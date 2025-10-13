@@ -17,6 +17,56 @@ console = Console()
 # Environment variable validation and payload creation
 VALID_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# Job wrapper script for workspace-based detached execution
+# This script runs in tmux and handles job lifecycle using the shared workspace directory
+WORKSPACE_JOB_WRAPPER_SCRIPT = '''#!/bin/bash
+# Job execution wrapper for workspace-based jobs
+set -euo pipefail
+
+JOB_ID=$1
+COMMAND=$2
+JOB_DIR=~/.bifrost/jobs/$JOB_ID
+WORKSPACE_DIR=~/.bifrost/workspace
+
+# Setup job metadata
+echo "running" > "$JOB_DIR/status"
+echo "$(date -Iseconds)" > "$JOB_DIR/start_time"
+echo $$ > "$JOB_DIR/pid"
+
+# Change to workspace directory
+cd "$WORKSPACE_DIR"
+
+# Prologue logs
+{
+  echo "==== BIFROST JOB START (workspace) ===="
+  date -Iseconds
+  echo "PWD: $(pwd)"
+  echo "Command: $COMMAND"
+  echo "Env snapshot (selected):"
+  echo "  PATH=$PATH"
+  echo "  PYTHONPATH=$PYTHONPATH"
+  echo "======================================="
+} >> "$JOB_DIR/job.log"
+
+# Run command and capture output
+set -x
+bash -c "$COMMAND" 2>&1 | tee -a "$JOB_DIR/job.log"
+EXIT_CODE=${PIPESTATUS[0]}
+set +x
+
+# Update job metadata
+echo $EXIT_CODE > "$JOB_DIR/exit_code"
+echo "$(date -Iseconds)" > "$JOB_DIR/end_time"
+
+if [ $EXIT_CODE -eq 0 ]; then
+  echo "completed" > "$JOB_DIR/status"
+  echo "==== JOB COMPLETE (exit=0) ====" >> "$JOB_DIR/job.log"
+else
+  echo "failed" > "$JOB_DIR/status"
+  echo "==== JOB FAILED (exit=$EXIT_CODE) ====" >> "$JOB_DIR/job.log"
+fi
+'''
+
 def make_env_payload(env_dict: Dict[str, str]) -> bytes:
     """Create secure environment variable payload for stdin injection."""
     lines = []
@@ -642,65 +692,16 @@ class GitDeployment:
 
     def _upload_workspace_job_wrapper_script(self, client: paramiko.SSHClient) -> None:
         """Upload job wrapper script that uses workspace directory."""
-        
+
         # Create scripts directory
         stdin, stdout, stderr = client.exec_command("mkdir -p ~/.bifrost/scripts")
         exit_code = stdout.channel.recv_exit_status()
         if exit_code != 0:
             error = stderr.read().decode()
             raise RuntimeError(f"Failed to create scripts directory: {error}")
-        
-        # Job wrapper script for workspace-based jobs
-        wrapper_script = '''#!/bin/bash
-# Job execution wrapper for workspace-based jobs
-set -euo pipefail
 
-JOB_ID=$1
-COMMAND=$2
-JOB_DIR=~/.bifrost/jobs/$JOB_ID
-WORKSPACE_DIR=~/.bifrost/workspace
-
-# Setup job metadata
-echo "running" > "$JOB_DIR/status"
-echo "$(date -Iseconds)" > "$JOB_DIR/start_time"
-echo $$ > "$JOB_DIR/pid"
-
-# Change to workspace directory
-cd "$WORKSPACE_DIR"
-
-# Prologue logs
-{
-  echo "==== BIFROST JOB START (workspace) ===="
-  date -Iseconds
-  echo "PWD: $(pwd)"
-  echo "Command: $COMMAND"
-  echo "Env snapshot (selected):"
-  echo "  PATH=$PATH"
-  echo "  PYTHONPATH=$PYTHONPATH"
-  echo "======================================="
-} >> "$JOB_DIR/job.log"
-
-# Run command and capture output
-set -x
-bash -c "$COMMAND" 2>&1 | tee -a "$JOB_DIR/job.log"
-EXIT_CODE=${PIPESTATUS[0]}
-set +x
-
-# Update job metadata
-echo $EXIT_CODE > "$JOB_DIR/exit_code"
-echo "$(date -Iseconds)" > "$JOB_DIR/end_time"
-
-if [ $EXIT_CODE -eq 0 ]; then
-  echo "completed" > "$JOB_DIR/status"
-  echo "==== JOB COMPLETE (exit=0) ====" >> "$JOB_DIR/job.log"
-else
-  echo "failed" > "$JOB_DIR/status"
-  echo "==== JOB FAILED (exit=$EXIT_CODE) ====" >> "$JOB_DIR/job.log"
-fi
-'''
-        
-        # Upload wrapper script
-        wrapper_cmd = f"cat > ~/.bifrost/scripts/workspace_job_wrapper.sh << 'EOF'\n{wrapper_script}\nEOF"
+        # Upload wrapper script (defined at module level for readability)
+        wrapper_cmd = f"cat > ~/.bifrost/scripts/workspace_job_wrapper.sh << 'EOF'\n{WORKSPACE_JOB_WRAPPER_SCRIPT}\nEOF"
         stdin, stdout, stderr = client.exec_command(wrapper_cmd)
         exit_code = stdout.channel.recv_exit_status()
         if exit_code != 0:

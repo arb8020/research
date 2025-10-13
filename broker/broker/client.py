@@ -4,10 +4,10 @@ GPU Broker Client - Main interface for GPU operations
 
 import os
 import logging
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union, cast
 
 from .query import GPUQuery, QueryType
-from .types import CloudType, GPUInstance, GPUOffer
+from .types import CloudType, GPUInstance, GPUOffer, ProviderCredentials
 
 
 logger = logging.getLogger(__name__)
@@ -31,29 +31,31 @@ class GPUClient:
         instance = client.create(offers[0])
     """
 
-    def __init__(self, credentials: Dict[str, str], ssh_key_path: str):
+    def __init__(self, credentials: Union[ProviderCredentials, Dict[str, str]], ssh_key_path: str):
         """Initialize GPU broker client
 
         Args:
-            credentials: Dict mapping provider name to API key
+            credentials: Provider credentials (ProviderCredentials or dict)
                         e.g., {"runpod": "key1", "vast": "key2"}
+                        or ProviderCredentials(runpod="key1", vast="key2")
             ssh_key_path: Path to SSH private key (required)
 
         Raises:
             AssertionError: If parameters are invalid
         """
+        # Convert dict to ProviderCredentials if needed (backward compatibility)
+        if isinstance(credentials, dict):
+            credentials = ProviderCredentials.from_dict(cast(Dict[str, str], credentials))
+
         # Assert inputs (Tiger Style: assert everything, fail fast)
-        assert isinstance(credentials, dict), "credentials must be dict"
-        assert len(credentials) > 0, "credentials dict cannot be empty"
-        for provider_name, api_key in credentials.items():
-            assert isinstance(provider_name, str), f"Provider name must be string: {provider_name}"
-            assert isinstance(api_key, str), f"API key must be string for {provider_name}"
-            assert len(api_key) > 0, f"API key cannot be empty for {provider_name}"
+        assert isinstance(credentials, ProviderCredentials), \
+            "credentials must be ProviderCredentials or dict"
 
         assert isinstance(ssh_key_path, str), "ssh_key_path must be string"
         assert len(ssh_key_path) > 0, "ssh_key_path cannot be empty"
 
-        self._credentials = credentials
+        # Store as dict internally for now (gradual migration)
+        self._credentials = credentials.to_dict()
         self._ssh_key_path = os.path.expanduser(ssh_key_path)
 
         # Validate SSH key (Tiger Style: assert everything, fail fast)

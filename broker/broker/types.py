@@ -159,7 +159,8 @@ class GPUInstance:
     def terminate(self) -> bool:
         """Terminate this instance"""
         from .api import terminate_instance
-        return terminate_instance(self.id, self.provider, api_key=self.api_key)
+        credentials = {self.provider: self.api_key} if self.api_key else None
+        return terminate_instance(self.id, self.provider, credentials=credentials)
     
     def wait_until_ready(self, timeout: int = 300) -> bool:
         """Wait until instance status is RUNNING"""
@@ -170,7 +171,8 @@ class GPUInstance:
         start_time = time.time()
 
         while time.time() - start_time < timeout:
-            updated_instance = get_instance(self.id, self.provider, api_key=self.api_key)
+            credentials = {self.provider: self.api_key} if self.api_key else None
+            updated_instance = get_instance(self.id, self.provider, credentials=credentials)
             if not updated_instance:
                 return False
                 
@@ -337,3 +339,62 @@ class SSHConfig:
     username: str
     key_path: Optional[str] = None
     method: Optional[str] = None  # "direct" or "proxy"
+
+
+# ============================================================================
+# New Frozen Dataclasses (Type Improvements)
+# ============================================================================
+
+
+@dataclass(frozen=True)
+class ProviderCredentials:
+    """API credentials for cloud GPU providers.
+
+    Supports multiple providers (RunPod, Vast, Lambda, etc).
+    Immutable to prevent accidental credential leaks.
+    """
+    runpod: str = ""
+    vast: str = ""
+    # Add more providers as needed
+
+    def __post_init__(self):
+        # Tiger Style: assert at least one credential provided
+        assert self.runpod or self.vast, \
+            "At least one provider credential required"
+
+        # Validate credential format (basic length check)
+        if self.runpod:
+            assert len(self.runpod) > 10, \
+                "RunPod API key appears invalid (too short)"
+
+        if self.vast:
+            assert len(self.vast) > 10, \
+                "Vast API key appears invalid (too short)"
+
+        # Assert output invariant
+        assert self.runpod or self.vast, "credentials validated"
+
+    def get(self, provider: str) -> Optional[str]:
+        """Get credential for specific provider."""
+        if provider == "runpod":
+            return self.runpod
+        elif provider == "vast":
+            return self.vast
+        return None
+
+    def to_dict(self) -> Dict[str, str]:
+        """Convert to dict for backward compatibility."""
+        result = {}
+        if self.runpod:
+            result["runpod"] = self.runpod
+        if self.vast:
+            result["vast"] = self.vast
+        return result
+
+    @classmethod
+    def from_dict(cls, credentials: Dict[str, str]) -> 'ProviderCredentials':
+        """Create from dict (for backward compatibility)."""
+        return cls(
+            runpod=credentials.get("runpod", ""),
+            vast=credentials.get("vast", "")
+        )

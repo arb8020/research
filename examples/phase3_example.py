@@ -25,8 +25,8 @@ print(f"Bootstrap session: {job.bootstrap_session}")  # bifrost-training-run-1-.
 
 # Get session info with attach commands
 session_info = client.get_session_info(job.job_id)
-print(f"\nAttach to main: {session_info['attach_main']}")
-print(f"Attach to bootstrap: {session_info['attach_bootstrap']}")
+print(f"\nAttach to main: {session_info.attach_main}")
+print(f"Attach to bootstrap: {session_info.attach_bootstrap}")
 
 # Get separate logs for bootstrap and command
 bootstrap_logs = client.get_logs(job.job_id, log_type="bootstrap", lines=50)

@@ -6,12 +6,12 @@ import os
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Callable, Iterator, List, Dict
+from typing import Optional, Callable, Iterator, List, Dict, Union
 import logging
 
 from .types import (
     SSHConnection, JobInfo, JobStatus, CopyResult, ConnectionError, JobError, TransferError,
-    RemoteConfig, ExecResult
+    RemoteConfig, ExecResult, EnvironmentVariables, SessionInfo
 )
 from .deploy import GitDeployment
 from . import git_sync
@@ -138,18 +138,24 @@ class BifrostClient:
             raise ConnectionError(f"Failed to load SSH key from {key_path}: {e}")
 
     def _build_command_with_env(self, command: str, working_dir: str,
-                                env: Optional[Dict[str, str]]) -> str:
+                                env: Optional[Union[EnvironmentVariables, Dict[str, str]]]) -> str:
         """Build command with environment variables and working directory.
 
         Args:
             command: Command to execute
             working_dir: Directory to run in
-            env: Environment variables
+            env: Environment variables (EnvironmentVariables or dict)
 
         Returns:
             Full command string with cd and exports
         """
         import shlex
+
+        # Convert EnvironmentVariables to dict if needed
+        if isinstance(env, EnvironmentVariables):
+            env_dict = env.to_dict()
+        else:
+            env_dict = env
 
         parts = []
 
@@ -157,8 +163,8 @@ class BifrostClient:
         parts.append(f"cd {working_dir}")
 
         # Export environment variables
-        if env:
-            for key, value in env.items():
+        if env_dict:
+            for key, value in env_dict.items():
                 # Basic validation
                 if not key.isidentifier():
                     raise ValueError(f"Invalid env var name: {key}")
@@ -243,7 +249,7 @@ class BifrostClient:
         assert workspace_path, "push() returned empty workspace_path"
         return workspace_path
     
-    def exec(self, command: str, env: Optional[Dict[str, str]] = None, working_dir: Optional[str] = None) -> ExecResult:
+    def exec(self, command: str, env: Optional[Union[EnvironmentVariables, Dict[str, str]]] = None, working_dir: Optional[str] = None) -> ExecResult:
         """
         Execute command in remote environment.
 
@@ -299,7 +305,7 @@ class BifrostClient:
             raise ConnectionError(f"Execution failed: {e}")
     
     def deploy(self, command: str, bootstrap_cmd: Optional[str] = None,
-               env: Optional[Dict[str, str]] = None) -> ExecResult:
+               env: Optional[Union[EnvironmentVariables, Dict[str, str]]] = None) -> ExecResult:
         """Deploy code and execute command.
 
         Equivalent to: push(bootstrap_cmd) + exec(command, env)
@@ -324,7 +330,7 @@ class BifrostClient:
         command: str,
         bootstrap_cmd: Optional[str] = None,
         bootstrap_timeout: int = 600,
-        env: Optional[Dict[str, str]] = None,
+        env: Optional[Union[EnvironmentVariables, Dict[str, str]]] = None,
         session_name: Optional[str] = None,
         no_deploy: bool = False
     ) -> JobInfo:
@@ -360,7 +366,9 @@ class BifrostClient:
 
                 # Use GitDeployment for detached execution
                 deployment = GitDeployment(self.ssh.user, self.ssh.host, self.ssh.port)
-                actual_job_id = deployment.deploy_and_execute_detached(client, command, env)
+                # Convert EnvironmentVariables to dict for GitDeployment
+                env_dict = env.to_dict() if isinstance(env, EnvironmentVariables) else env
+                actual_job_id = deployment.deploy_and_execute_detached(client, command, env_dict)
 
                 # Note: GitDeployment generates its own job_id, we use that one
                 # In Phase 3 full implementation, we'd pass our job_id to it
@@ -579,25 +587,33 @@ class BifrostClient:
         # Filter to bifrost sessions only
         return [s for s in sessions if s.startswith('bifrost-') and s]
 
-    def get_session_info(self, job_id: str) -> Dict[str, str]:
+    def get_session_info(self, job_id: str) -> SessionInfo:
         """Get tmux session information for a job.
 
         Returns:
-            Dict with session names and attach commands
+            SessionInfo with session names and attach commands
         """
         job = self.get_job_status(job_id)
 
-        info = {
-            "job_id": job_id,
-            "main_session": job.tmux_session or f"bifrost-{job_id}",
-            "attach_main": f"ssh {self.ssh.user}@{self.ssh.host} -p {self.ssh.port} -t 'tmux attach -t {job.tmux_session or f'bifrost-{job_id}'}'"
-        }
+        main_session = job.tmux_session or f"bifrost-{job_id}"
+        attach_main = f"ssh {self.ssh.user}@{self.ssh.host} -p {self.ssh.port} -t 'tmux attach -t {main_session}'"
 
         if job.bootstrap_session:
-            info["bootstrap_session"] = job.bootstrap_session
-            info["attach_bootstrap"] = f"ssh {self.ssh.user}@{self.ssh.host} -p {self.ssh.port} -t 'tmux attach -t {job.bootstrap_session}'"
-
-        return info
+            bootstrap_session = job.bootstrap_session
+            attach_bootstrap = f"ssh {self.ssh.user}@{self.ssh.host} -p {self.ssh.port} -t 'tmux attach -t {bootstrap_session}'"
+            return SessionInfo(
+                job_id=job_id,
+                main_session=main_session,
+                attach_main=attach_main,
+                bootstrap_session=bootstrap_session,
+                attach_bootstrap=attach_bootstrap
+            )
+        else:
+            return SessionInfo(
+                job_id=job_id,
+                main_session=main_session,
+                attach_main=attach_main
+            )
 
     def wait_for_completion(self, job_id: str, poll_interval: float = 5.0, timeout: Optional[float] = None) -> JobInfo:
         """

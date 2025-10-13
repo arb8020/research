@@ -1,0 +1,33 @@
+[tool.uv.workspace]
+members = ["bifrost", "broker", "shared"]
+
+[project]
+name = "gpu-research-tools"
+version = "0.1.0"
+description = "Research workspace for GPU provisioning and remote execution tools"
+requires-python = ">=3.10"
+
+# Core workspace members
+dependencies = [
+    "broker",
+    "bifrost",
+    "shared"
+]
+
+[tool.uv.sources]
+broker = { workspace = true }
+bifrost = { workspace = true }
+shared = { workspace = true }
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[dependency-groups]
+dev = [
+    "ty>=0.0.1a22",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["shared*"]
