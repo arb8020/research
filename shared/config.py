@@ -27,6 +27,51 @@ def get_prime_key() -> Optional[str]:
     return os.getenv("PRIME_API_KEY")
 
 
+def get_modal_token() -> Optional[str]:
+    """Get Modal token from environment or ~/.modal.toml
+
+    Precedence:
+    1. MODAL_TOKEN_ID from environment
+    2. Active workspace from ~/.modal.toml
+
+    Returns token_id if found, None otherwise.
+    """
+    # Try environment variable first
+    if token_id := os.getenv("MODAL_TOKEN_ID"):
+        return token_id
+
+    # Fall back to ~/.modal.toml
+    modal_config = Path.home() / ".modal.toml"
+    if modal_config.exists():
+        try:
+            # Parse TOML manually (avoid dependency)
+            content = modal_config.read_text()
+            current_section = None
+            sections = {}
+
+            for line in content.split('\n'):
+                line = line.strip()
+                # Section header
+                if line.startswith('[') and line.endswith(']'):
+                    current_section = line[1:-1]
+                    sections[current_section] = {}
+                # Key-value pair
+                elif '=' in line and current_section:
+                    key, _, value = line.partition('=')
+                    key = key.strip()
+                    value = value.strip().strip('"').strip("'")
+                    sections[current_section][key] = value
+
+            # Find active workspace
+            for workspace, config in sections.items():
+                if config.get('active') == 'true':
+                    return config.get('token_id')
+        except Exception:
+            pass  # If parsing fails, return None
+
+    return None
+
+
 def get_ssh_key_path() -> Optional[str]:
     """Get SSH key path from environment"""
     return os.getenv("SSH_KEY_PATH")

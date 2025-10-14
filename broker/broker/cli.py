@@ -92,7 +92,15 @@ def init():
         logger.info("Then run: broker search")
     except FileExistsError:
         logger.error("✗ .env already exists")
-        logger.info("Edit manually or delete to recreate")
+        logger.info("")
+        logger.info("To edit manually:")
+        logger.info(f"  Open: {Path('.env').absolute()}")
+        logger.info("  Ensure it contains:")
+        logger.info("    RUNPOD_API_KEY=your_key_here")
+        logger.info("    PRIME_API_KEY=your_key_here")
+        logger.info("    SSH_KEY_PATH=~/.ssh/id_ed25519")
+        logger.info("")
+        logger.info("Or delete .env and run 'broker init' again")
         raise typer.Exit(1)
 
 
@@ -394,7 +402,7 @@ def list(ctx: typer.Context):
 
         for instance in instances:
             table.add_row(
-                instance.id[:12],
+                instance.id,
                 instance.provider,
                 instance.gpu_type,
                 instance.status.value,
