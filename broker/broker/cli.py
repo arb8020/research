@@ -8,7 +8,6 @@ from typing import Optional
 
 import typer
 from rich.console import Console
-from rich.logging import RichHandler
 from rich.table import Table
 
 from broker.client import GPUClient
@@ -20,6 +19,7 @@ from shared.config import (
     get_runpod_key,
     get_ssh_key_path,
 )
+from shared.logging_config import setup_logging
 
 console = Console()
 app = typer.Typer(help="GPU broker - provision cloud GPUs")
@@ -48,26 +48,14 @@ def main(
     # Setup logging based on flags
     if json_output:
         # Suppress all logging when outputting JSON
-        logging.basicConfig(level=logging.CRITICAL)
+        setup_logging(level="CRITICAL", use_rich=False, use_json=False)
     elif debug:
-        logging.basicConfig(
-            level=logging.DEBUG,
-            format="%(message)s",
-            handlers=[RichHandler(console=console, rich_tracebacks=True)],
-        )
+        setup_logging(level="DEBUG", use_rich=True, rich_tracebacks=True)
     elif quiet:
-        logging.basicConfig(
-            level=logging.WARNING,
-            format="%(message)s",
-            handlers=[RichHandler(console=console)],
-        )
+        setup_logging(level="WARNING", use_rich=True)
     else:
         # Default: INFO level
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(message)s",
-            handlers=[RichHandler(console=console)],
-        )
+        setup_logging(level="INFO", use_rich=True)
 
     # Store options in context
     ctx.obj = {"credentials": credentials, "ssh_key": ssh_key, "json": json_output}

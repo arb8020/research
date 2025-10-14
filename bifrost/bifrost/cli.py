@@ -8,12 +8,12 @@ from typing import Dict, List, Optional
 
 import typer
 from rich.console import Console
-from rich.logging import RichHandler
 from rich.table import Table
 
 from bifrost.client import BifrostClient
 from bifrost.types import JobStatus
 from shared.config import create_env_template, discover_ssh_keys, get_ssh_key_path
+from shared.logging_config import setup_logging
 
 console = Console()
 app = typer.Typer(help="Bifrost - remote GPU execution")
@@ -117,25 +117,13 @@ def main(
 
     # Setup logging
     if json_output:
-        logging.basicConfig(level=logging.CRITICAL)
+        setup_logging(level="CRITICAL", use_rich=False, use_json=False)
     elif debug:
-        logging.basicConfig(
-            level=logging.DEBUG,
-            format="%(message)s",
-            handlers=[RichHandler(console=console, rich_tracebacks=True)],
-        )
+        setup_logging(level="DEBUG", use_rich=True, rich_tracebacks=True)
     elif quiet:
-        logging.basicConfig(
-            level=logging.WARNING,
-            format="%(message)s",
-            handlers=[RichHandler(console=console)],
-        )
+        setup_logging(level="WARNING", use_rich=True)
     else:
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(message)s",
-            handlers=[RichHandler(console=console)],
-        )
+        setup_logging(level="INFO", use_rich=True)
 
     ctx.obj = {"ssh_key": ssh_key, "json": json_output}
 

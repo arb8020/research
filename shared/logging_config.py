@@ -3,25 +3,39 @@ import os
 from typing import Any, Dict, Optional
 
 
-def setup_logging(level: Optional[str] = None, use_json: Optional[bool] = None, logger_levels: Optional[Dict[str, str]] = None,
-                  log_file: Optional[str] = None):
+def setup_logging(level: Optional[str] = None, use_json: Optional[bool] = None, use_rich: Optional[bool] = None,
+                  logger_levels: Optional[Dict[str, str]] = None, log_file: Optional[str] = None,
+                  rich_tracebacks: bool = False):
     """Setup standardized logging configuration using dict config.
 
     Args:
         level: Default log level for root logger
         use_json: Whether to use JSON formatter for console (default: False for human-readable)
+        use_rich: Whether to use RichHandler for console output (default: False).
+                 If True, produces clean CLI output with colors and formatting.
+                 Overridden to False if use_json=True.
         logger_levels: Dict mapping logger names to specific log levels
                       e.g. {"bifrost": "DEBUG", "broker": "WARNING", "paramiko": "ERROR"}
         log_file: Optional log file path. If provided, logs in JSONL format to file
                  while keeping human-readable console output
+        rich_tracebacks: Whether to enable rich tracebacks (only applies when use_rich=True)
     """
     level = level or os.getenv("LOG_LEVEL", "INFO")
     use_json = use_json if use_json is not None else os.getenv("LOG_JSON", "").lower() == "true"
+    use_rich = use_rich if use_rich is not None else False
     logger_levels = logger_levels or {}
+
+    # JSON mode overrides rich mode
+    if use_json:
+        use_rich = False
 
     formatters = {
         "standard": {
-            "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+            "format": "[%(asctime)s] %(levelname)s: %(message)s",
+            "datefmt": "%H:%M:%S"
+        },
+        "minimal": {
+            "format": "%(message)s"
         },
         "json": {
             "()": "shared.json_formatter.JSONFormatter",
@@ -35,14 +49,27 @@ def setup_logging(level: Optional[str] = None, use_json: Optional[bool] = None, 
         }
     }
 
-    handlers = {
-        "console": {
-            "class": "logging.StreamHandler",
-            "level": "DEBUG",  # Let loggers control their own levels
-            "formatter": "json" if use_json else "standard",
-            "stream": "ext://sys.stdout"
+    # Choose handler and formatter based on mode
+    if use_rich:
+        handlers = {
+            "console": {
+                "class": "rich.logging.RichHandler",
+                "level": "DEBUG",  # Let loggers control their own levels
+                "formatter": "minimal",
+                "rich_tracebacks": rich_tracebacks,
+                "show_time": False,
+                "show_path": False
+            }
         }
-    }
+    else:
+        handlers = {
+            "console": {
+                "class": "logging.StreamHandler",
+                "level": "DEBUG",  # Let loggers control their own levels
+                "formatter": "json" if use_json else "standard",
+                "stream": "ext://sys.stdout"
+            }
+        }
 
     # Add file handler for JSONL logging if log_file specified
     handler_list = ["console"]
