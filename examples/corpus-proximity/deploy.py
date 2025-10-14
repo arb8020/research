@@ -167,6 +167,22 @@ def main():
             logger.error("embed_chunks.py failed")
             return 1
 
+        # Run test_search.py
+        logger.info(f"Running test_search.py with config {args.config}...")
+        cmd = f"cd ~/.bifrost/workspace && uv run python examples/corpus-proximity/test_search.py examples/corpus-proximity/{args.config}"
+        result = bifrost_client.exec(cmd)
+
+        if result.stdout:
+            logger.info(f"STDOUT:\n{result.stdout}")
+        if result.stderr:
+            logger.error(f"STDERR:\n{result.stderr}")
+
+        logger.info(f"test_search.py completed with exit code: {result.exit_code}")
+        if result.exit_code != 0:
+            logger.error("test_search.py failed")
+            return 1
+
+        logger.info("All steps completed successfully!")
         return 0
     except KeyboardInterrupt:
         logger.error("\nInterrupted")
