@@ -71,5 +71,8 @@ def get_provider_impl(provider_name: str):
     elif provider_name == "vast":
         from . import vast
         return vast
+    elif provider_name == "primeintellect":
+        from . import primeintellect
+        return primeintellect
     else:
         raise ValueError(f"Unsupported provider: {provider_name}")

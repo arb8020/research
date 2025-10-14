@@ -32,14 +32,15 @@ class GPUClient:
         instance = client.create(offers[0])
     """
 
-    def __init__(self, credentials: Union[ProviderCredentials, Dict[str, str]], ssh_key_path: str):
+    def __init__(self, credentials: Union[ProviderCredentials, Dict[str, str]], ssh_key_path: Optional[str] = None):
         """Initialize GPU broker client
 
         Args:
             credentials: Provider credentials (ProviderCredentials or dict)
                         e.g., {"runpod": "key1", "vast": "key2"}
                         or ProviderCredentials(runpod="key1", vast="key2")
-            ssh_key_path: Path to SSH private key (required)
+            ssh_key_path: Path to SSH private key (optional - only needed for operations
+                         that connect to instances, not for searching)
 
         Raises:
             AssertionError: If parameters are invalid
@@ -57,18 +58,17 @@ class GPUClient:
         # Validate and store credentials (validation helper contains all assertions)
         self._credentials = credentials.to_dict()
 
-        # Validate and store SSH key path (validation helper contains all assertions)
-        self._ssh_key_path = validate_ssh_key_path(ssh_key_path)
+        # Validate and store SSH key path if provided (validation helper contains all assertions)
+        self._ssh_key_path = validate_ssh_key_path(ssh_key_path) if ssh_key_path else None
 
         # Initialize query interface
         self._query = GPUQuery()
 
         # Assert output invariants
         assert self._credentials, "Failed to set credentials"
-        assert self._ssh_key_path, "Failed to set ssh_key_path"
         assert self._query is not None, "Failed to initialize query"
 
-    def get_ssh_key_path(self) -> str:
+    def get_ssh_key_path(self) -> Optional[str]:
         """Get configured SSH key path"""
         return self._ssh_key_path
 

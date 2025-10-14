@@ -9,30 +9,40 @@ This test validates the complete workflow:
 4. Cleanup
 """
 
+import argparse
 import os
 import logging
 
-from dotenv import load_dotenv
-
 from broker import GPUClient, CloudType
 from bifrost import BifrostClient
-
-# Load environment variables from .env file
-load_dotenv()
+from shared.config import get_runpod_key, get_vast_key, get_prime_key
 
 
 logger = logging.getLogger(__name__)
 
 
-def get_credentials():
-    """Read credentials from environment."""
-    credentials = {}
-    if runpod_key := os.getenv("RUNPOD_API_KEY"):
-        credentials["runpod"] = runpod_key
-    if vast_key := os.getenv("VAST_API_KEY"):
-        credentials["vast"] = vast_key
+def get_credentials(provider_filter=None):
+    """Read credentials from environment.
 
-    assert credentials, "No API keys found - set RUNPOD_API_KEY or VAST_API_KEY"
+    Args:
+        provider_filter: Optional provider name to filter for (e.g., 'runpod', 'primeintellect')
+    """
+    credentials = {}
+    if runpod_key := get_runpod_key():
+        credentials["runpod"] = runpod_key
+    if vast_key := get_vast_key():
+        credentials["vast"] = vast_key
+    if prime_key := get_prime_key():
+        credentials["primeintellect"] = prime_key
+
+    # Filter to specific provider if requested
+    if provider_filter:
+        if provider_filter not in credentials:
+            raise ValueError(f"Provider '{provider_filter}' requested but no API key found. "
+                           f"Set {provider_filter.upper()}_API_KEY environment variable")
+        credentials = {provider_filter: credentials[provider_filter]}
+
+    assert credentials, "No API keys found - set RUNPOD_API_KEY, VAST_API_KEY, or PRIME_API_KEY"
     return credentials
 
 
@@ -122,16 +132,22 @@ fi""",
     return result
 
 
-def run_integration_test():
-    """Run the full integration test."""
+def run_integration_test(provider=None):
+    """Run the full integration test.
+
+    Args:
+        provider: Optional provider name to filter for (e.g., 'runpod', 'primeintellect')
+    """
     # Setup
-    credentials = get_credentials()
+    credentials = get_credentials(provider_filter=provider)
     ssh_key_path = os.getenv("SSH_KEY_PATH", "~/.ssh/id_ed25519")
 
     logger.info("=" * 70)
     logger.info("JAX GPU Integration Test - Broker → Bifrost → GPU")
     logger.info("=" * 70)
     logger.info(f"Providers: {list(credentials.keys())}")
+    if provider:
+        logger.info(f"Forcing provider: {provider}")
     logger.info(f"SSH key: {ssh_key_path}")
 
     # Initialize clients
@@ -163,6 +179,18 @@ def run_integration_test():
 
 def main():
     """Entry point - handle logging setup and error reporting."""
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(
+        description="JAX GPU Integration Test - Broker → Bifrost → GPU"
+    )
+    parser.add_argument(
+        "--provider",
+        type=str,
+        choices=["runpod", "vast", "primeintellect"],
+        help="Force a specific GPU provider (useful for integration testing a single provider)"
+    )
+    args = parser.parse_args()
+
     # Setup logging
     logging.basicConfig(
         level=logging.INFO,
@@ -170,7 +198,7 @@ def main():
     )
 
     try:
-        success = run_integration_test()
+        success = run_integration_test(provider=args.provider)
         logger.info("=" * 70)
         logger.info("🎉 INTEGRATION TEST PASSED")
         logger.info("=" * 70)
