@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Download and process FineWeb-Edu data for corpus similarity search."""
 
-import argparse
 import json
 import logging
 import time
@@ -11,18 +10,18 @@ from typing import List, Dict
 import requests
 import pyarrow.parquet as pq
 
+from config import Config
+
 logger = logging.getLogger(__name__)
 
 # FineWeb-Edu dataset configuration (nanochat's copy)
 BASE_URL = "https://huggingface.co/datasets/karpathy/fineweb-edu-100b-shuffle/resolve/main"
-DATA_DIR = Path("data/shards")
-PROCESSED_DIR = Path("data/processed")
 
 
-def download_shard(shard_id: int, max_retries: int = 5) -> bool:
+def download_shard(shard_id: int, data_dir: Path, max_retries: int = 5) -> bool:
     """Download a single FineWeb-Edu shard with retry logic."""
     filename = f"shard_{shard_id:05d}.parquet"
-    filepath = DATA_DIR / filename
+    filepath = data_dir / filename
 
     # Skip if already downloaded
     if filepath.exists():
@@ -30,7 +29,7 @@ def download_shard(shard_id: int, max_retries: int = 5) -> bool:
         return True
 
     # Create directory if needed
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    data_dir.mkdir(parents=True, exist_ok=True)
 
     url = f"{BASE_URL}/{filename}"
     temp_filepath = filepath.with_suffix(".parquet.tmp")
@@ -76,10 +75,10 @@ def download_shard(shard_id: int, max_retries: int = 5) -> bool:
     return False
 
 
-def process_shard(shard_id: int) -> List[Dict[str, str]]:
+def process_shard(shard_id: int, data_dir: Path) -> List[Dict[str, str]]:
     """Read parquet file and chunk into paragraphs."""
     filename = f"shard_{shard_id:05d}.parquet"
-    filepath = DATA_DIR / filename
+    filepath = data_dir / filename
 
     if not filepath.exists():
         logger.error(f"Shard {shard_id} not found at {filepath}")
@@ -157,11 +156,8 @@ def verify_data(output_path: Path, num_samples: int = 5):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Prepare FineWeb-Edu data")
-    parser.add_argument("--num-shards", type=int, default=5, help="Number of shards to download")
-    parser.add_argument("--output", type=str, default="data/processed/chunks.jsonl", help="Output JSONL file")
-    parser.add_argument("--verify", action="store_true", help="Print sample data after processing")
-    args = parser.parse_args()
+    import sys
+    import importlib.util
 
     # Setup logging
     logging.basicConfig(
@@ -169,12 +165,23 @@ def main():
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
 
-    logger.info(f"Starting data preparation: {args.num_shards} shards")
+    # Load config
+    if len(sys.argv) > 1 and sys.argv[1].endswith('.py'):
+        # Load config from experiment file
+        spec = importlib.util.spec_from_file_location("exp_config", sys.argv[1])
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        config = module.config
+    else:
+        # Use default config
+        config = Config()
+
+    logger.info(f"Starting data preparation: {config.data.num_shards} shards")
 
     # Download shards
     logger.info("Phase 1: Downloading shards")
-    for shard_id in range(args.num_shards):
-        success = download_shard(shard_id)
+    for shard_id in range(config.data.num_shards):
+        success = download_shard(shard_id, config.data.data_dir)
         if not success:
             logger.error(f"Failed to download shard {shard_id}, stopping")
             return 1
@@ -182,18 +189,22 @@ def main():
     # Process shards
     logger.info("Phase 2: Processing shards")
     all_chunks = []
-    for shard_id in range(args.num_shards):
-        chunks = process_shard(shard_id)
+    for shard_id in range(config.data.num_shards):
+        chunks = process_shard(shard_id, config.data.data_dir)
         all_chunks.extend(chunks)
 
     # Save chunks
     logger.info("Phase 3: Saving chunks")
-    output_path = Path(args.output)
+    output_path = config.data.processed_dir / config.data.output_file
     save_chunks(all_chunks, output_path)
 
-    # Verify
-    if args.verify:
-        verify_data(output_path)
+    # Verify (always verify for now)
+    verify_data(output_path)
+
+    # Save config for reproducibility
+    config_output = config.data.processed_dir / "config.json"
+    config.save(config_output)
+    logger.info(f"Saved config to {config_output}")
 
     logger.info("Data preparation complete!")
     return 0

@@ -129,7 +129,7 @@ def main():
     parser.add_argument("--provider", type=str, choices=["runpod", "primeintellect"])
     parser.add_argument("--use-existing", type=str, metavar="NAME_OR_SSH")
     parser.add_argument("--name", type=str)
-    parser.add_argument("--num-shards", type=int, default=5, help="Number of shards to download")
+    parser.add_argument("config", type=str, help="Path to experiment config file (e.g., experiments/02_small_test_03.py)")
     args = parser.parse_args()
 
     setup_logging()
@@ -138,8 +138,8 @@ def main():
         bifrost_client = run_deploy(provider=args.provider, use_existing=args.use_existing, name=args.name)
 
         # Run prepare_data.py
-        logger.info(f"Running prepare_data.py with {args.num_shards} shards...")
-        cmd = f"uv run python examples/corpus-proximity/prepare_data.py --num-shards {args.num_shards} --verify"
+        logger.info(f"Running prepare_data.py with config {args.config}...")
+        cmd = f"uv run python examples/corpus-proximity/prepare_data.py examples/corpus-proximity/{args.config}"
         result = bifrost_client.exec(cmd)
 
         if result.stdout:
@@ -150,6 +150,21 @@ def main():
         logger.info(f"prepare_data.py completed with exit code: {result.exit_code}")
         if result.exit_code != 0:
             logger.error("prepare_data.py failed")
+            return 1
+
+        # Run embed_chunks.py
+        logger.info(f"Running embed_chunks.py with config {args.config}...")
+        cmd = f"uv run python examples/corpus-proximity/embed_chunks.py examples/corpus-proximity/{args.config}"
+        result = bifrost_client.exec(cmd)
+
+        if result.stdout:
+            logger.info(f"STDOUT:\n{result.stdout}")
+        if result.stderr:
+            logger.error(f"STDERR:\n{result.stderr}")
+
+        logger.info(f"embed_chunks.py completed with exit code: {result.exit_code}")
+        if result.exit_code != 0:
+            logger.error("embed_chunks.py failed")
             return 1
 
         return 0

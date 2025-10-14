@@ -169,12 +169,11 @@ def execute_with_env_injection(
 
 class GitDeployment:
     """Handles git-based code deployment to remote instances."""
-    
-    def __init__(self, ssh_user: str, ssh_host: str, ssh_port: int, job_id: Optional[str] = None):
+
+    def __init__(self, ssh_user: str, ssh_host: str, ssh_port: int):
         self.ssh_user = ssh_user
         self.ssh_host = ssh_host
         self.ssh_port = ssh_port
-        self.job_id = job_id or str(uuid.uuid4())[:8]  # Use provided job_id or generate one
     
     def detect_bootstrap_command(self, client: paramiko.SSHClient, worktree_path: str, uv_extra: Optional[str] = None) -> str:
         """Detect Python dependency files and return appropriate bootstrap command."""
@@ -234,9 +233,15 @@ class GitDeployment:
         except subprocess.CalledProcessError:
             raise ValueError("Not in a git repository. Please run bifrost from a git repository.")
     
-    def setup_remote_structure(self, client: paramiko.SSHClient, repo_name: str) -> str:
-        """Set up ~/.bifrost directory structure on remote."""
-        
+    def setup_remote_structure(self, client: paramiko.SSHClient, repo_name: str, job_id: Optional[str] = None) -> str:
+        """Set up ~/.bifrost directory structure on remote.
+
+        Args:
+            client: SSH client connection
+            repo_name: Name of the git repository
+            job_id: Optional job ID for creating job-specific directories
+        """
+
         # Ensure tmux is installed for detached job functionality
         console.print("🔧 Ensuring tmux is installed for detached jobs...")
         tmux_check_cmd = "which tmux || (apt-get update && apt-get install -y tmux)"
@@ -246,12 +251,11 @@ class GitDeployment:
             console.print("⚠️  Warning: tmux installation may have failed, but continuing...")
         else:
             console.print("✅ tmux is available")
-        
+
         # Create directory structure
-        commands = [
-            "mkdir -p ~/.bifrost/repos ~/.bifrost/worktrees ~/.bifrost/jobs",
-            f"mkdir -p ~/.bifrost/jobs/{self.job_id}"
-        ]
+        commands = ["mkdir -p ~/.bifrost/repos ~/.bifrost/worktrees ~/.bifrost/jobs"]
+        if job_id:
+            commands.append(f"mkdir -p ~/.bifrost/jobs/{job_id}")
         
         for cmd in commands:
             stdin, stdout, stderr = client.exec_command(cmd)
@@ -277,17 +281,24 @@ class GitDeployment:
         
         return bare_repo_path
     
-    def push_code(self, repo_name: str, commit_hash: str, bare_repo_path: str) -> None:
-        """Push current code to remote bare repository."""
-        
+    def push_code(self, repo_name: str, commit_hash: str, bare_repo_path: str, job_id: str) -> None:
+        """Push current code to remote bare repository.
+
+        Args:
+            repo_name: Name of the git repository
+            commit_hash: Git commit hash to push
+            bare_repo_path: Path to bare repository on remote
+            job_id: Job ID for creating job-specific branch
+        """
+
         # Build SSH command for git push
         ssh_cmd = f"ssh -p {self.ssh_port} -o StrictHostKeyChecking=no"
         remote_url = f"{self.ssh_user}@{self.ssh_host}:{bare_repo_path}"
-        
+
         console.print("📤 Pushing code to remote...")
-        
+
         # Push current HEAD to a job-specific branch
-        job_branch = f"job/{self.job_id}"
+        job_branch = f"job/{job_id}"
         
         try:
             # Set git SSH command
@@ -382,12 +393,21 @@ class GitDeployment:
             
             console.print(f"✅ Workspace created at: {workspace_path}")
     
-    def create_worktree(self, client: paramiko.SSHClient, repo_name: str) -> str:
-        """Create git worktree for this job."""
-        
+    def create_worktree(self, client: paramiko.SSHClient, repo_name: str, job_id: str) -> str:
+        """Create git worktree for this job.
+
+        Args:
+            client: SSH client connection
+            repo_name: Name of the git repository
+            job_id: Job ID for creating job-specific worktree
+
+        Returns:
+            Path to created worktree
+        """
+
         bare_repo_path = f"~/.bifrost/repos/{repo_name}.git"
-        worktree_path = f"~/.bifrost/worktrees/{self.job_id}"
-        job_branch = f"job/{self.job_id}"
+        worktree_path = f"~/.bifrost/worktrees/{job_id}"
+        job_branch = f"job/{job_id}"
         
         console.print(f"🌳 Creating worktree: {worktree_path}")
         
@@ -403,21 +423,28 @@ class GitDeployment:
         console.print(f"✅ Worktree ready at: {worktree_path}")
         return worktree_path
     
-    def cleanup_job(self, client: paramiko.SSHClient, repo_name: str, worktree_path: str) -> None:
-        """Clean up job-specific resources."""
-        
+    def cleanup_job(self, client: paramiko.SSHClient, repo_name: str, worktree_path: str, job_id: str) -> None:
+        """Clean up job-specific resources.
+
+        Args:
+            client: SSH client connection
+            repo_name: Name of the git repository
+            worktree_path: Path to worktree to remove
+            job_id: Job ID for removing job-specific resources
+        """
+
         # Remove worktree
         bare_repo_path = f"~/.bifrost/repos/{repo_name}.git"
         cmd = f"cd {bare_repo_path} && git worktree remove {worktree_path} --force"
         client.exec_command(cmd)
-        
+
         # Remove job branch
-        job_branch = f"job/{self.job_id}"
+        job_branch = f"job/{job_id}"
         cmd = f"cd {bare_repo_path} && git branch -D {job_branch}"
         client.exec_command(cmd)
-        
+
         # Remove job directory
-        cmd = f"rm -rf ~/.bifrost/jobs/{self.job_id}"
+        cmd = f"rm -rf ~/.bifrost/jobs/{job_id}"
         client.exec_command(cmd)
     
     def deploy_and_execute(self, client: paramiko.SSHClient, command: str, env_vars: Optional[Dict[str, str]] = None, uv_extra: Optional[str] = None) -> int:
@@ -498,7 +525,7 @@ class GitDeployment:
         console.print(f"🎉 Code deployed successfully to workspace: {workspace_path}")
         return workspace_path
     
-    def deploy_code_only(self, client: paramiko.SSHClient, target_dir: Optional[str] = None, uv_extra: Optional[str] = None) -> str:
+    def deploy_code_only(self, client: paramiko.SSHClient, job_id: Optional[str] = None, target_dir: Optional[str] = None, uv_extra: Optional[str] = None) -> str:
         """Deploy code without executing commands. Returns worktree path.
 
         This method:
@@ -510,6 +537,7 @@ class GitDeployment:
 
         Args:
             client: Connected Paramiko SSH client (managed by caller)
+            job_id: Job ID for creating job-specific branch (generated if not provided)
             target_dir: Optional specific directory name for worktree
             uv_extra: Optional extra group for uv sync (e.g., 'interp')
 
@@ -520,20 +548,24 @@ class GitDeployment:
             ValueError: If not in a git repository
             RuntimeError: If deployment fails
         """
+        # Generate job_id if not provided
+        if not job_id:
+            job_id = generate_job_id()
+
         # Detect git repo
         repo_name, commit_hash = self.detect_git_repo()
 
         # Set up remote structure
-        bare_repo_path = self.setup_remote_structure(client, repo_name)
+        bare_repo_path = self.setup_remote_structure(client, repo_name, job_id)
 
         # Push code
-        self.push_code(repo_name, commit_hash, bare_repo_path)
+        self.push_code(repo_name, commit_hash, bare_repo_path, job_id)
 
         # Create worktree with optional custom directory name
         if target_dir:
-            # Create custom worktree path but keep using original job_id for git branch
+            # Create custom worktree path but keep using job_id for git branch
             worktree_path = f"~/.bifrost/worktrees/{target_dir}"
-            job_branch = f"job/{self.job_id}"
+            job_branch = f"job/{job_id}"
 
             console.print(f"🌳 Creating custom worktree: {worktree_path}")
 
@@ -549,7 +581,7 @@ class GitDeployment:
 
             console.print(f"✅ Custom worktree ready at: {worktree_path}")
         else:
-            worktree_path = self.create_worktree(client, repo_name)
+            worktree_path = self.create_worktree(client, repo_name, job_id)
 
         # Install dependencies
         bootstrap_cmd = self.detect_bootstrap_command(client, worktree_path, uv_extra)
@@ -580,10 +612,15 @@ class GitDeployment:
             client: Connected Paramiko SSH client (managed by caller)
             command: Command to execute
             env_vars: Optional environment variables
-        """
-        job_id = self._prepare_detached_job()
-        repo_name, commit_hash = self.detect_git_repo()
 
+        Returns:
+            Job ID of the detached job
+        """
+        # Generate job ID
+        job_id = generate_job_id()
+        console.print(f"🆔 Generated job ID: {job_id}")
+
+        repo_name, commit_hash = self.detect_git_repo()
         job_manager = JobManager(self.ssh_user, self.ssh_host, self.ssh_port)
 
         try:
@@ -594,13 +631,6 @@ class GitDeployment:
             console.print(f"❌ Failed to start detached job: {e}")
             console.print(f"🔍 Job data preserved for debugging: ~/.bifrost/jobs/{job_id}")
             raise
-    
-    def _prepare_detached_job(self) -> str:
-        """Generate job ID and update instance state."""
-        job_id = generate_job_id()
-        self.job_id = job_id
-        console.print(f"🆔 Generated job ID: {job_id}")
-        return job_id
     
     def _execute_detached_deployment(
         self,
@@ -613,12 +643,26 @@ class GitDeployment:
         env_vars: Optional[Dict[str, str]],
         uv_extra: Optional[str] = None
     ) -> str:
-        """Execute the main deployment steps for detached job."""
+        """Execute the main deployment steps for detached job.
+
+        Args:
+            client: SSH client connection
+            job_manager: Job manager instance
+            job_id: Job ID for the detached job
+            repo_name: Name of the git repository
+            commit_hash: Git commit hash
+            command: Command to execute
+            env_vars: Optional environment variables
+            uv_extra: Optional extra group for uv sync
+
+        Returns:
+            Job ID of the started job
+        """
 
         # Set up remote environment
-        bare_repo_path = self.setup_remote_structure(client, repo_name)
-        self.push_code(repo_name, commit_hash, bare_repo_path)
-        worktree_path = self.create_worktree(client, repo_name)
+        bare_repo_path = self.setup_remote_structure(client, repo_name, job_id)
+        self.push_code(repo_name, commit_hash, bare_repo_path, job_id)
+        worktree_path = self.create_worktree(client, repo_name, job_id)
         
         # Prepare command with bootstrap, but avoid duplicating if caller already does it
         bootstrap_cmd = self.detect_bootstrap_command(client, worktree_path, uv_extra)
@@ -662,7 +706,7 @@ class GitDeployment:
 
         # Deploy to workspace (shared directory) - reuse existing client
         workspace_path = "~/.bifrost/workspace"
-        self._deploy_to_existing_workspace(client, workspace_path, repo_name, commit_hash)
+        self._deploy_to_existing_workspace(client, workspace_path, repo_name, commit_hash, job_id)
 
         # Update job wrapper to use workspace directory instead of job-specific worktree
         self._upload_workspace_job_wrapper_script(client)
@@ -717,14 +761,22 @@ class GitDeployment:
         
         console.print("📋 Uploaded workspace job wrapper script")
 
-    def _deploy_to_existing_workspace(self, client: paramiko.SSHClient, workspace_path: str, repo_name: str, commit_hash: str) -> None:
-        """Deploy to workspace using existing SSH client."""
-        
+    def _deploy_to_existing_workspace(self, client: paramiko.SSHClient, workspace_path: str, repo_name: str, commit_hash: str, job_id: str) -> None:
+        """Deploy to workspace using existing SSH client.
+
+        Args:
+            client: SSH client connection
+            workspace_path: Path to workspace directory
+            repo_name: Name of the git repository
+            commit_hash: Git commit hash
+            job_id: Job ID for creating job-specific branch
+        """
+
         # Set up remote structure
-        bare_repo_path = self.setup_remote_structure(client, repo_name)
-        
+        bare_repo_path = self.setup_remote_structure(client, repo_name, job_id)
+
         # Push code to remote
-        self.push_code(repo_name, commit_hash, bare_repo_path)
+        self.push_code(repo_name, commit_hash, bare_repo_path, job_id)
         
         # Create or update workspace
         console.print(f"🏗️  Setting up workspace: {workspace_path}")

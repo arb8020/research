@@ -283,7 +283,67 @@ class BifrostClient:
             if isinstance(e, ConnectionError):
                 raise
             raise ConnectionError(f"Execution failed: {e}")
-    
+
+    def exec_stream(self, command: str, env: Optional[Union[EnvironmentVariables, Dict[str, str]]] = None, working_dir: Optional[str] = None) -> Iterator[str]:
+        """
+        Execute command and stream output line-by-line in real-time.
+
+        Like exec() but yields output as it's produced instead of waiting for completion.
+        Useful for long-running commands like package installations.
+
+        Args:
+            command: Command to execute
+            env: Environment variables to set (dict or EnvironmentVariables)
+            working_dir: Working directory (defaults to ~/.bifrost/workspace/ if deployed)
+
+        Yields:
+            Lines of output (stdout and stderr interleaved) as they're produced
+
+        Raises:
+            ConnectionError: SSH connection failed
+        """
+        try:
+            ssh_client = self._get_ssh_client()
+
+            # Default to workspace if it exists (same logic as exec)
+            if working_dir is None:
+                default_dir = "~/.bifrost/workspace"
+                stdin, stdout, stderr = ssh_client.exec_command(f"test -d {default_dir}")
+                if stdout.channel.recv_exit_status() == 0:
+                    working_dir = default_dir
+                    self.logger.debug(f"Using default working directory: {default_dir}")
+                else:
+                    working_dir = "~"
+                    self.logger.warning("No code deployed yet. Running from home directory.")
+
+            # Convert dict to EnvironmentVariables if needed
+            env_vars = None
+            if env is not None:
+                if isinstance(env, EnvironmentVariables):
+                    env_vars = env
+                elif isinstance(env, dict):
+                    env_vars = EnvironmentVariables.from_dict(env)
+
+            # Build command with environment and working directory
+            full_command = self._build_command_with_env(command, working_dir, env_vars)
+
+            # Execute command
+            stdin, stdout, stderr = ssh_client.exec_command(full_command)
+
+            # Stream output line by line (combines stdout and stderr)
+            # Note: This won't interleave perfectly but is good enough for most cases
+            for line in iter(stdout.readline, ""):
+                yield line.rstrip('\n')
+
+            # Also yield stderr if any
+            for line in iter(stderr.readline, ""):
+                yield f"[stderr] {line.rstrip('\n')}"
+
+        except Exception as e:
+            if isinstance(e, ConnectionError):
+                raise
+            raise ConnectionError(f"Streaming execution failed: {e}")
+
     def deploy(self, command: str, bootstrap_cmd: Optional[Union[str, List[str]]] = None,
                env: Optional[Union[EnvironmentVariables, Dict[str, str]]] = None) -> ExecResult:
         """Deploy code and execute command.
