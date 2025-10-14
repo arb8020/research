@@ -63,7 +63,7 @@ def provision_instance(gpu_client, offers):
 
     instance = gpu_client.create(
         offers,  # Pass list of offers for automatic fallback
-        image="nvidia/cuda:12.1.0-base-ubuntu22.04",
+        image="runpod/pytorch:1.0.0-cu1281-torch280-ubuntu2204",
         name="jax-integration-test",
         n_offers=len(offers)  # Try all provided offers
     )
@@ -80,7 +80,7 @@ def provision_instance(gpu_client, offers):
     logger.info("Waiting for SSH to be ready...")
     ssh_ready = instance.wait_until_ssh_ready(timeout=300)
     assert ssh_ready, "SSH failed to become ready!"
-    logger.info(f"SSH ready: {instance.ssh_address}")
+    logger.info(f"SSH ready: {instance.ssh_connection_string()}")
 
     return instance
 
@@ -146,7 +146,7 @@ def run_integration_test():
 
     # Deploy and test
     bifrost_client = BifrostClient(
-        ssh_connection=instance.ssh_address,
+        ssh_connection=instance.ssh_connection_string(),
         ssh_key_path=ssh_key_path
     )
 

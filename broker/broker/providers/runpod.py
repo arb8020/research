@@ -695,7 +695,8 @@ def _wait_for_direct_ssh_assignment(instance, start_time: float, timeout: int) -
             instance.ssh_username = fresh.ssh_username
             instance.status = fresh.status
 
-            logger.info(f"Direct SSH: {instance.public_ip}:{instance.ssh_port}")
+            elapsed = int(time.time() - start_time)
+            logger.info(f"Direct SSH: {instance.public_ip}:{instance.ssh_port} (took {elapsed}s)")
             return True
 
         # Log progress every 30s

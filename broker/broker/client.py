@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, List, Optional, Union, cast
 
 from shared.validation import validate_ssh_key_path
 from .query import GPUQuery, QueryType
-from .types import CloudType, GPUInstance, GPUOffer, ProviderCredentials
+from .types import CloudType, GPUInstance, GPUOffer, InstanceStatus, ProviderCredentials
 from .validation import validate_credentials
 
 
@@ -235,9 +235,65 @@ class ClientGPUInstance:
         self._instance = instance
         self._client = client
 
-    def __getattr__(self, name):
-        """Delegate attribute access to wrapped instance"""
-        return getattr(self._instance, name)
+    # Explicit attribute forwarding for type safety
+    @property
+    def id(self) -> str:
+        """Instance ID"""
+        return self._instance.id
+
+    @property
+    def provider(self) -> str:
+        """Provider name (e.g., 'runpod', 'vast')"""
+        return self._instance.provider
+
+    @property
+    def status(self) -> InstanceStatus:
+        """Instance status (InstanceStatus enum)"""
+        return self._instance.status
+
+    @property
+    def gpu_type(self) -> str:
+        """GPU type (e.g., 'NVIDIA RTX A4000')"""
+        return self._instance.gpu_type
+
+    @property
+    def gpu_count(self) -> int:
+        """Number of GPUs"""
+        return self._instance.gpu_count
+
+    @property
+    def price_per_hour(self) -> float:
+        """Price per hour in USD"""
+        return self._instance.price_per_hour
+
+    @property
+    def name(self) -> Optional[str]:
+        """Instance name"""
+        return self._instance.name
+
+    @property
+    def public_ip(self) -> Optional[str]:
+        """Public IP address"""
+        return self._instance.public_ip
+
+    @property
+    def ssh_port(self) -> Optional[int]:
+        """SSH port"""
+        return self._instance.ssh_port
+
+    @property
+    def ssh_username(self) -> Optional[str]:
+        """SSH username"""
+        return self._instance.ssh_username
+
+    @property
+    def raw_data(self) -> Optional[Dict[str, Any]]:
+        """Raw provider API data"""
+        return self._instance.raw_data
+
+    def ssh_connection_string(self) -> str:
+        """Get SSH connection string (user@host:port)"""
+        return self._instance.ssh_connection_string()
 
     def exec(self, command: str, ssh_key_path: Optional[str] = None, timeout: int = 30):
         """Execute command using client's SSH configuration (synchronous)"""
