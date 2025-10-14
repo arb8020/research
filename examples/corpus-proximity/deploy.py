@@ -129,12 +129,29 @@ def main():
     parser.add_argument("--provider", type=str, choices=["runpod", "primeintellect"])
     parser.add_argument("--use-existing", type=str, metavar="NAME_OR_SSH")
     parser.add_argument("--name", type=str)
+    parser.add_argument("--num-shards", type=int, default=5, help="Number of shards to download")
     args = parser.parse_args()
 
     setup_logging()
 
     try:
-        run_deploy(provider=args.provider, use_existing=args.use_existing, name=args.name)
+        bifrost_client = run_deploy(provider=args.provider, use_existing=args.use_existing, name=args.name)
+
+        # Run prepare_data.py
+        logger.info(f"Running prepare_data.py with {args.num_shards} shards...")
+        cmd = f"python examples/corpus-proximity/prepare_data.py --num-shards {args.num_shards} --verify"
+        result = bifrost_client.exec(cmd)
+
+        if result.stdout:
+            logger.info(f"STDOUT:\n{result.stdout}")
+        if result.stderr:
+            logger.error(f"STDERR:\n{result.stderr}")
+
+        logger.info(f"prepare_data.py completed with exit code: {result.exit_code}")
+        if result.exit_code != 0:
+            logger.error("prepare_data.py failed")
+            return 1
+
         return 0
     except KeyboardInterrupt:
         logger.error("\nInterrupted")

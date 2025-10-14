@@ -23,6 +23,7 @@ example-jax-basic = [
 
 # Corpus proximity example
 example-corpus-proximity = [
+    "pyarrow>=14.0.0",
     "sentence-transformers>=2.0.0",
     "datasets>=2.0.0",
     "numpy>=1.24.0",
