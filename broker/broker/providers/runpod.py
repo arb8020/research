@@ -683,6 +683,7 @@ def _wait_for_direct_ssh_assignment(instance, start_time: float, timeout: int) -
     import time
 
     logger.info("Waiting for direct SSH (may take 5-10 min, proxy ignored)")
+    next_log_time = start_time + 30  # Log at 30s, 60s, 90s, ...
 
     while time.time() - start_time < timeout:
         fresh = get_instance_details(instance.id, api_key=instance.api_key)
@@ -697,10 +698,12 @@ def _wait_for_direct_ssh_assignment(instance, start_time: float, timeout: int) -
             logger.info(f"Direct SSH: {instance.public_ip}:{instance.ssh_port}")
             return True
 
-        # Log every 30s
-        elapsed = int(time.time() - start_time)
-        if elapsed % 30 == 0:
+        # Log progress every 30s
+        current_time = time.time()
+        if current_time >= next_log_time:
+            elapsed = int(current_time - start_time)
             _log_ssh_wait_status(instance, elapsed)
+            next_log_time += 30  # Schedule next log
 
         time.sleep(10)
 
@@ -752,3 +755,79 @@ def _test_ssh_connectivity(instance) -> bool:
 def get_fresh_instance(instance_id: str, api_key: str):
     """Alias for get_instance_details (ProviderProtocol requirement)"""
     return get_instance_details(instance_id, api_key=api_key)
+
+
+def get_pod_logs(instance_id: str, api_key: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Get pod logs and runtime information for debugging
+
+    Args:
+        instance_id: The RunPod pod ID
+        api_key: RunPod API key
+
+    Returns:
+        Dictionary containing pod status, runtime info, and telemetry data
+    """
+    query = """
+    query pod($input: PodFilter!) {
+        pod(input: $input) {
+            id
+            name
+            imageName
+            desiredStatus
+            lastStatusChange
+            env
+            runtime {
+                uptimeInSeconds
+                ports {
+                    ip
+                    isIpPublic
+                    privatePort
+                    publicPort
+                    type
+                }
+                gpus {
+                    id
+                    gpuUtilPercent
+                    memoryUtilPercent
+                }
+            }
+            latestTelemetry {
+                cpuUtilization
+                memoryUtilization
+                averageGpuMetrics {
+                    percentUtilization
+                    memoryUtilization
+                    temperature
+                }
+            }
+        }
+    }
+    """
+
+    variables = {"input": {"podId": instance_id}}
+
+    try:
+        data = _make_graphql_request(query, variables, api_key=api_key)
+        pod_data = data.get("pod")
+
+        if not pod_data:
+            logger.error(f"No pod found with ID: {instance_id}")
+            return None
+
+        # Format the data for easier reading
+        result = {
+            "id": pod_data.get("id"),
+            "name": pod_data.get("name"),
+            "image": pod_data.get("imageName"),
+            "status": pod_data.get("desiredStatus"),
+            "last_status_change": pod_data.get("lastStatusChange"),
+            "environment": pod_data.get("env", []),
+            "runtime": pod_data.get("runtime"),
+            "telemetry": pod_data.get("latestTelemetry"),
+        }
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Failed to get RunPod pod logs: {e}")
+        return None
