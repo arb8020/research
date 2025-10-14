@@ -2,12 +2,13 @@
 GPU Broker Client - Main interface for GPU operations
 """
 
-import os
 import logging
 from typing import Any, Callable, Dict, List, Optional, Union, cast
 
+from shared.validation import validate_ssh_key_path
 from .query import GPUQuery, QueryType
 from .types import CloudType, GPUInstance, GPUOffer, ProviderCredentials
+from .validation import validate_credentials
 
 
 logger = logging.getLogger(__name__)
@@ -45,38 +46,21 @@ class GPUClient:
         """
         # Convert dict to ProviderCredentials if needed (backward compatibility)
         if isinstance(credentials, dict):
-            credentials = ProviderCredentials.from_dict(cast(Dict[str, str], credentials))
+            credentials_dict = cast(Dict[str, str], credentials)
+            validate_credentials(credentials_dict)  # Validate before conversion
+            credentials = ProviderCredentials.from_dict(credentials_dict)
 
-        # Assert inputs (Tiger Style: assert everything, fail fast)
+        # Assert credentials type after conversion
         assert isinstance(credentials, ProviderCredentials), \
             "credentials must be ProviderCredentials or dict"
 
-        assert isinstance(ssh_key_path, str), "ssh_key_path must be string"
-        assert len(ssh_key_path) > 0, "ssh_key_path cannot be empty"
-
-        # Store as dict internally for now (gradual migration)
+        # Validate and store credentials (validation helper contains all assertions)
         self._credentials = credentials.to_dict()
-        self._ssh_key_path = os.path.expanduser(ssh_key_path)
 
-        # Validate SSH key (Tiger Style: assert everything, fail fast)
-        assert os.path.exists(self._ssh_key_path), \
-            f"SSH private key not found: {self._ssh_key_path}"
+        # Validate and store SSH key path (validation helper contains all assertions)
+        self._ssh_key_path = validate_ssh_key_path(ssh_key_path)
 
-        assert os.access(self._ssh_key_path, os.R_OK), \
-            f"SSH private key not readable: {self._ssh_key_path}"
-
-        # Warn on bad permissions (non-blocking)
-        stat_info = os.stat(self._ssh_key_path)
-        if stat_info.st_mode & 0o077:
-            logger.warning(
-                f"SSH key has insecure permissions: {oct(stat_info.st_mode)[-3:]}. "
-                f"Recommend: chmod 600 {self._ssh_key_path}"
-            )
-
-        # Assert reasonable file size
-        assert stat_info.st_size < 10_000, \
-            f"SSH key file suspiciously large ({stat_info.st_size} bytes): {self._ssh_key_path}"
-
+        # Initialize query interface
         self._query = GPUQuery()
 
         # Assert output invariants

@@ -6,7 +6,7 @@ All state managed by caller (BifrostClient).
 
 import paramiko
 import logging
-from typing import Optional
+from typing import Optional, Union, List
 
 from .types import RemoteConfig
 
@@ -56,41 +56,61 @@ def deploy_code(ssh_client: paramiko.SSHClient,
     return workspace_path
 
 
-def install_dependencies(ssh_client: paramiko.SSHClient,
-                        config: RemoteConfig,
-                        workspace_path: str,
-                        bootstrap_cmd: str) -> None:
-    """Run bootstrap command to install dependencies.
+def run_bootstrap(ssh_client: paramiko.SSHClient,
+                  config: RemoteConfig,
+                  workspace_path: str,
+                  bootstrap_cmd: Union[str, List[str]]) -> None:
+    """Run bootstrap command(s) to prepare environment.
 
     Args:
         ssh_client: Active SSH client connection
         config: Remote connection configuration
         workspace_path: Path to workspace on remote
-        bootstrap_cmd: Command to run (e.g., "uv sync --frozen")
+        bootstrap_cmd: Command(s) to run - either single string or list of commands
+                      Each command runs in sequence, fails fast if any fails
 
     Raises:
-        RuntimeError: If bootstrap fails
+        RuntimeError: If any bootstrap step fails
     """
     # Assert inputs (Tiger Style)
     assert ssh_client is not None, "ssh_client cannot be None"
     assert isinstance(config, RemoteConfig), "config must be RemoteConfig"
     assert isinstance(workspace_path, str) and len(workspace_path) > 0, \
         "workspace_path must be non-empty string"
-    assert isinstance(bootstrap_cmd, str) and len(bootstrap_cmd) > 0, \
-        "bootstrap_cmd must be non-empty string"
+    assert isinstance(bootstrap_cmd, (str, list)), \
+        "bootstrap_cmd must be string or list of strings"
 
-    logger.info(f"Installing dependencies: {bootstrap_cmd}")
+    # Normalize to list for uniform processing
+    if isinstance(bootstrap_cmd, str):
+        commands = [bootstrap_cmd]
+    else:
+        commands = bootstrap_cmd
+        # Assert all items are strings
+        assert all(isinstance(cmd, str) and len(cmd) > 0 for cmd in commands), \
+            "All bootstrap commands must be non-empty strings"
 
-    # Run bootstrap command in workspace
-    full_cmd = f"cd {workspace_path} && {bootstrap_cmd}"
-    stdin, stdout, stderr = ssh_client.exec_command(full_cmd)
+    logger.info(f"Running {len(commands)} bootstrap step(s)...")
 
-    exit_code = stdout.channel.recv_exit_status()
-    if exit_code != 0:
-        error_output = stderr.read().decode()
-        raise RuntimeError(f"Bootstrap failed with exit code {exit_code}: {error_output}")
+    # Execute each command in sequence
+    for i, cmd in enumerate(commands, 1):
+        # Log what we're doing (truncate long commands)
+        cmd_preview = cmd[:60] + "..." if len(cmd) > 60 else cmd
+        logger.info(f"Step {i}/{len(commands)}: {cmd_preview}")
 
-    logger.info("Dependencies installed successfully")
+        # Run command in workspace
+        full_cmd = f"cd {workspace_path} && {cmd}"
+        stdin, stdout, stderr = ssh_client.exec_command(full_cmd)
+
+        exit_code = stdout.channel.recv_exit_status()
+        if exit_code != 0:
+            error_output = stderr.read().decode()
+            raise RuntimeError(
+                f"Bootstrap step {i}/{len(commands)} failed with exit code {exit_code}: {error_output}"
+            )
+
+        logger.debug(f"Step {i}/{len(commands)} completed successfully")
+
+    logger.info("All bootstrap steps completed successfully")
 
 
 def _create_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> None:

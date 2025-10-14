@@ -9,12 +9,17 @@ from pathlib import Path
 from typing import Optional, Callable, Iterator, List, Dict, Union
 import logging
 
+from shared.validation import validate_ssh_key_path, validate_timeout
 from .types import (
     SSHConnection, JobInfo, JobStatus, CopyResult, ConnectionError, JobError, TransferError,
-    RemoteConfig, ExecResult, EnvironmentVariables, SessionInfo
+    RemoteConfig, ExecResult, EnvironmentVariables, SessionInfo, JobMetadata
 )
 from .deploy import GitDeployment
 from . import git_sync
+from .validation import (
+    generate_job_id, validate_bootstrap_cmd, validate_command,
+    validate_environment_variables, validate_poll_interval
+)
 
 
 logger = logging.getLogger(__name__)
@@ -53,20 +58,23 @@ class BifrostClient:
             timeout: SSH connection timeout in seconds
             progress_callback: Optional callback for file transfer progress
         """
-        # Parse SSH connection
+        # Validate and parse SSH connection
         self.ssh = SSHConnection.from_string(ssh_connection)
 
+        # Validate inputs (validation helpers contain all assertions)
+        validated_ssh_key_path = validate_ssh_key_path(ssh_key_path)
+        validated_timeout = validate_timeout(timeout, min_value=1, max_value=300)
+
         # Create RemoteConfig
-        import os
         self._remote_config = RemoteConfig(
             host=self.ssh.host,
             port=self.ssh.port,
             user=self.ssh.user,
-            key_path=os.path.expanduser(ssh_key_path)
+            key_path=validated_ssh_key_path
         )
 
-        self.timeout = timeout
-        self.ssh_key_path = ssh_key_path
+        self.timeout = validated_timeout
+        self.ssh_key_path = validated_ssh_key_path
         self.progress_callback = progress_callback
         self.logger = logging.getLogger(__name__)
 
@@ -138,24 +146,18 @@ class BifrostClient:
             raise ConnectionError(f"Failed to load SSH key from {key_path}: {e}")
 
     def _build_command_with_env(self, command: str, working_dir: str,
-                                env: Optional[Union[EnvironmentVariables, Dict[str, str]]]) -> str:
+                                env: Optional[EnvironmentVariables]) -> str:
         """Build command with environment variables and working directory.
 
         Args:
             command: Command to execute
             working_dir: Directory to run in
-            env: Environment variables (EnvironmentVariables or dict)
+            env: Environment variables (EnvironmentVariables dataclass)
 
         Returns:
             Full command string with cd and exports
         """
         import shlex
-
-        # Convert EnvironmentVariables to dict if needed
-        if isinstance(env, EnvironmentVariables):
-            env_dict = env.to_dict()
-        else:
-            env_dict = env
 
         parts = []
 
@@ -163,11 +165,9 @@ class BifrostClient:
         parts.append(f"cd {working_dir}")
 
         # Export environment variables
-        if env_dict:
+        if env:
+            env_dict = env.to_dict()
             for key, value in env_dict.items():
-                # Basic validation
-                if not key.isidentifier():
-                    raise ValueError(f"Invalid env var name: {key}")
                 # Use shell quoting for safety
                 parts.append(f"export {key}={shlex.quote(value)}")
 
@@ -179,7 +179,7 @@ class BifrostClient:
     def _generate_job_id(self, session_name: Optional[str]) -> str:
         """Generate job ID with optional human-readable component.
 
-        Uses timestamp + random suffix to avoid collisions.
+        Uses validation helper which handles all assertions.
 
         Args:
             session_name: Optional human-readable session name
@@ -187,41 +187,14 @@ class BifrostClient:
         Returns:
             Job ID string
         """
-        import secrets
-        from datetime import datetime
+        return generate_job_id(session_name)
 
-        # Assert input
-        if session_name is not None:
-            assert isinstance(session_name, str), "session_name must be string"
-            assert len(session_name) > 0, "session_name cannot be empty"
-            assert len(session_name) < 100, f"session_name too long: {len(session_name)}"
-
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        random_suffix = secrets.token_hex(4)  # 8 hex chars, ~4B combinations
-
-        if session_name:
-            # Sanitize session name
-            safe_name = "".join(c if c.isalnum() or c == "-" else "_"
-                               for c in session_name)
-            assert len(safe_name) > 0, "Sanitized session_name is empty"
-            job_id = f"{safe_name}-{timestamp}-{random_suffix}"
-        else:
-            # Auto-generate from timestamp
-            job_id = f"job-{timestamp}-{random_suffix}"
-
-        # Assert output
-        assert len(job_id) > 0, "Generated empty job_id"
-        assert len(job_id) < 256, f"Job ID too long: {len(job_id)} chars"
-        assert "-" in job_id, "Job ID missing separators"
-
-        return job_id
-
-    def push(self, bootstrap_cmd: Optional[str] = None) -> str:
+    def push(self, bootstrap_cmd: Optional[Union[str, List[str]]] = None) -> str:
         """Deploy code to remote workspace.
 
         Args:
-            bootstrap_cmd: Optional explicit command to install dependencies
-                          (e.g., "uv sync --frozen" or "pip install -r requirements.txt")
+            bootstrap_cmd: Optional bootstrap command(s) - either single string or list of commands
+                          (e.g., "uv sync --frozen" or ["pip install uv", "uv sync --frozen"])
 
         Returns:
             Path to deployed workspace
@@ -230,10 +203,9 @@ class BifrostClient:
             ConnectionError: SSH connection failed
             RuntimeError: Deployment failed
         """
-        # Assert input
+        # Validate input (validation helper contains all assertions)
         if bootstrap_cmd is not None:
-            assert isinstance(bootstrap_cmd, str) and len(bootstrap_cmd) > 0, \
-                "bootstrap_cmd must be non-empty string"
+            bootstrap_cmd = validate_bootstrap_cmd(bootstrap_cmd)
 
         ssh_client = self._get_ssh_client()
         workspace_path = "~/.bifrost/workspace"
@@ -241,9 +213,9 @@ class BifrostClient:
         # Deploy code (pure function)
         workspace_path = git_sync.deploy_code(ssh_client, self._remote_config, workspace_path)
 
-        # Install dependencies if specified (pure function)
+        # Run bootstrap if specified (pure function)
         if bootstrap_cmd:
-            git_sync.install_dependencies(ssh_client, self._remote_config, workspace_path, bootstrap_cmd)
+            git_sync.run_bootstrap(ssh_client, self._remote_config, workspace_path, bootstrap_cmd)
 
         # Assert output
         assert workspace_path, "push() returned empty workspace_path"
@@ -263,7 +235,7 @@ class BifrostClient:
 
         Args:
             command: Command to execute
-            env: Environment variables to set
+            env: Environment variables to set (dict or EnvironmentVariables)
             working_dir: Working directory (defaults to ~/.bifrost/workspace/ if deployed)
 
         Returns:
@@ -286,8 +258,16 @@ class BifrostClient:
                     working_dir = "~"
                     self.logger.warning("No code deployed yet. Running from home directory.")
 
+            # Convert dict to EnvironmentVariables if needed
+            env_vars = None
+            if env is not None:
+                if isinstance(env, dict):
+                    env_vars = EnvironmentVariables.from_dict(env)
+                else:
+                    env_vars = env
+
             # Build command with environment and working directory
-            full_command = self._build_command_with_env(command, working_dir, env)
+            full_command = self._build_command_with_env(command, working_dir, env_vars)
 
             # Execute command
             stdin, stdout, stderr = ssh_client.exec_command(full_command)
@@ -304,7 +284,7 @@ class BifrostClient:
                 raise
             raise ConnectionError(f"Execution failed: {e}")
     
-    def deploy(self, command: str, bootstrap_cmd: Optional[str] = None,
+    def deploy(self, command: str, bootstrap_cmd: Optional[Union[str, List[str]]] = None,
                env: Optional[Union[EnvironmentVariables, Dict[str, str]]] = None) -> ExecResult:
         """Deploy code and execute command.
 
@@ -312,7 +292,7 @@ class BifrostClient:
 
         Args:
             command: Command to execute
-            bootstrap_cmd: Optional dependency installation command
+            bootstrap_cmd: Optional bootstrap command(s) - either single string or list of commands
             env: Environment variables
 
         Returns:
@@ -328,7 +308,7 @@ class BifrostClient:
     def run_detached(
         self,
         command: str,
-        bootstrap_cmd: Optional[str] = None,
+        bootstrap_cmd: Optional[Union[str, List[str]]] = None,
         bootstrap_timeout: int = 600,
         env: Optional[Union[EnvironmentVariables, Dict[str, str]]] = None,
         session_name: Optional[str] = None,
@@ -338,7 +318,7 @@ class BifrostClient:
 
         Args:
             command: Command to execute
-            bootstrap_cmd: Optional bootstrap command (runs in separate session)
+            bootstrap_cmd: Optional bootstrap command(s) - either single string or list of commands
             bootstrap_timeout: Max seconds to wait for bootstrap (default: 600 = 10 min)
             env: Environment variables
             session_name: Optional human-readable session name
@@ -351,10 +331,19 @@ class BifrostClient:
             ConnectionError: SSH connection failed
             JobError: Job creation failed
         """
-        # Assert inputs
-        assert isinstance(command, str) and len(command) > 0, "command must be non-empty string"
-        assert isinstance(bootstrap_timeout, int) and bootstrap_timeout > 0, \
-            f"bootstrap_timeout must be positive int, got {bootstrap_timeout}"
+        # Validate inputs (validation helpers contain all assertions)
+        command = validate_command(command)
+        validate_timeout(bootstrap_timeout, min_value=1, max_value=3600)
+        if bootstrap_cmd is not None:
+            bootstrap_cmd = validate_bootstrap_cmd(bootstrap_cmd)
+
+        # Convert dict to EnvironmentVariables if needed
+        env_vars = None
+        if env is not None:
+            if isinstance(env, dict):
+                env_vars = EnvironmentVariables.from_dict(env)
+            else:
+                env_vars = env
 
         # Generate job ID
         job_id = self._generate_job_id(session_name)
@@ -367,7 +356,7 @@ class BifrostClient:
                 # Use GitDeployment for detached execution
                 deployment = GitDeployment(self.ssh.user, self.ssh.host, self.ssh.port)
                 # Convert EnvironmentVariables to dict for GitDeployment
-                env_dict = env.to_dict() if isinstance(env, EnvironmentVariables) else env
+                env_dict = env_vars.to_dict() if env_vars else None
                 actual_job_id = deployment.deploy_and_execute_detached(client, command, env_dict)
 
                 # Note: GitDeployment generates its own job_id, we use that one
@@ -401,57 +390,56 @@ class BifrostClient:
     def get_job_status(self, job_id: str) -> JobInfo:
         """
         Get current status of a detached job.
-        
+
         Args:
             job_id: Job identifier
-            
+
         Returns:
             JobInfo with current status
-            
+
         Raises:
             ConnectionError: SSH connection failed
             JobError: Job not found or status check failed
         """
         try:
             ssh_client = self._get_ssh_client()
-            
+
             # Get job metadata
             metadata_cmd = f"cat ~/.bifrost/jobs/{job_id}/metadata.json 2>/dev/null"
             stdin, stdout, stderr = ssh_client.exec_command(metadata_cmd)
-            
+
             if stdout.channel.recv_exit_status() != 0:
                 raise JobError(f"Job {job_id} not found")
+
+            metadata_dict = json.loads(stdout.read().decode())
+            # Parse metadata using frozen dataclass for validation
+            metadata = JobMetadata.from_dict(metadata_dict)
             
-            metadata = json.loads(stdout.read().decode())
-            
-            # Get current status
+            # Get current status (may be updated from metadata)
             status_cmd = f"cat ~/.bifrost/jobs/{job_id}/status 2>/dev/null"
-            stdin, stdout, stderr = ssh_client.exec_command(status_cmd) 
+            stdin, stdout, stderr = ssh_client.exec_command(status_cmd)
             status_str = stdout.read().decode().strip()
-            
-            # Get end time if available
+
+            # Parse times from metadata
+            start_time = datetime.fromisoformat(metadata.start_time.replace('Z', '+00:00'))
             end_time = None
-            end_time_cmd = f"cat ~/.bifrost/jobs/{job_id}/end_time 2>/dev/null"
-            stdin, stdout, stderr = ssh_client.exec_command(end_time_cmd)
-            if stdout.channel.recv_exit_status() == 0:
-                end_time_str = stdout.read().decode().strip()
-                if end_time_str:
-                    end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00'))
-            
+            if metadata.end_time:
+                end_time = datetime.fromisoformat(metadata.end_time.replace('Z', '+00:00'))
+
             # Calculate runtime
-            start_time = datetime.fromisoformat(metadata['start_time'].replace('Z', '+00:00'))
             runtime_seconds = None
             if end_time:
                 runtime_seconds = (end_time - start_time).total_seconds()
             else:
                 runtime_seconds = (datetime.now().astimezone() - start_time).total_seconds()
-            
+
             return JobInfo(
                 job_id=job_id,
-                status=JobStatus(status_str) if status_str else JobStatus.PENDING,
-                command=metadata.get('command', ''),
+                status=JobStatus(status_str) if status_str else JobStatus(metadata.status),
+                command=metadata.command,
                 start_time=start_time,
                 end_time=end_time,
+                exit_code=metadata.exit_code,
                 runtime_seconds=runtime_seconds
             )
             
@@ -618,31 +606,36 @@ class BifrostClient:
     def wait_for_completion(self, job_id: str, poll_interval: float = 5.0, timeout: Optional[float] = None) -> JobInfo:
         """
         Wait for a job to complete.
-        
+
         Args:
             job_id: Job identifier
             poll_interval: Seconds between status checks
             timeout: Optional timeout in seconds
-            
+
         Returns:
-            Final JobInfo when job completes
-            
+            Final JobInfo when job_info is complete
+
         Raises:
             JobError: Job failed or timeout exceeded
             ConnectionError: SSH connection failed
         """
+        # Validate inputs (validation helpers contain all assertions)
+        poll_interval = validate_poll_interval(poll_interval)
+        if timeout is not None:
+            timeout = validate_timeout(int(timeout), min_value=1, max_value=86400)
+
         start_time = time.time()
-        
+
         while True:
             job_info = self.get_job_status(job_id)
-            
+
             if job_info.is_complete:
                 return job_info
-            
+
             # Check timeout
             if timeout and (time.time() - start_time) > timeout:
                 raise JobError(f"Timeout waiting for job {job_id} to complete")
-            
+
             time.sleep(poll_interval)
     
     def copy_files(

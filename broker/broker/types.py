@@ -188,101 +188,45 @@ class GPUInstance:
         return False  # Timeout
     
     def wait_until_ssh_ready(self, timeout: int = 300) -> bool:
-        """Wait until instance is running AND SSH is ready for connections"""
-        import time
-        
-        start_time = time.time()
-        
-        # First wait for instance to be running
-        if not self.wait_until_ready(timeout=min(timeout, 300)):
-            return False
-        
-        # Wait for SSH assignment (direct or proxy)
-        if not self._wait_for_ssh_assignment(start_time, timeout):
-            return False
-        
-        # Test SSH connectivity
-        return self._test_ssh_connectivity()
-    
-    def _wait_for_ssh_assignment(self, start_time: float, timeout: int) -> bool:
-        """Wait for direct SSH to be assigned (not proxy)."""
-        import time
+        """Wait until instance is running AND SSH is ready for connections.
+
+        Delegates to provider-specific implementation since SSH setup varies
+        across providers (proxy vs direct, timing, authentication, etc).
+
+        Args:
+            timeout: Maximum seconds to wait (default: 300 = 5min)
+
+        Returns:
+            True if SSH ready, False if timeout/failure
+        """
         import logging
-
-        logger = logging.getLogger(__name__)
-        from .providers.runpod import get_instance_details
-
-        logger.info("Waiting for direct SSH to be assigned...")
-        logger.info("Note: This may take up to 10 minutes. Proxy SSH will be ignored.")
-
-        while time.time() - start_time < timeout:
-            # Get fresh data directly from API (like broker list does)
-            fresh_instance = get_instance_details(self.id, api_key=self.api_key)
-
-            if fresh_instance and fresh_instance.public_ip and fresh_instance.ssh_port:
-                if fresh_instance.public_ip != "ssh.runpod.io":
-                    # Update current instance with fresh data
-                    self.public_ip = fresh_instance.public_ip
-                    self.ssh_port = fresh_instance.ssh_port
-                    self.ssh_username = fresh_instance.ssh_username
-                    self.status = fresh_instance.status
-
-                    logger.info(f"Direct SSH assigned: {self.public_ip}:{self.ssh_port}")
-                    return True
-
-            self._log_ssh_wait_status(start_time)
-            time.sleep(10)
-
-        elapsed_minutes = int((time.time() - start_time) / 60)
-        logger.error(f"Timeout waiting for direct SSH after {elapsed_minutes} minutes")
-        logger.error("Direct SSH was not assigned within the timeout period.")
-        logger.error("The instance will be cleaned up automatically.")
-        return False
-    
-    def _has_direct_ssh_details(self) -> bool:
-        """Check if instance has direct SSH details (not proxy)."""
-        return (
-            self.public_ip and 
-            self.ssh_port and 
-            self.public_ip != "ssh.runpod.io"
-        )
-    
-    def _log_ssh_wait_status(self, start_time: float) -> None:
-        """Log current SSH wait status with timing info."""
-        import time
-        import logging
-
-        logger = logging.getLogger(__name__)
-        elapsed = int(time.time() - start_time)
-
-        if self.public_ip and self.ssh_port:
-            if self.public_ip == "ssh.runpod.io":
-                logger.debug(f"Still waiting for direct SSH (currently proxy) - {elapsed}s elapsed...")
-            else:
-                logger.debug(f"SSH details available but not recognized as direct - {elapsed}s elapsed...")
-        else:
-            logger.debug(f"Still waiting for SSH details - {elapsed}s elapsed...")
-    
-    def _test_ssh_connectivity(self) -> bool:
-        """Test SSH connectivity with a simple command."""
-        import time
-        import logging
+        from .providers import get_provider_impl
 
         logger = logging.getLogger(__name__)
 
-        logger.info("Got direct SSH! Waiting for SSH daemon to initialize...")
-        time.sleep(30)  # SSH daemons typically need time to start
+        # Assert preconditions (Tiger Style)
+        assert isinstance(timeout, int) and timeout > 0, \
+            f"timeout must be positive int, got {timeout}"
+        assert self.provider, "Instance missing provider"
+        assert self.api_key, "Instance missing API key"
 
         try:
-            result = self.exec("echo 'ssh_ready'", timeout=30)
-            if result.success and "ssh_ready" in result.stdout:
-                logger.info("SSH connectivity confirmed!")
-                return True
-            else:
-                logger.warning(f"SSH test failed: {result.stderr}")
-                return False
+            # Get provider-specific implementation
+            provider = get_provider_impl(self.provider)
+
+            # Delegate to provider
+            result = provider.wait_for_ssh_ready(self, timeout)
+
+            # Assert postconditions
+            if result:
+                assert self.public_ip, "SSH ready but no public_ip"
+                assert self.ssh_port, "SSH ready but no ssh_port"
+                assert self.ssh_username, "SSH ready but no ssh_username"
+
+            return result
+
         except Exception as e:
-            logger.error(f"SSH connection error: {e}")
+            logger.error(f"wait_until_ssh_ready failed: {e}")
             return False
     
     def refresh(self) -> 'GPUInstance':

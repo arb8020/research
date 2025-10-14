@@ -630,3 +630,125 @@ def terminate_instance(instance_id: str, api_key: Optional[str] = None) -> bool:
     except Exception as e:
         logger.error(f"Failed to terminate RunPod instance: {e}")
         return False
+
+
+def wait_for_ssh_ready(instance, timeout: int = 300) -> bool:
+    """RunPod-specific SSH waiting implementation"""
+    # Tiger Style: Assert preconditions
+    assert instance.provider == "runpod"
+    assert instance.api_key
+    assert timeout > 0
+
+    # Wait for RUNNING status
+    if not _wait_until_running(instance, timeout):
+        return False
+
+    # Wait for direct SSH (RunPod-specific)
+    if not _wait_for_direct_ssh_assignment(instance, time.time(), timeout):
+        return False
+
+    # Test connectivity
+    return _test_ssh_connectivity(instance)
+
+
+def _wait_until_running(instance, timeout: int) -> bool:
+    """Wait for instance to reach RUNNING status (≤70 lines)"""
+    import time
+    start_time = time.time()
+
+    logger.info(f"Waiting for instance {instance.id} to reach RUNNING...")
+
+    while time.time() - start_time < timeout:
+        fresh = get_instance_details(instance.id, api_key=instance.api_key)
+        if not fresh:
+            logger.error("Instance disappeared")
+            return False
+
+        if fresh.status.value == "running":
+            instance.__dict__.update(fresh.__dict__)
+            logger.info(f"Instance {instance.id} is RUNNING")
+            return True
+        elif fresh.status.value in ["failed", "terminated"]:
+            logger.error(f"Instance terminal state: {fresh.status}")
+            return False
+
+        time.sleep(15)
+
+    logger.error(f"Timeout waiting for RUNNING after {timeout}s")
+    return False
+
+
+def _wait_for_direct_ssh_assignment(instance, start_time: float, timeout: int) -> bool:
+    """Wait for direct SSH (not proxy) - RunPod specific (≤70 lines)"""
+    import time
+
+    logger.info("Waiting for direct SSH (may take 5-10 min, proxy ignored)")
+
+    while time.time() - start_time < timeout:
+        fresh = get_instance_details(instance.id, api_key=instance.api_key)
+
+        if fresh and _has_direct_ssh(fresh):
+            # Update instance with SSH details
+            instance.public_ip = fresh.public_ip
+            instance.ssh_port = fresh.ssh_port
+            instance.ssh_username = fresh.ssh_username
+            instance.status = fresh.status
+
+            logger.info(f"Direct SSH: {instance.public_ip}:{instance.ssh_port}")
+            return True
+
+        # Log every 30s
+        elapsed = int(time.time() - start_time)
+        if elapsed % 30 == 0:
+            _log_ssh_wait_status(instance, elapsed)
+
+        time.sleep(10)
+
+    elapsed_min = int((time.time() - start_time) / 60)
+    logger.error(f"Timeout waiting for direct SSH after {elapsed_min} min")
+    return False
+
+
+def _has_direct_ssh(instance) -> bool:
+    """Check if instance has direct SSH (not proxy)"""
+    return (
+        instance.public_ip and
+        instance.ssh_port and
+        instance.public_ip != "ssh.runpod.io"  # RunPod proxy hostname
+    )
+
+
+def _log_ssh_wait_status(instance, elapsed_seconds: int) -> None:
+    """Log SSH wait status with timing"""
+    if instance.public_ip and instance.ssh_port:
+        if instance.public_ip == "ssh.runpod.io":
+            logger.debug(f"Waiting for direct SSH (proxy now) - {elapsed_seconds}s")
+        else:
+            logger.debug(f"SSH details available - {elapsed_seconds}s")
+    else:
+        logger.debug(f"Waiting for SSH details - {elapsed_seconds}s")
+
+
+def _test_ssh_connectivity(instance) -> bool:
+    """Test SSH connectivity with echo command (≤70 lines)"""
+    import time
+
+    logger.info("Direct SSH ready! Waiting 30s for SSH daemon...")
+    time.sleep(30)
+
+    try:
+        result = instance.exec("echo 'ssh_ready'", timeout=30)
+        if result.success and "ssh_ready" in result.stdout:
+            logger.info("SSH connectivity confirmed!")
+            return True
+        else:
+            logger.warning(f"SSH test failed: {result.stderr}")
+            return False
+    except Exception as e:
+        logger.error(f"SSH connection error: {e}")
+        return False
+
+
+def get_fresh_instance(instance_id: str, api_key: str):
+    """Alias for get_instance_details (ProviderProtocol requirement)"""
+    return get_instance_details(instance_id, api_key=api_key)
