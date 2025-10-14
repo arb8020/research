@@ -144,17 +144,32 @@ class GPUInstance:
             raise ValueError(f"Failed to load SSH key from {key_path}: {e}") from e
     
     
-    def ssh_connection_string(self) -> str:
+    def ssh_connection_string(self, ssh_key_path: Optional[str] = None, full_command: bool = False) -> str:
         """Get SSH connection string for use with bifrost or other tools.
-        
+
+        Args:
+            ssh_key_path: Optional SSH key path to include in command
+            full_command: If True, returns full 'ssh -p port user@host' command.
+                         If False, returns 'user@host:port' format.
+
         Returns:
-            SSH connection string in format: user@host:port
-            
+            SSH connection string in format:
+            - If full_command=True: 'ssh -p <port> -i <key> <user>@<host>' (or without -i if no key)
+            - If full_command=False: 'user@host:port'
+
         Raises:
             ValueError: If instance SSH details not available
         """
         self._validate_ssh_ready()
-        return f"{self.ssh_username}@{self.public_ip}:{self.ssh_port}"
+
+        if full_command:
+            parts = ["ssh", "-p", str(self.ssh_port)]
+            if ssh_key_path:
+                parts.extend(["-i", ssh_key_path])
+            parts.append(f"{self.ssh_username}@{self.public_ip}")
+            return " ".join(parts)
+        else:
+            return f"{self.ssh_username}@{self.public_ip}:{self.ssh_port}"
     
     def terminate(self) -> bool:
         """Terminate this instance"""

@@ -506,8 +506,8 @@ def ssh(
         logger.error("✗ Instance not ready")
         raise typer.Exit(1)
 
-    # Always output just the connection string (for piping)
-    print(instance.ssh_connection_string())
+    # Output full SSH command with key path (copy-pastable)
+    print(instance._instance.ssh_connection_string(ssh_key_path=ssh_key, full_command=True))
 
 
 @app.command()
