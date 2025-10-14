@@ -13,10 +13,14 @@ import argparse
 import os
 import logging
 
+from dotenv import load_dotenv
+
 from broker import GPUClient, CloudType
 from bifrost import BifrostClient
-from shared.config import get_runpod_key, get_vast_key, get_prime_key
+from shared.config import get_runpod_key, get_prime_key
 
+# Load .env file from current directory
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +34,6 @@ def get_credentials(provider_filter=None):
     credentials = {}
     if runpod_key := get_runpod_key():
         credentials["runpod"] = runpod_key
-    if vast_key := get_vast_key():
-        credentials["vast"] = vast_key
     if prime_key := get_prime_key():
         credentials["primeintellect"] = prime_key
 
@@ -42,7 +44,7 @@ def get_credentials(provider_filter=None):
                            f"Set {provider_filter.upper()}_API_KEY environment variable")
         credentials = {provider_filter: credentials[provider_filter]}
 
-    assert credentials, "No API keys found - set RUNPOD_API_KEY, VAST_API_KEY, or PRIME_API_KEY"
+    assert credentials, "No API keys found - set RUNPOD_API_KEY or PRIME_API_KEY"
     return credentials
 
 
@@ -186,7 +188,7 @@ def main():
     parser.add_argument(
         "--provider",
         type=str,
-        choices=["runpod", "vast", "primeintellect"],
+        choices=["runpod", "primeintellect"],
         help="Force a specific GPU provider (useful for integration testing a single provider)"
     )
     args = parser.parse_args()

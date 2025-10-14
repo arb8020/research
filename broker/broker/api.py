@@ -5,7 +5,7 @@ Main functional API for GPU cloud operations
 import logging
 from typing import Any, Callable, List, Optional, Union
 
-from .providers import runpod
+from .providers import runpod, primeintellect
 from .query import QueryType
 from .types import GPUInstance, GPUOffer, ProvisionRequest
 
@@ -55,6 +55,13 @@ def search(
                                                  memory_gb=memory_gb, container_disk_gb=container_disk_gb,
                                                  api_key=api_key)
         offers.extend(runpod_offers)
+
+    if provider is None or provider == "primeintellect":
+        api_key = credentials.get("primeintellect") if credentials else None
+        prime_offers = primeintellect.search_gpu_offers(cuda_version=cuda_version, manufacturer=manufacturer,
+                                                        memory_gb=memory_gb, container_disk_gb=container_disk_gb,
+                                                        api_key=api_key)
+        offers.extend(prime_offers)
     
     # Apply pandas-style query if provided
     if query is not None:
@@ -96,6 +103,10 @@ def get_instance(instance_id: str, provider: str, credentials: Optional[dict] = 
         instance = runpod.get_instance_details(instance_id, api_key=api_key)
         if instance:
             return instance
+    elif provider == "primeintellect":
+        instance = primeintellect.get_instance_details(instance_id, api_key=api_key)
+        if instance:
+            return instance
 
     return None
 
@@ -117,6 +128,9 @@ def terminate_instance(instance_id: str, provider: str, credentials: Optional[di
 
     if provider == "runpod":
         if runpod.terminate_instance(instance_id, api_key=api_key):
+            return True
+    elif provider == "primeintellect":
+        if primeintellect.terminate_instance(instance_id, api_key=api_key):
             return True
 
     return False
@@ -248,7 +262,19 @@ def create(
                 instance = runpod.provision_instance(request, request.ssh_startup_script, api_key=api_key)
                 if instance:
                     logger.info(f"✅ Successfully provisioned GPU instance: {instance.id}")
-                    logger.info(f"   GPU: {instance.gpu_type} x{instance.gpu_count}")  
+                    logger.info(f"   GPU: {instance.gpu_type} x{instance.gpu_count}")
+                    logger.info(f"   Provider: {offer.provider}")
+                    logger.info(f"   Expected price: ${offer.price_per_hour:.3f}/hr")
+                    return instance
+                else:
+                    logger.warning(f"Provisioning returned None for {offer.gpu_type}")
+                    last_error = "Provisioning returned None"
+            elif offer.provider == "primeintellect":
+                api_key = credentials.get("primeintellect") if credentials else None
+                instance = primeintellect.provision_instance(request, request.ssh_startup_script, api_key=api_key)
+                if instance:
+                    logger.info(f"✅ Successfully provisioned GPU instance: {instance.id}")
+                    logger.info(f"   GPU: {instance.gpu_type} x{instance.gpu_count}")
                     logger.info(f"   Provider: {offer.provider}")
                     logger.info(f"   Expected price: ${offer.price_per_hour:.3f}/hr")
                     return instance
@@ -288,5 +314,10 @@ def list_instances(provider: Optional[str] = None, credentials: Optional[dict] =
         api_key = credentials.get("runpod") if credentials else None
         runpod_instances = runpod.list_instances(api_key=api_key)
         instances.extend(runpod_instances)
+
+    if provider is None or provider == "primeintellect":
+        api_key = credentials.get("primeintellect") if credentials else None
+        prime_instances = primeintellect.list_instances(api_key=api_key)
+        instances.extend(prime_instances)
 
     return instances

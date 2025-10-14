@@ -19,7 +19,6 @@ from shared.config import (
     get_prime_key,
     get_runpod_key,
     get_ssh_key_path,
-    get_vast_key,
 )
 
 console = Console()
@@ -35,7 +34,7 @@ def main(
     credentials: Optional[str] = typer.Option(
         None,
         "--credentials",
-        help="Credentials file or inline 'runpod:key,vast:key'",
+        help="Credentials file or inline 'runpod:key,primeintellect:key'",
     ),
     ssh_key: Optional[str] = typer.Option(
         None, "--ssh-key", help="Path to SSH private key"
@@ -79,7 +78,7 @@ def init():
     """Create .env template for credentials
 
     Creates a .env file in the current directory with template
-    for RunPod/Vast API keys and SSH key path.
+    for RunPod/Prime Intellect API keys and SSH key path.
     """
     try:
         create_env_template("broker")
@@ -87,7 +86,6 @@ def init():
         logger.info("")
         logger.info("Edit .env with your API keys:")
         logger.info("  RUNPOD_API_KEY=your_key_here")
-        logger.info("  VAST_API_KEY=your_key_here")
         logger.info("  PRIME_API_KEY=your_key_here")
         logger.info("  SSH_KEY_PATH=~/.ssh/id_ed25519")
         logger.info("")
@@ -103,7 +101,7 @@ def resolve_credentials(ctx) -> ProviderCredentials:
 
     Priority:
     1. --credentials flag (file path or inline format)
-    2. Environment variables (RUNPOD_API_KEY, VAST_API_KEY)
+    2. Environment variables (RUNPOD_API_KEY, PRIME_API_KEY)
     3. .env file (loaded by python-dotenv)
     4. Error with helpful message
     """
@@ -117,13 +115,13 @@ def resolve_credentials(ctx) -> ProviderCredentials:
                 creds_dict = json.load(f)
             return ProviderCredentials.from_dict(creds_dict)
         else:
-            # Inline format: "runpod:key,vast:key"
+            # Inline format: "runpod:key,primeintellect:key"
             parts = creds_arg.split(",")
             creds_dict = {}
             for part in parts:
                 if ":" not in part:
                     logger.error(f"✗ Invalid credentials format: {part}")
-                    logger.info("Expected: runpod:key,vast:key")
+                    logger.info("Expected: runpod:key,primeintellect:key")
                     raise typer.Exit(1)
                 provider, key = part.split(":", 1)
                 creds_dict[provider.strip()] = key.strip()
@@ -131,18 +129,17 @@ def resolve_credentials(ctx) -> ProviderCredentials:
 
     # Priority 2+3: Environment variables (includes .env via load_dotenv)
     runpod_key = get_runpod_key()
-    vast_key = get_vast_key()
     prime_key = get_prime_key()
 
-    if runpod_key or vast_key or prime_key:
-        return ProviderCredentials(runpod=runpod_key or "", vast=vast_key or "", primeintellect=prime_key or "")
+    if runpod_key or prime_key:
+        return ProviderCredentials(runpod=runpod_key or "", primeintellect=prime_key or "")
 
     # Priority 4: Error with helpful message
     logger.error("✗ No credentials found")
     logger.info("")
     logger.info("Try: broker init")
-    logger.info("Or: export RUNPOD_API_KEY=... VAST_API_KEY=... PRIME_API_KEY=...")
-    logger.info("Or: --credentials <file|runpod:key,vast:key,primeintellect:key>")
+    logger.info("Or: export RUNPOD_API_KEY=... PRIME_API_KEY=...")
+    logger.info("Or: --credentials <file|runpod:key,primeintellect:key>")
     raise typer.Exit(1)
 
 
@@ -196,7 +193,7 @@ def search(
     ),
     min_vram: Optional[int] = typer.Option(None, "--min-vram", help="Minimum VRAM in GB"),
     provider: Optional[str] = typer.Option(
-        None, "--provider", help="Filter by provider (runpod|vast)"
+        None, "--provider", help="Filter by provider (runpod|primeintellect)"
     ),
     limit: int = typer.Option(10, "--limit", help="Maximum number of results"),
 ):
@@ -412,7 +409,7 @@ def status(
     ctx: typer.Context,
     instance_id: str = typer.Argument(..., help="Instance ID"),
     provider: Optional[str] = typer.Argument(
-        None, help="Provider (runpod|vast). Auto-detect if omitted."
+        None, help="Provider (runpod|primeintellect). Auto-detect if omitted."
     ),
 ):
     """Get instance status
@@ -477,7 +474,7 @@ def ssh(
     ctx: typer.Context,
     instance_id: str = typer.Argument(...),
     provider: Optional[str] = typer.Argument(
-        None, help="Provider (runpod|vast). Auto-detect if omitted."
+        None, help="Provider (runpod|primeintellect). Auto-detect if omitted."
     ),
 ):
     """Get SSH connection string for instance
@@ -522,7 +519,7 @@ def terminate(
     ctx: typer.Context,
     instance_id: str = typer.Argument(...),
     provider: Optional[str] = typer.Argument(
-        None, help="Provider (runpod|vast). Auto-detect if omitted."
+        None, help="Provider (runpod|primeintellect). Auto-detect if omitted."
     ),
     yes: bool = typer.Option(False, "-y", "--yes", help="Skip confirmation"),
 ):

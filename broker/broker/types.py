@@ -294,17 +294,16 @@ class SSHConfig:
 class ProviderCredentials:
     """API credentials for cloud GPU providers.
 
-    Supports multiple providers (RunPod, Vast, Prime Intellect, etc).
+    Supports multiple providers (RunPod, Prime Intellect, etc).
     Immutable to prevent accidental credential leaks.
     """
     runpod: str = ""
-    vast: str = ""
     primeintellect: str = ""
     # Add more providers as needed
 
     def __post_init__(self):
         # Tiger Style: assert at least one credential provided
-        assert self.runpod or self.vast or self.primeintellect, \
+        assert self.runpod or self.primeintellect, \
             "At least one provider credential required"
 
         # Validate credential format (basic length check)
@@ -312,23 +311,17 @@ class ProviderCredentials:
             assert len(self.runpod) > 10, \
                 "RunPod API key appears invalid (too short)"
 
-        if self.vast:
-            assert len(self.vast) > 10, \
-                "Vast API key appears invalid (too short)"
-
         if self.primeintellect:
             assert len(self.primeintellect) > 10, \
                 "Prime Intellect API key appears invalid (too short)"
 
         # Assert output invariant
-        assert self.runpod or self.vast or self.primeintellect, "credentials validated"
+        assert self.runpod or self.primeintellect, "credentials validated"
 
     def get(self, provider: str) -> Optional[str]:
         """Get credential for specific provider."""
         if provider == "runpod":
             return self.runpod
-        elif provider == "vast":
-            return self.vast
         elif provider == "primeintellect":
             return self.primeintellect
         return None
@@ -338,8 +331,6 @@ class ProviderCredentials:
         result = {}
         if self.runpod:
             result["runpod"] = self.runpod
-        if self.vast:
-            result["vast"] = self.vast
         if self.primeintellect:
             result["primeintellect"] = self.primeintellect
         return result
@@ -349,6 +340,5 @@ class ProviderCredentials:
         """Create from dict (for backward compatibility)."""
         return cls(
             runpod=credentials.get("runpod", ""),
-            vast=credentials.get("vast", ""),
             primeintellect=credentials.get("primeintellect", "")
         )

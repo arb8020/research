@@ -54,7 +54,7 @@ def get_provider_impl(provider_name: str):
     """Get provider implementation module.
 
     Args:
-        provider_name: Provider name (e.g., "runpod", "vast")
+        provider_name: Provider name (e.g., "runpod", "primeintellect")
 
     Returns:
         Provider module implementing ProviderProtocol
@@ -68,9 +68,6 @@ def get_provider_impl(provider_name: str):
     if provider_name == "runpod":
         from . import runpod
         return runpod
-    elif provider_name == "vast":
-        from . import vast
-        return vast
     elif provider_name == "primeintellect":
         from . import primeintellect
         return primeintellect

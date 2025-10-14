@@ -22,11 +22,6 @@ def get_runpod_key() -> Optional[str]:
     return os.getenv("RUNPOD_API_KEY")
 
 
-def get_vast_key() -> Optional[str]:
-    """Get Vast API key from environment"""
-    return os.getenv("VAST_API_KEY")
-
-
 def get_prime_key() -> Optional[str]:
     """Get Prime Intellect API key from environment"""
     return os.getenv("PRIME_API_KEY")
@@ -62,7 +57,6 @@ def create_env_template(tool: str):
     if tool == "broker":
         template = """# GPU Broker Credentials
 RUNPOD_API_KEY=
-VAST_API_KEY=
 PRIME_API_KEY=
 SSH_KEY_PATH=~/.ssh/id_ed25519
 """
