@@ -139,7 +139,7 @@ def main():
 
         # Run prepare_data.py
         logger.info(f"Running prepare_data.py with {args.num_shards} shards...")
-        cmd = f"python examples/corpus-proximity/prepare_data.py --num-shards {args.num_shards} --verify"
+        cmd = f"uv run python examples/corpus-proximity/prepare_data.py --num-shards {args.num_shards} --verify"
         result = bifrost_client.exec(cmd)
 
         if result.stdout:

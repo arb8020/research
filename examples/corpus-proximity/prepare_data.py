@@ -4,26 +4,24 @@
 import argparse
 import json
 import logging
-import os
 import time
 from pathlib import Path
 from typing import List, Dict
-import urllib.request
-import urllib.error
 
+import requests
 import pyarrow.parquet as pq
 
 logger = logging.getLogger(__name__)
 
-# FineWeb-Edu dataset configuration
-BASE_URL = "https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu-100b-shuffle/resolve/main/data"
+# FineWeb-Edu dataset configuration (nanochat's copy)
+BASE_URL = "https://huggingface.co/datasets/karpathy/fineweb-edu-100b-shuffle/resolve/main"
 DATA_DIR = Path("data/shards")
 PROCESSED_DIR = Path("data/processed")
 
 
 def download_shard(shard_id: int, max_retries: int = 5) -> bool:
     """Download a single FineWeb-Edu shard with retry logic."""
-    filename = f"train-{shard_id:05d}.parquet"
+    filename = f"shard_{shard_id:05d}.parquet"
     filepath = DATA_DIR / filename
 
     # Skip if already downloaded
@@ -41,8 +39,15 @@ def download_shard(shard_id: int, max_retries: int = 5) -> bool:
         try:
             logger.info(f"Downloading shard {shard_id} (attempt {attempt + 1}/{max_retries})")
 
-            # Download to temp file
-            urllib.request.urlretrieve(url, temp_filepath)
+            # Download with streaming
+            response = requests.get(url, stream=True, timeout=30)
+            response.raise_for_status()
+
+            # Write to temp file in chunks
+            with open(temp_filepath, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):  # 1MB chunks
+                    if chunk:
+                        f.write(chunk)
 
             # Move to final location
             temp_filepath.rename(filepath)
@@ -50,7 +55,7 @@ def download_shard(shard_id: int, max_retries: int = 5) -> bool:
             logger.info(f"Successfully downloaded shard {shard_id}")
             return True
 
-        except urllib.error.URLError as e:
+        except (requests.RequestException, IOError) as e:
             logger.warning(f"Download failed for shard {shard_id}: {e}")
             if attempt < max_retries - 1:
                 wait_time = 2 ** attempt  # Exponential backoff
@@ -73,7 +78,7 @@ def download_shard(shard_id: int, max_retries: int = 5) -> bool:
 
 def process_shard(shard_id: int) -> List[Dict[str, str]]:
     """Read parquet file and chunk into paragraphs."""
-    filename = f"train-{shard_id:05d}.parquet"
+    filename = f"shard_{shard_id:05d}.parquet"
     filepath = DATA_DIR / filename
 
     if not filepath.exists():
