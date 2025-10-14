@@ -49,19 +49,22 @@ def search(
     offers = []
 
     # Get all offers from providers
+    # Only search providers that have credentials available
     if provider is None or provider == "runpod":
         api_key = credentials.get("runpod") if credentials else None
-        runpod_offers = runpod.search_gpu_offers(cuda_version=cuda_version, manufacturer=manufacturer,
-                                                 memory_gb=memory_gb, container_disk_gb=container_disk_gb,
-                                                 api_key=api_key)
-        offers.extend(runpod_offers)
+        if api_key:  # Only search if we have credentials
+            runpod_offers = runpod.search_gpu_offers(cuda_version=cuda_version, manufacturer=manufacturer,
+                                                     memory_gb=memory_gb, container_disk_gb=container_disk_gb,
+                                                     api_key=api_key)
+            offers.extend(runpod_offers)
 
     if provider is None or provider == "primeintellect":
         api_key = credentials.get("primeintellect") if credentials else None
-        prime_offers = primeintellect.search_gpu_offers(cuda_version=cuda_version, manufacturer=manufacturer,
-                                                        memory_gb=memory_gb, container_disk_gb=container_disk_gb,
-                                                        api_key=api_key)
-        offers.extend(prime_offers)
+        if api_key:  # Only search if we have credentials
+            prime_offers = primeintellect.search_gpu_offers(cuda_version=cuda_version, manufacturer=manufacturer,
+                                                            memory_gb=memory_gb, container_disk_gb=container_disk_gb,
+                                                            api_key=api_key)
+            offers.extend(prime_offers)
     
     # Apply pandas-style query if provided
     if query is not None:
@@ -310,14 +313,17 @@ def list_instances(provider: Optional[str] = None, credentials: Optional[dict] =
     instances = []
 
     # Get instances from providers
+    # Only list instances for providers that have credentials available
     if provider is None or provider == "runpod":
         api_key = credentials.get("runpod") if credentials else None
-        runpod_instances = runpod.list_instances(api_key=api_key)
-        instances.extend(runpod_instances)
+        if api_key:  # Only list if we have credentials
+            runpod_instances = runpod.list_instances(api_key=api_key)
+            instances.extend(runpod_instances)
 
     if provider is None or provider == "primeintellect":
         api_key = credentials.get("primeintellect") if credentials else None
-        prime_instances = primeintellect.list_instances(api_key=api_key)
-        instances.extend(prime_instances)
+        if api_key:  # Only list if we have credentials
+            prime_instances = primeintellect.list_instances(api_key=api_key)
+            instances.extend(prime_instances)
 
     return instances
