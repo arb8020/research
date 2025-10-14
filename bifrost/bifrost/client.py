@@ -261,10 +261,10 @@ class BifrostClient:
             # Convert dict to EnvironmentVariables if needed
             env_vars = None
             if env is not None:
-                if isinstance(env, dict):
-                    env_vars = EnvironmentVariables.from_dict(env)
-                else:
+                if isinstance(env, EnvironmentVariables):
                     env_vars = env
+                elif isinstance(env, dict):
+                    env_vars = EnvironmentVariables.from_dict(env)
 
             # Build command with environment and working directory
             full_command = self._build_command_with_env(command, working_dir, env_vars)
@@ -340,10 +340,10 @@ class BifrostClient:
         # Convert dict to EnvironmentVariables if needed
         env_vars = None
         if env is not None:
-            if isinstance(env, dict):
-                env_vars = EnvironmentVariables.from_dict(env)
-            else:
+            if isinstance(env, EnvironmentVariables):
                 env_vars = env
+            elif isinstance(env, dict):
+                env_vars = EnvironmentVariables.from_dict(env)
 
         # Generate job ID
         job_id = self._generate_job_id(session_name)
