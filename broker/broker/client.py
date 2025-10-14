@@ -143,7 +143,7 @@ class GPUClient:
     def create(
         self,
         query: Union[QueryType, List[GPUOffer], GPUOffer],
-        image: str = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04",
+        image: str = "runpod/pytorch:1.0.0-cu1281-torch280-ubuntu2204",
         name: Optional[str] = None,
         gpu_count: int = 1,
         exposed_ports: Optional[List[int]] = None,

@@ -124,7 +124,7 @@ def terminate_instance(instance_id: str, provider: str, credentials: Optional[di
 
 def create(
     query: Union[QueryType, List[GPUOffer], GPUOffer] = None,
-    image: str = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04",
+    image: str = "runpod/pytorch:1.0.0-cu1281-torch280-ubuntu2204",
     name: Optional[str] = None,
     # Search parameters for when query is a filter
     gpu_type: Optional[str] = None,
