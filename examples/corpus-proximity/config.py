@@ -4,13 +4,16 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 import json
 
+# Base directory for all data (relative to this config file)
+_BASE_DIR = Path(__file__).parent / "data"
+
 
 @dataclass
 class DataConfig:
     """Data preparation configuration."""
     num_shards: int = 5
-    data_dir: Path = Path("data/shards")
-    processed_dir: Path = Path("data/processed")
+    data_dir: Path = _BASE_DIR / "shards"
+    processed_dir: Path = _BASE_DIR / "processed"
     output_file: str = "chunks.jsonl"
 
 
@@ -20,7 +23,7 @@ class EmbeddingConfig:
     model: str = "all-MiniLM-L6-v2"
     batch_size: int = 64
     device: str | None = None  # auto-detect if None
-    output_dir: Path = Path("data/embeddings")
+    output_dir: Path = _BASE_DIR / "embeddings"
 
 
 @dataclass

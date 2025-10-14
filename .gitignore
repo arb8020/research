@@ -33,3 +33,4 @@ uv.lock
 .env
 logs/
 output.txt
+data/
