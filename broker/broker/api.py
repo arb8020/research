@@ -141,8 +141,8 @@ def create(
     # Jupyter configuration
     start_jupyter: bool = False,
     jupyter_password: Optional[str] = None,
-    # Retry parameters
-    max_attempts: int = 3,
+    # Offer selection parameters
+    n_offers: int = 3,
     # API credentials
     credentials: Optional[dict] = None,
     **kwargs
@@ -161,21 +161,24 @@ def create(
         manufacturer: Filter by GPU manufacturer (used if query is None)
         sort: Sort key function (used if query is None)
         reverse: Sort order (used if query is None)
-        max_attempts: Try up to this many offers before giving up
+        n_offers: Number of offers to try from the list before giving up.
+                 When a single offer is provided, wraps it in a list (tries once).
+                 When a list is provided, tries offers in order until one succeeds.
         **kwargs: Additional provisioning parameters
-    
+
     Returns:
         Provisioned GPU instance or None if failed
-        
+
     Examples:
         # Provision best value GPU (memory/price ratio)
         create(sort=lambda x: x.memory_gb/x.price_per_hour, reverse=True)
-        
+
         # Provision cheapest A100
         create(gpus.gpu_type.contains("A100"))
-        
-        # Provision from top 5 cheapest RTX 4090s
-        create(gpu_type="RTX 4090", max_attempts=5)
+
+        # Try top 5 cheapest RTX 4090s (falls back if first is unavailable)
+        offers = search(gpu_type="RTX 4090")
+        create(offers[:5], n_offers=5)
     """
     # Handle different input types
     if isinstance(query, GPUOffer):
@@ -210,11 +213,12 @@ def create(
     
     # Try to provision from the top offers
     last_error = None
-    attempts_made = 0
-    
-    for offer in suitable_offers[:max_attempts]:
-        attempts_made += 1
-        logger.info(f"Provisioning attempt {attempts_made}/{max_attempts}: {offer.gpu_type} at ${offer.price_per_hour:.3f}/hr")
+    offers_tried = 0
+    total_offers = min(len(suitable_offers), n_offers)
+
+    for offer in suitable_offers[:n_offers]:
+        offers_tried += 1
+        logger.info(f"Trying offer {offers_tried}/{total_offers}: {offer.gpu_type} at ${offer.price_per_hour:.3f}/hr")
         
         try:
             # Create provision request using this offer
@@ -259,8 +263,8 @@ def create(
             last_error = str(e)
             continue
     
-    # All attempts failed
-    logger.error(f"Failed to provision after {attempts_made} attempts")
+    # All offers failed
+    logger.error(f"Failed to provision after trying {offers_tried} offer(s)")
     if last_error:
         logger.error(f"Last error: {last_error}")
     return None

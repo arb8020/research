@@ -66,7 +66,7 @@ def _make_graphql_request(query: str, variables: Optional[Dict] = None, api_key:
             RUNPOD_API_URL,
             json=payload,
             headers=headers,
-            timeout=(5, 5),
+            timeout=(10, 30),
         )
         response.raise_for_status()
     except requests.Timeout as exc:

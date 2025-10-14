@@ -148,19 +148,24 @@ class GPUClient:
         gpu_count: int = 1,
         exposed_ports: Optional[List[int]] = None,
         enable_http_proxy: bool = True,
-        max_attempts: int = 3,
+        n_offers: int = 3,
         **kwargs
     ) -> Optional['ClientGPUInstance']:
         """Create GPU instance
 
         Args:
-            query: Query or offer(s) to provision from
+            query: Query or offer(s) to provision from. Can be:
+                   - Single GPUOffer: Tries to provision that specific offer
+                   - List of GPUOffers: Tries offers in order until one succeeds
+                   - Query object: Searches for matching offers and tries them in order
             image: Docker image to use
             name: Instance name
             gpu_count: Number of GPUs
             exposed_ports: List of ports to expose via HTTP proxy
             enable_http_proxy: Enable provider's HTTP proxy for exposed ports
-            max_attempts: Maximum provisioning attempts
+            n_offers: Number of offers to try before giving up.
+                     If query is a list, tries up to this many offers from the list.
+                     If query is a search filter, tries up to this many from search results.
 
         Returns:
             GPU instance with client configuration
@@ -174,7 +179,7 @@ class GPUClient:
             gpu_count=gpu_count,
             exposed_ports=exposed_ports,
             enable_http_proxy=enable_http_proxy,
-            max_attempts=max_attempts,
+            n_offers=n_offers,
             credentials=self._credentials,
             **kwargs
         )

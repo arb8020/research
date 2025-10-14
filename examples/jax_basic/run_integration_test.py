@@ -12,8 +12,13 @@ This test validates the complete workflow:
 import os
 import logging
 
+from dotenv import load_dotenv
+
 from broker import GPUClient, CloudType
 from bifrost import BifrostClient
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 logger = logging.getLogger(__name__)
@@ -31,9 +36,9 @@ def get_credentials():
     return credentials
 
 
-def search_cheapest_gpu(gpu_client):
-    """Search for cheapest available GPU."""
-    logger.info("Searching for cheapest GPU offer...")
+def search_cheapest_gpus(gpu_client, max_offers=5):
+    """Search for cheapest available GPUs (returns multiple for fallback)."""
+    logger.info("Searching for cheapest GPU offers...")
 
     offers = gpu_client.search(
         query=gpu_client.cloud_type == CloudType.COMMUNITY,
@@ -43,26 +48,28 @@ def search_cheapest_gpu(gpu_client):
 
     assert offers, "No GPU offers found!"
 
-    # Log top 3 cheapest
-    logger.info(f"Found {len(offers)} offers. Top 3 cheapest:")
-    for i, offer in enumerate(offers[:3]):
+    # Log top offers we'll try
+    num_to_try = min(max_offers, len(offers))
+    logger.info(f"Found {len(offers)} offers. Top {num_to_try} cheapest to try:")
+    for i, offer in enumerate(offers[:num_to_try]):
         logger.info(f"  [{i+1}] {offer.gpu_type} - ${offer.price_per_hour:.3f}/hr ({offer.provider})")
 
-    return offers[0]
+    return offers[:num_to_try]
 
 
-def provision_instance(gpu_client, offer):
-    """Provision GPU instance and wait for SSH."""
-    logger.info(f"Provisioning {offer.gpu_type} @ ${offer.price_per_hour:.3f}/hr")
+def provision_instance(gpu_client, offers):
+    """Provision GPU instance and wait for SSH (tries multiple offers)."""
+    logger.info(f"Provisioning from {len(offers)} offers...")
 
     instance = gpu_client.create(
-        offer,
+        offers,  # Pass list of offers for automatic fallback
         image="nvidia/cuda:12.1.0-base-ubuntu22.04",
-        name="jax-integration-test"
+        name="jax-integration-test",
+        n_offers=len(offers)  # Try all provided offers
     )
 
-    assert instance, "Failed to create instance!"
-    logger.info(f"Instance created: {instance.id}")
+    assert instance, "Failed to create instance after trying all offers!"
+    logger.info(f"Instance created: {instance.id} ({instance.gpu_type})")
 
     # Wait for ready
     logger.info("Waiting for instance to be ready...")
@@ -133,9 +140,9 @@ def run_integration_test():
         ssh_key_path=ssh_key_path
     )
 
-    # Search and provision
-    offer = search_cheapest_gpu(gpu_client)
-    instance = provision_instance(gpu_client, offer)
+    # Search and provision (try top 5 cheapest offers for resilience)
+    offers = search_cheapest_gpus(gpu_client, max_offers=5)
+    instance = provision_instance(gpu_client, offers)
 
     # Deploy and test
     bifrost_client = BifrostClient(
@@ -150,7 +157,7 @@ def run_integration_test():
     instance.terminate()
     logger.info("Instance terminated")
 
-    logger.info(f"Cost estimate: ~${offer.price_per_hour * 0.1:.4f}")
+    logger.info(f"Cost estimate: ~${instance.price_per_hour * 0.1:.4f} (6 minutes)")
     return True
 
 
