@@ -162,7 +162,7 @@ class GPUInstance:
         credentials = {self.provider: self.api_key} if self.api_key else None
         return terminate_instance(self.id, self.provider, credentials=credentials)
     
-    def wait_until_ready(self, timeout: int = 300) -> bool:
+    def wait_until_ready(self, timeout: int = 600) -> bool:
         """Wait until instance status is RUNNING"""
         import time
 
@@ -187,14 +187,14 @@ class GPUInstance:
         
         return False  # Timeout
     
-    def wait_until_ssh_ready(self, timeout: int = 300) -> bool:
+    def wait_until_ssh_ready(self, timeout: int = 600) -> bool:
         """Wait until instance is running AND SSH is ready for connections.
 
         Delegates to provider-specific implementation since SSH setup varies
         across providers (proxy vs direct, timing, authentication, etc).
 
         Args:
-            timeout: Maximum seconds to wait (default: 300 = 5min)
+            timeout: Maximum seconds to wait (default: 600 = 5min)
 
         Returns:
             True if SSH ready, False if timeout/failure

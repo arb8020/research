@@ -24,9 +24,14 @@ def main():
     devices = jax.devices()
     print(f"   Found {len(devices)} device(s):")
     for i, device in enumerate(devices):
-        print(f"   [{i}] {device.device_kind} - {device}")
+        print(f"   [{i}] {device}")
 
-    gpu_devices = [d for d in devices if d.device_kind == 'gpu']
+    # Use JAX's type-based device query (cleaner than checking device_kind)
+    try:
+        gpu_devices = jax.devices('gpu')
+    except RuntimeError:
+        gpu_devices = []
+
     if not gpu_devices:
         print("   ❌ No GPU devices found!")
         return False
@@ -57,10 +62,18 @@ def main():
     # Verify computation ran on GPU
     print("\n4. Verifying GPU was used...")
     default_device = jax.devices()[0]
-    print(f"   Default device: {default_device.device_kind}")
-    if default_device.device_kind != 'gpu':
-        print("   ❌ Computation did not run on GPU!")
+    print(f"   Default device: {default_device}")
+
+    # Check if default device is a GPU
+    try:
+        gpu_devices = jax.devices('gpu')
+        if default_device not in gpu_devices:
+            print("   ❌ Computation did not run on GPU!")
+            return False
+    except RuntimeError:
+        print("   ❌ No GPU devices available!")
         return False
+
     print("   ✅ Computation ran on GPU")
 
     print("\n" + "=" * 60)

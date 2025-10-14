@@ -32,3 +32,4 @@ Thumbs.db
 uv.lock
 .env
 logs/
+output.txt

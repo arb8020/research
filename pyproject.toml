@@ -17,7 +17,8 @@ dependencies = [
 [project.optional-dependencies]
 # Integration test example
 example-jax-basic = [
-    "jax",
+    "jax[cuda12] ; sys_platform == 'linux'",
+    "jax ; sys_platform == 'darwin'",
 ]
 
 [tool.uv.sources]
