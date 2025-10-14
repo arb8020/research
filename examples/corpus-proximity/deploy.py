@@ -129,7 +129,7 @@ def main():
     parser.add_argument("--provider", type=str, choices=["runpod", "primeintellect"])
     parser.add_argument("--use-existing", type=str, metavar="NAME_OR_SSH")
     parser.add_argument("--name", type=str)
-    parser.add_argument("config", type=str, help="Path to experiment config file (e.g., experiments/02_small_test_03.py)")
+    parser.add_argument("--config", type=str, required=True, help="Path to config file (e.g., configs/02_small_test_03.py)")
     args = parser.parse_args()
 
     setup_logging()
@@ -139,7 +139,7 @@ def main():
 
         # Run prepare_data.py
         logger.info(f"Running prepare_data.py with config {args.config}...")
-        cmd = f"uv run python examples/corpus-proximity/prepare_data.py examples/corpus-proximity/{args.config}"
+        cmd = f"cd ~/.bifrost/workspace && uv run python examples/corpus-proximity/prepare_data.py examples/corpus-proximity/{args.config}"
         result = bifrost_client.exec(cmd)
 
         if result.stdout:
@@ -154,7 +154,7 @@ def main():
 
         # Run embed_chunks.py
         logger.info(f"Running embed_chunks.py with config {args.config}...")
-        cmd = f"uv run python examples/corpus-proximity/embed_chunks.py examples/corpus-proximity/{args.config}"
+        cmd = f"cd ~/.bifrost/workspace && uv run python examples/corpus-proximity/embed_chunks.py examples/corpus-proximity/{args.config}"
         result = bifrost_client.exec(cmd)
 
         if result.stdout:
