@@ -383,6 +383,7 @@ def list(ctx: typer.Context):
 
         table = Table(title=f"GPU Instances ({len(instances)})")
         table.add_column("ID", style="cyan")
+        table.add_column("Name")
         table.add_column("Provider")
         table.add_column("GPU")
         table.add_column("Status")
@@ -391,6 +392,7 @@ def list(ctx: typer.Context):
         for instance in instances:
             table.add_row(
                 instance.id,
+                instance.name or "-",
                 instance.provider,
                 instance.gpu_type,
                 instance.status.value,

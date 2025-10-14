@@ -72,10 +72,11 @@ fi""",
         bifrost_client.push()
 
 
-def find_instance_by_name(gpu_client, instance_name):
+def find_instance_by_name_or_id(gpu_client, identifier):
+    """Find instance by name or ID."""
     instances = gpu_client.list_instances()
     for instance in instances:
-        if instance.name == instance_name:
+        if instance.name == identifier or instance.id == identifier:
             return instance
     return None
 
@@ -92,12 +93,12 @@ def run_deploy(provider=None, use_existing=None, name=None):
         else:
             credentials = get_credentials(provider_filter=provider)
             gpu_client = GPUClient(credentials=credentials, ssh_key_path=ssh_key_path)
-            instance = find_instance_by_name(gpu_client, use_existing)
+            instance = find_instance_by_name_or_id(gpu_client, use_existing)
 
             if instance:
                 ssh_connection = instance.ssh_connection_string()
             else:
-                raise ValueError(f"Instance not found: {use_existing}")
+                raise ValueError(f"Instance not found (name or ID): {use_existing}")
 
         bifrost_client = BifrostClient(ssh_connection=ssh_connection, ssh_key_path=ssh_key_path)
         deploy_code(bifrost_client, use_existing=True)

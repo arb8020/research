@@ -33,6 +33,7 @@ def test_known_sentence(search_engine: CorpusSearch, chunks_path: Path):
     for i, result in enumerate(results, 1):
         match = "✓" if result.shard_id == test_chunk['shard_id'] and result.chunk_id == test_chunk['chunk_id'] else ""
         logger.info(f"{i}. dist={result.distance:.6f} {match} shard={result.shard_id} chunk={result.chunk_id}")
+        logger.info(f"   {result.text[:80]}...")
 
     top = results[0]
     is_match = top.shard_id == test_chunk['shard_id'] and top.chunk_id == test_chunk['chunk_id']
