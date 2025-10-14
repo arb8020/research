@@ -4,10 +4,13 @@ be able to write search(corpus, text) and get back nearest neighbors/distance/so
 
 
 [ ] basic data collect
-[ ] download small chunk of C4/similar
-[ ] chunk into sentences/paragraphs/something
-[ ] save as jsonl 
-[ ] print to verify it worked
+[x] decided on fineweb-edu (nanochat uses this)
+[ ] single-threaded prepare_data.py
+  [ ] download N shards (fineweb-edu parquet files)
+  [ ] process shards (read parquet, chunk into paragraphs)
+  [ ] save as jsonl
+  [ ] print to verify it worked
+[ ] parallelize with Worker pattern (fork + sockets)
 
 [ ] embed chunks (sentence-transformers or BERT or something)
 [ ] save embedded chunks as numpy arrays or something
