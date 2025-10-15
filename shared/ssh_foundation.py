@@ -1,5 +1,5 @@
 """
-Universal SSH foundation for llm-workbench components.
+Universal SSH foundation for research components.
 
 Provides secure, unified SSH connectivity that both broker and bifrost
 can build upon, eliminating code duplication and ensuring consistent

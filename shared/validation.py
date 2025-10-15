@@ -1,5 +1,5 @@
 """
-Shared validation utilities for llm-workbench components.
+Shared validation utilities for research components.
 
 All validators follow Tiger Style: assert everything, fail fast.
 Each validator returns the validated/normalized value on success.

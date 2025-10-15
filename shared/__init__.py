@@ -1,5 +1,5 @@
 """
-Shared utilities and foundations for llm-workbench components.
+Shared utilities and foundations for research components.
 
 This module contains common functionality that is used across
 broker, bifrost, and other components to reduce code duplication

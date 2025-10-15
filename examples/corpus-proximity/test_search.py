@@ -6,14 +6,16 @@ import logging
 import random
 from pathlib import Path
 
-from search import CorpusSearch
+from sentence_transformers import SentenceTransformer
+
+from search import load_training_corpus, search
 from config import Config
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
-def test_known_sentence(search_engine: CorpusSearch, chunks_path: Path):
+def test_known_sentence(corpus, model, chunks_path: Path):
     """Test that a sentence from the corpus returns itself as top result."""
     logger.info("\n" + "="*80)
     logger.info("Test 1: Known sentence (should return itself)")
@@ -28,11 +30,11 @@ def test_known_sentence(search_engine: CorpusSearch, chunks_path: Path):
     logger.info(f"Query: shard={test_chunk['shard_id']}, chunk={test_chunk['chunk_id']}")
     logger.info(f"{test_chunk['text'][:150]}...\n")
 
-    results = search_engine.search(test_chunk['text'], top_k=5)
+    results = search(test_chunk['text'], [corpus], model, top_k=5)
 
     for i, result in enumerate(results, 1):
         match = "✓" if result.shard_id == test_chunk['shard_id'] and result.chunk_id == test_chunk['chunk_id'] else ""
-        logger.info(f"{i}. dist={result.distance:.6f} {match} shard={result.shard_id} chunk={result.chunk_id}")
+        logger.info(f"{i}. dist={result.distance:.6f} {match} shard={result.shard_id} chunk={result.chunk_id} stage={result.stage}")
         logger.info(f"   {result.text[:80]}...")
 
     top = results[0]
@@ -42,7 +44,7 @@ def test_known_sentence(search_engine: CorpusSearch, chunks_path: Path):
     return is_match
 
 
-def test_unknown_sentence(search_engine: CorpusSearch):
+def test_unknown_sentence(corpus, model):
     """Test with a sentence not in the corpus."""
     logger.info("\n" + "="*80)
     logger.info("Test 2: Unknown sentence (should have high distance)")
@@ -51,10 +53,10 @@ def test_unknown_sentence(search_engine: CorpusSearch):
     query = "The purple elephant danced gracefully with a robotic unicorn under the moonlight."
     logger.info(f"Query: {query}\n")
 
-    results = search_engine.search(query, top_k=5)
+    results = search(query, [corpus], model, top_k=5)
 
     for i, result in enumerate(results, 1):
-        logger.info(f"{i}. dist={result.distance:.6f} shard={result.shard_id} chunk={result.chunk_id}")
+        logger.info(f"{i}. dist={result.distance:.6f} shard={result.shard_id} chunk={result.chunk_id} stage={result.stage}")
         logger.info(f"   {result.text[:80]}...")
 
     top_dist = results[0].distance
@@ -76,16 +78,18 @@ def main():
     else:
         config = Config()
 
-    search_engine = CorpusSearch(
+    # Load corpus using new API
+    corpus = load_training_corpus(
         embeddings_path=config.embedding.output_dir / "embeddings.npy",
         metadata_path=config.embedding.output_dir / "metadata.jsonl",
         chunks_path=config.data.processed_dir / config.data.output_file,
-        model_name=config.embedding.model,
-        device=config.embedding.device
+        stage="pretrain"  # Default to pretrain for now
     )
 
-    test1 = test_known_sentence(search_engine, config.data.processed_dir / config.data.output_file)
-    test2 = test_unknown_sentence(search_engine)
+    model = SentenceTransformer(config.embedding.model, device=config.embedding.device)
+
+    test1 = test_known_sentence(corpus, model, config.data.processed_dir / config.data.output_file)
+    test2 = test_unknown_sentence(corpus, model)
 
     logger.info("\n" + "="*80)
     logger.info(f"Test 1: {'✅ PASS' if test1 else '❌ FAIL'}")
