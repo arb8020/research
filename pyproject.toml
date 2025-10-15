@@ -34,6 +34,15 @@ example-corpus-proximity = [
     "openai>=1.0.0",
 ]
 
+# Optimizer visualizations
+example-optimizer-visuals = [
+    "jax[cuda12] ; sys_platform == 'linux'",
+    "jax ; sys_platform == 'darwin'",
+    "matplotlib>=3.0.0",
+    "streamlit>=1.28.0",
+    "plotext>=5.0.0",
+]
+
 [tool.uv.sources]
 broker = { workspace = true }
 bifrost = { workspace = true }
