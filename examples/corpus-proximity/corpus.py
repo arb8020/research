@@ -3,8 +3,8 @@
 
 import logging
 from dataclasses import dataclass
-from typing import Iterator, Optional
-from datasets import load_dataset
+from typing import Iterator, Optional, cast
+from datasets import load_dataset, IterableDataset
 
 logger = logging.getLogger(__name__)
 
@@ -128,15 +128,18 @@ def stream_corpus(config: CorpusConfig) -> Iterator[str]:
         streaming=config.streaming
     )
 
+    # Cast to IterableDataset for type safety
+    dataset = cast(IterableDataset, dataset)
+
     # Limit to num_shards if specified
     if config.num_shards is not None:
         dataset = dataset.take(config.num_shards)
 
     for item in dataset:
         # Most text datasets have a 'text' field
-        if 'text' in item:
+        if isinstance(item, dict) and 'text' in item:
             yield item['text']
-        else:
+        elif isinstance(item, dict):
             # Fallback: try to find any text-like field
             for key, value in item.items():
                 if isinstance(value, str) and len(value) > 0:

@@ -4,8 +4,8 @@
 import json
 import logging
 from pathlib import Path
-from typing import List, Optional
-from datasets import load_dataset
+from typing import List, Optional, cast
+from datasets import load_dataset, Dataset
 
 from trajectory import Trajectory, batch_create_trajectories
 
@@ -26,7 +26,7 @@ def load_gsm8k(split: str = "test", num_samples: Optional[int] = None) -> List[T
             - difficulty: "gsm8k"  # placeholder, could compute from solve rates
     """
     logger.info(f"Loading GSM8K {split} split...")
-    dataset = load_dataset("openai/gsm8k", "main", split=split)
+    dataset = cast(Dataset, load_dataset("openai/gsm8k", "main", split=split))
 
     if num_samples:
         dataset = dataset.select(range(min(num_samples, len(dataset))))
@@ -36,6 +36,7 @@ def load_gsm8k(split: str = "test", num_samples: Optional[int] = None) -> List[T
 
     for item in dataset:
         # GSM8K format: question + answer with #### separator
+        assert isinstance(item, dict), f"Expected dict, got {type(item)}"
         question = item['question']
         answer = item['answer'].split('####')[-1].strip()
 
@@ -68,7 +69,7 @@ def load_arc(subset: str = "easy", split: str = "test", num_samples: Optional[in
     dataset_name = f"arc-{subset}"
     logger.info(f"Loading ARC-{subset} {split} split...")
 
-    dataset = load_dataset("allenai/ai2_arc", f"ARC-{subset.capitalize()}", split=split)
+    dataset = cast(Dataset, load_dataset("allenai/ai2_arc", f"ARC-{subset.capitalize()}", split=split))
 
     if num_samples:
         dataset = dataset.select(range(min(num_samples, len(dataset))))
@@ -76,9 +77,12 @@ def load_arc(subset: str = "easy", split: str = "test", num_samples: Optional[in
     trajectories = []
 
     for item in dataset:
+        assert isinstance(item, dict), f"Expected dict, got {type(item)}"
         question = item['question']
-        choices = item['choices']['text']
-        labels = item['choices']['label']
+        choices_dict = item['choices']
+        assert isinstance(choices_dict, dict), f"Expected dict, got {type(choices_dict)}"
+        choices = choices_dict['text']
+        labels = choices_dict['label']
         answer_key = item['answerKey']
 
         # Format as multiple choice
@@ -121,11 +125,11 @@ def load_mmlu(
     logger.info(f"Loading MMLU {split} split..." + (f" (subject: {subject})" if subject else ""))
 
     if subject:
-        dataset = load_dataset("cais/mmlu", subject, split=split)
+        dataset = cast(Dataset, load_dataset("cais/mmlu", subject, split=split))
         subjects = [subject]
     else:
-        dataset = load_dataset("cais/mmlu", "all", split=split)
-        subjects = dataset['subject']
+        dataset = cast(Dataset, load_dataset("cais/mmlu", "all", split=split))
+        subjects = dataset['subject'] if 'subject' in dataset.column_names else []
 
     if num_samples:
         dataset = dataset.select(range(min(num_samples, len(dataset))))
@@ -133,10 +137,11 @@ def load_mmlu(
     trajectories = []
 
     for i, item in enumerate(dataset):
+        assert isinstance(item, dict), f"Expected dict, got {type(item)}"
         question = item['question']
         choices = item['choices']
         answer = item['answer']  # 0-3
-        subj = subjects[i] if isinstance(subjects, list) else item.get('subject', 'unknown')
+        subj = subjects[i] if isinstance(subjects, list) and i < len(subjects) else item.get('subject', 'unknown')
 
         # Format as multiple choice
         choice_labels = ['A', 'B', 'C', 'D']

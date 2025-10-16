@@ -249,7 +249,8 @@ async def generate(
             delta = chunk.choices[0].delta
             if delta.content:
                 accumulated_content += delta.content
-                await on_chunk(delta.content)
+                if on_chunk:
+                    await on_chunk(delta.content)
 
             if chunk.choices[0].finish_reason:
                 finish_reason = chunk.choices[0].finish_reason
