@@ -3,6 +3,7 @@
 import argparse
 import os
 import logging
+from typing import Literal, TypeAlias
 from dotenv import load_dotenv
 from broker import GPUClient, CloudType
 from bifrost import BifrostClient
@@ -11,6 +12,13 @@ from shared.logging_config import setup_logging
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+# Type aliases for provision result
+ProvisionError: TypeAlias = Literal["create_failed", "ready_timeout", "ssh_timeout"]
+ProvisionResult: TypeAlias = (
+    tuple[Literal[True], "ClientGPUInstance", None] |
+    tuple[Literal[False], None, ProvisionError]
+)
 
 
 def get_credentials(provider_filter=None):
@@ -39,22 +47,30 @@ def search_cheapest_gpus(gpu_client, max_offers=5):
     return offers[:max_offers]
 
 
-def provision_instance(gpu_client, offers):
+def provision_instance(gpu_client, offers) -> ProvisionResult:
     instance = gpu_client.create(
         offers,
         image="runpod/pytorch:1.0.0-cu1281-torch280-ubuntu2204",
         name="jax-integration-test",
         n_offers=len(offers)
     )
-    assert instance, "Failed to create instance"
+    if not instance:
+        logger.error("Failed to create instance")
+        return (False, None, "create_failed")
 
     ready = instance.wait_until_ready(timeout=300)
-    assert ready, "Instance failed to become ready"
+    if not ready:
+        logger.error(f"Instance {instance.id} failed to become ready, terminating...")
+        gpu_client.terminate_instance(instance.id, instance.provider)
+        return (False, None, "ready_timeout")
 
     ssh_ready = instance.wait_until_ssh_ready(timeout=300)
-    assert ssh_ready, "SSH failed to become ready"
+    if not ssh_ready:
+        logger.error(f"SSH failed to become ready on {instance.id}, terminating...")
+        gpu_client.terminate_instance(instance.id, instance.provider)
+        return (False, None, "ssh_timeout")
 
-    return instance
+    return (True, instance, None)
 
 
 def deploy_and_test(bifrost_client):
@@ -97,7 +113,11 @@ def run_integration_test(provider=None):
     gpu_client = GPUClient(credentials=credentials, ssh_key_path=ssh_key_path)
 
     offers = search_cheapest_gpus(gpu_client, max_offers=5)
-    instance = provision_instance(gpu_client, offers)
+    success, instance, error = provision_instance(gpu_client, offers)
+
+    if not success:
+        logger.error(f"Provisioning failed: {error}")
+        return False
 
     bifrost_client = BifrostClient(
         ssh_connection=instance.ssh_connection_string(),
@@ -122,7 +142,10 @@ def main():
     setup_logging()
 
     try:
-        run_integration_test(provider=args.provider)
+        success = run_integration_test(provider=args.provider)
+        if not success:
+            logger.error("Integration test failed")
+            return 1
         logger.info("=" * 70)
         logger.info("INTEGRATION TEST PASSED")
         logger.info("=" * 70)
