@@ -35,6 +35,14 @@ class SGDState(NamedTuple):
     params: PyTree
 
 
+class AdamState(NamedTuple):
+    """Adam optimizer state."""
+    step: int
+    params: PyTree
+    m: PyTree  # Momentum (EMA of gradients)
+    v: PyTree  # Second moment (EMA of squared gradients)
+
+
 def sgd_init(params: PyTree) -> SGDState:
     """Initialize SGD optimizer.
 
@@ -84,6 +92,82 @@ def sgd_update(
     )
 
 
+def adam_init(params: PyTree) -> AdamState:
+    """Initialize Adam optimizer.
+
+    Args:
+        params: Initial model parameters
+
+    Returns:
+        Initial optimizer state with m and v initialized to zeros
+    """
+    # Initialize m and v to zeros (same structure as params)
+    m = jax.tree.map(lambda p: jnp.zeros_like(p), params)
+    v = jax.tree.map(lambda p: jnp.zeros_like(p), params)
+
+    return AdamState(step=0, params=params, m=m, v=v)
+
+
+def adam_update(
+    state: AdamState,
+    grads: PyTree,
+    learning_rate: float,
+    beta1: float = 0.9,
+    beta2: float = 0.999,
+    epsilon: float = 1e-8
+) -> AdamState:
+    """Adam update step.
+
+    Following Tiger Style: Assert all preconditions.
+
+    Args:
+        state: Current optimizer state
+        grads: Gradients
+        learning_rate: Learning rate (must be positive)
+        beta1: Momentum decay (default 0.9)
+        beta2: Second moment decay (default 0.999)
+        epsilon: Small constant for numerical stability (default 1e-8)
+
+    Returns:
+        New optimizer state
+    """
+    # Tiger Style: Assert all preconditions
+    assert learning_rate > 0.0, f"learning_rate must be positive, got {learning_rate}"
+    assert 0.0 <= beta1 < 1.0, f"beta1 must be in [0, 1), got {beta1}"
+    assert 0.0 <= beta2 < 1.0, f"beta2 must be in [0, 1), got {beta2}"
+    assert epsilon > 0.0, f"epsilon must be positive, got {epsilon}"
+    assert state.step >= 0, f"step must be non-negative, got {state.step}"
+
+    # Update momentum: m = beta1 * m + (1 - beta1) * grad
+    new_m = jax.tree.map(
+        lambda m, g: beta1 * m + (1 - beta1) * g,
+        state.m,
+        grads
+    )
+
+    # Update second moment: v = beta2 * v + (1 - beta2) * grad^2
+    new_v = jax.tree.map(
+        lambda v, g: beta2 * v + (1 - beta2) * (g ** 2),
+        state.v,
+        grads
+    )
+
+    # Update parameters: param = param - lr * m / (sqrt(v) + epsilon)
+    new_params = jax.tree.map(
+        lambda p, m, v: p - learning_rate * m / (jnp.sqrt(v) + epsilon),
+        state.params,
+        new_m,
+        new_v
+    )
+
+    return AdamState(
+        step=state.step + 1,
+        params=new_params,
+        m=new_m,
+        v=new_v
+    )
+
+
 def optimize(
     init_params: PyTree,
     grad_fn: GradFn,
@@ -92,7 +176,7 @@ def optimize(
     learning_rate: float,
     num_steps: int,
     return_grads: bool = False
-) -> tuple[list[float], list[PyTree], list[Any], list[PyTree] | None]:
+) -> tuple[list[float], list[PyTree], list[Any], list[PyTree]]:
     """Run optimization loop and collect trajectory.
 
     Following Casey Muratori:
@@ -131,10 +215,10 @@ def optimize(
     state = init_fn(init_params)
 
     # Preallocate storage (Tiger Style: static allocation where possible)
-    losses = []
-    params_history = []
-    states_history = []
-    grads_history = [] if return_grads else None
+    losses: list[float] = []
+    params_history: list[PyTree] = []
+    states_history: list[Any] = []
+    grads_history: list[PyTree] = []
 
     # Optimization loop (Tiger Style: bounded loop)
     for step in range(num_steps):
@@ -158,8 +242,7 @@ def optimize(
     assert len(losses) == num_steps
     assert len(params_history) == num_steps
     assert len(states_history) == num_steps
-    if return_grads:
-        assert len(grads_history) == num_steps
+    assert len(grads_history) == num_steps if return_grads else len(grads_history) == 0
 
     return losses, params_history, states_history, grads_history
 
@@ -202,7 +285,7 @@ def main():
     print(f"Steps: {num_steps}\n")
 
     # Run optimization
-    losses, params_history, states = optimize(
+    losses, params_history, states, _ = optimize(
         init_params=init_params,
         grad_fn=grad_fn,
         init_fn=sgd_init,
