@@ -14,8 +14,11 @@ from dataclasses import dataclass
 
 from sentence_transformers import SentenceTransformer
 from datasets import load_dataset
+import asyncio
+import os
 
 from config import Config
+from rollout import GSM8KSample, Endpoint, generate
 from corpus import (
     NANOCHAT_PRETRAIN, SMOLTALK, MMLU_AUX_TRAIN, GSM8K_TRAIN,
     ARC_EASY_TRAIN, ARC_CHALLENGE_TRAIN, sample_corpus
@@ -229,24 +232,28 @@ def load_gsm8k_samples(num_samples: int, split: str = "test") -> List[Dict]:
 
 def embed_gsm8k_samples(
     samples: List[Dict],
-    model: SentenceTransformer
+    model: SentenceTransformer,
+    model_answers: List[str] = None
 ) -> Dict[str, List[np.ndarray]]:
-    """Embed GSM8K samples in 3 variants.
+    """Embed GSM8K samples in 3-4 variants.
 
     Args:
         samples: List of GSM8K samples (dicts with 'question' and 'answer')
         model: SentenceTransformer for encoding
+        model_answers: Optional list of model-generated answers
 
     Returns:
         Dict mapping variant -> list of embeddings
         {
             "question": [emb1, emb2, ...],
             "answer": [emb1, emb2, ...],
-            "question_answer": [emb1, emb2, ...]
+            "question_answer": [emb1, emb2, ...],
+            "model_answer": [emb1, emb2, ...]  # if model_answers provided
         }
     """
+    num_variants = 3 + (1 if model_answers else 0)
     logger.info("="*80)
-    logger.info("Embedding GSM8K samples (3 variants)")
+    logger.info(f"Embedding GSM8K samples ({num_variants} variants)")
     logger.info("="*80)
 
     variants = {}
@@ -261,8 +268,8 @@ def embed_gsm8k_samples(
         convert_to_numpy=True
     )
 
-    # Answer only
-    logger.info("\n2. Answer variant...")
+    # Answer only (ground truth)
+    logger.info("\n2. Answer variant (ground truth)...")
     answers = [s['answer'] for s in samples]
     variants['answer'] = model.encode(
         answers,
@@ -281,8 +288,96 @@ def embed_gsm8k_samples(
         convert_to_numpy=True
     )
 
+    # Model answers (if provided)
+    if model_answers:
+        logger.info("\n4. Model answer variant...")
+        variants['model_answer'] = model.encode(
+            model_answers,
+            batch_size=32,
+            show_progress_bar=True,
+            convert_to_numpy=True
+        )
+
     logger.info("="*80 + "\n")
     return variants
+
+
+def generate_model_answers(
+    samples: List[Dict],
+    config: Config
+) -> List[str]:
+    """Generate model answers for GSM8K samples using inference API.
+
+    Uses asyncio.to_thread to avoid async spreading through the codebase.
+
+    Args:
+        samples: List of GSM8K samples (dicts with 'question' and 'answer')
+        config: Config with model endpoint settings
+
+    Returns:
+        List of model-generated answer strings
+    """
+    logger.info("="*80)
+    logger.info("Generating model answers (requires API calls)")
+    logger.info("="*80)
+    logger.info(f"Model: {config.similarity.model_name}")
+    logger.info(f"API: {config.similarity.model_api_base}")
+    logger.info(f"Temperature: {config.similarity.model_temperature}")
+    logger.info(f"Samples: {len(samples)}\n")
+
+    # Get API key from environment
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    if not api_key and "api.openai.com" in config.similarity.model_api_base:
+        raise ValueError(
+            "OPENAI_API_KEY environment variable not set. "
+            "Set it with: export OPENAI_API_KEY=your-key"
+        )
+
+    # Create endpoint
+    endpoint = Endpoint(
+        model=config.similarity.model_name,
+        api_base=config.similarity.model_api_base,
+        api_key=api_key,
+        temperature=config.similarity.model_temperature,
+        max_tokens=config.similarity.model_max_tokens
+    )
+
+    async def generate_all():
+        """Generate answers for all samples."""
+        model_answers = []
+
+        for i, sample in enumerate(samples):
+            logger.info(f"Generating answer {i+1}/{len(samples)}...")
+
+            # Convert to GSM8KSample and then to Rollout
+            gsm8k_sample = GSM8KSample(
+                question=sample['question'],
+                answer=sample['answer'],
+                sample_id=sample['id']
+            )
+            rollout = gsm8k_sample.to_rollout()
+
+            # Generate completion
+            updated_rollout = await generate(endpoint, rollout)
+
+            # Extract model answer
+            model_answer = updated_rollout.get_last_message_content()
+            if model_answer:
+                model_answers.append(model_answer)
+            else:
+                logger.warning(f"  No answer generated for sample {sample['id']}")
+                model_answers.append("")  # Empty string as fallback
+
+        return model_answers
+
+    # Run async code without spreading async through the codebase
+    # asyncio.to_thread runs the coroutine in a thread pool
+    import asyncio
+    model_answers = asyncio.run(generate_all())
+
+    logger.info(f"\nGenerated {len(model_answers)} model answers")
+    logger.info("="*80 + "\n")
+    return model_answers
 
 
 def search_all(
@@ -456,10 +551,15 @@ def main():
             split=config.similarity.gsm8k_split
         )
 
-        # 4. Embed GSM8K variants
-        gsm8k_embeddings = embed_gsm8k_samples(gsm8k_samples, model)
+        # 4. Generate model answers (optional - requires API calls)
+        model_answers = None
+        if config.similarity.include_model_answers:
+            model_answers = generate_model_answers(gsm8k_samples, config)
 
-        # 5. Search all
+        # 5. Embed GSM8K variants
+        gsm8k_embeddings = embed_gsm8k_samples(gsm8k_samples, model, model_answers)
+
+        # 6. Search all
         results = search_all(
             samples=gsm8k_samples,
             gsm8k_embeddings=gsm8k_embeddings,
@@ -469,18 +569,22 @@ def main():
             distance_metric=config.similarity.distance_metric
         )
 
-        # 6. Save results
+        # 7. Save results
         output_path = config.similarity.output_dir / config.similarity.output_file
         save_results(results, output_path)
 
         # Summary
+        num_variants = len(gsm8k_embeddings)
         logger.info("="*80)
         logger.info("SUMMARY")
         logger.info("="*80)
         logger.info(f"GSM8K samples: {len(gsm8k_samples)}")
-        logger.info(f"Variants per sample: 3 (question, answer, question+answer)")
+        variant_list = list(gsm8k_embeddings.keys())
+        logger.info(f"Variants per sample: {num_variants} ({', '.join(variant_list)})")
+        if model_answers:
+            logger.info(f"  (includes model-generated answers)")
         logger.info(f"Corpus stages: {list(corpora.keys())}")
-        logger.info(f"Results per sample: {config.similarity.k_neighbors * 3 * len(corpora)}")
+        logger.info(f"Results per sample: {config.similarity.k_neighbors * num_variants * len(corpora)}")
         logger.info(f"Total results: {len(results)}")
         logger.info(f"Output: {output_path}")
         logger.info("="*80)

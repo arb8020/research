@@ -53,6 +53,13 @@ class SimilarityConfig:
     output_dir: Path = _BASE_DIR / "results"
     output_file: str = "gsm8k_similarity.csv"
 
+    # Model generation (optional - requires API calls)
+    include_model_answers: bool = False
+    model_name: str = "gpt-4o-mini"
+    model_api_base: str = "https://api.openai.com/v1"
+    model_temperature: float = 0.7
+    model_max_tokens: int = 2048
+
 
 @dataclass
 class Config:
