@@ -25,22 +25,31 @@ Measure distance from model outputs to training data to understand memorization,
 - [x] Sample protocol for dataset samples (GSM8KSample implementation)
 - [x] Inference wrapper (generate() function with OpenAI/vLLM support)
 - [x] CLI for interactive querying (rollout.py with --stream, --system flags)
+- [x] Advanced chunking strategies with spaCy/NLTK (chunking.py - sentence_spacy/sentence_nltk)
+- [x] SimilarityConfig in config.py
+- [x] GSM8K corpus similarity measurement script (gsm8k_corpus_similarity.py)
+- [x] Config files for tiny/full experiments
+- [x] Local test validation (3 samples × 3 variants × 3 stages × 5 neighbors = 135 results)
 
 ## Next: Minimal Shippable Artifact (4-6 hours)
 **Narrative: "Can we detect what training data a model is using?"**
 
-### Phase 1: Core Infrastructure (addresses interest #1)
+### Phase 1: Core Infrastructure (addresses interest #1) ✅ COMPLETE
 - [x] Define Rollout dataclass (prompt, completion, tokens, metadata)
 - [x] Build inference wrapper (OpenAI/vLLM via generate() function)
-- [ ] Build integration: eval question → embed → search corpus → measure distance
-- [ ] Test: Load GSM8K question, measure distance to nanochat corpus
-- [ ] Validate: Can we detect when eval questions are similar to training data?
+- [x] Build integration: eval question → embed → search corpus → measure distance
+- [x] Test: Load GSM8K question, measure distance to nanochat corpus
+- [x] Validate: Can we detect when eval questions are similar to training data?
+
+**Status:** Infrastructure complete. Ready for Phase 2 experiments with model-generated answers (requires LLM inference via rollout.py).
 
 ### Phase 2: Experiments
 **Interest #1: Eval benchmark → corpus distance**
-- [ ] Load GSM8K (easy/hard split if available)
-- [ ] For each question: measure distance to pretrain/midtrain/SFT corpus
-- [ ] Hypothesis: Harder questions = further from training data?
+- [x] Load GSM8K eval questions/answers
+- [x] Measure distance to pretrain/midtrain/SFT corpus (baseline with ground truth)
+- [ ] Generate model answers using rollout.py (requires LLM inference)
+- [ ] Compare model answers vs ground truth answers to corpus
+- [ ] Hypothesis: Model answers closer to training data = memorization vs reasoning
 - [ ] Visualize: distance vs difficulty/correctness
 
 **Interest #5: Muon vs Adam on exact recall (lyrics test)**

@@ -27,10 +27,39 @@ class EmbeddingConfig:
 
 
 @dataclass
+class SimilarityConfig:
+    """Configuration for similarity measurement experiments."""
+    # GSM8K sampling (from eval_datasets.py's load_gsm8k)
+    num_gsm8k_samples: int = 10
+    gsm8k_split: str = "test"  # Use load_dataset("openai/gsm8k", "main", split="test")
+
+    # Corpus sampling (chunks per stage)
+    # Corpus definitions from corpus.py: NANOCHAT_PRETRAIN, SMOLTALK, MMLU_AUX_TRAIN, etc.
+    corpus_sizes: dict = field(default_factory=lambda: {
+        "pretrain": 1000,     # From NANOCHAT_PRETRAIN
+        "midtrain": 900,      # From SMOLTALK(300) + MMLU_AUX_TRAIN(300) + GSM8K_TRAIN(300)
+        "sft": 1000,          # From ARC_EASY_TRAIN(500) + ARC_CHALLENGE_TRAIN(500)
+    })
+
+    # Chunking strategy
+    chunking_strategy: str = "paragraph"  # "paragraph" | "fixed_chars" | "sentence_spacy" | "sentence_nltk"
+    chunk_size: int = 512  # For fixed_chars strategy
+
+    # Search
+    k_neighbors: int = 5  # Return top-k nearest neighbors
+    distance_metric: str = "cosine"  # "cosine" | "euclidean" | "manhattan"
+
+    # Output
+    output_dir: Path = _BASE_DIR / "results"
+    output_file: str = "gsm8k_similarity.csv"
+
+
+@dataclass
 class Config:
     """Main configuration container."""
     data: DataConfig = field(default_factory=DataConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
+    similarity: SimilarityConfig = field(default_factory=SimilarityConfig)
 
     def save(self, path):
         """Save this exact config for reproducibility."""
@@ -55,6 +84,11 @@ class Config:
                         for k, v in field_data.items()
                     }
                 elif field_name == 'embedding':
+                    field_data = {
+                        k: Path(v) if k == 'output_dir' else v
+                        for k, v in field_data.items()
+                    }
+                elif field_name == 'similarity':
                     field_data = {
                         k: Path(v) if k == 'output_dir' else v
                         for k, v in field_data.items()
