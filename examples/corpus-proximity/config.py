@@ -63,11 +63,48 @@ class SimilarityConfig:
 
 
 @dataclass
+class ClusteringConfig:
+    """Recursive clustering configuration."""
+    # Embedding model (Arctic-Embed-L for better cluster separation)
+    embedding_model: str = "Snowflake/snowflake-arctic-embed-l"
+    embedding_batch_size: int = 32
+
+    # Chunking strategy (use fixed_tokens with Arctic-Embed-L)
+    chunking_strategy: str = "fixed_tokens"
+    chunk_max_tokens: int = 512  # Arctic-Embed-L supports 512 tokens
+    chunk_overlap_pct: float = 0.15
+
+    # Recursive clustering parameters
+    max_depth: int = 3
+    base_pct: float = 0.05  # 5% base for min_cluster_size
+    decay: float = 0.7      # Decay factor per depth
+    silhouette_threshold: float = 0.3  # Only recurse if score < this
+
+    # UMAP parameters
+    umap_n_components: int = 50
+    umap_metric: str = "cosine"
+
+    # HDBSCAN parameters
+    hdbscan_min_samples: int = 10
+
+    # Caching (separate from main embeddings)
+    cache_dir: Path = _BASE_DIR / "clusters"
+    embedding_cache_dir: Path = _BASE_DIR / "embeddings_arctic"
+
+    # LLM naming (use rollout.py)
+    naming_model: str = "gpt-4o-mini"
+    naming_api_base: str = "https://api.openai.com/v1"
+    naming_temperature: float = 0.7
+    naming_max_tokens: int = 50  # Short labels only
+
+
+@dataclass
 class Config:
     """Main configuration container."""
     data: DataConfig = field(default_factory=DataConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     similarity: SimilarityConfig = field(default_factory=SimilarityConfig)
+    clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
 
     def save(self, path):
         """Save this exact config for reproducibility."""
@@ -99,6 +136,11 @@ class Config:
                 elif field_name == 'similarity':
                     field_data = {
                         k: Path(v) if k == 'output_dir' else v
+                        for k, v in field_data.items()
+                    }
+                elif field_name == 'clustering':
+                    field_data = {
+                        k: Path(v) if k.endswith('_dir') else v
                         for k, v in field_data.items()
                     }
                 kwargs[field_name] = field_type(**field_data)

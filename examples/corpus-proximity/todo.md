@@ -3,6 +3,60 @@
 ## Goal
 Measure distance from model outputs to training data to understand memorization, optimizer differences, and OOD behavior.
 
+## 🎯 Recent Accomplishments (This Session)
+
+### Recursive Clustering Pipeline - COMPLETE ✅
+Implemented Spotify-inspired recursive embedding and clustering for corpus taxonomy:
+
+**Core Implementation (cluster_corpus.py)**
+- Recursive UMAP dimensionality reduction (1024→50 dims) + HDBSCAN clustering
+- Silhouette gating: only recurse if cluster coherence < 0.3 (prevents forced subdivisions)
+- Adaptive parameters: `min_cluster_size = max(5, n * 0.05 * 0.7^depth)`
+- Re-embedding at each level with Arctic-Embed-L (1024-dim, 512 token limit)
+- Token-based chunking integration (512 tokens max, 15% overlap)
+- Noise point tracking (HDBSCAN outliers)
+- Full caching system with hash-based keys
+
+**LLM Naming System (name_clusters.py)**
+- Breadth-first cluster naming using OpenAI API (gpt-4o-mini)
+- Asyncio parallelization (names entire level concurrently)
+- Centroid-based text sampling for representative examples
+- Hierarchical context (passes parent cluster name to child)
+- dotenv integration for API key management
+
+**Inspection Tools (name_clusters.py CLI)**
+- `--tree`: Pretty-print cluster hierarchy with names and stats
+- `--list`: Flat list of all clusters with metadata
+- `--inspect <id> --samples N`: Random sample inspection from any cluster
+- `--show-noise`: View noise points separately
+- `--name`: Generate LLM names for entire tree
+
+**Validation**
+- Tested on tiny corpus (150 chunks → 405 token-limited chunks)
+- Found 8 clusters with 126 noise points, silhouette 0.525
+- Correctly identified high coherence (no recursion needed)
+- Successfully generated cluster name: "Diverse Infrastructure and Ecology"
+
+**Type Safety**
+- Fixed all `ty check` errors in corpus-proximity codebase
+- Added proper type annotations for dynamic module loading
+- Optional types for nullable parameters
+- Null checks for callbacks
+
+**Files Created/Modified**
+- `cluster_corpus.py` (530 lines) - core clustering engine
+- `name_clusters.py` (490 lines) - LLM naming and inspection
+- `configs/clustering_01_tiny.py` - test configuration
+- `prepare_tiny_corpus.py` - sampling utility for testing
+- Updated `config.py` with ClusteringConfig dataclass
+- Type fixes in: rollout.py, search.py, embed_chunks.py, prepare_data.py, gsm8k_corpus_similarity.py
+
+**Next Steps for Clustering**
+- Run on full corpus (not just 150-sample test)
+- Integrate with similarity search to tag model outputs by cluster
+- Visualize cluster hierarchy and distributions
+- Analyze: Do model errors correlate with specific clusters?
+
 ## Original Interest Areas (from conversation.txt)
 1. Measuring OOD performance by comparing chunked/embedded pretraining corpus with benchmark questions
 2. Anthropic 1.5B settlement - training data provenance detection
@@ -31,6 +85,31 @@ Measure distance from model outputs to training data to understand memorization,
 - [x] GSM8K corpus similarity measurement script (gsm8k_corpus_similarity.py)
 - [x] Config files for tiny/full experiments
 - [x] Local test validation (3 samples × 3 variants × 3 stages × 5 neighbors = 135 results)
+- [x] **Recursive clustering pipeline (cluster_corpus.py) - Spotify-inspired UMAP+HDBSCAN**
+  - [x] ClusterNode dataclass with hierarchical IDs, silhouette scores, noise tracking
+  - [x] Adaptive HDBSCAN parameters with decay by depth
+  - [x] Silhouette gating (only recurse if score < 0.3)
+  - [x] Re-embedding at each level (Arctic-Embed-L, 1024-dim)
+  - [x] Token-based chunking integration (512 tokens max, 15% overlap)
+  - [x] Caching system with hash-based keys for embeddings and trees
+  - [x] JSON serialization with sample texts and full indices
+- [x] **LLM-based cluster naming (name_clusters.py)**
+  - [x] Breadth-first cluster naming with asyncio parallelization
+  - [x] Centroid-based and random text sampling strategies
+  - [x] Hierarchical context (parent cluster names)
+  - [x] Integration with rollout.py's generate() function
+  - [x] dotenv support for API keys
+- [x] **Cluster inspection utilities (name_clusters.py CLI)**
+  - [x] --tree: Pretty-print cluster hierarchy with names
+  - [x] --list: List all clusters with metadata
+  - [x] --inspect <id>: Show random samples from specific cluster
+  - [x] --show-noise: Display noise points separately
+  - [x] --name: Generate LLM names for entire tree
+- [x] **Type safety improvements**
+  - [x] Fixed all ty check errors in corpus-proximity
+  - [x] Type annotations for module.config loading
+  - [x] Optional types for nullable parameters
+  - [x] Callback null checks in rollout.py
 
 ## Next: Minimal Shippable Artifact (4-6 hours)
 **Narrative: "Can we detect what training data a model is using?"**
@@ -64,12 +143,15 @@ Measure distance from model outputs to training data to understand memorization,
 - [ ] Measure edit distance of completions vs ground truth
 - [ ] Hypothesis: Muon has higher edit distance (worse exact recall)
 
-**Interest #4: Cluster-based annotations**
-- [ ] Cluster corpus embeddings (recursive clustering)
-- [ ] Sample texts from each cluster
-- [ ] Use LLM to name clusters ("math textbook", "code", "news", etc.)
+**Interest #4: Cluster-based annotations** ✅ INFRASTRUCTURE COMPLETE
+- [x] Cluster corpus embeddings (recursive clustering) - cluster_corpus.py with UMAP+HDBSCAN
+- [x] Sample texts from each cluster - sample_cluster_texts() with centroid/random strategies
+- [x] Use LLM to name clusters - name_clusters.py with hierarchical naming
+- [x] Full inspection utilities - CLI with --tree, --list, --inspect, --show-noise
 - [ ] For model outputs: tag which cluster(s) they're closest to
 - [ ] Analysis: Do errors correlate with specific clusters?
+- [ ] Run on full corpus (not just tiny test set)
+- [ ] Visualize cluster hierarchy and distributions
 
 **Interest #9: SFT vs base model proximity**
 - [ ] If access to base + SFT pair (e.g., Llama-3-base vs Llama-3-Instruct)
@@ -107,9 +189,10 @@ See "New Ideas / Extended Research Directions" section below for future experime
 - [ ] Deploy to GPU cluster
 
 ### Advanced Measurement
-- [ ] Recursive clustering on embeddings
-- [ ] LLM-based cluster labeling
+- [x] Recursive clustering on embeddings (cluster_corpus.py - Spotify approach)
+- [x] LLM-based cluster labeling (name_clusters.py with OpenAI integration)
 - [ ] Annotate outputs by cluster ("this came from math content")
+- [ ] Integrate clustering with similarity search for cluster-tagged results
 
 ### Experiments (Requires Trained Models)
 - [ ] Muon vs Adam distance patterns (lyrics completion test)
@@ -160,7 +243,7 @@ See "New Ideas / Extended Research Directions" section below for future experime
 ### BETR-Inspired Methodology Improvements
 
 **Upgrade Embedding Models**
-- [ ] Add Arctic-Embed-L (`Snowflake/snowflake-arctic-embed-l`) to config
+- [x] Add Arctic-Embed-L (`Snowflake/snowflake-arctic-embed-l`) to config - used in clustering pipeline
 - [ ] Add GTE-Large (`Alibaba-NLP/gte-large-en-v1.5`) as alternative
 - [ ] Create ablation configs comparing MiniLM vs Arctic vs GTE
 - [ ] Run comparison on tiny GSM8K
