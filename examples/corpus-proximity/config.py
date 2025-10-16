@@ -42,8 +42,9 @@ class SimilarityConfig:
     })
 
     # Chunking strategy
-    chunking_strategy: str = "paragraph"  # "paragraph" | "fixed_chars" | "sentence_spacy" | "sentence_nltk"
-    chunk_size: int = 512  # For fixed_chars strategy
+    chunking_strategy: str = "paragraph"  # "paragraph" | "fixed_chars" | "fixed_tokens" | "sentence_spacy" | "sentence_nltk"
+    chunk_size: int = 512  # For fixed_chars: characters, for fixed_tokens: max tokens
+    chunk_overlap_pct: float = 0.15  # Overlap percentage for fixed_chars and fixed_tokens (0.15 = 15%)
 
     # Search
     k_neighbors: int = 5  # Return top-k nearest neighbors

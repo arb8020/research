@@ -26,6 +26,7 @@ Measure distance from model outputs to training data to understand memorization,
 - [x] Inference wrapper (generate() function with OpenAI/vLLM support)
 - [x] CLI for interactive querying (rollout.py with --stream, --system flags)
 - [x] Advanced chunking strategies with spaCy/NLTK (chunking.py - sentence_spacy/sentence_nltk)
+- [x] Token-aware chunking with configurable overlap (chunking.py - chunk_fixed_tokens)
 - [x] SimilarityConfig in config.py
 - [x] GSM8K corpus similarity measurement script (gsm8k_corpus_similarity.py)
 - [x] Config files for tiny/full experiments
@@ -41,16 +42,20 @@ Measure distance from model outputs to training data to understand memorization,
 - [x] Test: Load GSM8K question, measure distance to nanochat corpus
 - [x] Validate: Can we detect when eval questions are similar to training data?
 
-**Status:** Infrastructure complete. Ready for Phase 2 experiments with model-generated answers (requires LLM inference via rollout.py).
+**Status:** Phase 1 infrastructure complete and validated.
 
 ### Phase 2: Experiments
 **Interest #1: Eval benchmark → corpus distance**
 - [x] Load GSM8K eval questions/answers
 - [x] Measure distance to pretrain/midtrain/SFT corpus (baseline with ground truth)
-- [ ] Generate model answers using rollout.py (requires LLM inference)
-- [ ] Compare model answers vs ground truth answers to corpus
-- [ ] Hypothesis: Model answers closer to training data = memorization vs reasoning
+- [x] Generate model answers using rollout.py (generate_model_answers function)
+- [x] Compare model answers vs ground truth answers to corpus (4-variant embedding with model_answer)
+- [x] Optional model generation via config flag (include_model_answers in SimilarityConfig)
+- [x] Config file for model experiments (configs/gsm8k_similarity_03_model.py)
+- [ ] Hypothesis testing: Model answers closer to training data = memorization vs reasoning
 - [ ] Visualize: distance vs difficulty/correctness
+
+**Status:** Phase 2 core infrastructure complete. Model generation is implemented and optional (set `include_model_answers=True` in config). Ready for hypothesis testing and visualization.
 
 **Interest #5: Muon vs Adam on exact recall (lyrics test)**
 - [ ] Find ~50 famous quotes/lyrics definitely in Common Crawl
@@ -73,6 +78,28 @@ Measure distance from model outputs to training data to understand memorization,
 
 **This produces:** Evidence connecting training data proximity to model behavior across multiple hypotheses
 
+---
+
+## Current Status Summary
+
+### ✅ Phase 1 & 2 Core: COMPLETE
+All infrastructure for measuring training data proximity is implemented and tested:
+- Data collection, chunking (incl. token-aware), embedding, search
+- Model answer generation (optional, config-controlled)
+- GSM8K baseline measurements with ground truth + model answers
+- Multi-variant embedding pipeline (question, answer, question+answer, model_answer)
+
+### 🔄 Phase 2 Analysis: IN PROGRESS
+Infrastructure ready, need to:
+- Run experiments with model generation enabled
+- Analyze memorization vs reasoning patterns
+- Build visualizations
+
+### 📋 Phase 3+: Extended Research
+See "New Ideas / Extended Research Directions" section below for future experiments (Muon vs Adam, clustering, SFT vs RL, contamination detection, etc.)
+
+---
+
 ## Future Work (After First Artifact)
 ### Training Infrastructure
 - [ ] Training pipeline (corpus + optimizer → trained model)
@@ -93,6 +120,144 @@ Measure distance from model outputs to training data to understand memorization,
 - [ ] Parallelize data processing (Worker pattern)
 - [ ] Batch inference for speed
 - [ ] Larger corpus coverage
+
+---
+
+## New Ideas / Extended Research Directions
+
+### Positioning vs. BETR Paper (arxiv 2507.12466)
+**BETR's contribution:** Pretraining data selection using benchmark similarity (forward-looking optimization)
+
+**Our novel extensions:**
+- Post-hoc analysis: Measure model outputs → training corpus (interpretability, not just data selection)
+- Optimizer effects: Muon vs Adam memorization patterns
+- SFT/RL comparison: Training method effects on corpus proximity
+- Contamination detection: Per-question benchmark hygiene scoring
+- Fine-grained difficulty: Per-question metrics revealing "model shapes"
+- Multi-stage analysis: Pretrain/midtrain/SFT/RL stage separation
+
+### Additional Interest Areas
+10. RL contamination hypothesis: GSM8K/MATH500 in midtraining inflates RL results
+11. **"RL is secretly SFT" hypothesis:** RL is just SFT on synthetically generated data from the RL environment/process, not true credit assignment through gradient signals
+12. Per-question difficulty via OpenRouter aggregation (10-20 providers)
+
+### Key Insights from Related Papers
+
+**"SFT Memorizes, RL Generalizes" (arxiv 2501.17161)**
+- RL with outcome-based rewards generalizes across rule-based textual and visual variants
+- SFT memorizes training data, struggles on OOD scenarios
+- SFT is essential for RL: stabilizes output format before RL training
+- RL improves underlying visual capabilities for cross-domain generalization
+
+**Our counter-hypothesis to test:**
+- **"RL is secretly SFT"**: The RL process is just a data generation mechanism (via environment interactions/rollouts). The actual learning is standard SFT on this synthetically generated data, not credit assignment via RL gradients.
+- **Testable prediction via corpus proximity:**
+  - SFT models: answers close to original training corpus (direct memorization)
+  - RL models: answers close to *synthetic rollout data* generated during RL training, but NOT farther from corpus overall
+  - If RL is truly different: answers should show novel patterns uncorrelated with either training corpus OR rollout data
+  - If RL is secretly SFT: corpus proximity should match the distribution of rollout data, not show true generalization
+
+### BETR-Inspired Methodology Improvements
+
+**Upgrade Embedding Models**
+- [ ] Add Arctic-Embed-L (`Snowflake/snowflake-arctic-embed-l`) to config
+- [ ] Add GTE-Large (`Alibaba-NLP/gte-large-en-v1.5`) as alternative
+- [ ] Create ablation configs comparing MiniLM vs Arctic vs GTE
+- [ ] Run comparison on tiny GSM8K
+- [ ] Document embedding choice
+
+**Implement Rank-Based Aggregation**
+- [ ] Create `ranking.py` with rank-based similarity
+- [ ] For each query: rank all corpus chunks by distance
+- [ ] Implement "max aggregation": best rank across all queries
+- [ ] Implement "mean aggregation": average rank
+- [ ] Add to search.py as alternative scoring method
+- [ ] Update config with `aggregation_strategy: "distance" | "rank_max" | "rank_mean"`
+- [ ] Test on tiny GSM8K: compare distance vs rank-based
+
+**Multi-Benchmark Contamination Detection**
+- [ ] Extend corpus.py: add MATH, MMLU, HellaSwag, ARC loaders
+- [ ] Create `multi_benchmark_similarity.py`
+- [ ] For each corpus chunk: compute similarity to all benchmarks
+- [ ] Track: max_similarity, source_benchmark, all_similarities
+- [ ] Output contamination heatmap (corpus stage × benchmark)
+- [ ] Visualization: which benchmarks leak into which stages
+
+**Held-Out Benchmark Validation**
+- [ ] Define benchmark splits: training (GSM8K, MATH, MMLU, ARC) vs held-out (BBH, GPQA, IFEval)
+- [ ] Hypothesis: Does corpus proximity predict held-out performance?
+- [ ] Correlate: corpus proximity vs. performance on both splits
+
+**Efficient Sampling for Large Corpora** (for scaling)
+- [ ] Create `scale_embeddings.py`
+- [ ] Sample 0.1-1% of corpus, embed sample
+- [ ] Train FastText classifier: text → predicted similarity score
+- [ ] Apply to full corpus without embedding all
+
+### Novel Experimental Directions
+
+**Per-Question Difficulty Metric**
+- [ ] Create `benchmark_difficulty.py`
+- [ ] OpenRouter integration: 10-20 diverse providers
+- [ ] Query all providers on GSM8K test set
+- [ ] Grade correctness, aggregate: difficulty_score = 1 - (correct/total)
+- [ ] Cache results: `data/benchmark_difficulty/gsm8k_difficulty.json`
+- [ ] Visualization: difficulty histogram
+- [ ] Extend to MATH500
+
+**GSM8K Contamination with Difficulty Stratification**
+- [ ] Run full GSM8K corpus similarity (100+ samples)
+- [ ] Merge with difficulty scores
+- [ ] Analyze: Are easy questions closer to midtrain?
+- [ ] Contamination score by difficulty tier
+- [ ] Export contaminated question IDs
+
+**SFT vs RL Corpus Proximity (Testing "RL is secretly SFT")**
+- [ ] Identify base + SFT + RL model triple (Llama-3 variants or train own)
+- [ ] **Critical: Access RL rollout data** (the synthetic data generated during RL training)
+  - [ ] If training own RL model: save all rollout trajectories
+  - [ ] If using existing model: try to get rollout data or approximate it
+- [ ] Generate answers from all three models on same eval set
+- [ ] Measure corpus proximity for:
+  - [ ] Base model answers → original training corpus
+  - [ ] SFT model answers → original training corpus
+  - [ ] RL model answers → original training corpus
+  - [ ] **RL model answers → RL rollout data** (the synthetic data)
+- [ ] Compare:
+  - [ ] Is SFT closer to training corpus than base? (expected: yes, memorization)
+  - [ ] Is RL farther from training corpus than SFT? (if yes, supports "RL generalizes")
+  - [ ] **Is RL close to its own rollout data?** (if yes, supports "RL is secretly SFT")
+  - [ ] Does RL show novel patterns uncorrelated with both corpus AND rollouts? (if yes, true RL)
+- [ ] Stratify by difficulty: does pattern hold across easy/hard questions?
+
+**RL Contamination in Midtrain**
+- [ ] Compare RL performance on contaminated vs clean questions
+- [ ] Hypothesis: RL shows bigger gains on contaminated questions
+- [ ] Correlate: contamination_score × RL_performance_gain
+
+**Muon vs Adam Corpus Proximity**
+- [ ] If lyrics test shows difference
+- [ ] Measure corpus proximity for Muon vs Adam outputs
+- [ ] On reasoning tasks (GSM8K) vs memorization tasks (lyrics)
+- [ ] Hypothesis: Muon farther from training on memorization
+
+### Implementation Priority
+
+**Week 1: Foundation**
+1. Upgrade embeddings (Arctic-Embed)
+2. Per-question difficulty metric
+3. Multi-benchmark contamination
+4. GSM8K contamination analysis with stratification
+
+**Week 2: Novel Hypotheses**
+5. Rank-based aggregation
+6. Model answer generation + corpus proximity
+7. SFT vs RL proximity comparison
+
+**Week 3: Extensions**
+8. Muon vs Adam lyrics + proximity test
+9. Cluster-based annotations
+10. Ablations (embeddings, aggregation, chunking)
 
 
 

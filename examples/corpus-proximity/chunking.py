@@ -26,7 +26,7 @@ except ImportError:
     NLTK_AVAILABLE = False
 
 
-def chunk_text(text: str, strategy: str, chunk_size: int = 512) -> List[str]:
+def chunk_text(text: str, strategy: str, chunk_size: int = 512, overlap_pct: float = 0.15, tokenizer=None) -> List[str]:
     """Split text into chunks based on strategy.
 
     Following Casey Muratori: Redundancy for convenience.
@@ -34,22 +34,29 @@ def chunk_text(text: str, strategy: str, chunk_size: int = 512) -> List[str]:
 
     Args:
         text: Text to chunk
-        strategy: "paragraph" | "fixed_chars" | "sentence_spacy" | "sentence_nltk"
-        chunk_size: For fixed_chars strategy, target chunk size
+        strategy: "paragraph" | "fixed_chars" | "fixed_tokens" | "sentence_spacy" | "sentence_nltk"
+        chunk_size: For fixed_chars/fixed_tokens, target chunk size (chars or tokens)
+        overlap_pct: Overlap percentage for fixed_chars/fixed_tokens (default 0.15 = 15%)
+        tokenizer: Required for fixed_tokens strategy (HuggingFace tokenizer)
 
     Returns:
         List of text chunks
 
     Example:
         chunks = chunk_text(text, "paragraph")
-        chunks = chunk_text(text, "fixed_chars", chunk_size=512)
+        chunks = chunk_text(text, "fixed_chars", chunk_size=2048, overlap_pct=0.15)
+        chunks = chunk_text(text, "fixed_tokens", chunk_size=512, overlap_pct=0.15, tokenizer=tokenizer)
         chunks = chunk_text(text, "sentence_spacy")  # Use spaCy
         chunks = chunk_text(text, "sentence_nltk")  # Use NLTK
     """
     if strategy == "paragraph":
         return chunk_paragraph(text)
     elif strategy == "fixed_chars":
-        return chunk_fixed_chars(text, chunk_size)
+        return chunk_fixed_chars(text, chunk_size, overlap_pct)
+    elif strategy == "fixed_tokens":
+        if tokenizer is None:
+            raise ValueError("tokenizer is required for fixed_tokens strategy")
+        return chunk_fixed_tokens(text, tokenizer, chunk_size, overlap_pct)
     elif strategy == "sentence_spacy":
         return chunk_sentence_spacy(text)
     elif strategy == "sentence_nltk":
@@ -83,33 +90,35 @@ def chunk_paragraph(text: str) -> List[str]:
     return chunks
 
 
-def chunk_fixed_chars(text: str, size: int) -> List[str]:
+def chunk_fixed_chars(text: str, size: int, overlap_pct: float = 0.15) -> List[str]:
     """Split into fixed character length chunks with overlap.
 
     Following Casey Muratori: Explicit about overlap strategy.
-    Uses 20% overlap to avoid cutting important context.
+    Configurable overlap to avoid cutting important context.
 
     Args:
         text: Text to chunk
         size: Target chunk size in characters
+        overlap_pct: Overlap percentage (default 0.15 = 15%)
 
     Returns:
         List of fixed-size chunks with overlap
 
     Example:
         text = "a" * 1000
-        chunks = chunk_fixed_chars(text, size=512)
+        chunks = chunk_fixed_chars(text, size=512, overlap_pct=0.15)
         # First chunk: chars 0-512
-        # Second chunk: chars 410-922 (20% overlap = 102 chars)
+        # Second chunk: chars 435-947 (15% overlap = 77 chars)
         # etc.
     """
     assert size > 0, f"chunk size must be positive, got {size}"
+    assert 0 <= overlap_pct < 1, f"overlap_pct must be in [0, 1), got {overlap_pct}"
 
     if len(text) <= size:
         return [text] if text.strip() else []
 
     chunks = []
-    overlap = int(size * 0.2)  # 20% overlap
+    overlap = int(size * overlap_pct)
     stride = size - overlap
 
     start = 0
@@ -125,6 +134,70 @@ def chunk_fixed_chars(text: str, size: int) -> List[str]:
 
         # Stop if we've reached the end
         if end == len(text):
+            break
+
+    return chunks
+
+
+def chunk_fixed_tokens(text: str, tokenizer, max_tokens: int = 512, overlap_pct: float = 0.15) -> List[str]:
+    """Split into fixed token-length chunks with overlap.
+
+    Token-aware chunking ensures chunks don't exceed embedding model limits.
+    Uses exact tokenization to match model's token counting.
+
+    Args:
+        text: Text to chunk
+        tokenizer: HuggingFace tokenizer (e.g., from AutoTokenizer.from_pretrained())
+        max_tokens: Maximum tokens per chunk (default 512 for Arctic-Embed L)
+        overlap_pct: Overlap percentage between chunks (default 0.15 = 15%)
+
+    Returns:
+        List of token-limited chunks with overlap
+
+    Example:
+        from transformers import AutoTokenizer
+        tokenizer = AutoTokenizer.from_pretrained("Snowflake/snowflake-arctic-embed-l")
+        chunks = chunk_fixed_tokens(text, tokenizer, max_tokens=512)
+        # Each chunk guaranteed to be ≤ 512 tokens
+    """
+    assert max_tokens > 0, f"max_tokens must be positive, got {max_tokens}"
+    assert 0 <= overlap_pct < 1, f"overlap_pct must be in [0, 1), got {overlap_pct}"
+
+    # Tokenize entire text (no special tokens - we'll measure actual content)
+    tokens = tokenizer.encode(text, add_special_tokens=False)
+
+    # Handle short text
+    if len(tokens) <= max_tokens:
+        return [text] if text.strip() else []
+
+    # Account for potential special tokens added during encode
+    # Some tokenizers add CLS/SEP tokens, reducing effective max_tokens
+    # Reserve 2 tokens for safety
+    effective_max_tokens = max_tokens - 2
+
+    # Calculate overlap
+    overlap_tokens = int(effective_max_tokens * overlap_pct)
+    stride = effective_max_tokens - overlap_tokens
+
+    chunks = []
+    start = 0
+
+    while start < len(tokens):
+        # Get chunk of tokens
+        end = min(start + effective_max_tokens, len(tokens))
+        chunk_tokens = tokens[start:end]
+
+        # Decode back to text
+        chunk_text = tokenizer.decode(chunk_tokens, skip_special_tokens=True).strip()
+
+        if chunk_text:  # Only add non-empty chunks
+            chunks.append(chunk_text)
+
+        # Move forward by stride
+        start += stride
+
+        # Stop if we've reached the end
+        if end == len(tokens):
             break
 
     return chunks
