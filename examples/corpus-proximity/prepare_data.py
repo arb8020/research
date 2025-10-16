@@ -169,9 +169,13 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1].endswith('.py'):
         # Load config from experiment file
         spec = importlib.util.spec_from_file_location("exp_config", sys.argv[1])
+        if spec is None:
+            raise ImportError(f"Could not load spec from {sys.argv[1]}")
+        if spec.loader is None:
+            raise ImportError(f"Spec has no loader: {sys.argv[1]}")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        config = module.config
+        config: Config = getattr(module, "config")
     else:
         # Use default config
         config = Config()

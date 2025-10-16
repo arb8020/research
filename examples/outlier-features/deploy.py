@@ -58,7 +58,7 @@ def load_config_from_file(config_path: str) -> Config:
     spec.loader.exec_module(module)
 
     assert hasattr(module, 'config'), f"Config file must define 'config' variable"
-    config = module.config
+    config: Config = getattr(module, 'config')
     assert isinstance(config, Config), f"Expected Config object, got {type(config)}"
 
     return config
@@ -418,8 +418,7 @@ def cleanup_instance(instance_id: str):
 
     try:
         result = subprocess.run(
-            ["broker", "instances", "terminate", instance_id],
-            input="y\n",
+            ["broker", "terminate", instance_id, "--yes"],
             text=True,
             capture_output=True
         )
@@ -428,11 +427,11 @@ def cleanup_instance(instance_id: str):
             logger.info("✅ Cleanup complete")
         else:
             logger.warning(f"⚠️  Cleanup may have failed: {result.stderr}")
-            logger.info(f"   Manual cleanup: broker instances terminate {instance_id}")
+            logger.info(f"   Manual cleanup: broker terminate {instance_id}")
 
     except Exception as e:
         logger.warning(f"⚠️  Cleanup error (instance may still be running): {e}")
-        logger.info(f"   Manual cleanup: broker instances terminate {instance_id}")
+        logger.info(f"   Manual cleanup: broker terminate {instance_id}")
 
 
 def main():
@@ -493,13 +492,13 @@ def main():
             logger.warning("⚠️  Analysis did not complete successfully, but syncing logs for debugging...")
         sync_results(bifrost_client, output_dir)
 
-        # Step 6: Cleanup (conditional)
+        # Step 7: Cleanup (conditional)
         if not config.deployment.keep_running:
             cleanup_instance(gpu_instance.id)
         else:
             logger.info(f"\n🎯 Keeping GPU running")
             logger.info(f"   SSH: {gpu_instance.ssh_connection_string()}")
-            logger.info(f"   Terminate: broker instances terminate {gpu_instance.id}")
+            logger.info(f"   Terminate: broker terminate {gpu_instance.id}")
 
         logger.info("\n🎉 Deployment complete!")
         return 0

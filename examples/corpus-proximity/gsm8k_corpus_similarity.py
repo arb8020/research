@@ -9,7 +9,7 @@ import json
 import logging
 import numpy as np
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional
 from dataclasses import dataclass
 
 from sentence_transformers import SentenceTransformer
@@ -212,7 +212,7 @@ def load_gsm8k_samples(num_samples: int, split: str = "test") -> List[Dict]:
     logger.info("="*80)
 
     dataset = load_dataset("openai/gsm8k", "main", split=split)
-    dataset = dataset.select(range(min(num_samples, len(dataset))))
+    dataset = dataset.select(range(min(num_samples, len(dataset))))  # type: ignore
 
     samples = []
     for i, item in enumerate(dataset):
@@ -233,8 +233,8 @@ def load_gsm8k_samples(num_samples: int, split: str = "test") -> List[Dict]:
 def embed_gsm8k_samples(
     samples: List[Dict],
     model: SentenceTransformer,
-    model_answers: List[str] = None
-) -> Dict[str, List[np.ndarray]]:
+    model_answers: Optional[List[str]] = None
+) -> Dict[str, np.ndarray]:
     """Embed GSM8K samples in 3-4 variants.
 
     Args:
@@ -512,9 +512,13 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1].endswith('.py'):
         # Load config from experiment file
         spec = importlib.util.spec_from_file_location("exp_config", sys.argv[1])
+        if spec is None:
+            raise ImportError(f"Could not load spec from {sys.argv[1]}")
+        if spec.loader is None:
+            raise ImportError(f"Spec has no loader: {sys.argv[1]}")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        config = module.config
+        config: Config = getattr(module, "config")
     else:
         # Use default config
         config = Config()

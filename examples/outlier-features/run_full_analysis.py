@@ -51,7 +51,7 @@ def load_config_from_file(config_path: str) -> Config:
     spec.loader.exec_module(module)
 
     assert hasattr(module, 'config'), f"Config file must define 'config' variable"
-    config = module.config
+    config: Config = getattr(module, 'config')
     assert isinstance(config, Config), f"Expected Config object, got {type(config)}"
 
     return config
