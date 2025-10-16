@@ -632,7 +632,7 @@ def terminate_instance(instance_id: str, api_key: Optional[str] = None) -> bool:
         return False
 
 
-def wait_for_ssh_ready(instance, timeout: int = 300) -> bool:
+def wait_for_ssh_ready(instance, timeout: int = 600) -> bool:
     """RunPod-specific SSH waiting implementation"""
     # Tiger Style: Assert preconditions
     assert instance.provider == "runpod"

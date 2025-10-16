@@ -337,7 +337,8 @@ class BifrostClient:
 
             # Also yield stderr if any
             for line in iter(stderr.readline, ""):
-                yield f"[stderr] {line.rstrip('\n')}"
+                stripped_line = line.rstrip('\n')
+                yield f"[stderr] {stripped_line}"
 
         except Exception as e:
             if isinstance(e, ConnectionError):
