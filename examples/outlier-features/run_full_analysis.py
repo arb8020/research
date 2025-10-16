@@ -45,6 +45,7 @@ def load_config_from_file(config_path: str) -> Config:
 
     spec = importlib.util.spec_from_file_location("exp_config", config_path)
     assert spec is not None, f"Failed to load spec from {config_path}"
+    assert spec.loader is not None, f"Spec loader is None for {config_path}"
 
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

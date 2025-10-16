@@ -52,6 +52,7 @@ def load_config_from_file(config_path: str) -> Config:
 
     spec = importlib.util.spec_from_file_location("exp_config", config_path)
     assert spec is not None, f"Failed to load spec from {config_path}"
+    assert spec.loader is not None, f"Spec loader is None for {config_path}"
 
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -227,7 +228,8 @@ export TRANSFORMERS_CACHE=$HF_HOME/transformers && \\
 exec > outlier_analysis.log 2>&1 && \\
 {hf_env}uv sync --extra example-outlier-features && \\
 ~/.bifrost/workspace/.venv/bin/python run_full_analysis.py {remote_config_path} \\
-|| echo "ANALYSIS FAILED with exit code $?"
+&& touch .analysis_complete \\
+|| {{ echo "ANALYSIS FAILED with exit code $?"; touch .analysis_failed; exit 1; }}
 """
 
     return cmd
@@ -263,6 +265,53 @@ def start_analysis(bifrost_client: 'BifrostClient', config: Config, config_path:
     logger.info("✅ Analysis started - will take 10-30 minutes")
     logger.info(f"📊 Monitor: bifrost exec '{bifrost_client.ssh}' "
                 "'cd ~/.bifrost/workspace/examples/outlier-features && tail -20 outlier_analysis.log'")
+
+
+def wait_for_analysis_completion(bifrost_client: 'BifrostClient', timeout: int = 2700) -> bool:
+    """Poll for analysis completion with explicit timeout.
+
+    Args:
+        bifrost_client: Connected Bifrost client
+        timeout: Max wait time in seconds (default 45 min)
+
+    Returns:
+        True if completed successfully, False if failed/timeout
+    """
+    assert bifrost_client is not None, "BifrostClient must not be None"
+    assert timeout > 0, "Timeout must be positive"
+
+    import time
+
+    poll_interval = 30
+    max_iterations = timeout // poll_interval
+    assert max_iterations > 0, f"Timeout {timeout}s too short for poll interval {poll_interval}s"
+
+    logger.info(f"⏳ Waiting for analysis completion (timeout: {timeout}s, polling every {poll_interval}s)...")
+
+    for i in range(max_iterations):
+        # Check for completion markers
+        result = bifrost_client.exec(
+            "test -f ~/.bifrost/workspace/examples/outlier-features/.analysis_complete && echo 'COMPLETE' || "
+            "test -f ~/.bifrost/workspace/examples/outlier-features/.analysis_failed && echo 'FAILED' || "
+            "echo 'RUNNING'"
+        )
+
+        status = result.stdout.strip() if result.stdout else 'UNKNOWN'
+
+        if status == 'COMPLETE':
+            logger.info("✅ Analysis completed successfully")
+            return True
+        elif status == 'FAILED':
+            logger.error("❌ Analysis failed (marker file found)")
+            return False
+
+        # Show progress
+        elapsed = (i + 1) * poll_interval
+        logger.info(f"⏳ Analysis running... ({elapsed}s / {timeout}s)")
+        time.sleep(poll_interval)
+
+    logger.error(f"❌ Analysis timeout after {timeout}s")
+    return False
 
 
 def sync_results(bifrost_client: 'BifrostClient', output_dir: Path):
@@ -410,8 +459,14 @@ def main():
         # Step 4: Start analysis
         start_analysis(bifrost_client, config, args.config)
 
-        # Step 5: Sync results
+        # Step 5: Wait for completion
+        logger.info("\n⏳ Waiting for analysis to complete...")
+        success = wait_for_analysis_completion(bifrost_client, timeout=2700)
+
+        # Step 6: Sync results
         logger.info("\n💾 Syncing results to local...")
+        if not success:
+            logger.warning("⚠️  Analysis did not complete successfully, but syncing logs for debugging...")
         sync_results(bifrost_client, output_dir)
 
         # Step 6: Cleanup (conditional)
