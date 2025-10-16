@@ -5,7 +5,7 @@ RunPod provider implementation
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from dotenv import load_dotenv
@@ -15,6 +15,204 @@ from ..types import CloudType, GPUInstance, GPUOffer, InstanceStatus, ProvisionR
 logger = logging.getLogger(__name__)
 
 RUNPOD_API_URL = "https://api.runpod.io/graphql"
+
+# GraphQL query for pod details - extracted to module level to avoid duplication
+# Why separate constant: This 45-line query appears in multiple functions,
+# extracting it reduces code size and ensures consistency across API calls
+_POD_DETAILS_QUERY = """
+query pod($input: PodFilter!) {
+    pod(input: $input) {
+        id
+        name
+        machineId
+        imageName
+        env
+        machineId
+        machine {
+            podHostId
+            gpuType {
+                displayName
+                manufacturer
+                memoryInGb
+            }
+        }
+        desiredStatus
+        lastStatusChange
+        gpuCount
+        vcpuCount
+        memoryInGb
+        costPerHr
+        containerDiskInGb
+        volumeInGb
+        ports
+        runtime {
+            uptimeInSeconds
+            ports {
+                ip
+                isIpPublic
+                privatePort
+                publicPort
+                type
+            }
+            gpus {
+                id
+                gpuUtilPercent
+                memoryUtilPercent
+            }
+        }
+    }
+}
+"""
+
+
+def _is_direct_ssh_port(port: Dict[str, Any]) -> bool:
+    """Check if port configuration represents direct SSH access.
+
+    Why three conditions: RunPod exposes multiple ports, but only one
+    with privatePort=22, isIpPublic=True, type=tcp is direct SSH.
+    Proxy SSH uses different mechanism (podHostId).
+
+    Tiger Style: Split compound condition for debuggability.
+    Each condition is checked separately so failures are traceable.
+    """
+    # Tiger Style: Assert precondition
+    assert isinstance(port, dict), f"Port must be dict, got {type(port)}"
+
+    # Check each condition separately (easier to debug than compound condition)
+    if port.get("privatePort") != 22:
+        return False
+    if not port.get("isIpPublic"):
+        return False
+    if port.get("type") != "tcp":
+        return False
+
+    return True
+
+
+def _extract_direct_ssh(pod: Dict[str, Any]) -> Optional[Tuple[str, int]]:
+    """Extract direct SSH connection info from pod runtime.
+
+    Returns (ip, port) or None if direct SSH not available.
+
+    Why runtime.ports: RunPod provisions direct IP 5-10 minutes after
+    instance starts. Until then, runtime.ports is empty or missing.
+    """
+    runtime = pod.get("runtime")
+    if not runtime:
+        return None
+
+    ports = runtime.get("ports")
+    if not ports:
+        return None
+
+    # Tiger Style: Assert the type we expect
+    assert isinstance(ports, list), f"runtime.ports must be list, got {type(ports)}"
+
+    # Find SSH port
+    for port in ports:
+        if _is_direct_ssh_port(port):
+            ip = port.get("ip")
+            public_port = port.get("publicPort")
+
+            # Tiger Style: Assert postconditions - validate extracted data
+            # Why assert here: port passed _is_direct_ssh_port() but could still have missing fields
+            assert ip, f"Direct SSH port found but missing IP: {port}"
+            assert public_port, f"Direct SSH port found but missing publicPort: {port}"
+            assert isinstance(public_port, int), f"publicPort must be int, got {type(public_port)}"
+            assert 0 < public_port < 65536, f"Invalid port number: {public_port}"
+
+            return (ip, public_port)
+
+    return None
+
+
+def _extract_proxy_ssh(pod: Dict[str, Any]) -> Optional[str]:
+    """Extract proxy SSH podHostId from pod machine.
+
+    Returns podHostId (username for ssh.runpod.io) or None.
+
+    Why proxy fallback: RunPod always provides proxy SSH via ssh.runpod.io,
+    even when direct IP not yet assigned. Uses podHostId as SSH username.
+    """
+    machine = pod.get("machine")
+    if not machine:
+        return None
+
+    pod_host_id = machine.get("podHostId")
+    if not pod_host_id:
+        return None
+
+    # Tiger Style: Assert postcondition
+    assert isinstance(pod_host_id, str), f"podHostId must be string, got {type(pod_host_id)}"
+    assert pod_host_id.strip(), "podHostId cannot be empty string"
+
+    return pod_host_id
+
+
+def _extract_ssh_info(pod: Dict[str, Any]) -> Optional[Tuple[str, int, str]]:
+    """Extract SSH connection info with fallback strategy.
+
+    Returns (public_ip, ssh_port, ssh_username) or None if no SSH method available.
+
+    Why two-method fallback: Direct SSH is faster but takes 5-10 min to provision.
+    Proxy SSH is always available immediately but slower. Try direct first, fall back to proxy.
+    """
+    # Tiger Style: Assert preconditions
+    assert isinstance(pod, dict), f"Pod must be dict, got {type(pod)}"
+    assert "id" in pod, "Pod missing required 'id' field"
+
+    # Method 1: Try direct SSH (preferred for performance)
+    direct_ssh = _extract_direct_ssh(pod)
+    if direct_ssh:
+        ip, port = direct_ssh
+        return (ip, port, "root")  # Direct SSH always uses root
+
+    # Method 2: Fallback to proxy SSH
+    pod_host_id = _extract_proxy_ssh(pod)
+    if pod_host_id:
+        # Proxy SSH: connect to ssh.runpod.io using podHostId as username
+        return ("ssh.runpod.io", 22, pod_host_id)
+
+    # No SSH method available - pod may still be provisioning
+    return None
+
+
+def _extract_gpu_type(pod: Dict[str, Any]) -> str:
+    """Extract GPU type name from pod machine details.
+
+    Returns GPU display name or "unknown" if not available.
+    """
+    # Navigate nested structure safely
+    machine = pod.get("machine")
+    if not machine:
+        return "unknown"
+
+    gpu_type_obj = machine.get("gpuType")
+    if not gpu_type_obj:
+        return "unknown"
+
+    display_name = gpu_type_obj.get("displayName")
+    if not display_name:
+        return "unknown"
+
+    return display_name
+
+
+def _map_status(desired_status: str) -> InstanceStatus:
+    """Map RunPod status string to our InstanceStatus enum.
+
+    Why separate function: Status mapping logic used by multiple functions,
+    extracting ensures consistency and makes updates easier.
+    """
+    status_map = {
+        "RUNNING": InstanceStatus.RUNNING,
+        "PENDING": InstanceStatus.PENDING,
+        "STOPPED": InstanceStatus.STOPPED,
+        "TERMINATED": InstanceStatus.TERMINATED,
+        "FAILED": InstanceStatus.FAILED
+    }
+    # Default to PENDING for unknown statuses
+    return status_map.get(desired_status, InstanceStatus.PENDING)
 
 
 def _build_ports_string(exposed_ports: Optional[List[int]], enable_http_proxy: bool) -> str:
@@ -315,161 +513,87 @@ def get_instance_details_enhanced(instance_id: str, api_key: Optional[str] = Non
 
 
 def get_instance_details(instance_id: str, api_key: Optional[str] = None) -> Optional[GPUInstance]:
-    """Get details of a specific instance"""
-    query = """
-    query pod($input: PodFilter!) {
-        pod(input: $input) {
-            id
-            name
-            machineId
-            imageName
-            env
-            machineId
-            machine {
-                podHostId
-                gpuType {
-                    displayName
-                    manufacturer
-                    memoryInGb
-                }
-            }
-            desiredStatus
-            lastStatusChange
-            gpuCount
-            vcpuCount
-            memoryInGb
-            costPerHr
-            containerDiskInGb
-            volumeInGb
-            ports
-            runtime {
-                uptimeInSeconds
-                ports {
-                    ip
-                    isIpPublic
-                    privatePort
-                    publicPort
-                    type
-                }
-                gpus {
-                    id
-                    gpuUtilPercent
-                    memoryUtilPercent
-                }
-            }
-        }
-    }
+    """Get details of a specific instance.
+
+    Returns None if instance not found, raises on malformed data.
+
+    Tiger Style: Function split into small helpers (SSH extraction, GPU extraction, status mapping).
+    This brings line count from 113 to ~40 lines while adding proper assertions.
     """
-    
+    # Tiger Style: Assert preconditions
+    assert instance_id, "instance_id cannot be empty"
+    assert api_key, "api_key is required for RunPod API access"
+
     variables = {"input": {"podId": instance_id}}
-    
+
     try:
-        data = _make_graphql_request(query, variables, api_key=api_key)
+        data = _make_graphql_request(_POD_DETAILS_QUERY, variables, api_key=api_key)
         pod = data.get("pod")
-        
+
         if not pod:
             return None
-        
-        # Map RunPod status to our status enum
-        status_map = {
-            "RUNNING": InstanceStatus.RUNNING,
-            "PENDING": InstanceStatus.PENDING,
-            "STOPPED": InstanceStatus.STOPPED,
-            "TERMINATED": InstanceStatus.TERMINATED,
-            "FAILED": InstanceStatus.FAILED
-        }
-        status = status_map.get(pod.get("desiredStatus", ""), InstanceStatus.PENDING)
-        
-        # Extract SSH connection info - Try direct SSH first, fallback to proxy
-        public_ip = None
-        ssh_port = 22
-        ssh_username = "root"  # Default for direct SSH
-        
-        # Method 1: Check for direct SSH via runtime.ports (preferred)
-        runtime = pod.get("runtime")
-        if runtime and runtime.get("ports"):
-            for port in runtime["ports"]:
-                if (port.get("privatePort") == 22 and 
-                    port.get("isIpPublic") and 
-                    port.get("type") == "tcp"):
-                    public_ip = port.get("ip")
-                    ssh_port = port.get("publicPort")
-                    ssh_username = "root"  # Direct connection uses root
-                    break
-        
-        # Method 2: Fallback to proxy SSH if no direct SSH available
-        if not public_ip and pod.get("machine") and pod["machine"].get("podHostId"):
-            pod_host_id = pod["machine"]["podHostId"]
-            public_ip = "ssh.runpod.io"
-            ssh_port = 22
-            ssh_username = pod_host_id  # Proxy uses podHostId as username
-        
-        # Extract GPU type from machine details
-        gpu_type = "unknown"
-        if pod.get("machine") and pod["machine"].get("gpuType") and pod["machine"]["gpuType"].get("displayName"):
-            gpu_type = pod["machine"]["gpuType"]["displayName"]
-        
+
+        # Tiger Style: Assert critical fields exist before using them
+        assert "id" in pod, f"Pod missing required 'id' field: {pod.keys()}"
+
+        # Map status (delegated to helper)
+        status = _map_status(pod.get("desiredStatus", ""))
+
+        # Extract SSH info (delegated to helper with explicit fallback strategy)
+        ssh_info = _extract_ssh_info(pod)
+        if ssh_info:
+            public_ip, ssh_port, ssh_username = ssh_info
+        else:
+            # SSH not available yet - pod may still be provisioning
+            logger.debug(f"Instance {instance_id} has no SSH access yet (still provisioning)")
+            public_ip, ssh_port, ssh_username = None, None, None
+
+        # Extract GPU type (delegated to helper)
+        gpu_type = _extract_gpu_type(pod)
+
         return GPUInstance(
             id=pod["id"],
             provider="runpod",
             status=status,
             gpu_type=gpu_type,
             gpu_count=pod.get("gpuCount", 0),
-            name=pod.get("name"),  # Fix: Properly map name field
+            name=pod.get("name"),
             price_per_hour=pod.get("costPerHr", 0.0),
             public_ip=public_ip,
             ssh_port=ssh_port,
             ssh_username=ssh_username,
             raw_data=pod,
-            api_key=api_key  # Store API key for instance methods
+            api_key=api_key
         )
-        
+
     except Exception as e:
         logger.error(f"Failed to get RunPod instance details: {e}")
         return None
 
 
 def _parse_pod_to_instance(pod: Dict[str, Any], api_key: Optional[str] = None) -> GPUInstance:
-    """Parse a pod dictionary into a GPUInstance"""
+    """Parse a pod dictionary into a GPUInstance.
 
-    # Map RunPod statuses to our enum
-    status_map = {
-        "PENDING": InstanceStatus.PENDING,
-        "RUNNING": InstanceStatus.RUNNING,
-        "STOPPED": InstanceStatus.STOPPED,
-        "TERMINATED": InstanceStatus.TERMINATED,
-        "FAILED": InstanceStatus.FAILED
-    }
-    status = status_map.get(pod.get("desiredStatus", ""), InstanceStatus.PENDING)
+    Tiger Style: Refactored to use shared helpers, eliminating 40+ lines of duplication.
+    Now has 2+ assertions and delegates SSH/GPU extraction to tested functions.
+    """
+    # Tiger Style: Assert preconditions
+    assert isinstance(pod, dict), f"Pod must be dict, got {type(pod)}"
+    assert "id" in pod, f"Pod missing required 'id' field: {pod.keys()}"
 
-    # Extract SSH connection info - Try direct SSH first, fallback to proxy
-    public_ip = None
-    ssh_port = 22
-    ssh_username = "root"  # Default for direct SSH
+    # Map status (delegated to helper - ensures consistency with get_instance_details)
+    status = _map_status(pod.get("desiredStatus", ""))
 
-    # Method 1: Check for direct SSH via runtime.ports (preferred)
-    runtime = pod.get("runtime")
-    if runtime and runtime.get("ports"):
-        for port in runtime["ports"]:
-            if (port.get("privatePort") == 22 and
-                port.get("isIpPublic") and
-                port.get("type") == "tcp"):
-                public_ip = port.get("ip")
-                ssh_port = port.get("publicPort")
-                ssh_username = "root"  # Direct connection uses root
-                break
+    # Extract SSH info (delegated to helper - same logic as get_instance_details)
+    ssh_info = _extract_ssh_info(pod)
+    if ssh_info:
+        public_ip, ssh_port, ssh_username = ssh_info
+    else:
+        # SSH not available yet
+        public_ip, ssh_port, ssh_username = None, None, None
 
-    # Method 2: Fallback to proxy SSH if no direct SSH available
-    if not public_ip and pod.get("machine") and pod["machine"].get("podHostId"):
-        pod_host_id = pod["machine"]["podHostId"]
-        public_ip = "ssh.runpod.io"
-        ssh_port = 22
-        ssh_username = pod_host_id  # Proxy uses podHostId as username
-
-    # Extract GPU type from machine details
-    gpu_type = "unknown"
-    if pod.get("machine") and pod["machine"].get("gpuType") and pod["machine"]["gpuType"].get("displayName"):
-        gpu_type = pod["machine"]["gpuType"]["displayName"]
+    # Extract GPU type (delegated to helper)
+    gpu_type = _extract_gpu_type(pod)
 
     return GPUInstance(
         id=pod["id"],
@@ -477,13 +601,13 @@ def _parse_pod_to_instance(pod: Dict[str, Any], api_key: Optional[str] = None) -
         status=status,
         gpu_type=gpu_type,
         gpu_count=pod.get("gpuCount", 0),
-        name=pod.get("name"),  # Fix: Properly map name field
+        name=pod.get("name"),
         price_per_hour=pod.get("costPerHr", 0.0),
         public_ip=public_ip,
         ssh_port=ssh_port,
         ssh_username=ssh_username,
         raw_data=pod,
-        api_key=api_key  # Store API key for instance methods
+        api_key=api_key
     )
 
 

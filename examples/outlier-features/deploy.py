@@ -23,6 +23,7 @@ import logging
 import importlib.util
 from pathlib import Path
 from datetime import datetime
+from typing import Literal, TypeAlias
 from dotenv import load_dotenv
 
 # Import broker and bifrost for deployment
@@ -37,6 +38,13 @@ from config import Config
 from estimate_vram import estimate_vram_requirements
 
 logger = logging.getLogger(__name__)
+
+# Type aliases for provision result
+ProvisionError: TypeAlias = Literal["create_failed", "ssh_timeout"]
+ProvisionResult: TypeAlias = (
+    tuple[Literal[True], "ClientGPUInstance", str, None] |
+    tuple[Literal[False], None, None, ProvisionError]
+)
 
 
 def load_config_from_file(config_path: str) -> Config:
@@ -92,7 +100,7 @@ def estimate_vram_if_needed(config: Config) -> int:
     return min_vram
 
 
-def provision_gpu(config: Config, min_vram: int):
+def provision_gpu(config: Config, min_vram: int) -> ProvisionResult:
     """Provision GPU instance via broker.
 
     Args:
@@ -100,7 +108,7 @@ def provision_gpu(config: Config, min_vram: int):
         min_vram: Minimum VRAM in GB
 
     Returns:
-        GPU instance object
+        ProvisionResult tuple
     """
     gpu_desc = f"{config.deployment.gpu_count}x GPU" if config.deployment.gpu_count > 1 else "GPU"
     disk_desc = f"{config.deployment.container_disk}GB container"
@@ -149,19 +157,23 @@ def provision_gpu(config: Config, min_vram: int):
         volume_disk_gb=config.deployment.volume_disk if config.deployment.volume_disk > 0 else None
     )
 
-    if gpu_instance is None:
-        raise RuntimeError("Failed to create GPU instance - no matching offers available")
+    if not gpu_instance:
+        logger.error("Failed to create GPU instance - no matching offers available")
+        return (False, None, None, "create_failed")
 
     logger.info(f"✅ GPU ready: {gpu_instance.id}")
 
     # Wait for SSH
-    if not gpu_instance.wait_until_ssh_ready(timeout=300):
-        raise RuntimeError("Failed to get SSH connection ready")
+    ssh_ready = gpu_instance.wait_until_ssh_ready(timeout=300)
+    if not ssh_ready:
+        logger.error(f"SSH failed to become ready on {gpu_instance.id}, terminating...")
+        gpu_client.terminate_instance(gpu_instance.id, gpu_instance.provider)
+        return (False, None, None, "ssh_timeout")
 
     ssh_connection = gpu_instance.ssh_connection_string()
     logger.info(f"✅ SSH ready: {ssh_connection}")
 
-    return gpu_instance, ssh_key_path
+    return (True, gpu_instance, ssh_key_path, None)
 
 
 def deploy_code(ssh_connection: str, ssh_key_path: str, config: Config) -> 'BifrostClient':
@@ -474,7 +486,10 @@ def main():
         min_vram = estimate_vram_if_needed(config)
 
         # Step 2: Provision GPU
-        gpu_instance, ssh_key_path = provision_gpu(config, min_vram)
+        success, gpu_instance, ssh_key_path, error = provision_gpu(config, min_vram)
+        if not success:
+            logger.error(f"Provisioning failed: {error}")
+            return 1
 
         # Step 3: Deploy code
         bifrost_client = deploy_code(gpu_instance.ssh_connection_string(), ssh_key_path, config)
