@@ -3,9 +3,9 @@
 Adapted from llm-workbench/examples/outlier_features_moe/dataset_utils.py
 """
 
-from typing import Iterator, Optional
-from datasets import load_dataset
-from transformers import AutoTokenizer
+from typing import Iterator, Optional, cast
+from datasets import load_dataset, IterableDataset
+from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 
 
 def load_streaming_dataset(
@@ -36,11 +36,12 @@ def load_streaming_dataset(
     assert buffer_size > 0, f"buffer_size must be positive, got {buffer_size}"
 
     try:
-        dataset = load_dataset(dataset_name, split=split, streaming=True)
+        dataset = cast(IterableDataset, load_dataset(dataset_name, split=split, streaming=True))
         if shuffle:
             # Streaming shuffle with buffer; deterministic with seed
             dataset = dataset.shuffle(seed=seed, buffer_size=buffer_size)
         for item in dataset:
+            assert isinstance(item, dict), f"Expected dict, got {type(item)}"
             yield item["text"]
     except Exception as e:
         raise RuntimeError(f"Failed to load dataset {dataset_name}: {e}")
@@ -71,7 +72,11 @@ def chunk_text_by_chars(text: str, chunk_size: int) -> list[str]:
     return chunks
 
 
-def chunk_text_by_tokens(text: str, tokenizer: AutoTokenizer, chunk_size: int) -> list[str]:
+def chunk_text_by_tokens(
+    text: str,
+    tokenizer: PreTrainedTokenizer | PreTrainedTokenizerFast,
+    chunk_size: int
+) -> list[str]:
     """Split text into token-based chunks.
 
     Args:
@@ -105,7 +110,7 @@ def get_text_sequences(
     dataset_name: str,
     num_sequences: int,
     sequence_length: int,
-    tokenizer: Optional[AutoTokenizer] = None,
+    tokenizer: Optional[PreTrainedTokenizer | PreTrainedTokenizerFast] = None,
     split: str = "train",
     *,
     skip_sequences: int = 0,
