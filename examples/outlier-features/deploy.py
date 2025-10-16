@@ -289,20 +289,44 @@ def wait_for_analysis_completion(bifrost_client: 'BifrostClient', timeout: int =
     logger.info(f"⏳ Waiting for analysis completion (timeout: {timeout}s, polling every {poll_interval}s)...")
 
     for i in range(max_iterations):
-        # Check for completion markers
-        result = bifrost_client.exec(
-            "test -f ~/.bifrost/workspace/examples/outlier-features/.analysis_complete && echo 'COMPLETE' || "
-            "test -f ~/.bifrost/workspace/examples/outlier-features/.analysis_failed && echo 'FAILED' || "
-            "echo 'RUNNING'"
-        )
+        # Check for completion markers AND final results file with debug info
+        check_cmd = """
+cd ~/.bifrost/workspace/examples/outlier-features
+echo "=== Polling Debug Info ==="
+echo "Marker files:"
+ls -lh .analysis_complete .analysis_failed 2>/dev/null || echo "  No marker files"
+echo "Results file:"
+ls -lh results/final_analysis_results.json 2>/dev/null || echo "  No results file yet"
+echo "Last 3 log lines:"
+tail -3 outlier_analysis.log 2>/dev/null || echo "  No log file yet"
+echo "Tmux session status:"
+tmux list-sessions 2>/dev/null | grep outlier-analysis || echo "  No tmux session (may have completed)"
+echo "========================="
 
-        status = result.stdout.strip() if result.stdout else 'UNKNOWN'
+# Determine status
+test -f .analysis_complete && echo 'COMPLETE' && exit 0
+test -f .analysis_failed && echo 'FAILED' && exit 0
+test -f results/final_analysis_results.json && echo 'COMPLETE' && exit 0
+echo 'RUNNING'
+"""
+        result = bifrost_client.exec(check_cmd)
+
+        # Extract status (last line of output)
+        output_lines = result.stdout.strip().split('\n') if result.stdout else []
+        status = output_lines[-1] if output_lines else 'UNKNOWN'
+
+        # Log debug info every 5 polls (or first poll)
+        if i == 0 or (i + 1) % 5 == 0:
+            logger.debug("Poll debug output:\n" + result.stdout if result.stdout else "No output")
 
         if status == 'COMPLETE':
             logger.info("✅ Analysis completed successfully")
+            # Show final debug info
+            logger.info("Final state:\n" + result.stdout if result.stdout else "")
             return True
         elif status == 'FAILED':
             logger.error("❌ Analysis failed (marker file found)")
+            logger.error("Failure state:\n" + result.stdout if result.stdout else "")
             return False
 
         # Show progress

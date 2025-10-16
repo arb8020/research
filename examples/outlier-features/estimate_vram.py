@@ -102,34 +102,40 @@ def calculate_model_size_from_config(config: Dict) -> Tuple[int, str]:
     params = 0
     breakdown = []
     
+    # Type assertions
+    assert vocab_size is not None
+    assert hidden_size is not None
+    assert num_layers is not None
+
     # Embedding layer: vocab_size * hidden_size
     embedding_params = vocab_size * hidden_size
     params += embedding_params
     breakdown.append(f"Embeddings: {embedding_params/1e9:.1f}B")
-    
+
     # Per-layer parameters
     for layer in range(num_layers):
         layer_params = 0
-        
+
         # Attention: 4 linear layers (Q, K, V, O) * hidden_size^2
         attn_params = 4 * hidden_size * hidden_size
         layer_params += attn_params
-        
+
         # Layer norms: 2 * hidden_size (pre-attn and pre-mlp)
         ln_params = 2 * hidden_size
         layer_params += ln_params
-        
+
         # MLP/FFN
         if num_experts and num_experts > 1:
             # MoE layer: each expert has 2 linear layers
             if not intermediate_size:
                 intermediate_size = hidden_size * 4  # Common default
-            
+
+            assert intermediate_size is not None
             # For parameter counting, we need ALL experts (they all exist in memory)
             # But for VRAM estimation, we'll apply MoE efficiency later
             expert_params = num_experts * (hidden_size * intermediate_size + intermediate_size * hidden_size)
             layer_params += expert_params
-            
+
             # Router/gating layer
             router_params = hidden_size * num_experts
             layer_params += router_params
@@ -141,7 +147,8 @@ def calculate_model_size_from_config(config: Dict) -> Tuple[int, str]:
             # Standard FFN: 2 linear layers
             if not intermediate_size:
                 intermediate_size = hidden_size * 4  # Common default
-                
+
+            assert intermediate_size is not None
             ffn_params = hidden_size * intermediate_size + intermediate_size * hidden_size
             layer_params += ffn_params
             
@@ -158,6 +165,7 @@ def calculate_model_size_from_config(config: Dict) -> Tuple[int, str]:
     if config.get('tie_word_embeddings', False):
         breakdown.append("Output head: tied with embeddings")
     else:
+        assert vocab_size is not None and hidden_size is not None
         output_params = vocab_size * hidden_size
         params += output_params
         breakdown.append(f"Output head: {output_params/1e9:.1f}B")
