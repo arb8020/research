@@ -149,6 +149,9 @@ class GPUClient:
         exposed_ports: Optional[List[int]] = None,
         enable_http_proxy: bool = True,
         n_offers: int = 3,
+        cloud_type: Optional[Union[str, CloudType]] = None,
+        sort: Optional[Callable[[Any], Any]] = None,
+        reverse: bool = False,
         **kwargs
     ) -> Optional['ClientGPUInstance']:
         """Create GPU instance
@@ -166,11 +169,28 @@ class GPUClient:
             n_offers: Number of offers to try before giving up.
                      If query is a list, tries up to this many offers from the list.
                      If query is a search filter, tries up to this many from search results.
+            cloud_type: Cloud deployment type ("secure", "community", or CloudType enum)
+            sort: Sort function for ordering offers (e.g., lambda x: x.price_per_hour)
+            reverse: Sort descending
 
         Returns:
             GPU instance with client configuration
         """
         from . import api
+
+        # Handle cloud_type parameter by adding it to the query
+        if cloud_type is not None and not isinstance(query, (list, GPUOffer)):
+            # Convert string to enum if needed
+            if isinstance(cloud_type, str):
+                cloud_enum = CloudType.SECURE if cloud_type.lower() == "secure" else CloudType.COMMUNITY
+            else:
+                cloud_enum = cloud_type
+
+            # Add cloud_type to query
+            if query is None:
+                query = (self.cloud_type == cloud_enum)
+            else:
+                query = query & (self.cloud_type == cloud_enum)
 
         instance = api.create(
             query=query,
@@ -180,6 +200,8 @@ class GPUClient:
             exposed_ports=exposed_ports,
             enable_http_proxy=enable_http_proxy,
             n_offers=n_offers,
+            sort=sort,
+            reverse=reverse,
             credentials=self._credentials,
             **kwargs
         )
