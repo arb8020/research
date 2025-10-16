@@ -183,6 +183,36 @@ def main():
             logger.error("test_search.py failed")
             return 1
 
+        # Run cluster_corpus.py
+        logger.info(f"Running cluster_corpus.py with config {args.config}...")
+        cmd = f"cd ~/.bifrost/workspace && uv run python examples/corpus-proximity/cluster_corpus.py examples/corpus-proximity/{args.config}"
+        result = bifrost_client.exec(cmd)
+
+        if result.stdout:
+            logger.info(f"STDOUT:\n{result.stdout}")
+        if result.stderr:
+            logger.error(f"STDERR:\n{result.stderr}")
+
+        logger.info(f"cluster_corpus.py completed with exit code: {result.exit_code}")
+        if result.exit_code != 0:
+            logger.error("cluster_corpus.py failed")
+            return 1
+
+        # Run name_clusters.py --name
+        logger.info(f"Running name_clusters.py --name with config {args.config}...")
+        cmd = f"cd ~/.bifrost/workspace && uv run python examples/corpus-proximity/name_clusters.py examples/corpus-proximity/{args.config} --name"
+        result = bifrost_client.exec(cmd)
+
+        if result.stdout:
+            logger.info(f"STDOUT:\n{result.stdout}")
+        if result.stderr:
+            logger.error(f"STDERR:\n{result.stderr}")
+
+        logger.info(f"name_clusters.py completed with exit code: {result.exit_code}")
+        if result.exit_code != 0:
+            logger.error("name_clusters.py failed")
+            return 1
+
         logger.info("All steps completed successfully!")
         return 0
     except KeyboardInterrupt:
