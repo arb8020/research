@@ -362,7 +362,13 @@ def main():
         config = Config()  # Use defaults
 
     # Setup logging
-    setup_logging(level=config.output.log_level)
+    setup_logging(
+        level=config.output.log_level,
+        logger_levels={
+            "httpx": "WARNING",
+            "urllib3": "WARNING"
+        }
+    )
 
     logger.info("="*80)
     logger.info("OUTLIER FEATURES ANALYSIS PIPELINE")
