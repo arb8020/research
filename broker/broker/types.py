@@ -44,7 +44,7 @@ class GPUOffer:
     price_per_hour: float
     availability_zone: Optional[str] = None
     raw_data: Optional[Dict[str, Any]] = None
-    
+
     # Additional fields for pandas-style queries
     vram_gb: Optional[int] = None
     region: Optional[str] = None
@@ -54,6 +54,18 @@ class GPUOffer:
     driver_version: Optional[str] = None
     cloud_type: Optional[CloudType] = None
     manufacturer: Optional[str] = None
+
+    def total_price(self, gpu_count: int = 1) -> float:
+        """Calculate total price for N GPUs."""
+        assert gpu_count > 0, f"gpu_count must be positive, got {gpu_count}"
+        assert self.price_per_hour > 0, f"price_per_hour must be positive"
+
+        total = self.price_per_hour * gpu_count
+
+        assert total >= self.price_per_hour, "Total must be >= per-GPU price"
+        assert total > 0, "Total price must be positive"
+
+        return total
 
 
 @dataclass

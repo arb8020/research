@@ -267,7 +267,7 @@ def create(
                     logger.info(f"✅ Successfully provisioned GPU instance: {instance.id}")
                     logger.info(f"   GPU: {instance.gpu_type} x{instance.gpu_count}")
                     logger.info(f"   Provider: {offer.provider}")
-                    logger.info(f"   Expected price: ${offer.price_per_hour:.3f}/hr")
+                    logger.info(f"   Expected price: ${offer.total_price(instance.gpu_count):.3f}/hr")
                     return instance
                 else:
                     logger.warning(f"Provisioning returned None for {offer.gpu_type}")
@@ -279,7 +279,7 @@ def create(
                     logger.info(f"✅ Successfully provisioned GPU instance: {instance.id}")
                     logger.info(f"   GPU: {instance.gpu_type} x{instance.gpu_count}")
                     logger.info(f"   Provider: {offer.provider}")
-                    logger.info(f"   Expected price: ${offer.price_per_hour:.3f}/hr")
+                    logger.info(f"   Expected price: ${offer.total_price(instance.gpu_count):.3f}/hr")
                     return instance
                 else:
                     logger.warning(f"Provisioning returned None for {offer.gpu_type}")
