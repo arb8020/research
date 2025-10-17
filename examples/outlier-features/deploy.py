@@ -21,7 +21,7 @@ import os
 import json
 import logging
 import importlib.util
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from datetime import datetime
 from typing import Literal, TypeAlias
 from dotenv import load_dotenv
@@ -41,6 +41,44 @@ logger = logging.getLogger(__name__)
 
 # Remote workspace path - used by all remote operations
 REMOTE_WORKSPACE_PATH = "~/.bifrost/workspace/examples/outlier-features"
+
+
+def normalize_save_dir(save_dir: Path | str) -> str:
+    """Convert save_dir to normalized relative POSIX path for remote.
+
+    Handles Path objects and strings correctly, removing './' prefix safely.
+    Uses Path operations instead of string manipulation to avoid bugs.
+
+    Args:
+        save_dir: Path object or string from config
+
+    Returns:
+        Normalized relative path string (e.g., "results", "foo/bar")
+
+    Examples:
+        Path("./results") -> "results"
+        Path("results") -> "results"
+        "results" -> "results"
+        "./foo/bar" -> "foo/bar"
+    """
+    # Convert to Path if string
+    if isinstance(save_dir, str):
+        save_dir = Path(save_dir)
+
+    # Convert to POSIX path (for remote Linux systems)
+    posix_path = PurePosixPath(save_dir)
+
+    # Get parts and filter out current directory markers
+    parts = [p for p in posix_path.parts if p not in ('.', '..')]
+
+    # Reconstruct path
+    normalized = '/'.join(parts) if parts else ''
+
+    # Validation
+    assert normalized, f"save_dir normalized to empty string from: {save_dir}"
+    assert not normalized.startswith('/'), f"save_dir should be relative, got: {normalized}"
+
+    return normalized
 
 # Type aliases for provision result
 ProvisionError: TypeAlias = Literal["create_failed", "ssh_timeout"]
@@ -299,8 +337,8 @@ def wait_for_analysis_completion(bifrost_client: 'BifrostClient', config: Config
 
     import time
 
-    # Build remote paths from config
-    remote_save_dir = str(config.output.save_dir).lstrip('./')
+    # Build remote paths from config using type-safe normalization
+    remote_save_dir = normalize_save_dir(config.output.save_dir)
     remote_results_path = f"{REMOTE_WORKSPACE_PATH}/{remote_save_dir}"
 
     poll_interval = 30
@@ -376,11 +414,8 @@ def sync_results(bifrost_client: 'BifrostClient', config: Config, output_dir: Pa
     # ASSERTION: Validate config has save_dir set
     assert config.output.save_dir is not None, "Config must specify output.save_dir"
 
-    # Build remote paths from config.output.save_dir
-    remote_save_dir = str(config.output.save_dir).lstrip('./')
-    assert not remote_save_dir.startswith('/'), \
-        f"config.output.save_dir should be relative path, got: {config.output.save_dir}"
-
+    # Build remote paths from config.output.save_dir using type-safe normalization
+    remote_save_dir = normalize_save_dir(config.output.save_dir)
     remote_results_path = f"{REMOTE_WORKSPACE_PATH}/{remote_save_dir}"
 
     logger.info(f"💾 Syncing results from remote: {remote_results_path}")
