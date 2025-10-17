@@ -408,7 +408,6 @@ def provision_instance(request: ProvisionRequest, ssh_startup_script: Optional[s
         "name": request.name or f"gpus-{request.gpu_type or 'auto'}-{int(time.time())}",
         "supportPublicIp": True,  # Required for SSH access
         "containerDiskInGb": request.container_disk_gb or 50,  # Default 50GB for ML workloads, configurable
-        "volumeInGb": request.volume_disk_gb or 0,  # Default 0GB, configurable
         "minVcpuCount": 1,  # Required minimum CPU
         "minMemoryInGb": request.memory_gb or 4,  # Use requested memory or default 4GB minimum
         "ports": _build_ports_string(request.exposed_ports, request.enable_http_proxy),
@@ -416,7 +415,14 @@ def provision_instance(request: ProvisionRequest, ssh_startup_script: Optional[s
         "startJupyter": request.start_jupyter,  # Auto-start Jupyter Lab
         "env": env_vars
     }
-    
+
+    # Add volume configuration if requested
+    # IMPORTANT: volumeMountPath is REQUIRED when volumeInGb > 0
+    # Without it, RunPod fails with "invalid mount config for type bind field target must not be empty"
+    if request.volume_disk_gb and request.volume_disk_gb > 0:
+        pod_input["volumeInGb"] = request.volume_disk_gb
+        pod_input["volumeMountPath"] = "/workspace"  # RunPod default mount point
+
     # Add GPU type if specified
     if request.gpu_type:
         # Use the GPU type ID directly - it should already be the full RunPod ID
