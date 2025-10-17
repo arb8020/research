@@ -700,31 +700,39 @@ class BifrostClient:
             time.sleep(poll_interval)
     
     def copy_files(
-        self, 
-        remote_path: str, 
-        local_path: str, 
+        self,
+        remote_path: str,
+        local_path: str,
         recursive: bool = False
     ) -> CopyResult:
         """
         Copy files from remote to local machine.
-        
+
         Args:
             remote_path: Remote file or directory path
             local_path: Local destination path
             recursive: Copy directories recursively
-            
+
         Returns:
             CopyResult with transfer statistics
-            
+
         Raises:
             ConnectionError: SSH connection failed
             TransferError: File transfer failed
         """
         start_time = time.time()
-        
+
         try:
             ssh_client = self._get_ssh_client()
-            
+
+            # FOOTGUN WARNING: Tilde expansion behavior differs between shell and SFTP!
+            # - Shell commands (exec_command) expand ~ automatically via bash
+            # - SFTP operations (stat, get, put) treat ~ as a LITERAL directory name
+            #
+            # This method uses shell commands to check file existence (works with ~),
+            # but then calls _copy_file() which uses SFTP (must expand ~ manually).
+            # See _copy_file() for the tilde expansion logic.
+
             # Check if remote path exists (expand tilde if present)
             if remote_path.startswith('~/'):
                 # For tilde paths, don't use quotes so bash can expand ~
@@ -783,12 +791,19 @@ class BifrostClient:
             )
     
     def _copy_file(self, sftp, remote_path: str, local_path: str) -> int:
-        """Copy single file and return bytes transferred."""
+        """Copy single file and return bytes transferred.
+
+        IMPORTANT: This method receives paths that may contain tilde (~).
+        SFTP protocol does NOT expand tilde - it treats it as a literal directory.
+        We must manually expand ~ to /root before calling sftp.stat() and sftp.get().
+        """
         # Ensure local directory exists
         local_dir = Path(local_path).parent
         local_dir.mkdir(parents=True, exist_ok=True)
 
-        # Expand tilde for SFTP operations (SFTP doesn't do shell expansion)
+        # CRITICAL: Expand tilde for SFTP operations
+        # SFTP treats "~/foo" as literal path with directory named "~"
+        # Shell commands expand it to "/root/foo" (or appropriate home dir)
         if remote_path.startswith('~/'):
             remote_path = remote_path.replace('~', '/root', 1)
 
