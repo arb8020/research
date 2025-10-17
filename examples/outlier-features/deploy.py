@@ -27,7 +27,7 @@ from typing import Literal, TypeAlias
 from dotenv import load_dotenv
 
 # Import broker and bifrost for deployment
-from broker.client import GPUClient
+from broker.client import GPUClient, ClientGPUInstance
 from bifrost.client import BifrostClient
 
 # Import shared logging
@@ -39,10 +39,13 @@ from estimate_vram import estimate_vram_requirements
 
 logger = logging.getLogger(__name__)
 
+# Remote workspace path - used by all remote operations
+REMOTE_WORKSPACE_PATH = "~/.bifrost/workspace/examples/outlier-features"
+
 # Type aliases for provision result
 ProvisionError: TypeAlias = Literal["create_failed", "ssh_timeout"]
 ProvisionResult: TypeAlias = (
-    tuple[Literal[True], "ClientGPUInstance", str, None] |
+    tuple[Literal[True], ClientGPUInstance, str, None] |
     tuple[Literal[False], None, None, ProvisionError]
 )
 
@@ -279,20 +282,26 @@ def start_analysis(bifrost_client: 'BifrostClient', config: Config, config_path:
                 "'cd ~/.bifrost/workspace/examples/outlier-features && tail -20 outlier_analysis.log'")
 
 
-def wait_for_analysis_completion(bifrost_client: 'BifrostClient', timeout: int = 2700) -> bool:
+def wait_for_analysis_completion(bifrost_client: 'BifrostClient', config: Config, timeout: int = 2700) -> bool:
     """Poll for analysis completion with explicit timeout.
 
     Args:
         bifrost_client: Connected Bifrost client
+        config: Configuration object (for output.save_dir)
         timeout: Max wait time in seconds (default 45 min)
 
     Returns:
         True if completed successfully, False if failed/timeout
     """
     assert bifrost_client is not None, "BifrostClient must not be None"
+    assert config.output.save_dir is not None, "Config must specify output.save_dir"
     assert timeout > 0, "Timeout must be positive"
 
     import time
+
+    # Build remote paths from config
+    remote_save_dir = str(config.output.save_dir).lstrip('./')
+    remote_results_path = f"{REMOTE_WORKSPACE_PATH}/{remote_save_dir}"
 
     poll_interval = 30
     max_iterations = timeout // poll_interval
@@ -302,13 +311,13 @@ def wait_for_analysis_completion(bifrost_client: 'BifrostClient', timeout: int =
 
     for i in range(max_iterations):
         # Check for completion markers AND final results file with debug info
-        check_cmd = """
-cd ~/.bifrost/workspace/examples/outlier-features
+        check_cmd = f"""
+cd {REMOTE_WORKSPACE_PATH}
 echo "=== Polling Debug Info ==="
 echo "Marker files:"
 ls -lh .analysis_complete .analysis_failed 2>/dev/null || echo "  No marker files"
 echo "Results file:"
-ls -lh results/final_analysis_results.json 2>/dev/null || echo "  No results file yet"
+ls -lh {remote_results_path}/final_analysis_results.json 2>/dev/null || echo "  No results file yet"
 echo "Last 3 log lines:"
 tail -3 outlier_analysis.log 2>/dev/null || echo "  No log file yet"
 echo "Tmux session status:"
@@ -318,7 +327,7 @@ echo "========================="
 # Determine status
 test -f .analysis_complete && echo 'COMPLETE' && exit 0
 test -f .analysis_failed && echo 'FAILED' && exit 0
-test -f results/final_analysis_results.json && echo 'COMPLETE' && exit 0
+test -f {remote_results_path}/final_analysis_results.json && echo 'COMPLETE' && exit 0
 echo 'RUNNING'
 """
         result = bifrost_client.exec(check_cmd)
@@ -350,25 +359,40 @@ echo 'RUNNING'
     return False
 
 
-def sync_results(bifrost_client: 'BifrostClient', output_dir: Path):
+def sync_results(bifrost_client: 'BifrostClient', config: Config, output_dir: Path):
     """Sync analysis results from remote GPU to local directory.
+
+    IMPORTANT: Syncs from config.output.save_dir (NOT hardcoded 'results/').
+    The remote and local must agree on where results are saved.
 
     Args:
         bifrost_client: Bifrost client instance
+        config: Configuration object (for output.save_dir)
         output_dir: Local output directory
-    """
-    logger.info("💾 Syncing results from remote GPU...")
 
+    Raises:
+        RuntimeError: If final results cannot be synced (indicates config mismatch)
+    """
+    # ASSERTION: Validate config has save_dir set
+    assert config.output.save_dir is not None, "Config must specify output.save_dir"
+
+    # Build remote paths from config.output.save_dir
+    remote_save_dir = str(config.output.save_dir).lstrip('./')
+    assert not remote_save_dir.startswith('/'), \
+        f"config.output.save_dir should be relative path, got: {config.output.save_dir}"
+
+    remote_results_path = f"{REMOTE_WORKSPACE_PATH}/{remote_save_dir}"
+
+    logger.info(f"💾 Syncing results from remote: {remote_results_path}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Display remote log
     logger.info("=" * 60)
     logger.info("Remote analysis log:")
     logger.info("=" * 60)
+    remote_log_path = f"{REMOTE_WORKSPACE_PATH}/outlier_analysis.log"
     try:
-        result = bifrost_client.exec(
-            "cat ~/.bifrost/workspace/examples/outlier-features/outlier_analysis.log"
-        )
+        result = bifrost_client.exec(f"cat {remote_log_path}")
         if result.stdout and result.stdout.strip():
             print(result.stdout)
         else:
@@ -381,7 +405,7 @@ def sync_results(bifrost_client: 'BifrostClient', output_dir: Path):
     log_path = output_dir / "outlier_analysis.log"
     try:
         result = bifrost_client.download_files(
-            remote_path="~/.bifrost/workspace/examples/outlier-features/outlier_analysis.log",
+            remote_path=remote_log_path,
             local_path=str(log_path)
         )
         if result and result.success and result.files_copied > 0:
@@ -391,23 +415,30 @@ def sync_results(bifrost_client: 'BifrostClient', output_dir: Path):
     except Exception as e:
         logger.warning(f"⚠️  Could not sync analysis log: {e}")
 
-    # Sync final results
-    try:
-        result = bifrost_client.download_files(
-            remote_path="~/.bifrost/workspace/examples/outlier-features/results/final_analysis_results.json",
-            local_path=str(output_dir / "final_analysis_results.json")
+    # Sync final results - FAIL LOUDLY if missing (indicates bug)
+    final_results_remote = f"{remote_results_path}/final_analysis_results.json"
+    final_results_local = output_dir / "final_analysis_results.json"
+
+    result = bifrost_client.download_files(
+        remote_path=final_results_remote,
+        local_path=str(final_results_local)
+    )
+
+    if not (result and result.success and result.files_copied > 0):
+        raise RuntimeError(
+            f"Failed to sync final results from {final_results_remote}\n"
+            f"This likely means config.output.save_dir={config.output.save_dir} doesn't match "
+            f"where the remote analysis actually saved results.\n"
+            f"Check: bifrost exec '<ssh>' 'ls -la {remote_results_path}/'"
         )
-        if result and result.success and result.files_copied > 0:
-            logger.info(f"✅ Synced: final_analysis_results.json")
-        else:
-            logger.info("ℹ️  Final results not ready yet")
-    except Exception as e:
-        logger.info(f"ℹ️  Final results not ready yet: {e}")
+
+    logger.info(f"✅ Synced: final_analysis_results.json")
 
     # Sync config used
+    config_remote = f"{remote_results_path}/config.json"
     try:
         result = bifrost_client.download_files(
-            remote_path="~/.bifrost/workspace/examples/outlier-features/results/config.json",
+            remote_path=config_remote,
             local_path=str(output_dir / "config.json")
         )
         if result and result.success and result.files_copied > 0:
@@ -472,7 +503,13 @@ def main():
         experiment_name = f"outlier_analysis_{model_safe_name}_{timestamp}"
 
     # Setup logging
-    setup_logging(level=config.output.log_level)
+    setup_logging(
+        level=config.output.log_level,
+        logger_levels={
+            "httpx": "WARNING",
+            "urllib3": "WARNING"
+        }
+    )
 
     logger.info("🎯 Outlier Features Analysis - Automated Deployment")
     logger.info(f"📅 Experiment: {experiment_name}")
@@ -499,13 +536,13 @@ def main():
 
         # Step 5: Wait for completion
         logger.info("\n⏳ Waiting for analysis to complete...")
-        success = wait_for_analysis_completion(bifrost_client, timeout=2700)
+        success = wait_for_analysis_completion(bifrost_client, config, timeout=2700)
 
         # Step 6: Sync results
         logger.info("\n💾 Syncing results to local...")
         if not success:
             logger.warning("⚠️  Analysis did not complete successfully, but syncing logs for debugging...")
-        sync_results(bifrost_client, output_dir)
+        sync_results(bifrost_client, config, output_dir)
 
         # Step 7: Cleanup (conditional)
         if not config.deployment.keep_running:
