@@ -787,7 +787,11 @@ class BifrostClient:
         # Ensure local directory exists
         local_dir = Path(local_path).parent
         local_dir.mkdir(parents=True, exist_ok=True)
-        
+
+        # Expand tilde for SFTP operations (SFTP doesn't do shell expansion)
+        if remote_path.startswith('~/'):
+            remote_path = remote_path.replace('~', '/root', 1)
+
         # Get file size
         file_size = sftp.stat(remote_path).st_size
         
