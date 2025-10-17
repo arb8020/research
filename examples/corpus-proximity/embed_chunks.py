@@ -6,13 +6,65 @@ import logging
 import numpy as np
 import time
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, cast
 
+import httpx
 from sentence_transformers import SentenceTransformer
 
 from config import Config
 
 logger = logging.getLogger(__name__)
+
+
+def extract_rate_limit_info(exception: Exception) -> tuple[Optional[int], Optional[int], Optional[int]]:
+    """
+    Extract rate limit information from HuggingFace HTTP exception.
+
+    Why: HuggingFace includes rate limit headers in responses that tell us:
+    - How many requests remain in the current window
+    - When the rate limit resets (Unix timestamp or seconds)
+    - Retry-After header with suggested wait time
+
+    Returns: (retry_after_seconds, requests_remaining, reset_time) or (None, None, None) if not found
+    """
+    # Check if exception has a response attribute (HfHubHTTPError from httpx)
+    if not hasattr(exception, 'response'):
+        return None, None, None
+
+    response = cast(httpx.Response, exception.response)
+    headers = response.headers
+
+    # Extract Retry-After header (preferred - tells us exactly when to retry)
+    retry_after = None
+    if 'retry-after' in headers or 'Retry-After' in headers:
+        retry_after_str = headers.get('retry-after') or headers.get('Retry-After')
+        if retry_after_str:
+            try:
+                retry_after = int(retry_after_str)
+            except ValueError:
+                pass
+
+    # Extract X-RateLimit-Remaining header
+    requests_remaining = None
+    if 'x-ratelimit-remaining' in headers or 'X-RateLimit-Remaining' in headers:
+        remaining_str = headers.get('x-ratelimit-remaining') or headers.get('X-RateLimit-Remaining')
+        if remaining_str:
+            try:
+                requests_remaining = int(remaining_str)
+            except ValueError:
+                pass
+
+    # Extract X-RateLimit-Reset header
+    reset_time = None
+    if 'x-ratelimit-reset' in headers or 'X-RateLimit-Reset' in headers:
+        reset_str = headers.get('x-ratelimit-reset') or headers.get('X-RateLimit-Reset')
+        if reset_str:
+            try:
+                reset_time = int(reset_str)
+            except ValueError:
+                pass
+
+    return retry_after, requests_remaining, reset_time
 
 
 def load_chunks(input_path: Path) -> tuple[List[str], List[Dict]]:
@@ -40,20 +92,129 @@ def load_chunks(input_path: Path) -> tuple[List[str], List[Dict]]:
     return texts, metadata
 
 
+def load_model_with_retry(
+    model_name: str,
+    device: Optional[str],
+    max_retries: int,
+    retry_delay_seconds: int,
+    retry_backoff_multiplier: float,
+    hf_token: Optional[str]
+) -> SentenceTransformer:
+    """
+    Load SentenceTransformer model with exponential backoff retry on rate limits.
+
+    Why: HuggingFace rate limits unauthenticated users to 3000 requests per 5 minutes.
+    If rate limited, we retry with exponential backoff up to max_retries attempts.
+
+    Returns: Loaded model on success
+    Raises: Exception on final failure after all retries exhausted
+    """
+    assert max_retries >= 0  # Precondition: retries must be non-negative
+    assert retry_delay_seconds > 0  # Precondition: delay must be positive
+    assert retry_backoff_multiplier >= 1.0  # Precondition: backoff must not decrease
+
+    # Set HF token if provided (why: increases rate limit from 3000 to much higher)
+    if hf_token:
+        import os
+        os.environ['HF_TOKEN'] = hf_token
+        logger.info("Using provided HuggingFace token for authentication")
+
+    last_error = None
+    attempt = 0
+
+    # Bounded loop - will terminate after max_retries + 1 attempts
+    while attempt <= max_retries:
+        assert attempt <= max_retries  # Invariant: never exceed max retries
+
+        if attempt > 0:
+            delay = retry_delay_seconds * (retry_backoff_multiplier ** (attempt - 1))
+            logger.warning(f"Retry attempt {attempt}/{max_retries} after {delay}s delay")
+            time.sleep(delay)
+
+        try:
+            logger.info(f"Loading model: {model_name} on device: {device or 'auto'} (attempt {attempt + 1})")
+            model_start = time.time()
+            model = SentenceTransformer(model_name, device=device)
+            model_load_time = time.time() - model_start
+
+            # Postcondition: model loaded successfully
+            assert model is not None
+            logger.info(f"Model loaded successfully in {model_load_time:.2f}s")
+            return model
+
+        except Exception as e:
+            error_str = str(e)
+
+            # Check if this is a rate limit error (positive space check)
+            if '429' in error_str or 'Too Many Requests' in error_str or 'rate limit' in error_str.lower():
+                # Extract rate limit info from HTTP response headers
+                retry_after, requests_remaining, reset_time = extract_rate_limit_info(e)
+
+                # Log rate limit details if available
+                rate_info_parts = []
+                if retry_after is not None:
+                    rate_info_parts.append(f"retry after {retry_after}s")
+                if requests_remaining is not None:
+                    rate_info_parts.append(f"{requests_remaining} requests remaining")
+                if reset_time is not None:
+                    import datetime
+                    reset_dt = datetime.datetime.fromtimestamp(reset_time)
+                    rate_info_parts.append(f"resets at {reset_dt.strftime('%H:%M:%S')}")
+
+                if rate_info_parts:
+                    logger.warning(f"Rate limit hit: {', '.join(rate_info_parts)}")
+                else:
+                    logger.warning(f"Rate limit hit (no rate limit headers available)")
+
+                last_error = e
+                attempt += 1
+                # Continue to next iteration
+            else:
+                # Not a rate limit error (negative space check) - fail immediately
+                logger.error(f"Non-rate-limit error: {error_str}")
+                raise
+
+    # Assert: if we reach here, we exhausted all retries
+    assert attempt > max_retries
+    assert last_error is not None
+
+    # All retries exhausted - fail with informative message
+    error_msg = (
+        f"Failed to load model after {max_retries} retries due to rate limiting. "
+        f"Last error: {last_error}\n"
+        f"Solution: Set HF_TOKEN environment variable or pass hf_token in config."
+    )
+    logger.error(error_msg)
+    raise RuntimeError(error_msg) from last_error
+
+
 def embed_chunks(
     texts: List[str],
     model_name: str,
     batch_size: int,
-    device: Optional[str] = None
+    device: Optional[str] = None,
+    max_retries: int = 3,
+    retry_delay_seconds: int = 60,
+    retry_backoff_multiplier: float = 2.0,
+    hf_token: Optional[str] = None
 ) -> np.ndarray:
     """Embed text chunks using sentence-transformers."""
-    logger.info(f"Loading model: {model_name} on device: {device or 'auto'}")
-    model_start = time.time()
-    model = SentenceTransformer(model_name, device=device)
-    model_load_time = time.time() - model_start
-    logger.info(f"Model loaded in {model_load_time:.2f}s")
+    # Preconditions
+    assert len(texts) > 0  # Must have texts to embed
+    assert batch_size > 0  # Batch size must be positive
+    assert max_retries >= 0  # Retries cannot be negative
+
+    model = load_model_with_retry(
+        model_name=model_name,
+        device=device,
+        max_retries=max_retries,
+        retry_delay_seconds=retry_delay_seconds,
+        retry_backoff_multiplier=retry_backoff_multiplier,
+        hf_token=hf_token
+    )
 
     num_batches = (len(texts) + batch_size - 1) // batch_size
+    assert num_batches > 0  # Must have at least one batch
     logger.info(f"Embedding {len(texts)} chunks with batch_size={batch_size} ({num_batches} batches)")
 
     # Encode with progress bar
@@ -198,7 +359,11 @@ def main():
             texts=texts,
             model_name=config.embedding.model,
             batch_size=config.embedding.batch_size,
-            device=config.embedding.device
+            device=config.embedding.device,
+            max_retries=config.embedding.max_retries,
+            retry_delay_seconds=config.embedding.retry_delay_seconds,
+            retry_backoff_multiplier=config.embedding.retry_backoff_multiplier,
+            hf_token=config.embedding.hf_token
         )
 
         # Save embeddings
