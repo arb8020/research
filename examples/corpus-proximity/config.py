@@ -25,6 +25,12 @@ class EmbeddingConfig:
     device: str | None = None  # auto-detect if None
     output_dir: Path = _BASE_DIR / "embeddings"
 
+    # Rate limit handling - HuggingFace limits: 3000 requests per 300s window
+    max_retries: int = 3  # Fixed upper bound on retry attempts
+    retry_delay_seconds: int = 60  # Base delay between retries
+    retry_backoff_multiplier: float = 2.0  # Exponential backoff: delay * (multiplier ** attempt)
+    hf_token: str | None = None  # HuggingFace token for higher rate limits
+
 
 @dataclass
 class SimilarityConfig:

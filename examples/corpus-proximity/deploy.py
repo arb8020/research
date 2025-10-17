@@ -6,7 +6,7 @@ import logging
 import os
 from typing import Literal, TypeAlias
 from dotenv import load_dotenv
-from broker import GPUClient, CloudType
+from broker import GPUClient, CloudType, GPUInstance
 from bifrost import BifrostClient
 from shared.config import get_runpod_key, get_prime_key
 from shared.logging_config import setup_logging
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # Type aliases for provision result
 ProvisionError: TypeAlias = Literal["create_failed", "ready_timeout", "ssh_timeout"]
 ProvisionResult: TypeAlias = (
-    tuple[Literal[True], "ClientGPUInstance", None] |
+    tuple[Literal[True], GPUInstance, None] |
     tuple[Literal[False], None, ProvisionError]
 )
 
@@ -163,8 +163,8 @@ def main():
 
         # Run prepare_data.py
         logger.info(f"Running prepare_data.py with config {args.config}...")
-        cmd = f"cd ~/.bifrost/workspace && uv run python examples/corpus-proximity/prepare_data.py examples/corpus-proximity/{args.config}"
-        result = bifrost_client.exec(cmd)
+        cmd = f"uv run python examples/corpus-proximity/prepare_data.py examples/corpus-proximity/{args.config}"
+        result = bifrost_client.exec(cmd, working_dir="~/.bifrost/workspace")
 
         if result.stdout:
             logger.info(f"STDOUT:\n{result.stdout}")
@@ -178,8 +178,9 @@ def main():
 
         # Run embed_chunks.py
         logger.info(f"Running embed_chunks.py with config {args.config}...")
-        cmd = f"cd ~/.bifrost/workspace && uv run python examples/corpus-proximity/embed_chunks.py examples/corpus-proximity/{args.config}"
-        result = bifrost_client.exec(cmd)
+        cmd = f"uv run python examples/corpus-proximity/embed_chunks.py examples/corpus-proximity/{args.config}"
+        env = {"HF_TOKEN": os.getenv("HF_TOKEN", "")} if os.getenv("HF_TOKEN") else None
+        result = bifrost_client.exec(cmd, env=env, working_dir="~/.bifrost/workspace")
 
         if result.stdout:
             logger.info(f"STDOUT:\n{result.stdout}")
@@ -193,8 +194,8 @@ def main():
 
         # Run test_search.py
         logger.info(f"Running test_search.py with config {args.config}...")
-        cmd = f"cd ~/.bifrost/workspace && uv run python examples/corpus-proximity/test_search.py examples/corpus-proximity/{args.config}"
-        result = bifrost_client.exec(cmd)
+        cmd = f"uv run python examples/corpus-proximity/test_search.py examples/corpus-proximity/{args.config}"
+        result = bifrost_client.exec(cmd, working_dir="~/.bifrost/workspace")
 
         if result.stdout:
             logger.info(f"STDOUT:\n{result.stdout}")
@@ -208,8 +209,8 @@ def main():
 
         # Run cluster_corpus.py
         logger.info(f"Running cluster_corpus.py with config {args.config}...")
-        cmd = f"cd ~/.bifrost/workspace && uv run python examples/corpus-proximity/cluster_corpus.py examples/corpus-proximity/{args.config}"
-        result = bifrost_client.exec(cmd)
+        cmd = f"uv run python examples/corpus-proximity/cluster_corpus.py examples/corpus-proximity/{args.config}"
+        result = bifrost_client.exec(cmd, working_dir="~/.bifrost/workspace")
 
         if result.stdout:
             logger.info(f"STDOUT:\n{result.stdout}")
@@ -223,8 +224,9 @@ def main():
 
         # Run name_clusters.py --name
         logger.info(f"Running name_clusters.py --name with config {args.config}...")
-        cmd = f"cd ~/.bifrost/workspace && uv run python examples/corpus-proximity/name_clusters.py examples/corpus-proximity/{args.config} --name"
-        result = bifrost_client.exec(cmd)
+        cmd = f"uv run python examples/corpus-proximity/name_clusters.py examples/corpus-proximity/{args.config} --name"
+        env = {"OPENAI_API_KEY": os.getenv("OPENAI_API_KEY", "")} if os.getenv("OPENAI_API_KEY") else None
+        result = bifrost_client.exec(cmd, env=env, working_dir="~/.bifrost/workspace")
 
         if result.stdout:
             logger.info(f"STDOUT:\n{result.stdout}")
