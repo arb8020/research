@@ -4,6 +4,7 @@
 import json
 import logging
 import numpy as np
+import time
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -19,6 +20,9 @@ def load_chunks(input_path: Path) -> tuple[List[str], List[Dict]]:
     if not input_path.exists():
         raise FileNotFoundError(f"Input file not found: {input_path}")
 
+    logger.info(f"Loading chunks from {input_path}")
+    start_time = time.time()
+
     texts = []
     metadata = []
 
@@ -31,7 +35,8 @@ def load_chunks(input_path: Path) -> tuple[List[str], List[Dict]]:
                 'chunk_id': chunk['chunk_id']
             })
 
-    logger.info(f"Loaded {len(texts)} chunks from {input_path}")
+    elapsed = time.time() - start_time
+    logger.info(f"Loaded {len(texts)} chunks from {input_path} in {elapsed:.2f}s")
     return texts, metadata
 
 
@@ -42,20 +47,28 @@ def embed_chunks(
     device: Optional[str] = None
 ) -> np.ndarray:
     """Embed text chunks using sentence-transformers."""
-    logger.info(f"Loading model: {model_name}")
+    logger.info(f"Loading model: {model_name} on device: {device or 'auto'}")
+    model_start = time.time()
     model = SentenceTransformer(model_name, device=device)
+    model_load_time = time.time() - model_start
+    logger.info(f"Model loaded in {model_load_time:.2f}s")
 
-    logger.info(f"Embedding {len(texts)} chunks with batch_size={batch_size}")
+    num_batches = (len(texts) + batch_size - 1) // batch_size
+    logger.info(f"Embedding {len(texts)} chunks with batch_size={batch_size} ({num_batches} batches)")
 
     # Encode with progress bar
+    embed_start = time.time()
     embeddings = model.encode(
         texts,
         batch_size=batch_size,
         show_progress_bar=True,
         convert_to_numpy=True
     )
+    embed_time = time.time() - embed_start
 
+    chunks_per_sec = len(texts) / embed_time if embed_time > 0 else 0
     logger.info(f"Generated embeddings with shape: {embeddings.shape}")
+    logger.info(f"Embedding completed in {embed_time:.2f}s ({chunks_per_sec:.1f} chunks/sec)")
     return embeddings
 
 
@@ -72,6 +85,7 @@ def save_embeddings(
     metadata_path = output_dir / "metadata.jsonl"
 
     # Save embeddings
+    save_start = time.time()
     if use_memmap:
         logger.info(f"Saving embeddings as memory-mapped array to {embeddings_path}")
         memmap = np.memmap(
@@ -83,14 +97,20 @@ def save_embeddings(
         memmap[:] = embeddings[:]
         memmap.flush()
     else:
-        logger.info(f"Saving embeddings to {embeddings_path}")
+        size_mb = embeddings.nbytes / (1024**2)
+        logger.info(f"Saving embeddings to {embeddings_path} ({size_mb:.2f} MB)")
         np.save(embeddings_path, embeddings)
+    save_embed_time = time.time() - save_start
+    logger.info(f"Embeddings saved in {save_embed_time:.2f}s")
 
     # Save metadata
     logger.info(f"Saving metadata to {metadata_path}")
+    meta_start = time.time()
     with open(metadata_path, 'w') as f:
         for item in metadata:
             f.write(json.dumps(item) + '\n')
+    meta_time = time.time() - meta_start
+    logger.info(f"Metadata saved in {meta_time:.2f}s")
 
     logger.info(f"Saved {len(embeddings)} embeddings to {output_dir}")
 
@@ -157,17 +177,23 @@ def main():
         # Use default config
         config = Config()
 
+    logger.info("="*80)
     logger.info(f"Starting embedding pipeline")
     logger.info(f"  Model: {config.embedding.model}")
     logger.info(f"  Batch size: {config.embedding.batch_size}")
     logger.info(f"  Device: {config.embedding.device or 'auto'}")
+    logger.info("="*80)
+
+    pipeline_start = time.time()
 
     try:
         # Load chunks
+        logger.info("\n[1/4] Loading chunks...")
         input_path = config.data.processed_dir / config.data.output_file
         texts, metadata = load_chunks(input_path)
 
         # Embed chunks
+        logger.info("\n[2/4] Embedding chunks...")
         embeddings = embed_chunks(
             texts=texts,
             model_name=config.embedding.model,
@@ -176,6 +202,7 @@ def main():
         )
 
         # Save embeddings
+        logger.info("\n[3/4] Saving embeddings...")
         save_embeddings(
             embeddings=embeddings,
             metadata=metadata,
@@ -184,6 +211,7 @@ def main():
         )
 
         # Verify (always verify for now)
+        logger.info("\n[4/4] Verifying embeddings...")
         verify_embeddings(config.embedding.output_dir)
 
         # Save config for reproducibility
@@ -191,7 +219,10 @@ def main():
         config.save(config_output)
         logger.info(f"Saved config to {config_output}")
 
-        logger.info("Embedding pipeline complete!")
+        total_time = time.time() - pipeline_start
+        logger.info("="*80)
+        logger.info(f"Embedding pipeline complete! Total time: {total_time:.2f}s ({total_time/60:.1f} min)")
+        logger.info("="*80)
         return 0
 
     except Exception as e:
