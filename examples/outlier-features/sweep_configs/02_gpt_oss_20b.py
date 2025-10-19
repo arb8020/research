@@ -1,0 +1,41 @@
+"""GPT-OSS-20B (21.5B total, ? active).
+
+First systematic MoE model in original analysis.
+Expected: SYSTEMATIC outliers (100% layer agreement, dimension 773).
+Runtime: ~25-30 minutes on 2xA100.
+"""
+
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from config import Config
+
+config = Config()
+
+# Model: GPT-OSS-20B
+config.model.name = "GAIR/GPT-OSS-20B"
+config.model.device_map = "balanced"
+
+# Dataset: Standard 16 sequences
+config.dataset.num_sequences = 16
+config.dataset.sequence_length = 2048
+config.dataset.shuffle = False
+
+# Analysis: Chunked for memory
+config.analysis.batch_size = 1
+config.analysis.layers = None
+config.analysis.chunk_layers = 8
+
+# Deployment: Multi-GPU
+config.deployment.min_vram = None
+config.deployment.gpu_count = 2
+config.deployment.gpu_filter = "A100"
+config.deployment.min_cpu_ram = 64
+config.deployment.max_price = 3.0
+config.deployment.safety_factor = 1.3
+
+# Output
+config.output.experiment_name = "gpt_oss_20b_sweep"
+config.output.log_level = "INFO"
+config.output.save_dir = Path("./results")
