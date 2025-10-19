@@ -5,7 +5,7 @@ Implements methodology from Dettmers et al. (2022) "LLM.int8()":
 - Layer coverage: ≥25% of transformer layers affected
 - Sequence coverage: ≥6% of sequence positions affected
 
-Adapted from llm-workbench/examples/outlier_features_moe/analyze_activations.py
+Adapted from analyze_activations.py
 """
 
 import json

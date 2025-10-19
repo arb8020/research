@@ -1,6 +1,6 @@
 """Activation extraction from transformer models using nnsight.
 
-Adapted from llm-workbench/examples/outlier_features_moe/extract_activations.py
+Adapted from extract_activations.py
 Memory-optimized with chunked layer processing.
 """
 

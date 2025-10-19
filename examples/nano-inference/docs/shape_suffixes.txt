@@ -1,0 +1,11 @@
+B: batch
+L: layers
+T: sequence length (query)
+S: sequence length (key value)
+V: vocab size
+D: d_model
+F: MLP hidden dim
+H: attn head dim
+N: query heads
+K: key value heads
+G: q heads per kv head

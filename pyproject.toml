@@ -69,6 +69,16 @@ example-kernels = [
     "kernels",
 ]
 
+# Nano-inference JAX GPT-2 implementation
+example-nano-inference-jax = [
+    "jax[cuda12] ; sys_platform == 'linux'",
+    "jax ; sys_platform == 'darwin'",
+    "numpy>=1.24.0",
+    "transformers>=4.30.0",
+    "huggingface-hub>=0.20.0",
+    "safetensors>=0.4.0",
+]
+
 [tool.uv.sources]
 broker = { workspace = true }
 bifrost = { workspace = true }

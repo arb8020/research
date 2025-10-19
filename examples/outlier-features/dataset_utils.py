@@ -1,6 +1,6 @@
 """Pure functions for loading and processing datasets for outlier analysis.
 
-Adapted from llm-workbench/examples/outlier_features_moe/dataset_utils.py
+Adapted from dataset_utils.py
 """
 
 from typing import Iterator, Optional, cast
