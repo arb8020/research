@@ -2,7 +2,7 @@
 """Push-button script to extract activations and analyze for outlier features.
 
 Combines extraction and analysis into a single workflow with config-based execution.
-Adapted from llm-workbench/examples/outlier_features_moe/run_full_analysis.py
+Adapted from run_full_analysis.py
 
 Split into functions <70 lines following Tiger Style.
 """
