@@ -8,7 +8,7 @@ This script automatically:
 4. Syncs results back to local
 5. Cleans up GPU instance
 
-Adapted from llm-workbench/examples/outlier_features_moe/deploy_and_analyze.py
+Adapted from deploy_and_analyze.py
 Split into functions <70 lines following Tiger Style.
 
 Usage:

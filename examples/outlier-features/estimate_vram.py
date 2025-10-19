@@ -18,7 +18,7 @@ def get_hf_headers() -> Dict[str, str]:
     """Get HuggingFace API headers with authentication token."""
     load_dotenv()
     hf_token = os.getenv("HF_TOKEN")
-    headers = {"User-Agent": "llm-workbench/1.0"}
+    headers = {"User-Agent": "gpu-research-tools/1.0"}
     if hf_token:
         headers["Authorization"] = f"Bearer {hf_token}"
     return headers
