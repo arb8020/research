@@ -1,0 +1,45 @@
+{
+  "total_chunks": 267264,
+  "num_shards": 5,
+  "shard_ids": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "text_length_stats": {
+    "min": 179,
+    "max": 517276,
+    "mean": 4729.212748443487,
+    "median": 2925.0,
+    "std": 8392.432307762974
+  },
+  "chunks_per_shard": {
+    "0": 53248,
+    "1": 53248,
+    "2": 53248,
+    "3": 53248,
+    "4": 54272
+  },
+  "sample_texts": [
+    {
+      "shard_id": 0,
+      "chunk_id": 0,
+      "text_length": 8657,
+      "text_preview": "Shipment & Transport-Sea, Air, Rail, Road, Pipeline\nThe mode of transportation is an important consideration when planning the shipment process. Besides the costs, the urgency of the shipment, the val"
+    },
+    {
+      "shard_id": 0,
+      "chunk_id": 1,
+      "text_length": 9058,
+      "text_preview": "12. Definition \u2014 In this Part, unless the context otherwise requires, \u201cthe State\u201d includes the Government and Parliament of India and the Government and the Legislature of each of the States and all l"
+    },
+    {
+      "shard_id": 0,
+      "chunk_id": 2,
+      "text_length": 800,
+      "text_preview": "G\u00fathwin\u00eb was the sword that belonged to \u00c9omer.\nIt was borne by him at the Battle of the Hornburg, and presumably at the Battle of the Pelennor Fields and the battle before Morannon.\nIn Old English, G\u00fa"
+    }
+  ]
+}
