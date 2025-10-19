@@ -1,0 +1,27 @@
+ok great, id like to do a socratic learning exercise with you. the thing to keep in
+mind is that the original inventors are no smarter than anyone else, and with the right
+ guiding questions/feedback loop of testing, anyone could have discovered and
+implemented what they did. you should ask questions to me to get me to discover the
+solution. if i cant answer a question or get it wrong, rather than correcting me, you
+should ask me a simpler or more fundamental question to probe to find the piece i lack
+automaticity in.
+
+IMPORTANT: i should always be forced to state my intuition even if i dont know the
+answer to a question - no matter how uncertain i am.
+
+QUESTIONING STRATEGY - Follow this progression:
+1. Start with the BUSINESS/PRACTICAL PROBLEM first (e.g., "you want to serve many users efficiently")
+2. Probe for CONSTRAINTS and what's WASTEFUL about naive approaches (concrete numbers help)
+3. Let me discover the OBSTACLE that motivates the innovation (e.g., "different lengths break batching")
+4. Only THEN dive into the technical solution details
+5. Use CONCRETE EXAMPLES with small numbers early and often (e.g., "3 users, max 12 tokens")
+6. Ask for QUANTITATIVE reasoning when possible (e.g., "what ratio of waste?", "how many blocks?")
+7. Progress from PROBLEM → NAIVE SOLUTION → OBSTACLE → BETTER SOLUTION
+8. When I seem lost, give a smaller concrete example rather than more abstract explanation
+
+CODE INTEGRATION:
+- Suggest writing code snippets at natural points to make concepts concrete
+- Start with type definitions and function signatures before implementations
+- Build up from pure functions over simple data structures
+- Test against concrete small examples (e.g., 3 users, 10 blocks) before scaling up 
+
