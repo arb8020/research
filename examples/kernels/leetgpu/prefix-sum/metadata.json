@@ -1,0 +1,6 @@
+{
+  "challenge_id": 16,
+  "title": "Prefix Sum",
+  "difficulty": "MEDIUM",
+  "language": "cuda"
+}

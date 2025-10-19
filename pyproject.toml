@@ -1,5 +1,5 @@
 [tool.uv.workspace]
-members = ["bifrost", "broker", "shared"]
+members = ["bifrost", "broker", "shared", "examples/kernels"]
 
 [project]
 name = "gpu-research-tools"
@@ -64,10 +64,16 @@ example-outlier-features = [
     "kernels; sys_platform == 'linux'",  # Optimized MXFP4 kernels for GPT-OSS
 ]
 
+# LeetGPU CLI for GPU kernel challenges
+example-kernels = [
+    "kernels",
+]
+
 [tool.uv.sources]
 broker = { workspace = true }
 bifrost = { workspace = true }
 shared = { workspace = true }
+kernels = { workspace = true }
 
 [build-system]
 requires = ["setuptools>=61.0"]
