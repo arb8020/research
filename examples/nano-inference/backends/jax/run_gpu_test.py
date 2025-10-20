@@ -120,11 +120,11 @@ def find_instance_by_name_or_id(gpu_client, identifier):
 
 
 def run_gpu_test(bifrost_client):
-    """Run GPU test script on remote instance."""
-    logger.info("Running GPU test...")
+    """Run GPU correctness test on remote instance."""
+    logger.info("Running GPU correctness test (comparing against HuggingFace)...")
 
     result = bifrost_client.exec(
-        "uv run python examples/nano-inference/backends/jax/test_gpu.py",
+        "uv run python examples/nano-inference/backends/jax/test_gpt2.py --batches 5",
         working_dir="~/.bifrost/workspace"
     )
 
