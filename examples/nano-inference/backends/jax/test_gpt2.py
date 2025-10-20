@@ -12,8 +12,8 @@ Usage:
 import sys
 from pathlib import Path
 
-# Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add nano-inference root to path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import jax
 import jax.numpy as jnp
@@ -24,7 +24,7 @@ from typing import Dict
 from utils.comparison import compare_logits, get_hf_logits
 from utils.weights import download_gpt2_weights, load_gpt2_weights
 from config import GPT2Config
-from jax.model import gpt2_forward
+from backends.jax.model import gpt2_forward
 
 
 def load_weights_for_jax() -> Dict[str, jax.Array]:
