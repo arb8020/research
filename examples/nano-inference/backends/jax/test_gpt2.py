@@ -25,18 +25,13 @@ from utils.comparison import compare_logits, get_hf_logits
 from utils.weights import download_gpt2_weights, load_gpt2_weights
 from config import GPT2Config
 from backends.jax.model import gpt2_forward
+from backends.jax.loader import load_weights
 
 
 def load_weights_for_jax() -> Dict[str, jax.Array]:
     """Download and load GPT-2 weights, convert to JAX arrays."""
-    print("📦 Downloading GPT-2 weights...")
-    model_dir = download_gpt2_weights("gpt2")
-
-    print("🔄 Loading weights...")
-    weights_obj = load_gpt2_weights(model_dir)
-
-    # Convert to JAX arrays
-    weights = {name: jnp.array(param) for name, param in weights_obj.params.items()}
+    print("📦 Loading GPT-2 weights...")
+    weights = load_weights("gpt2")
 
     print(f"✅ Loaded {len(weights)} weight tensors")
     total_params = sum(p.size for p in weights.values())
