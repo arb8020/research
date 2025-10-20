@@ -37,6 +37,9 @@ def load_weights(model_name: str = "gpt2", cache_dir: Optional[str] = None) -> D
     # Convert to JAX arrays
     weights = {name: jnp.array(param) for name, param in weights_obj.params.items()}
 
+    # Convert HuggingFace format to our format (add convenience aliases)
+    weights = convert_hf_weights_to_jax_format(weights)
+
     return weights
 
 
