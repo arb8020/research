@@ -103,8 +103,11 @@ fi""",
         ]
         bifrost_client.push(bootstrap_cmd=bootstrap_cmd)
     else:
-        # Just sync code on existing instance
-        bifrost_client.push()
+        # Sync code and update dependencies on existing instance
+        bootstrap_cmd = [
+            "uv sync --extra example-nano-inference-jax"
+        ]
+        bifrost_client.push(bootstrap_cmd=bootstrap_cmd)
 
 
 def find_instance_by_name_or_id(gpu_client, identifier):
