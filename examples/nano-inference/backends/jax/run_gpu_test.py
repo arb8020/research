@@ -6,13 +6,13 @@ Supports both provisioning new instances and reusing existing ones for fast iter
 
 Usage:
     # Provision new GPU and run test
-    python jax/run_gpu_test.py
+    python backends/jax/run_gpu_test.py
 
     # Reuse existing instance (fast iteration)
-    python jax/run_gpu_test.py --use-existing jax-gpt2-dev
+    python backends/jax/run_gpu_test.py --use-existing jax-gpt2-dev
 
     # Or with direct SSH connection
-    python jax/run_gpu_test.py --use-existing root@123.45.67.89:22
+    python backends/jax/run_gpu_test.py --use-existing root@123.45.67.89:22
 """
 
 import argparse
@@ -121,7 +121,7 @@ def run_gpu_test(bifrost_client):
     logger.info("Running GPU test...")
 
     result = bifrost_client.exec(
-        "uv run python examples/nano-inference/jax/test_gpu.py",
+        "uv run python examples/nano-inference/backends/jax/test_gpu.py",
         working_dir="~/.bifrost/workspace"
     )
 
@@ -191,7 +191,7 @@ def run_deploy_and_test(provider=None, use_existing=None, name=None, terminate=F
 
         logger.info(f"Deployed: {instance_name}")
         logger.info(f"  SSH: {instance.ssh_connection_string()}")
-        logger.info(f"  Iterate: python jax/run_gpu_test.py --use-existing {instance_name}")
+        logger.info(f"  Iterate: python backends/jax/run_gpu_test.py --use-existing {instance_name}")
 
         run_gpu_test(bifrost_client)
 

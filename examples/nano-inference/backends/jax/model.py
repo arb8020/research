@@ -14,10 +14,10 @@ from jax import Array
 
 import sys
 from pathlib import Path
-sys.path.append(str(Path(__file__).parent.parent))
+sys.path.append(str(Path(__file__).parent.parent.parent))
 from config import GPT2Config
 
-from layers import (
+from backends.jax.layers import (
     project_and_embed,
     embedding_lookup,
     layer_norm,

@@ -3,7 +3,7 @@
 Simple example showing how to use the JAX GPT-2 implementation.
 
 Usage:
-    python jax/example.py
+    python backends/jax/example.py
 """
 
 import sys
@@ -14,10 +14,10 @@ import jax.numpy as jnp
 import numpy as np
 
 # Import local modules
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config import GPT2Config
-from jax.model import gpt2_forward
-from jax.loader import load_weights
+from backends.jax.model import gpt2_forward
+from backends.jax.loader import load_weights
 
 
 def main():
