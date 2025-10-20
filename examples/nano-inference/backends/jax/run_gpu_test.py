@@ -138,7 +138,7 @@ def run_gpu_test(bifrost_client):
     logger.info("=" * 70)
 
     assert result.exit_code == 0, f"Test failed with exit code {result.exit_code}"
-    assert "All tests passed!" in result.stdout, "Test did not report success"
+    assert "ALL TESTS PASSED!" in result.stdout, "Test did not report success"
 
     return result
 
