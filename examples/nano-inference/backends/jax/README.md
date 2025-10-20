@@ -8,7 +8,7 @@ Clean, well-documented GPT-2 implementation in JAX following best practices:
 ## Files
 
 ```
-jax/
+backends/jax/
 ├── kvcache.py      # KV cache with functional JAX array updates
 ├── layers.py       # Layer implementations (attention, MLP, layer norm)
 ├── model.py        # GPT-2 model and transformer blocks
@@ -16,6 +16,8 @@ jax/
 ├── generate.py     # Generation utilities (placeholder)
 ├── example.py      # Simple usage example
 ├── test_gpt2.py    # Test suite comparing against HuggingFace
+├── test_gpu.py     # GPU test script (runs on remote)
+├── run_gpu_test.py # GPU deployment script
 └── README.md       # This file
 ```
 
@@ -39,7 +41,7 @@ uv sync --extra example-nano-inference-jax
 ### Quick Example
 
 ```bash
-uv run python examples/nano-inference/jax/example.py
+uv run python examples/nano-inference/backends/jax/example.py
 ```
 
 This will:
@@ -51,10 +53,10 @@ This will:
 
 ```bash
 # Test on 5 different inputs
-uv run python examples/nano-inference/jax/test_gpt2.py
+uv run python examples/nano-inference/backends/jax/test_gpt2.py
 
 # Test on more batches
-uv run python examples/nano-inference/jax/test_gpt2.py --batches 10
+uv run python examples/nano-inference/backends/jax/test_gpt2.py --batches 10
 ```
 
 Tests compare JAX implementation against HuggingFace reference.
@@ -67,8 +69,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path("examples/nano-inference")))
 
 import jax.numpy as jnp
-from jax.model import gpt2_forward
-from jax.loader import load_weights
+from backends.jax.model import gpt2_forward
+from backends.jax.loader import load_weights
 from config import GPT2Config
 
 # Load weights
@@ -129,7 +131,7 @@ Follows three key principles:
 The test suite compares against HuggingFace GPT-2:
 
 ```bash
-$ uv run python examples/nano-inference/jax/test_gpt2.py
+$ uv run python examples/nano-inference/backends/jax/test_gpt2.py
 
 🧪 Testing JAX GPT-2 vs HuggingFace across multiple batches
 ======================================================================
@@ -157,19 +159,19 @@ Deploy and test on a remote GPU instance:
 
 ```bash
 # First time: provision new GPU and run test
-python jax/run_gpu_test.py
+python examples/nano-inference/backends/jax/run_gpu_test.py
 
 # Keep instance running for fast iteration
-# Output will show: "Iterate: python jax/run_gpu_test.py --use-existing jax-gpt2-dev"
+# Output will show: "Iterate: python backends/jax/run_gpu_test.py --use-existing jax-gpt2-dev"
 
 # Fast iteration: reuse existing instance (no bootstrap needed)
-python jax/run_gpu_test.py --use-existing jax-gpt2-dev
+python examples/nano-inference/backends/jax/run_gpu_test.py --use-existing jax-gpt2-dev
 
 # Or with direct SSH
-python jax/run_gpu_test.py --use-existing root@123.45.67.89:22
+python examples/nano-inference/backends/jax/run_gpu_test.py --use-existing root@123.45.67.89:22
 
 # Provision and terminate after test
-python jax/run_gpu_test.py --terminate
+python examples/nano-inference/backends/jax/run_gpu_test.py --terminate
 ```
 
 **Prerequisites for GPU testing:**

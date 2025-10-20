@@ -69,11 +69,11 @@ def test_gpt2_gpu():
 
     try:
         import jax.numpy as jnp
-        sys.path.insert(0, str(Path(__file__).parent.parent))
+        sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
         from config import GPT2Config
-        from jax.model import gpt2_forward
-        from jax.loader import load_weights
+        from backends.jax.model import gpt2_forward
+        from backends.jax.loader import load_weights
 
         print("   Loading GPT-2 weights...")
         weights = load_weights("gpt2")
