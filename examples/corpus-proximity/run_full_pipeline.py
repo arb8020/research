@@ -21,11 +21,9 @@ logger = logging.getLogger(__name__)
 def run_step(script: str, config_arg: str, *extra: str) -> None:
     cmd = [sys.executable, str(SCRIPT_DIR / script), config_arg, *extra]
     logger.info("Running %s", " ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.stdout:
-        logger.info("STDOUT:\n%s", result.stdout)
-    if result.stderr:
-        logger.error("STDERR:\n%s", result.stderr)
+    # Use stdout=None and stderr=None to inherit parent's streams
+    # This allows progress bars to display in real-time
+    result = subprocess.run(cmd, stdout=None, stderr=None, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"{script} failed with exit code {result.returncode}")
 
