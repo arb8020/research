@@ -82,6 +82,13 @@ example-nano-inference-jax = [
     "torch>=2.0.0",  # Required for comparison utilities
 ]
 
+# GPT-2 speedrun training
+example-speedrun = [
+    "torch>=2.4.0",
+    "huggingface-hub>=0.20.0",
+    "numpy>=1.24.0",
+]
+
 [project.scripts]
 corpus-proximity = "corpus_proximity_cli:main"
 
