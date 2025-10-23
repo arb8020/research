@@ -249,13 +249,15 @@ def recursive_cluster(
         noise_indices=noise_indices
     )
 
-    # Decide whether to recurse (Spotify insight: only if low coherence)
-    if sil_score >= silhouette_threshold:
-        # High coherence = don't subdivide
-        logger.info(f"  High coherence ({sil_score:.3f} >= {silhouette_threshold}), not recursing")
+    # Decide whether to recurse based on silhouette score
+    # High silhouette = well-separated clusters -> DO recurse
+    # Low silhouette = poorly-separated clusters -> DON'T recurse
+    if sil_score < silhouette_threshold:
+        # Low separation = clusters are fuzzy, don't subdivide
+        logger.info(f"  Poor cluster separation ({sil_score:.3f} < {silhouette_threshold}), not recursing")
         return current_node
 
-    logger.info(f"  Low coherence ({sil_score:.3f} < {silhouette_threshold}), recursing into {n_clusters} subclusters")
+    logger.info(f"  Good cluster separation ({sil_score:.3f} >= {silhouette_threshold}), recursing into {n_clusters} subclusters")
 
     # Recurse into each subcluster
     for i, label in enumerate(sorted(unique_labels)):
