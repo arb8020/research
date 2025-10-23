@@ -327,18 +327,57 @@ class BifrostClient:
             # Build command with environment and working directory
             full_command = self._build_command_with_env(command, working_dir, env_vars)
 
-            # Execute command
-            stdin, stdout, stderr = ssh_client.exec_command(full_command)
+            # Open interactive channel to stream combined stdout/stderr in real-time
+            transport = ssh_client.get_transport()
+            if transport is None:
+                raise ConnectionError("SSH transport is not available")
 
-            # Stream output line by line (combines stdout and stderr)
-            # Note: This won't interleave perfectly but is good enough for most cases
-            for line in iter(stdout.readline, ""):
-                yield line.rstrip('\n')
+            channel = None
+            try:
+                channel = transport.open_session()
+                channel.set_combine_stderr(True)
+                channel.get_pty()
+                channel.exec_command(full_command)
 
-            # Also yield stderr if any
-            for line in iter(stderr.readline, ""):
-                stripped_line = line.rstrip('\n')
-                yield f"[stderr] {stripped_line}"
+                buffer = ""
+                while True:
+                    if channel.recv_ready():
+                        chunk = channel.recv(4096)
+                        if not chunk:
+                            break
+
+                        text = chunk.decode(errors="replace")
+                        buffer += text
+
+                        while "\n" in buffer:
+                            line, buffer = buffer.split("\n", 1)
+                            yield line.rstrip("\r")
+                        continue
+
+                    if channel.exit_status_ready():
+                        break
+
+                    time.sleep(0.1)
+
+                # Drain any remaining data after command exit
+                while channel.recv_ready():
+                    chunk = channel.recv(4096)
+                    if not chunk:
+                        break
+                    text = chunk.decode(errors="replace")
+                    buffer += text
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        yield line.rstrip("\r")
+
+                if buffer:
+                    yield buffer.rstrip("\r")
+
+                # Wait for command exit to propagate errors to caller
+                channel.recv_exit_status()
+            finally:
+                if channel is not None:
+                    channel.close()
 
         except Exception as e:
             if isinstance(e, ConnectionError):
