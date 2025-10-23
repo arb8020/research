@@ -13,6 +13,40 @@ from .types import RemoteConfig
 logger = logging.getLogger(__name__)
 
 
+def _check_untracked_files() -> Optional[List[str]]:
+    """Check for untracked files in the git repo.
+
+    Returns:
+        List of untracked files, or None if not in a git repo
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ['git', 'status', '--porcelain'],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+
+        if result.returncode != 0:
+            return None  # Not a git repo
+
+        # Parse git status output
+        # Untracked files start with '??'
+        untracked = []
+        for line in result.stdout.splitlines():
+            if line.startswith('??'):
+                # Extract filename (remove '?? ' prefix)
+                filename = line[3:].strip()
+                untracked.append(filename)
+
+        return untracked if untracked else None
+
+    except Exception:
+        return None  # Git command failed
+
+
 def deploy_code(ssh_client: paramiko.SSHClient,
                 config: RemoteConfig,
                 workspace_path: str) -> str:
@@ -122,6 +156,16 @@ def _create_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> No
     import tempfile
     import os
 
+    # Check for untracked files and warn user
+    untracked = _check_untracked_files()
+    if untracked:
+        logger.warning(f"⚠️  Found {len(untracked)} untracked file(s) that will NOT be deployed:")
+        for file in untracked[:5]:  # Show first 5
+            logger.warning(f"  - {file}")
+        if len(untracked) > 5:
+            logger.warning(f"  ... and {len(untracked) - 5} more")
+        logger.warning("Tip: Use 'git add' to track these files, or add them to .gitignore")
+
     logger.debug("Creating git bundle of current repo...")
 
     # Create git bundle locally
@@ -176,6 +220,16 @@ def _update_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> No
     import subprocess
     import tempfile
     import os
+
+    # Check for untracked files and warn user
+    untracked = _check_untracked_files()
+    if untracked:
+        logger.warning(f"⚠️  Found {len(untracked)} untracked file(s) that will NOT be deployed:")
+        for file in untracked[:5]:  # Show first 5
+            logger.warning(f"  - {file}")
+        if len(untracked) > 5:
+            logger.warning(f"  ... and {len(untracked) - 5} more")
+        logger.warning("Tip: Use 'git add' to track these files, or add them to .gitignore")
 
     logger.debug("Creating git bundle of current repo...")
 
