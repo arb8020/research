@@ -5,6 +5,16 @@ set -e
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
 
+# Activate virtual environment (uv creates .venv in workspace root)
+# Go up two levels: speedrun -> examples -> workspace root
+WORKSPACE_ROOT="$(cd ../.. && pwd)"
+if [ -f "$WORKSPACE_ROOT/.venv/bin/activate" ]; then
+    source "$WORKSPACE_ROOT/.venv/bin/activate"
+    echo "Activated virtual environment: $WORKSPACE_ROOT/.venv"
+else
+    echo "Warning: Virtual environment not found at $WORKSPACE_ROOT/.venv"
+fi
+
 # Default values
 SCRIPT="single-file.py"
 GPU_COUNT=8
