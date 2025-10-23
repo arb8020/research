@@ -53,5 +53,6 @@ if [ ! -d "data/fineweb10B" ]; then
 fi
 
 # Run training with torchrun
+# Use PYTHONUNBUFFERED=1 to get real-time output
 echo "Starting training..."
-torchrun --standalone --nproc_per_node=$GPU_COUNT "$SCRIPT"
+PYTHONUNBUFFERED=1 torchrun --standalone --nproc_per_node=$GPU_COUNT "$SCRIPT"
