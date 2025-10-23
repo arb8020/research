@@ -163,6 +163,15 @@ def wait_for_pipeline_completion(bifrost_client: BifrostClient, timeout: int = 3
     poll_interval = 30
     max_iterations = max(1, timeout // poll_interval)
     logging.info("⏳ Waiting for pipeline completion (timeout: %ss)", timeout)
+
+    # Define pipeline steps for progress reporting
+    steps = [
+        ("prepare_data.py", "📥 Downloading data"),
+        ("embed_chunks.py", "🧮 Generating embeddings"),
+        ("cluster_corpus.py", "🗂️  Clustering corpus"),
+        ("name_clusters.py", "🏷️  Naming clusters"),
+    ]
+
     check_cmd = f"""
 cd {REMOTE_WORKSPACE_PATH}
 if [ -f .pipeline_complete ]; then
@@ -173,6 +182,17 @@ else
   echo RUNNING
 fi
 """
+
+    # Command to get current step from log
+    progress_cmd = f"""
+cd {REMOTE_WORKSPACE_PATH}
+if [ -f pipeline.log ]; then
+  tail -20 pipeline.log | grep -E '(prepare_data|embed_chunks|cluster_corpus|name_clusters)' | tail -1
+else
+  echo ""
+fi
+"""
+
     for i in range(max_iterations):
         result = bifrost_client.exec(check_cmd)
         status = (result.stdout or "RUNNING").strip().splitlines()[-1]
@@ -182,8 +202,22 @@ fi
         if status == "FAILED":
             logging.error("❌ Remote pipeline reported failure")
             return False
+
+        # Get current step from logs
+        progress_result = bifrost_client.exec(progress_cmd)
+        current_step = "Unknown"
+        step_emoji = "⏳"
+
+        if progress_result.stdout:
+            log_line = progress_result.stdout.strip()
+            for step_name, step_desc in steps:
+                if step_name in log_line:
+                    current_step = step_desc
+                    step_emoji = step_desc.split()[0]
+                    break
+
         elapsed = (i + 1) * poll_interval
-        logging.info("Pipeline running... (%ss / %ss)", elapsed, timeout)
+        logging.info("%s Pipeline running: %s (%ss / %ss)", step_emoji, current_step, elapsed, timeout)
         time.sleep(poll_interval)
     logging.error("❌ Pipeline timed out after %ss", timeout)
     return False
