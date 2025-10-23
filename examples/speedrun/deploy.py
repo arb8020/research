@@ -199,26 +199,32 @@ def main():
         command = f"bash examples/speedrun/run.sh --script {args.script} --gpu-count {args.gpu_count}"
         print(f"Command: {command}")
 
-        result = bifrost_client.exec(
-            command,
-            working_dir=workspace_path,
-            detached=args.detached,
-        )
-
         if args.detached:
+            # Use run_detached for background execution
+            job_info = bifrost_client.run_detached(
+                command=command,
+                no_deploy=True  # Already deployed in step 2
+            )
             print(f"✓ Training launched in detached mode")
-            print(f"  Job ID: {result.job_id}")
+            print(f"  Job ID: {job_info.job_id}")
             print(f"\nTo monitor the job:")
-            print(f"  bifrost logs {result.job_id}")
-            print(f"  bifrost status {result.job_id}")
+            print(f"  bifrost logs {job_info.job_id}")
+            print(f"  bifrost status {job_info.job_id}")
             print(f"\nTo download logs later:")
-            print(f"  bifrost download {result.job_id} logs/ ./results/")
+            print(f"  bifrost download {job_info.job_id} logs/ ./results/")
         else:
+            # Use exec for synchronous execution
+            result = bifrost_client.exec(
+                command,
+                working_dir=workspace_path,
+            )
             print(f"✓ Training completed")
             print(f"  Exit code: {result.exit_code}")
             if result.exit_code != 0:
                 print(f"  ⚠ Training failed!")
                 print(result.stderr)
+            else:
+                print(result.stdout)
 
         # Step 4: Cleanup (optional)
         # Don't terminate if using existing instance
