@@ -5,19 +5,22 @@
 Deploy and run the full pipeline (data prep, embedding, clustering, naming) on a GPU instance:
 
 ```bash
-# Full pipeline with automatic GPU provisioning
-python deploy.py --config configs/clustering_02_full.py
+# Provision GPU, run pipeline in tmux, and sync results back automatically
+corpus-proximity index --config configs/clustering_02_full.py --deploy-gpu
 
-# Or use an existing instance by name
+# Keep the GPU alive for debugging after the run completes
+corpus-proximity index --config configs/clustering_02_full.py --deploy-gpu --keep-running
+
+# Reuse an existing instance by name or ID
 python deploy.py --config configs/clustering_02_full.py --use-existing corpus-proximity-dev
 
-# Or connect to a specific SSH endpoint
+# Or connect directly to an SSH endpoint
 python deploy.py --config configs/clustering_02_full.py --use-existing root@123.45.67.89:22
 ```
 
 ## What It Does
 
-The deploy script runs a complete pipeline on a GPU instance:
+The deployment flow runs the full pipeline inside a tmux session on the GPU:
 
 1. **Data Preparation** (`prepare_data.py`)
    - Downloads FineWeb-Edu shards
@@ -29,22 +32,21 @@ The deploy script runs a complete pipeline on a GPU instance:
    - Embeds with Arctic-Embed-L (1024-dim)
    - Caches embeddings for clustering
 
-3. **Search Validation** (`test_search.py`)
-   - Tests known/unknown sentence search
-   - Validates embedding quality
-
-4. **Clustering** (`cluster_corpus.py`) ⭐ NEW
+3. **Clustering** (`cluster_corpus.py`)
    - Recursive UMAP + HDBSCAN clustering
    - Silhouette gating (only recurse if coherence < 0.3)
    - Adaptive parameters with depth decay
    - Tracks noise points (outliers)
    - Saves cluster tree with sample texts
 
-5. **LLM Naming** (`name_clusters.py --name`) ⭐ NEW
+4. **LLM Naming** (`name_clusters.py --name`)
    - Breadth-first cluster naming with OpenAI API
    - Parallel naming using asyncio
    - Hierarchical context (parent names)
    - Updates cluster tree with generated names
+
+When the run finishes, results are synced back to `remote_results/clustering_<timestamp>/`,
+including the cluster tree, stats, chunk-to-cluster map, and `pipeline.log`.
 
 ## Configuration
 
@@ -139,7 +141,9 @@ The `name_clusters.py` CLI provides several inspection modes:
 
 ## Output Structure
 
-After running the pipeline, you'll have:
+After running the pipeline, you'll have synced results in `remote_results/clustering_<timestamp>/`
+with the cluster tree, statistics, chunk-to-cluster cache, and `pipeline.log`. The full cached
+artifacts remain under the project data directories:
 
 ```
 data/

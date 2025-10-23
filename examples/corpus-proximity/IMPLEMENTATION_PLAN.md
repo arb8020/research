@@ -382,8 +382,8 @@ class CorpusIndex:
 import numpy as np
 from typing import List
 from datetime import datetime
-import spacy
 
+from syntok import segmenter
 from corpus_index import CorpusIndex
 from dataclasses import dataclass, asdict
 
@@ -399,17 +399,14 @@ class AnnotatedOutput:
 
 
 def split_into_sentences(text: str) -> list[str]:
-    """Split text into sentences using spaCy.
-
-    Args:
-        text: Input text
-
-    Returns:
-        List of sentence strings
-    """
-    nlp = spacy.load("en_core_web_sm")
-    doc = nlp(text)
-    return [sent.text.strip() for sent in doc.sents]
+    """Split text into sentences using syntok (pure Python)."""
+    sentences: list[str] = []
+    for paragraph in segmenter.analyze(text):
+        for sentence in paragraph:
+            text_span = "".join(token.spacing + token.value for token in sentence).strip()
+            if text_span:
+                sentences.append(text_span)
+    return sentences
 
 
 def compute_distances(query_emb: np.ndarray, corpus_embs: np.ndarray) -> np.ndarray:
@@ -1593,17 +1590,14 @@ corpus-proximity = [
     "scikit-learn>=1.3.0",
 
     # New for annotation
-    "spacy>=3.7.0",
+    "syntok>=1.4.0",
 ]
 
 [project.scripts]
 corpus-proximity = "examples.corpus_proximity.cli:main"
 ```
 
-**Install spaCy model:**
-```bash
-python -m spacy download en_core_web_sm
-```
+**Note:** syntok is pure Python and does not require external model downloads.
 
 ---
 

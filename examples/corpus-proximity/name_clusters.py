@@ -406,31 +406,41 @@ async def main():
 
     # Execute requested action
     if args.name:
-        # Generate names
-        logger.info("Generating cluster names...")
+        success_marker = Path(".naming_complete")
+        failure_marker = Path(".naming_failed")
+        for marker in (success_marker, failure_marker):
+            if marker.exists():
+                marker.unlink()
 
-        # Load .env file and get API key
-        load_dotenv()
-        api_key = os.getenv("OPENAI_API_KEY", "")
-        if not api_key:
-            logger.error("OPENAI_API_KEY not set. Add it to .env file or export it")
-            return 1
+        try:
+            logger.info("Generating cluster names...")
 
-        endpoint = Endpoint(
-            model=config.clustering.naming_model,
-            api_base=config.clustering.naming_api_base,
-            api_key=api_key,
-            temperature=config.clustering.naming_temperature,
-            max_tokens=config.clustering.naming_max_tokens
-        )
+            load_dotenv()
+            api_key = os.getenv("OPENAI_API_KEY", "")
+            if not api_key:
+                logger.error("OPENAI_API_KEY not set. Add it to .env file or export it")
+                return 1
 
-        root = await name_cluster_tree(root, embeddings, texts, endpoint)
+            endpoint = Endpoint(
+                model=config.clustering.naming_model,
+                api_base=config.clustering.naming_api_base,
+                api_key=api_key,
+                temperature=config.clustering.naming_temperature,
+                max_tokens=config.clustering.naming_max_tokens
+            )
 
-        # Save updated tree
-        from cluster_corpus import save_cluster_tree
-        logger.info(f"Saving updated tree to {tree_path}")
-        save_cluster_tree(root, texts, [], tree_path)
-        logger.info("Done!")
+            root = await name_cluster_tree(root, embeddings, texts, endpoint)
+
+            from cluster_corpus import save_cluster_tree
+            logger.info(f"Saving updated tree to {tree_path}")
+            save_cluster_tree(root, texts, [], tree_path)
+            success_marker.touch()
+            logger.info(f"✅ Naming complete, marker: {success_marker}")
+            logger.info("Done!")
+        except Exception as exc:
+            failure_marker.touch()
+            logger.error(f"❌ Naming failed, marker: {failure_marker} ({exc})")
+            raise
 
     elif args.inspect:
         # Inspect specific cluster
