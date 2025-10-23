@@ -1,0 +1,76 @@
+2025-10-22 22:34:48,877 - INFO - ================================================================================
+2025-10-22 22:34:48,877 - INFO - Starting corpus-proximity pipeline
+2025-10-22 22:34:48,877 - INFO - ================================================================================
+2025-10-22 22:34:48,877 - INFO - Running /Users/chiraagbalu/research/.venv/bin/python /Users/chiraagbalu/research/examples/corpus-proximity/prepare_data.py configs/clustering_01_tiny.py
+2025-10-22 22:34:58,916 - ERROR - STDERR:
+2025-10-22 22:34:51,162 - INFO - Starting data preparation: 1 shards
+2025-10-22 22:34:51,162 - INFO - Phase 1: Downloading shards
+2025-10-22 22:34:51,162 - INFO - Shard 0 already exists, skipping
+2025-10-22 22:34:51,162 - INFO - Phase 2: Processing shards
+2025-10-22 22:34:58,253 - INFO - Processed shard 0: 53248 chunks
+2025-10-22 22:34:58,253 - INFO - Phase 3: Saving chunks
+2025-10-22 22:34:58,779 - INFO - Saved 53248 chunks to /Users/chiraagbalu/research/examples/corpus-proximity/data/processed_tiny/chunks_tiny.jsonl
+2025-10-22 22:34:58,779 - INFO - 
+================================================================================
+2025-10-22 22:34:58,779 - INFO - Sample chunks:
+2025-10-22 22:34:58,779 - INFO - ================================================================================
+2025-10-22 22:34:58,780 - INFO - 
+Chunk 0:
+2025-10-22 22:34:58,780 - INFO -   Shard ID: 0
+2025-10-22 22:34:58,780 - INFO -   Chunk ID: 0
+2025-10-22 22:34:58,780 - INFO -   Text: Shipment & Transport-Sea, Air, Rail, Road, Pipeline
+The mode of transportation is an important consideration when planning the shipment process. Besides the costs, the urgency of the shipment, the val...
+2025-10-22 22:34:58,780 - INFO - 
+Chunk 1:
+2025-10-22 22:34:58,780 - INFO -   Shard ID: 0
+2025-10-22 22:34:58,780 - INFO -   Chunk ID: 1
+2025-10-22 22:34:58,780 - INFO -   Text: 12. Definition — In this Part, unless the context otherwise requires, “the State” includes the Government and Parliament of India and the Government and the Legislature of each of the States and all l...
+2025-10-22 22:34:58,780 - INFO - 
+Chunk 2:
+2025-10-22 22:34:58,780 - INFO -   Shard ID: 0
+2025-10-22 22:34:58,780 - INFO -   Chunk ID: 2
+2025-10-22 22:34:58,780 - INFO -   Text: Gúthwinë was the sword that belonged to Éomer.
+It was borne by him at the Battle of the Hornburg, and presumably at the Battle of the Pelennor Fields and the battle before Morannon.
+In Old English, Gú...
+2025-10-22 22:34:58,780 - INFO - 
+Chunk 3:
+2025-10-22 22:34:58,780 - INFO -   Shard ID: 0
+2025-10-22 22:34:58,780 - INFO -   Chunk ID: 3
+2025-10-22 22:34:58,780 - INFO -   Text: The robot in the picture above is called YOLO, which stands for “your own living object.” It’s pretty weird looking—not like something you or I would design if someone were to tell us to design a soci...
+2025-10-22 22:34:58,780 - INFO - 
+Chunk 4:
+2025-10-22 22:34:58,780 - INFO -   Shard ID: 0
+2025-10-22 22:34:58,780 - INFO -   Chunk ID: 4
+2025-10-22 22:34:58,780 - INFO -   Text: Metal additive manufacturing (AM) is growing at a fast-paced spurring the world’s current economy. According to the Wohler’s Report metal AM grew nearly 76% from 2012 to 2013. Much of this growth is d...
+2025-10-22 22:34:58,846 - INFO - 
+================================================================================
+2025-10-22 22:34:58,846 - INFO - Total chunks: 53248
+2025-10-22 22:34:58,846 - INFO - ================================================================================
+
+2025-10-22 22:34:58,847 - INFO - Saved config to /Users/chiraagbalu/research/examples/corpus-proximity/data/processed_tiny/config.json
+2025-10-22 22:34:58,847 - INFO - Data preparation complete!
+
+2025-10-22 22:34:58,916 - INFO - Running /Users/chiraagbalu/research/.venv/bin/python /Users/chiraagbalu/research/examples/corpus-proximity/embed_chunks.py configs/clustering_01_tiny.py
+2025-10-22 22:35:04,819 - ERROR - STDERR:
+Traceback (most recent call last):
+  File "/Users/chiraagbalu/research/examples/corpus-proximity/embed_chunks.py", line 12, in <module>
+    from sentence_transformers import SentenceTransformer
+  File "/Users/chiraagbalu/research/.venv/lib/python3.13/site-packages/sentence_transformers/__init__.py", line 10, in <module>
+    from sentence_transformers.backend import (
+    ...<3 lines>...
+    )
+  File "/Users/chiraagbalu/research/.venv/lib/python3.13/site-packages/sentence_transformers/backend/__init__.py", line 5, in <module>
+    from .quantize import export_dynamic_quantized_onnx_model, export_static_quantized_openvino_model
+  File "/Users/chiraagbalu/research/.venv/lib/python3.13/site-packages/sentence_transformers/backend/quantize.py", line 7, in <module>
+    from sentence_transformers.util import disable_datasets_caching, is_datasets_available
+  File "/Users/chiraagbalu/research/.venv/lib/python3.13/site-packages/sentence_transformers/util/__init__.py", line 15, in <module>
+    from .retrieval import (
+    ...<5 lines>...
+    )
+  File "/Users/chiraagbalu/research/.venv/lib/python3.13/site-packages/sentence_transformers/util/retrieval.py", line 13, in <module>
+    from .similarity import cos_sim
+  File "/Users/chiraagbalu/research/.venv/lib/python3.13/site-packages/sentence_transformers/util/similarity.py", line 5, in <module>
+    from sklearn.metrics import pairwise_distances
+ImportError: cannot import name 'pairwise_distances' from 'sklearn.metrics' (unknown location)
+
+2025-10-22 22:35:04,820 - ERROR - Pipeline failed: embed_chunks.py failed with exit code 1
