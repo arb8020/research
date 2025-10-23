@@ -4,6 +4,10 @@
 Based on Spotify's approach: https://engineering.atspotify.com/2023/12/recursive-embedding-and-clustering
 
 Key insight: Re-embed and re-cluster at each level to discover hidden structure.
+
+Alternative approach: Recursive K-means (https://arxiv.org/abs/1706.07913) could be
+simpler and faster than UMAP+HDBSCAN, though less sophisticated for noise handling
+and discovering non-convex clusters. Worth considering for very large corpora.
 """
 
 import json
