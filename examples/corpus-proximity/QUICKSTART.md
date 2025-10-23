@@ -20,7 +20,6 @@ Model: "The derivative of x^2 is 2x."
 ```bash
 # Install dependencies
 uv sync --extra example-corpus-proximity
-python -m spacy download en_core_web_sm
 ```
 
 ---
@@ -31,9 +30,9 @@ python -m spacy download en_core_web_sm
 
 ```bash
 # Deploy to GPU, build index, sync results back
-python deploy.py --config configs/clustering_01_tiny_gpu.py
+corpus-proximity index --config configs/clustering_01_tiny_gpu.py --deploy-gpu
 
-# Results appear in: remote_results/clustering_<timestamp>/
+# Results appear in: examples/corpus-proximity/remote_results/clustering_<timestamp>/
 ```
 
 **What happens:**

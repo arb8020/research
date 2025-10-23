@@ -18,6 +18,7 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import List, Dict, Optional
 
+
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,47 @@ class ClusterNode:
         assert self.depth >= 0, f"depth must be non-negative, got {self.depth}"
         assert 0.0 <= self.silhouette_score <= 1.0, \
             f"silhouette_score must be in [0, 1], got {self.silhouette_score}"
+
+
+# ──────────────────────────── Helper Functions ─────────────────────────────
+
+
+def build_chunk_to_cluster_map(tree: ClusterNode) -> Dict[int, str]:
+    """Build mapping from chunk index to most specific cluster ID.
+
+    Args:
+        tree: Root of the cluster tree.
+
+    Returns:
+        Dictionary mapping global chunk indices to cluster identifiers.
+    """
+    mapping: Dict[int, str] = {}
+
+    def traverse(node: ClusterNode):
+        if not node.children:
+            for chunk_idx in node.indices:
+                mapping[int(chunk_idx)] = node.cluster_id
+            return
+
+        for child in node.children:
+            traverse(child)
+
+        for noise_idx in node.noise_indices:
+            assert 0 <= noise_idx < len(node.indices), (
+                f"Noise index {noise_idx} out of bounds for cluster {node.cluster_id}"
+            )
+            chunk_idx = int(node.indices[noise_idx])
+            mapping[chunk_idx] = node.cluster_id
+
+    traverse(tree)
+
+    expected_indices = {int(idx) for idx in tree.indices}
+    assert set(mapping.keys()) == expected_indices, (
+        "Chunk-to-cluster map must cover all indices; "
+        f"expected {len(expected_indices)} keys, built {len(mapping)}"
+    )
+
+    return mapping
 
 
 # ────────────────────────────── Core Clustering ──────────────────────────────
@@ -440,6 +482,12 @@ def main():
     else:
         config = Config()
 
+    success_marker = Path(".clustering_complete")
+    failure_marker = Path(".clustering_failed")
+    for marker in (success_marker, failure_marker):
+        if marker.exists():
+            marker.unlink()
+
     logger.info("="*80)
     logger.info("Recursive Clustering Pipeline")
     logger.info("="*80)
@@ -461,80 +509,89 @@ def main():
     if tree_path.exists():
         logger.info(f"Cluster tree already exists at {tree_path}")
         logger.info("Skipping clustering. Delete cache to re-run.")
+        success_marker.touch()
+        logger.info(f"✅ Clustering complete (cache hit), marker: {success_marker}")
         return 0
 
-    # Load and embed corpus
-    embeddings, texts, metadata = load_and_embed_corpus(config)
+    try:
+        embeddings, texts, metadata = load_and_embed_corpus(config)
 
-    # Cache embeddings
-    embedding_cache_dir = config.clustering.embedding_cache_dir / cache_key
-    embedding_cache_dir.mkdir(parents=True, exist_ok=True)
+        embedding_cache_dir = config.clustering.embedding_cache_dir / cache_key
+        embedding_cache_dir.mkdir(parents=True, exist_ok=True)
 
-    embeddings_path = embedding_cache_dir / "embeddings.npy"
-    metadata_path = embedding_cache_dir / "metadata.jsonl"
+        embeddings_path = embedding_cache_dir / "embeddings.npy"
+        metadata_path = embedding_cache_dir / "metadata.jsonl"
 
-    logger.info(f"Caching embeddings to {embedding_cache_dir}")
-    np.save(embeddings_path, embeddings)
+        logger.info(f"Caching embeddings to {embedding_cache_dir}")
+        np.save(embeddings_path, embeddings)
 
-    with open(metadata_path, 'w') as f:
-        for meta in metadata:
-            f.write(json.dumps(meta) + '\n')
+        with open(metadata_path, 'w') as f:
+            for meta in metadata:
+                f.write(json.dumps(meta) + '\n')
 
-    # Run recursive clustering
-    logger.info("")
-    logger.info("="*80)
-    logger.info("Starting recursive clustering...")
-    logger.info("="*80)
+        logger.info("")
+        logger.info("="*80)
+        logger.info("Starting recursive clustering...")
+        logger.info("="*80)
 
-    root_node = recursive_cluster(
-        embeddings=embeddings,
-        texts=texts,
-        metadata=metadata,
-        depth=0,
-        max_depth=config.clustering.max_depth,
-        base_pct=config.clustering.base_pct,
-        decay=config.clustering.decay,
-        silhouette_threshold=config.clustering.silhouette_threshold,
-        umap_n_components=config.clustering.umap_n_components,
-        umap_metric=config.clustering.umap_metric,
-        hdbscan_min_samples=config.clustering.hdbscan_min_samples
-    )
+        root_node = recursive_cluster(
+            embeddings=embeddings,
+            texts=texts,
+            metadata=metadata,
+            depth=0,
+            max_depth=config.clustering.max_depth,
+            base_pct=config.clustering.base_pct,
+            decay=config.clustering.decay,
+            silhouette_threshold=config.clustering.silhouette_threshold,
+            umap_n_components=config.clustering.umap_n_components,
+            umap_metric=config.clustering.umap_metric,
+            hdbscan_min_samples=config.clustering.hdbscan_min_samples
+        )
 
-    logger.info("")
-    logger.info("="*80)
-    logger.info("Clustering complete!")
-    logger.info("="*80)
+        logger.info("")
+        logger.info("="*80)
+        logger.info("Clustering complete!")
+        logger.info("="*80)
 
-    # Compute statistics
-    stats = compute_cluster_stats(root_node)
-    logger.info(f"Total clusters: {stats['total_clusters']}")
-    logger.info(f"Leaf clusters: {stats['leaf_clusters']}")
-    logger.info(f"Max depth: {stats['max_depth']}")
-    logger.info(f"Clusters by depth: {stats['clusters_by_depth']}")
-    logger.info(f"Total noise points: {stats['total_noise_points']}")
+        stats = compute_cluster_stats(root_node)
+        logger.info(f"Total clusters: {stats['total_clusters']}")
+        logger.info(f"Leaf clusters: {stats['leaf_clusters']}")
+        logger.info(f"Max depth: {stats['max_depth']}")
+        logger.info(f"Clusters by depth: {stats['clusters_by_depth']}")
+        logger.info(f"Total noise points: {stats['total_noise_points']}")
 
-    # Save cluster tree
-    logger.info("")
-    logger.info(f"Saving cluster tree to {cache_dir}")
-    save_cluster_tree(root_node, texts, metadata, tree_path)
+        logger.info("")
+        logger.info(f"Saving cluster tree to {cache_dir}")
+        save_cluster_tree(root_node, texts, metadata, tree_path)
 
-    # Save statistics
-    with open(stats_path, 'w') as f:
-        json.dump(stats, f, indent=2)
+        logger.info("Building chunk-to-cluster mapping...")
+        chunk_to_cluster = build_chunk_to_cluster_map(root_node)
+        mapping_path = cache_dir / "chunk_to_cluster.json"
+        with open(mapping_path, 'w') as f:
+            json.dump(chunk_to_cluster, f)
+        logger.info(f"Saved chunk-to-cluster mapping to {mapping_path}")
 
-    logger.info(f"Saved statistics to {stats_path}")
+        with open(stats_path, 'w') as f:
+            json.dump(stats, f, indent=2)
+        logger.info(f"Saved statistics to {stats_path}")
 
-    # Save config for reproducibility
-    config_path = cache_dir / "config.json"
-    config.save(config_path)
-    logger.info(f"Saved config to {config_path}")
+        config_path = cache_dir / "config.json"
+        config.save(config_path)
+        logger.info(f"Saved config to {config_path}")
 
-    logger.info("")
-    logger.info("="*80)
-    logger.info("Pipeline complete!")
-    logger.info("="*80)
+        logger.info("")
+        logger.info("="*80)
+        logger.info("Pipeline complete!")
+        logger.info("="*80)
 
-    return 0
+        success_marker.touch()
+        logger.info(f"✅ Clustering complete, marker: {success_marker}")
+        return 0
+
+    except Exception as exc:
+        failure_marker.touch()
+        logger.error(f"❌ Clustering failed, marker: {failure_marker} ({exc})")
+        raise
 
 
 if __name__ == "__main__":

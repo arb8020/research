@@ -105,12 +105,26 @@ class ClusteringConfig:
 
 
 @dataclass
+class DeploymentConfig:
+    """GPU deployment settings."""
+
+    keep_running: bool = False
+    min_vram: int = 24
+    min_cpu_ram: int = 32
+    max_price: float = 1.0
+    container_disk: int = 50
+    volume_disk: int = 0
+    gpu_filter: str | None = None
+
+
+@dataclass
 class Config:
     """Main configuration container."""
     data: DataConfig = field(default_factory=DataConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     similarity: SimilarityConfig = field(default_factory=SimilarityConfig)
     clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
+    deployment: DeploymentConfig = field(default_factory=DeploymentConfig)
 
     def save(self, path):
         """Save this exact config for reproducibility."""
@@ -149,6 +163,8 @@ class Config:
                         k: Path(v) if k.endswith('_dir') else v
                         for k, v in field_data.items()
                     }
+                elif field_name == 'deployment':
+                    field_data = {k: v for k, v in field_data.items()}
                 kwargs[field_name] = field_type(**field_data)
 
         return cls(**kwargs)
