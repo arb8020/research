@@ -5,6 +5,19 @@ Tests: distributed setup, CUDA availability, GPU communication.
 Should complete in <1 minute.
 """
 
+# Check dependencies are installed
+try:
+    import torch
+    import torch.distributed as dist
+    import huggingface_hub
+    import numpy as np
+except ImportError as e:
+    print(f"✗ Missing dependency: {e}")
+    print("\nInstalled packages:")
+    import subprocess
+    subprocess.run(["pip", "list"])
+    raise
+
 import torch
 import torch.distributed as dist
 

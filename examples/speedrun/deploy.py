@@ -189,9 +189,19 @@ def main():
             ssh_key_path=args.ssh_key_path,
         )
 
-        # Bootstrap: install dependencies
-        workspace_path = bifrost_client.push(bootstrap_cmd="uv sync --extra example-speedrun")
+        # Deploy code (without bootstrap first)
+        workspace_path = bifrost_client.push()
         print(f"✓ Code deployed to: {workspace_path}")
+
+        # Bootstrap: install dependencies (with streaming output)
+        print("\n[2.5/4] Installing dependencies...")
+        print("Running: uv sync --extra example-speedrun")
+        for line in bifrost_client.exec_stream(
+            "uv sync --extra example-speedrun",
+            working_dir=workspace_path
+        ):
+            print(f"  {line}", end="")
+        print("✓ Dependencies installed")
 
         # Step 3: Execute training
         print("\n[3/4] Starting training...")
