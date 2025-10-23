@@ -471,6 +471,10 @@ def main():
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
 
+    # Silence noisy HTTP request logs
+    logging.getLogger('httpx').setLevel(logging.WARNING)
+    logging.getLogger('httpcore').setLevel(logging.WARNING)
+
     # Load config
     if len(sys.argv) > 1 and sys.argv[1].endswith('.py'):
         spec = importlib.util.spec_from_file_location("exp_config", sys.argv[1])
