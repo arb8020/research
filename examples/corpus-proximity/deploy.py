@@ -159,7 +159,7 @@ def start_remote_pipeline(bifrost_client: BifrostClient, config_arg: str) -> Non
         raise RuntimeError(f"Failed to start remote pipeline: {result.stderr}")
 
 
-def wait_for_pipeline_completion(bifrost_client: BifrostClient, timeout: int = 3600) -> bool:
+def wait_for_pipeline_completion(bifrost_client: BifrostClient, timeout: int = 10800) -> bool:
     poll_interval = 30
     max_iterations = max(1, timeout // poll_interval)
     logging.info("⏳ Waiting for pipeline completion (timeout: %ss)", timeout)
