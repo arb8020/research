@@ -30,7 +30,7 @@ uv sync --extra example-corpus-proximity
 
 ```bash
 # Deploy to GPU, build index, sync results back
-corpus-proximity index --config configs/clustering_01_tiny_gpu.py --deploy-gpu
+corpus-proximity index --config configs/clustering_01_tiny.py --deploy-gpu
 
 # Results appear in: examples/corpus-proximity/remote_results/clustering_<timestamp>/
 ```
