@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import sys
 import time
 from datetime import datetime
@@ -159,7 +160,7 @@ def start_remote_pipeline(bifrost_client: BifrostClient, config_arg: str) -> Non
         raise RuntimeError(f"Failed to start remote pipeline: {result.stderr}")
 
 
-def wait_for_pipeline_completion(bifrost_client: BifrostClient, timeout: int = 10800) -> bool:
+def wait_for_pipeline_completion(bifrost_client: BifrostClient, timeout: int = 3600*4) -> bool:
     poll_interval = 30
     max_iterations = max(1, timeout // poll_interval)
     logging.info("⏳ Waiting for pipeline completion (timeout: %ss)", timeout)
@@ -183,7 +184,7 @@ else
 fi
 """
 
-    # Command to get current step from log
+    # Command to get current step from log and recent progress
     progress_cmd = f"""
 cd {REMOTE_WORKSPACE_PATH}
 if [ -f pipeline.log ]; then
@@ -192,6 +193,9 @@ else
   echo ""
 fi
 """
+
+    # Command to capture tmux output for detailed progress
+    tmux_progress_cmd = f"tmux capture-pane -t {TMUX_SESSION} -p 2>/dev/null | tail -10 || echo ''"
 
     for i in range(max_iterations):
         result = bifrost_client.exec(check_cmd)
@@ -217,7 +221,26 @@ fi
                     break
 
         elapsed = (i + 1) * poll_interval
-        logging.info("%s Pipeline running: %s (%ss / %ss)", step_emoji, current_step, elapsed, timeout)
+
+        # Get detailed progress from tmux (e.g., progress bars)
+        tmux_result = bifrost_client.exec(tmux_progress_cmd)
+        detailed_progress = ""
+        if tmux_result.stdout:
+            lines = tmux_result.stdout.strip().splitlines()
+            # Look for progress bar lines (containing % or |)
+            for line in reversed(lines):
+                if "%" in line and ("|" in line or "Batches:" in line):
+                    # Extract just the progress percentage and basic info
+                    if "Batches:" in line:
+                        # Extract percentage and counts from tqdm-style progress bars
+                        match = re.search(r'(\d+)%\|.*?\s+(\d+)/(\d+)\s+\[([^\]]+)', line)
+                        if match:
+                            pct, current, total, time_info = match.groups()
+                            detailed_progress = f" [{pct}% - {current}/{total}]"
+                    break
+
+        logging.info("%s Pipeline running: %s%s (%ss / %ss)",
+                    step_emoji, current_step, detailed_progress, elapsed, timeout)
         time.sleep(poll_interval)
     logging.error("❌ Pipeline timed out after %ss", timeout)
     return False
