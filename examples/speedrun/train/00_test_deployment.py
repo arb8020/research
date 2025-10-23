@@ -28,6 +28,9 @@ def main():
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
+
+    # Set device based on local rank to avoid duplicate GPU assignment
+    torch.cuda.set_device(rank)
     device = torch.cuda.current_device()
 
     print(f"[Rank {rank}/{world_size}] Initialized successfully")
