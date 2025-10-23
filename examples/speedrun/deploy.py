@@ -223,18 +223,21 @@ def main():
             print(f"\nTo download logs later:")
             print(f"  bifrost download {job_info.job_id} logs/ ./results/")
         else:
-            # Use exec for synchronous execution
-            result = bifrost_client.exec(
-                command,
-                working_dir=workspace_path,
-            )
+            # Use exec_stream for real-time output
+            exit_code = 0
+            try:
+                for line in bifrost_client.exec_stream(
+                    command,
+                    working_dir=workspace_path,
+                ):
+                    print(line, end="")
+            except Exception as e:
+                print(f"\n✗ Training failed with error: {e}")
+                exit_code = 1
+
             print(f"✓ Training completed")
-            print(f"  Exit code: {result.exit_code}")
-            if result.exit_code != 0:
+            if exit_code != 0:
                 print(f"  ⚠ Training failed!")
-                print(result.stderr)
-            else:
-                print(result.stdout)
 
         # Step 4: Cleanup (optional)
         # Don't terminate if using existing instance
