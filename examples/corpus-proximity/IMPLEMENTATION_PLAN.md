@@ -1205,7 +1205,7 @@ with open("outputs.jsonl", "w") as f:
   - [ ] Creates `.pipeline_complete` or `.pipeline_failed` markers
   - [ ] Logs to `pipeline.log`
 
-- [ ] Create `configs/clustering_01_tiny_gpu.py`
+- [ ] Ensure `configs/clustering_01_tiny.py` works for GPU smoke tests
   - [ ] GPU-optimized config (batch_size=128)
   - [ ] 1 shard, max_depth=2 for quick testing
   - [ ] Include DeploymentConfig
@@ -1227,7 +1227,7 @@ with open("outputs.jsonl", "w") as f:
 ### **Phase 4: Testing (3-4 hours)**
 
 - [ ] Test GPU deployment
-  - [ ] Run `python deploy.py --config configs/clustering_01_tiny_gpu.py`
+  - [ ] Run `python deploy.py --config configs/clustering_01_tiny.py`
   - [ ] Verify GPU provisioning
   - [ ] Verify pipeline execution (all 4 steps)
   - [ ] Verify result syncing to `remote_results/`
@@ -1278,7 +1278,7 @@ with open("outputs.jsonl", "w") as f:
 **Steps:**
 ```bash
 # Run GPU deployment
-python deploy.py --config configs/clustering_01_tiny_gpu.py
+python deploy.py --config configs/clustering_01_tiny.py
 
 # Expected results:
 # - GPU provisioned
