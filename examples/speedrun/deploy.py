@@ -41,8 +41,8 @@ def main():
     parser.add_argument(
         "--max-price",
         type=float,
-        default=3.5,
-        help="Maximum price per GPU per hour in USD (default: 3.5)",
+        default=4.0,
+        help="Maximum price per GPU per hour in USD (default: 4.0)",
     )
 
     # Disk configuration
@@ -200,7 +200,7 @@ def main():
             "uv sync --extra example-speedrun",
             working_dir=workspace_path
         ):
-            print(f"  {line}", end="")
+            print(f"  {line}")
         print("✓ Dependencies installed")
 
         # Step 3: Execute training
@@ -225,17 +225,19 @@ def main():
         else:
             # Use exec_stream for real-time output
             exit_code = 0
+            line_count = 0
             try:
                 for line in bifrost_client.exec_stream(
                     command,
                     working_dir=workspace_path,
                 ):
-                    print(line, end="")
+                    print(line, flush=True)
+                    line_count += 1
             except Exception as e:
                 print(f"\n✗ Training failed with error: {e}")
                 exit_code = 1
 
-            print(f"✓ Training completed")
+            print(f"✓ Training completed (received {line_count} lines)")
             if exit_code != 0:
                 print(f"  ⚠ Training failed!")
 
