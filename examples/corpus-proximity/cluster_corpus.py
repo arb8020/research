@@ -182,7 +182,7 @@ def recursive_cluster(
         n_components=n_components,
         metric=umap_metric,
         random_state=42,
-        verbose=False
+        verbose=True  # Show progress during dimensionality reduction
     )
     reduced_embeddings = reducer.fit_transform(embeddings)
 
