@@ -14,7 +14,7 @@ from config import Config
 config = Config()
 
 # Model: GPT-OSS-20B
-config.model.name = "GAIR/GPT-OSS-20B"
+config.model.name = "openai/gpt-oss-20b"
 config.model.device_map = "balanced"
 
 # Dataset: Standard 16 sequences

@@ -15,7 +15,7 @@ from config import Config
 config = Config()
 
 # Model: GLM-4.5-Air
-config.model.name = "THUDM/glm-4-air-106b"
+config.model.name = "zai-org/GLM-4.5-Air"
 config.model.device_map = "balanced"
 
 # Dataset: Standard 16 sequences (up from original 4)
