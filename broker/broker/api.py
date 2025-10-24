@@ -5,7 +5,7 @@ Main functional API for GPU cloud operations
 import logging
 from typing import Any, Callable, List, Optional, Union
 
-from .providers import runpod, primeintellect
+from .providers import runpod, primeintellect, lambdalabs
 from .query import QueryType
 from .types import GPUInstance, GPUOffer, ProvisionRequest
 
@@ -69,6 +69,14 @@ def search(
                                                             memory_gb=memory_gb, container_disk_gb=container_disk_gb,
                                                             gpu_count=gpu_count, api_key=api_key)
             offers.extend(prime_offers)
+
+    if provider is None or provider == "lambdalabs":
+        api_key = credentials.get("lambdalabs") if credentials else None
+        if api_key:  # Only search if we have credentials
+            lambda_offers = lambdalabs.search_gpu_offers(cuda_version=cuda_version, manufacturer=manufacturer,
+                                                         memory_gb=memory_gb, container_disk_gb=container_disk_gb,
+                                                         gpu_count=gpu_count, api_key=api_key)
+            offers.extend(lambda_offers)
     
     # Apply pandas-style query if provided
     if query is not None:
@@ -114,6 +122,10 @@ def get_instance(instance_id: str, provider: str, credentials: Optional[dict] = 
         instance = primeintellect.get_instance_details(instance_id, api_key=api_key)
         if instance:
             return instance
+    elif provider == "lambdalabs":
+        instance = lambdalabs.get_instance_details(instance_id, api_key=api_key)
+        if instance:
+            return instance
 
     return None
 
@@ -138,6 +150,9 @@ def terminate_instance(instance_id: str, provider: str, credentials: Optional[di
             return True
     elif provider == "primeintellect":
         if primeintellect.terminate_instance(instance_id, api_key=api_key):
+            return True
+    elif provider == "lambdalabs":
+        if lambdalabs.terminate_instance(instance_id, api_key=api_key):
             return True
 
     return False
@@ -293,6 +308,20 @@ def create(
                 else:
                     logger.warning(f"Provisioning returned None for {offer.gpu_type}")
                     last_error = "Provisioning returned None"
+            elif offer.provider == "lambdalabs":
+                api_key = credentials.get("lambdalabs") if credentials else None
+                # For Lambda Labs, use the offer ID which contains instance type and region
+                request.gpu_type = offer.id
+                instance = lambdalabs.provision_instance(request, request.ssh_startup_script, api_key=api_key)
+                if instance:
+                    logger.info(f"✅ Successfully provisioned GPU instance: {instance.id}")
+                    logger.info(f"   GPU: {instance.gpu_type} x{instance.gpu_count}")
+                    logger.info(f"   Provider: {offer.provider}")
+                    logger.info(f"   Expected price: ${offer.total_price(instance.gpu_count):.3f}/hr")
+                    return instance
+                else:
+                    logger.warning(f"Provisioning returned None for {offer.gpu_type}")
+                    last_error = "Provisioning returned None"
             else:
                 raise ValueError(f"Unsupported provider: {offer.provider}")
                 
@@ -334,5 +363,11 @@ def list_instances(provider: Optional[str] = None, credentials: Optional[dict] =
         if api_key:  # Only list if we have credentials
             prime_instances = primeintellect.list_instances(api_key=api_key)
             instances.extend(prime_instances)
+
+    if provider is None or provider == "lambdalabs":
+        api_key = credentials.get("lambdalabs") if credentials else None
+        if api_key:  # Only list if we have credentials
+            lambda_instances = lambdalabs.list_instances(api_key=api_key)
+            instances.extend(lambda_instances)
 
     return instances

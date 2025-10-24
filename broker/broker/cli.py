@@ -15,6 +15,7 @@ from broker.types import ProviderCredentials
 from shared.config import (
     create_env_template,
     discover_ssh_keys,
+    get_lambda_key,
     get_prime_key,
     get_runpod_key,
     get_ssh_key_path,
@@ -75,6 +76,7 @@ def init():
         logger.info("Edit .env with your API keys:")
         logger.info("  RUNPOD_API_KEY=your_key_here")
         logger.info("  PRIME_API_KEY=your_key_here")
+        logger.info("  LAMBDA_API_KEY=your_key_here")
         logger.info("  SSH_KEY_PATH=~/.ssh/id_ed25519")
         logger.info("")
         logger.info("Then run: broker search")
@@ -86,6 +88,7 @@ def init():
         logger.info("  Ensure it contains:")
         logger.info("    RUNPOD_API_KEY=your_key_here")
         logger.info("    PRIME_API_KEY=your_key_here")
+        logger.info("    LAMBDA_API_KEY=your_key_here")
         logger.info("    SSH_KEY_PATH=~/.ssh/id_ed25519")
         logger.info("")
         logger.info("Or delete .env and run 'broker init' again")
@@ -126,16 +129,21 @@ def resolve_credentials(ctx) -> ProviderCredentials:
     # Priority 2+3: Environment variables (includes .env via load_dotenv)
     runpod_key = get_runpod_key()
     prime_key = get_prime_key()
+    lambda_key = get_lambda_key()
 
-    if runpod_key or prime_key:
-        return ProviderCredentials(runpod=runpod_key or "", primeintellect=prime_key or "")
+    if runpod_key or prime_key or lambda_key:
+        return ProviderCredentials(
+            runpod=runpod_key or "",
+            primeintellect=prime_key or "",
+            lambdalabs=lambda_key or ""
+        )
 
     # Priority 4: Error with helpful message
     logger.error("✗ No credentials found")
     logger.info("")
     logger.info("Try: broker init")
-    logger.info("Or: export RUNPOD_API_KEY=... PRIME_API_KEY=...")
-    logger.info("Or: --credentials <file|runpod:key,primeintellect:key>")
+    logger.info("Or: export RUNPOD_API_KEY=... PRIME_API_KEY=... LAMBDA_API_KEY=...")
+    logger.info("Or: --credentials <file|runpod:key,primeintellect:key,lambdalabs:key>")
     raise typer.Exit(1)
 
 
@@ -521,7 +529,7 @@ def list(ctx: typer.Context):
             return
 
         table = Table(title=f"GPU Instances ({len(instances)})")
-        table.add_column("ID", style="cyan")
+        table.add_column("ID", style="cyan", no_wrap=True)
         table.add_column("Name")
         table.add_column("Provider")
         table.add_column("GPUs")
@@ -658,6 +666,257 @@ def ssh(
 
     # Output full SSH command with key path (copy-pastable)
     print(instance._instance.ssh_connection_string(ssh_key_path=ssh_key, full_command=True))
+
+
+@app.command()
+def info(
+    ctx: typer.Context,
+    instance_id: str = typer.Argument(..., help="Instance ID"),
+    provider: Optional[str] = typer.Argument(
+        None, help="Provider (runpod|primeintellect). Auto-detect if omitted."
+    ),
+):
+    """Get detailed system information from GPU instance
+
+    Collects GPU utilization, VRAM usage, CPU usage, memory usage, and disk usage
+    via SSH connection to the instance.
+    """
+    creds = resolve_credentials(ctx)
+    ssh_key = resolve_ssh_key(ctx)
+
+    client = GPUClient(credentials=creds, ssh_key_path=ssh_key)
+
+    # Auto-detect provider if not specified
+    if provider is None:
+        instances = client.list_instances()
+        matches = [i for i in instances if i.id == instance_id]
+
+        if len(matches) == 0:
+            logger.error(f"✗ Instance {instance_id} not found in any provider")
+            raise typer.Exit(1)
+        elif len(matches) > 1:
+            logger.error(f"✗ Instance {instance_id} found in multiple providers:")
+            for m in matches:
+                logger.error(f"  - {m.provider}")
+            logger.info(f"Specify provider: broker info {instance_id} <provider>")
+            raise typer.Exit(1)
+
+        instance = matches[0]
+    else:
+        instance = client.get_instance(instance_id, provider)
+
+        if not instance:
+            logger.error(f"✗ Instance {instance_id} not found in {provider}")
+            raise typer.Exit(1)
+
+    # Check if instance is ready
+    if not instance._instance.public_ip:
+        logger.error("✗ Instance not ready (no public IP)")
+        raise typer.Exit(1)
+
+    # Collect system info
+    if not ctx.obj["json"]:
+        logger.info("Collecting system information...")
+
+    # Temporarily suppress SSH connection logs
+    ssh_logger = logging.getLogger("shared.ssh_foundation")
+    paramiko_logger = logging.getLogger("paramiko")
+    original_ssh_level = ssh_logger.level
+    original_paramiko_level = paramiko_logger.level
+    ssh_logger.setLevel(logging.WARNING)
+    paramiko_logger.setLevel(logging.WARNING)
+
+    try:
+        # Get GPU info
+        gpu_cmd = "nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits"
+        gpu_result = instance._instance.exec(gpu_cmd)
+
+        # Get CPU info
+        cpu_cmd = "top -bn1 | grep 'Cpu(s)' | awk '{print $2}'"
+        cpu_result = instance._instance.exec(cpu_cmd)
+
+        # Get memory info
+        mem_cmd = "free -m | awk 'NR==2{printf \"%s,%s,%s\", $3,$2,$3*100/$2 }'"
+        mem_result = instance._instance.exec(mem_cmd)
+
+        # Get disk info
+        disk_cmd = "df -h / | awk 'NR==2{printf \"%s,%s,%s\", $3,$2,$5}'"
+        disk_result = instance._instance.exec(disk_cmd)
+
+    except Exception as e:
+        logger.error(f"✗ Failed to collect system info: {e}")
+        raise typer.Exit(1)
+    finally:
+        # Restore original log levels
+        ssh_logger.setLevel(original_ssh_level)
+        paramiko_logger.setLevel(original_paramiko_level)
+
+    # Parse and display results
+    if ctx.obj["json"]:
+        # Parse GPU info
+        gpus = []
+        for line in gpu_result.stdout.strip().split('\n'):
+            if line.strip():
+                parts = [p.strip() for p in line.split(',')]
+                if len(parts) >= 5:
+                    gpus.append({
+                        "index": int(parts[0]),
+                        "name": parts[1],
+                        "utilization_percent": float(parts[2]),
+                        "memory_used_mb": float(parts[3]),
+                        "memory_total_mb": float(parts[4]),
+                        "memory_percent": (float(parts[3]) / float(parts[4])) * 100,
+                    })
+
+        # Parse CPU info
+        cpu_util = float(cpu_result.stdout.strip()) if cpu_result.stdout.strip() else 0.0
+
+        # Parse memory info
+        mem_parts = mem_result.stdout.strip().split(',')
+        mem_used_mb = int(mem_parts[0]) if len(mem_parts) > 0 else 0
+        mem_total_mb = int(mem_parts[1]) if len(mem_parts) > 1 else 0
+        mem_percent = float(mem_parts[2]) if len(mem_parts) > 2 else 0.0
+
+        # Parse disk info
+        disk_parts = disk_result.stdout.strip().split(',')
+        disk_used = disk_parts[0] if len(disk_parts) > 0 else "0"
+        disk_total = disk_parts[1] if len(disk_parts) > 1 else "0"
+        disk_percent = disk_parts[2] if len(disk_parts) > 2 else "0%"
+
+        print(json.dumps({
+            "instance_id": instance_id,
+            "provider": instance.provider,
+            "gpus": gpus,
+            "cpu_utilization_percent": cpu_util,
+            "memory_used_mb": mem_used_mb,
+            "memory_total_mb": mem_total_mb,
+            "memory_percent": mem_percent,
+            "disk_used": disk_used,
+            "disk_total": disk_total,
+            "disk_percent": disk_percent,
+        }, indent=2))
+    else:
+        # Display with Rich tables
+        console.print(f"\n[bold]Instance: {instance_id}[/bold] ({instance.provider})\n")
+
+        # GPU Table
+        gpu_table = Table(title="GPU Utilization", show_header=True)
+        gpu_table.add_column("GPU", style="cyan", justify="center")
+        gpu_table.add_column("Name", style="white")
+        gpu_table.add_column("GPU Util", justify="right")
+        gpu_table.add_column("VRAM Used", justify="right")
+        gpu_table.add_column("VRAM Total", justify="right")
+        gpu_table.add_column("VRAM %", justify="right")
+
+        for line in gpu_result.stdout.strip().split('\n'):
+            if line.strip():
+                parts = [p.strip() for p in line.split(',')]
+                if len(parts) >= 5:
+                    gpu_idx = parts[0]
+                    gpu_name = parts[1]
+                    gpu_util = float(parts[2])
+                    vram_used = float(parts[3])
+                    vram_total = float(parts[4])
+                    vram_percent = (vram_used / vram_total) * 100
+
+                    # Color coding for utilization
+                    gpu_util_str = f"{gpu_util:.1f}%"
+                    if gpu_util > 80:
+                        gpu_util_str = f"[red]{gpu_util_str}[/red]"
+                    elif gpu_util > 50:
+                        gpu_util_str = f"[yellow]{gpu_util_str}[/yellow]"
+                    else:
+                        gpu_util_str = f"[green]{gpu_util_str}[/green]"
+
+                    vram_percent_str = f"{vram_percent:.1f}%"
+                    if vram_percent > 80:
+                        vram_percent_str = f"[red]{vram_percent_str}[/red]"
+                    elif vram_percent > 50:
+                        vram_percent_str = f"[yellow]{vram_percent_str}[/yellow]"
+                    else:
+                        vram_percent_str = f"[green]{vram_percent_str}[/green]"
+
+                    gpu_table.add_row(
+                        gpu_idx,
+                        gpu_name,
+                        gpu_util_str,
+                        f"{vram_used:.0f} MB",
+                        f"{vram_total:.0f} MB",
+                        vram_percent_str,
+                    )
+
+        console.print(gpu_table)
+
+        # System Resources Table
+        sys_table = Table(title="System Resources", show_header=True)
+        sys_table.add_column("Resource", style="cyan")
+        sys_table.add_column("Used", justify="right")
+        sys_table.add_column("Total", justify="right")
+        sys_table.add_column("Utilization", justify="right")
+
+        # CPU row
+        cpu_util_str = cpu_result.stdout.strip()
+        if cpu_util_str:
+            cpu_util = float(cpu_util_str)
+            cpu_display = f"{cpu_util:.1f}%"
+            if cpu_util > 80:
+                cpu_display = f"[red]{cpu_display}[/red]"
+            elif cpu_util > 50:
+                cpu_display = f"[yellow]{cpu_display}[/yellow]"
+            else:
+                cpu_display = f"[green]{cpu_display}[/green]"
+            sys_table.add_row("CPU", "-", "-", cpu_display)
+
+        # Memory row
+        mem_parts = mem_result.stdout.strip().split(',')
+        if len(mem_parts) >= 3:
+            mem_used = int(mem_parts[0])
+            mem_total = int(mem_parts[1])
+            mem_percent = float(mem_parts[2])
+
+            mem_percent_str = f"{mem_percent:.1f}%"
+            if mem_percent > 80:
+                mem_percent_str = f"[red]{mem_percent_str}[/red]"
+            elif mem_percent > 50:
+                mem_percent_str = f"[yellow]{mem_percent_str}[/yellow]"
+            else:
+                mem_percent_str = f"[green]{mem_percent_str}[/green]"
+
+            sys_table.add_row(
+                "Memory",
+                f"{mem_used} MB",
+                f"{mem_total} MB",
+                mem_percent_str,
+            )
+
+        # Disk row
+        disk_parts = disk_result.stdout.strip().split(',')
+        if len(disk_parts) >= 3:
+            disk_used = disk_parts[0]
+            disk_total = disk_parts[1]
+            disk_percent_raw = disk_parts[2].rstrip('%')
+
+            try:
+                disk_pct = float(disk_percent_raw)
+                disk_display = f"{disk_pct:.0f}%"
+                if disk_pct > 80:
+                    disk_display = f"[red]{disk_display}[/red]"
+                elif disk_pct > 50:
+                    disk_display = f"[yellow]{disk_display}[/yellow]"
+                else:
+                    disk_display = f"[green]{disk_display}[/green]"
+            except ValueError:
+                disk_display = disk_parts[2]
+
+            sys_table.add_row(
+                "Disk (/)",
+                disk_used,
+                disk_total,
+                disk_display,
+            )
+
+        console.print(sys_table)
+        console.print()
 
 
 @app.command()

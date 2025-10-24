@@ -3,7 +3,7 @@
 from pathlib import Path
 from config import Config, DataConfig, ClusteringConfig
 
-_BASE_DIR = Path(__file__).parent.parent / "data"
+_BASE_DIR = Path(__file__).parent.parent.parent / "data"  # Go up to repo root, then into data/
 
 config = Config(
     data=DataConfig(
@@ -17,14 +17,14 @@ config = Config(
         embedding_model="Snowflake/snowflake-arctic-embed-l",
         embedding_batch_size=32,
         chunking_strategy="fixed_tokens",
-        chunk_max_tokens=512,
-        chunk_overlap_pct=0.15,
+        chunk_max_tokens=256,  # Optimal for taxonomy: focused single-topic chunks
+        chunk_overlap_pct=0.0,  # NO overlap for clustering (prevents artificial similarity)
 
         # Clustering params (adjusted for tiny corpus)
-        max_depth=3,
-        base_pct=0.01,  # 1% to allow smaller clusters (was 0.03, too strict)
+        max_depth=4,  # Deeper taxonomy for finer-grained clusters
+        base_pct=0.005,  # 0.5% - much lower than before to allow smaller clusters
         decay=0.7,
-        silhouette_threshold=0.3,
+        silhouette_threshold=0.25,  # Slightly lower = more aggressive recursion
 
         # UMAP params
         umap_n_components=50,

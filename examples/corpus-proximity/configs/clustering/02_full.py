@@ -4,7 +4,7 @@
 from pathlib import Path
 from config import Config, DataConfig, ClusteringConfig
 
-_BASE_DIR = Path(__file__).parent.parent / "data"
+_BASE_DIR = Path(__file__).parent.parent.parent / "data"  # Go up to repo root, then into data/
 
 config = Config(
     data=DataConfig(
@@ -17,12 +17,12 @@ config = Config(
         embedding_model="Snowflake/snowflake-arctic-embed-l",
         embedding_batch_size=64,  # Larger batch for GPU
         chunking_strategy="fixed_tokens",
-        chunk_max_tokens=512,
-        chunk_overlap_pct=0.15,
-        max_depth=3,
-        base_pct=0.05,  # 5% base for larger corpus
+        chunk_max_tokens=256,  # Optimal for taxonomy: focused single-topic chunks
+        chunk_overlap_pct=0.0,  # NO overlap for clustering (prevents artificial similarity)
+        max_depth=4,  # Deeper taxonomy for finer-grained clusters
+        base_pct=0.002,  # 0.2% - critical fix from 5% (was preventing any clusters from forming)
         decay=0.7,
-        silhouette_threshold=0.3,
+        silhouette_threshold=0.25,  # Slightly lower = more aggressive recursion
         umap_n_components=50,
         umap_metric="cosine",
         hdbscan_min_samples=10,
