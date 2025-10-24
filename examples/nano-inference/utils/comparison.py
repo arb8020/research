@@ -37,9 +37,9 @@ def compare_logits(
     """
     # Convert to numpy if needed
     if hasattr(logits1, 'numpy'):
-        logits1 = logits1.numpy()
+        logits1 = logits1.numpy()  # type: ignore[misc]
     if hasattr(logits2, 'numpy'):
-        logits2 = logits2.numpy()
+        logits2 = logits2.numpy()  # type: ignore[misc]
     
     # Ensure same shape
     assert logits1.shape == logits2.shape, f"Shape mismatch: {logits1.shape} vs {logits2.shape}"

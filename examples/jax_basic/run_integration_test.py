@@ -6,6 +6,7 @@ import logging
 from typing import Literal, TypeAlias
 from dotenv import load_dotenv
 from broker import GPUClient, CloudType
+from broker.client import ClientGPUInstance
 from bifrost import BifrostClient
 from shared.config import get_runpod_key, get_prime_key
 from shared.logging_config import setup_logging
@@ -16,7 +17,7 @@ logger = logging.getLogger(__name__)
 # Type aliases for provision result
 ProvisionError: TypeAlias = Literal["create_failed", "ready_timeout", "ssh_timeout"]
 ProvisionResult: TypeAlias = (
-    tuple[Literal[True], "ClientGPUInstance", None] |
+    tuple[Literal[True], ClientGPUInstance, None] |
     tuple[Literal[False], None, ProvisionError]
 )
 

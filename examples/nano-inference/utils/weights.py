@@ -1,10 +1,13 @@
 # weights.py
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict, Tuple, Optional, Union
+from typing import Any, Dict, Tuple, Optional, Union, TYPE_CHECKING
 import pathlib
 import numpy as np
 import re
+
+if TYPE_CHECKING:
+    from jax import Array
 
 # -----------------------------
 # GPT-2 Weight Loading
@@ -230,7 +233,7 @@ def download_gpt2_weights(model_name: str = "gpt2", cache_dir: Optional[Union[st
     
     return pathlib.Path(local_dir)
 
-def validate_gpt2_weights(weights: Dict[str, any], expected_keys: list[str]) -> None:
+def validate_gpt2_weights(weights: Dict[str, Any], expected_keys: list[str]) -> None:
     """
     Validate that all expected keys exist in weights dictionary.
     Provides helpful error messages with suggestions for missing keys.
@@ -262,7 +265,7 @@ def validate_gpt2_weights(weights: Dict[str, any], expected_keys: list[str]) -> 
     
     print("✅ All required weight keys found")
 
-def validate_llama_weights(weights: Dict[str, any], expected_keys: list[str]) -> None:
+def validate_llama_weights(weights: Dict[str, Any], expected_keys: list[str]) -> None:
     """
     Validate that all expected keys exist in weights dictionary.
     Provides helpful error messages with suggestions for missing keys.

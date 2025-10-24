@@ -30,9 +30,9 @@ def _load_cli_module() -> ModuleType:
 
 def main(argv: Iterable[str] | None = None) -> Any:
     cli_module = _load_cli_module()
-    if not hasattr(cli_module, "main"):
-        raise AttributeError("CLI module missing 'main' callable")
-    return cli_module.main(list(argv) if argv is not None else None)
+    main_func = getattr(cli_module, "main", None)
+    assert callable(main_func), "CLI module missing 'main' callable"
+    return main_func(list(argv) if argv is not None else None)
 
 
 if __name__ == "__main__":
