@@ -120,7 +120,7 @@ def estimate_vram_if_needed(config: Config) -> int:
         config: Configuration object
 
     Returns:
-        VRAM requirement in GB
+        VRAM requirement in GB (capped at 80GB for multi-GPU)
     """
     if config.deployment.min_vram is not None:
         logger.info(f"Using configured VRAM: {config.deployment.min_vram}GB")
@@ -137,6 +137,12 @@ def estimate_vram_if_needed(config: Config) -> int:
     min_vram = vram_estimate['recommended_vram']
     effective_params = vram_estimate.get('effective_params_billions', 0.0)
     logger.info(f"📊 Estimated VRAM: {min_vram}GB (effective params: {effective_params:.1f}B)")
+
+    # Cap at 80GB (max A100 size) for multi-GPU configs
+    # Broker will find gpu_count GPUs each with ≤80GB, totaling enough VRAM
+    if config.deployment.gpu_count > 1 and min_vram > 80:
+        logger.info(f"📊 Capping per-GPU VRAM at 80GB for {config.deployment.gpu_count}x GPU config (total: {min_vram}GB)")
+        min_vram = 80
 
     return min_vram
 
