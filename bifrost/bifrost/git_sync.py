@@ -9,8 +9,38 @@ import logging
 from typing import Optional, Union, List
 
 from .types import RemoteConfig
+from shared.retry import retry
 
 logger = logging.getLogger(__name__)
+
+
+@retry(max_attempts=3, delay=1, backoff=2, exceptions=(Exception,))
+def _upload_bundle_with_retry(sftp, local_bundle_path: str, remote_bundle_path: str) -> None:
+    """Upload git bundle with retry logic.
+
+    This is at an external boundary (network I/O over SFTP) so retry is appropriate.
+    Retries up to 3 times with exponential backoff (1s, 2s, 4s) on any exception.
+
+    Args:
+        sftp: Active SFTP client
+        local_bundle_path: Path to local bundle file
+        remote_bundle_path: Path to remote bundle file
+
+    Raises:
+        Exception: If upload fails after all retry attempts
+    """
+    import os
+
+    # Tiger Style: Assert inputs
+    assert sftp is not None, "sftp client cannot be None"
+    assert os.path.exists(local_bundle_path), f"Local bundle not found: {local_bundle_path}"
+    assert isinstance(remote_bundle_path, str) and len(remote_bundle_path) > 0, \
+        "remote_bundle_path must be non-empty string"
+
+    # Upload the bundle
+    sftp.put(local_bundle_path, remote_bundle_path)
+
+    logger.debug(f"Bundle uploaded successfully to {remote_bundle_path}")
 
 
 def _check_untracked_files() -> Optional[List[str]]:
@@ -184,11 +214,11 @@ def _create_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> No
 
         logger.debug("Uploading bundle to remote...")
 
-        # Upload bundle to remote
+        # Upload bundle to remote with retry logic
         sftp = ssh_client.open_sftp()
         try:
             remote_bundle = f"/tmp/bifrost-bundle-{os.getpid()}.bundle"
-            sftp.put(bundle_path, remote_bundle)
+            _upload_bundle_with_retry(sftp, bundle_path, remote_bundle)
         finally:
             sftp.close()
 
@@ -249,11 +279,11 @@ def _update_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> No
 
         logger.debug("Uploading bundle to remote...")
 
-        # Upload bundle to remote
+        # Upload bundle to remote with retry logic
         sftp = ssh_client.open_sftp()
         try:
             remote_bundle = f"/tmp/bifrost-bundle-{os.getpid()}.bundle"
-            sftp.put(bundle_path, remote_bundle)
+            _upload_bundle_with_retry(sftp, bundle_path, remote_bundle)
         finally:
             sftp.close()
 

@@ -11,6 +11,7 @@ import requests
 from dotenv import load_dotenv
 
 from ..types import CloudType, GPUInstance, GPUOffer, InstanceStatus, ProvisionRequest
+from shared.retry import retry
 
 logger = logging.getLogger(__name__)
 
@@ -238,8 +239,11 @@ def _build_ports_string(exposed_ports: Optional[List[int]], enable_http_proxy: b
     return ",".join(ports)
 
 
+@retry(max_attempts=3, delay=1, backoff=2, exceptions=(requests.RequestException, requests.Timeout))
 def _make_graphql_request(query: str, variables: Optional[Dict] = None, api_key: Optional[str] = None) -> Dict[str, Any]:
-    """Make a GraphQL request to RunPod API
+    """Make a GraphQL request to RunPod API with automatic retries.
+
+    Retries up to 3 times with exponential backoff (1s, 2s, 4s) on network errors.
 
     Args:
         query: GraphQL query string
@@ -254,11 +258,11 @@ def _make_graphql_request(query: str, variables: Optional[Dict] = None, api_key:
         "Content-Type": "application/json"
     }
     logger.debug("RunPod GraphQL request %s (api key ...%s)", query.split("\n")[0][:60], api_key[-4:] if api_key else "none")
-    
+
     payload = {"query": query}
     if variables:
         payload["variables"] = variables
-    
+
     try:
         response = requests.post(
             RUNPOD_API_URL,
@@ -277,7 +281,7 @@ def _make_graphql_request(query: str, variables: Optional[Dict] = None, api_key:
     data = response.json()
     if "errors" in data:
         raise Exception(f"GraphQL errors: {data['errors']}")
-    
+
     return data["data"]
 
 
