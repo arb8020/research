@@ -283,88 +283,110 @@ def _make_graphql_request(query: str, variables: Optional[Dict] = None, api_key:
 
 def search_gpu_offers(cuda_version: Optional[str] = None, manufacturer: Optional[str] = None,
                       memory_gb: Optional[int] = None, container_disk_gb: Optional[int] = None,
-                      api_key: Optional[str] = None) -> List[GPUOffer]:
-    """Search for available GPU offers on RunPod with optional CUDA version and manufacturer filtering"""
-    # Build lowestPrice input - RunPod API only supports basic parameters
-    lowest_price_input = "{ gpuCount: 1 }"
-    if cuda_version:
-        lowest_price_input = f'{{ gpuCount: 1, cudaVersion: "{cuda_version}" }}'
-    
-    # Query to get available GPU types - this will help us understand what's available
-    query = f"""
-    query {{
-        gpuTypes {{
-            id
-            displayName
-            memoryInGb
-            manufacturer
-            secureCloud
-            communityCloud
-            lowestPrice(input: {lowest_price_input}) {{
-                minimumBidPrice
-                uninterruptablePrice
+                      gpu_count: int = 1, api_key: Optional[str] = None) -> List[GPUOffer]:
+    """Search for available GPU offers on RunPod with optional CUDA version and manufacturer filtering
+
+    Note: Queries secure and community clouds separately to get accurate stock availability
+    """
+    offers = []
+
+    # Query secure and community clouds separately to get accurate availability data
+    # This is necessary because availability differs between cloud types
+    for cloud_type_filter in [True, False]:  # True = secure, False = community
+        cloud_name = "secure" if cloud_type_filter else "community"
+
+        # Build lowestPrice input with cloud type filter
+        lowest_price_params = [f"gpuCount: {gpu_count}", f"secureCloud: {str(cloud_type_filter).lower()}"]
+        if cuda_version:
+            lowest_price_params.append(f'cudaVersion: "{cuda_version}"')
+        lowest_price_input = f"{{ {', '.join(lowest_price_params)} }}"
+
+        # Query to get available GPU types for this cloud type
+        query = f"""
+        query {{
+            gpuTypes {{
+                id
+                displayName
+                memoryInGb
+                manufacturer
+                secureCloud
+                communityCloud
+                lowestPrice(input: {lowest_price_input}) {{
+                    minimumBidPrice
+                    uninterruptablePrice
+                    stockStatus
+                    maxUnreservedGpuCount
+                    availableGpuCounts
+                }}
             }}
         }}
-    }}
-    """
-    
-    try:
-        data = _make_graphql_request(query, api_key=api_key)
-        offers = []
-        
-        for gpu_type in data.get("gpuTypes", []):
-            # Filter by manufacturer if specified
-            if manufacturer and gpu_type.get("manufacturer"):
-                gpu_manufacturer = gpu_type["manufacturer"].lower()
-                if manufacturer.lower() not in gpu_manufacturer:
-                    continue
-            
-            # Create offers for both secure and community cloud if available
-            price_info = gpu_type.get("lowestPrice", {})
-            
-            if gpu_type.get("secureCloud") and price_info.get("uninterruptablePrice"):
+        """
+
+        try:
+            data = _make_graphql_request(query, api_key=api_key)
+
+            for gpu_type in data.get("gpuTypes", []):
+                # Filter by manufacturer if specified
+                if manufacturer and gpu_type.get("manufacturer"):
+                    gpu_manufacturer = gpu_type["manufacturer"].lower()
+                    if manufacturer.lower() not in gpu_manufacturer:
+                        continue
+
+                # Get pricing info for this cloud type
+                # Note: RunPod's lowestPrice returns total price for requested gpu_count
+                # We normalize to per-GPU pricing for consistency
+                price_info = gpu_type.get("lowestPrice", {})
+
+                # Check if this cloud type is available and has pricing
+                if cloud_type_filter:  # Secure cloud
+                    if not gpu_type.get("secureCloud") or not price_info.get("uninterruptablePrice"):
+                        continue
+                    total_price = price_info["uninterruptablePrice"]
+                    cloud_type = CloudType.SECURE
+                    offer_id = f"runpod-{gpu_type['id']}-secure"
+                    spot = False
+                else:  # Community cloud
+                    if not gpu_type.get("communityCloud") or not price_info.get("minimumBidPrice"):
+                        continue
+                    total_price = price_info["minimumBidPrice"]
+                    cloud_type = CloudType.COMMUNITY
+                    offer_id = f"runpod-{gpu_type['id']}-community-spot"
+                    spot = True
+
                 gpu_vram = gpu_type.get("memoryInGb", 0)
+                per_gpu_price = total_price / gpu_count if gpu_count > 0 else total_price
+
+                # Extract availability information
+                max_gpu_count = price_info.get("maxUnreservedGpuCount")
+                available_counts = price_info.get("availableGpuCounts", [])
+                stock_status = price_info.get("stockStatus")
+
                 offers.append(GPUOffer(
-                    id=f"runpod-{gpu_type['id']}-secure",
+                    id=offer_id,
                     provider="runpod",
                     gpu_type=gpu_type["displayName"],
-                    gpu_count=1,
-                    vcpu=0,  # Not specified in this query
-                    memory_gb=gpu_vram,  # For backward compatibility - this is actually GPU VRAM
-                    vram_gb=gpu_vram,    # Properly populate VRAM field
-                    storage_gb=0,  # Not specified in this query  
-                    price_per_hour=price_info["uninterruptablePrice"],
-                    availability_zone="secure-cloud",
-                    cloud_type=CloudType.SECURE,
-                    cuda_version=cuda_version,  # Add CUDA version if filtered
-                    manufacturer=gpu_type.get("manufacturer"),
-                    raw_data=gpu_type
-                ))
-            
-            if gpu_type.get("communityCloud") and price_info.get("minimumBidPrice"):
-                gpu_vram = gpu_type.get("memoryInGb", 0)
-                offers.append(GPUOffer(
-                    id=f"runpod-{gpu_type['id']}-community-spot",
-                    provider="runpod", 
-                    gpu_type=gpu_type["displayName"],
-                    gpu_count=1,
+                    gpu_count=gpu_count,
                     vcpu=0,  # Not specified in this query
                     memory_gb=gpu_vram,  # For backward compatibility - this is actually GPU VRAM
                     vram_gb=gpu_vram,    # Properly populate VRAM field
                     storage_gb=0,  # Not specified in this query
-                    price_per_hour=price_info["minimumBidPrice"], 
-                    availability_zone="community-cloud",
-                    cloud_type=CloudType.COMMUNITY,
-                    cuda_version=cuda_version,  # Add CUDA version if filtered
+                    price_per_hour=per_gpu_price,  # Normalized per-GPU price
+                    availability_zone=f"{cloud_name}-cloud",
+                    cloud_type=cloud_type,
+                    spot=spot,
+                    cuda_version=cuda_version,
                     manufacturer=gpu_type.get("manufacturer"),
+                    max_gpu_count=max_gpu_count,
+                    available_gpu_counts=available_counts,
+                    stock_status=stock_status,
                     raw_data=gpu_type
                 ))
-        
-        return offers
-        
-    except Exception as e:
-        logger.error(f"Failed to search RunPod GPU offers: {e}")
-        return []
+
+        except Exception as e:
+            logger.error(f"Failed to query RunPod {cloud_name} cloud: {e}")
+            continue
+
+    return offers
 
 
 def provision_instance(request: ProvisionRequest, ssh_startup_script: Optional[str] = None, api_key: Optional[str] = None) -> Optional[GPUInstance]:
