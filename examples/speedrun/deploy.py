@@ -39,10 +39,30 @@ def main():
         help="GPU type to request (default: H100)",
     )
     parser.add_argument(
+        "--max-price-per-gpu",
+        type=float,
+        default=None,
+        help="Maximum price per GPU per hour in USD (e.g., 12.0 for $12/GPU/hr)",
+    )
+    parser.add_argument(
+        "--max-total-price",
+        type=float,
+        default=None,
+        help="Maximum total price per hour in USD (e.g., 100.0 for $100/hr total)",
+    )
+    # Deprecated but keep for backward compatibility
+    parser.add_argument(
         "--max-price",
         type=float,
-        default=4.0,
-        help="Maximum price per GPU per hour in USD (default: 4.0)",
+        default=None,
+        help="(Deprecated) Use --max-price-per-gpu instead. Maximum price per GPU per hour.",
+    )
+    parser.add_argument(
+        "--cloud-type",
+        type=str,
+        default="secure",
+        choices=["secure", "community"],
+        help="Cloud type: 'secure' (default, guaranteed) or 'community' (spot, ~50%% cheaper but can be interrupted)",
     )
 
     # Disk configuration
@@ -68,7 +88,7 @@ def main():
     parser.add_argument(
         "--provider",
         type=str,
-        help="Provider name when using --use-existing (e.g., runpod, vast)",
+        help="Provider name to use (e.g., runpod, primeintellect, vast)",
     )
     parser.add_argument(
         "--ssh-key-path",
@@ -88,6 +108,57 @@ def main():
 
     args = parser.parse_args()
 
+    # Handle pricing flags with backward compatibility
+    max_price_per_gpu = None
+    max_total_price = None
+
+    # Priority: new flags > deprecated flag > defaults
+    if args.max_price_per_gpu is not None:
+        max_price_per_gpu = args.max_price_per_gpu
+    elif args.max_price is not None:
+        print("⚠ Warning: --max-price is deprecated, use --max-price-per-gpu instead")
+        max_price_per_gpu = args.max_price
+
+    if args.max_total_price is not None:
+        max_total_price = args.max_total_price
+
+    # Set sensible defaults if neither is specified
+    if max_price_per_gpu is None and max_total_price is None:
+        # Default: reasonable per-GPU price based on GPU type
+        if "H100" in args.gpu_type:
+            max_price_per_gpu = 15.0  # H100s are expensive
+        elif "A100" in args.gpu_type:
+            max_price_per_gpu = 3.0
+        else:
+            max_price_per_gpu = 2.0
+        print(f"ℹ Using default max price: ${max_price_per_gpu}/GPU/hour")
+
+    # Validate GPU count for training script constraints
+    # Note: single-file-smoke.py requires world_size to divide 8 evenly due to gradient accumulation
+    # (grad_accum_steps = 8 // world_size). This is an artificial constraint - 7 GPUs would work
+    # fine if we used math.ceil(8 / world_size) instead. TODO: Fix training script to support arbitrary GPU counts.
+    if "single-file-smoke.py" in args.script or "single-file.py" in args.script:
+        if args.gpu_count not in [1, 2, 4, 8]:
+            print(f"✗ GPU count validation failed")
+            print(f"  Script: {args.script}")
+            print(f"  Requested: {args.gpu_count} GPUs")
+            print(f"  Supported: 1, 2, 4, or 8 GPUs")
+            print(f"\n  Reason: Training script uses gradient accumulation with hardcoded constraint:")
+            print(f"    assert 8 % world_size == 0")
+            print(f"    grad_accum_steps = 8 // world_size")
+            print(f"\n  Choose a GPU count that divides 8 evenly: --gpu-count [1|2|4|8]")
+            return 1
+
+    # Validate constraints make sense
+    if max_price_per_gpu is not None and max_total_price is not None:
+        implied_total = max_price_per_gpu * args.gpu_count
+        if implied_total > max_total_price:
+            print(f"✗ Conflicting constraints:")
+            print(f"  --max-price-per-gpu ${max_price_per_gpu} × {args.gpu_count} GPUs = ${implied_total:.2f}/hr")
+            print(f"  --max-total-price ${max_total_price:.2f}/hr")
+            print(f"  These constraints cannot both be satisfied.")
+            return 1
+
     # Load .env file from repo root (searches parent directories)
     load_dotenv()
 
@@ -97,13 +168,16 @@ def main():
         credentials["runpod"] = runpod_key
     if vast_key := os.getenv("VAST_API_KEY"):
         credentials["vast"] = vast_key
+    if prime_key := os.getenv("PRIME_API_KEY"):
+        credentials["primeintellect"] = prime_key
 
     if not credentials:
         print("✗ No GPU provider credentials found")
-        print("Set RUNPOD_API_KEY or VAST_API_KEY environment variables")
+        print("Set RUNPOD_API_KEY, VAST_API_KEY, or PRIME_API_KEY environment variables")
         print("\nExample:")
         print("  export RUNPOD_API_KEY=your-key-here")
         print("  export VAST_API_KEY=your-key-here")
+        print("  export PRIME_API_KEY=your-key-here")
         return 1
 
     print("=" * 60)
@@ -112,7 +186,10 @@ def main():
     print(f"Training script: {args.script}")
     if not args.use_existing:
         print(f"GPU configuration: {args.gpu_count}x {args.gpu_type}")
-        print(f"Max price: ${args.max_price}/GPU/hour")
+        if max_price_per_gpu:
+            print(f"Max price per GPU: ${max_price_per_gpu}/GPU/hour (${max_price_per_gpu * args.gpu_count:.2f}/hr total)")
+        if max_total_price:
+            print(f"Max total price: ${max_total_price}/hour (${max_total_price / args.gpu_count:.2f}/GPU/hr)")
         print(f"Disk: {args.container_disk_gb}GB container + {args.volume_disk_gb}GB volume")
     else:
         print(f"Using existing instance: {args.use_existing}")
@@ -152,11 +229,42 @@ def main():
         print("\n[1/4] Provisioning GPU instance...")
 
         # Build query using the query builder API
-        query = (
-            (gpu_client.gpu_type.contains(args.gpu_type)) &
-            (gpu_client.price_per_hour <= args.max_price)
-        )
-        print(f"Query: GPU type contains '{args.gpu_type}' and price <= ${args.max_price}/hr")
+        query = gpu_client.gpu_type.contains(args.gpu_type)
+
+        # Apply provider filter if specified
+        query_description = f"GPU type contains '{args.gpu_type}'"
+        if args.provider:
+            query = query & (gpu_client.provider == args.provider)
+            query_description += f" and provider={args.provider}"
+
+        if max_price_per_gpu is not None:
+            query = query & (gpu_client.price_per_hour <= max_price_per_gpu)
+            query_description += f" and price <= ${max_price_per_gpu}/GPU/hr"
+
+        if max_total_price is not None:
+            # Total price filter: price_per_hour * gpu_count <= max_total_price
+            # So: price_per_hour <= max_total_price / gpu_count
+            max_per_gpu_from_total = max_total_price / args.gpu_count
+            query = query & (gpu_client.price_per_hour <= max_per_gpu_from_total)
+            if max_price_per_gpu is None:
+                query_description += f" and total <= ${max_total_price}/hr"
+            else:
+                query_description += f" (total <= ${max_total_price}/hr)"
+
+        # Apply cloud type filter
+        if args.cloud_type:
+            from broker.types import CloudType
+            if args.cloud_type == "secure":
+                query = query & (gpu_client.cloud_type == CloudType.SECURE)
+                query_description += f" and cloud=secure"
+            elif args.cloud_type == "community":
+                query = query & (gpu_client.cloud_type == CloudType.COMMUNITY)
+                query_description += f" and cloud=community"
+
+        print(f"Query: {query_description}")
+
+        # First, search to see what's available (for better error messages)
+        available_offers = gpu_client.search(query, sort=lambda x: x.price_per_hour, reverse=False)
 
         gpu_instance = gpu_client.create(
             query=query,
@@ -166,6 +274,62 @@ def main():
             sort=lambda x: x.price_per_hour,  # Sort by price (cheapest first)
             reverse=False,
         )
+
+        if not gpu_instance:
+            print(f"\n✗ Failed to provision GPU instance")
+            print(f"  No {args.gpu_count}x {args.gpu_type} available matching your constraints")
+
+            # Show the constraints that were applied
+            print(f"\n  Your search criteria:")
+            print(f"  - GPU Type: {args.gpu_type}")
+            print(f"  - GPU Count: {args.gpu_count}")
+            if args.provider:
+                print(f"  - Provider: {args.provider}")
+            if args.cloud_type:
+                print(f"  - Cloud Type: {args.cloud_type}")
+            if max_price_per_gpu:
+                print(f"  - Max Price per GPU: ${max_price_per_gpu}/GPU/hr")
+            if max_total_price:
+                print(f"  - Max Total Price: ${max_total_price}/hr (${max_total_price/args.gpu_count:.2f}/GPU/hr)")
+
+            # Show availability information if we have it
+            if available_offers:
+                print(f"\n  Found {len(available_offers)} offer(s) matching some criteria, but none available for {args.gpu_count} GPUs:")
+                for i, offer in enumerate(available_offers[:3], 1):
+                    total_price = offer.price_per_hour * offer.gpu_count
+                    print(f"\n  {i}. {offer.provider} - {offer.gpu_type} ({offer.cloud_type.value})")
+                    print(f"     Price: ${offer.price_per_hour:.2f}/GPU/hr (${total_price:.2f}/hr for {offer.gpu_count} GPU)")
+
+                    max_gpus = offer.max_gpu_count
+                    avail_counts = offer.available_gpu_counts
+                    if max_gpus is not None:
+                        print(f"     Max GPUs Available: {max_gpus}")
+                    if avail_counts:
+                        print(f"     Available GPU Counts: {avail_counts}")
+
+                    # Explain why this doesn't work
+                    if max_gpus is not None and max_gpus < args.gpu_count:
+                        print(f"     ✗ Cannot provision {args.gpu_count} GPUs (max available: {max_gpus})")
+                    elif avail_counts and args.gpu_count not in avail_counts:
+                        print(f"     ✗ {args.gpu_count} GPUs not in available counts")
+            else:
+                print(f"\n  No offers found matching your criteria at all.")
+
+            print(f"\n  Suggestions:")
+            # Suggest a valid GPU count that's close to what was requested
+            valid_counts = [1, 2, 4, 8]
+            suggested_count = max([c for c in valid_counts if c < args.gpu_count], default=4)
+            print(f"  1. Use {suggested_count} GPUs instead: --gpu-count {suggested_count}")
+            if args.cloud_type == "secure":
+                print(f"  2. Try community cloud (cheaper, but spot instances): --cloud-type community")
+            if max_total_price:
+                print(f"  3. Increase budget: --max-total-price {int(max_total_price * 1.5)}")
+            if args.provider:
+                print(f"  4. Try different provider: remove --provider {args.provider}")
+            else:
+                print(f"  4. Try specific provider: --provider primeintellect")
+            print(f"  5. Search for available GPUs first: broker search --gpu-type {args.gpu_type} --gpu-count {suggested_count}")
+            return 1
 
         print(f"✓ Instance created: {gpu_instance.id}")
         print(f"  Provider: {gpu_instance.provider}")
