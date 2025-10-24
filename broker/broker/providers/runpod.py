@@ -425,7 +425,6 @@ def provision_instance(request: ProvisionRequest, ssh_startup_script: Optional[s
     
     pod_input = {
         "gpuCount": request.gpu_count,
-        "imageName": request.image,
         "cloudType": "SECURE" if not request.spot_instance else "COMMUNITY",
         "name": request.name or f"gpus-{request.gpu_type or 'auto'}-{int(time.time())}",
         "supportPublicIp": True,  # Required for SSH access
@@ -437,6 +436,13 @@ def provision_instance(request: ProvisionRequest, ssh_startup_script: Optional[s
         "startJupyter": request.start_jupyter,  # Auto-start Jupyter Lab
         "env": env_vars
     }
+
+    # Add template ID if specified (takes precedence over imageName)
+    # Templates are pre-configured with optimized settings for multi-GPU deployments
+    if request.template_id:
+        pod_input["templateId"] = request.template_id
+    else:
+        pod_input["imageName"] = request.image
 
     # Add volume configuration if requested
     # IMPORTANT: volumeMountPath is REQUIRED when volumeInGb > 0

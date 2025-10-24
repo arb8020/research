@@ -1,0 +1,31 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Temporary execution files
+*.log
+*.txt
+!requirements.txt
+.naming_complete
+.pipeline_complete
+.pipeline_failed
+smoke_test_results.json
+
+# Data directories (too large for git)
+data/shards/
+data/processed/
+data/processed_tiny/
+data/embeddings*/
+data/results/
+
+# Remote results (synced from GPU runs)
+remote_results/
+
+# Environment
+.env
+.venv/
+venv/
+ENV/

@@ -296,6 +296,8 @@ class ProvisionRequest:
     # Jupyter configuration
     start_jupyter: bool = False  # Auto-start Jupyter Lab
     jupyter_password: Optional[str] = None  # Jupyter authentication token
+    # RunPod-specific: Template support
+    template_id: Optional[str] = None  # RunPod template ID (e.g., "runpod-torch-v280")
 
 
 @dataclass
