@@ -133,7 +133,7 @@ class QueryExpression:
 
 class GPUQuery:
     """Pandas-style query interface for GPU offers"""
-    
+
     # Query fields
     gpu_type = QueryField('gpu_type')
     price_per_hour = QueryField('price_per_hour')
@@ -149,6 +149,7 @@ class GPUQuery:
     driver_version = QueryField('driver_version')
     cloud_type = QueryField('cloud_type')
     manufacturer = QueryField('manufacturer')
+    underlying_provider = QueryField('underlying_provider')  # For aggregators like PrimeIntellect
 
 
 # Type alias for query types

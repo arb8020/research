@@ -184,12 +184,27 @@ def search(
     gpu_type: Optional[str] = typer.Option(
         None, "--gpu-type", help="Filter by GPU type (e.g., 'A100')"
     ),
+    gpu_count: int = typer.Option(
+        1, "--gpu-count", help="Number of GPUs (affects pricing, default: 1)"
+    ),
+    max_price_per_gpu: Optional[float] = typer.Option(
+        None, "--max-price-per-gpu", help="Maximum price per GPU per hour"
+    ),
+    max_total_price: Optional[float] = typer.Option(
+        None, "--max-total-price", help="Maximum total price per hour"
+    ),
     max_price: Optional[float] = typer.Option(
-        None, "--max-price", help="Maximum price per hour"
+        None, "--max-price", help="(Deprecated) Use --max-price-per-gpu instead"
     ),
     min_vram: Optional[int] = typer.Option(None, "--min-vram", help="Minimum VRAM in GB"),
     provider: Optional[str] = typer.Option(
         None, "--provider", help="Filter by provider (runpod|primeintellect)"
+    ),
+    cloud_type: Optional[str] = typer.Option(
+        "secure", "--cloud-type", help="Cloud type: secure (default, guaranteed) or community (spot, cheaper but can be interrupted)"
+    ),
+    underlying_provider: Optional[str] = typer.Option(
+        None, "--underlying-provider", help="Filter by underlying provider (e.g., massedcompute, hyperstack) for aggregators like PrimeIntellect"
     ),
     limit: int = typer.Option(10, "--limit", help="Maximum number of results"),
 ):
@@ -203,12 +218,28 @@ def search(
     # Create client (SSH key not needed for search)
     client = GPUClient(credentials=creds, ssh_key_path=None)
 
+    # Handle pricing flags
+    effective_max_price = None
+    if max_price_per_gpu is not None:
+        effective_max_price = max_price_per_gpu
+    elif max_price is not None:
+        logger.warning("--max-price is deprecated, use --max-price-per-gpu instead")
+        effective_max_price = max_price
+
+    if max_total_price is not None:
+        max_per_gpu_from_total = max_total_price / gpu_count
+        if effective_max_price is not None:
+            # Use the more restrictive constraint
+            effective_max_price = min(effective_max_price, max_per_gpu_from_total)
+        else:
+            effective_max_price = max_per_gpu_from_total
+
     # Build query
     query = None
     if gpu_type:
         query = client.gpu_type.contains(gpu_type)
-    if max_price:
-        price_filter = client.price_per_hour <= max_price
+    if effective_max_price:
+        price_filter = client.price_per_hour <= effective_max_price
         query = price_filter if query is None else query & price_filter
     if min_vram:
         vram_filter = client.vram_gb >= min_vram
@@ -216,10 +247,29 @@ def search(
     if provider:
         provider_filter = client.provider == provider
         query = provider_filter if query is None else query & provider_filter
+    if cloud_type:
+        from broker.types import CloudType
+        if cloud_type.lower() == "secure":
+            cloud_filter = client.cloud_type == CloudType.SECURE
+        elif cloud_type.lower() == "community":
+            cloud_filter = client.cloud_type == CloudType.COMMUNITY
+        else:
+            logger.error(f"Invalid cloud type: {cloud_type}. Use 'secure' or 'community'")
+            raise typer.Exit(1)
+        query = cloud_filter if query is None else query & cloud_filter
+    if underlying_provider:
+        underlying_filter = client.underlying_provider == underlying_provider
+        query = underlying_filter if query is None else query & underlying_filter
 
     # Search (queries all providers by default, merges results)
-    logger.info("Searching for GPU offers...")
-    offers = client.search(query, sort=lambda x: x.price_per_hour)
+    if gpu_count > 1:
+        logger.info(f"Searching for GPU offers (gpu_count={gpu_count})...")
+    else:
+        logger.info("Searching for GPU offers...")
+
+    # Import api to call search with gpu_count
+    from broker import api
+    offers = api.search(query, gpu_count=gpu_count, sort=lambda x: x.price_per_hour, credentials=creds.to_dict())
 
     # Limit results
     offers = offers[:limit]
@@ -234,7 +284,9 @@ def search(
                         "gpu_type": o.gpu_type,
                         "vram_gb": o.vram_gb,
                         "price_per_hour": o.price_per_hour,
+                        "total_price_per_hour": o.price_per_hour * gpu_count,
                         "memory_gb": o.memory_gb,
+                        "gpu_count": gpu_count,
                     }
                     for o in offers
                 ],
@@ -243,32 +295,76 @@ def search(
         )
     else:
         # Rich table output
-        table = Table(title=f"GPU Offers ({len(offers)} found)")
-        table.add_column("Provider", style="cyan")
-        table.add_column("GPU Type")
-        table.add_column("VRAM", justify="right")
-        table.add_column("RAM", justify="right")
-        table.add_column("Price/hr", justify="right")
+        if gpu_count > 1:
+            table = Table(title=f"GPU Node Offers - {gpu_count}x GPUs ({len(offers)} found)")
+            table.add_column("Provider", style="cyan")
+            table.add_column("GPU Type")
+            table.add_column("Cloud", justify="center")
+            table.add_column("VRAM", justify="right")
+            table.add_column("Node Price/hr", justify="right", style="bold")
+            table.add_column("Per GPU", justify="right", style="dim")
 
-        for offer in offers:
-            table.add_row(
-                offer.provider,
-                offer.gpu_type,
-                f"{offer.vram_gb}GB",
-                f"{offer.memory_gb}GB",
-                f"${offer.price_per_hour:.2f}",
-            )
+            for offer in offers:
+                from broker.types import CloudType
+                # Use offer.gpu_count (which reflects the actual search result) rather than parameter gpu_count
+                total_price = offer.price_per_hour * offer.gpu_count
+
+                # Format cloud type display
+                if offer.cloud_type == CloudType.SECURE:
+                    cloud_display = "[green]Secure[/green]"
+                elif offer.cloud_type == CloudType.COMMUNITY:
+                    cloud_display = "[yellow]Community[/yellow]"
+                else:
+                    cloud_display = "Unknown"
+
+                table.add_row(
+                    offer.provider,
+                    offer.gpu_type,
+                    cloud_display,
+                    f"{offer.vram_gb}GB",
+                    f"${total_price:.2f}",
+                    f"${offer.price_per_hour:.2f}",
+                )
+        else:
+            table = Table(title=f"GPU Offers ({len(offers)} found)")
+            table.add_column("Provider", style="cyan")
+            table.add_column("GPU Type")
+            table.add_column("VRAM", justify="right")
+            table.add_column("RAM", justify="right")
+            table.add_column("Price/hr", justify="right")
+
+            for offer in offers:
+                table.add_row(
+                    offer.provider,
+                    offer.gpu_type,
+                    f"{offer.vram_gb}GB",
+                    f"{offer.memory_gb}GB",
+                    f"${offer.price_per_hour:.2f}",
+                )
 
         console.print(table)
-        logger.info(f"Showing {len(offers)} cheapest offers")
+        if gpu_count > 1:
+            logger.info(f"Showing {len(offers)} cheapest offers for {gpu_count}x GPUs")
+        else:
+            logger.info(f"Showing {len(offers)} cheapest offers")
 
 
 @app.command()
 def create(
     ctx: typer.Context,
     gpu_type: Optional[str] = typer.Option(None, "--gpu-type", help="GPU type filter"),
+    gpu_count: int = typer.Option(1, "--gpu-count", help="Number of GPUs (default: 1)"),
+    max_price_per_gpu: Optional[float] = typer.Option(
+        None, "--max-price-per-gpu", help="Maximum price per GPU per hour"
+    ),
+    max_total_price: Optional[float] = typer.Option(
+        None, "--max-total-price", help="Maximum total price per hour"
+    ),
     max_price: Optional[float] = typer.Option(
-        None, "--max-price", help="Maximum price per hour"
+        None, "--max-price", help="(Deprecated) Use --max-price-per-gpu instead"
+    ),
+    cloud_type: Optional[str] = typer.Option(
+        "secure", "--cloud-type", help="Cloud type: secure (default, guaranteed) or community (spot, cheaper but can be interrupted)"
     ),
     image: str = typer.Option(
         "runpod/pytorch:1.0.0-cu1281-torch280-ubuntu2204", "--image", help="Docker image to use"
@@ -297,17 +393,48 @@ def create(
     # Create client
     client = GPUClient(credentials=creds, ssh_key_path=ssh_key)
 
+    # Handle pricing flags
+    effective_max_price = None
+    if max_price_per_gpu is not None:
+        effective_max_price = max_price_per_gpu
+    elif max_price is not None:
+        logger.warning("--max-price is deprecated, use --max-price-per-gpu instead")
+        effective_max_price = max_price
+
+    if max_total_price is not None:
+        max_per_gpu_from_total = max_total_price / gpu_count
+        if effective_max_price is not None:
+            # Use the more restrictive constraint
+            effective_max_price = min(effective_max_price, max_per_gpu_from_total)
+        else:
+            effective_max_price = max_per_gpu_from_total
+
     # Build query if filters provided
     query = None
     if gpu_type:
         query = client.gpu_type.contains(gpu_type)
-    if max_price:
-        price_filter = client.price_per_hour <= max_price
+    if effective_max_price:
+        price_filter = client.price_per_hour <= effective_max_price
         query = price_filter if query is None else query & price_filter
+    if cloud_type:
+        from broker.types import CloudType
+        if cloud_type.lower() == "secure":
+            cloud_filter = client.cloud_type == CloudType.SECURE
+        elif cloud_type.lower() == "community":
+            cloud_filter = client.cloud_type == CloudType.COMMUNITY
+        else:
+            logger.error(f"Invalid cloud type: {cloud_type}. Use 'secure' or 'community'")
+            raise typer.Exit(1)
+        query = cloud_filter if query is None else query & cloud_filter
 
     # Create instance
-    logger.info("Provisioning instance...")
-    instance = client.create(query, image=image, name=name)
+    if gpu_count > 1:
+        cloud_msg = f" ({cloud_type} cloud)" if cloud_type else ""
+        logger.info(f"Provisioning {gpu_count}x GPU instance{cloud_msg}...")
+    else:
+        cloud_msg = f" ({cloud_type} cloud)" if cloud_type else ""
+        logger.info(f"Provisioning instance{cloud_msg}...")
+    instance = client.create(query, image=image, name=name, gpu_count=gpu_count)
 
     if not instance:
         logger.error("✗ Failed to provision instance")
@@ -328,9 +455,11 @@ def create(
                     "id": instance.id,
                     "provider": instance.provider,
                     "gpu_type": instance.gpu_type,
+                    "gpu_count": instance.gpu_count,
                     "status": instance.status.value,
                     "ssh": instance.ssh_connection_string() if wait_ssh else None,
                     "price_per_hour": instance.price_per_hour,
+                    "total_price_per_hour": instance.price_per_hour * instance.gpu_count,
                 },
                 indent=2,
             )
@@ -343,11 +472,21 @@ def create(
             raise typer.Exit(1)
     else:  # summary
         if wait_ssh:
-            logger.info(
-                f"✓ Instance {instance.id} ready: {instance.ssh_connection_string()}"
-            )
+            gpu_info = f"{instance.gpu_count}x {instance.gpu_type}" if instance.gpu_count > 1 else instance.gpu_type
+            logger.info(f"✓ Instance {instance.id} ready: {instance.ssh_connection_string()}")
+            logger.info(f"  GPU: {gpu_info}")
+            if instance.gpu_count > 1:
+                logger.info(f"  Price: ${instance.price_per_hour:.2f}/GPU/hr (${instance.price_per_hour * instance.gpu_count:.2f}/hr total)")
+            else:
+                logger.info(f"  Price: ${instance.price_per_hour:.2f}/hr")
         else:
+            gpu_info = f"{instance.gpu_count}x {instance.gpu_type}" if instance.gpu_count > 1 else instance.gpu_type
             logger.info(f"✓ Instance {instance.id} provisioning started")
+            logger.info(f"  GPU: {gpu_info}")
+            if instance.gpu_count > 1:
+                logger.info(f"  Price: ${instance.price_per_hour:.2f}/GPU/hr (${instance.price_per_hour * instance.gpu_count:.2f}/hr total)")
+            else:
+                logger.info(f"  Price: ${instance.price_per_hour:.2f}/hr")
             logger.info(f"Use 'broker status {instance.id}' to check progress")
 
 
@@ -385,18 +524,27 @@ def list(ctx: typer.Context):
         table.add_column("ID", style="cyan")
         table.add_column("Name")
         table.add_column("Provider")
-        table.add_column("GPU")
+        table.add_column("GPUs")
         table.add_column("Status")
-        table.add_column("Price/hr", justify="right")
+        table.add_column("Node Price/hr", justify="right")
 
         for instance in instances:
+            # Show GPU count and type
+            if instance.gpu_count > 1:
+                gpu_display = f"{instance.gpu_count}x {instance.gpu_type}"
+            else:
+                gpu_display = instance.gpu_type
+
+            # Calculate node price (per-GPU price × count)
+            node_price = instance.price_per_hour * instance.gpu_count
+
             table.add_row(
                 instance.id,
                 instance.name or "-",
                 instance.provider,
-                instance.gpu_type,
+                gpu_display,
                 instance.status.value,
-                f"${instance.price_per_hour:.2f}",
+                f"${node_price:.2f}",
             )
 
         console.print(table)

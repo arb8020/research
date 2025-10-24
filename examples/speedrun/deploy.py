@@ -69,8 +69,8 @@ def main():
     parser.add_argument(
         "--container-disk-gb",
         type=int,
-        default=250,
-        help="Container disk size in GB (default: 250)",
+        default=150,
+        help="Container disk size in GB (default: 150, increased from 50 to avoid 'no space left' errors during image pull)",
     )
     parser.add_argument(
         "--volume-disk-gb",

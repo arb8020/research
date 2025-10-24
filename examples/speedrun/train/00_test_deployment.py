@@ -28,9 +28,11 @@ def main():
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
+    local_rank = int(os.environ.get('LOCAL_RANK', 0))
 
     # Set device based on local rank to avoid duplicate GPU assignment
-    torch.cuda.set_device(rank)
+    # torchrun sets CUDA_VISIBLE_DEVICES, so local_rank is the correct device index
+    torch.cuda.set_device(local_rank)
     device = torch.cuda.current_device()
 
     print(f"[Rank {rank}/{world_size}] Initialized successfully")
