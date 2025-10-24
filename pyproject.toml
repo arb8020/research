@@ -1,5 +1,5 @@
 [tool.uv.workspace]
-members = ["bifrost", "broker", "shared", "examples/kernels"]
+members = ["bifrost", "broker", "shared", "examples/kernel-learning"]
 
 [project]
 name = "gpu-research-tools"
@@ -62,12 +62,12 @@ example-outlier-features = [
     "requests>=2.28.0",
     "python-dotenv>=1.0.0",
     "triton>=3.4.0; sys_platform == 'linux'",  # MXFP4 quantization support for GPT-OSS
-    "kernels; sys_platform == 'linux'",  # Optimized MXFP4 kernels for GPT-OSS
+    "kernels; sys_platform == 'linux'",  # Optimized MXFP4 kernels from PyPI for GPT-OSS
 ]
 
-# LeetGPU CLI for GPU kernel challenges
-example-kernels = [
-    "kernels",
+# LeetGPU CLI for GPU kernel learning challenges
+example-kernel-learning = [
+    "kernel-learning",
 ]
 
 # Nano-inference JAX GPT-2 implementation
@@ -96,7 +96,7 @@ corpus-proximity = "corpus_proximity_cli:main"
 broker = { workspace = true }
 bifrost = { workspace = true }
 shared = { workspace = true }
-kernels = { workspace = true }
+kernel-learning = { workspace = true }
 
 [build-system]
 requires = ["setuptools>=61.0"]
