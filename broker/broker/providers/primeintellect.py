@@ -9,15 +9,19 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from ..types import CloudType, GPUInstance, GPUOffer, InstanceStatus, ProvisionRequest
+from shared.retry import retry
 
 logger = logging.getLogger(__name__)
 
 PRIME_API_BASE_URL = "https://api.primeintellect.ai/api/v1"
 
 
-def _make_api_request(method: str, endpoint: str, data: Optional[Dict] = None, 
+@retry(max_attempts=3, delay=1, backoff=2, exceptions=(requests.RequestException, requests.Timeout))
+def _make_api_request(method: str, endpoint: str, data: Optional[Dict] = None,
                      params: Optional[Dict] = None, api_key: Optional[str] = None) -> Dict[str, Any]:
-    """Make a REST API request to Prime Intellect API
+    """Make a REST API request to Prime Intellect API with automatic retries.
+
+    Retries up to 3 times with exponential backoff (1s, 2s, 4s) on network errors.
 
     Args:
         method: HTTP method (GET, POST, DELETE, etc.)
@@ -33,10 +37,10 @@ def _make_api_request(method: str, endpoint: str, data: Optional[Dict] = None,
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
-    
+
     url = f"{PRIME_API_BASE_URL}{endpoint}"
     logger.debug("Prime Intellect API request %s %s (api key ...%s)", method, url, api_key[-4:] if api_key else "none")
-    
+
     try:
         response = requests.request(
             method=method,
@@ -57,7 +61,7 @@ def _make_api_request(method: str, endpoint: str, data: Optional[Dict] = None,
     # Handle empty responses (e.g., DELETE operations)
     if response.status_code == 204 or not response.content:
         return {}
-        
+
     return response.json()
 
 
