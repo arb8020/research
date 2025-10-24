@@ -114,3 +114,13 @@ include = ["shared*"]
 
 [tool.setuptools]
 py-modules = ["corpus_proximity_cli"]
+
+[tool.ty.src]
+exclude = [
+    "**/originals/**",  # Exclude all third-party code in originals/ directories
+    "examples/speedrun/history/**",  # Exclude historical speedrun versions
+    "examples/speedrun/single-file.py",  # Speedrun example with type issues
+    "examples/speedrun/single-file-smoke.py",  # Speedrun example with type issues
+    "examples/speedrun/train/00_test_deployment.py",  # Training deployment test
+    "examples/nano-inference/basic_blocks.py",  # Incomplete/skeleton code
+]
