@@ -165,15 +165,13 @@ def provision_gpu(config: Config, min_vram: int) -> ProvisionResult:
     logger.info(f"📡 Creating {gpu_desc} instance (min {min_vram}GB VRAM per GPU, "
                 f"{config.deployment.min_cpu_ram}GB CPU RAM, max ${config.deployment.max_price}/hr, {disk_desc})...")
 
-    # Load credentials from environment
+    # Load RunPod credentials from environment
+    # NOTE: This deployment script is configured for RunPod only
     load_dotenv()
-    credentials = {}
-    if runpod_key := os.getenv("RUNPOD_API_KEY"):
-        credentials["runpod"] = runpod_key
-    if vast_key := os.getenv("VAST_API_KEY"):
-        credentials["vast"] = vast_key
+    runpod_key = os.getenv("RUNPOD_API_KEY")
+    assert runpod_key, "RUNPOD_API_KEY not found in environment. Set it in .env file"
 
-    assert credentials, "No GPU provider credentials found. Set RUNPOD_API_KEY or VAST_API_KEY in .env"
+    credentials = {"runpod": runpod_key}
 
     # Load SSH key path from environment
     ssh_key_path = os.getenv("SSH_KEY_PATH", "~/.ssh/id_ed25519")

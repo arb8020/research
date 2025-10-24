@@ -27,6 +27,11 @@ def get_prime_key() -> Optional[str]:
     return os.getenv("PRIME_API_KEY")
 
 
+def get_lambda_key() -> Optional[str]:
+    """Get Lambda Labs API key from environment"""
+    return os.getenv("LAMBDA_API_KEY")
+
+
 def get_modal_token() -> Optional[str]:
     """Get Modal token from environment or ~/.modal.toml
 
@@ -103,6 +108,7 @@ def create_env_template(tool: str):
         template = """# GPU Broker Credentials
 RUNPOD_API_KEY=
 PRIME_API_KEY=
+LAMBDA_API_KEY=
 SSH_KEY_PATH=~/.ssh/id_ed25519
 """
     else:  # bifrost
