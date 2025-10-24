@@ -175,7 +175,8 @@ def process_single_batch(
     batch_texts: list[str],
     batch_idx: int,
     config: Config,
-    save_dir: Path
+    save_dir: Path,
+    num_batches: int | None = None
 ) -> dict:
     """Extract and analyze activations for a single batch.
 
@@ -191,7 +192,8 @@ def process_single_batch(
     """
     import torch
 
-    logger.info(f"\n{'='*20} BATCH {batch_idx + 1} {'='*20}")
+    batch_label = f"{batch_idx + 1}/{num_batches}" if num_batches else f"{batch_idx + 1}"
+    logger.info(f"\n{'='*20} BATCH {batch_label} {'='*20}")
     logger.info(f"Processing {len(batch_texts)} sequences")
 
     # Step 1: Extract activations
@@ -205,7 +207,7 @@ def process_single_batch(
     logger.info(f"✓ Activation extraction completed: {run_dir}")
 
     # Step 2: Analyze for outliers
-    logger.info(f"🔍 Analyzing batch {batch_idx + 1} for outliers...")
+    logger.info(f"🔍 Analyzing batch {batch_label} for outliers...")
     systematic_outliers, outlier_info = analyze_run_for_outliers(
         run_dir=run_dir,
         magnitude_threshold=config.analysis.magnitude_threshold,
@@ -411,7 +413,7 @@ def main():
             batch_texts = text_sequences[start_idx:end_idx]
 
             batch_result = process_single_batch(
-                llm, batch_texts, batch_idx, config, config.output.save_dir
+                llm, batch_texts, batch_idx, config, config.output.save_dir, num_batches
             )
             batch_results.append(batch_result)
 
