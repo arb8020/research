@@ -162,6 +162,8 @@ def create(
     # Jupyter configuration
     start_jupyter: bool = False,
     jupyter_password: Optional[str] = None,
+    # RunPod-specific: Template support
+    template_id: Optional[str] = None,
     # Offer selection parameters
     n_offers: int = 3,
     # API credentials
@@ -262,6 +264,7 @@ def create(
                 start_jupyter=start_jupyter,
                 jupyter_password=jupyter_password,
                 manufacturer=manufacturer,
+                template_id=template_id,
                 **kwargs
             )
             
