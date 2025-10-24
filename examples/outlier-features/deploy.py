@@ -600,6 +600,15 @@ def main():
         logger.error(f"✗ Deployment failed: {e}")
         import traceback
         traceback.print_exc()
+
+        # Cleanup GPU instance even on failure (unless explicitly kept)
+        if 'gpu_instance' in locals() and gpu_instance and not config.deployment.keep_running:
+            logger.info(f"\n🧹 Cleaning up GPU instance after failure...")
+            try:
+                cleanup_instance(gpu_instance.id)
+            except Exception as cleanup_error:
+                logger.error(f"⚠️  Cleanup also failed: {cleanup_error}")
+
         return 1
 
 
