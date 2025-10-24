@@ -10,6 +10,7 @@ from typing import Optional, Callable, Iterator, List, Dict, Union
 import logging
 
 from shared.validation import validate_ssh_key_path, validate_timeout
+from shared.retry import retry
 from .types import (
     SSHConnection, JobInfo, JobStatus, CopyResult, ConnectionError, JobError, TransferError,
     RemoteConfig, ExecResult, EnvironmentVariables, SessionInfo, JobMetadata
@@ -81,21 +82,52 @@ class BifrostClient:
         # Connection will be established on-demand
         self._ssh_client: Optional[paramiko.SSHClient] = None
     
+    @retry(max_attempts=3, delay=2, backoff=2, exceptions=(Exception,))
+    def _establish_connection(self, ssh_client: paramiko.SSHClient, private_key=None) -> None:
+        """Establish SSH connection with retry logic.
+
+        This is at an external boundary (network I/O) so retry is appropriate.
+        Retries up to 3 times with exponential backoff (2s, 4s, 8s) on connection errors.
+
+        Args:
+            ssh_client: Paramiko SSH client
+            private_key: Optional private key object
+
+        Raises:
+            Exception: If connection fails after all retry attempts
+        """
+        if private_key:
+            ssh_client.connect(
+                hostname=self.ssh.host,
+                port=self.ssh.port,
+                username=self.ssh.user,
+                pkey=private_key,
+                timeout=self.timeout
+            )
+        else:
+            # Use SSH agent or default keys
+            ssh_client.connect(
+                hostname=self.ssh.host,
+                port=self.ssh.port,
+                username=self.ssh.user,
+                timeout=self.timeout
+            )
+
     def _get_ssh_client(self) -> paramiko.SSHClient:
         """Get or create SSH client connection."""
         if self._ssh_client is None or self._ssh_client.get_transport() is None:
             self._ssh_client = paramiko.SSHClient()
             self._ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            
+
             try:
                 # Load SSH key if provided
                 key_content = self._load_ssh_key()
-                
+
                 if key_content:
                     # Use provided key
                     import io
                     from paramiko import RSAKey, Ed25519Key, ECDSAKey
-                    
+
                     key_file = io.StringIO(key_content)
                     # Try different key types
                     private_key = None
@@ -106,30 +138,20 @@ class BifrostClient:
                             break
                         except Exception:
                             continue
-                    
+
                     if not private_key:
                         raise ConnectionError(f"Could not parse SSH key at {self.ssh_key_path}")
-                    
-                    self._ssh_client.connect(
-                        hostname=self.ssh.host,
-                        port=self.ssh.port, 
-                        username=self.ssh.user,
-                        pkey=private_key,
-                        timeout=self.timeout
-                    )
+
+                    # Connect with retry logic
+                    self._establish_connection(self._ssh_client, private_key)
                 else:
-                    # Use SSH agent or default keys
-                    self._ssh_client.connect(
-                        hostname=self.ssh.host,
-                        port=self.ssh.port, 
-                        username=self.ssh.user,
-                        timeout=self.timeout
-                    )
-                    
+                    # Connect with retry logic (no key)
+                    self._establish_connection(self._ssh_client, None)
+
                 self.logger.info(f"Connected to {self.ssh}")
             except Exception as e:
                 raise ConnectionError(f"Failed to connect to {self.ssh}: {e}")
-        
+
         return self._ssh_client
     
     def _load_ssh_key(self) -> Optional[str]:
