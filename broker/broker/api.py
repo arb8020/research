@@ -23,6 +23,7 @@ def search(
     # Resource requirements for accurate pricing
     memory_gb: Optional[int] = None,
     container_disk_gb: Optional[int] = None,
+    gpu_count: int = 1,
     # New sorting parameters
     sort: Optional[Callable[[Any], Any]] = None,
     reverse: bool = False,
@@ -39,6 +40,9 @@ def search(
         provider: Specific provider to search (default: all providers)
         cuda_version: Filter by specific CUDA version (e.g., "12.0", "11.8")
         manufacturer: Filter by GPU manufacturer (e.g., "nvidia", "amd")
+        memory_gb: Minimum memory in GB
+        container_disk_gb: Container disk size in GB
+        gpu_count: Number of GPUs to search for (default: 1). Affects pricing and availability.
         sort: Callable to extract sort key (e.g., lambda x: x.memory_gb/x.price_per_hour)
         reverse: Sort in descending order (default: False)
         credentials: Dict mapping provider name to API key (e.g., {"runpod": "key1"})
@@ -55,7 +59,7 @@ def search(
         if api_key:  # Only search if we have credentials
             runpod_offers = runpod.search_gpu_offers(cuda_version=cuda_version, manufacturer=manufacturer,
                                                      memory_gb=memory_gb, container_disk_gb=container_disk_gb,
-                                                     api_key=api_key)
+                                                     gpu_count=gpu_count, api_key=api_key)
             offers.extend(runpod_offers)
 
     if provider is None or provider == "primeintellect":
@@ -63,7 +67,7 @@ def search(
         if api_key:  # Only search if we have credentials
             prime_offers = primeintellect.search_gpu_offers(cuda_version=cuda_version, manufacturer=manufacturer,
                                                             memory_gb=memory_gb, container_disk_gb=container_disk_gb,
-                                                            api_key=api_key)
+                                                            gpu_count=gpu_count, api_key=api_key)
             offers.extend(prime_offers)
     
     # Apply pandas-style query if provided
@@ -211,7 +215,7 @@ def create(
         # Extract memory and disk from kwargs to pass to search
         memory_gb = kwargs.get('memory_gb')
         container_disk_gb = kwargs.get('container_disk_gb')
-        
+
         suitable_offers = search(
             query=query,
             gpu_type=gpu_type,
@@ -221,12 +225,14 @@ def create(
             manufacturer=manufacturer,
             memory_gb=memory_gb,
             container_disk_gb=container_disk_gb,
+            gpu_count=gpu_count,
             sort=sort,
             reverse=reverse,
             credentials=credentials
         )
         if not suitable_offers:
-            raise ValueError("No GPUs found matching criteria")
+            logger.info("No GPUs found matching criteria")
+            return None
     
     # Try to provision from the top offers
     last_error = None

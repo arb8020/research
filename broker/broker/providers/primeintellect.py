@@ -63,31 +63,39 @@ def _make_api_request(method: str, endpoint: str, data: Optional[Dict] = None,
 
 def search_gpu_offers(cuda_version: Optional[str] = None, manufacturer: Optional[str] = None,
                       memory_gb: Optional[int] = None, container_disk_gb: Optional[int] = None,
-                      api_key: Optional[str] = None) -> List[GPUOffer]:
-    """Search for available GPU offers on Prime Intellect with optional filtering"""
-    
+                      gpu_count: int = 1, api_key: Optional[str] = None) -> List[GPUOffer]:
+    """Search for available GPU offers on Prime Intellect with optional filtering
+
+    Note: Prime Intellect's availability API doesn't support gpu_count as a query parameter,
+    but we filter the results client-side to match the requested gpu_count.
+    """
+
     # Build query parameters for availability API
     params = {}
-    
+
     # Add CUDA version filter if specified
     if cuda_version:
         params["cuda_version"] = cuda_version
-    
+
     # Add memory filter if specified
     if memory_gb:
         params["min_memory"] = memory_gb
-        
+
     try:
         data = _make_api_request("GET", "/availability/", params=params, api_key=api_key)
         offers = []
-        
+
         # Prime Intellect API returns data grouped by GPU type
         for gpu_type, gpu_offers in data.items():
             # Skip CPU-only offers - we want GPU offers
             if gpu_type == "CPU_NODE":
                 continue
-                
+
             for offer in gpu_offers:
+                # Filter by GPU count (client-side filtering)
+                if offer.get("gpuCount", 1) != gpu_count:
+                    continue
+
                 # Filter by manufacturer if specified
                 if manufacturer and offer.get("provider"):
                     # Note: Prime Intellect doesn't have manufacturer field, using provider as proxy
@@ -96,15 +104,21 @@ def search_gpu_offers(cuda_version: Optional[str] = None, manufacturer: Optional
                 
                 # Determine cloud type from security field
                 cloud_type = CloudType.SECURE if offer.get("security") == "secure_cloud" else CloudType.COMMUNITY
-                
+
                 # Extract pricing - prefer onDemand, fallback to communityPrice
-                price_per_hour = 0.0
+                # Note: PrimeIntellect returns total node price for multi-GPU offers
+                # We normalize to per-GPU pricing for consistency with other providers
+                total_price = 0.0
                 prices = offer.get("prices", {})
                 if prices.get("onDemand"):
-                    price_per_hour = prices["onDemand"]
+                    total_price = prices["onDemand"]
                 elif prices.get("communityPrice"):
-                    price_per_hour = prices["communityPrice"]
-                
+                    total_price = prices["communityPrice"]
+
+                # Normalize to per-GPU pricing
+                offer_gpu_count = offer.get("gpuCount", 1)
+                price_per_hour = total_price / offer_gpu_count if offer_gpu_count > 0 else total_price
+
                 # Create unique offer ID
                 offer_id = f"prime-{offer.get('cloudId', 'unknown')}-{offer.get('dataCenter', 'unknown')}"
                 
@@ -122,6 +136,7 @@ def search_gpu_offers(cuda_version: Optional[str] = None, manufacturer: Optional
                     cloud_type=cloud_type,
                     cuda_version=cuda_version,  # Pass through filter
                     manufacturer=offer.get("provider"),  # Use provider as manufacturer proxy
+                    underlying_provider=offer.get("provider"),  # Extract underlying provider (e.g., massedcompute, hyperstack)
                     raw_data=offer
                 )
                 offers.append(gpu_offer)

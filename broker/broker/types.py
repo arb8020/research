@@ -54,6 +54,12 @@ class GPUOffer:
     driver_version: Optional[str] = None
     cloud_type: Optional[CloudType] = None
     manufacturer: Optional[str] = None
+    underlying_provider: Optional[str] = None  # For aggregators like PrimeIntellect
+
+    # Stock availability information (from provider APIs)
+    max_gpu_count: Optional[int] = None  # Maximum unreserved GPU count available
+    available_gpu_counts: Optional[list] = None  # List of available GPU counts (e.g., [1,2,3,4,5,6,7])
+    stock_status: Optional[str] = None  # Stock status (e.g., "Low", "High")
 
     def total_price(self, gpu_count: int = 1) -> float:
         """Calculate total price for N GPUs."""
