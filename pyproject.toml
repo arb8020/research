@@ -87,6 +87,7 @@ example-speedrun = [
     "torch>=2.4.0",
     "huggingface-hub>=0.20.0",
     "numpy>=1.24.0",
+    "kernels; sys_platform == 'linux'",
 ]
 
 [project.scripts]
