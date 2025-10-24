@@ -141,7 +141,7 @@ def deploy_code(bifrost_client: BifrostClient, *, use_existing: bool) -> str:
 fi""",
         "uv sync --extra example-corpus-proximity",
     ]
-    workspace_path = bifrost_client.push(bootstrap_cmd=bootstrap_cmd if not use_existing else None)
+    workspace_path = bifrost_client.push(bootstrap_cmd=bootstrap_cmd)
     return workspace_path or "~/.bifrost/workspace"
 
 
