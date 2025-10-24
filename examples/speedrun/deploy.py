@@ -69,14 +69,14 @@ def main():
     parser.add_argument(
         "--container-disk-gb",
         type=int,
-        default=150,
-        help="Container disk size in GB (default: 150, increased from 50 to avoid 'no space left' errors during image pull)",
+        default=250,
+        help="Container disk size in GB (default: 250 - all storage in container, matching outlier-features)",
     )
     parser.add_argument(
         "--volume-disk-gb",
         type=int,
-        default=100,
-        help="Volume disk size in GB for data (default: 100)",
+        default=0,
+        help="Volume disk size in GB for data (default: 0 - avoid RunPod mount errors, use container disk only)",
     )
 
     # Deployment configuration
