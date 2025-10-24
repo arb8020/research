@@ -104,6 +104,11 @@ class GPUClient:
         return self._query.provider
 
     @property
+    def underlying_provider(self):
+        """Query by underlying provider (for aggregators): client.underlying_provider == 'massedcompute'"""
+        return self._query.underlying_provider
+
+    @property
     def cuda_version(self):
         """Query by CUDA version: client.cuda_version.contains('12.0')"""
         return self._query.cuda_version

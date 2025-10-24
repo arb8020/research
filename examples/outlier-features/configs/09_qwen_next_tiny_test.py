@@ -2,6 +2,10 @@
 
 Minimal config to test that Qwen3-Next loads and runs.
 Expected runtime: 4-6 minutes on 1xA100.
+
+Previous run failed with "out of disk space" error.
+Qwen-80B requires ~200GB for model weights + cache.
+Using GLM config settings (250GB container disk).
 """
 
 from pathlib import Path
@@ -26,13 +30,15 @@ config.analysis.batch_size = 1
 config.analysis.layers = [0, 1, 2, 3]  # Just first 4 layers
 config.analysis.chunk_layers = 2  # Small chunks for large model
 
-# Deployment: Single GPU (may be tight, but worth testing)
+# Deployment: Single GPU with sufficient disk space
 config.deployment.min_vram = None
 config.deployment.gpu_count = 1
 config.deployment.gpu_filter = "A100"
 config.deployment.min_cpu_ram = 64
 config.deployment.max_price = 3.0
 config.deployment.safety_factor = 1.4
+config.deployment.container_disk = 250  # Increased from 150GB (GLM pattern)
+config.deployment.volume_disk = 0  # No volume disk (avoid mount errors)
 
 # Output
 config.output.experiment_name = "qwen_next_tiny_test"

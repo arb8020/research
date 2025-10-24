@@ -146,14 +146,37 @@ fi""",
 
 
 def start_remote_pipeline(bifrost_client: BifrostClient, config_arg: str) -> None:
+    """Start the pipeline on remote instance with required environment variables.
+
+    Args:
+        bifrost_client: Connected bifrost client
+        config_arg: Config file path argument for pipeline
+    """
+    # Load OpenAI API key from local environment
+    load_dotenv()
+    openai_api_key = os.getenv("OPENAI_API_KEY", "")
+
+    # Build environment variable exports for the remote command
+    env_exports = ""
+    if openai_api_key:
+        env_exports = f"export OPENAI_API_KEY='{openai_api_key}' && "
+        logging.info("✅ OPENAI_API_KEY will be set on remote instance")
+    else:
+        logging.warning("⚠️  OPENAI_API_KEY not found in local .env - cluster naming will fail")
+
+    # Clean up previous runs
     setup_cmd = f"cd {REMOTE_WORKSPACE_PATH} && rm -f .pipeline_complete .pipeline_failed pipeline.log"
     bifrost_client.exec(setup_cmd)
+
+    # Kill existing tmux session if any
     tmux_cleanup = f"tmux kill-session -t {TMUX_SESSION} 2>/dev/null || true"
     bifrost_client.exec(f"cd {REMOTE_WORKSPACE_PATH} && {tmux_cleanup}")
+
+    # Build and start pipeline with environment variables
     run_cmd = (
         f"cd {REMOTE_WORKSPACE_PATH} && "
         f"tmux new-session -d -s {TMUX_SESSION} "
-        f"'uv run python run_full_pipeline.py {config_arg}'"
+        f"'{env_exports}uv run python run_full_pipeline.py {config_arg}'"
     )
     result = bifrost_client.exec(run_cmd)
     if result.exit_code != 0:
@@ -338,6 +361,12 @@ def main() -> int:
 
     setup_logging()
     load_dotenv()
+
+    # Check for OPENAI_API_KEY early (needed for cluster naming)
+    if not os.getenv("OPENAI_API_KEY"):
+        logging.warning("⚠️  OPENAI_API_KEY not found in environment")
+        logging.warning("   Cluster naming will fail. Set it in .env file or export it.")
+        logging.warning("   Continuing anyway in case you only want to run clustering without naming...")
 
     try:
         config = load_config_from_file(args.config)
