@@ -32,10 +32,10 @@ config.analysis.chunk_layers = 6  # Small chunks for 106B model
 config.deployment.min_vram = None
 config.deployment.gpu_count = 2
 config.deployment.gpu_filter = "A100"
-config.deployment.min_cpu_ram = 96
-config.deployment.max_price = 4.5
+config.deployment.min_cpu_ram = 64  # Reduced from 96 to match availability
+config.deployment.max_price = 5.0  # Increased for 2-GPU availability
 config.deployment.safety_factor = 1.4
-config.deployment.container_disk = 150
+config.deployment.container_disk = 250  # Increased from 150GB - avoid disk space failure
 config.deployment.volume_disk = 0  # No volume to avoid mount issues
 
 # Output
