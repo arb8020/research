@@ -219,7 +219,17 @@ fi
 """
 
     # Command to capture tmux output for detailed progress
-    tmux_progress_cmd = f"tmux capture-pane -t {TMUX_SESSION} -p 2>/dev/null | tail -10 || echo ''"
+    tmux_progress_cmd = f"tmux capture-pane -t {TMUX_SESSION} -p 2>/dev/null | tail -30 || echo ''"
+
+    # Command to get detailed clustering progress from logs
+    detailed_cmd = f"""
+cd {REMOTE_WORKSPACE_PATH}
+if [ -f pipeline.log ]; then
+  tail -50 pipeline.log | grep -E '(Re-chunked|Embedding|Generated embeddings|Clustering at depth|Found.*clusters|Silhouette score|Recursing)' | tail -3
+else
+  echo ""
+fi
+"""
 
     for i in range(max_iterations):
         result = bifrost_client.exec(check_cmd)
@@ -253,15 +263,31 @@ fi
             lines = tmux_result.stdout.strip().splitlines()
             # Look for progress bar lines (containing % or |)
             for line in reversed(lines):
-                if "%" in line and ("|" in line or "Batches:" in line):
+                if "%" in line and "|" in line:
                     # Extract just the progress percentage and basic info
-                    if "Batches:" in line:
-                        # Extract percentage and counts from tqdm-style progress bars
-                        match = re.search(r'(\d+)%\|.*?\s+(\d+)/(\d+)\s+\[([^\]]+)', line)
-                        if match:
-                            pct, current, total, time_info = match.groups()
-                            detailed_progress = f" [{pct}% - {current}/{total}]"
-                    break
+                    match = re.search(r'(\d+)%\|.*?\s+(\d+)/(\d+)', line)
+                    if match:
+                        pct, current, total = match.groups()
+                        detailed_progress = f" [{pct}% - {current}/{total}]"
+                        break
+
+        # Get detailed clustering info if we're in clustering phase
+        if "Clustering corpus" in current_step:
+            detail_result = bifrost_client.exec(detailed_cmd)
+            if detail_result.stdout:
+                detail_lines = [l.strip() for l in detail_result.stdout.strip().splitlines() if l.strip()]
+                if detail_lines:
+                    # Extract useful info from recent log lines
+                    for line in detail_lines:
+                        if "depth" in line.lower():
+                            # Extract depth and cluster count info
+                            depth_match = re.search(r'depth[=\s]+(\d+)', line, re.IGNORECASE)
+                            if depth_match:
+                                detailed_progress = f" [depth {depth_match.group(1)}]"
+                        elif "clusters" in line.lower():
+                            cluster_match = re.search(r'(\d+)\s+clusters', line, re.IGNORECASE)
+                            if cluster_match:
+                                detailed_progress += f" {cluster_match.group(1)} clusters"
 
         logging.info("%s Pipeline running: %s%s (%ss / %ss)",
                     step_emoji, current_step, detailed_progress, elapsed, timeout)
