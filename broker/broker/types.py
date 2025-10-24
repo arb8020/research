@@ -329,16 +329,17 @@ class SSHConfig:
 class ProviderCredentials:
     """API credentials for cloud GPU providers.
 
-    Supports multiple providers (RunPod, Prime Intellect, etc).
+    Supports multiple providers (RunPod, Prime Intellect, Lambda Labs, etc).
     Immutable to prevent accidental credential leaks.
     """
     runpod: str = ""
     primeintellect: str = ""
+    lambdalabs: str = ""
     # Add more providers as needed
 
     def __post_init__(self):
         # Tiger Style: assert at least one credential provided
-        assert self.runpod or self.primeintellect, \
+        assert self.runpod or self.primeintellect or self.lambdalabs, \
             "At least one provider credential required"
 
         # Validate credential format (basic length check)
@@ -350,8 +351,12 @@ class ProviderCredentials:
             assert len(self.primeintellect) > 10, \
                 "Prime Intellect API key appears invalid (too short)"
 
+        if self.lambdalabs:
+            assert len(self.lambdalabs) > 10, \
+                "Lambda Labs API key appears invalid (too short)"
+
         # Assert output invariant
-        assert self.runpod or self.primeintellect, "credentials validated"
+        assert self.runpod or self.primeintellect or self.lambdalabs, "credentials validated"
 
     def get(self, provider: str) -> Optional[str]:
         """Get credential for specific provider."""
@@ -359,6 +364,8 @@ class ProviderCredentials:
             return self.runpod
         elif provider == "primeintellect":
             return self.primeintellect
+        elif provider == "lambdalabs":
+            return self.lambdalabs
         return None
 
     def to_dict(self) -> Dict[str, str]:
@@ -368,6 +375,8 @@ class ProviderCredentials:
             result["runpod"] = self.runpod
         if self.primeintellect:
             result["primeintellect"] = self.primeintellect
+        if self.lambdalabs:
+            result["lambdalabs"] = self.lambdalabs
         return result
 
     @classmethod
@@ -375,5 +384,6 @@ class ProviderCredentials:
         """Create from dict (for backward compatibility)."""
         return cls(
             runpod=credentials.get("runpod", ""),
-            primeintellect=credentials.get("primeintellect", "")
+            primeintellect=credentials.get("primeintellect", ""),
+            lambdalabs=credentials.get("lambdalabs", "")
         )

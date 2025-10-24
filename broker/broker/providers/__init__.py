@@ -71,5 +71,8 @@ def get_provider_impl(provider_name: str):
     elif provider_name == "primeintellect":
         from . import primeintellect
         return primeintellect
+    elif provider_name == "lambdalabs":
+        from . import lambdalabs
+        return lambdalabs
     else:
         raise ValueError(f"Unsupported provider: {provider_name}")
