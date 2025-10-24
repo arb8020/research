@@ -11,11 +11,12 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Literal, Optional, TypeAlias
+from typing import Literal, Optional, TypeAlias, Union
 
 from dotenv import load_dotenv
 
 from broker import CloudType, GPUClient, GPUInstance
+from broker.client import ClientGPUInstance
 from bifrost import BifrostClient
 from config import Config
 from cluster_corpus import get_cache_key
@@ -125,7 +126,7 @@ def provision_instance(gpu_client: GPUClient, offers, instance_name: str, *, min
     return (True, instance, None)
 
 
-def find_instance_by_name_or_id(gpu_client: GPUClient, identifier: str) -> Optional[GPUInstance]:
+def find_instance_by_name_or_id(gpu_client: GPUClient, identifier: str) -> Optional[ClientGPUInstance]:
     instances = gpu_client.list_instances()
     for instance in instances:
         if instance.name == identifier or instance.id == identifier:
@@ -320,7 +321,7 @@ def cleanup_instance(instance_id: str) -> None:
         logging.warning("⚠️  Cleanup may have failed: %s", result.stderr)
 
 
-def connect_existing_instance(identifier: str, provider: Optional[str], ssh_key_path: str) -> tuple[BifrostClient, Optional[GPUInstance]]:
+def connect_existing_instance(identifier: str, provider: Optional[str], ssh_key_path: str) -> tuple[BifrostClient, Optional[ClientGPUInstance]]:
     credentials = get_credentials(provider_filter=provider) if provider else get_credentials()
     gpu_client = GPUClient(credentials=credentials, ssh_key_path=ssh_key_path)
     instance = find_instance_by_name_or_id(gpu_client, identifier)
@@ -381,7 +382,7 @@ def main() -> int:
     local_results = SCRIPT_DIR / "remote_results" / f"clustering_{timestamp}"
 
     bifrost_client: Optional[BifrostClient] = None
-    instance: Optional[GPUInstance] = None
+    instance: Union[GPUInstance, ClientGPUInstance, None] = None
     ssh_key_path = os.getenv("SSH_KEY_PATH", "~/.ssh/id_ed25519")
 
     try:

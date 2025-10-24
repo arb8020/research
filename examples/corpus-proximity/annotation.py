@@ -6,16 +6,18 @@ import logging
 import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from types import ModuleType
 from typing import Iterable, List, Optional
 
 import numpy as np
 
 from corpus_index import CorpusIndex
 
+syntok_segmenter: Optional[ModuleType] = None
 try:
     from syntok import segmenter as syntok_segmenter  # type: ignore
 except ModuleNotFoundError:
-    syntok_segmenter = None
+    pass  # Already None
 
 
 logger = logging.getLogger(__name__)
@@ -93,7 +95,7 @@ def split_into_sentences(text: str) -> List[str]:
 
     if syntok_segmenter is not None:
         sentences: List[str] = []
-        for paragraph in syntok_segmenter.analyze(text):
+        for paragraph in syntok_segmenter.analyze(text):  # type: ignore[attr-defined]
             for sentence in paragraph:
                 sentence_text = "".join(token.spacing + token.value for token in sentence).strip()
                 if sentence_text:
