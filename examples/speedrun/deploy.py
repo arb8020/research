@@ -91,6 +91,11 @@ def main():
         help="Provider name to use (e.g., runpod, primeintellect, vast)",
     )
     parser.add_argument(
+        "--template-id",
+        type=str,
+        help="RunPod template ID (e.g., runpod-torch-v280) - use instead of image for multi-GPU",
+    )
+    parser.add_argument(
         "--ssh-key-path",
         default="~/.ssh/id_ed25519",
         help="Path to SSH private key (default: ~/.ssh/id_ed25519)",
@@ -271,6 +276,7 @@ def main():
             gpu_count=args.gpu_count,
             container_disk_gb=args.container_disk_gb,
             volume_disk_gb=args.volume_disk_gb,
+            template_id=args.template_id,
             sort=lambda x: x.price_per_hour,  # Sort by price (cheapest first)
             reverse=False,
         )

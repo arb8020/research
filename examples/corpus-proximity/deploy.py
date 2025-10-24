@@ -176,7 +176,7 @@ def start_remote_pipeline(bifrost_client: BifrostClient, config_arg: str) -> Non
     run_cmd = (
         f"cd {REMOTE_WORKSPACE_PATH} && "
         f"tmux new-session -d -s {TMUX_SESSION} "
-        f"'{env_exports}uv run python run_full_pipeline.py {config_arg}'"
+        f"'{env_exports}uv run python scripts/run_full_pipeline.py {config_arg}'"
     )
     result = bifrost_client.exec(run_cmd)
     if result.exit_code != 0:

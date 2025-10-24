@@ -10,16 +10,17 @@ from pathlib import Path
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-SUCCESS_MARKER = SCRIPT_DIR / ".pipeline_complete"
-FAILURE_MARKER = SCRIPT_DIR / ".pipeline_failed"
-LOG_PATH = SCRIPT_DIR / "pipeline.log"
+PROJECT_ROOT = SCRIPT_DIR.parent  # Go up from scripts/ to project root
+SUCCESS_MARKER = PROJECT_ROOT / ".pipeline_complete"
+FAILURE_MARKER = PROJECT_ROOT / ".pipeline_failed"
+LOG_PATH = PROJECT_ROOT / "pipeline.log"
 
 
 logger = logging.getLogger(__name__)
 
 
 def run_step(script: str, config_arg: str, *extra: str) -> None:
-    cmd = [sys.executable, str(SCRIPT_DIR / script), config_arg, *extra]
+    cmd = [sys.executable, str(PROJECT_ROOT / script), config_arg, *extra]
     logger.info("Running %s", " ".join(cmd))
     # Capture both stdout and stderr to preserve error details
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
