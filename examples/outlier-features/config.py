@@ -56,6 +56,7 @@ class DeploymentConfig:
     gpu_filter: str | None = None  # e.g., "A100", "H100"
     safety_factor: float = 1.3
     keep_running: bool = False  # Keep instance after completion
+    analysis_timeout: int = 2700  # Analysis completion timeout in seconds (default 45 min)
 
 
 @dataclass
