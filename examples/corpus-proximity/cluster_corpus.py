@@ -340,6 +340,8 @@ def recursive_cluster(
 
         # Update child indices to be relative to original corpus
         child_node.indices = [all_indices[j] for j in child_node.indices]
+        # Also convert noise_indices from local to global coordinates
+        child_node.noise_indices = [all_indices[j] for j in child_node.noise_indices]
 
         current_node.children.append(child_node)
 
