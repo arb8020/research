@@ -37,6 +37,7 @@ config.deployment.max_price = 5.0  # Increased for 2-GPU availability
 config.deployment.safety_factor = 1.4
 config.deployment.container_disk = 250  # Increased from 150GB - avoid disk space failure
 config.deployment.volume_disk = 0  # No volume to avoid mount issues
+config.deployment.analysis_timeout = 5400  # 90 minutes (previous run timed out at 45 min)
 
 # Output
 config.output.experiment_name = "glm_45_air_sweep"

@@ -577,7 +577,7 @@ def main():
 
         # Step 5: Wait for completion
         logger.info("\n⏳ Waiting for analysis to complete...")
-        success = wait_for_analysis_completion(bifrost_client, config, timeout=2700)
+        success = wait_for_analysis_completion(bifrost_client, config, timeout=config.deployment.analysis_timeout)
 
         # Step 6: Sync results
         logger.info("\n💾 Syncing results to local...")
