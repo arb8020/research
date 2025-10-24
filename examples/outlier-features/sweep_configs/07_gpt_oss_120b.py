@@ -28,7 +28,7 @@ config.analysis.layers = None
 config.analysis.chunk_layers = 6
 
 # Deployment: Multi-GPU with high VRAM
-config.deployment.min_vram = None
+config.deployment.min_vram = 80  # Explicit: 2x80GB = 160GB total (estimator fails with 404)
 config.deployment.gpu_count = 2
 config.deployment.gpu_filter = "A100"
 config.deployment.min_cpu_ram = 64  # Reduced from 96 to match availability
