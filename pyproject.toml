@@ -1,5 +1,5 @@
 [tool.uv.workspace]
-members = ["bifrost", "broker", "shared", "examples/kernel-learning"]
+members = ["bifrost", "broker", "shared", "dev/kernel-learning"]
 
 [project]
 name = "gpu-research-tools"
@@ -15,14 +15,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Integration test example
-example-jax-basic = [
+# Development experiments (unpublished)
+dev-jax-basic = [
     "jax[cuda12] ; sys_platform == 'linux'",
     "jax ; sys_platform == 'darwin'",
 ]
 
-# Corpus proximity example
-example-corpus-proximity = [
+# Corpus proximity experiment
+dev-corpus-proximity = [
     "pyarrow>=14.0.0",
     "requests>=2.31.0",
     "sentence-transformers>=3.0.0",
@@ -39,7 +39,7 @@ example-corpus-proximity = [
 ]
 
 # Optimizer visualizations
-example-optimizer-visuals = [
+dev-optimizer-visuals = [
     "jax[cuda12] ; sys_platform == 'linux'",
     "jax ; sys_platform == 'darwin'",
     "matplotlib>=3.0.0",
@@ -49,7 +49,7 @@ example-optimizer-visuals = [
 
 # Outlier features analysis for MoE models
 # Includes bleeding-edge transformers for GPT-OSS & GLM-4 MoE support
-example-outlier-features = [
+dev-outlier-features = [
     "broker",
     "bifrost",
     "shared",
@@ -66,12 +66,12 @@ example-outlier-features = [
 ]
 
 # LeetGPU CLI for GPU kernel learning challenges
-example-kernel-learning = [
+dev-kernel-learning = [
     "kernel-learning",
 ]
 
 # Nano-inference JAX GPT-2 implementation
-example-nano-inference-jax = [
+dev-nano-inference-jax = [
     "jax[cuda12] ; sys_platform == 'linux'",
     "jax ; sys_platform == 'darwin'",
     "numpy>=1.24.0",
@@ -83,7 +83,7 @@ example-nano-inference-jax = [
 ]
 
 # GPT-2 speedrun training
-example-speedrun = [
+dev-speedrun = [
     "torch>=2.4.0",
     "huggingface-hub>=0.20.0",
     "numpy>=1.24.0",
@@ -107,7 +107,7 @@ build-backend = "setuptools.build_meta"
 dev = [
     "ty>=0.0.1a22",
 ]
-example-outlier-features = [
+dev-outlier-features = [
     "matplotlib>=3.10.7",
     "plotext>=5.3.2",
     "rich>=14.1.0",
@@ -123,9 +123,9 @@ py-modules = ["corpus_proximity_cli"]
 [tool.ty.src]
 exclude = [
     "**/originals/**",  # Exclude all third-party code in originals/ directories
-    "examples/speedrun/history/**",  # Exclude historical speedrun versions
-    "examples/speedrun/single-file.py",  # Speedrun example with type issues
-    "examples/speedrun/single-file-smoke.py",  # Speedrun example with type issues
-    "examples/speedrun/train/00_test_deployment.py",  # Training deployment test
-    "examples/nano-inference/basic_blocks.py",  # Incomplete/skeleton code
+    "dev/speedrun/history/**",  # Exclude historical speedrun versions
+    "dev/speedrun/single-file.py",  # Speedrun example with type issues
+    "dev/speedrun/single-file-smoke.py",  # Speedrun example with type issues
+    "dev/speedrun/train/00_test_deployment.py",  # Training deployment test
+    "dev/nano-inference/basic_blocks.py",  # Incomplete/skeleton code
 ]

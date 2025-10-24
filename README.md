@@ -2,8 +2,6 @@
 
 GPU provisioning and remote execution utilities for ML research.
 
-
-
 ## Components
 
 - **broker**: GPU cloud provisioning across multiple providers (RunPod, etc.)
@@ -11,6 +9,10 @@ GPU provisioning and remote execution utilities for ML research.
 - **shared**: Common utilities and SSH foundation
 
 ## Development
+
+Active research experiments live in `dev/`. Once published, projects are promoted to top-level packages.
+
+## Workflow
 
 This repository uses [git-branchless](https://github.com/arxanas/git-branchless) for workflow management.
 
@@ -20,6 +22,6 @@ This repository uses [git-branchless](https://github.com/arxanas/git-branchless)
 # Install dependencies
 uv sync
 
-# Provision a GPU
-python examples/phase1_example.py
+# Install dependencies for specific experiment
+uv sync --extra dev-outlier-features
 ```
