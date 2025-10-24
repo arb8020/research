@@ -14,15 +14,22 @@ End-to-end integration test validating the full broker → bifrost → GPU workf
 ```bash
 # Set environment variables
 export RUNPOD_API_KEY="your-runpod-key"
-export VAST_API_KEY="your-vast-key"  # optional
+export PRIME_API_KEY="your-prime-key"  # optional
+export LAMBDA_API_KEY="your-lambda-key"  # optional
 export SSH_KEY_PATH="~/.ssh/id_ed25519"  # optional, defaults to this
 ```
 
 ## Running
 
 ```bash
-# From repository root
+# Full integration test (broker + bifrost + JAX)
 uv run python examples/jax_basic/run_integration_test.py
+uv run python examples/jax_basic/run_integration_test.py --provider lambdalabs  # specific provider
+
+# Lambda Labs provider test (search + provision + nvidia-smi)
+uv run python examples/jax_basic/test_lambda_integration.py
+uv run python examples/jax_basic/test_lambda_integration.py --skip-create  # only test search
+uv run python examples/jax_basic/test_lambda_integration.py --gpu-type H100  # filter by GPU type
 ```
 
 ## Cost
