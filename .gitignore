@@ -34,3 +34,6 @@ uv.lock
 logs/
 output.txt
 data/
+
+# Remote results (experimental outputs, should not be in git)
+**/remote_results/
