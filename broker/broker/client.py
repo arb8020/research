@@ -32,15 +32,22 @@ class GPUClient:
         instance = client.create(offers[0])
     """
 
-    def __init__(self, credentials: Union[ProviderCredentials, Dict[str, str]], ssh_key_path: Optional[str] = None):
+    def __init__(
+        self,
+        credentials: Union[ProviderCredentials, Dict[str, str]],
+        ssh_key_path: Optional[str] = None,
+        ssh_key_paths: Optional[Dict[str, str]] = None
+    ):
         """Initialize GPU broker client
 
         Args:
             credentials: Provider credentials (ProviderCredentials or dict)
                         e.g., {"runpod": "key1", "vast": "key2"}
                         or ProviderCredentials(runpod="key1", vast="key2")
-            ssh_key_path: Path to SSH private key (optional - only needed for operations
-                         that connect to instances, not for searching)
+            ssh_key_path: Default SSH private key path for all providers (optional)
+            ssh_key_paths: Per-provider SSH key paths (optional)
+                          e.g., {"lambdalabs": "~/.ssh/lambda_key"}
+                          Provider-specific keys override the default ssh_key_path
 
         Raises:
             AssertionError: If parameters are invalid
@@ -61,15 +68,38 @@ class GPUClient:
         # Validate and store SSH key path if provided (validation helper contains all assertions)
         self._ssh_key_path = validate_ssh_key_path(ssh_key_path) if ssh_key_path else None
 
+        # Validate and store per-provider SSH key paths
+        self._ssh_key_paths: Dict[str, str] = {}
+        if ssh_key_paths:
+            assert isinstance(ssh_key_paths, dict), "ssh_key_paths must be dict"
+            for provider, key_path in ssh_key_paths.items():
+                assert isinstance(provider, str), f"provider must be string, got {type(provider)}"
+                assert provider in self._credentials, f"Unknown provider in ssh_key_paths: {provider}"
+                validated_path = validate_ssh_key_path(key_path)
+                self._ssh_key_paths[provider] = validated_path
+
         # Initialize query interface
         self._query = GPUQuery()
 
         # Assert output invariants
         assert self._credentials, "Failed to set credentials"
         assert self._query is not None, "Failed to initialize query"
+        assert isinstance(self._ssh_key_paths, dict), "Failed to set ssh_key_paths"
 
-    def get_ssh_key_path(self) -> Optional[str]:
-        """Get configured SSH key path"""
+    def get_ssh_key_path(self, provider: Optional[str] = None) -> Optional[str]:
+        """Get SSH key path for a specific provider with precedence.
+
+        Args:
+            provider: Provider name to get SSH key for (optional)
+
+        Returns:
+            SSH key path with precedence:
+            1. Provider-specific key from ssh_key_paths (highest)
+            2. Default ssh_key_path (fallback)
+            3. None (no SSH key configured)
+        """
+        if provider and provider in self._ssh_key_paths:
+            return self._ssh_key_paths[provider]
         return self._ssh_key_path
 
     # Query interface - expose as properties
@@ -325,14 +355,16 @@ class ClientGPUInstance:
     def exec(self, command: str, ssh_key_path: Optional[str] = None, timeout: int = 30):
         """Execute command using client's SSH configuration (synchronous)"""
         if ssh_key_path is None:
-            ssh_key_path = self._client.get_ssh_key_path()
+            # Get provider-specific SSH key with fallback to default
+            ssh_key_path = self._client.get_ssh_key_path(provider=self._instance.provider)
 
         return self._instance.exec(command, ssh_key_path, timeout)
 
     async def aexec(self, command: str, ssh_key_path: Optional[str] = None, timeout: int = 30):
         """Execute command using client's SSH configuration (asynchronous)"""
         if ssh_key_path is None:
-            ssh_key_path = self._client.get_ssh_key_path()
+            # Get provider-specific SSH key with fallback to default
+            ssh_key_path = self._client.get_ssh_key_path(provider=self._instance.provider)
 
         return await self._instance.aexec(command, ssh_key_path, timeout)
 
