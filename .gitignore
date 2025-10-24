@@ -38,15 +38,15 @@ conversation*.txt
 
 # Test/debug scripts (keep out of git)
 scripts/
-examples/speedrun/scripts/
-examples/outlier-features/fetch_model_params.py
-examples/outlier-features/scrape_model_params_from_readme.py
+dev/speedrun/scripts/
+dev/outlier-features/fetch_model_params.py
+dev/outlier-features/scrape_model_params_from_readme.py
 
 # Remote results (experimental outputs, should not be in git)
 **/remote_results/
 
-# Large untracked directories
-examples/nano-inference/originals/
-examples/outlier-features/archive/
-examples/outlier-features/sweep_analysis/
-examples/speedrun/originals/
+# Large untracked directories (third-party code, archives, analysis results)
+dev/nano-inference/originals/
+dev/outlier-features/archive/
+dev/outlier-features/sweep_analysis/
+dev/speedrun/originals/
