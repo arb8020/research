@@ -100,7 +100,7 @@ def vec_add_1D(gA: cute.Tensor, gB: cute.Tensor, gC: cute.Tensor, N: cute.Uint32
     # we need to multiply threads per block by the block index into the grid
     # and offset by the thread index into the block
 
-    thread_idx = bdim * bdix + tidx
+    thread_idx = bdim * bidx + tidx
 
     if thread_idx < N: # protect against out of range access
         gC[thread_idx] = gA[thread_idx] + gB[thread_idx]

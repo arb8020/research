@@ -58,9 +58,9 @@ def retry(
                         raise
 
                     # Log the retry for debugging
-                    logger = logging.getLogger(func.__module__)
+                    logger = logging.getLogger(getattr(func, '__module__', 'unknown'))
                     logger.warning(
-                        f"{func.__name__}() attempt {attempt}/{max_attempts} failed: {e}. "
+                        f"{getattr(func, '__name__', '<function>')}() attempt {attempt}/{max_attempts} failed: {e}. "
                         f"Retrying in {current_delay}s..."
                     )
 
