@@ -10,6 +10,22 @@ Testing whether Dettmers et al. (2022) phase transition claim extends to MoE arc
 - Analyzed activation tensors from ln_attn and ln_mlp across all layers
 - Dataset: 16 sequences × 2048 tokens from FineWeb-Edu
 
+### Model Precision
+
+**Important:** Models were analyzed at different native precisions, which may affect outlier detection:
+
+| Model | Native Precision | Analysis Precision | Notes |
+|-------|-----------------|-------------------|-------|
+| OLMoE-1B-7B | float32 | bfloat16 | Downcast from native fp32 |
+| GPT-OSS-20B | MXFP4 (MoE weights) | MXFP4 | 4-bit quantized MoE weights (BF16+U8 storage) |
+| Qwen3-30B | bfloat16 | bfloat16 | Native precision |
+| Mixtral-8x7B | bfloat16 | bfloat16 | Native precision |
+| Qwen3-Next-80B | bfloat16 | bfloat16 | Native precision |
+| GLM-4.5-Air | bfloat16 | bfloat16 | Native precision |
+| GPT-OSS-120B | MXFP4 (MoE weights) | MXFP4 | 4-bit quantized MoE weights (BF16+U8 storage) |
+
+**MXFP4 Details:** GPT-OSS models use post-training MXFP4 quantization (4-bit floating point) for MoE weights, enabling the 120B model to run on a single 80GB GPU. The models were likely analyzed at this quantized precision (attempting to load with standard bfloat16 would exceed memory constraints).
+
 ## Results
 
 | Model | Total Params | Active Params | Experts | Top-K | Routing | Outliers | Mean L% | Mean S% |
