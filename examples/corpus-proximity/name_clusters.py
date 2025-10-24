@@ -152,7 +152,9 @@ Examples from this cluster (cluster has {node.size} total texts):
         return label or f"Cluster {node.cluster_id}"
 
     except Exception as e:
-        logger.error(f"Error generating name for cluster {node.cluster_id}: {e}")
+        logger.error(f"Error generating name for cluster {node.cluster_id}: {type(e).__name__}: {e}")
+        logger.debug(f"Endpoint: model={endpoint.model}, api_base={endpoint.api_base}")
+        logger.debug(f"Prompt length: {len(prompt)} chars")
         return f"Cluster {node.cluster_id}"
 
 
@@ -419,7 +421,13 @@ async def main():
             api_key = os.getenv("OPENAI_API_KEY", "")
             if not api_key:
                 logger.error("OPENAI_API_KEY not set. Add it to .env file or export it")
+                logger.error("Current environment variables: %s", [k for k in os.environ.keys() if 'API' in k or 'KEY' in k])
                 return 1
+
+            logger.info(f"Using naming model: {config.clustering.naming_model}")
+            logger.info(f"API base: {config.clustering.naming_api_base}")
+            logger.info(f"Temperature: {config.clustering.naming_temperature}")
+            logger.info(f"Max tokens: {config.clustering.naming_max_tokens}")
 
             endpoint = Endpoint(
                 model=config.clustering.naming_model,
@@ -439,7 +447,11 @@ async def main():
             logger.info("Done!")
         except Exception as exc:
             failure_marker.touch()
-            logger.error(f"❌ Naming failed, marker: {failure_marker} ({exc})")
+            logger.error(f"❌ Naming failed, marker: {failure_marker}")
+            logger.error(f"Exception type: {type(exc).__name__}")
+            logger.error(f"Exception message: {exc}")
+            import traceback
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
             raise
 
     elif args.inspect:

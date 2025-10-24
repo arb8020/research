@@ -188,31 +188,84 @@ def recursive_cluster(
 
     # Adaptive HDBSCAN parameters
     floor = max(5, 10 // (2 ** depth))  # Prevent degenerate clustering (lowered floor)
-    min_cluster_size = max(floor, int(n_points * base_pct * (decay ** depth)))
+    base_min_cluster_size = max(floor, int(n_points * base_pct * (decay ** depth)))
 
-    logger.info(f"  HDBSCAN: min_cluster_size={min_cluster_size}, min_samples={hdbscan_min_samples}")
+    # Allow a few retries with more permissive parameters when HDBSCAN collapses
+    min_cluster_size = base_min_cluster_size
+    min_samples = hdbscan_min_samples
+    max_retries = 3
 
-    clusterer = HDBSCAN(
-        min_cluster_size=min_cluster_size,
-        min_samples=hdbscan_min_samples,
-        metric='euclidean',  # On UMAP-reduced space
-        cluster_selection_method='eom'
-    )
-    labels = clusterer.fit_predict(reduced_embeddings)
+    labels = None
+    noise_mask = None
+    noise_indices: List[int] = []
+    unique_labels: set[int] = set()
+    n_clusters = 0
+    noise_ratio = 0.0
 
-    # Separate noise points (label = -1)
-    noise_mask = labels == -1
-    noise_indices = np.where(noise_mask)[0].tolist()
+    for attempt in range(1, max_retries + 1):
+        logger.info(
+            "  HDBSCAN attempt %d: min_cluster_size=%d, min_samples=%d",
+            attempt,
+            min_cluster_size,
+            min_samples,
+        )
 
-    # Check if clustering succeeded
-    unique_labels = set(labels[~noise_mask])
-    n_clusters = len(unique_labels)
+        clusterer = HDBSCAN(
+            min_cluster_size=min_cluster_size,
+            min_samples=min_samples,
+            metric='euclidean',  # On UMAP-reduced space
+            cluster_selection_method='eom'
+        )
+        labels = clusterer.fit_predict(reduced_embeddings)
 
-    logger.info(f"  Found {n_clusters} clusters, {len(noise_indices)} noise points")
+        # Separate noise points (label = -1)
+        noise_mask = labels == -1
+        noise_indices = np.where(noise_mask)[0].tolist()
+
+        # Check if clustering succeeded
+        unique_labels = set(labels[~noise_mask])
+        n_clusters = len(unique_labels)
+        noise_ratio = len(noise_indices) / n_points if n_points else 0.0
+
+        logger.info(
+            "  Found %d clusters, %d noise points (noise_ratio=%.1f%%)",
+            n_clusters,
+            len(noise_indices),
+            noise_ratio * 100,
+        )
+
+        # Accept result if we discovered >1 cluster or noise is manageable
+        if n_clusters > 1 or noise_ratio <= 0.3 or min_cluster_size <= floor:
+            break
+
+        # Last attempt reached – keep current assignment even if it's poor
+        if attempt == max_retries:
+            break
+
+        # Retry with looser parameters to let smaller clusters emerge
+        next_min_cluster_size = max(floor, int(min_cluster_size * 0.5))
+        next_min_samples = max(5, int(min_samples * 0.8))
+
+        if next_min_cluster_size == min_cluster_size and next_min_samples == min_samples:
+            logger.info("  Parameters can no longer relax, accepting current clustering")
+            break
+
+        logger.info(
+            "  High noise and single cluster detected; retrying with min_cluster_size=%d, min_samples=%d",
+            next_min_cluster_size,
+            next_min_samples,
+        )
+        min_cluster_size = next_min_cluster_size
+        min_samples = next_min_samples
+
+    assert labels is not None and noise_mask is not None
 
     if n_clusters <= 1:
         # No meaningful clusters found
-        logger.info(f"  No meaningful clusters, returning leaf node")
+        logger.info(
+            "  No meaningful clusters after %s attempts; returning leaf node",
+            "multiple" if min_cluster_size != base_min_cluster_size else "single",
+        )
         return ClusterNode(
             cluster_id=cluster_id,
             depth=depth,
@@ -220,7 +273,7 @@ def recursive_cluster(
             indices=all_indices,
             centroid=embeddings.mean(axis=0),
             size=n_points,
-            silhouette_score=1.0,
+            silhouette_score=0.0,
             children=[],
             noise_indices=noise_indices
         )
@@ -250,14 +303,17 @@ def recursive_cluster(
     )
 
     # Decide whether to recurse based on silhouette score
-    # High silhouette = well-separated clusters -> DO recurse
-    # Low silhouette = poorly-separated clusters -> DON'T recurse
-    if sil_score < silhouette_threshold:
-        # Low separation = clusters are fuzzy, don't subdivide
-        logger.info(f"  Poor cluster separation ({sil_score:.3f} < {silhouette_threshold}), not recursing")
+    # Low silhouette = poorly separated clusters -> keep subdividing
+    # High silhouette = well-separated clusters -> stop here
+    if sil_score >= silhouette_threshold:
+        logger.info(
+            f"  Cluster coherence is high ({sil_score:.3f} >= {silhouette_threshold}), stopping recursion"
+        )
         return current_node
 
-    logger.info(f"  Good cluster separation ({sil_score:.3f} >= {silhouette_threshold}), recursing into {n_clusters} subclusters")
+    logger.info(
+        f"  Cluster coherence is low ({sil_score:.3f} < {silhouette_threshold}), recursing into {n_clusters} subclusters"
+    )
 
     # Recurse into each subcluster
     for i, label in enumerate(sorted(unique_labels)):
