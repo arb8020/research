@@ -22,7 +22,7 @@ config = Config(
 
         # Clustering params (adjusted for tiny corpus)
         max_depth=3,
-        base_pct=0.03,  # 3% instead of 5% for smaller corpus
+        base_pct=0.01,  # 1% to allow smaller clusters (was 0.03, too strict)
         decay=0.7,
         silhouette_threshold=0.3,
 
