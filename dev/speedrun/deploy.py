@@ -365,9 +365,9 @@ def main():
 
         # Bootstrap: install dependencies (with streaming output)
         print("\n[2.5/4] Installing dependencies...")
-        print("Running: uv sync --extra example-speedrun")
+        print("Running: uv sync --extra dev-speedrun")
         for line in bifrost_client.exec_stream(
-            "uv sync --extra example-speedrun",
+            "uv sync --extra dev-speedrun",
             working_dir=workspace_path
         ):
             print(f"  {line}")

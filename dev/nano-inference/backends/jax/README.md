@@ -28,7 +28,7 @@ backends/jax/
 cd ~/research
 
 # Install dependencies with uv
-uv sync --extra example-nano-inference-jax
+uv sync --extra dev-nano-inference-jax
 
 # This installs:
 # - JAX (GPU on Linux, CPU on macOS)
