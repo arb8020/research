@@ -156,6 +156,7 @@ def run_integration_test(provider=None, ready_timeout=None, ssh_timeout=None):
 
     # Get provider-specific SSH key (with fallback to default)
     provider_ssh_key = gpu_client.get_ssh_key_path(provider=instance.provider)
+    assert provider_ssh_key is not None, "SSH key path must be configured"
 
     bifrost_client = BifrostClient(
         ssh_connection=instance.ssh_connection_string(),
