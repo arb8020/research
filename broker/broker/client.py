@@ -227,7 +227,7 @@ class GPUClient:
             else:
                 query = query & (self.cloud_type == cloud_enum)
 
-        instance = api.create(
+        result = api.create(
             query=query,
             image=image,
             name=name,
@@ -241,8 +241,18 @@ class GPUClient:
             **kwargs
         )
 
-        if instance:
-            return ClientGPUInstance(instance, self)
+        # Tiger Style: Assert postconditions - create() now returns ProvisionResult
+        from .types import ProvisionResult
+        assert isinstance(result, ProvisionResult), \
+            f"create() must return ProvisionResult, got {type(result)}"
+
+        if result.success:
+            # Tiger Style: Assert invariant - success implies instance exists
+            assert result.instance is not None, \
+                "ProvisionResult.success=True but instance is None"
+            return ClientGPUInstance(result.instance, self)
+
+        # Provisioning failed - return None (caller checks for None)
         return None
 
     def get_instance(self, instance_id: str, provider: str) -> Optional['ClientGPUInstance']:

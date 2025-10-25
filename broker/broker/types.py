@@ -2,9 +2,9 @@
 Core data types for GPU cloud operations
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Protocol
 
 from .ssh_clients_compat import execute_command_sync, execute_command_async
 
@@ -320,6 +320,49 @@ class SSHConfig:
     method: Optional[str] = None  # "direct" or "proxy"
 
 
+@dataclass
+class ProvisionAttempt:
+    """Record of a single provisioning attempt.
+
+    Tracks what was tried and why it failed (if it did).
+    Allows users to understand provisioning decisions.
+    """
+    offer_id: str
+    gpu_type: str
+    provider: str
+    price_per_hour: float
+    error: Optional[str] = None  # None if successful
+    error_category: Optional[str] = None  # "credentials", "unavailable", "network", "unknown"
+
+
+@dataclass
+class ProvisionResult:
+    """Result of provisioning operation with detailed error tracking.
+
+    Unlike returning Optional[GPUInstance], this provides:
+    - Success/failure status
+    - Instance if successful
+    - Detailed log of all attempts
+    - Categorized errors for programmatic handling
+
+    Error categories:
+    - no_offers_found: Search returned empty (adjust search criteria)
+    - all_unavailable: Offers exist but all returned None (capacity issue, try different GPU)
+    - credential_error: Invalid API key detected (fix credentials)
+    - network_error: Network timeout/failure (transient, retry later)
+    """
+    success: bool
+    instance: Optional[GPUInstance] = None
+    attempts: List[ProvisionAttempt] = field(default_factory=list)
+    error_summary: Optional[str] = None
+
+    # Error categories for programmatic handling
+    no_offers_found: bool = False      # Search returned empty
+    all_unavailable: bool = False      # All offers returned None (capacity issue)
+    credential_error: bool = False     # Invalid API key detected
+    network_error: bool = False        # Network timeout/failure
+
+
 # ============================================================================
 # New Frozen Dataclasses (Type Improvements)
 # ============================================================================
@@ -387,3 +430,57 @@ class ProviderCredentials:
             primeintellect=credentials.get("primeintellect", ""),
             lambdalabs=credentials.get("lambdalabs", "")
         )
+
+
+
+# ============================================================================
+# Provider Module Protocol (Compile-time Interface Checking)
+# ============================================================================
+
+
+class ProviderModule(Protocol):
+    """Provider interface - all provider modules must implement these methods.
+
+    Uses structural typing (Protocol) for compile-time checking without
+    inheritance coupling. Aligns with Tiger Style compile-time assertions.
+    This is composition (Casey Muratori registry pattern), not inheritance.
+    """
+
+    def provision_instance(
+        self,
+        request: ProvisionRequest,
+        ssh_startup_script: Optional[str] = None,
+        api_key: Optional[str] = None
+    ) -> Optional[GPUInstance]:
+        ...
+
+    def get_instance_details(
+        self,
+        instance_id: str,
+        api_key: Optional[str] = None
+    ) -> Optional[GPUInstance]:
+        ...
+
+    def list_instances(
+        self,
+        api_key: Optional[str] = None
+    ) -> List[GPUInstance]:
+        ...
+
+    def terminate_instance(
+        self,
+        instance_id: str,
+        api_key: Optional[str] = None
+    ) -> bool:
+        ...
+
+    def search_gpu_offers(
+        self,
+        cuda_version: Optional[str] = None,
+        manufacturer: Optional[str] = None,
+        memory_gb: Optional[int] = None,
+        container_disk_gb: Optional[int] = None,
+        gpu_count: int = 1,
+        api_key: Optional[str] = None
+    ) -> List[GPUOffer]:
+        ...
