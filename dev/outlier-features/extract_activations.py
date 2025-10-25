@@ -14,6 +14,22 @@ from nnsight import LanguageModel
 logger = logging.getLogger(__name__)
 
 
+def get_model_layers(model):
+    """Get the layers module from a model, handling multimodal architectures.
+
+    Args:
+        model: nnsight LanguageModel
+
+    Returns:
+        The layers ModuleList (either model.model.layers or model.model.language_model.layers)
+    """
+    # Handle multimodal models (e.g., Gemma-3 VLMs) that have language_model.layers
+    if hasattr(model.model, 'language_model') and hasattr(model.model.language_model, 'layers'):
+        return model.model.language_model.layers
+    else:
+        return model.model.layers
+
+
 def extract_activations_batch(
     model: LanguageModel,
     texts: list[str],
@@ -38,10 +54,11 @@ def extract_activations_batch(
     assert len(layers) > 0, "layers cannot be empty"
 
     activations = {}
+    model_layers = get_model_layers(model)
     with model.trace(texts) as tracer:
         for layer_idx in layers:
-            ln_into_attn = model.model.layers[layer_idx].input_layernorm.output.save()
-            ln_into_mlp = model.model.layers[layer_idx].post_attention_layernorm.output.save()
+            ln_into_attn = model_layers[layer_idx].input_layernorm.output.save()
+            ln_into_mlp = model_layers[layer_idx].post_attention_layernorm.output.save()
 
             activations[f"layer_{layer_idx}_ln_attn"] = ln_into_attn
             activations[f"layer_{layer_idx}_ln_mlp"] = ln_into_mlp
@@ -83,7 +100,10 @@ def extract_activations_optimized(
 
     # Auto-detect all layers if None provided
     if layers is None:
-        num_layers = len(llm.model.layers)
+        model_layers = get_model_layers(llm)
+        num_layers = len(model_layers)
+        if hasattr(llm.model, 'language_model'):
+            logger.info(f"Detected multimodal model, using language_model.layers")
         layers = list(range(num_layers))
         logger.info(f"Auto-detected {num_layers} layers: {layers[0]}-{layers[-1]}")
     else:
@@ -111,10 +131,11 @@ def extract_activations_optimized(
 
         # Extract activations for this chunk only
         activations = {}
+        model_layers = get_model_layers(llm)
         with torch.inference_mode(), llm.trace(texts) as tracer:
             for layer_idx in layers_chunk:
-                ln_into_attn = llm.model.layers[layer_idx].input_layernorm.output.save()
-                ln_into_mlp = llm.model.layers[layer_idx].post_attention_layernorm.output.save()
+                ln_into_attn = model_layers[layer_idx].input_layernorm.output.save()
+                ln_into_mlp = model_layers[layer_idx].post_attention_layernorm.output.save()
 
                 activations[f"layer_{layer_idx}_ln_attn"] = ln_into_attn
                 activations[f"layer_{layer_idx}_ln_mlp"] = ln_into_mlp
