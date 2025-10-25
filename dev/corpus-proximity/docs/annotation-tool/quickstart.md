@@ -19,7 +19,7 @@ Model: "The derivative of x^2 is 2x."
 
 ```bash
 # Install dependencies
-uv sync --extra example-corpus-proximity
+uv sync --extra dev-corpus-proximity
 ```
 
 ---

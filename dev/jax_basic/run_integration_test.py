@@ -96,7 +96,7 @@ def deploy_and_test(bifrost_client):
     curl -LsSf https://astral.sh/uv/install.sh | sh
     export PATH="$HOME/.cargo/bin:$PATH"
 fi""",
-        "uv sync --extra example-jax-basic"
+        "uv sync --extra dev-jax-basic"
     ]
 
     bifrost_client.push(bootstrap_cmd=bootstrap_cmd)

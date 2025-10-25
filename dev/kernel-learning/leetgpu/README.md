@@ -9,7 +9,7 @@ Command-line interface for working with LeetGPU challenges programmatically, wit
 From the research workspace root:
 
 ```bash
-uv sync --extra example-leetgpu
+uv sync --extra dev-kernel-learning
 ```
 
 ### Using pip

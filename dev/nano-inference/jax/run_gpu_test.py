@@ -99,13 +99,13 @@ def deploy_code(bifrost_client, use_existing=False):
     curl -LsSf https://astral.sh/uv/install.sh | sh
     export PATH="$HOME/.cargo/bin:$PATH"
 fi""",
-            "uv sync --extra example-nano-inference-jax"
+            "uv sync --extra dev-nano-inference-jax"
         ]
         bifrost_client.push(bootstrap_cmd=bootstrap_cmd)
     else:
         # Sync code and update dependencies on existing instance
         bootstrap_cmd = [
-            "uv sync --extra example-nano-inference-jax"
+            "uv sync --extra dev-nano-inference-jax"
         ]
         bifrost_client.push(bootstrap_cmd=bootstrap_cmd)
 
