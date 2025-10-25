@@ -143,10 +143,10 @@ def calculate_metrics(outliers: List[Dict]) -> Dict[str, float]:
     seq_pcts = [o['seq_percentage'] * 100 for o in outliers]
 
     return {
-        'mean_layer_pct': np.mean(layer_pcts),
-        'median_layer_pct': np.median(layer_pcts),
-        'mean_seq_pct': np.mean(seq_pcts),
-        'median_seq_pct': np.median(seq_pcts),
+        'mean_layer_pct': float(np.mean(layer_pcts)),
+        'median_layer_pct': float(np.median(layer_pcts)),
+        'mean_seq_pct': float(np.mean(seq_pcts)),
+        'median_seq_pct': float(np.median(seq_pcts)),
     }
 
 
@@ -435,6 +435,7 @@ def generate_all_plots(results: List[Dict], output_dir: Optional[Path] = None, t
             if plot_spec != plots[-1]:  # Not the last plot
                 input("Press Enter for next plot...")
         else:
+            assert output_dir is not None, "output_dir required when not in terminal mode"
             create_plot_matplotlib(
                 results=results,
                 x_key=plot_spec['x_key'],

@@ -23,7 +23,7 @@ def main():
         target = next((i for i in instances if i.id == instance_id or i.name == instance_id), None)
     else:
         # Find corpus-proximity instance
-        target = next((i for i in instances if 'corpus' in i.name.lower()), None)
+        target = next((i for i in instances if i.name and 'corpus' in i.name.lower()), None)
 
     if not target:
         print(f"No instance found matching: {instance_id or 'corpus*'}")
