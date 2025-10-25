@@ -81,14 +81,17 @@ def get_model_number(config_path: str) -> str:
     return Path(config_path).stem[:2]
 
 
-def launch_deployment(config_path: Path, model_names: dict, dry_run: bool = False) -> subprocess.Popen | None:
+def launch_deployment(config_path: Path, model_names: dict, sweep_log_dir: Path, dry_run: bool = False) -> subprocess.Popen | None:
     """Launch a single deployment in background."""
     model_num = get_model_number(str(config_path))
     model_name = model_names.get(model_num, "Unknown")
 
+    # Extract clean model name from config path for log filename
+    model_slug = Path(config_path).stem  # e.g., "01_qwen3_0.6b"
+
     cmd = ["python", "deploy.py", str(config_path)]
-    log_file = Path(f"logs/deploy_{model_num}_{int(time.time())}.log")
-    log_file.parent.mkdir(exist_ok=True)
+    log_file = sweep_log_dir / f"{model_slug}.log"
+    log_file.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"[{model_num}] 🚀 Launching: {model_name}")
     print(f"      Config: {config_path}")
@@ -206,10 +209,22 @@ def main():
             return
         print()
 
+    # Create sweep log directory: logs/sweep_<timestamp>_<config_dir>/
+    # Example: logs/sweep_20251025_135530_dense/
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    config_dir_name = Path(args.config_dir).name  # "sweep_configs" or "sweep_dense"
+    sweep_log_dir = Path(f"logs/sweep_{timestamp}_{config_dir_name}")
+
+    if not args.dry_run:
+        sweep_log_dir.mkdir(parents=True, exist_ok=True)
+        print(f"📁 Sweep logs: {sweep_log_dir}")
+        print()
+
     # Launch all deployments
     processes = []
     for i, config_path in enumerate(configs_to_deploy):
-        proc = launch_deployment(Path(config_path), model_names, dry_run=args.dry_run)
+        proc = launch_deployment(Path(config_path), model_names, sweep_log_dir, dry_run=args.dry_run)
 
         if proc:
             processes.append((get_model_number(config_path), proc))
@@ -236,12 +251,13 @@ def main():
         print(f"  [{model_num}] {model_name} (PID: {proc.pid})")
     print()
     print("Monitor progress:")
-    print("  - Check logs: ls -lt logs/deploy_*.log")
+    print(f"  - Check logs: ls -la {sweep_log_dir}/")
+    print(f"  - Tail logs: tail -f {sweep_log_dir}/*.log")
     print("  - Check GPUs: broker list")
     print("  - Check instances: python deploy_sweep.py --status")
     print()
     print("Results will be saved to:")
-    print("  examples/outlier-features/results/")
+    print("  dev/outlier-features/results/")
     print("=" * 80)
 
 
