@@ -40,7 +40,7 @@ from estimate_vram import estimate_vram_requirements
 logger = logging.getLogger(__name__)
 
 # Remote workspace path - used by all remote operations
-REMOTE_WORKSPACE_PATH = "~/.bifrost/workspace/examples/outlier-features"
+REMOTE_WORKSPACE_PATH = "~/.bifrost/workspace/dev/outlier-features"
 
 
 def normalize_save_dir(save_dir: Path | str) -> str:

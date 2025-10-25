@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Parallel deployment script for full model sweep.
 
-Launches all 7 models simultaneously for overnight runs.
+Launches all models simultaneously for overnight runs.
 Each deployment runs in a separate subprocess.
 
 Usage:
     # Dry run (show what would be deployed)
     python deploy_sweep.py --dry-run
 
-    # Launch all 7 models
+    # Launch all MoE models (default)
     python deploy_sweep.py
+
+    # Launch all dense models
+    python deploy_sweep.py --config-dir sweep_dense
 
     # Launch specific models
     python deploy_sweep.py --models 01 03 06
@@ -25,8 +28,34 @@ from typing import List
 import argparse
 import sys
 
-# All 7 model configs in order
-ALL_CONFIGS = [
+
+def discover_configs(config_dir: str = "sweep_configs") -> List[str]:
+    """Discover all .py config files in the specified directory."""
+    config_path = Path(config_dir)
+    if not config_path.exists():
+        print(f"Error: Config directory '{config_dir}' does not exist")
+        sys.exit(1)
+
+    configs = sorted(config_path.glob("*.py"))
+    return [str(c) for c in configs]
+
+
+def build_model_names(configs: List[str]) -> dict:
+    """Build model name mapping from config filenames."""
+    names = {}
+    for config in configs:
+        stem = Path(config).stem
+        # Extract model number (first 2 chars)
+        model_num = stem[:2]
+        # Create human-readable name from filename
+        # e.g., "01_qwen3_0.6b" -> "Qwen3-0.6B"
+        name_part = stem[3:]  # Skip "01_"
+        names[model_num] = name_part.replace("_", "-").upper()
+    return names
+
+
+# Default MoE configs (for backwards compatibility)
+DEFAULT_CONFIGS = [
     "sweep_configs/01_olmoe_1b_7b.py",
     "sweep_configs/02_gpt_oss_20b.py",
     "sweep_configs/03_qwen3_30b.py",
@@ -36,7 +65,7 @@ ALL_CONFIGS = [
     "sweep_configs/07_gpt_oss_120b.py",
 ]
 
-MODEL_NAMES = {
+DEFAULT_MODEL_NAMES = {
     "01": "OLMoE-1B-7B (7B)",
     "02": "GPT-OSS-20B (21.5B)",
     "03": "Qwen3-30B (30.5B)",
@@ -52,10 +81,10 @@ def get_model_number(config_path: str) -> str:
     return Path(config_path).stem[:2]
 
 
-def launch_deployment(config_path: Path, dry_run: bool = False) -> subprocess.Popen | None:
+def launch_deployment(config_path: Path, model_names: dict, dry_run: bool = False) -> subprocess.Popen | None:
     """Launch a single deployment in background."""
     model_num = get_model_number(str(config_path))
-    model_name = MODEL_NAMES.get(model_num, "Unknown")
+    model_name = model_names.get(model_num, "Unknown")
 
     cmd = ["python", "deploy.py", str(config_path)]
     log_file = Path(f"logs/deploy_{model_num}_{int(time.time())}.log")
@@ -102,11 +131,16 @@ def main():
         help="Show what would be deployed without actually launching"
     )
     parser.add_argument(
+        "--config-dir",
+        type=str,
+        default="sweep_configs",
+        help="Config directory to use (default: sweep_configs, use sweep_dense for dense models)"
+    )
+    parser.add_argument(
         "--models",
         nargs="+",
-        choices=["01", "02", "03", "04", "05", "06", "07", "all"],
         default=["all"],
-        help="Which models to deploy (e.g., --models 01 03 06)"
+        help="Which models to deploy (e.g., --models 01 03 06, or 'all')"
     )
     parser.add_argument(
         "--status",
@@ -127,12 +161,20 @@ def main():
         check_broker_status()
         return
 
+    # Discover configs from specified directory
+    all_configs = discover_configs(args.config_dir)
+    model_names = build_model_names(all_configs)
+
+    if not all_configs:
+        print(f"Error: No config files found in {args.config_dir}")
+        sys.exit(1)
+
     # Determine which configs to deploy
     if "all" in args.models:
-        configs_to_deploy = ALL_CONFIGS
+        configs_to_deploy = all_configs
     else:
         configs_to_deploy = [
-            cfg for cfg in ALL_CONFIGS
+            cfg for cfg in all_configs
             if get_model_number(cfg) in args.models
         ]
 
@@ -140,13 +182,14 @@ def main():
     print("=" * 80)
     print("OUTLIER FEATURES SWEEP - DEPLOYMENT PLAN")
     print("=" * 80)
+    print(f"Config directory: {args.config_dir}")
     print(f"Mode: {'DRY RUN' if args.dry_run else 'LIVE DEPLOYMENT'}")
     print(f"Models to deploy: {len(configs_to_deploy)}")
     print()
 
     for cfg in configs_to_deploy:
         model_num = get_model_number(cfg)
-        model_name = MODEL_NAMES.get(model_num, "Unknown")
+        model_name = model_names.get(model_num, "Unknown")
         print(f"  [{model_num}] {model_name}")
 
     print()
@@ -166,7 +209,7 @@ def main():
     # Launch all deployments
     processes = []
     for i, config_path in enumerate(configs_to_deploy):
-        proc = launch_deployment(Path(config_path), dry_run=args.dry_run)
+        proc = launch_deployment(Path(config_path), model_names, dry_run=args.dry_run)
 
         if proc:
             processes.append((get_model_number(config_path), proc))
@@ -189,7 +232,7 @@ def main():
     print("=" * 80)
     print(f"Running processes: {len(processes)}")
     for model_num, proc in processes:
-        model_name = MODEL_NAMES.get(model_num, "Unknown")
+        model_name = model_names.get(model_num, "Unknown")
         print(f"  [{model_num}] {model_name} (PID: {proc.pid})")
     print()
     print("Monitor progress:")
