@@ -279,9 +279,9 @@ export TRANSFORMERS_CACHE=$HF_HOME/transformers && \\
 
     # Build main command
     # Note: We'll copy the config file to remote, then run with that path
-    remote_config_path = f"~/.bifrost/workspace/examples/outlier-features/configs/{Path(config_path).name}"
+    remote_config_path = f"~/.bifrost/workspace/dev/outlier-features/configs/{Path(config_path).name}"
 
-    cmd = f"""cd ~/.bifrost/workspace/examples/outlier-features && \\
+    cmd = f"""cd ~/.bifrost/workspace/dev/outlier-features && \\
 exec > outlier_analysis.log 2>&1 && \\
 {hf_env}uv sync --extra dev-outlier-features && \\
 ~/.bifrost/workspace/.venv/bin/python run_full_analysis.py {remote_config_path} \\
@@ -303,7 +303,7 @@ def start_analysis(bifrost_client: 'BifrostClient', config: Config, config_path:
     logger.info("🔬 Starting outlier analysis...")
 
     # First, copy the config file to remote
-    remote_config_dir = "~/.bifrost/workspace/examples/outlier-features/configs"
+    remote_config_dir = "~/.bifrost/workspace/dev/outlier-features/configs"
     bifrost_client.exec(f"mkdir -p {remote_config_dir}")
 
     # Upload config file
@@ -321,7 +321,7 @@ def start_analysis(bifrost_client: 'BifrostClient', config: Config, config_path:
 
     logger.info("✅ Analysis started - will take 10-30 minutes")
     logger.info(f"📊 Monitor: bifrost exec '{bifrost_client.ssh}' "
-                "'cd ~/.bifrost/workspace/examples/outlier-features && tail -20 outlier_analysis.log'")
+                "'cd ~/.bifrost/workspace/dev/outlier-features && tail -20 outlier_analysis.log'")
 
 
 def wait_for_analysis_completion(bifrost_client: 'BifrostClient', config: Config, timeout: int = 2700) -> bool:

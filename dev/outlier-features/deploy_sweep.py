@@ -117,13 +117,59 @@ def launch_deployment(config_path: Path, model_names: dict, sweep_log_dir: Path,
     return proc
 
 
-def check_broker_status():
-    """Check current GPU instances via broker."""
+def check_sweep_status(num_lines: int = 5, sweep_dir: str = None):
+    """Check status of most recent sweep by tailing logs.
+
+    Args:
+        num_lines: Number of lines to show from each log (default: 5)
+        sweep_dir: Optional specific sweep directory to check (e.g., "sweep_20251025_141227_sweep_dense")
+    """
+    from datetime import datetime
+    import glob
+
+    if sweep_dir:
+        # Use specified sweep directory
+        sweep_path = f"logs/{sweep_dir}" if not sweep_dir.startswith("logs/") else sweep_dir
+        if not Path(sweep_path).exists():
+            print(f"Sweep directory not found: {sweep_path}")
+            return
+        latest_sweep = sweep_path
+    else:
+        # Find most recent sweep log directory
+        sweep_dirs = sorted(glob.glob("logs/sweep_*"), reverse=True)
+        if not sweep_dirs:
+            print("No sweep logs found in logs/")
+            return
+        latest_sweep = sweep_dirs[0]
+
+    log_files = sorted(glob.glob(f"{latest_sweep}/*.log"))
+
+    if not log_files:
+        print(f"No log files found in {latest_sweep}")
+        return
+
     print("=" * 80)
-    print("CURRENT GPU INSTANCES")
+    print(f"SWEEP STATUS: {Path(latest_sweep).name}")
     print("=" * 80)
-    subprocess.run(["broker", "list"])
     print()
+
+    for log_file in log_files:
+        model_name = Path(log_file).stem  # e.g., "01_qwen3_0.6b"
+        print(f"{'─' * 80}")
+        print(f"📊 {model_name}")
+        print(f"{'─' * 80}")
+
+        # Read last N lines of log
+        try:
+            with open(log_file, 'r') as f:
+                lines = f.readlines()
+                tail_lines = lines[-num_lines:] if len(lines) >= num_lines else lines
+                for line in tail_lines:
+                    print(f"  {line.rstrip()}")
+        except Exception as e:
+            print(f"  ❌ Error reading log: {e}")
+
+        print()
 
 
 def main():
@@ -147,8 +193,16 @@ def main():
     )
     parser.add_argument(
         "--status",
-        action="store_true",
-        help="Check status of running deployments"
+        nargs="?",
+        const=5,
+        type=int,
+        metavar="N",
+        help="Check status of running deployments (optionally specify number of lines to show, default: 5)"
+    )
+    parser.add_argument(
+        "--sweep",
+        type=str,
+        help="Specific sweep directory to check status for (e.g., sweep_20251025_141227_sweep_dense)"
     )
     parser.add_argument(
         "--delay",
@@ -156,12 +210,17 @@ def main():
         default=30,
         help="Delay in seconds between launches (default: 30)"
     )
+    parser.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="Skip confirmation prompt"
+    )
 
     args = parser.parse_args()
 
     # Status check mode
-    if args.status:
-        check_broker_status()
+    if args.status is not None:
+        check_sweep_status(num_lines=args.status, sweep_dir=args.sweep)
         return
 
     # Discover configs from specified directory
@@ -202,7 +261,7 @@ def main():
     print("=" * 80)
     print()
 
-    if not args.dry_run:
+    if not args.dry_run and not args.yes:
         response = input("Proceed with deployment? [y/N]: ")
         if response.lower() != 'y':
             print("Deployment cancelled.")
