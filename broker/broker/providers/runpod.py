@@ -794,8 +794,8 @@ def terminate_instance(instance_id: str, api_key: Optional[str] = None) -> bool:
         return False
 
 
-def wait_for_ssh_ready(instance, timeout: int = 600) -> bool:
-    """RunPod-specific SSH waiting implementation"""
+def wait_for_ssh_ready(instance, timeout: int = 900) -> bool:
+    """RunPod-specific SSH waiting implementation (15 min default)"""
     # Tiger Style: Assert preconditions
     assert instance.provider == "runpod"
     assert instance.api_key
@@ -844,7 +844,7 @@ def _wait_for_direct_ssh_assignment(instance, start_time: float, timeout: int) -
     """Wait for direct SSH (not proxy) - RunPod specific (≤70 lines)"""
     import time
 
-    logger.info("Waiting for direct SSH (may take 5-10 min, proxy ignored)")
+    logger.info("Waiting for direct SSH (may take 5-15 min, proxy ignored)")
     next_log_time = start_time + 30  # Log at 30s, 60s, 90s, ...
 
     while time.time() - start_time < timeout:
