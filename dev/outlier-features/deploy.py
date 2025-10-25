@@ -236,7 +236,7 @@ def deploy_code(ssh_connection: str, ssh_key_path: str, config: Config) -> 'Bifr
 
     # Deploy the codebase with outlier dependencies
     logger.info("Deploying code and installing dependencies...")
-    workspace_path = bifrost_client.push(bootstrap_cmd="uv sync --extra example-outlier-features")
+    workspace_path = bifrost_client.push(bootstrap_cmd="uv sync --extra dev-outlier-features")
     logger.info(f"✅ Code deployed to {workspace_path}")
 
     # Configure HuggingFace cache if using volume disk
@@ -283,7 +283,7 @@ export TRANSFORMERS_CACHE=$HF_HOME/transformers && \\
 
     cmd = f"""cd ~/.bifrost/workspace/examples/outlier-features && \\
 exec > outlier_analysis.log 2>&1 && \\
-{hf_env}uv sync --extra example-outlier-features && \\
+{hf_env}uv sync --extra dev-outlier-features && \\
 ~/.bifrost/workspace/.venv/bin/python run_full_analysis.py {remote_config_path} \\
 && touch .analysis_complete \\
 || {{ echo "ANALYSIS FAILED with exit code $?"; touch .analysis_failed; exit 1; }}

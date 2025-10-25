@@ -140,7 +140,7 @@ def deploy_code(bifrost_client: BifrostClient, *, use_existing: bool) -> str:
     curl -LsSf https://astral.sh/uv/install.sh | sh
     export PATH=\"$HOME/.cargo/bin:$PATH\"
 fi""",
-        "uv sync --extra example-corpus-proximity",
+        "uv sync --extra dev-corpus-proximity",
     ]
     workspace_path = bifrost_client.push(bootstrap_cmd=bootstrap_cmd)
     return workspace_path or "~/.bifrost/workspace"
