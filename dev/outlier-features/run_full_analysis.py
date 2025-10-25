@@ -215,13 +215,17 @@ def process_single_batch(
         min_seq_percentage=config.analysis.min_seq_percentage
     )
 
-    # Step 3: Create batch result summary
+    # Step 3: Create batch result summary (excluding full outlier_info to save space)
     batch_result = {
         "batch_id": batch_idx + 1,
         "run_dir": str(run_dir),
         "sequences_processed": len(batch_texts),
         "systematic_outliers": systematic_outliers,
-        "outlier_info": outlier_info,
+        "outlier_summary": {
+            "total_outlier_features": len(outlier_info.get('feature_outliers', {})),
+            "layer_stats": outlier_info.get('layer_stats', {}),
+            "threshold": outlier_info.get('threshold', 6.0)
+        },
         "timestamp": datetime.now().isoformat()
     }
 
@@ -417,11 +421,8 @@ def main():
             )
             batch_results.append(batch_result)
 
-            # Save intermediate batch result
-            batch_file = config.output.save_dir / f"batch_{batch_idx + 1:03d}_results.json"
-            batch_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(batch_file, 'w') as f:
-                json.dump(batch_result, f, indent=2)
+            # Individual batch files removed to save disk space (~9GB per model)
+            # All batch data is included in final_analysis_results.json
 
         logger.info(f"\n✓ All {num_batches} batches completed!")
 
