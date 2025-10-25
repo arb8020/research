@@ -4,7 +4,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import typer
 from rich.console import Console
@@ -974,6 +974,120 @@ def terminate(
         logger.info(f"✓ Instance {instance_id} terminated")
     else:
         logger.error("✗ Failed to terminate instance")
+        raise typer.Exit(1)
+
+
+@app.command()
+def cleanup(
+    ctx: typer.Context,
+    yes: bool = typer.Option(False, "-y", "--yes", help="Skip confirmation"),
+    provider: Optional[str] = typer.Option(
+        None, "--provider", help="Only terminate instances from this provider"
+    ),
+    exclude: Optional[List[str]] = typer.Option(
+        None, "--exclude", help="Instance IDs to exclude from cleanup (can be specified multiple times)"
+    ),
+):
+    """Terminate all running GPU instances
+
+    This command lists all your instances across all configured providers
+    and terminates them. Use with caution!
+
+    Examples:
+        broker cleanup --exclude abc123 --exclude def456
+        broker cleanup --exclude abc123 def456 ghi789
+    """
+    creds = resolve_credentials(ctx)
+    ssh_key = resolve_ssh_key(ctx)
+
+    client = GPUClient(credentials=creds, ssh_key_path=ssh_key)
+
+    # Get all instances
+    logger.info("Fetching all instances...")
+    instances = client.list_instances()
+
+    # Filter by provider if specified
+    if provider:
+        instances = [i for i in instances if i.provider == provider]
+
+    # Exclude specified instances
+    if exclude:
+        exclude_set = set(exclude)
+        instances = [i for i in instances if i.id not in exclude_set]
+        if exclude_set:
+            logger.info(f"Excluding {len(exclude_set)} instance(s) from cleanup")
+
+    if not instances:
+        if provider:
+            logger.info(f"No instances found in {provider}")
+        else:
+            logger.info("No instances found")
+        return
+
+    # Display instances to be terminated
+    if not ctx.obj["json"]:
+        table = Table(title=f"Instances to Terminate ({len(instances)})")
+        table.add_column("ID", style="cyan", no_wrap=True)
+        table.add_column("Name")
+        table.add_column("Provider")
+        table.add_column("GPUs")
+        table.add_column("Status")
+        table.add_column("Price/hr", justify="right")
+
+        for instance in instances:
+            if instance.gpu_count > 1:
+                gpu_display = f"{instance.gpu_count}x {instance.gpu_type}"
+            else:
+                gpu_display = instance.gpu_type
+
+            node_price = instance.price_per_hour * instance.gpu_count
+
+            table.add_row(
+                instance.id,
+                instance.name or "-",
+                instance.provider,
+                gpu_display,
+                instance.status.value,
+                f"${node_price:.2f}",
+            )
+
+        console.print(table)
+
+    # Confirmation prompt
+    if not yes:
+        if provider:
+            confirm = typer.confirm(
+                f"Terminate all {len(instances)} instance(s) in {provider}?"
+            )
+        else:
+            confirm = typer.confirm(
+                f"Terminate all {len(instances)} instance(s) across all providers?"
+            )
+        if not confirm:
+            logger.info("Cancelled")
+            raise typer.Exit(0)
+
+    # Terminate all instances
+    failed = []
+    succeeded = []
+
+    for instance in instances:
+        logger.info(f"Terminating {instance.id} ({instance.provider})...")
+        success = client.terminate_instance(instance.id, instance.provider)
+
+        if success:
+            succeeded.append(instance)
+        else:
+            failed.append(instance)
+
+    # Report results
+    if succeeded:
+        logger.info(f"✓ Successfully terminated {len(succeeded)} instance(s)")
+
+    if failed:
+        logger.error(f"✗ Failed to terminate {len(failed)} instance(s):")
+        for instance in failed:
+            logger.error(f"  - {instance.id} ({instance.provider})")
         raise typer.Exit(1)
 
 
