@@ -84,10 +84,13 @@ class BifrostClient:
     
     @retry(max_attempts=3, delay=2, backoff=2, exceptions=(Exception,))
     def _establish_connection(self, ssh_client: paramiko.SSHClient, private_key=None) -> None:
-        """Establish SSH connection with retry logic.
+        """Establish SSH connection with retry logic and keepalive.
 
         This is at an external boundary (network I/O) so retry is appropriate.
         Retries up to 3 times with exponential backoff (2s, 4s, 8s) on connection errors.
+
+        Enables SSH keepalive (30s interval) to prevent connection timeouts during
+        long-running operations where no data flows over the SSH channel.
 
         Args:
             ssh_client: Paramiko SSH client
@@ -113,9 +116,30 @@ class BifrostClient:
                 timeout=self.timeout
             )
 
+        # Tiger Style: Assert post-condition and enable keepalive
+        transport = ssh_client.get_transport()
+        assert transport is not None, "SSH transport must exist after connection"
+        transport.set_keepalive(30)  # Send keepalive every 30 seconds
+
     def _get_ssh_client(self) -> paramiko.SSHClient:
-        """Get or create SSH client connection."""
-        if self._ssh_client is None or self._ssh_client.get_transport() is None:
+        """Get or create SSH client connection.
+
+        Tiger Style: Check transport is not just present but ACTIVE.
+        Detects stale connections and reconnects automatically.
+        """
+        # Check if we need to (re)connect
+        needs_reconnect = False
+        if self._ssh_client is None:
+            needs_reconnect = True
+        else:
+            transport = self._ssh_client.get_transport()
+            if transport is None:
+                needs_reconnect = True
+            elif not transport.is_active():
+                self.logger.debug("SSH transport inactive, reconnecting...")
+                needs_reconnect = True
+
+        if needs_reconnect:
             self._ssh_client = paramiko.SSHClient()
             self._ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
@@ -151,6 +175,12 @@ class BifrostClient:
                 self.logger.info(f"Connected to {self.ssh}")
             except Exception as e:
                 raise ConnectionError(f"Failed to connect to {self.ssh}: {e}")
+
+        # Tiger Style: Assert post-conditions
+        assert self._ssh_client is not None, "SSH client must be initialized"
+        transport = self._ssh_client.get_transport()
+        assert transport is not None, "SSH transport must exist"
+        assert transport.is_active(), "SSH transport must be active"
 
         return self._ssh_client
     
