@@ -15,19 +15,44 @@ logger = logging.getLogger(__name__)
 
 
 def get_model_layers(model):
-    """Get the layers module from a model, handling multimodal architectures.
+    """Get the layers module from a model, handling multimodal and decoder-only architectures.
 
     Args:
         model: nnsight LanguageModel
 
     Returns:
-        The layers ModuleList (either model.model.layers or model.model.language_model.layers)
+        The layers ModuleList (handles multiple architecture patterns)
     """
     # Handle multimodal models (e.g., Gemma-3 VLMs) that have language_model.layers
     if hasattr(model.model, 'language_model') and hasattr(model.model.language_model, 'layers'):
         return model.model.language_model.layers
+    # Handle decoder-only models (e.g., OPT, GPT-J) that have decoder.layers
+    elif hasattr(model.model, 'decoder') and hasattr(model.model.decoder, 'layers'):
+        return model.model.decoder.layers
+    # Handle standard models (Llama, Qwen, Mistral, etc.) with model.layers
     else:
         return model.model.layers
+
+
+def get_layernorm_outputs(layer):
+    """Get layernorm outputs from a layer, handling different architectures.
+
+    Args:
+        layer: A single transformer layer module
+
+    Returns:
+        Tuple of (ln_attn_output, ln_mlp_output) from the layer
+
+    Note:
+        - Standard models (Llama, Qwen, Mistral): input_layernorm, post_attention_layernorm
+        - OPT models: self_attn_layer_norm, final_layer_norm
+    """
+    # OPT models use self_attn_layer_norm and final_layer_norm
+    if hasattr(layer, 'self_attn_layer_norm') and hasattr(layer, 'final_layer_norm'):
+        return layer.self_attn_layer_norm.output, layer.final_layer_norm.output
+    # Standard models use input_layernorm and post_attention_layernorm
+    else:
+        return layer.input_layernorm.output, layer.post_attention_layernorm.output
 
 
 def extract_activations_batch(
@@ -57,8 +82,9 @@ def extract_activations_batch(
     model_layers = get_model_layers(model)
     with model.trace(texts) as tracer:
         for layer_idx in layers:
-            ln_into_attn = model_layers[layer_idx].input_layernorm.output.save()
-            ln_into_mlp = model_layers[layer_idx].post_attention_layernorm.output.save()
+            ln_attn_output, ln_mlp_output = get_layernorm_outputs(model_layers[layer_idx])
+            ln_into_attn = ln_attn_output.save()
+            ln_into_mlp = ln_mlp_output.save()
 
             activations[f"layer_{layer_idx}_ln_attn"] = ln_into_attn
             activations[f"layer_{layer_idx}_ln_mlp"] = ln_into_mlp
