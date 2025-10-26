@@ -160,8 +160,9 @@ def extract_activations_optimized(
         model_layers = get_model_layers(llm)
         with torch.inference_mode(), llm.trace(texts) as tracer:
             for layer_idx in layers_chunk:
-                ln_into_attn = model_layers[layer_idx].input_layernorm.output.save()
-                ln_into_mlp = model_layers[layer_idx].post_attention_layernorm.output.save()
+                ln_attn_output, ln_mlp_output = get_layernorm_outputs(model_layers[layer_idx])
+                ln_into_attn = ln_attn_output.save()
+                ln_into_mlp = ln_mlp_output.save()
 
                 activations[f"layer_{layer_idx}_ln_attn"] = ln_into_attn
                 activations[f"layer_{layer_idx}_ln_mlp"] = ln_into_mlp

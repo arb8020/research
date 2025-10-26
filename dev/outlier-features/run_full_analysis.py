@@ -142,7 +142,14 @@ def load_model_optimized(config: Config):
         )
 
     # Disable KV cache to save memory
-    llm.model.config.use_cache = config.model.use_cache
+    # Access underlying model for nnsight compatibility (some models use _model)
+    if hasattr(llm, 'model'):
+        llm.model.config.use_cache = config.model.use_cache
+    elif hasattr(llm, '_model'):
+        llm._model.config.use_cache = config.model.use_cache
+    else:
+        # Fallback: try to access config directly on the wrapped model
+        llm.config.use_cache = config.model.use_cache
 
     logger.info("✓ Model loaded successfully")
     logger.info("="*80 + "\n")
