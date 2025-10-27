@@ -23,15 +23,28 @@ def get_model_layers(model):
     Returns:
         The layers ModuleList (handles multiple architecture patterns)
     """
+    # Access underlying model (nnsight uses either .model or ._model)
+    underlying_model = None
+    if hasattr(model, 'model'):
+        underlying_model = model.model
+    elif hasattr(model, '_model'):
+        underlying_model = model._model
+    else:
+        # Fallback: assume model is the wrapped object itself
+        underlying_model = model
+
     # Handle multimodal models (e.g., Gemma-3 VLMs) that have language_model.layers
-    if hasattr(model.model, 'language_model') and hasattr(model.model.language_model, 'layers'):
-        return model.model.language_model.layers
+    if hasattr(underlying_model, 'language_model') and hasattr(underlying_model.language_model, 'layers'):
+        return underlying_model.language_model.layers
     # Handle decoder-only models (e.g., OPT, GPT-J) that have decoder.layers
-    elif hasattr(model.model, 'decoder') and hasattr(model.model.decoder, 'layers'):
-        return model.model.decoder.layers
+    elif hasattr(underlying_model, 'decoder') and hasattr(underlying_model.decoder, 'layers'):
+        return underlying_model.decoder.layers
+    # Handle GPT2 models that have transformer.h
+    elif hasattr(underlying_model, 'transformer') and hasattr(underlying_model.transformer, 'h'):
+        return underlying_model.transformer.h
     # Handle standard models (Llama, Qwen, Mistral, etc.) with model.layers
     else:
-        return model.model.layers
+        return underlying_model.layers
 
 
 def get_layernorm_outputs(layer):
@@ -44,13 +57,19 @@ def get_layernorm_outputs(layer):
         Tuple of (ln_attn_output, ln_mlp_output) from the layer
 
     Note:
-        - Standard models (Llama, Qwen, Mistral): input_layernorm, post_attention_layernorm
-        - OPT models: self_attn_layer_norm, final_layer_norm
+        Architecture patterns:
+        - Pre-norm (Llama, Qwen, Mistral): input_layernorm, post_attention_layernorm
+        - Pre-norm (GPT2): ln_1, ln_2
+        - Post-norm (OPT): Use input to self_attn and fc1 (MLP input) instead of layernorm outputs
     """
-    # OPT models use self_attn_layer_norm and final_layer_norm
-    if hasattr(layer, 'self_attn_layer_norm') and hasattr(layer, 'final_layer_norm'):
-        return layer.self_attn_layer_norm.output, layer.final_layer_norm.output
-    # Standard models use input_layernorm and post_attention_layernorm
+    # GPT2 models use ln_1 (before attn) and ln_2 (before MLP)
+    if hasattr(layer, 'ln_1') and hasattr(layer, 'ln_2'):
+        return layer.ln_1.output, layer.ln_2.output
+    # OPT models (post-norm): layernorms are AFTER sublayers, so we use sublayer inputs instead
+    elif hasattr(layer, 'self_attn') and hasattr(layer, 'fc1'):
+        # For OPT: get input to self_attn and input to fc1 (first MLP layer)
+        return layer.self_attn.input[0][0], layer.fc1.input[0][0]
+    # Standard pre-norm models use input_layernorm and post_attention_layernorm
     else:
         return layer.input_layernorm.output, layer.post_attention_layernorm.output
 
