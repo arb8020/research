@@ -68,7 +68,8 @@ def get_layernorm_outputs(layer):
     # OPT models (post-norm): layernorms are AFTER sublayers, so we use sublayer inputs instead
     elif hasattr(layer, 'self_attn') and hasattr(layer, 'fc1'):
         # For OPT: get input to self_attn and input to fc1 (first MLP layer)
-        return layer.self_attn.input[0][0], layer.fc1.input[0][0]
+        # .input[0] gets the first positional argument (the hidden states tensor)
+        return layer.self_attn.input[0], layer.fc1.input[0]
     # Standard pre-norm models use input_layernorm and post_attention_layernorm
     else:
         return layer.input_layernorm.output, layer.post_attention_layernorm.output
