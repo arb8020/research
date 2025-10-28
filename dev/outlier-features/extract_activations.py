@@ -51,25 +51,34 @@ def get_layernorm_outputs(layer):
     """Get layernorm outputs from a layer, handling different architectures.
 
     Args:
-        layer: A single transformer layer module
+        layer: A single transformer layer module (nnsight proxy)
 
     Returns:
-        Tuple of (ln_attn_output, ln_mlp_output) from the layer
+        Tuple of (ln_attn_output, ln_mlp_output) - nnsight proxy objects
+        These should be called with .save() to capture activations
 
     Note:
         Architecture patterns:
-        - Pre-norm (Llama, Qwen, Mistral): input_layernorm, post_attention_layernorm
-        - Pre-norm (GPT2): ln_1, ln_2
-        - Post-norm (OPT): Use input to self_attn and fc1 (MLP input) instead of layernorm outputs
+        - Pre-norm (Llama, Qwen, Mistral): input_layernorm.output, post_attention_layernorm.output
+        - Pre-norm (GPT2): ln_1.output, ln_2.output
+        - Pre-norm (GPT-J): ln_1.output, NO separate MLP layernorm (parallel attn+mlp)
+        - Post-norm (OPT): self_attn.input[0][0], fc1.input[0][0]
     """
     # GPT2 models use ln_1 (before attn) and ln_2 (before MLP)
     if hasattr(layer, 'ln_1') and hasattr(layer, 'ln_2'):
         return layer.ln_1.output, layer.ln_2.output
-    # OPT models (post-norm): layernorms are AFTER sublayers, so we use sublayer inputs instead
-    elif hasattr(layer, 'self_attn') and hasattr(layer, 'fc1'):
-        # For OPT: get input to self_attn and input to fc1 (first MLP layer)
-        # .input[0] gets the first positional argument (the hidden states tensor)
-        return layer.self_attn.input[0], layer.fc1.input[0]
+    # GPT-J uses ln_1 but has parallel attention (no separate MLP layernorm)
+    # Return ln_1 for both since attn and mlp run in parallel after single layernorm
+    elif hasattr(layer, 'ln_1') and hasattr(layer, 'attn') and hasattr(layer, 'mlp'):
+        return layer.ln_1.output, layer.ln_1.output
+    # OPT models (post-norm): layernorms are AFTER sublayers
+    # For post-norm, we want the layer input (before any sublayers)
+    elif hasattr(layer, 'self_attn_layer_norm') and hasattr(layer, 'final_layer_norm'):
+        # Both attention and MLP use the same input in OPT (residual from previous layer)
+        # We can't easily get "input to MLP" separately, so use layer input for both
+        # The hidden state flows: input -> attn -> add -> layernorm -> fc1 -> fc2 -> add -> layernorm
+        # We want the input before both paths, which is the same
+        return layer.input[0][0], layer.input[0][0]
     # Standard pre-norm models use input_layernorm and post_attention_layernorm
     else:
         return layer.input_layernorm.output, layer.post_attention_layernorm.output
