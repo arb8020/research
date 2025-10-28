@@ -21,30 +21,32 @@ def get_model_layers(model):
         model: nnsight LanguageModel
 
     Returns:
-        The layers ModuleList (handles multiple architecture patterns)
-    """
-    # Access underlying model (nnsight uses either .model or ._model)
-    underlying_model = None
-    if hasattr(model, 'model'):
-        underlying_model = model.model
-    elif hasattr(model, '_model'):
-        underlying_model = model._model
-    else:
-        # Fallback: assume model is the wrapped object itself
-        underlying_model = model
+        The layers ModuleList (returns nnsight proxy-compatible reference)
 
+    Important:
+        When accessed inside a trace context, indexing the returned layers will yield nnsight proxies.
+        The model parameter should be the nnsight LanguageModel wrapper, NOT the underlying PyTorch model.
+    """
     # Handle multimodal models (e.g., Gemma-3 VLMs) that have language_model.layers
-    if hasattr(underlying_model, 'language_model') and hasattr(underlying_model.language_model, 'layers'):
-        return underlying_model.language_model.layers
-    # Handle decoder-only models (e.g., OPT, GPT-J) that have decoder.layers
-    elif hasattr(underlying_model, 'decoder') and hasattr(underlying_model.decoder, 'layers'):
-        return underlying_model.decoder.layers
-    # Handle GPT2 models that have transformer.h
-    elif hasattr(underlying_model, 'transformer') and hasattr(underlying_model.transformer, 'h'):
-        return underlying_model.transformer.h
+    if hasattr(model, 'language_model') and hasattr(model.language_model, 'layers'):
+        return model.language_model.layers
+    # Handle decoder-only models (e.g., OPT, GPT-J) that have model.decoder.layers
+    elif hasattr(model, 'decoder') and hasattr(model.decoder, 'layers'):
+        return model.decoder.layers
+    # Handle GPT2 models that have model.transformer.h
+    elif hasattr(model, 'transformer') and hasattr(model.transformer, 'h'):
+        return model.transformer.h
     # Handle standard models (Llama, Qwen, Mistral, etc.) with model.layers
+    elif hasattr(model, 'layers'):
+        return model.layers
+    # Fallback: try accessing through .model or ._model attribute
+    elif hasattr(model, 'model'):
+        # Recursively call with the wrapped model
+        return get_model_layers(model.model)
+    elif hasattr(model, '_model'):
+        return get_model_layers(model._model)
     else:
-        return underlying_model.layers
+        raise AttributeError(f"Could not find layers in model of type {type(model)}")
 
 
 def get_layernorm_outputs(layer):
@@ -78,7 +80,7 @@ def get_layernorm_outputs(layer):
         # We can't easily get "input to MLP" separately, so use layer input for both
         # The hidden state flows: input -> attn -> add -> layernorm -> fc1 -> fc2 -> add -> layernorm
         # We want the input before both paths, which is the same
-        return layer.input[0][0], layer.input[0][0]
+        return layer.input, layer.input
     # Standard pre-norm models use input_layernorm and post_attention_layernorm
     else:
         return layer.input_layernorm.output, layer.post_attention_layernorm.output
@@ -189,9 +191,26 @@ def extract_activations_optimized(
         model_layers = get_model_layers(llm)
         with torch.inference_mode(), llm.trace(texts) as tracer:
             for layer_idx in layers_chunk:
-                ln_attn_output, ln_mlp_output = get_layernorm_outputs(model_layers[layer_idx])
-                ln_into_attn = ln_attn_output.save()
-                ln_into_mlp = ln_mlp_output.save()
+                layer = model_layers[layer_idx]
+
+                # Access layernorm outputs directly based on architecture
+                # Must be done inline in trace context, not via helper function
+                if hasattr(layer, 'ln_1') and hasattr(layer, 'ln_2'):
+                    # GPT2: pre-norm with ln_1 and ln_2
+                    ln_into_attn = layer.ln_1.output.save()
+                    ln_into_mlp = layer.ln_2.output.save()
+                elif hasattr(layer, 'ln_1') and hasattr(layer, 'attn') and hasattr(layer, 'mlp'):
+                    # GPT-J: parallel architecture, single layernorm
+                    ln_into_attn = layer.ln_1.output.save()
+                    ln_into_mlp = layer.ln_1.output.save()
+                elif hasattr(layer, 'self_attn_layer_norm') and hasattr(layer, 'final_layer_norm'):
+                    # OPT: post-norm, use layer input directly
+                    ln_into_attn = layer.input.save()
+                    ln_into_mlp = layer.input.save()
+                else:
+                    # Standard Llama-style: input_layernorm and post_attention_layernorm
+                    ln_into_attn = layer.input_layernorm.output.save()
+                    ln_into_mlp = layer.post_attention_layernorm.output.save()
 
                 activations[f"layer_{layer_idx}_ln_attn"] = ln_into_attn
                 activations[f"layer_{layer_idx}_ln_mlp"] = ln_into_mlp
