@@ -50,3 +50,7 @@ dev/nano-inference/originals/
 dev/outlier-features/archive/
 dev/outlier-features/sweep_analysis/
 dev/speedrun/originals/
+
+# Test outputs and logs
+*.log
+*test_output.txt

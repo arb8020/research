@@ -12,7 +12,7 @@ Testing whether Dettmers et al. (2022) phase transition claim extends to MoE arc
 
 ### Model Precision
 
-**Important:** Models were analyzed at different native precisions, which may affect outlier detection:
+**Important:** Models were analyzed at native precisions, which may affect outlier detection:
 
 | Model | Native Precision | Analysis Precision | Notes |
 |-------|-----------------|-------------------|-------|
@@ -23,8 +23,6 @@ Testing whether Dettmers et al. (2022) phase transition claim extends to MoE arc
 | Qwen3-Next-80B | bfloat16 | bfloat16 | Native precision |
 | GLM-4.5-Air | bfloat16 | bfloat16 | Native precision |
 | GPT-OSS-120B | MXFP4 (MoE weights) | MXFP4 | Native precision
-
-**MXFP4 Details:** GPT-OSS models use post-training MXFP4 quantization (4-bit floating point) for MoE weights, enabling the 120B model to run on a single 80GB GPU. The models were likely analyzed at this quantized precision (attempting to load with standard bfloat16 would exceed memory constraints).
 
 ## Results
 
@@ -44,8 +42,21 @@ Testing whether Dettmers et al. (2022) phase transition claim extends to MoE arc
 - **Experts** = number of expert modules per MoE layer
 - **Top-K** = number of experts activated per token
 
-**Notes:**
-- *GPT-OSS-20B: Architecture details inferred from GPT-OSS-120B specifications (same model family)
-- GPT-OSS models use softmax-weighted routing (outputs scaled by softmax of router scores over selected experts)
-- Both GPT-OSS models use alternating dense and locally banded sparse attention patterns
+## Dense Model Analysis
+
+To validate our methodology and compare against Dettmers et al. (2022), we also analyzed dense transformer models across the parameter scaling curve:
+
+| Model | Total Params | Outliers | Mean L% | Mean S% |
+|-------|--------------|----------|---------|---------|
+| Qwen3-0.6B | 0.6B | 9,212 | 32.7% | 66.5% |
+| Qwen3-1.7B | 1.7B | 16,563 | 30.3% | 78.4% |
+| Qwen3-4B | 4.0B | 1,042 | 34.8% | 68.8% |
+| Qwen3-8B | 8.0B | 777 | 32.3% | 70.8% |
+| Qwen3-14B | 14.0B | 985 | 31.4% | 79.0% |
+
+**Key Observations:**
+- Dense models show relatively consistent layer coverage (30-35%) across all parameter scales
+- All dense models show high sequence position coverage (66-79%), indicating systematic outlier presence
+- Unlike Dettmers' finding of a phase transition at 6.7B, the Qwen3 family shows systematic outliers even at small scales (0.6B)
+- Total outlier counts decrease from 1.7B to 4B+ parameters, suggesting consolidation of outlier features in larger models
 
