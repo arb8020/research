@@ -3,9 +3,39 @@
 Adapted from dataset_utils.py
 """
 
+import logging
 from typing import Iterator, Optional, cast
 from datasets import load_dataset, IterableDataset
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
+
+
+logger = logging.getLogger(__name__)
+
+_TOKENIZER_MAX_LEN_SENTINEL = 1_000_000_000  # treat extremely large values as "unbounded"
+
+
+def _effective_sequence_length(
+    requested_length: int,
+    tokenizer: Optional[PreTrainedTokenizer | PreTrainedTokenizerFast]
+) -> int:
+    """Return the sequence length we should actually use for this tokenizer."""
+
+    if tokenizer is None:
+        return requested_length
+
+    max_length = getattr(tokenizer, "model_max_length", None)
+
+    if isinstance(max_length, int) and 0 < max_length < _TOKENIZER_MAX_LEN_SENTINEL:
+        if requested_length > max_length:
+            logger.warning(
+                "Requested sequence length %s exceeds tokenizer limit %s; clipping to %s",
+                requested_length,
+                max_length,
+                max_length,
+            )
+            return max_length
+
+    return requested_length
 
 
 def load_streaming_dataset(
@@ -152,6 +182,8 @@ def get_text_sequences(
         seed=seed,
         buffer_size=buffer_size,
     )
+
+    sequence_length = _effective_sequence_length(sequence_length, tokenizer)
 
     try:
         for text in dataset_stream:
