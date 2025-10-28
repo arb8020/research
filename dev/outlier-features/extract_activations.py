@@ -64,7 +64,7 @@ def get_layernorm_outputs(layer):
         - Pre-norm (Llama, Qwen, Mistral): input_layernorm.output, post_attention_layernorm.output
         - Pre-norm (GPT2): ln_1.output, ln_2.output
         - Pre-norm (GPT-J): ln_1.output, NO separate MLP layernorm (parallel attn+mlp)
-        - Post-norm (OPT): self_attn.input[0][0], fc1.input[0][0]
+        - OPT: self_attn_layer_norm.output, final_layer_norm.output
     """
     # GPT2 models use ln_1 (before attn) and ln_2 (before MLP)
     if hasattr(layer, 'ln_1') and hasattr(layer, 'ln_2'):
@@ -73,14 +73,9 @@ def get_layernorm_outputs(layer):
     # Return ln_1 for both since attn and mlp run in parallel after single layernorm
     elif hasattr(layer, 'ln_1') and hasattr(layer, 'attn') and hasattr(layer, 'mlp'):
         return layer.ln_1.output, layer.ln_1.output
-    # OPT models (post-norm): layernorms are AFTER sublayers
-    # For post-norm, we want the layer input (before any sublayers)
     elif hasattr(layer, 'self_attn_layer_norm') and hasattr(layer, 'final_layer_norm'):
-        # Both attention and MLP use the same input in OPT (residual from previous layer)
-        # We can't easily get "input to MLP" separately, so use layer input for both
-        # The hidden state flows: input -> attn -> add -> layernorm -> fc1 -> fc2 -> add -> layernorm
-        # We want the input before both paths, which is the same
-        return layer.input, layer.input
+        # OPT variants expose dedicated layer norms feeding the attn/MLP blocks
+        return layer.self_attn_layer_norm.output, layer.final_layer_norm.output
     # Standard pre-norm models use input_layernorm and post_attention_layernorm
     else:
         return layer.input_layernorm.output, layer.post_attention_layernorm.output
@@ -159,8 +154,6 @@ def extract_activations_optimized(
     if layers is None:
         model_layers = get_model_layers(llm)
         num_layers = len(model_layers)
-        if hasattr(llm.model, 'language_model'):
-            logger.info(f"Detected multimodal model, using language_model.layers")
         layers = list(range(num_layers))
         logger.info(f"Auto-detected {num_layers} layers: {layers[0]}-{layers[-1]}")
     else:
@@ -204,9 +197,9 @@ def extract_activations_optimized(
                     ln_into_attn = layer.ln_1.output.save()
                     ln_into_mlp = layer.ln_1.output.save()
                 elif hasattr(layer, 'self_attn_layer_norm') and hasattr(layer, 'final_layer_norm'):
-                    # OPT: post-norm, use layer input directly
-                    ln_into_attn = layer.input.save()
-                    ln_into_mlp = layer.input.save()
+                    # OPT (pre-LN variants): capture layernorm outputs feeding attn/MLP
+                    ln_into_attn = layer.self_attn_layer_norm.output.save()
+                    ln_into_mlp = layer.final_layer_norm.output.save()
                 else:
                     # Standard Llama-style: input_layernorm and post_attention_layernorm
                     ln_into_attn = layer.input_layernorm.output.save()
@@ -218,6 +211,17 @@ def extract_activations_optimized(
         # Immediately convert to CPU and save to disk
         for layer_name, activation_proxy in activations.items():
             tensor = activation_proxy.detach().to(torch.bfloat16).cpu()
+
+            if tensor.dim() == 2:
+                # Some architectures (e.g., OPT) flatten batch/sequence dims prior to layernorm.
+                batch_size = len(texts)
+                assert tensor.shape[0] % batch_size == 0, (
+                    f"Cannot reshape flattened activations for {layer_name}: "
+                    f"batch={batch_size}, shape={tensor.shape}"
+                )
+                seq_len = tensor.shape[0] // batch_size
+                tensor = tensor.view(batch_size, seq_len, tensor.shape[-1])
+
             assert tensor.dim() == 3, f"Expected 3D tensor for {layer_name}, got shape {tensor.shape}"
 
             # Save activation
