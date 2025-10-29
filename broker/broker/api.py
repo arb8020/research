@@ -304,6 +304,7 @@ def _build_provision_request(
         jupyter_password=jupyter_password,
         manufacturer=manufacturer,
         template_id=template_id,
+        raw_data=offer.raw_data,  # Pass raw_data for provider-specific needs (e.g., Vast.ai price)
         **kwargs
     )
 
