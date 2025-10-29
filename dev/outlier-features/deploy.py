@@ -253,12 +253,13 @@ export TRANSFORMERS_CACHE=$HF_HOME/transformers
     return bifrost_client
 
 
-def build_analysis_command(config: Config, config_path: str) -> str:
+def build_analysis_command(config: Config, config_path: str, mode: str = "outliers") -> str:
     """Build the remote analysis command string.
 
     Args:
         config: Configuration object
         config_path: Path to config file (for copying to remote)
+        mode: Analysis mode - "outliers" or "perplexity"
 
     Returns:
         Command string
@@ -277,14 +278,22 @@ export HUGGINGFACE_HUB_CACHE=$HF_HOME && \\
 export TRANSFORMERS_CACHE=$HF_HOME/transformers && \\
 """
 
+    # Select script based on mode
+    if mode == "perplexity":
+        script = "compute_perplexity.py"
+        log_file = "perplexity_computation.log"
+    else:  # mode == "outliers"
+        script = "run_full_analysis.py"
+        log_file = "outlier_analysis.log"
+
     # Build main command
     # Note: We'll copy the config file to remote, then run with that path
     remote_config_path = f"~/.bifrost/workspace/dev/outlier-features/configs/{Path(config_path).name}"
 
     cmd = f"""cd ~/.bifrost/workspace/dev/outlier-features && \\
-exec > outlier_analysis.log 2>&1 && \\
+exec > {log_file} 2>&1 && \\
 {hf_env}uv sync --extra dev-outlier-features && \\
-~/.bifrost/workspace/.venv/bin/python run_full_analysis.py {remote_config_path} \\
+~/.bifrost/workspace/.venv/bin/python {script} {remote_config_path} \\
 && touch .analysis_complete \\
 || {{ echo "ANALYSIS FAILED with exit code $?"; touch .analysis_failed; exit 1; }}
 """
@@ -292,15 +301,17 @@ exec > outlier_analysis.log 2>&1 && \\
     return cmd
 
 
-def start_analysis(bifrost_client: 'BifrostClient', config: Config, config_path: str):
+def start_analysis(bifrost_client: 'BifrostClient', config: Config, config_path: str, mode: str = "outliers"):
     """Start analysis in tmux session on remote.
 
     Args:
         bifrost_client: Bifrost client instance
         config: Configuration object
         config_path: Path to local config file
+        mode: Analysis mode - "outliers" or "perplexity"
     """
-    logger.info("🔬 Starting outlier analysis...")
+    mode_label = "perplexity computation" if mode == "perplexity" else "outlier analysis"
+    logger.info(f"🔬 Starting {mode_label}...")
 
     # First, copy the config file to remote
     remote_config_dir = "~/.bifrost/workspace/dev/outlier-features/configs"
@@ -315,13 +326,14 @@ def start_analysis(bifrost_client: 'BifrostClient', config: Config, config_path:
     logger.info(f"✅ Config uploaded: {remote_config_path}")
 
     # Build and execute analysis command
-    cmd = build_analysis_command(config, config_path)
+    cmd = build_analysis_command(config, config_path, mode)
     tmux_cmd = f"tmux new-session -d -s outlier-analysis '{cmd}'"
     bifrost_client.exec(tmux_cmd)
 
-    logger.info("✅ Analysis started - will take 10-30 minutes")
+    log_file = "perplexity_computation.log" if mode == "perplexity" else "outlier_analysis.log"
+    logger.info(f"✅ {mode_label.capitalize()} started - will take 10-30 minutes")
     logger.info(f"📊 Monitor: bifrost exec '{bifrost_client.ssh}' "
-                "'cd ~/.bifrost/workspace/dev/outlier-features && tail -20 outlier_analysis.log'")
+                f"'cd ~/.bifrost/workspace/dev/outlier-features && tail -20 {log_file}'")
 
 
 def wait_for_analysis_completion(bifrost_client: 'BifrostClient', config: Config, timeout: int = 2700) -> bool:
@@ -401,7 +413,7 @@ echo 'RUNNING'
     return False
 
 
-def sync_results(bifrost_client: 'BifrostClient', config: Config, output_dir: Path):
+def sync_results(bifrost_client: 'BifrostClient', config: Config, output_dir: Path, mode: str = "outliers"):
     """Sync analysis results from remote GPU to local directory.
 
     IMPORTANT: Syncs from config.output.save_dir (NOT hardcoded 'results/').
@@ -411,6 +423,7 @@ def sync_results(bifrost_client: 'BifrostClient', config: Config, output_dir: Pa
         bifrost_client: Bifrost client instance
         config: Configuration object (for output.save_dir)
         output_dir: Local output directory
+        mode: Analysis mode - "outliers" or "perplexity"
 
     Raises:
         RuntimeError: If final results cannot be synced (indicates config mismatch)
@@ -425,11 +438,14 @@ def sync_results(bifrost_client: 'BifrostClient', config: Config, output_dir: Pa
     logger.info(f"💾 Syncing results from remote: {remote_results_path}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Select log file based on mode
+    log_filename = "perplexity_computation.log" if mode == "perplexity" else "outlier_analysis.log"
+
     # Display remote log
     logger.info("=" * 60)
-    logger.info("Remote analysis log:")
+    logger.info(f"Remote {mode} log:")
     logger.info("=" * 60)
-    remote_log_path = f"{REMOTE_WORKSPACE_PATH}/outlier_analysis.log"
+    remote_log_path = f"{REMOTE_WORKSPACE_PATH}/{log_filename}"
     try:
         result = bifrost_client.exec(f"cat {remote_log_path}")
         if result.stdout and result.stdout.strip():
@@ -441,22 +457,28 @@ def sync_results(bifrost_client: 'BifrostClient', config: Config, output_dir: Pa
     logger.info("=" * 60)
 
     # Sync main log file
-    log_path = output_dir / "outlier_analysis.log"
+    log_path = output_dir / log_filename
     try:
         result = bifrost_client.download_files(
             remote_path=remote_log_path,
             local_path=str(log_path)
         )
         if result and result.success and result.files_copied > 0:
-            logger.info(f"✅ Synced: outlier_analysis.log")
+            logger.info(f"✅ Synced: {log_filename}")
         else:
-            logger.warning(f"⚠️  Analysis log not ready yet")
+            logger.warning(f"⚠️  Log not ready yet")
     except Exception as e:
-        logger.warning(f"⚠️  Could not sync analysis log: {e}")
+        logger.warning(f"⚠️  Could not sync log: {e}")
 
     # Sync final results - FAIL LOUDLY if missing (indicates bug)
-    final_results_remote = f"{remote_results_path}/final_analysis_results.json"
-    final_results_local = output_dir / "final_analysis_results.json"
+    # Different result files for different modes
+    if mode == "perplexity":
+        results_filename = "perplexity_results.json"
+    else:
+        results_filename = "final_analysis_results.json"
+
+    final_results_remote = f"{remote_results_path}/{results_filename}"
+    final_results_local = output_dir / results_filename
 
     result = bifrost_client.download_files(
         remote_path=final_results_remote,
@@ -471,7 +493,7 @@ def sync_results(bifrost_client: 'BifrostClient', config: Config, output_dir: Pa
             f"Check: bifrost exec '<ssh>' 'ls -la {remote_results_path}/'"
         )
 
-    logger.info(f"✅ Synced: final_analysis_results.json")
+    logger.info(f"✅ Synced: {results_filename}")
 
     # Sync config used
     config_remote = f"{remote_results_path}/config.json"
@@ -524,6 +546,8 @@ def main():
     parser.add_argument("config", help="Path to config file (e.g., configs/02_olmoe_baseline.py)")
     parser.add_argument("--keep-running", action="store_true",
                         help="Keep GPU instance running after analysis")
+    parser.add_argument("--mode", type=str, default="outliers", choices=["outliers", "perplexity"],
+                        help="Analysis mode: 'outliers' (default) or 'perplexity'")
     args = parser.parse_args()
 
     # Load config
@@ -550,9 +574,11 @@ def main():
         }
     )
 
-    logger.info("🎯 Outlier Features Analysis - Automated Deployment")
+    mode_label = "Perplexity Computation" if args.mode == "perplexity" else "Outlier Features Analysis"
+    logger.info(f"🎯 {mode_label} - Automated Deployment")
     logger.info(f"📅 Experiment: {experiment_name}")
     logger.info(f"🤖 Model: {config.model.name}")
+    logger.info(f"📊 Mode: {args.mode}")
     logger.info("=" * 60)
 
     output_dir = Path(f"remote_results/{experiment_name}")
@@ -571,17 +597,17 @@ def main():
         bifrost_client = deploy_code(gpu_instance.ssh_connection_string(), ssh_key_path, config)
 
         # Step 4: Start analysis
-        start_analysis(bifrost_client, config, args.config)
+        start_analysis(bifrost_client, config, args.config, mode=args.mode)
 
         # Step 5: Wait for completion
-        logger.info("\n⏳ Waiting for analysis to complete...")
+        logger.info("\n⏳ Waiting for completion...")
         success = wait_for_analysis_completion(bifrost_client, config, timeout=config.deployment.analysis_timeout)
 
         # Step 6: Sync results
         logger.info("\n💾 Syncing results to local...")
         if not success:
-            logger.warning("⚠️  Analysis did not complete successfully, but syncing logs for debugging...")
-        sync_results(bifrost_client, config, output_dir)
+            logger.warning("⚠️  Did not complete successfully, but syncing logs for debugging...")
+        sync_results(bifrost_client, config, output_dir, mode=args.mode)
 
         # Step 7: Cleanup (conditional)
         if not config.deployment.keep_running:

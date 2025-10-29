@@ -45,6 +45,16 @@ class AnalysisConfig:
 
 
 @dataclass
+class PerplexityConfig:
+    """Perplexity computation parameters.
+
+    For replicating Dettmers Figure 3b - perplexity vs outlier emergence.
+    """
+    batch_size: int = 1  # Batch size for perplexity computation
+    stride: int | None = None  # Sliding window stride (None = no overlap)
+
+
+@dataclass
 class DeploymentConfig:
     """Remote GPU deployment configuration."""
     min_vram: int | None = None  # Auto-estimate if None
@@ -73,6 +83,7 @@ class Config:
     model: ModelConfig = field(default_factory=ModelConfig)
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
+    perplexity: PerplexityConfig = field(default_factory=PerplexityConfig)
     deployment: DeploymentConfig = field(default_factory=DeploymentConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
 
