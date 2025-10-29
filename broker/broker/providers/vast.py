@@ -4,7 +4,7 @@ Vast.ai provider implementation
 
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 import requests
 
@@ -255,12 +255,18 @@ def provision_instance(request: ProvisionRequest, ssh_startup_script: Optional[s
 
     # Get price from raw_data (stored in GPUOffer during search)
     # The raw_data should contain the original Vast.ai API response
-    raw_data = request.raw_data if hasattr(request, 'raw_data') else None
+    # Type checker note: raw_data is Optional[Dict[str, Any]], use cast for type safety
+    raw_data = cast(Optional[Dict[str, Any]],
+                    request.raw_data if hasattr(request, 'raw_data') else None)
 
     # If raw_data not available, we need to extract from stored offer data
     # For now, we'll use a reasonable max price - this should be improved
     # by passing price through ProvisionRequest
-    price = raw_data.get("dph_total") if raw_data else 1.0
+    price: float = 1.0  # Default price
+    if raw_data:
+        dph_total = raw_data.get("dph_total")
+        if dph_total is not None:
+            price = float(dph_total)
 
     # Build request body
     request_body = {
