@@ -24,7 +24,7 @@ Usage:
 import subprocess
 import time
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 import argparse
 import sys
 
@@ -117,7 +117,7 @@ def launch_deployment(config_path: Path, model_names: dict, sweep_log_dir: Path,
     return proc
 
 
-def check_sweep_status(num_lines: int = 5, sweep_dir: str = None):
+def check_sweep_status(num_lines: int = 5, sweep_dir: Optional[str] = None):
     """Check status of most recent sweep by tailing logs.
 
     Args:
