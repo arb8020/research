@@ -67,6 +67,13 @@ def _make_api_request(method: str, endpoint: str, data: Optional[Dict] = None,
         logger.error("Vast.ai API request timed out")
         raise
     except requests.RequestException as exc:
+        # Log response body for debugging 400 errors
+        if hasattr(exc, 'response') and exc.response is not None:
+            try:
+                error_detail = exc.response.json()
+                logger.error(f"Vast.ai API error: {error_detail}")
+            except Exception:
+                logger.error(f"Vast.ai API response: {exc.response.text[:500]}")
         logger.error(f"Vast.ai API request failed: {exc}")
         raise
 
@@ -255,20 +262,18 @@ def provision_instance(request: ProvisionRequest, ssh_startup_script: Optional[s
         logger.error(f"Failed to parse offer_id from gpu_type '{request.gpu_type}': {e}")
         raise ValueError(f"Invalid gpu_type format: {request.gpu_type}")
 
-    # Get price from raw_data (stored in GPUOffer during search)
-    # The raw_data should contain the original Vast.ai API response
-    # Type checker note: raw_data is Optional[Dict[str, Any]], use cast for type safety
-    raw_data = cast(Optional[Dict[str, Any]],
-                    request.raw_data if hasattr(request, 'raw_data') else None)
+    # Get price from raw_data (stored in GPUOffer during search, passed through ProvisionRequest)
+    # The raw_data contains the original Vast.ai API response with pricing info
+    raw_data = cast(Optional[Dict[str, Any]], request.raw_data)
 
-    # If raw_data not available, we need to extract from stored offer data
-    # For now, we'll use a reasonable max price - this should be improved
-    # by passing price through ProvisionRequest
-    price: float = 1.0  # Default price
+    # Extract price from raw_data (required for Vast.ai provisioning)
+    price: float = 1.0  # Default fallback price
     if raw_data:
         dph_total = raw_data.get("dph_total")
         if dph_total is not None:
             price = float(dph_total)
+        else:
+            logger.warning(f"No dph_total in raw_data for offer {offer_id}, using default price ${price}")
 
     # Build request body
     request_body = {
