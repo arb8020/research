@@ -287,6 +287,9 @@ def _build_provision_request(
     elif offer.provider == "lambdalabs":
         # For Lambda Labs, use the offer ID which contains instance type and region
         gpu_type_id = offer.id
+    elif offer.provider == "vast":
+        # For Vast.ai, use the offer ID which is in format "vast-{offer_id}"
+        gpu_type_id = offer.id
 
     return ProvisionRequest(
         gpu_type=gpu_type_id,
