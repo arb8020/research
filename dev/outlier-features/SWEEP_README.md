@@ -141,25 +141,21 @@ python deploy_sweep.py --models 01 03 --dry-run
 
 After all deployments complete:
 
-1. **Verify results**:
+1. **Run comparison analysis**:
 ```bash
-python verify_results.py  # Check all models have valid results
+python compare_sweep_results.py  # Generate plots and summary table
 ```
 
-2. **Run analysis** (from llm-workbench):
+2. **View results in different formats**:
 ```bash
-cd ~/llm-workbench/examples/outlier_features_moe
-python analyze_all_models_dettmers.py
-```
+# Display plots in terminal
+python compare_sweep_results.py --terminal
 
-3. **Bootstrap CIs** (TIER 2 Task 7):
-```bash
-python analyze_with_bootstrap.py  # Compute 95% confidence intervals
-```
+# Export as CSV
+python compare_sweep_results.py --terminal --format csv > results.csv
 
-4. **Create visualizations**:
-```bash
-python create_comparison_plots.py  # Layer agreement, magnitude, etc.
+# Export as JSON
+python compare_sweep_results.py --terminal --format json > results.json
 ```
 
 ## Expected Results
@@ -193,19 +189,10 @@ python deploy_sweep.py --models 01 03
 # Edit configs: num_sequences = 8  # Instead of 16
 ```
 
-## Reviewer Requirements Addressed
-
-✅ **Task 11**: Re-run GLM with 5+ batches (now 16 sequences)
-✅ **Task 8**: Add model at threshold (Phi-3.5-MoE, if available)
-✅ **Task 9**: Add Mixtral-8x7B (fills gap, canonical model)
-✅ **Task 7**: Enable bootstrap CIs (16 sequences provides data)
-✅ **Sample size**: N=7 models (70% of Dettmers' N=10)
-
-## Next Steps
+## Analysis Workflow
 
 After sweep completes:
-1. Run TIER 1 fixes (circular logic, GLM reporting)
-2. Compute bootstrap CIs (TIER 2)
-3. Create visualizations
-4. Write up findings with N=7 results
-5. Package as blog post for EOW
+1. Run `compare_sweep_results.py` for comparative analysis
+2. Review plots in `sweep_analysis/` directory
+3. Compare MoE results with dense baselines (see `sweep_dense/README.md`)
+4. Validate methodology with replication sweep (see `sweep_validation/README.md`)
