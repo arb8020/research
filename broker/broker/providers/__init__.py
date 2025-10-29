@@ -74,5 +74,8 @@ def get_provider_impl(provider_name: str):
     elif provider_name == "lambdalabs":
         from . import lambdalabs
         return lambdalabs
+    elif provider_name == "vast":
+        from . import vast
+        return vast
     else:
         raise ValueError(f"Unsupported provider: {provider_name}")

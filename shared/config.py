@@ -32,6 +32,11 @@ def get_lambda_key() -> Optional[str]:
     return os.getenv("LAMBDA_API_KEY")
 
 
+def get_vast_key() -> Optional[str]:
+    """Get Vast.ai API key from environment"""
+    return os.getenv("VAST_API_KEY")
+
+
 def get_modal_token() -> Optional[str]:
     """Get Modal token from environment or ~/.modal.toml
 
@@ -109,6 +114,7 @@ def create_env_template(tool: str):
 RUNPOD_API_KEY=
 PRIME_API_KEY=
 LAMBDA_API_KEY=
+VAST_API_KEY=
 SSH_KEY_PATH=~/.ssh/id_ed25519
 """
     else:  # bifrost
