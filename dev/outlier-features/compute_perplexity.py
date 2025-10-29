@@ -19,6 +19,7 @@ from tqdm import tqdm
 
 # Import shared logging setup
 from shared.logging_config import setup_logging
+from shared.retry import retry
 
 # Import local modules
 from config import Config
@@ -52,6 +53,80 @@ def load_config_from_file(config_path: str) -> Config:
     return config
 
 
+@retry(max_attempts=3, delay=30, backoff=2, exceptions=(OSError,))
+def load_tokenizer_with_retry(model_name: str) -> AutoTokenizer:
+    """Load tokenizer with retry on HuggingFace rate limits.
+
+    External boundary: Network I/O to HuggingFace API.
+    Retries on 429 rate limit errors with exponential backoff: 30s, 60s, 120s.
+    Total max wait time: ~3.5 minutes.
+
+    Args:
+        model_name: HuggingFace model identifier
+
+    Returns:
+        Loaded tokenizer
+
+    Raises:
+        OSError: If loading fails after all retry attempts
+    """
+    assert model_name, "model_name must not be empty"
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    assert tokenizer is not None, "Tokenizer loading returned None"
+    return tokenizer
+
+
+@retry(max_attempts=3, delay=30, backoff=2, exceptions=(OSError,))
+def load_model_with_retry(
+    model_name: str,
+    device_map: str,
+    torch_dtype,
+    max_memory: dict | None = None
+) -> AutoModelForCausalLM:
+    """Load model with retry on HuggingFace rate limits.
+
+    External boundary: Network I/O to HuggingFace API.
+    Retries on 429 rate limit errors with exponential backoff: 30s, 60s, 120s.
+
+    Args:
+        model_name: HuggingFace model identifier
+        device_map: Device mapping strategy ("auto" or "balanced")
+        torch_dtype: PyTorch dtype for model weights
+        max_memory: Optional memory limits per GPU
+
+    Returns:
+        Loaded model in eval mode
+
+    Raises:
+        OSError: If loading fails after all retry attempts
+    """
+    assert model_name, "model_name must not be empty"
+    assert device_map in ["auto", "balanced"], f"Invalid device_map: {device_map}"
+    assert torch_dtype is not None, "torch_dtype must not be None"
+
+    if max_memory is None:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            device_map=device_map,
+            torch_dtype=torch_dtype
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            device_map=device_map,
+            torch_dtype=torch_dtype,
+            max_memory=max_memory
+        )
+
+    assert model is not None, "Model loading returned None"
+    model.eval()
+    return model
+
+
 def load_model_and_tokenizer(config: Config) -> tuple[AutoModelForCausalLM, AutoTokenizer]:
     """Load model and tokenizer without nnsight wrapper.
 
@@ -73,21 +148,19 @@ def load_model_and_tokenizer(config: Config) -> tuple[AutoModelForCausalLM, Auto
     gpu_count = torch.cuda.device_count()
     logger.info(f"Detected {gpu_count} GPU(s)")
 
-    # Load tokenizer
-    logger.info("Loading tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(config.model.name)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    # Load tokenizer with retry
+    logger.info("Loading tokenizer (will retry on rate limits)...")
+    tokenizer = load_tokenizer_with_retry(config.model.name)
     logger.info(f"✓ Tokenizer loaded: {tokenizer.__class__.__name__}")
 
-    # Load model
-    logger.info("Loading model...")
+    # Load model with retry
+    logger.info("Loading model (will retry on rate limits)...")
     torch_dtype = getattr(torch, config.model.torch_dtype)
     assert torch_dtype is not None, f"Invalid torch_dtype: {config.model.torch_dtype}"
 
     if gpu_count == 1:
         logger.info("Using single-GPU configuration with device_map='auto'")
-        model = AutoModelForCausalLM.from_pretrained(
+        model = load_model_with_retry(
             config.model.name,
             device_map="auto",
             torch_dtype=torch_dtype
@@ -95,15 +168,14 @@ def load_model_and_tokenizer(config: Config) -> tuple[AutoModelForCausalLM, Auto
     else:
         logger.info(f"Using multi-GPU balanced configuration...")
         max_memory = {i: "76GiB" for i in range(gpu_count)}
-        model = AutoModelForCausalLM.from_pretrained(
+        model = load_model_with_retry(
             config.model.name,
             device_map="balanced",
-            max_memory=max_memory,
-            torch_dtype=torch_dtype
+            torch_dtype=torch_dtype,
+            max_memory=max_memory
         )
 
     assert model is not None, "Model loading failed"
-    model.eval()
     logger.info("✓ Model loaded successfully")
     logger.info("="*80 + "\n")
 
