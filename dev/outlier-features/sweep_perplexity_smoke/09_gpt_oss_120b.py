@@ -31,6 +31,8 @@ config.deployment.gpu_filter = "A100"
 config.deployment.min_cpu_ram = 64
 config.deployment.max_price = 3.5
 config.deployment.safety_factor = 1.3
+config.deployment.container_disk = 250  # Large models need more disk space
+config.deployment.volume_disk = 0  # No volume to avoid mount issues
 
 # Output
 config.output.experiment_name = "perplexity_smoke_gpt_oss_120b"
