@@ -107,14 +107,14 @@ def search_gpu_offers(cuda_version: Optional[str] = None, manufacturer: Optional
         logger.warning(f"Low reliability threshold {min_reliability} may result in unreliable hosts")
 
     # Build base query with sensible defaults (explicit, not implicit)
-    # Note: Not filtering by "type" to return both on-demand (SECURE) and bid (COMMUNITY)
-    # This allows the caller to filter by cloud_type if needed
+    # Use on-demand type for SECURE cloud (more reliable than bid/community)
     query = {
         "verified": {"eq": True},      # Only verified hosts
         "external": {"eq": False},     # Exclude external hosts
         "rentable": {"eq": True},      # Only rentable machines
         "rented": {"eq": False},       # Only available machines
         "order": [["dph_total", "asc"]],  # Sort by price ascending
+        "type": "on-demand",           # On-demand only (SECURE cloud)
         "allocated_storage": 10,       # Minimum storage allocation
     }
 
