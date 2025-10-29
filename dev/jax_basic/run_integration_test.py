@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from broker import GPUClient, CloudType
 from broker.client import ClientGPUInstance
 from bifrost import BifrostClient
-from shared.config import get_runpod_key, get_prime_key, get_lambda_key
+from shared.config import get_runpod_key, get_prime_key, get_lambda_key, get_vast_key
 from shared.logging_config import setup_logging
 
 load_dotenv()
@@ -30,13 +30,15 @@ def get_credentials(provider_filter=None):
         credentials["primeintellect"] = prime_key
     if lambda_key := get_lambda_key():
         credentials["lambdalabs"] = lambda_key
+    if vast_key := get_vast_key():
+        credentials["vast"] = vast_key
 
     if provider_filter:
         if provider_filter not in credentials:
             raise ValueError(f"Provider '{provider_filter}' not found. Set {provider_filter.upper()}_API_KEY")
         credentials = {provider_filter: credentials[provider_filter]}
 
-    assert credentials, "No API keys found - set RUNPOD_API_KEY, PRIME_API_KEY, or LAMBDA_API_KEY"
+    assert credentials, "No API keys found - set RUNPOD_API_KEY, PRIME_API_KEY, LAMBDA_API_KEY, or VAST_API_KEY"
     return credentials
 
 
@@ -175,7 +177,7 @@ def run_integration_test(provider=None, ready_timeout=None, ssh_timeout=None):
 
 def main():
     parser = argparse.ArgumentParser(description="JAX GPU Integration Test")
-    parser.add_argument("--provider", type=str, choices=["runpod", "primeintellect", "lambdalabs"],
+    parser.add_argument("--provider", type=str, choices=["runpod", "primeintellect", "lambdalabs", "vast"],
                         help="Cloud provider to use")
     parser.add_argument("--ready-timeout", type=int, default=None,
                         help="Timeout in seconds for instance to become ready (default: 900 for Lambda Labs, 300 for others)")

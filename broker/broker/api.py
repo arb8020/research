@@ -5,7 +5,7 @@ Main functional API for GPU cloud operations
 import logging
 from typing import Any, Callable, List, Optional, Union, cast
 
-from .providers import runpod, primeintellect, lambdalabs
+from .providers import runpod, primeintellect, lambdalabs, vast
 from .query import QueryType
 from .types import GPUInstance, GPUOffer, ProvisionRequest, ProvisionResult, ProvisionAttempt, ProviderModule
 
@@ -17,6 +17,7 @@ PROVIDER_MODULES: dict[str, ProviderModule] = {
     "runpod": cast(ProviderModule, runpod),
     "primeintellect": cast(ProviderModule, primeintellect),
     "lambdalabs": cast(ProviderModule, lambdalabs),
+    "vast": cast(ProviderModule, vast),
 }
 
 
@@ -85,7 +86,15 @@ def search(
                                                          memory_gb=memory_gb, container_disk_gb=container_disk_gb,
                                                          gpu_count=gpu_count, api_key=api_key)
             offers.extend(lambda_offers)
-    
+
+    if provider is None or provider == "vast":
+        api_key = credentials.get("vast") if credentials else None
+        if api_key:  # Only search if we have credentials
+            vast_offers = vast.search_gpu_offers(cuda_version=cuda_version, manufacturer=manufacturer,
+                                                 memory_gb=memory_gb, container_disk_gb=container_disk_gb,
+                                                 gpu_count=gpu_count, api_key=api_key)
+            offers.extend(vast_offers)
+
     # Apply pandas-style query if provided
     if query is not None:
         offers = [offer for offer in offers if query.evaluate(offer)]
@@ -235,13 +244,17 @@ def _try_provision_with_fallback(
 
         # Check if successful
         if attempt.error is None:
-            # Success! Get the instance from the provider
-            api_key = credentials.get(offer.provider)
-            provider_module = PROVIDER_MODULES[offer.provider]
-            instance = provider_module.provision_instance(request, request.ssh_startup_script, api_key=api_key)
+            # Tiger Style: Assert postcondition - successful attempt must have instance
+            # This enforces the invariant that error=None implies instance is set
+            assert attempt.instance is not None, \
+                f"Successful attempt (error=None) but instance not stored in ProvisionAttempt"
 
-            # Tiger Style: Assert postcondition
-            assert instance is not None, "Successful attempt but no instance returned"
+            instance = attempt.instance
+
+            # Tiger Style: Additional validation of the retrieved instance
+            assert instance.id, f"Instance in ProvisionAttempt missing ID: {instance}"
+            assert instance.provider == offer.provider, \
+                f"Instance provider mismatch: expected {offer.provider}, got {instance.provider}"
 
             logger.info(f"✅ Successfully provisioned GPU instance: {instance.id}")
             logger.info(f"   GPU: {instance.gpu_type} x{instance.gpu_count}")
@@ -367,23 +380,28 @@ def _try_provision_from_offer(
             assert instance.provider == offer.provider, \
                 f"Instance provider mismatch: expected {offer.provider}, got {instance.provider}"
 
+            # Tiger Style: Store instance in ProvisionAttempt to avoid double provisioning
+            # This fixes the bug where _try_provision_with_fallback would provision again
             return ProvisionAttempt(
                 offer_id=offer.id,
                 gpu_type=offer.gpu_type,
                 provider=offer.provider,
                 price_per_hour=offer.price_per_hour,
                 error=None,
-                error_category=None
+                error_category=None,
+                instance=instance  # Store the provisioned instance
             )
         else:
             # Provider returned None - offer unavailable (expected operating error)
+            # Tiger Style: Assert the negative space - failed attempts must not have instance
             return ProvisionAttempt(
                 offer_id=offer.id,
                 gpu_type=offer.gpu_type,
                 provider=offer.provider,
                 price_per_hour=offer.price_per_hour,
                 error="Offer unavailable",
-                error_category="unavailable"
+                error_category="unavailable",
+                instance=None  # Explicit None for failed attempts
             )
 
     except ValueError as e:
@@ -395,7 +413,8 @@ def _try_provision_from_offer(
             provider=offer.provider,
             price_per_hour=offer.price_per_hour,
             error=str(e),
-            error_category="credentials"
+            error_category="credentials",
+            instance=None  # Explicit None for failed attempts
         )
 
     except Exception as e:
@@ -411,7 +430,8 @@ def _try_provision_from_offer(
                 provider=offer.provider,
                 price_per_hour=offer.price_per_hour,
                 error=str(e),
-                error_category="network"
+                error_category="network",
+                instance=None  # Explicit None for failed attempts
             )
         else:
             # Unknown error - log with full context
@@ -422,7 +442,8 @@ def _try_provision_from_offer(
                 provider=offer.provider,
                 price_per_hour=offer.price_per_hour,
                 error=str(e),
-                error_category="unknown"
+                error_category="unknown",
+                instance=None  # Explicit None for failed attempts
             )
 
 def create(
