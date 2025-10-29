@@ -14,7 +14,8 @@ import importlib.util
 import torch
 from pathlib import Path
 from datetime import datetime
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from typing import Any, cast
+from transformers import AutoTokenizer, AutoModelForCausalLM, PreTrainedTokenizerBase
 from tqdm import tqdm
 
 # Import shared logging setup
@@ -54,7 +55,7 @@ def load_config_from_file(config_path: str) -> Config:
 
 
 @retry(max_attempts=3, delay=30, backoff=2, exceptions=(OSError,))
-def load_tokenizer_with_retry(model_name: str) -> AutoTokenizer:
+def load_tokenizer_with_retry(model_name: str) -> PreTrainedTokenizerBase:
     """Load tokenizer with retry on HuggingFace rate limits.
 
     External boundary: Network I/O to HuggingFace API.
@@ -72,7 +73,7 @@ def load_tokenizer_with_retry(model_name: str) -> AutoTokenizer:
     """
     assert model_name, "model_name must not be empty"
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = cast(PreTrainedTokenizerBase, AutoTokenizer.from_pretrained(model_name))
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -109,25 +110,26 @@ def load_model_with_retry(
     assert torch_dtype is not None, "torch_dtype must not be None"
 
     if max_memory is None:
-        model = AutoModelForCausalLM.from_pretrained(
+        model = cast(AutoModelForCausalLM, AutoModelForCausalLM.from_pretrained(
             model_name,
             device_map=device_map,
             torch_dtype=torch_dtype
-        )
+        ))
     else:
-        model = AutoModelForCausalLM.from_pretrained(
+        model = cast(AutoModelForCausalLM, AutoModelForCausalLM.from_pretrained(
             model_name,
             device_map=device_map,
             torch_dtype=torch_dtype,
             max_memory=max_memory
-        )
+        ))
 
     assert model is not None, "Model loading returned None"
-    model.eval()
+    # Cast to Any to call .eval() (exists at runtime)
+    cast(Any, model).eval()
     return model
 
 
-def load_model_and_tokenizer(config: Config) -> tuple[AutoModelForCausalLM, AutoTokenizer]:
+def load_model_and_tokenizer(config: Config) -> tuple[AutoModelForCausalLM, PreTrainedTokenizerBase]:
     """Load model and tokenizer without nnsight wrapper.
 
     Args:
@@ -184,7 +186,7 @@ def load_model_and_tokenizer(config: Config) -> tuple[AutoModelForCausalLM, Auto
 
 def compute_perplexity_single_text(
     model: AutoModelForCausalLM,
-    tokenizer: AutoTokenizer,
+    tokenizer: PreTrainedTokenizerBase,
     text: str,
     sequence_length: int
 ) -> tuple[float, int]:
@@ -205,7 +207,9 @@ def compute_perplexity_single_text(
     assert sequence_length > 0, f"sequence_length must be positive, got {sequence_length}"
 
     # Tokenize
-    inputs = tokenizer(
+    # Cast tokenizer to Any to call it (tokenizers are callable at runtime)
+    tokenizer_any = cast(Any, tokenizer)
+    inputs = tokenizer_any(
         text,
         return_tensors="pt",
         truncation=True,
@@ -214,7 +218,9 @@ def compute_perplexity_single_text(
     )
 
     # Move to same device as model
-    input_ids = inputs.input_ids.to(model.device)
+    # Cast model to Any to access .device attribute (exists at runtime)
+    model_any = cast(Any, model)
+    input_ids = inputs.input_ids.to(model_any.device)
     num_tokens = input_ids.shape[1]
 
     # Skip if sequence is too short
@@ -222,7 +228,8 @@ def compute_perplexity_single_text(
         return 0.0, 0
 
     # Compute loss (standard causal LM: predict next token)
-    outputs = model(input_ids, labels=input_ids)
+    # Cast model to Any to call it (models are callable at runtime)
+    outputs = model_any(input_ids, labels=input_ids)
     loss = outputs.loss
     assert loss is not None, "Model did not return loss"
 
@@ -231,7 +238,7 @@ def compute_perplexity_single_text(
 
 def compute_perplexity_on_batch(
     model: AutoModelForCausalLM,
-    tokenizer: AutoTokenizer,
+    tokenizer: PreTrainedTokenizerBase,
     texts: list[str],
     sequence_length: int
 ) -> dict:
@@ -279,7 +286,7 @@ def compute_perplexity_on_batch(
 
 def process_batches(
     model: AutoModelForCausalLM,
-    tokenizer: AutoTokenizer,
+    tokenizer: PreTrainedTokenizerBase,
     text_sequences: list[str],
     config: Config
 ) -> list[dict]:

@@ -4,7 +4,7 @@ Vast.ai provider implementation
 
 import logging
 import time
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional
 
 import requests
 
@@ -264,7 +264,7 @@ def provision_instance(request: ProvisionRequest, ssh_startup_script: Optional[s
 
     # Get price from raw_data (stored in GPUOffer during search, passed through ProvisionRequest)
     # The raw_data contains the original Vast.ai API response with pricing info
-    raw_data = cast(Optional[Dict[str, Any]], request.raw_data)
+    raw_data = request.raw_data
 
     # Extract price from raw_data (required for Vast.ai provisioning)
     price: float = 1.0  # Default fallback price
