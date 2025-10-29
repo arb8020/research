@@ -81,7 +81,7 @@ def get_model_number(config_path: str) -> str:
     return Path(config_path).stem[:2]
 
 
-def launch_deployment(config_path: Path, model_names: dict, sweep_log_dir: Path, dry_run: bool = False) -> subprocess.Popen | None:
+def launch_deployment(config_path: Path, model_names: dict, sweep_log_dir: Path, dry_run: bool = False, mode: str = "outliers") -> subprocess.Popen | None:
     """Launch a single deployment in background."""
     model_num = get_model_number(str(config_path))
     model_name = model_names.get(model_num, "Unknown")
@@ -89,7 +89,7 @@ def launch_deployment(config_path: Path, model_names: dict, sweep_log_dir: Path,
     # Extract clean model name from config path for log filename
     model_slug = Path(config_path).stem  # e.g., "01_qwen3_0.6b"
 
-    cmd = ["python", "deploy.py", str(config_path)]
+    cmd = ["python", "deploy.py", str(config_path), "--mode", mode]
     log_file = sweep_log_dir / f"{model_slug}.log"
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -215,6 +215,13 @@ def main():
         action="store_true",
         help="Skip confirmation prompt"
     )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default="outliers",
+        choices=["outliers", "perplexity"],
+        help="Analysis mode: 'outliers' (default) or 'perplexity'"
+    )
 
     args = parser.parse_args()
 
@@ -245,6 +252,7 @@ def main():
     print("OUTLIER FEATURES SWEEP - DEPLOYMENT PLAN")
     print("=" * 80)
     print(f"Config directory: {args.config_dir}")
+    print(f"Analysis mode: {args.mode}")
     print(f"Mode: {'DRY RUN' if args.dry_run else 'LIVE DEPLOYMENT'}")
     print(f"Models to deploy: {len(configs_to_deploy)}")
     print()
@@ -283,7 +291,7 @@ def main():
     # Launch all deployments
     processes = []
     for i, config_path in enumerate(configs_to_deploy):
-        proc = launch_deployment(Path(config_path), model_names, sweep_log_dir, dry_run=args.dry_run)
+        proc = launch_deployment(Path(config_path), model_names, sweep_log_dir, dry_run=args.dry_run, mode=args.mode)
 
         if proc:
             processes.append((get_model_number(config_path), proc))
