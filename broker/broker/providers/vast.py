@@ -107,13 +107,14 @@ def search_gpu_offers(cuda_version: Optional[str] = None, manufacturer: Optional
         logger.warning(f"Low reliability threshold {min_reliability} may result in unreliable hosts")
 
     # Build base query with sensible defaults (explicit, not implicit)
+    # Note: Not filtering by "type" to return both on-demand (SECURE) and bid (COMMUNITY)
+    # This allows the caller to filter by cloud_type if needed
     query = {
         "verified": {"eq": True},      # Only verified hosts
         "external": {"eq": False},     # Exclude external hosts
         "rentable": {"eq": True},      # Only rentable machines
         "rented": {"eq": False},       # Only available machines
         "order": [["dph_total", "asc"]],  # Sort by price ascending
-        "type": "on-demand",           # Default to on-demand (not spot)
         "allocated_storage": 10,       # Minimum storage allocation
     }
 
@@ -185,8 +186,9 @@ def search_gpu_offers(cuda_version: Optional[str] = None, manufacturer: Optional
         # Calculate per-GPU price (Vast.ai returns total price for all GPUs)
         price_per_gpu = dph_total / num_gpus
 
-        # Determine cloud type based on offer type
-        offer_type = query.get("type", "on-demand")
+        # Determine cloud type based on offer type from API response
+        # Vast.ai API returns "on-demand" for SECURE and "bid" for COMMUNITY
+        offer_type = offer_data.get("type", "on-demand")
         cloud_type = CloudType.SECURE if offer_type == "on-demand" else CloudType.COMMUNITY
 
         # Determine manufacturer from GPU name
