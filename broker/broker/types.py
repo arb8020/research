@@ -326,6 +326,9 @@ class ProvisionAttempt:
 
     Tracks what was tried and why it failed (if it did).
     Allows users to understand provisioning decisions.
+
+    Tiger Style: When error is None (success), instance must be set.
+    This postcondition is enforced by assertions in _try_provision_from_offer.
     """
     offer_id: str
     gpu_type: str
@@ -333,6 +336,7 @@ class ProvisionAttempt:
     price_per_hour: float
     error: Optional[str] = None  # None if successful
     error_category: Optional[str] = None  # "credentials", "unavailable", "network", "unknown"
+    instance: Optional['GPUInstance'] = None  # Set when error is None (successful provisioning)
 
 
 @dataclass
@@ -372,17 +376,18 @@ class ProvisionResult:
 class ProviderCredentials:
     """API credentials for cloud GPU providers.
 
-    Supports multiple providers (RunPod, Prime Intellect, Lambda Labs, etc).
+    Supports multiple providers (RunPod, Prime Intellect, Lambda Labs, Vast.ai, etc).
     Immutable to prevent accidental credential leaks.
     """
     runpod: str = ""
     primeintellect: str = ""
     lambdalabs: str = ""
+    vast: str = ""
     # Add more providers as needed
 
     def __post_init__(self):
         # Tiger Style: assert at least one credential provided
-        assert self.runpod or self.primeintellect or self.lambdalabs, \
+        assert self.runpod or self.primeintellect or self.lambdalabs or self.vast, \
             "At least one provider credential required"
 
         # Validate credential format (basic length check)
@@ -398,8 +403,12 @@ class ProviderCredentials:
             assert len(self.lambdalabs) > 10, \
                 "Lambda Labs API key appears invalid (too short)"
 
+        if self.vast:
+            assert len(self.vast) > 10, \
+                "Vast.ai API key appears invalid (too short)"
+
         # Assert output invariant
-        assert self.runpod or self.primeintellect or self.lambdalabs, "credentials validated"
+        assert self.runpod or self.primeintellect or self.lambdalabs or self.vast, "credentials validated"
 
     def get(self, provider: str) -> Optional[str]:
         """Get credential for specific provider."""
@@ -409,6 +418,8 @@ class ProviderCredentials:
             return self.primeintellect
         elif provider == "lambdalabs":
             return self.lambdalabs
+        elif provider == "vast":
+            return self.vast
         return None
 
     def to_dict(self) -> Dict[str, str]:
@@ -420,6 +431,8 @@ class ProviderCredentials:
             result["primeintellect"] = self.primeintellect
         if self.lambdalabs:
             result["lambdalabs"] = self.lambdalabs
+        if self.vast:
+            result["vast"] = self.vast
         return result
 
     @classmethod
@@ -428,7 +441,8 @@ class ProviderCredentials:
         return cls(
             runpod=credentials.get("runpod", ""),
             primeintellect=credentials.get("primeintellect", ""),
-            lambdalabs=credentials.get("lambdalabs", "")
+            lambdalabs=credentials.get("lambdalabs", ""),
+            vast=credentials.get("vast", "")
         )
 
 
