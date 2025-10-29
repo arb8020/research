@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+.venv
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter
+.ipynb_checkpoints
+
+# Project-specific
+# Results and logs (too large for git)
+remote_results/
+logs/
+sweep_analysis/
+archive/
+output.txt
+
+# Temporary/personal files
+neel.txt
+HANDOFF.md
+blog.md
+blog_new.md
+feedback.txt
+cleanup.md
+
+# Development/test files (keep locally but don't track)
+smoke_test_*.py
+test_architectures_local.py
+test_tilde_bug.py
+docs/HANDOFF_JSON_OPTIMIZATION.md
+
+# Validation sweep (not needed for public repo)
+sweep_validation/
+
+# Data
+data/
+*.log
+
+# Model artifacts
+fetch_model_params.py
+scrape_model_params_from_readme.py
+
+# OS
+.DS_Store
+Thumbs.db
