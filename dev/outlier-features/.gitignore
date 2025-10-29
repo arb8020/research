@@ -36,10 +36,10 @@ blog_new.md
 feedback.txt
 cleanup.md
 
-# Development/test files (keep locally but don't track)
-smoke_test_*.py
-test_architectures_local.py
-test_tilde_bug.py
+# Development/test files (removed)
+# smoke_test_*.py
+# test_architectures_local.py
+# test_tilde_bug.py
 docs/HANDOFF_JSON_OPTIMIZATION.md
 
 # Validation sweep (not needed for public repo)
