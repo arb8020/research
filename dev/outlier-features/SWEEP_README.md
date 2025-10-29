@@ -27,32 +27,17 @@ All models use standardized parameters following reviewer feedback:
 - **batch_size = 1** - memory optimization
 - **Proper chunking** - varies by model size
 
-| ID | Model | Size | Active | Experts | Expected | Runtime | Cost/hr |
-|----|-------|------|--------|---------|----------|---------|---------|
-| 01 | OLMoE-1B-7B | 7B | 1.3B | 64 | Probabilistic | 15-20m | ~$1.50 |
-| 02 | GPT-OSS-20B | 21.5B | ? | ? | **Systematic** | 25-30m | ~$3.00 |
-| 03 | Qwen3-30B | 30.5B | 3.3B | 60 | Probabilistic | 30-35m | ~$3.50 |
-| 04 | Mixtral-8x7B | 46.7B | 12.9B | 8 | Probabilistic | 30-40m | ~$3.50 |
-| 05 | Qwen3-Next-80B | 80B | 3B | 512 | Probabilistic | 40-50m | ~$4.50 |
-| 06 | GLM-4.5-Air | 106B | 12B | 128 | Probabilistic | 45-60m | ~$4.50 |
-| 07 | GPT-OSS-120B | 117B | ? | ? | **Systematic** | 50-70m | ~$5.00 |
+| ID | Model | Size | Active | Experts | Runtime |
+|----|-------|------|--------|---------|---------|
+| 01 | OLMoE-1B-7B | 7B | 1.3B | 64 | 15-20m |
+| 02 | GPT-OSS-20B | 21.5B | ? | ? | 25-30m |
+| 03 | Qwen3-30B | 30.5B | 3.3B | 60 | 30-35m |
+| 04 | Mixtral-8x7B | 46.7B | 12.9B | 8 | 30-40m |
+| 05 | Qwen3-Next-80B | 80B | 3B | 512 | 40-50m |
+| 06 | GLM-4.5-Air | 106B | 12B | 128 | 45-60m |
+| 07 | GPT-OSS-120B | 117B | ? | ? | 50-70m |
 
-**Total sweep**: ~4-6 hours wall time (parallel), ~$20-25 total cost
-
-## Key Changes from Original Runs
-
-### 1. Increased Sample Size
-- **Old**: 4 sequences
-- **New**: 16 sequences
-- **Why**: Bootstrap CIs (Task 7), cross-batch validation (Task 3), addresses GLM data quality issue
-
-### 2. GLM Re-run
-- **Issue**: Original had only 2/12 valid batches due to file truncation
-- **Fix**: 16 sequences with no volume disk to avoid mount issues
-
-### 3. New Models
-- **Added**: Mixtral-8x7B (fills 30B-106B gap, canonical MoE)
-- **Added**: Qwen3-Next-80B (tests Qwen arch at scale, 512 experts!)
+**Total sweep**: ~4-6 hours wall time (parallel)
 
 ## Directory Structure
 
@@ -108,34 +93,10 @@ ls -lt logs/
 ls -R results/
 ```
 
-### Dry Run (Testing)
+### Dry Run
 ```bash
-# See what would be deployed without actually launching
 python deploy_sweep.py --dry-run
-python deploy_sweep.py --models 01 03 --dry-run
 ```
-
-## Troubleshooting
-
-### No GPUs Available
-- **Symptom**: "No GPUs found matching criteria"
-- **Fix**: Increase `max_price` in config or wait and retry
-- **Alternative**: Remove `gpu_filter` to allow any GPU type
-
-### Out of Memory
-- **Symptom**: CUDA OOM errors
-- **Fix**: Decrease `chunk_layers` (e.g., 8 → 6 → 4)
-- **Alternative**: Increase `gpu_count` in config
-
-### File Truncation (GLM Issue)
-- **Symptom**: Invalid JSON in batch results
-- **Fix**: Config already sets `volume_disk = 0` to avoid mount issues
-- **Alternative**: Increase `container_disk` if needed
-
-### Deployment Hangs
-- **Symptom**: SSH connection timeout
-- **Fix**: Wait up to 15 minutes for SSH (normal for RunPod)
-- **Check**: Instance may still be starting, check `broker list`
 
 ## Post-Sweep Analysis
 
@@ -143,56 +104,25 @@ After all deployments complete:
 
 1. **Run comparison analysis**:
 ```bash
-python compare_sweep_results.py  # Generate plots and summary table
+python generate_comparison_plots.py  # Generate plots and summary table
 ```
 
 2. **View results in different formats**:
 ```bash
 # Display plots in terminal
-python compare_sweep_results.py --terminal
+python generate_comparison_plots.py --terminal
 
 # Export as CSV
-python compare_sweep_results.py --terminal --format csv > results.csv
+python generate_comparison_plots.py --terminal --format csv > results.csv
 
 # Export as JSON
-python compare_sweep_results.py --terminal --format json > results.json
-```
-
-## Expected Results
-
-### Systematic Models (GPT-OSS)
-- **Layer agreement**: ~100% on key dimensions (773, 2559, 883, 1359)
-- **Magnitude**: 170-200
-- **Systematic dimensions**: 4-7
-
-### Probabilistic Models (All others)
-- **Layer agreement**: 30-50%
-- **Magnitude**: 15-150
-- **Systematic dimensions**: 0
-
-### Key Finding
-**Architecture matters more than size**: Only GPT-OSS shows systematic outliers, regardless of parameter count.
-
-## Cost Management
-
-### Estimated Costs
-- **Single model**: $1.50 - $5.00 (15-70 minutes)
-- **Full sweep**: ~$20-25 (parallel execution)
-- **With reruns**: ~$30-35
-
-### Cost Reduction
-```bash
-# Deploy smaller models first (cheaper)
-python deploy_sweep.py --models 01 03
-
-# Reduce sequences if budget-constrained (not recommended)
-# Edit configs: num_sequences = 8  # Instead of 16
+python generate_comparison_plots.py --terminal --format json > results.json
 ```
 
 ## Analysis Workflow
 
 After sweep completes:
-1. Run `compare_sweep_results.py` for comparative analysis
+1. Run `generate_comparison_plots.py` for comparative analysis
 2. Review plots in `sweep_analysis/` directory
 3. Compare MoE results with dense baselines (see `sweep_dense/README.md`)
 4. Validate methodology with replication sweep (see `sweep_validation/README.md`)

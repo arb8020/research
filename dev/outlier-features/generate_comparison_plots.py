@@ -7,11 +7,11 @@ Generates 8 plots comparing models by parameter count vs outlier metrics:
 - Aggregation: Mean or Median
 
 Usage:
-    python compare_sweep_results.py                        # Save PNG plots
-    python compare_sweep_results.py --terminal              # Display plots in terminal
-    python compare_sweep_results.py --terminal --format csv    # Output as CSV
-    python compare_sweep_results.py --terminal --format json   # Output as JSON
-    python compare_sweep_results.py --terminal --format table  # Output as table only
+    python generate_comparison_plots.py                        # Save PNG plots
+    python generate_comparison_plots.py --terminal              # Display plots in terminal
+    python generate_comparison_plots.py --terminal --format csv    # Output as CSV
+    python generate_comparison_plots.py --terminal --format json   # Output as JSON
+    python generate_comparison_plots.py --terminal --format table  # Output as table only
 """
 
 import json
