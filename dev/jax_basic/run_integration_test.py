@@ -43,8 +43,8 @@ def get_credentials(provider_filter=None):
 
 
 def search_cheapest_gpus(gpu_client, max_offers=5, provider=None):
-    # Lambda Labs only supports SECURE cloud type, others support COMMUNITY
-    if provider == "lambdalabs":
+    # Lambda Labs and Vast.ai only support SECURE cloud type, others support COMMUNITY
+    if provider in ["lambdalabs", "vast"]:
         cloud_filter = gpu_client.cloud_type == CloudType.SECURE
     else:
         cloud_filter = gpu_client.cloud_type == CloudType.COMMUNITY
