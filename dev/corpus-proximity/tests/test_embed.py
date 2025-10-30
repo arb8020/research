@@ -32,7 +32,7 @@ def main():
 
         import subprocess
         cmd = [
-            "uv", "run", "python", "examples/corpus-proximity/embed_chunks.py",
+            "uv", "run", "python", "dev/corpus-proximity/embed_chunks.py",
             "--input", str(input_file),
             "--output-dir", str(output_dir),
             "--model", "all-MiniLM-L6-v2",

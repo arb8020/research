@@ -41,14 +41,14 @@ def main():
         bf = BifrostClient(target.ssh_connection_string(), os.getenv('SSH_KEY_PATH', '~/.ssh/id_ed25519'))
 
         # Check for completion markers
-        result = bf.exec('cd ~/.bifrost/workspace/examples/corpus-proximity && ls -la .clustering_* 2>/dev/null')
+        result = bf.exec('cd ~/.bifrost/workspace/dev/corpus-proximity && ls -la .clustering_* 2>/dev/null')
         if result.stdout.strip():
             print("Completion markers:")
             print(result.stdout)
             print()
 
         # Get recent log lines
-        result = bf.exec('cd ~/.bifrost/workspace/examples/corpus-proximity && tail -50 pipeline.log 2>/dev/null || echo "No pipeline.log"')
+        result = bf.exec('cd ~/.bifrost/workspace/dev/corpus-proximity && tail -50 pipeline.log 2>/dev/null || echo "No pipeline.log"')
         print("Recent pipeline log:")
         print("=" * 80)
         print(result.stdout)

@@ -219,7 +219,7 @@ Add to `deploy.py`:
 ```python
 # After embed_chunks.py completes
 logger.info("Running gsm8k_corpus_similarity.py...")
-cmd = f"cd ~/.bifrost/workspace && uv run python examples/corpus-proximity/gsm8k_corpus_similarity.py examples/corpus-proximity/{args.config}"
+cmd = f"cd ~/.bifrost/workspace && uv run python dev/corpus-proximity/gsm8k_corpus_similarity.py dev/corpus-proximity/{args.config}"
 result = bifrost_client.exec(cmd)
 ```
 
