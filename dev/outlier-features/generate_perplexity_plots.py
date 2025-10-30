@@ -22,6 +22,28 @@ from typing import Dict, List, Optional
 import numpy as np
 
 
+# Dense (non-MoE) models
+DENSE_MODELS = {
+    "Qwen/Qwen3-0.6B",
+    "Qwen/Qwen3-1.7B",
+    "Qwen/Qwen3-4B",
+    "Qwen/Qwen3-8B",
+    "Qwen/Qwen3-14B",
+}
+
+
+def is_dense_model(model_name: str) -> bool:
+    """Check if a model is a dense (non-MoE) model.
+
+    Args:
+        model_name: Full model name
+
+    Returns:
+        True if model is dense, False if MoE
+    """
+    return model_name in DENSE_MODELS
+
+
 # Model metadata with total and active parameter counts
 MODEL_METADATA = {
     "allenai/OLMoE-1B-7B-0125": {
@@ -677,6 +699,16 @@ def run_analysis(args) -> int:
 
     print(f"\n✅ Matched {len(results)} models with both perplexity and outlier data")
 
+    # Filter for dense models if requested
+    if args.dense_only:
+        original_count = len(results)
+        results = [r for r in results if is_dense_model(r['full_model_name'])]
+        print(f"🔍 Filtered to {len(results)} dense models (excluded {original_count - len(results)} MoE models)")
+
+    if not results:
+        print("❌ No results after filtering!")
+        return 1
+
     # Handle different output formats
     output_dir = Path("perplexity_analysis")
 
@@ -727,6 +759,11 @@ def main():
             choices=["plot", "table", "csv", "json"],
             default="plot",
             help="Output format for terminal mode: plot (default), table, csv, or json"
+        )
+        parser.add_argument(
+            "--dense-only",
+            action="store_true",
+            help="Only include dense (non-MoE) models in the analysis"
         )
         args = parser.parse_args()
 
