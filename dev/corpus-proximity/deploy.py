@@ -25,7 +25,7 @@ from shared.logging_config import setup_logging
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-REMOTE_WORKSPACE_PATH = "~/.bifrost/workspace/examples/corpus-proximity"
+REMOTE_WORKSPACE_PATH = "~/.bifrost/workspace/dev/corpus-proximity"
 TMUX_SESSION = "corpus_proximity_pipeline"
 
 ProvisionError: TypeAlias = Literal["create_failed", "ready_timeout", "ssh_timeout"]

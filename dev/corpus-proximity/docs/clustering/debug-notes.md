@@ -78,7 +78,7 @@ instances = [i for i in client.list_instances() if 'corpus' in i.name.lower()]
 
 if instances:
     bf = BifrostClient(instances[0].ssh_connection_string(), os.getenv('SSH_KEY_PATH', '~/.ssh/id_ed25519'))
-    result = bf.exec('''cd ~/.bifrost/workspace/examples/corpus-proximity && python3 -c \"
+    result = bf.exec('''cd ~/.bifrost/workspace/dev/corpus-proximity && python3 -c \"
 import json
 with open('data/processed_tiny/chunks_tiny.jsonl') as f:
     chunks = [json.loads(line) for line in f]
@@ -279,7 +279,7 @@ if corpus_inst:
     bf = BifrostClient(corpus_inst.ssh_connection_string(), os.getenv('SSH_KEY_PATH', '~/.ssh/id_ed25519'))
 
     # Run commands
-    result = bf.exec("cd ~/.bifrost/workspace/examples/corpus-proximity && ls -lh data/")
+    result = bf.exec("cd ~/.bifrost/workspace/dev/corpus-proximity && ls -lh data/")
     print(result.stdout)
 ```
 
@@ -288,7 +288,7 @@ if corpus_inst:
 ```python
 # Using the BifrostClient
 result = bf.download_files(
-    remote_path="~/.bifrost/workspace/examples/corpus-proximity/data/clusters_tiny/<cache_key>/tree.json",
+    remote_path="~/.bifrost/workspace/dev/corpus-proximity/data/clusters_tiny/<cache_key>/tree.json",
     local_path="./tree.json"
 )
 ```
@@ -346,6 +346,6 @@ To force re-clustering, change any of these parameters or delete the cache direc
 - Results: `remote_results/*/`
 
 ### Remote (on GPU instance):
-- Workspace: `~/.bifrost/workspace/examples/corpus-proximity/`
+- Workspace: `~/.bifrost/workspace/dev/corpus-proximity/`
 - Same structure as local under workspace
-- Pipeline log: `~/.bifrost/workspace/examples/corpus-proximity/pipeline.log`
+- Pipeline log: `~/.bifrost/workspace/dev/corpus-proximity/pipeline.log`

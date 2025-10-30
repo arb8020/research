@@ -642,7 +642,7 @@ from pathlib import Path, PurePosixPath
 import time
 import hashlib
 
-REMOTE_WORKSPACE_PATH = "~/.bifrost/workspace/examples/corpus-proximity"
+REMOTE_WORKSPACE_PATH = "~/.bifrost/workspace/dev/corpus-proximity"
 
 
 def normalize_save_dir(save_dir: Path | str) -> str:
@@ -853,8 +853,8 @@ def run_step(script: str, config_path: str) -> bool:
 
     cmd = [
         sys.executable,
-        f"examples/corpus-proximity/{script}",
-        f"examples/corpus-proximity/{config_path}"
+        f"dev/corpus-proximity/{script}",
+        f"dev/corpus-proximity/{config_path}"
     ]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -947,7 +947,7 @@ def main():
     # Start pipeline in tmux (non-blocking)
     logger.info("🔬 Starting pipeline in background...")
 
-    remote_config_path = f"~/.bifrost/workspace/examples/corpus-proximity/{args.config}"
+    remote_config_path = f"~/.bifrost/workspace/dev/corpus-proximity/{args.config}"
 
     tmux_cmd = f"""
 cd {REMOTE_WORKSPACE_PATH} && \\
@@ -957,7 +957,7 @@ tmux new-session -d -s corpus-pipeline \\
     bifrost_client.exec(tmux_cmd)
 
     logger.info("✅ Pipeline started in tmux session 'corpus-pipeline'")
-    logger.info(f"   Monitor: ssh {bifrost_client.ssh} 'tail -f ~/.bifrost/workspace/examples/corpus-proximity/pipeline.log'")
+    logger.info(f"   Monitor: ssh {bifrost_client.ssh} 'tail -f ~/.bifrost/workspace/dev/corpus-proximity/pipeline.log'")
 
     # Wait for completion (polling)
     success = wait_for_pipeline_completion(bifrost_client, timeout=3600)

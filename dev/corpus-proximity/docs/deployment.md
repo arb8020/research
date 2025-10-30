@@ -112,20 +112,20 @@ ssh root@<instance-ip>
 cd ~/.bifrost/workspace
 
 # Run clustering only
-uv run python examples/corpus-proximity/cluster_corpus.py \
-    examples/corpus-proximity/configs/clustering_02_full.py
+uv run python dev/corpus-proximity/cluster_corpus.py \
+    dev/corpus-proximity/configs/clustering_02_full.py
 
 # Inspect clusters (no API calls)
-uv run python examples/corpus-proximity/name_clusters.py \
-    examples/corpus-proximity/configs/clustering_02_full.py --tree
+uv run python dev/corpus-proximity/name_clusters.py \
+    dev/corpus-proximity/configs/clustering_02_full.py --tree
 
 # Generate LLM names
-uv run python examples/corpus-proximity/name_clusters.py \
-    examples/corpus-proximity/configs/clustering_02_full.py --name
+uv run python dev/corpus-proximity/name_clusters.py \
+    dev/corpus-proximity/configs/clustering_02_full.py --name
 
 # Inspect specific cluster
-uv run python examples/corpus-proximity/name_clusters.py \
-    examples/corpus-proximity/configs/clustering_02_full.py \
+uv run python dev/corpus-proximity/name_clusters.py \
+    dev/corpus-proximity/configs/clustering_02_full.py \
     --inspect 0 --samples 10 --show-noise
 ```
 
