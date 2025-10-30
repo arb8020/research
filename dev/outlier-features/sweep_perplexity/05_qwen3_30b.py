@@ -12,8 +12,8 @@ from config import Config
 
 config = Config()
 
-# Model: Qwen3-30B (MoE)
-config.model.name = "Qwen/Qwen3-30B"
+# Model: Qwen3-30B-A3B (30.5B total, 3.3B active, 60 experts)
+config.model.name = "Qwen/Qwen3-30B-A3B"
 config.model.device_map = "balanced"
 
 # Dataset: Standard 16 sequences for bootstrap CIs
