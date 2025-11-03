@@ -1,0 +1,160 @@
+Large language models have been widely adopted but require significant GPU
+memory for inference. We develop a procedure for Int8 matrix multiplication for
+feed-forward and attention projection layers in transformers, which cut the memory
+needed for inference by half while retaining full precision performance. With our
+method, a 175B parameter 16/32-bit checkpoint can be loaded, converted to Int8,
+and used immediately without performance degradation. This is made possible
+by understanding and working around properties of highly systematic emergent
+features in transformer language models that dominate attention and transformer
+predictive performance. To cope with these features, we develop a two-part quantization procedure, LLM.int8(). We first use vector-wise quantization with separate
+normalization constants for each inner product in the matrix multiplication, to
+quantize most of the features. However, for the emergent outliers, we also include
+a new mixed-precision decomposition scheme, which isolates the outlier feature
+dimensions into a 16-bit matrix multiplication while still more than 99.9% of values
+are multiplied in 8-bit. Using LLM.int8(), we show empirically it is possible to
+perform inference in LLMs with up to 175B parameters without any performance
+degradation. This result makes such models much more accessible, for example
+making it possible to use OPT-175B/BLOOM on a single server with consumer
+GPUs. We open source our software
+
+As we scale transformers, outlier features with large magnitudes emerge and strongly affect all layers
+and their quantization. Given a hidden state X ∈ R
+s×h where s is the sequence/token dimension and
+h the hidden/feature dimension, we define a feature to be a particular dimension hi
+. Our analysis
+looks at a particular feature dimension hi across all layers of a given transformer.
+We find that outlier features strongly affect attention and the overall predictive performance of
+transformers. While up to 150k outliers exist per 2048 token sequence for a 13B model, these outlier
+features are highly systematic and only representing at most 7 unique feature dimensions hi
+. Insights
+from this analysis were critical to developing mixed-precision decomposition. Our analysis explains
+the advantages of zeropoint quantization and why they disappear with the use of mixed-precision
+decomposition and the quantization performance of small vs. large models.
+
+The difficulty with the quantitative analysis of emergent phenomena is two-fold. We aim to select a
+small subset of features for analysis such that the results are intelligible and not to complex while
+also capturing important probabilistic and structured patterns. We use an empirical approach to find
+these constraints. We define outliers according to the following criteria: the magnitude of the feature
+is at least 6.0, affects at least 25% of layers, and affects at least 6% of the sequence dimensions.
+More formally, given a transformer with L layers and hidden state Xl ∈ R
+s×h
+, l = 0...L where s is
+the sequence dimension and h the feature dimension, we define a feature to be a particular dimension
+hi
+in any of the hidden states Xli
+. We track dimensions hi
+, 0 ≤ i ≤ h, which have at least one value
+with a magnitude of α ≥ 6 and we only collect statistics if these outliers occur in the same feature
+dimension hi
+in at least 25% of transformer layers 0...L and appear in at least 6% of all sequence
+dimensions s across all hidden states Xl
+. Since feature outliers only occur in attention projection
+(key/query/value/output) and the feedforward network expansion layer (first sub-layer), we ignore the
+attention function and the FFN contraction layer (second sub-layer) for this analysis.
+Our reasoning for these thresholds is as follows. We find that using mixed-precision decomposition,
+perplexity degradation stops if we treat any feature with a magnitude 6 or larger as an outlier feature.
+For the number of layers affected by outliers, we find that outlier features are systematic in large
+models: they either occur in most layers or not at all. On the other hand, they are probabilistic in
+small models: they occur sometimes in some layers for each sequence. As such, we set our threshold
+for how many layers need to be affected to detect an outlier feature in such a way as to limit detection
+to a single outlier in our smallest model with 125M parameters. This threshold corresponds to that at
+least 25% of transformer layers are affected by an outlier in the same feature dimension. The second
+most common outlier occurs in only a single layer ( 2% of layers), indicating that this is a reasonable
+threshold. We use the same procedure to find the threshold for how many sequence dimensions are
+affected by outlier features in our 125M model: outliers occur in at least 6% of sequence dimensions.
+We test models up to a scale of 13B parameters. To make sure that the observed phenomena are
+not due to bugs in software, we evaluate transformers that were trained in three different software
+frameworks. We evaluate four GPT-2 models which use OpenAI software, five Meta AI models that
+use Fairseq (Ott et al., 2019), and one EleutherAI model GPT-J that uses Tensorflow-Mesh (Shazeer
+et al., 2018). More details can be found in Appendix C. We also perform our analysis in two different
+inference software frameworks: Fairseq and Hugging Face Transformers (Wolf et al., 2019).
+
+Figure 3: Percentage of layers and all sequence dimensions affected by large magnitude outlier
+features across the transformer by (a) model size or (b) C4 perplexity. Lines are B-spline interpolations
+of 4 and 9 linear segments for (a) and (b). Once the phase shift occurs, outliers are present in all layers
+and in about 75% of all sequence dimensions. While (a) suggest a sudden phase shift in parameter
+size, (b) suggests a gradual exponential phase shift as perplexity decreases. The stark shift in (a)
+co-occurs with the sudden degradation of performance in quantization methods.
+
+To demonstrate that the outlier features are essential for attention and predictive performance, we set
+the outlier features to zero before feeding the hidden states Xl
+into the attention projection layers and
+then compare the top-1 softmax probability with the regular softmax probability with outliers. We
+do this for all layers independently, meaning we forward the regular softmax probabilities values to
+avoid cascading errors and isolate the effects due to the outlier features. We also report the perplexity
+degradation if we remove the outlier feature dimension (setting them to zero) and propagate these
+altered, hidden states through the transformer. As a control, we apply the same procedure for random
+non-outlier feature dimensions and note attention and perplexity degradation.
+Our main quantitative results can be summarized as four main points.
+
+(1) When measured by the number of parameters, the emergence of large magnitude features across
+all layers of a transformer occurs suddenly between 6B and 6.7B parameters as shown in Figure 3a as
+the percentage of layers affected increases from 65% to 100%. The number of sequence dimensions
+affected increases rapidly from 35% to 75%. This sudden shift co-occurs with the point where
+quantization begins to fail.
+(2) Alternatively, when measured by perplexity, the emergence of large magnitude features across
+all layers of the transformer can be seen as emerging smoothly according to an exponential function
+of decreasing perplexity, as seen in Figure 3b. This indicates that there is nothing sudden about
+emergence and that we might be able to detect emergent features before a phase shift occurs by
+studying exponential trends in smaller models. This also suggests that emergence is not only about
+model size but about perplexity, which is related to multiple additional factors such as the amount of
+training data used, and data quality (Hoffmann et al., 2022; Henighan et al., 2020).
+(3) Median outlier feature magnitude rapidly increases once outlier features occur in all layers
+of the transformer, as shown in Figure 4a. The large magnitude of outliers features and their
+asymmetric distribution disrupts Int8 quantization precision. This is the core reason why quantization
+methods fail starting at the 6.7B scale – the range of the quantization distribution is too large so that
+most quantization bins are empty and small quantization values are quantized to zero, essentially
+extinguishing information. We hypothesize that besides Int8 inference, regular 16-bit floating point
+training becomes unstable due to outliers beyond the 6.7B scale – it is easy to exceed the maximum
+16-bit value 65535 by chance if you multiply by vectors filled with values of magnitude 60.
+(4) The number of outliers features increases strictly monotonically with respect to decreasing
+C4 perplexity as shown in Figure 4b, while a relationship with model size is non-monotonic. This
+indicates that model perplexity rather than mere model size determines the phase shift. We hypothesize
+that model size is only one important covariate among many that are required to reach emergence.
+These outliers features are highly systematic after the phase shift occurred. For example, for a 6.7B
+transformer with a sequence length of 2048, we find about 150k outlier features per sequence for the
+entire transformer, but these features are concentrated in only 6 different hidden dimensions.
+These outliers are critical for transformer performance. If the outliers are removed, the mean top-1
+softmax probability is reduced from about 40% to about 20%, and validation perplexity increases by
+600-1000% even though there are at most 7 outlier feature dimensions. When we remove 7 random
+feature dimensions instead, the top-1 probability decreases only between 0.02-0.3%, and perplexity
+increases by 0.1%. This highlights the critical nature of these feature dimensions. Quantization
+precision for these outlier features is paramount as even tiny errors greatly impact model performance.
+
+Figure 4: The median magnitude of the largest outlier feature in (a) indicates a sudden shift in outlier
+size. This appears to be the prime reason why quantization methods fail after emergence. While the
+number of outlier feature dimensions is only roughly proportional to model size, (b) shows that the
+number of outliers is strictly monotonic with respect to perplexity across all models analyzed. Lines
+are B-spline interpolations of 9 linear segments.
+
+Our analysis shows that outliers in particular feature dimensions are ubiquitous in large transformers,
+and these feature dimensions are critical for transformer performance. Since row-wise and vectorwise quantization scale each hidden state sequence dimension s (rows) and because outliers occur in
+the feature dimension h (columns), both methods cannot deal with these outliers effectively. This is
+why absmax quantization methods fail quickly after emergence.
+However, almost all outliers have a strict asymmetric distribution: they are either solely positive or
+negative (see Appendix C). This makes zeropoint quantization particularly effective for these outliers,
+as zeropoint quantization is an asymmetric quantization method that scales these outliers into the full
+[−127, 127] range. This explains the strong performance in our quantization scaling benchmark in
+Table 1. However, at the 13B scale, even zeropoint quantization fails due to accumulated quantization
+errors and the quick growth of outlier magnitudes, as seen in Figure 4a.
+If we use our full LLM.int8() method with mixed-precision decomposition, the advantage of zeropoint quantization disappears indicating that the remaining decomposed features are symmetric.
+However, vector-wise still has an advantage over row-wise quantization, indicating that the enhanced
+quantization precision of the model weights is needed to retain full precision predictive performance.
+
+Table 4: Summary statistics of outliers with a magnitude of at least 6 that occur in at least 25% of
+all layers and at least 6% of all sequence dimensions. We can see that the lower the C4 validation
+perplexity, the more outliers are present. Outliers are usually one-sided, and their quartiles with
+maximum range show that the outlier magnitude is 3-20x larger than the largest magnitude of other
+feature dimensions, which usually have a range of [-3.5, 3.5]. With increasing scale, outliers become
+more and more common in all layers of the transformer, and they occur in almost all sequence
+dimensions. A phase transition occurs at 6.7B parameters when the same outlier occurs in all layers
+in the same feature dimension for about 75% of all sequence dimensions (SDim). Despite only
+making up about 0.1% of all features, the outliers are essential for large softmax probabilities. The
+mean top-1 softmax probability shrinks by about 20% if outliers are removed. Because the outliers
+have mostly asymmetric distributions across the sequence dimension s, these outlier dimensions
+disrupt symmetric absmax quantization and favor asymmetric zeropoint quantization. This explains
+the results in our validation perplexity analysis. These observations appear to be universal as they
+occur for models trained in different software frameworks (fairseq, OpenAI, Tensorflow-mesh), and
+they occur in different inference frameworks (fairseq, Hugging Face Transformers). These outliers
+also appear robust to slight variations of the transformer architecture (rotary embeddings, embedding
+norm, residual scaling, different initializations).

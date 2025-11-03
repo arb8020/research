@@ -1,63 +1,107 @@
 # Broker
 
-Provision and manage cloud GPU instances across multiple providers.
+Unified GPU provisioning across RunPod, Prime Intellect, and Lambda Labs.
+
+## Installation
+
+```bash
+uv pip install -e .
+```
+
+## Quick Start
+
+```bash
+# Setup credentials
+broker init
+# Edit .env with your API keys
+
+# Search for GPUs
+broker search --gpu-type "H100"
+
+# Provision instance
+broker create --gpu-type "H100" --name my-job
+```
+
+## Python API
+
+```python
+from broker import GPUClient
+
+# Initialize with credentials
+gpu_client = GPUClient(
+    credentials={"runpod": "your-key"},
+    ssh_key_path="~/.ssh/id_ed25519"
+)
+
+# Search using query DSL
+query = (
+    (gpu_client.gpu_type.contains("H100")) &
+    (gpu_client.price_per_hour <= 2.0) &
+    (gpu_client.vram_gb >= 80)
+)
+
+offers = gpu_client.search(query, sort=lambda x: x.price_per_hour)
+
+# Provision instance
+instance = gpu_client.create(
+    query=query,
+    gpu_count=8,
+    container_disk_gb=250,
+    sort=lambda x: x.price_per_hour,
+    reverse=False  # cheapest first
+)
+
+# Wait for SSH
+instance.wait_until_ssh_ready(timeout=900)
+print(f"SSH: {instance.ssh_connection_string()}")
+
+# Cleanup
+gpu_client.terminate_instance(instance.id, instance.provider)
+```
+
+## Query DSL
+
+Build complex queries with pandas-style syntax:
+
+```python
+# Price and GPU filtering
+query = (
+    gpu_client.gpu_type.contains("A100") &
+    (gpu_client.price_per_hour <= 2.0)
+)
+
+# Multi-GPU with memory requirements
+query = (
+    (gpu_client.vram_gb >= 80) &
+    (gpu_client.memory_gb >= 128) &
+    (gpu_client.manufacturer == "Nvidia")
+)
+
+# Provider-specific
+query = (
+    (gpu_client.provider == "runpod") &
+    (gpu_client.cloud_type == CloudType.COMMUNITY)
+)
+```
 
 ## CLI Reference
 
 ```bash
-broker init                                    # Create .env template
-broker search --gpu-type "RTX 4090"            # Search available GPUs
-broker create --gpu-type "H100" --name my-job  # Provision instance
-broker list                                    # List your instances
-broker status <instance-id>                    # Get instance status
-broker ssh <instance-id>                       # Get SSH connection string
-broker info <instance-id>                      # Get system info (GPU/CPU/memory)
-broker terminate <instance-id>                 # Terminate instance
+broker search --gpu-type "RTX 4090"            # Search GPUs
+broker create --gpu-type "H100" --name my-job  # Provision
+broker list                                    # List instances
+broker status <instance-id>                    # Get status
+broker ssh <instance-id>                       # SSH connection
+broker info <instance-id>                      # System info
+broker terminate <instance-id>                 # Terminate
 ```
 
-**Global options:** `--credentials`, `--ssh-key`, `--quiet`, `--json`, `--debug`
+## Configuration
 
-## Python API Reference
-
-```python
-from broker import search, create, list_instances, terminate
-
-# Search for GPUs
-offers = search(
-    gpu_type="H100",
-    max_price_per_hour=2.0,
-    gpu_count=1,
-    provider="runpod"  # optional: runpod, primeintellect, lambdalabs
-)
-
-# Provision instance
-instance = create(
-    gpu_type="H100",
-    name="my-job",
-    credentials={"runpod": "your-api-key"}
-)
-print(f"SSH: {instance.ssh_connection}")
-
-# List instances
-instances = list_instances(credentials={"runpod": "your-api-key"})
-
-# Terminate
-terminate(instance.instance_id, credentials={"runpod": "your-api-key"})
-```
-
-## Setup
-
-Create `.env` file:
+Create `.env`:
 ```bash
 RUNPOD_API_KEY=your_key
 PRIME_API_KEY=your_key
 LAMBDA_API_KEY=your_key
 SSH_KEY_PATH=~/.ssh/id_ed25519
 ```
-
-## Implementation Details
-
-- **Providers**: RunPod, Prime Intellect, Lambda Labs
-- **Query syntax**: Pandas-style queries supported (e.g., `gpus.gpu_type.contains("A100") & gpus.price_per_hour < 2.0`)
-- **SSH keys**: Automatically injected into instances for secure access
-- **Validation**: GPU types, providers, and pricing validated before provisioning
