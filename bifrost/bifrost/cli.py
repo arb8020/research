@@ -75,7 +75,7 @@ def resolve_ssh_key(ctx) -> str:
         for key in found_keys:
             logger.info(f"  {key}")
         logger.info("")
-        logger.info(f"Or use: --ssh-key {found_keys[0]}")
+        logger.info(f"Or use: bifrost --ssh-key {found_keys[0]} <command>")
     else:
         logger.info("No SSH keys found in ~/.ssh/")
         logger.info("Generate one: ssh-keygen -t ed25519")
