@@ -13,7 +13,8 @@ from dataclasses import asdict
 from typing import Dict, Any, List, Callable, Iterator, Tuple
 from tqdm.asyncio import tqdm
 
-from .rollout import Endpoint, Rollout, Message, generate
+from .dtypes import Endpoint, Trajectory, Message
+from .rollout_legacy import generate  # TODO: Migrate to providers.rollout_openai
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ async def evaluate_sample(
     sample_id: str,
     endpoint: Endpoint,
     message_preparer: Callable[[Dict[str, Any]], List[Dict[str, Any]]],
-    reward_functions: List[Tuple[str, Callable[[Rollout, Dict[str, Any]], float]]],
+    reward_functions: List[Tuple[str, Callable[[Trajectory, Dict[str, Any]], float]]],
 ) -> Dict[str, Any]:
     """Evaluate a single sample (generic).
 
@@ -40,7 +41,7 @@ async def evaluate_sample(
     # Prepare messages (convert raw dicts to Message objects)
     messages_dicts = message_preparer(sample)
     messages = [Message(role=m["role"], content=m["content"]) for m in messages_dicts]
-    rollout = Rollout(messages=messages)
+    rollout = Trajectory(messages=messages)
 
     # Generate response (Tiger Style: tuple return for explicit error handling)
     result_rollout, error = await generate(endpoint, rollout)
@@ -76,7 +77,7 @@ async def evaluate_dataset(
     dataset: Iterator[Dict[str, Any]],
     endpoint: Endpoint,
     message_preparer: Callable[[Dict[str, Any]], List[Dict[str, Any]]],
-    reward_functions: List[Tuple[str, Callable[[Rollout, Dict[str, Any]], float]]],
+    reward_functions: List[Tuple[str, Callable[[Trajectory, Dict[str, Any]], float]]],
     sample_id_fn: Callable[[int, Dict[str, Any]], str],
     max_concurrent: int = 10,
     group_by_key: str | None = None,
