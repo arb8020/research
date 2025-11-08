@@ -48,6 +48,7 @@ class SerialDataclass:
         json_str = Path(path).read_text(encoding="utf-8")
         return cls.from_json(json_str)
 
+@dataclass(frozen=True)
 class ToolCall(SerialDataclass):
     id: str
     name: str
