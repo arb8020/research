@@ -85,9 +85,14 @@ def verbose(level: int) -> bool:
     """Simple verbose checker - just return True for now"""
     return True
 
-async def handle_checkpoint_event(state: 'AgentState', event: str, run_config: 'RunConfig', 
+async def handle_checkpoint_event(state: 'AgentState', event: str, run_config: 'RunConfig',
                                  session_id: Optional[str] = None) -> None:
     """Handle checkpoint event if configured - stub for now"""
+    assert state is not None
+    assert isinstance(state, AgentState)
+    assert event is not None
+    assert isinstance(event, str)
+    assert run_config is not None
     pass
 
 async def stdout_handler(chunk: StreamChunk):
@@ -104,13 +109,20 @@ async def stdout_handler(chunk: StreamChunk):
 
 def _message_to_openai(m: Message) -> ChatCompletionMessageParam:
     """Convert our Message to OpenAI format"""
+    assert m is not None
+    assert isinstance(m, Message)
+    assert m.role is not None
+    assert isinstance(m.role, str)
+    assert len(m.role) > 0
+
     msg: Dict[str, Any] = {"role": m.role}
-    
+
     if m.content is not None:
         msg["content"] = m.content
-    
+
     # Handle tool calls
     if m.tool_calls and m.role == "assistant":
+        assert isinstance(m.tool_calls, list)
         msg["tool_calls"] = [
             {
                 "id": tc.id,
@@ -122,18 +134,27 @@ def _message_to_openai(m: Message) -> ChatCompletionMessageParam:
             }
             for tc in m.tool_calls
         ]
-    
+
     # Handle tool results
     if m.role == "tool":
+        assert m.tool_call_id is not None
         msg["tool_call_id"] = m.tool_call_id  # Use the actual tool_call_id
         msg["content"] = m.content
-    
+
+    assert "role" in msg
     return msg
 
 
 def _tool_to_openai(tool: Tool) -> Dict[str, Any]:
     """Convert our Tool to OpenAI function format"""
-    return {
+    assert tool is not None
+    assert isinstance(tool, Tool)
+    assert tool.function is not None
+    assert tool.function.name is not None
+    assert len(tool.function.name) > 0
+    assert tool.function.parameters is not None
+
+    result = {
         "type": tool.type,
         "function": {
             "name": tool.function.name,
@@ -145,6 +166,9 @@ def _tool_to_openai(tool: Tool) -> Dict[str, Any]:
             }
         }
     }
+    assert "type" in result
+    assert "function" in result
+    return result
 
 def _parse_usage(u: CompletionUsage) -> Usage:
     return Usage(u.prompt_tokens, u.completion_tokens, u.total_tokens)
@@ -180,124 +204,208 @@ def _parse_completion(resp: Any) -> ChatCompletion:
     )
 
 # ── Core agent functions ──────────────────────────────────────────────────────
-async def aggregate_stream(
-    stream: AsyncIterator, 
+
+# ── OpenAI Stream Accumulator Pattern ────────────────────────────────────────
+# Following TRAINING_SYSTEM_DESIGN Component 0 pattern and Tiger Style Exception
+
+@dataclass
+class OpenAIStreamAccumulator:
+    """Mutable accumulator for OpenAI streaming (see tiger_style_safety.md exception).
+
+    Why mutation: OpenAI streams emit 1000s of delta chunks per response.
+    Immutable rebuild would be O(n²). Bounded by API stream termination.
+    """
+    content: str = ""
+    finish_reason: Optional[str] = None
+    response_id: Optional[str] = None
+    created: Optional[int] = None
+    tool_call_buffer: Dict[int, Dict[str, Any]] = field(default_factory=dict)
+    next_auto_index: int = 0  # For Gemini compat (sends index=None)
+
+async def _handle_openai_metadata(
+    acc: OpenAIStreamAccumulator,
+    chunk,
     on_chunk: Callable[[StreamChunk], Awaitable[None]]
-) -> ChatCompletion:
-    """Aggregate streaming chunks into a complete ChatCompletion"""
-    # Accumulate the response
-    accumulated_content = ""
-    finish_reason = None
-    response_id = None
-    created = None
-    
-    # Tool call buffer for partial accumulation
-    call_buf: dict[int, dict[str, Any]] = {}
-    next_auto_index = 0  # Auto-assign indexes when tool_call.index is None
-    
-    async for chunk in stream:
-        choice = chunk.choices[0]
-        delta = choice.delta
-        
-        # Store metadata from first chunk
-        if response_id is None:
-            response_id = chunk.id
-            created = chunk.created
-        
-        # Handle content streaming
-        if delta.content:
-            accumulated_content += delta.content
-            await on_chunk(StreamChunk("token", {"text": delta.content}))
-        
-        # Handle tool calls with better accumulation
-        if delta.tool_calls:
-            for tool_call in delta.tool_calls:
-                # FIXED: Handle None index properly for Gemini compatibility
-                idx = tool_call.index
-                if idx is None:
-                    # Gemini sends tool calls with index=None - auto-assign unique indexes
-                    idx = next_auto_index
-                    next_auto_index += 1
-                
-                # Initialize if needed
-                if idx not in call_buf:
-                    call_buf[idx] = {
-                        "id": "",
-                        "type": "function",
-                        "function": {"name": "", "arguments": ""}
-                    }
-                
-                # Update tool call
-                if tool_call.id:
-                    call_buf[idx]["id"] = tool_call.id
-                if tool_call.function:
-                    if tool_call.function.name:
-                        call_buf[idx]["function"]["name"] = tool_call.function.name
-                    if tool_call.function.arguments:
-                        call_buf[idx]["function"]["arguments"] += tool_call.function.arguments
-            
-            # Emit partial tool call event
-            await on_chunk(StreamChunk("tool_call_partial", {"calls": list(call_buf.values())}))
-        
-        # Handle finish reason
-        if choice.finish_reason:
-            finish_reason = choice.finish_reason
-    
-    # Parse accumulated tool calls and emit completion events
+) -> None:
+    """Handle metadata from first chunk."""
+    assert acc is not None
+    assert chunk is not None
+
+    if acc.response_id is None:
+        acc.response_id = chunk.id
+        acc.created = chunk.created
+
+async def _handle_openai_content_delta(
+    acc: OpenAIStreamAccumulator,
+    delta,
+    on_chunk: Callable[[StreamChunk], Awaitable[None]]
+) -> None:
+    """Handle content delta."""
+    assert acc is not None
+    assert delta is not None
+
+    if delta.content:
+        assert isinstance(delta.content, str)
+        acc.content += delta.content
+        await on_chunk(StreamChunk("token", {"text": delta.content}))
+
+async def _handle_openai_tool_calls_delta(
+    acc: OpenAIStreamAccumulator,
+    delta,
+    on_chunk: Callable[[StreamChunk], Awaitable[None]]
+) -> None:
+    """Handle tool calls delta with Gemini compatibility."""
+    assert acc is not None
+    assert delta is not None
+
+    if delta.tool_calls:
+        for tool_call in delta.tool_calls:
+            # Handle None index for Gemini compatibility
+            idx = tool_call.index
+            if idx is None:
+                idx = acc.next_auto_index
+                acc.next_auto_index += 1
+
+            assert isinstance(idx, int)
+            assert idx >= 0
+
+            # Initialize buffer entry if needed
+            if idx not in acc.tool_call_buffer:
+                acc.tool_call_buffer[idx] = {
+                    "id": "",
+                    "type": "function",
+                    "function": {"name": "", "arguments": ""}
+                }
+
+            # Accumulate tool call parts
+            if tool_call.id:
+                acc.tool_call_buffer[idx]["id"] = tool_call.id
+            if tool_call.function:
+                if tool_call.function.name:
+                    acc.tool_call_buffer[idx]["function"]["name"] = tool_call.function.name
+                if tool_call.function.arguments:
+                    acc.tool_call_buffer[idx]["function"]["arguments"] += tool_call.function.arguments
+
+        # Emit partial tool call event
+        await on_chunk(StreamChunk("tool_call_partial", {
+            "calls": list(acc.tool_call_buffer.values())
+        }))
+
+async def _parse_openai_tool_calls(
+    acc: OpenAIStreamAccumulator,
+    on_chunk: Callable[[StreamChunk], Awaitable[None]]
+) -> List[ToolCall]:
+    """Parse accumulated tool calls and emit events."""
+    assert acc is not None
+
     tool_calls = []
-    for idx, tc in sorted(call_buf.items()):
-        if tc["function"]["name"]:  # Only process complete tool calls
-            try:
-                args = json.loads(tc["function"]["arguments"]) if tc["function"]["arguments"] else {}
-            except json.JSONDecodeError:
-                # Emit error chunk for malformed JSON
-                await on_chunk(StreamChunk("tool_call_error", {
-                    "id": tc["id"],
-                    "name": tc["function"]["name"],
-                    "error": f"Invalid JSON arguments: {tc['function']['arguments']}",
-                    "index": idx
-                }))
-                continue
-            
-            # Emit completion event for each tool call
+    for idx, tc in sorted(acc.tool_call_buffer.items()):
+        assert isinstance(idx, int)
+        assert isinstance(tc, dict)
+
+        # Only process complete tool calls
+        if not tc["function"]["name"]:
+            continue
+
+        try:
+            args_json = tc["function"]["arguments"]
+            args = json.loads(args_json) if args_json else {}
+            assert isinstance(args, dict)
+
+            # Emit completion event
             await on_chunk(StreamChunk("tool_call_complete", {
                 "id": tc["id"],
                 "name": tc["function"]["name"],
                 "args": args,
-                "raw_arguments": tc["function"]["arguments"],
+                "raw_arguments": args_json,
                 "index": idx
             }))
-            
+
             tool_calls.append(ToolCall(
                 id=tc["id"],
                 name=tc["function"]["name"],
                 args=args
             ))
-    
-    # Create final message
+
+        except json.JSONDecodeError:
+            # Emit error for malformed JSON
+            await on_chunk(StreamChunk("tool_call_error", {
+                "id": tc["id"],
+                "name": tc["function"]["name"],
+                "error": f"Invalid JSON arguments: {tc['function']['arguments']}",
+                "index": idx
+            }))
+
+    return tool_calls
+
+async def aggregate_stream(
+    stream: AsyncIterator,
+    on_chunk: Callable[[StreamChunk], Awaitable[None]]
+) -> ChatCompletion:
+    """Aggregate OpenAI streaming chunks into ChatCompletion.
+
+    Uses mutable accumulator pattern (see tiger_style_safety.md exception).
+    Why mutation: Streams emit 1000s of deltas, O(n²) rebuild unacceptable.
+    Bounded by: API terminates stream (implicit upper bound).
+    """
+    assert stream is not None
+    assert on_chunk is not None
+    assert callable(on_chunk)
+
+    acc = OpenAIStreamAccumulator()
+
+    # Process chunks through bounded loop (stream terminates)
+    async for chunk in stream:
+        assert chunk is not None
+        assert hasattr(chunk, 'choices')
+        assert len(chunk.choices) > 0
+
+        choice = chunk.choices[0]
+        delta = choice.delta
+
+        # Handle metadata
+        await _handle_openai_metadata(acc, chunk, on_chunk)
+
+        # Handle content delta
+        await _handle_openai_content_delta(acc, delta, on_chunk)
+
+        # Handle tool calls delta
+        await _handle_openai_tool_calls_delta(acc, delta, on_chunk)
+
+        # Handle finish reason
+        if choice.finish_reason:
+            acc.finish_reason = choice.finish_reason
+
+    # Parse tool calls and emit events
+    tool_calls = await _parse_openai_tool_calls(acc, on_chunk)
+    assert isinstance(tool_calls, list)
+
+    # Build final message (pure transform)
     final_message = Message(
         role="assistant",
-        content=accumulated_content if accumulated_content else "",  # Always string, never None
+        content=acc.content if acc.content else "",
         tool_calls=tool_calls
     )
-    
-    # Emit assistant completion event
+    assert final_message is not None
+
+    # Emit completion event
     await on_chunk(StreamChunk("assistant_complete", {
-        "content": accumulated_content,
+        "content": acc.content,
         "tool_call_count": len(tool_calls),
-        "finish_reason": finish_reason
+        "finish_reason": acc.finish_reason or "stop"
     }))
-    
-    # Create completion object
+
+    # Build completion (pure transform)
     completion = ChatCompletion(
-        id=response_id or "unknown",
+        id=acc.response_id or "unknown",
         object="chat.completion",
-        created=created or 0,
-        model="",  # Will be set by caller
-        usage=Usage(0, 0, 0),  # Usage not available in streaming
-        choices=[Choice(0, final_message, finish_reason or "stop")]
+        created=acc.created or 0,
+        model="",  # Set by caller
+        usage=Usage(0, 0, 0),  # Not available in streaming
+        choices=[Choice(0, final_message, acc.finish_reason or "stop")]
     )
-    
+    assert completion is not None
+
     return completion
 
 
@@ -418,7 +526,12 @@ async def rollout_vllm(actor: Actor, on_chunk: Callable[[StreamChunk], Awaitable
 
 async def rollout_openai(actor: Actor, on_chunk: Callable[[StreamChunk], Awaitable[None]]) -> Actor:
     """Make LLM API call with streaming and return updated actor with new trajectory"""
-    client = AsyncOpenAI(api_key=actor.endpoint.api_key, base_url=actor.endpoint.api_base)
+    # Explicitly handle base_url: empty string means use OpenAI default, non-empty means custom endpoint
+    # Don't pass base_url="" to AsyncOpenAI as it breaks (tries to use empty URL instead of default)
+    if actor.endpoint.api_base:
+        client = AsyncOpenAI(api_key=actor.endpoint.api_key, base_url=actor.endpoint.api_base)
+    else:
+        client = AsyncOpenAI(api_key=actor.endpoint.api_key)  # Uses default https://api.openai.com/v1/
     
     # Convert messages to OpenAI format
     messages = [_message_to_openai(m) for m in actor.trajectory.messages]
@@ -661,7 +774,7 @@ def _message_to_anthropic(m: Message, inline_thinking: Optional[str] = None) -> 
 
 def _tool_to_anthropic(tool: Tool) -> Dict[str, Any]:
     """Convert our Tool to Anthropic format
-    
+
     Key differences from OpenAI:
     - Uses 'input_schema' instead of 'parameters'
     - No 'type' field at top level
@@ -677,203 +790,303 @@ def _tool_to_anthropic(tool: Tool) -> Dict[str, Any]:
         }
     }
 
+# ── Anthropic Stream Accumulator Pattern ─────────────────────────────────────
+# Following TRAINING_SYSTEM_DESIGN Component 0 pattern and Tiger Style Exception
+
+@dataclass
+class AnthropicStreamAccumulator:
+    """Mutable accumulator for Anthropic streaming (see tiger_style_safety.md exception).
+
+    Why mutation: Anthropic streams emit 1000s of delta events per response.
+    Immutable rebuild would be O(n²). Bounded by API stream termination.
+    """
+    content: str = ""
+    thinking: str = ""
+    thinking_signature: Optional[str] = None
+    tool_calls: List[ToolCall] = field(default_factory=list)
+    tool_json_buffer: Dict[int, str] = field(default_factory=dict)
+    tool_metadata: Dict[int, Dict[str, str]] = field(default_factory=dict)
+    message_id: Optional[str] = None
+    created_at: int = 0
+    finish_reason: str = "stop"
+
+async def _handle_anthropic_message_start(
+    acc: AnthropicStreamAccumulator,
+    event,
+    on_chunk: Callable[[StreamChunk], Awaitable[None]]
+) -> None:
+    """Handle message_start event."""
+    assert acc is not None
+    assert event is not None
+    assert hasattr(event, 'message')
+    acc.message_id = event.message.id
+    acc.created_at = int(time.time())
+
+async def _handle_anthropic_content_block_start(
+    acc: AnthropicStreamAccumulator,
+    event,
+    on_chunk: Callable[[StreamChunk], Awaitable[None]]
+) -> None:
+    """Handle content_block_start event."""
+    assert acc is not None
+    assert event is not None
+    assert hasattr(event, 'content_block')
+    assert hasattr(event, 'index')
+
+    block = event.content_block
+    index = event.index
+    assert block is not None
+    assert isinstance(index, int)
+    assert index >= 0
+
+    if block.type == "tool_use":
+        acc.tool_metadata[index] = {
+            "id": block.id,
+            "name": block.name
+        }
+        acc.tool_json_buffer[index] = ""
+
+async def _handle_anthropic_text_delta(
+    acc: AnthropicStreamAccumulator,
+    delta,
+    on_chunk: Callable[[StreamChunk], Awaitable[None]]
+) -> None:
+    """Handle text delta event."""
+    assert acc is not None
+    assert delta is not None
+    assert hasattr(delta, 'text')
+
+    text = delta.text
+    assert isinstance(text, str)
+    acc.content += text
+    await on_chunk(StreamChunk("token", {"text": text}))
+
+async def _handle_anthropic_thinking_delta(
+    acc: AnthropicStreamAccumulator,
+    delta,
+    on_chunk: Callable[[StreamChunk], Awaitable[None]]
+) -> None:
+    """Handle thinking delta event."""
+    assert acc is not None
+    assert delta is not None
+    assert hasattr(delta, 'thinking')
+
+    thinking_text = delta.thinking
+    assert isinstance(thinking_text, str)
+    acc.thinking += thinking_text
+    await on_chunk(StreamChunk("thinking", {"text": thinking_text}))
+
+async def _handle_anthropic_tool_json_delta(
+    acc: AnthropicStreamAccumulator,
+    event,
+    on_chunk: Callable[[StreamChunk], Awaitable[None]]
+) -> None:
+    """Handle tool input JSON delta."""
+    assert acc is not None
+    assert event is not None
+    assert hasattr(event, 'delta')
+    assert hasattr(event, 'index')
+
+    delta = event.delta
+    index = event.index
+    partial = delta.partial_json
+
+    assert isinstance(index, int)
+    assert index >= 0
+    assert isinstance(partial, str)
+
+    acc.tool_json_buffer[index] += partial
+
+    # Emit partial tool call event if metadata exists
+    if index in acc.tool_metadata:
+        await on_chunk(StreamChunk("tool_call_partial", {
+            "index": index,
+            "id": acc.tool_metadata[index]["id"],
+            "name": acc.tool_metadata[index]["name"],
+            "partial_json": partial,
+            "accumulated_json": acc.tool_json_buffer[index]
+        }))
+
+async def _handle_anthropic_content_block_stop(
+    acc: AnthropicStreamAccumulator,
+    event,
+    on_chunk: Callable[[StreamChunk], Awaitable[None]]
+) -> None:
+    """Handle content block stop, parse complete tool calls."""
+    assert acc is not None
+    assert event is not None
+    assert hasattr(event, 'index')
+
+    index = event.index
+    assert isinstance(index, int)
+    assert index >= 0
+
+    # Parse complete tool call if this was a tool block
+    if index in acc.tool_metadata:
+        raw_json = acc.tool_json_buffer.get(index, "")
+        assert isinstance(raw_json, str)
+
+        try:
+            # IMPORTANT: Tools with no args may generate "" instead of "{}"
+            # json.loads("") fails, json.loads("{}") works
+            tool_input = json.loads(raw_json) if raw_json else {}
+            assert isinstance(tool_input, dict)
+
+            tool_call = ToolCall(
+                id=acc.tool_metadata[index]["id"],
+                name=acc.tool_metadata[index]["name"],
+                args=tool_input
+            )
+            acc.tool_calls.append(tool_call)
+
+            await on_chunk(StreamChunk("tool_call_complete", {
+                "id": tool_call.id,
+                "name": tool_call.name,
+                "args": tool_input,
+                "index": index
+            }))
+
+        except json.JSONDecodeError as e:
+            await on_chunk(StreamChunk("tool_call_error", {
+                "index": index,
+                "id": acc.tool_metadata[index]["id"],
+                "name": acc.tool_metadata[index]["name"],
+                "error": f"Invalid JSON: {str(e)}",
+                "partial_json": acc.tool_json_buffer[index]
+            }))
+
+async def _handle_anthropic_content_block_delta(
+    acc: AnthropicStreamAccumulator,
+    event,
+    on_chunk: Callable[[StreamChunk], Awaitable[None]]
+) -> None:
+    """Dispatch content_block_delta to specific handler based on delta type."""
+    assert acc is not None
+    assert event is not None
+    assert hasattr(event, 'delta')
+
+    delta = event.delta
+    delta_type = delta.type
+    assert delta_type is not None
+
+    if delta_type == "text_delta":
+        await _handle_anthropic_text_delta(acc, delta, on_chunk)
+    elif delta_type == "input_json_delta":
+        await _handle_anthropic_tool_json_delta(acc, event, on_chunk)
+    elif delta_type == "thinking_delta":
+        await _handle_anthropic_thinking_delta(acc, delta, on_chunk)
+    elif delta_type == "signature_delta":
+        acc.thinking_signature = delta.signature
+        await on_chunk(StreamChunk("thinking_signature", {
+            "signature": delta.signature,
+            "index": event.index
+        }))
+
+async def _handle_anthropic_message_delta(
+    acc: AnthropicStreamAccumulator,
+    event,
+    on_chunk: Callable[[StreamChunk], Awaitable[None]]
+) -> None:
+    """Handle message delta for final metadata."""
+    assert acc is not None
+    assert event is not None
+
+    if hasattr(event, 'delta') and hasattr(event.delta, 'stop_reason'):
+        if event.delta.stop_reason:
+            acc.finish_reason = event.delta.stop_reason
+
 async def aggregate_anthropic_stream(
     stream,  # Anthropic's MessageStream object
     on_chunk: Callable[[StreamChunk], Awaitable[None]]
 ) -> ChatCompletion:
-    """Aggregate Anthropic SDK stream into our ChatCompletion format"""
-    
-    accumulated_content = ""
-    thinking_content = ""
-    thinking_signature = None
-    tool_calls = []
-    message_id = None
-    created_at = int(time.time())
-    finish_reason = "stop"
-    
-    # For accumulating tool input JSON
-    tool_json_accumulator = {}  # index -> accumulated json string
-    tool_metadata = {}  # index -> {id, name}
-    
-    # Process events from the SDK stream
+    """Aggregate Anthropic SDK stream into ChatCompletion.
+
+    Uses mutable accumulator pattern (see tiger_style_safety.md exception).
+    Why mutation: Streams emit 1000s of events, O(n²) rebuild unacceptable.
+    Bounded by: API terminates stream (implicit upper bound).
+    """
+    assert stream is not None
+    assert on_chunk is not None
+    assert callable(on_chunk)
+
+    acc = AnthropicStreamAccumulator()
+
+    # Process events through bounded loop (stream terminates)
     async for event in stream:
+        assert event is not None
         event_type = event.type
-        
+        assert event_type is not None
+
+        # Dispatch to event handlers
         if event_type == "message_start":
-            message_id = event.message.id
-            created_at = int(time.time())  # SDK doesn't expose created timestamp
-            
+            await _handle_anthropic_message_start(acc, event, on_chunk)
         elif event_type == "content_block_start":
-            block = event.content_block
-            index = event.index
-            
-            if block.type == "text":
-                # Text block starting
-                pass
-                
-            elif block.type == "tool_use":
-                # Tool use block starting
-                tool_metadata[index] = {
-                    "id": block.id,
-                    "name": block.name
-                }
-                tool_json_accumulator[index] = ""
-                
-            elif block.type == "thinking":
-                # Extended thinking block - we'll skip for now
-                # You could emit thinking events if needed
-                pass
-
-            # elif block.type == "server_tool_use":
-            #     # TODO: Handle Anthropic's built-in tools
-            #     tool_metadata[index] = {
-            #         "id": block.id,
-            #         "name": block.name,
-            #         "is_server_tool": True
-            #     }
-            # elif block.type == "web_search_tool_result":
-            #     # TODO: Handle web search results
-            #     await on_chunk(StreamChunk("web_search_result", {
-            #         "tool_use_id": block.tool_use_id,
-            #         "content": block.content
-            #     }))
-
-                
+            await _handle_anthropic_content_block_start(acc, event, on_chunk)
         elif event_type == "content_block_delta":
-            delta = event.delta
-            index = event.index
-            
-            if delta.type == "text_delta":
-                text = delta.text
-                accumulated_content += text
-                await on_chunk(StreamChunk("token", {"text": text}))
-                
-            elif delta.type == "input_json_delta":
-                # Accumulate partial JSON for tool input
-                partial = delta.partial_json
-                tool_json_accumulator[index] += partial
-                
-                # Emit partial tool call event
-                if index in tool_metadata:
-                    await on_chunk(StreamChunk("tool_call_partial", {
-                        "index": index,
-                        "id": tool_metadata[index]["id"],
-                        "name": tool_metadata[index]["name"],
-                        "partial_json": partial,
-                        "accumulated_json": tool_json_accumulator[index]
-                    }))
-                    
-            elif delta.type == "thinking_delta":
-                # Could emit thinking events
-                thinking_text = delta.thinking
-                thinking_content += thinking_text  # TODO: Accumulate thinking
-                await on_chunk(StreamChunk("thinking", {"text": thinking_text}))
-
-            elif delta.type == "signature_delta":
-                signature = delta.signature
-                thinking_signature = signature  # TODO: Store signature
-                await on_chunk(StreamChunk("thinking_signature", {
-                    "signature": signature,
-                    "index": index
-                }))
-
-                
+            await _handle_anthropic_content_block_delta(acc, event, on_chunk)
         elif event_type == "content_block_stop":
-            index = event.index
-            
-            # If this was a tool use block, parse the complete JSON
-            if index in tool_metadata:
-                raw = tool_json_accumulator.get(index, "")  # may be ""
-                try:
-                    # IMPORTANT GOTCHA: Tools with no arguments (like "clear") may generate
-                    # empty JSON strings "" instead of empty objects "{}". json.loads("")
-                    # fails, but json.loads("{}") works. Default to {} for empty strings.
-                    tool_input = json.loads(raw) if raw else {}
-                    
-                    tool_call = ToolCall(
-                        id=tool_metadata[index]["id"],
-                        name=tool_metadata[index]["name"],
-                        args=tool_input
-                    )
-                    tool_calls.append(tool_call)
-                    
-                    # Emit tool call complete event
-                    await on_chunk(StreamChunk("tool_call_complete", {
-                        "id": tool_call.id,
-                        "name": tool_call.name,
-                        "args": tool_input,
-                        "index": index
-                    }))
-                    
-                except json.JSONDecodeError as e:
-                    # Emit error for malformed JSON
-                    await on_chunk(StreamChunk("tool_call_error", {
-                        "index": index,
-                        "id": tool_metadata[index]["id"],
-                        "name": tool_metadata[index]["name"],
-                        "error": f"Invalid JSON: {str(e)}",
-                        "partial_json": tool_json_accumulator[index]
-                    }))
-                    
+            await _handle_anthropic_content_block_stop(acc, event, on_chunk)
         elif event_type == "message_delta":
-            # Final message metadata
-            if hasattr(event, 'delta') and hasattr(event.delta, 'stop_reason'):
-                finish_reason = event.delta.stop_reason or "stop"
-                
+            await _handle_anthropic_message_delta(acc, event, on_chunk)
         elif event_type == "message_stop":
-            # Message complete
-            pass
-            
+            pass  # No-op: message complete
         elif event_type == "ping":
-            # Keep-alive ping
             await on_chunk(StreamChunk("ping", {}))
-            
         elif event_type == "error":
-            # Handle streaming errors
             error_data = {"type": event.error.type, "message": event.error.message}
             await on_chunk(StreamChunk("error", error_data))
             raise Exception(f"Anthropic stream error: {error_data}")
-    
-    # Create final message
+
+    # Build final message from accumulator (pure transform)
     final_message = Message(
         role="assistant",
-        content=accumulated_content if accumulated_content else "",
-        thinking_content=thinking_content if thinking_content else None,  # TODO: Include thinking,
-        thinking_signature=thinking_signature,
-        tool_calls=tool_calls
+        content=acc.content if acc.content else "",
+        thinking_content=acc.thinking if acc.thinking else None,
+        thinking_signature=acc.thinking_signature,
+        tool_calls=acc.tool_calls
     )
-    
+    assert final_message is not None
+
     # Emit completion event
     await on_chunk(StreamChunk("assistant_complete", {
-        "content": accumulated_content,
-        "tool_call_count": len(tool_calls),
-        "finish_reason": finish_reason
+        "content": acc.content,
+        "tool_call_count": len(acc.tool_calls),
+        "finish_reason": acc.finish_reason
     }))
-    
-    # Get final message from stream for usage stats
+
+    # Get usage from SDK
     final_anthropic_message = await stream.get_final_message()
-    
-    # Extract usage information
+    assert final_anthropic_message is not None
+
     usage = Usage(
         prompt_tokens=final_anthropic_message.usage.input_tokens,
         completion_tokens=final_anthropic_message.usage.output_tokens,
         total_tokens=final_anthropic_message.usage.input_tokens + final_anthropic_message.usage.output_tokens
     )
-    
-    # Create completion object
+    assert usage is not None
+
+    # Build completion (pure transform)
     completion = ChatCompletion(
-        id=message_id or f"msg_{int(time.time() * 1000)}",
+        id=acc.message_id or f"msg_{int(time.time() * 1000)}",
         object="chat.completion",
-        created=created_at,
-        model="",  # Will be set by caller
+        created=acc.created_at,
+        model="",  # Set by caller
         usage=usage,
-        choices=[Choice(0, final_message, finish_reason)]
+        choices=[Choice(0, final_message, acc.finish_reason)]
     )
-    
+    assert completion is not None
+
     return completion
 
 async def confirm_tool_with_feedback(tc: ToolCall, state: AgentState, run_config: 'RunConfig') -> Tuple[AgentState, ToolConfirmResult]:
     """Confirm tool execution, returning state and confirmation result"""
+    assert tc is not None
+    assert isinstance(tc, ToolCall)
+    assert state is not None
+    assert isinstance(state, AgentState)
+    assert run_config is not None
+    assert state.environment is not None
+
     if not state.environment.requires_confirmation(tc):
         return state, ToolConfirmResult(proceed=True)
 
@@ -881,15 +1094,15 @@ async def confirm_tool_with_feedback(tc: ToolCall, state: AgentState, run_config
     print("  [y] Yes, execute")
     print("  [n] No, provide feedback")
     print("  [s] No, skip silently")
-    
+
     resp = input("Choice: ").strip().lower()
-    
+
     if resp == 'y':
         return state, ToolConfirmResult(proceed=True)
-    
+
     elif resp == 'n':
         feedback = input("Why not? Provide guidance: \n").strip()
-        return state, ToolConfirmResult(
+        result_with_feedback = ToolConfirmResult(
             proceed=False,
             tool_result=ToolResult(
                 call_id=tc.id,
@@ -898,9 +1111,11 @@ async def confirm_tool_with_feedback(tc: ToolCall, state: AgentState, run_config
             ),
             user_message=feedback
         )
-    
+        assert result_with_feedback.tool_result is not None
+        return state, result_with_feedback
+
     else:  # Skip silently
-        return state, ToolConfirmResult(
+        result_skip = ToolConfirmResult(
             proceed=False,
             tool_result=ToolResult(
                 call_id=tc.id,
@@ -908,13 +1123,25 @@ async def confirm_tool_with_feedback(tc: ToolCall, state: AgentState, run_config
                 error="Skipped by user"
             )
         )
+        assert result_skip.tool_result is not None
+        return state, result_skip
 
 def handle_tool_error(result: ToolResult, state: AgentState) -> AgentState:
     """Handle tool execution errors - currently a no-op"""
+    assert result is not None
+    assert isinstance(result, ToolResult)
+    assert state is not None
+    assert isinstance(state, AgentState)
     return state
 
 def inject_turn_warning(state: AgentState) -> AgentState:
     """Warn when 2 turns remaining"""
+    assert state is not None
+    assert isinstance(state, AgentState)
+    assert state.turn_idx >= 0
+    assert state.max_turns > 0
+    assert state.turn_idx <= state.max_turns
+
     turns_left = state.max_turns - state.turn_idx
     if turns_left == 2:
         warning = Message(
@@ -926,17 +1153,30 @@ def inject_turn_warning(state: AgentState) -> AgentState:
             state.actor.trajectory,
             messages=state.actor.trajectory.messages + [warning]
         )
-        return replace(state, actor=replace(state.actor, trajectory=new_trajectory))
+        result_state = replace(state, actor=replace(state.actor, trajectory=new_trajectory))
+        assert result_state is not None
+        return result_state
     return state
 
 def handle_stop_max_turns(state: AgentState) -> AgentState:
     """Stop when max turns reached"""
+    assert state is not None
+    assert isinstance(state, AgentState)
+    assert state.turn_idx >= 0
+    assert state.max_turns > 0
+
     if state.turn_idx >= state.max_turns:
-        return replace(state, stop=StopReason.MAX_TURNS)
+        result_state = replace(state, stop=StopReason.MAX_TURNS)
+        assert result_state.stop is not None
+        return result_state
     return state
 
 async def inject_tool_reminder(state: AgentState, run_config: 'RunConfig') -> AgentState:
     """Remind the agent to use tools"""
+    assert state is not None
+    assert isinstance(state, AgentState)
+    assert run_config is not None
+
     reminder = Message(
         role="user",
         content="Please use the available tools to complete the task. What calculation would you like to perform?",
@@ -946,7 +1186,9 @@ async def inject_tool_reminder(state: AgentState, run_config: 'RunConfig') -> Ag
         state.actor.trajectory,
         messages=state.actor.trajectory.messages + [reminder]
     )
-    return replace(state, actor=replace(state.actor, trajectory=new_trajectory))
+    result_state = replace(state, actor=replace(state.actor, trajectory=new_trajectory))
+    assert result_state is not None
+    return result_state
 
 
 FullAuto = RunConfig(
