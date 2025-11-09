@@ -126,7 +126,12 @@ def generate_bootstrap_command(config: ServerConfig) -> str:
     Returns:
         Bootstrap command string
     """
+    assert config is not None
+    assert isinstance(config, ServerConfig)
+
     venv_name = get_venv_path()
+    assert venv_name is not None
+    assert len(venv_name) > 0
 
     steps = [
         # Ensure uv is in PATH
@@ -148,7 +153,10 @@ def generate_bootstrap_command(config: ServerConfig) -> str:
         'echo "=== Installed SGLang version ===" && uv pip show sglang | grep Version || true',
     ]
 
-    return ' && '.join(steps)
+    assert len(steps) > 0
+    result = ' && '.join(steps)
+    assert len(result) > 0
+    return result
 
 
 def check_local_prerequisites() -> Tuple[bool, Optional[str]]:
@@ -169,6 +177,7 @@ def check_local_prerequisites() -> Tuple[bool, Optional[str]]:
             capture_output=True,
             timeout=5,
         )
+        assert result is not None
         if result.returncode != 0:
             missing.append("nvidia-smi (NVIDIA drivers not installed or GPU not available)")
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -181,6 +190,7 @@ def check_local_prerequisites() -> Tuple[bool, Optional[str]]:
             capture_output=True,
             timeout=5,
         )
+        assert result is not None
         if result.returncode != 0:
             missing.append("tmux (install with: brew install tmux or apt install tmux)")
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -193,13 +203,17 @@ def check_local_prerequisites() -> Tuple[bool, Optional[str]]:
             capture_output=True,
             timeout=5,
         )
+        assert result is not None
         if result.returncode != 0:
             missing.append("python")
     except (FileNotFoundError, subprocess.TimeoutExpired):
         missing.append("python")
 
+    assert isinstance(missing, list)
     if missing:
         error_msg = "Missing prerequisites:\n" + "\n".join(f"  - {m}" for m in missing)
+        assert error_msg is not None
+        assert len(error_msg) > 0
         return False, error_msg
 
     return True, None
@@ -223,7 +237,14 @@ def check_gpus_available_local(
         (True, None) if all GPUs are free
         (False, error_message) if any GPU is busy
     """
+    assert gpu_ids is not None
+    assert isinstance(gpu_ids, list)
     assert len(gpu_ids) > 0, "Must specify at least one GPU to check"
+    assert all(isinstance(gpu_id, int) for gpu_id in gpu_ids)
+    assert all(gpu_id >= 0 for gpu_id in gpu_ids)
+    assert memory_threshold_mb > 0
+    assert util_threshold_pct >= 0
+    assert util_threshold_pct <= 100
 
     try:
         result = subprocess.run(

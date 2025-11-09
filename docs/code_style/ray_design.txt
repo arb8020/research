@@ -1,0 +1,25 @@
+The "Ray-Ready" Design Checklist
+
+  If you follow these principles, adding Ray later costs ~1 week instead of ~4-6 weeks:
+
+  ✅ Design Principles
+
+  1. Use Protocols, Not Concrete Classes
+    - Define TrainingBackend, InferenceEngine, Storage protocols
+    - Swap implementations without changing caller code
+  2. Async by Default
+    - Use async/await for I/O operations
+    - Ray works great with async code
+  3. Message Passing, Not Shared Memory
+    - Use Queue, asyncio.Queue for communication
+    - No global mutable state
+  4. Dependency Injection
+    - Pass dependencies to __init__, don't create them
+    - Makes testing AND Ray distribution easier
+  5. Serializable Configuration
+    - Use @dataclass with JSON serialization
+    - Ray needs to serialize config to workers
+  6. Abstract Storage
+    - Don't assume local filesystem
+    - Use a Storage protocol
+

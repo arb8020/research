@@ -18,8 +18,16 @@ class CheckpointStore(Protocol):
 
 async def serialize_agent_state(state: AgentState) -> Dict[str, Any]:
     """Convert AgentState to JSON-serializable dict"""
+    assert state is not None
+    assert isinstance(state, AgentState)
+    assert state.actor is not None
+    assert state.environment is not None
+    assert state.turn_idx >= 0
+    assert state.max_turns > 0
+    assert state.turn_idx <= state.max_turns
+
     from dataclasses import asdict
-    return {
+    result = {
         "actor": asdict(state.actor),  # asdict handles nested dataclasses!
         "environment": {
             "class_name": state.environment.__class__.__name__,
@@ -32,24 +40,46 @@ async def serialize_agent_state(state: AgentState) -> Dict[str, Any]:
         "next_tool_idx": state.next_tool_idx,
     }
 
+    assert "actor" in result
+    assert "environment" in result
+    assert "class_name" in result["environment"]
+    return result
+
 
 async def deserialize_agent_state(
         data: Dict[str, Any],
         environment_registry: Dict[str, type[Environment]],
     ) -> AgentState:
     """Reconstruct AgentState from JSON-serializable dict"""
+    assert data is not None
+    assert isinstance(data, dict)
+    assert "environment" in data
+    assert "class_name" in data["environment"]
+    assert "actor" in data
+    assert "turn_idx" in data
+    assert "max_turns" in data
+    assert environment_registry is not None
+    assert isinstance(environment_registry, dict)
+
     # Handle environment separately
     env_class_name = data["environment"]["class_name"]
+    assert env_class_name in environment_registry, f"Unknown environment class: {env_class_name}"
     env_class = environment_registry[env_class_name]
     environment = await env_class.deserialize(data["environment"]["data"])
-    
+    assert environment is not None
+
     # Use dacite for the rest
     state_data = data.copy()
     state_data["environment"] = environment  # Replace with actual object
     state_data["actor"] = from_dict(Actor, data["actor"], Config(check_types=False))
     state_data["stop"] = StopReason(data["stop"]) if data["stop"] else None
-    
-    return from_dict(AgentState, state_data, Config(check_types=False))
+
+    result = from_dict(AgentState, state_data, Config(check_types=False))
+    assert result is not None
+    assert isinstance(result, AgentState)
+    assert result.turn_idx >= 0
+    assert result.max_turns > 0
+    return result
 
 
 class FileCheckpointStore:
@@ -60,40 +90,82 @@ class FileCheckpointStore:
         environment_registry: Dict[str, type[Environment]],
         directory: str = "/tmp/rollouts-agent-checkpoints",
     ):
+        assert environment_registry is not None
+        assert isinstance(environment_registry, dict)
+        assert len(environment_registry) > 0
+        assert directory is not None
+        assert len(directory) > 0
+
         self.directory = Path(directory)
         self.directory.mkdir(exist_ok=True, parents=True)
+        assert self.directory.exists()
+        assert self.directory.is_dir()
         # Registry of environment classes for deserialization
         self.environment_registry = environment_registry
     
     async def save(self, checkpoint_id: str, state: AgentState) -> None:
         """Save state to JSON file"""
+        assert checkpoint_id is not None
+        assert isinstance(checkpoint_id, str)
+        assert len(checkpoint_id) > 0
+        assert "/" not in checkpoint_id  # Prevent path traversal
+        assert ".." not in checkpoint_id  # Prevent path traversal
+        assert state is not None
+        assert isinstance(state, AgentState)
+
         data = await serialize_agent_state(state)
-        
+        assert data is not None
+        assert isinstance(data, dict)
+
         # Add metadata
         data["_metadata"] = {
             "checkpoint_id": checkpoint_id,
             "timestamp": time.time(),
             "iso_time": datetime.now().isoformat(),
         }
-        
+
         path = self.directory / f"{checkpoint_id}.json"
+        assert path.parent == self.directory  # Ensure no path traversal
         with open(path, 'w') as f:
             json.dump(data, f, indent=2)
+        assert path.exists()  # Verify file was written
     
     async def load(self, checkpoint_id: str) -> AgentState:
         """Load state from JSON file"""
+        assert checkpoint_id is not None
+        assert isinstance(checkpoint_id, str)
+        assert len(checkpoint_id) > 0
+        assert "/" not in checkpoint_id  # Prevent path traversal
+        assert ".." not in checkpoint_id  # Prevent path traversal
+
         path = self.directory / f"{checkpoint_id}.json"
+        assert path.parent == self.directory  # Ensure no path traversal
+        assert path.exists(), f"Checkpoint file not found: {path}"
+        assert path.is_file()
+
         with open(path, 'r') as f:
             data = json.load(f)
-        
+
+        assert data is not None
+        assert isinstance(data, dict)
+
         # Remove metadata before deserializing
         data.pop("_metadata", None)
-        
-        return await deserialize_agent_state(data, self.environment_registry)
+
+        result = await deserialize_agent_state(data, self.environment_registry)
+        assert result is not None
+        return result
     
     async def list(self) -> List[str]:
         """List all checkpoint IDs"""
+        assert self.directory.exists()
+        assert self.directory.is_dir()
+
         checkpoints = []
         for path in self.directory.glob("*.json"):
+            assert path.is_file()
             checkpoints.append(path.stem)  # filename without extension
-        return sorted(checkpoints)
+
+        result = sorted(checkpoints)
+        assert isinstance(result, list)
+        return result
