@@ -67,33 +67,22 @@ class RolloutManager:
         Process:
             1. Get prompts from DataBuffer
             2. Call user rollout function
-            3. Apply optional filters
+            3. Apply optional transforms (filter/reward)
             4. Convert to RolloutBatch
         """
-        # 1. Get prompts from buffer (handles epoch wraparound)
+        # Get prompts from buffer (handles epoch wraparound)
         prompts = self.data_buffer.get_prompts(self.config.batch_size)
+        assert len(prompts) == self.config.batch_size, "Buffer must return requested batch size"
 
-        # 2. Call user-provided rollout function
-        samples = self.config.generate_fn(
-            prompts,
-            **self.rollout_kwargs,
-        )
+        # Call user-provided rollout function
+        samples = self.config.generate_fn(prompts, **self.rollout_kwargs)
+        assert isinstance(samples, list), f"generate_fn must return list[Sample], got {type(samples)}"
+        assert len(samples) > 0, "generate_fn must return non-empty sample list"
 
-        # Validate output
-        if not isinstance(samples, list):
-            raise TypeError(
-                f"generate_fn must return list[Sample], got {type(samples)}"
-            )
+        # Apply optional transforms
+        samples = _apply_sample_transforms(samples, self.config)
 
-        # 3. Apply optional filter
-        if self.config.filter_fn is not None:
-            samples = self.config.filter_fn(samples)
-
-        # 4. Apply optional reward function (for RL rollouts)
-        if self.config.reward_fn is not None:
-            samples = self.config.reward_fn(samples)
-
-        # 5. Convert to RolloutBatch
+        # Convert to batch
         batch = convert_to_batch(
             samples,
             epoch_id=self.data_buffer.epoch_id,
@@ -124,6 +113,22 @@ class RolloutManager:
         self._step_count = state["step_count"]
 
 
+def _apply_sample_transforms(samples: list[Sample], config: RolloutConfig) -> list[Sample]:
+    """Apply optional filter and reward functions to samples.
+
+    Isolates optional transform logic from main iteration flow.
+    """
+    if config.filter_fn is not None:
+        samples = config.filter_fn(samples)
+        assert len(samples) > 0, "filter_fn must not filter out all samples"
+
+    if config.reward_fn is not None:
+        samples = config.reward_fn(samples)
+        assert len(samples) > 0, "reward_fn must not remove all samples"
+
+    return samples
+
+
 def convert_to_batch(
     samples: list[Sample],
     epoch_id: int = 0,
@@ -147,37 +152,19 @@ def convert_to_batch(
         >>> batch.tokens  # list of token lists
         >>> batch.loss_masks  # list of loss masks
     """
-    if not samples:
-        raise ValueError("Cannot convert empty sample list to batch")
+    # Preconditions
+    assert len(samples) > 0, "Cannot convert empty sample list to batch"
+    assert all(len(s.tokens) == len(s.loss_mask) for s in samples), \
+        "All samples must have matching token/loss_mask lengths"
 
-    # Extract fields from samples
-    tokens = [s.tokens for s in samples]
-    loss_masks = [s.loss_mask for s in samples]
-    rewards = [s.reward for s in samples]
+    # Extract fields
+    tokens, loss_masks, rewards = _extract_sample_fields(samples)
+    response_lengths = _compute_response_lengths(loss_masks)
+    metadata = _build_batch_metadata(samples, epoch_id, step_id)
 
-    # Calculate response lengths from tokens and loss masks
-    # Response tokens are where loss_mask > 0
-    response_lengths = []
-    for mask in loss_masks:
-        response_len = sum(1 for m in mask if m > 0.0)
-        response_lengths.append(response_len)
-
-    # Collect metadata
-    metadata = {
-        "epoch_id": epoch_id,
-        "step_id": step_id,
-        "batch_size": len(samples),
-        # Store prompts/responses in metadata for inspection
-        "prompts": [s.prompt for s in samples],
-        "responses": [s.response for s in samples],
-    }
-
-    # Add any custom metadata from samples
-    if samples[0].metadata:
-        # Aggregate sample-level metadata
-        for key in samples[0].metadata.keys():
-            values = [s.metadata.get(key) for s in samples]
-            metadata[f"sample_{key}"] = values
+    # Postcondition
+    assert len(tokens) == len(loss_masks) == len(rewards) == len(response_lengths), \
+        "All batch fields must have same length"
 
     return RolloutBatch(
         tokens=tokens,
@@ -186,3 +173,53 @@ def convert_to_batch(
         response_lengths=response_lengths,
         metadata=metadata,
     )
+
+
+def _extract_sample_fields(samples: list[Sample]) -> tuple[list, list, list]:
+    """Extract tokens, loss_masks, and rewards from samples.
+
+    Pure extraction - no computation.
+    """
+    tokens = [s.tokens for s in samples]
+    loss_masks = [s.loss_mask for s in samples]
+    rewards = [s.reward for s in samples]
+    return tokens, loss_masks, rewards
+
+
+def _compute_response_lengths(loss_masks: list[list[float]]) -> list[int]:
+    """Compute response lengths from loss masks.
+
+    Response tokens are where loss_mask > 0.
+    Pure computation - no side effects.
+    """
+    response_lengths = []
+    for mask in loss_masks:
+        response_len = sum(1 for m in mask if m > 0.0)
+        response_lengths.append(response_len)
+    return response_lengths
+
+
+def _build_batch_metadata(
+    samples: list[Sample],
+    epoch_id: int,
+    step_id: int,
+) -> dict[str, Any]:
+    """Build metadata dict for batch.
+
+    Aggregates sample-level metadata and adds batch-level info.
+    """
+    metadata = {
+        "epoch_id": epoch_id,
+        "step_id": step_id,
+        "batch_size": len(samples),
+        "prompts": [s.prompt for s in samples],
+        "responses": [s.response for s in samples],
+    }
+
+    # Aggregate custom metadata if present
+    if samples[0].metadata:
+        for key in samples[0].metadata.keys():
+            values = [s.metadata.get(key) for s in samples]
+            metadata[f"sample_{key}"] = values
+
+    return metadata
