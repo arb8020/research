@@ -68,8 +68,16 @@ async def run_evaluation(config, result_dir: Path) -> dict:
 
     # Create endpoint - read API key from environment
     api_key = ""
-    if hasattr(config, "api_key_env_var") and config.api_key_env_var:
-        api_key = os.getenv(config.api_key_env_var, "")
+    # Try config.model.api_key_env_var first (new style), then config.api_key_env_var (old style)
+    api_key_env_var = None
+    if hasattr(config, "model") and hasattr(config.model, "api_key_env_var"):
+        api_key_env_var = config.model.api_key_env_var
+    elif hasattr(config, "api_key_env_var"):
+        api_key_env_var = config.api_key_env_var
+
+    if api_key_env_var:
+        api_key = os.getenv(api_key_env_var, "")
+        logger.info(f"🔑 API key from {api_key_env_var}: {'***' + api_key[-4:] if api_key else 'NOT FOUND'}")
 
     endpoint = Endpoint(
         provider=config.provider,
@@ -122,8 +130,11 @@ async def run_evaluation(config, result_dir: Path) -> dict:
         )
 
         # Run agent
-        # Note: Use None for on_chunk to avoid printing base64 images to stdout
-        run_config = RunConfig(on_chunk=None)
+        # Use no-op handler to avoid printing streaming chunks
+        async def noop_chunk_handler(chunk):
+            pass
+
+        run_config = RunConfig(on_chunk=noop_chunk_handler)
 
         try:
             states = await run_agent(state, run_config)
