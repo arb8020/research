@@ -5,7 +5,7 @@ import asyncio
 import json
 import os
 import time
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from typing import (Any, Dict, List, Optional, Tuple, Callable,
                    AsyncIterator, Awaitable)
 
