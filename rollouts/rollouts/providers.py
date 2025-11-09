@@ -49,9 +49,15 @@ def sanitize_request_for_logging(params: dict) -> dict:
                         if isinstance(part, dict):
                             if part.get("type") == "image_url":
                                 # Replace base64 data with placeholder
+                                # image_url field is a dict with url key containing base64
+                                url_str = str(part.get("image_url", {}).get("url", ""))
+                                if url_str.startswith("data:image") and len(url_str) > 100:
+                                    url_preview = f"{url_str[:50]}... ({len(url_str)} chars)"
+                                else:
+                                    url_preview = url_str
                                 sanitized_parts.append({
                                     "type": "image_url",
-                                    "image_url": "<base64 image data truncated>"
+                                    "image_url": {"url": url_preview}
                                 })
                             else:
                                 # Keep text parts
