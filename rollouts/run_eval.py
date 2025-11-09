@@ -167,7 +167,7 @@ async def run_evaluation(config, result_dir: Path) -> dict:
                 "response": final_message.content,
                 "turns": final_state.turn_idx,
                 "reward": reward,
-                "stop_reason": final_state.stop.reason if final_state.stop else None,
+                "stop_reason": final_state.stop.value if final_state.stop else None,
                 "success": final_state.stop is not None,
             }
 
