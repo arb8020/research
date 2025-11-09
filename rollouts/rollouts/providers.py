@@ -743,7 +743,7 @@ async def aggregate_anthropic_stream(
                 accumulated_content += text
                 await on_chunk(StreamChunk("token", {"text": text}))
 
-            elif block.type == "tool_use_delta":
+            elif block.type == "input_json_delta":
                 tool_json_accumulator[index] += block.partial_json
 
             elif block.type == "thinking_delta":

@@ -31,10 +31,19 @@ def compute_loss_mask(
         >>> compute_loss_mask(tokens, user_spans)
         [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0]
     """
+    # Preconditions
+    assert len(tokens) > 0, "Cannot compute mask for empty token list"
+    assert all(0 <= start < end <= len(tokens) for start, end in user_message_spans), \
+        "All user spans must be valid ranges within token bounds"
+
     mask = [1.0] * len(tokens)
     for start, end in user_message_spans:
         for i in range(start, end):
             mask[i] = 0.0
+
+    # Postcondition
+    assert len(mask) == len(tokens), "Mask length must match token length"
+
     return mask
 
 
@@ -63,17 +72,51 @@ def tokenize_conversation(
         >>> tokens, spans = tokenize_conversation(messages, tokenizer)
         >>> # spans = [(0, 3)] means user message is tokens[0:3]
     """
-    # Apply chat template
+    # Preconditions
+    assert len(messages) > 0, "Cannot tokenize empty conversation"
+    assert all("role" in m and "content" in m for m in messages), "All messages must have 'role' and 'content'"
+
+    # Tokenize full conversation
+    full_tokens = _tokenize_full_conversation(messages, tokenizer, max_length)
+
+    # Track user message spans incrementally
+    user_spans = _compute_user_message_spans(messages, tokenizer, max_length)
+
+    # Postconditions
+    assert len(full_tokens) > 0, "Tokenization produced no tokens"
+    assert len(user_spans) <= len(messages), "Cannot have more user spans than messages"
+    assert all(0 <= start < end <= len(full_tokens) for start, end in user_spans), "User spans must be valid ranges"
+
+    return full_tokens, user_spans
+
+
+def _tokenize_full_conversation(
+    messages: list[dict[str, str]],
+    tokenizer: Any,
+    max_length: int,
+) -> list[int]:
+    """Tokenize complete conversation into tokens.
+
+    Pure helper - no control flow, just tokenization.
+    """
     full_text = tokenizer.apply_chat_template(
         messages,
         tokenize=False,
         add_generation_prompt=False,
     )
-
-    # Tokenize full conversation
     tokens = tokenizer.encode(full_text, max_length=max_length, truncation=True)
+    return tokens
 
-    # Track user message spans by tokenizing incrementally
+
+def _compute_user_message_spans(
+    messages: list[dict[str, str]],
+    tokenizer: Any,
+    max_length: int,
+) -> list[tuple[int, int]]:
+    """Compute spans for user messages by incremental tokenization.
+
+    Control flow: iterate through messages, track lengths, record user spans.
+    """
     user_spans = []
     current_messages = []
     current_length = 0
@@ -81,33 +124,36 @@ def tokenize_conversation(
     for msg in messages:
         current_messages.append(msg)
 
+        # Tokenize up to current point
+        new_length = _tokenize_partial_length(current_messages, tokenizer, max_length)
+
+        # Record span if this was a user message
         if msg["role"] == "user":
-            # Tokenize up to this point
-            partial_text = tokenizer.apply_chat_template(
-                current_messages,
-                tokenize=False,
-                add_generation_prompt=False,
-            )
-            partial_tokens = tokenizer.encode(
-                partial_text, max_length=max_length, truncation=True
-            )
+            user_spans.append((current_length, new_length))
 
-            # User message span is [current_length, len(partial_tokens))
-            user_spans.append((current_length, len(partial_tokens)))
-            current_length = len(partial_tokens)
-        else:
-            # Update current length after assistant message
-            partial_text = tokenizer.apply_chat_template(
-                current_messages,
-                tokenize=False,
-                add_generation_prompt=False,
-            )
-            partial_tokens = tokenizer.encode(
-                partial_text, max_length=max_length, truncation=True
-            )
-            current_length = len(partial_tokens)
+        current_length = new_length
 
-    return tokens, user_spans
+    return user_spans
+
+
+def _tokenize_partial_length(
+    messages: list[dict[str, str]],
+    tokenizer: Any,
+    max_length: int,
+) -> int:
+    """Get token length of partial conversation.
+
+    Pure helper - just computes length, no side effects.
+    """
+    partial_text = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=False,
+    )
+    partial_tokens = tokenizer.encode(
+        partial_text, max_length=max_length, truncation=True
+    )
+    return len(partial_tokens)
 
 
 def prepare_sft_sample(
@@ -145,6 +191,13 @@ def prepare_sft_sample(
         ...     tokenizer=tokenizer,
         ... )
     """
+    # Preconditions
+    assert response, "Response cannot be empty"
+    if isinstance(prompt, str):
+        assert prompt, "String prompt cannot be empty"
+    elif isinstance(prompt, list):
+        assert len(prompt) > 0, "Conversation prompt cannot be empty list"
+
     # Convert to messages format
     if isinstance(prompt, str):
         messages = [
@@ -159,9 +212,15 @@ def prepare_sft_sample(
             f"prompt must be string or list of message dicts with 'role' field, got {type(prompt)}"
         )
 
+    # Invariant: messages must have at least 2 entries (user + assistant)
+    assert len(messages) >= 2, "Messages must contain at least one user-assistant turn"
+
     # Tokenize and compute loss mask
     tokens, user_spans = tokenize_conversation(messages, tokenizer, max_length)
     loss_mask = compute_loss_mask(tokens, user_spans)
+
+    # Postcondition: tokens and loss_mask must align
+    assert len(tokens) == len(loss_mask), "Token and loss mask lengths must match"
 
     return Sample(
         prompt=prompt,

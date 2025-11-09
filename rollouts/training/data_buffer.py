@@ -72,6 +72,7 @@ class DataBuffer:
             >>> buffer.get_prompts(2)  # Wraps
             ['c', 'a']  # New epoch, shuffled
         """
+        # Preconditions
         assert n > 0, "Must request at least 1 prompt"
         assert len(self.prompts) > 0, "Dataset is empty"
 
@@ -92,6 +93,9 @@ class DataBuffer:
             # Wraparound if needed
             if self.sample_offset >= len(self.prompts):
                 self._advance_epoch()
+
+        # Postcondition
+        assert len(result) == n, "Must return exact number of prompts requested"
 
         return result
 
