@@ -31,6 +31,7 @@ from .providers import (
     rollout_anthropic,
     rollout_openai,
     rollout_sglang,
+    sanitize_request_for_logging,
     verbose,
 )
 
@@ -569,13 +570,14 @@ async def rollout_openai(actor: Actor, on_chunk: Callable[[StreamChunk], Awaitab
         completion = await aggregate_stream(stream, on_chunk)
         
     except Exception as e:
-        # Dump the exact request on error
+        # Dump the sanitized request on error
         print("\n" + "="*80)
         print("ERROR: Failed to call OpenAI API")
         print("="*80)
         print("Exception:", str(e))
-        print("\nExact request sent to OpenAI:")
-        print(json.dumps(params, indent=2, default=str))
+        print("\nRequest sent to OpenAI (sanitized):")
+        sanitized = sanitize_request_for_logging(params)
+        print(json.dumps(sanitized, indent=2, default=str))
         print("="*80)
         raise  # Re-raise the exception
     
