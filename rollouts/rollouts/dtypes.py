@@ -74,6 +74,23 @@ class Message(JsonSerializable):
     tool_calls: List[ToolCall] = field(default_factory=list)
     tool_call_id: Optional[str] = None
 
+    def __repr__(self) -> str:
+        """Tiger Style: Bounded repr, truncate large content.
+
+        Vision messages can contain base64 images (100KB+).
+        Always truncate to prevent terminal spam.
+        """
+        # Truncate content for display
+        if isinstance(self.content, str):
+            content_preview = self.content[:100] + "..." if len(self.content) > 100 else self.content
+        elif isinstance(self.content, list):
+            # Vision message - show structure but not base64 data
+            content_preview = f"[vision message with {len(self.content)} parts]"
+        else:
+            content_preview = str(self.content)
+
+        return f"Message(role={self.role!r}, content={content_preview!r})"
+
 @dataclass(frozen=True)
 class Usage(JsonSerializable):
     prompt_tokens: int
