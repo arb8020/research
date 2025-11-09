@@ -66,11 +66,16 @@ async def run_evaluation(config, result_dir: Path) -> dict:
     )
     logger.info(f"📊 Loaded {len(dataset)} samples from {config.dataset.dataset_path}")
 
-    # Create endpoint
+    # Create endpoint - read API key from environment
+    api_key = ""
+    if hasattr(config, "api_key_env_var") and config.api_key_env_var:
+        api_key = os.getenv(config.api_key_env_var, "")
+
     endpoint = Endpoint(
         provider=config.provider,
         model=config.model_name,
         api_base=config.api_base,
+        api_key=api_key,
         temperature=config.temperature,
         max_tokens=config.max_output_tokens,
     )
