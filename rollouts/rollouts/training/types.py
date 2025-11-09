@@ -6,7 +6,7 @@ Tinker: Token-level loss weights for fine-grained control.
 
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
-from asyncio import Future
+import trio
 
 # ────────────────────── Training Samples ──────────────────────
 
@@ -50,18 +50,28 @@ class TrainFuture[T]:
     """Future for training operations (Tinker-inspired)
 
     Enables pipelining: submit work, wait later.
+
+    Uses trio primitives for async coordination.
     """
 
-    _future: Future[T]
-    operation: str  # "forward_backward", "optim_step", etc.
+    _event: trio.Event = field(default_factory=trio.Event)
+    _result: Optional[T] = None
+    operation: str = ""  # "forward_backward", "optim_step", etc.
 
     async def result(self) -> T:
         """Wait for completion"""
-        return await self._future
+        await self._event.wait()
+        assert self._result is not None, f"Future for {self.operation} completed without result"
+        return self._result
+
+    def set_result(self, value: T) -> None:
+        """Set result and mark complete"""
+        self._result = value
+        self._event.set()
 
     def done(self) -> bool:
         """Check if ready (non-blocking)"""
-        return self._future.done()
+        return self._event.is_set()
 
 
 # ────────────────────── Weight Versioning ──────────────────────

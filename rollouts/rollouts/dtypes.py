@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from enum import Enum
 import os
-import asyncio
+import trio
 from abc import ABC
 from dataclasses import dataclass, field, asdict, fields
 from typing import Any, Dict, List, Optional, Mapping, Union, TypeVar, Type, Iterator, Callable, Awaitable, Tuple, Protocol, runtime_checkable
@@ -422,8 +422,8 @@ class AgentState:
 
 # Forward declarations for RunConfig (needs to be after AgentState but before default handlers)
 async def default_stdin_handler(prompt: str) -> str:
-    """Default input handler using asyncio.to_thread for non-blocking input."""
-    return await asyncio.to_thread(input, prompt)
+    """Default input handler using trio.to_thread.run_sync for non-blocking input."""
+    return await trio.to_thread.run_sync(input, prompt)
 
 async def default_confirm_tool(tc: ToolCall, state: 'AgentState', run_config: 'RunConfig') -> Tuple['AgentState', ToolConfirmResult]:
     """Default tool confirmation handler - auto-confirm all tools."""
