@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import logging
 import os
 import sys
 import time
@@ -17,6 +18,8 @@ from dacite import from_dict
 from openai import AsyncOpenAI
 from openai.types import CompletionUsage
 from openai.types.chat import ChatCompletionMessageParam
+
+logger = logging.getLogger(__name__)
 
 from .dtypes import (
     Actor,
@@ -580,14 +583,16 @@ async def rollout_openai(
         completion = await aggregate_stream(stream, on_chunk)
 
     except Exception as e:
-        print("\n" + "=" * 80)
-        print("ERROR: Failed to call OpenAI API")
-        print("=" * 80)
-        print("Exception:", str(e))
-        print("\nRequest sent to OpenAI (sanitized):")
+        # Log error with sanitized request details
         sanitized = sanitize_request_for_logging(params)
-        print(json.dumps(sanitized, indent=2, default=str))
-        print("=" * 80)
+        logger.error(
+            "OpenAI API call failed",
+            extra={
+                "exception": str(e),
+                "request_params": sanitized,
+                "model": actor.endpoint.model,
+            }
+        )
         raise
 
     assert completion is not None
@@ -929,14 +934,17 @@ async def rollout_anthropic(
                 await asyncio.sleep(delay)
                 continue
             else:
-                print("\n" + "=" * 80)
-                print("ERROR: Failed to call Anthropic API after all retries")
-                print("=" * 80)
-                print("Final Exception:", str(e))
-                print("\nRequest sent to Anthropic (sanitized):")
+                # Log error with sanitized request details
                 sanitized = sanitize_request_for_logging(params)
-                print(json.dumps(sanitized, indent=2, default=str))
-                print("=" * 80)
+                logger.error(
+                    "Anthropic API call failed after all retries",
+                    extra={
+                        "exception": str(e),
+                        "request_params": sanitized,
+                        "model": actor.endpoint.model,
+                        "max_retries": max_retries,
+                    }
+                )
                 raise
 
     if completion is None:
