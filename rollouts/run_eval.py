@@ -12,6 +12,7 @@ import asyncio
 import argparse
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -222,6 +223,25 @@ def main():
         print("❌ Config missing environment or to_trajectory fields")
         print("   This config appears to be old-style. Please update to rollouts-style.")
         return 1
+
+    # Verify API key is set for the provider
+    provider_key_map = {
+        "openai": "OPENAI_API_KEY",
+        "anthropic": "ANTHROPIC_API_KEY",
+        "gemini": "GEMINI_API_KEY",
+        "google": "GOOGLE_API_KEY",
+    }
+
+    provider = config.provider.lower()
+    if provider in provider_key_map:
+        required_key = provider_key_map[provider]
+        if not os.getenv(required_key):
+            print(f"❌ Error: {required_key} not found in environment")
+            print(f"   Provider '{config.provider}' requires {required_key}")
+            print(f"   Please add it to your .env file or set it in your environment")
+            return 1
+        else:
+            print(f"✅ Found {required_key} in environment")
 
     # Initialize logging with timestamped results directory
     result_dir = init_rollout_logging(
