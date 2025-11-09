@@ -38,10 +38,25 @@ async def evaluate_sample(
     Returns:
         Result dict with metrics
     """
+    assert sample is not None
+    assert isinstance(sample, dict)
+    assert sample_id is not None
+    assert isinstance(sample_id, str)
+    assert len(sample_id) > 0
+    assert endpoint is not None
+    assert message_preparer is not None
+    assert callable(message_preparer)
+    assert reward_functions is not None
+    assert isinstance(reward_functions, list)
+    assert len(reward_functions) > 0
+
     # Prepare messages (convert raw dicts to Message objects)
     messages_dicts = message_preparer(sample)
+    assert messages_dicts is not None
+    assert isinstance(messages_dicts, list)
     messages = [Message(role=m["role"], content=m["content"]) for m in messages_dicts]
     rollout = Trajectory(messages=messages)
+    assert rollout is not None
 
     # Generate response (Tiger Style: tuple return for explicit error handling)
     result_rollout, error = await generate(endpoint, rollout)
@@ -55,7 +70,11 @@ async def evaluate_sample(
             "response": ""
         }
         for name, _ in reward_functions:
+            assert name is not None
+            assert isinstance(name, str)
             error_result[name] = 0.0
+        assert "sample_id" in error_result
+        assert "status" in error_result
         return error_result
 
     # Success - compute all reward functions
@@ -65,10 +84,16 @@ async def evaluate_sample(
         "status": "success"
     }
     for name, reward_fn in reward_functions:
-        result[name] = reward_fn(result_rollout, sample)
+        assert name is not None
+        assert callable(reward_fn)
+        reward_value = reward_fn(result_rollout, sample)
+        assert isinstance(reward_value, (int, float))
+        result[name] = reward_value
 
     # Add response text
     result["response"] = result_rollout.messages[-1].content if result_rollout.messages else ""
+    assert "sample_id" in result
+    assert "status" in result
 
     return result
 
@@ -100,8 +125,23 @@ async def evaluate_dataset(
     Returns:
         Results dict with summary and per-sample results
     """
+    assert dataset is not None
+    assert endpoint is not None
+    assert message_preparer is not None
+    assert callable(message_preparer)
+    assert reward_functions is not None
+    assert isinstance(reward_functions, list)
+    assert len(reward_functions) > 0
+    assert sample_id_fn is not None
+    assert callable(sample_id_fn)
+    assert max_concurrent > 0
+    assert max_concurrent <= 100  # Reasonable upper bound
+    assert eval_name is not None
+    assert isinstance(eval_name, str)
+
     # Convert iterator to list (needed for indexing)
     dataset_list = list(dataset)
+    assert isinstance(dataset_list, list)
 
     # Evaluate with concurrency control and progress tracking
     semaphore = asyncio.Semaphore(max_concurrent)
