@@ -2,7 +2,7 @@
 """
 Simple calculator demo using the extracted agent framework
 """
-import asyncio
+import trio
 import os
 from rollouts import (
     Endpoint, Actor, AgentState, RunConfig, stdout_handler,
@@ -83,4 +83,4 @@ async def main():
         print(f"🛑 Stopped because: {final_state.stop.value}")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    trio.run(main)
