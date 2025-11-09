@@ -18,14 +18,32 @@ Usage:
     from training import DataBuffer       # Training system
 """
 
-from training.data_buffer import DataBuffer, load_prompts_from_jsonl
+from training.data_buffer import DataBuffer, load_prompts_from_jsonl, load_prompts_from_list
 from training.types import Sample, RolloutConfig, RolloutBatch, TrainingConfig
+from training.sft import (
+    compute_loss_mask,
+    tokenize_conversation,
+    prepare_sft_sample,
+    example_sft_rollout_fn,
+)
+from training.rollout_manager import RolloutManager, convert_to_batch
 
 __all__ = [
+    # Data management
     "DataBuffer",
     "load_prompts_from_jsonl",
+    "load_prompts_from_list",
+    # Types
     "Sample",
     "RolloutConfig",
     "RolloutBatch",
     "TrainingConfig",
+    # SFT functions
+    "compute_loss_mask",
+    "tokenize_conversation",
+    "prepare_sft_sample",
+    "example_sft_rollout_fn",
+    # Orchestration
+    "RolloutManager",
+    "convert_to_batch",
 ]
