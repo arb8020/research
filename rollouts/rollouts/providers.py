@@ -30,13 +30,58 @@ from .dtypes import (
 )
 
 
+def sanitize_request_for_logging(params: dict) -> dict:
+    """Tiger Style: Sanitize request parameters to remove large base64 image data.
+
+    Vision messages can contain 100KB+ base64 images. Replace with bounded
+    placeholders to prevent terminal spam while preserving useful debug info.
+    """
+    sanitized = copy.deepcopy(params)
+
+    if "messages" in sanitized:
+        for msg in sanitized["messages"]:
+            if isinstance(msg, dict) and "content" in msg:
+                content = msg["content"]
+                # Handle vision messages (list of content parts)
+                if isinstance(content, list):
+                    sanitized_parts = []
+                    for part in content:
+                        if isinstance(part, dict):
+                            if part.get("type") == "image_url":
+                                # Replace base64 data with placeholder
+                                sanitized_parts.append({
+                                    "type": "image_url",
+                                    "image_url": "<base64 image data truncated>"
+                                })
+                            else:
+                                # Keep text parts
+                                sanitized_parts.append(part)
+                        else:
+                            sanitized_parts.append(part)
+                    msg["content"] = sanitized_parts
+                # Handle long text content
+                elif isinstance(content, str) and len(content) > 500:
+                    msg["content"] = content[:500] + f"... ({len(content)} chars total)"
+
+    return sanitized
+
+
 def add_cache_control_to_last_content(
     messages, cache_control={"type": "ephemeral"}, max_cache_controls: int = 4
 ):
     """Adds cache control metadata to the final content block if possible."""
+    assert cache_control is not None
+    assert isinstance(cache_control, dict)
+    assert max_cache_controls > 0
+    assert max_cache_controls <= 10  # Reasonable upper bound
+
     if not messages:
         return messages
+
+    assert isinstance(messages, list)
     new_messages = copy.deepcopy(messages)
+    assert new_messages is not None
+
     cache_control_count = sum(
         1
         for msg in new_messages
@@ -47,8 +92,10 @@ def add_cache_control_to_last_content(
         )
         if isinstance(content, dict) and "cache_control" in content
     )
+
     if cache_control_count >= max_cache_controls:
         return new_messages
+
     last_message = new_messages[-1]
     if isinstance(last_message.get("content"), list) and last_message["content"]:
         last_content = last_message["content"][-1]
@@ -61,17 +108,26 @@ def add_cache_control_to_last_content(
     elif isinstance(last_message.get("content"), dict):
         if "cache_control" not in last_message["content"]:
             last_message["content"]["cache_control"] = cache_control
+
+    assert isinstance(new_messages, list)
     return new_messages
 
 
 def _message_to_openai(m: Message) -> ChatCompletionMessageParam:
     """Convert framework `Message` objects to the OpenAI SDK schema."""
+    assert m is not None
+    assert isinstance(m, Message)
+    assert m.role is not None
+    assert isinstance(m.role, str)
+    assert len(m.role) > 0
+
     msg: Dict[str, Any] = {"role": m.role}
 
     if m.content is not None:
         msg["content"] = m.content
 
     if m.tool_calls and m.role == "assistant":
+        assert isinstance(m.tool_calls, list)
         msg["tool_calls"] = [
             {
                 "id": tc.id,
@@ -85,15 +141,24 @@ def _message_to_openai(m: Message) -> ChatCompletionMessageParam:
         ]
 
     if m.role == "tool":
+        assert m.tool_call_id is not None
         msg["tool_call_id"] = m.tool_call_id
         msg["content"] = m.content
 
+    assert "role" in msg
     return msg
 
 
 def _tool_to_openai(tool: Tool) -> Dict[str, Any]:
     """Convert a framework `Tool` definition into OpenAI's schema."""
-    return {
+    assert tool is not None
+    assert isinstance(tool, Tool)
+    assert tool.function is not None
+    assert tool.function.name is not None
+    assert len(tool.function.name) > 0
+    assert tool.function.parameters is not None
+
+    result = {
         "type": tool.type,
         "function": {
             "name": tool.function.name,
@@ -105,19 +170,44 @@ def _tool_to_openai(tool: Tool) -> Dict[str, Any]:
             },
         },
     }
+    assert "type" in result
+    assert "function" in result
+    return result
 
 
 def _parse_usage(u: CompletionUsage) -> Usage:
-    return Usage(u.prompt_tokens, u.completion_tokens, u.total_tokens)
+    assert u is not None
+    assert hasattr(u, 'prompt_tokens')
+    assert hasattr(u, 'completion_tokens')
+    assert hasattr(u, 'total_tokens')
+    result = Usage(u.prompt_tokens, u.completion_tokens, u.total_tokens)
+    assert result is not None
+    assert result.prompt_tokens >= 0
+    assert result.completion_tokens >= 0
+    assert result.total_tokens >= 0
+    return result
 
 
 def _parse_completion(resp: Any) -> ChatCompletion:
     """Convert an OpenAI SDK response into the framework `ChatCompletion`."""
+    assert resp is not None
+    assert hasattr(resp, 'choices')
+    assert hasattr(resp, 'id')
+    assert hasattr(resp, 'object')
+    assert hasattr(resp, 'created')
+    assert hasattr(resp, 'model')
+    assert hasattr(resp, 'usage')
+
     choices = []
     for c in resp.choices:
+        assert c is not None
+        assert hasattr(c, 'message')
         tool_calls = []
         if hasattr(c.message, "tool_calls") and c.message.tool_calls:
             for tc in c.message.tool_calls:
+                assert tc is not None
+                assert hasattr(tc, 'id')
+                assert hasattr(tc, 'function')
                 tool_calls.append(
                     ToolCall(
                         id=tc.id,
@@ -131,9 +221,11 @@ def _parse_completion(resp: Any) -> ChatCompletion:
             content=c.message.content,
             tool_calls=tool_calls,
         )
+        assert msg is not None
         choices.append(Choice(c.index, msg, c.finish_reason))
 
-    return ChatCompletion(
+    assert len(choices) > 0
+    result = ChatCompletion(
         id=resp.id,
         object=resp.object,
         created=resp.created,
@@ -141,6 +233,10 @@ def _parse_completion(resp: Any) -> ChatCompletion:
         usage=_parse_usage(resp.usage),
         choices=choices,
     )
+    assert result is not None
+    assert result.choices is not None
+    assert len(result.choices) > 0
+    return result
 
 
 async def aggregate_stream(
@@ -148,6 +244,10 @@ async def aggregate_stream(
     on_chunk: Callable[[StreamChunk], Awaitable[None]],
 ) -> ChatCompletion:
     """Aggregate streaming chunks into a complete `ChatCompletion`."""
+    assert stream is not None
+    assert on_chunk is not None
+    assert callable(on_chunk)
+
     accumulated_content = ""
     finish_reason = None
     response_id = None
@@ -253,6 +353,10 @@ async def aggregate_stream(
         )
     )
 
+    assert final_message is not None
+    assert isinstance(final_message, Message)
+    assert isinstance(tool_calls, list)
+
     completion = ChatCompletion(
         id=response_id or "unknown",
         object="chat.completion",
@@ -262,6 +366,9 @@ async def aggregate_stream(
         choices=[Choice(0, final_message, finish_reason or "stop")],
     )
 
+    assert completion is not None
+    assert completion.choices is not None
+    assert len(completion.choices) > 0
     return completion
 
 
@@ -277,8 +384,19 @@ async def rollout_sglang(
     backoff_base: int = 4,
 ) -> Actor:
     """Invoke a vLLM server and return the updated actor."""
+    assert actor is not None
+    assert isinstance(actor, Actor)
+    assert actor.endpoint is not None
+    assert actor.trajectory is not None
+    assert actor.trajectory.messages is not None
+    assert on_chunk is not None
+    assert callable(on_chunk)
+    assert max_api_retries > 0
+    assert max_api_retries <= 100  # Reasonable upper bound
+    assert backoff_base > 0
 
     messages = [_message_to_openai(m) for m in actor.trajectory.messages]
+    assert isinstance(messages, list)
 
     params = {
         "model": actor.endpoint.model,
@@ -390,16 +508,24 @@ async def rollout_sglang(
         )
     else:
         print("🔥 No prompt_logprobs (expected for amplified sampling server)")
+    assert completion is not None
     completion = replace(completion, model=actor.endpoint.model)
+    assert completion.choices is not None
+    assert len(completion.choices) > 0
     final_message = completion.choices[0].message
+    assert final_message is not None
 
     new_trajectory = replace(
         actor.trajectory,
         messages=actor.trajectory.messages + [final_message],
         completions=actor.trajectory.completions + [completion],
     )
+    assert new_trajectory is not None
 
-    return replace(actor, trajectory=new_trajectory)
+    result_actor = replace(actor, trajectory=new_trajectory)
+    assert result_actor is not None
+    assert result_actor.trajectory is not None
+    return result_actor
 
 
 
@@ -407,6 +533,13 @@ async def rollout_openai(
     actor: Actor, on_chunk: Callable[[StreamChunk], Awaitable[None]]
 ) -> Actor:
     """Make an OpenAI API call with streaming and update the actor."""
+    assert actor is not None
+    assert isinstance(actor, Actor)
+    assert actor.endpoint is not None
+    assert actor.trajectory is not None
+    assert on_chunk is not None
+    assert callable(on_chunk)
+
     client = AsyncOpenAI(
         api_key=actor.endpoint.api_key,
         base_url=actor.endpoint.api_base,
@@ -445,21 +578,30 @@ async def rollout_openai(
         print("ERROR: Failed to call OpenAI API")
         print("=" * 80)
         print("Exception:", str(e))
-        print("\nExact request sent to OpenAI:")
-        print(json.dumps(params, indent=2, default=str))
+        print("\nRequest sent to OpenAI (sanitized):")
+        sanitized = sanitize_request_for_logging(params)
+        print(json.dumps(sanitized, indent=2, default=str))
         print("=" * 80)
         raise
 
+    assert completion is not None
     completion = replace(completion, model=actor.endpoint.model)
+    assert completion.choices is not None
+    assert len(completion.choices) > 0
     final_message = completion.choices[0].message
+    assert final_message is not None
 
     new_trajectory = replace(
         actor.trajectory,
         messages=actor.trajectory.messages + [final_message],
         completions=actor.trajectory.completions + [completion],
     )
+    assert new_trajectory is not None
 
-    return replace(actor, trajectory=new_trajectory)
+    result_actor = replace(actor, trajectory=new_trajectory)
+    assert result_actor is not None
+    assert result_actor.trajectory is not None
+    return result_actor
 
 
 def _apply_inline_thinking_template(
@@ -475,6 +617,11 @@ def _message_to_anthropic(
     m: Message, inline_thinking: Optional[str] = None
 ) -> Dict[str, Any]:
     """Convert a `Message` into Anthropic's streaming-compatible schema."""
+    assert m is not None
+    assert isinstance(m, Message)
+    assert m.role is not None
+    assert isinstance(m.role, str)
+
     msg: Dict[str, Any] = {"role": m.role}
 
     if m.role == "assistant" and m.tool_calls:
@@ -780,8 +927,9 @@ async def rollout_anthropic(
                 print("ERROR: Failed to call Anthropic API after all retries")
                 print("=" * 80)
                 print("Final Exception:", str(e))
-                print("\nExact request sent to Anthropic:")
-                print(json.dumps(params, indent=2, default=str))
+                print("\nRequest sent to Anthropic (sanitized):")
+                sanitized = sanitize_request_for_logging(params)
+                print(json.dumps(sanitized, indent=2, default=str))
                 print("=" * 80)
                 raise
 
