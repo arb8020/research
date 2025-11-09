@@ -23,45 +23,49 @@ def verbose(level=1):
     """Check if verbose logging is enabled at given level"""
     return int(os.getenv("VERBOSE", 0)) >= level
 
-T = TypeVar('T', bound='SerialDataclass')
+class JsonSerializable:
+    """Base class for dataclasses with JSON serialization support.
 
-class SerialDataclass:
-    """Base class for dataclasses with JSON serialization support"""
-    
+    Tiger Style: Pure serialization, no I/O side effects.
+    Caller controls where the JSON goes (file, network, memory, etc.).
+    """
+
     def to_json(self) -> str:
         """Serialize to JSON string"""
-        return json.dumps(asdict(self), ensure_ascii=False) #type:ignore
-    
+        assert self is not None
+        result = json.dumps(asdict(self), ensure_ascii=False) #type:ignore
+        assert result is not None
+        assert isinstance(result, str)
+        assert len(result) > 0
+        return result
+
     @classmethod
-    def from_json(cls: Type[T], json_str: str) -> T:
+    def from_json(cls, json_str: str):
         """Deserialize from JSON string using dacite"""
+        assert json_str is not None
+        assert isinstance(json_str, str)
+        assert len(json_str) > 0
         data = json.loads(json_str)
-        return dacite.from_dict(data_class=cls, data=data)
-    
-    def to_path(self, path: str | Path) -> None:
-        """Save to file as JSON"""
-        Path(path).write_text(self.to_json(), encoding="utf-8")
-    
-    @classmethod
-    def from_path(cls: Type[T], path: str | Path) -> T:
-        """Load from JSON file"""
-        json_str = Path(path).read_text(encoding="utf-8")
-        return cls.from_json(json_str)
+        assert data is not None
+        assert isinstance(data, dict)
+        result = dacite.from_dict(data_class=cls, data=data)
+        assert result is not None
+        return result
 
 @dataclass(frozen=True)
-class ToolCall(SerialDataclass):
+class ToolCall(JsonSerializable):
     id: str
     name: str
     args: Mapping[str, Any]
 
 @dataclass(frozen=True)
-class StreamChunk(SerialDataclass):
+class StreamChunk(JsonSerializable):
     """A chunk of data emitted during streaming"""
     kind: str  # "token", "tool_call_complete", "tool_result", etc.
     data: Mapping[str, Any]
 
 @dataclass(frozen=True)
-class Message(SerialDataclass):
+class Message(JsonSerializable):
     role: str
     content: Optional[str | List[Dict[str, Any]]]  # str for text, List[Dict] for vision (OpenAI format)
     reasoning_content: Optional[Any] = None
@@ -71,25 +75,25 @@ class Message(SerialDataclass):
     tool_call_id: Optional[str] = None
 
 @dataclass(frozen=True)
-class Usage(SerialDataclass):
+class Usage(JsonSerializable):
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
     prompt_tokens_details: Optional[Any] = None
 
 @dataclass(frozen=True)
-class Logprob(SerialDataclass):
+class Logprob(JsonSerializable):
     token: str
     logprob: float
     bytes: List[int]
     top_logprobs: List[float]
 
 @dataclass(frozen=True)
-class Logprobs(SerialDataclass):
+class Logprobs(JsonSerializable):
     content: List[Logprob] = field(default_factory=list)
 
 @dataclass(frozen=True)
-class Choice(SerialDataclass):
+class Choice(JsonSerializable):
     index: int
     message: Message
     finish_reason: str
@@ -98,7 +102,7 @@ class Choice(SerialDataclass):
 
 
 @dataclass(frozen=True)
-class TokenInfo(SerialDataclass):
+class TokenInfo(JsonSerializable):
     logprob: float
     rank: int
     decoded_token: str
@@ -115,7 +119,7 @@ PromptLogprob = Optional[Dict[str, TokenInfo]]
 """
 
 @dataclass(frozen=True)
-class ChatCompletion(SerialDataclass):
+class ChatCompletion(JsonSerializable):
     id: str
     object: str
     created: int
@@ -126,7 +130,7 @@ class ChatCompletion(SerialDataclass):
     prompt_logprobs: Optional[List[PromptLogprob]] = None
 
 @dataclass
-class Trajectory: # TODO: Port to serial
+class Trajectory(JsonSerializable):
     completions: List[ChatCompletion] = field(default_factory=list)
     messages: List[Message] = field(default_factory=list)   # debugging only
     rewards: float = 0.0
@@ -137,14 +141,23 @@ class Trajectory: # TODO: Port to serial
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> "Trajectory":
         """Rebuild nested dataclasses so type hints stay correct."""
+        assert data is not None
+        assert isinstance(data, dict)
+
         comps: List[ChatCompletion] = []
         for comp in data.get("completions", []):
+            assert comp is not None
+            assert isinstance(comp, dict)
             usage_dict = comp.get("usage", {})
+            assert "prompt_tokens" in usage_dict
+            assert "completion_tokens" in usage_dict
+            assert "total_tokens" in usage_dict
             usage = Usage(
                 prompt_tokens       = usage_dict["prompt_tokens"],
                 completion_tokens   = usage_dict["completion_tokens"],
                 total_tokens        = usage_dict["total_tokens"],
             )
+            assert usage is not None
             # Construct ChatCompletion with explicit parameters for type safety
             comps.append(ChatCompletion(
                 id=comp.get("id", "unknown"),
@@ -157,7 +170,7 @@ class Trajectory: # TODO: Port to serial
                 prompt_logprobs=comp.get("prompt_logprobs")
             ))
 
-        return Trajectory(
+        result = Trajectory(
             completions=comps,
             messages=data.get("messages", []),
             rewards=data.get("rewards", 0.0),
@@ -165,77 +178,143 @@ class Trajectory: # TODO: Port to serial
             replica=data.get("replica", 0),
             advantages=data.get("advantages", 0.0),
         )
+        assert result is not None
+        return result
 
     # ---------- JSONL convenience layer -----------------------------------
     def to_json(self) -> str:
-        return json.dumps(asdict(self), ensure_ascii=False)
+        assert self is not None
+        result = json.dumps(asdict(self), ensure_ascii=False)
+        assert result is not None
+        assert isinstance(result, str)
+        return result
 
     @staticmethod
     def to_jsonl(trajectories: List["Trajectory"]) -> str:
-        return "\n".join(t.to_json() for t in trajectories)
+        assert trajectories is not None
+        assert isinstance(trajectories, list)
+        result = "\n".join(t.to_json() for t in trajectories)
+        assert isinstance(result, str)
+        return result
 
     @staticmethod
     def from_json(json_str: str) -> "Trajectory":
-        return Trajectory.from_dict(json.loads(json_str))
+        assert json_str is not None
+        assert isinstance(json_str, str)
+        assert len(json_str) > 0
+        data = json.loads(json_str)
+        result = Trajectory.from_dict(data)
+        assert result is not None
+        return result
 
     @staticmethod
     def from_jsonl(jsonl_str: str) -> List["Trajectory"]:
-        return [Trajectory.from_json(line) for line in jsonl_str.strip().splitlines() if line]
+        assert jsonl_str is not None
+        assert isinstance(jsonl_str, str)
+        result = [Trajectory.from_json(line) for line in jsonl_str.strip().splitlines() if line]
+        assert isinstance(result, list)
+        return result
 
     # ---------- disk I/O ---------------------------------------------------
     @staticmethod
     def save_jsonl(trajectories: List["Trajectory"], filepath: str) -> None:
-        Path(filepath).write_text(Trajectory.to_jsonl(trajectories), encoding="utf-8")
+        assert trajectories is not None
+        assert isinstance(trajectories, list)
+        assert filepath is not None
+        assert len(filepath) > 0
+        jsonl_content = Trajectory.to_jsonl(trajectories)
+        assert jsonl_content is not None
+        path_obj = Path(filepath)
+        path_obj.write_text(jsonl_content, encoding="utf-8")
+        assert path_obj.exists()
 
     @staticmethod
     def load_jsonl(filepath: str) -> List["Trajectory"]:
-        return Trajectory.from_jsonl(Path(filepath).read_text(encoding="utf-8"))
+        assert filepath is not None
+        assert len(filepath) > 0
+        path_obj = Path(filepath)
+        assert path_obj.exists(), f"File not found: {filepath}"
+        assert path_obj.is_file()
+        content = path_obj.read_text(encoding="utf-8")
+        result = Trajectory.from_jsonl(content)
+        assert result is not None
+        assert isinstance(result, list)
+        return result
 
     @staticmethod
     def load_jsonl_streaming(filepath: str) -> Iterator["Trajectory"]:
+        assert filepath is not None
+        assert len(filepath) > 0
+        path_obj = Path(filepath)
+        assert path_obj.exists(), f"File not found: {filepath}"
+        assert path_obj.is_file()
+
         with open(filepath, 'r', encoding='utf-8') as f:
             for line in f:
-                line = line.strip()
-                if line:  # Skip empty lines
-                    yield Trajectory.from_json(line)
+                line_stripped = line.strip()
+                if line_stripped:  # Skip empty lines
+                    yield Trajectory.from_json(line_stripped)
 
     # ---------- helpers that work pre-/post-serialisation ------------------
     @staticmethod
     def _usage_total(usage: Union[Usage, Dict[str, Any]], key: str) -> int:
+        assert usage is not None
+        assert key is not None
+        assert isinstance(key, str)
         if isinstance(usage, Usage):
-            return getattr(usage, key, 0)
-        return usage.get(key, 0)
+            result = getattr(usage, key, 0)
+        else:
+            result = usage.get(key, 0)
+        assert isinstance(result, int)
+        assert result >= 0
+        return result
 
     @staticmethod
     def get_completion_tokens(traj: "Trajectory") -> int:
-        return sum(Trajectory._usage_total(c.usage, "completion_tokens") for c in traj.completions)
+        assert traj is not None
+        assert isinstance(traj, Trajectory)
+        result = sum(Trajectory._usage_total(c.usage, "completion_tokens") for c in traj.completions)
+        assert result >= 0
+        return result
 
     @staticmethod
     def get_total_tokens(traj: "Trajectory") -> int:
-        return sum(Trajectory._usage_total(c.usage, "total_tokens") for c in traj.completions[-1:])
+        assert traj is not None
+        assert isinstance(traj, Trajectory)
+        result = sum(Trajectory._usage_total(c.usage, "total_tokens") for c in traj.completions[-1:])
+        assert result >= 0
+        return result
 
     @staticmethod
     def hash(trajectory: "Trajectory") -> str:
-        import hashlib
         """Generate a hash for a single trajectory."""
+        import hashlib
+        assert trajectory is not None
+        assert isinstance(trajectory, Trajectory)
         traj_dict = asdict(trajectory)
+        assert traj_dict is not None
         traj_str = json.dumps(traj_dict, sort_keys=True)
-        return hashlib.sha256(traj_str.encode()).hexdigest()[:16]
+        assert traj_str is not None
+        result = hashlib.sha256(traj_str.encode()).hexdigest()[:16]
+        assert result is not None
+        assert isinstance(result, str)
+        assert len(result) == 16
+        return result
 
 @dataclass(frozen=True)
-class ToolFunctionParameter(SerialDataclass):
+class ToolFunctionParameter(JsonSerializable):
     properties: Dict[str, Any]
     type: str = "object"
 
 @dataclass(frozen=True)
-class ToolFunction(SerialDataclass):
+class ToolFunction(JsonSerializable):
     name: str
     description: str
     parameters: ToolFunctionParameter
     required: List[str] = field(default_factory=list)
 
 @dataclass(frozen=True)
-class Tool(SerialDataclass):
+class Tool(JsonSerializable):
     function: ToolFunction
     type: str = "function"
 
@@ -248,7 +327,7 @@ class StopReason(Enum):
     TASK_COMPLETED = "TASK_COMPLETED"
 
 @dataclass(frozen=True)
-class ToolResult(SerialDataclass):
+class ToolResult(JsonSerializable):
     call_id: str = ""
     ok: bool = False
     content: str = ""
@@ -256,7 +335,7 @@ class ToolResult(SerialDataclass):
     stop_reason: Optional[StopReason] = None
 
 @dataclass(frozen=True)
-class ToolConfirmResult(SerialDataclass):
+class ToolConfirmResult(JsonSerializable):
     """Result of tool confirmation"""
     proceed: bool
     tool_result: Optional[ToolResult] = None
@@ -291,7 +370,7 @@ class Environment(Protocol):
         ...
 
 @dataclass(frozen=True)
-class Endpoint(SerialDataclass):
+class Endpoint(JsonSerializable):
     provider: str
     model: str
     api_base: str = ""
@@ -307,7 +386,7 @@ class Endpoint(SerialDataclass):
     extra_params: Optional[Dict[str, Any]] = None
 
 @dataclass(frozen=True)
-class Actor(SerialDataclass):
+class Actor(JsonSerializable):
     trajectory: Trajectory
     endpoint: Endpoint
     tools: List[Tool] = field(default_factory=list)
