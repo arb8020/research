@@ -108,7 +108,8 @@ async def run_evaluation(config) -> dict:
         )
 
         # Run agent
-        run_config = RunConfig(on_chunk=stdout_handler)
+        # Note: Use None for on_chunk to avoid printing base64 images to stdout
+        run_config = RunConfig(on_chunk=None)
 
         try:
             states = await run_agent(state, run_config)
