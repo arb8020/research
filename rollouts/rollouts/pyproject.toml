@@ -8,6 +8,7 @@ dependencies = [
     "anthropic>=0.40.0",
     "dacite>=1.8.0",
     "aiohttp>=3.9.0",
+    "shared @ git+https://github.com/arb8020/research.git#subdirectory=shared",
 ]
 
 [project.optional-dependencies]

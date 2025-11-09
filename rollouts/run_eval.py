@@ -11,15 +11,19 @@ Usage:
 import asyncio
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import Optional
 
 from rollouts.dtypes import Endpoint, Actor, AgentState
 from rollouts.agents import run_agent, RunConfig, stdout_handler
+from rollouts.logging_utils import init_rollout_logging
+
+logger = logging.getLogger(__name__)
 
 
-async def run_evaluation(config) -> dict:
+async def run_evaluation(config, result_dir: Path) -> dict:
     """Run evaluation on dataset with environment.
 
     Generic evaluation loop:
@@ -38,8 +42,7 @@ async def run_evaluation(config) -> dict:
     Returns:
         Results dict with summary and per-sample results
     """
-    print(f"🚀 Running evaluation: {config.experiment_name}")
-    print("=" * 60)
+    logger.info("=" * 60)
 
     # Load dataset
     assert config.load_dataset is not None, "Config must have load_dataset function"
@@ -55,7 +58,7 @@ async def run_evaluation(config) -> dict:
         applications=config.filters.applications if config.filters.applications else None,
         ui_types=config.filters.ui_types if config.filters.ui_types else None,
     )
-    print(f"📊 Loaded {len(dataset)} samples from {config.dataset.dataset_path}")
+    logger.info(f"📊 Loaded {len(dataset)} samples from {config.dataset.dataset_path}")
 
     # Create endpoint
     endpoint = Endpoint(
@@ -65,14 +68,14 @@ async def run_evaluation(config) -> dict:
         temperature=config.temperature,
         max_tokens=config.max_output_tokens,
     )
-    print(f"🔗 Endpoint: {config.provider} @ {config.api_base}")
-    print(f"🤖 Model: {config.model_name}")
+    logger.info(f"🔗 Endpoint: {config.provider} @ {config.api_base}")
+    logger.info(f"🤖 Model: {config.model_name}")
 
     # Create environment instance
     assert config.environment is not None, "Config must have environment"
     environment = config.environment()
-    print(f"🌍 Environment: {environment.__class__.__name__}")
-    print()
+    logger.info(f"🌍 Environment: {environment.__class__.__name__}")
+    logger.info("")
 
     # Run on each sample
     results = []
@@ -80,15 +83,15 @@ async def run_evaluation(config) -> dict:
     num_completed = 0
 
     for i, row in enumerate(dataset):
-        print(f"\n{'─' * 60}")
-        # Print sample identifier (different for each dataset)
+        logger.info(f"\n{'─' * 60}")
+        # Log sample identifier (different for each dataset)
         if "question" in row:
-            print(f"Sample {i+1}/{len(dataset)}: {row['question'][:80]}")
+            logger.info(f"Sample {i+1}/{len(dataset)}: {row['question'][:80]}")
         elif "instruction" in row:
-            print(f"Sample {i+1}/{len(dataset)}: {row['instruction'][:80]}")
+            logger.info(f"Sample {i+1}/{len(dataset)}: {row['instruction'][:80]}")
         else:
-            print(f"Sample {i+1}/{len(dataset)}")
-        print(f"{'─' * 60}\n")
+            logger.info(f"Sample {i+1}/{len(dataset)}")
+        logger.info(f"{'─' * 60}\n")
 
         # Transform to trajectory
         assert config.to_trajectory is not None, "Config must have to_trajectory"
@@ -152,12 +155,10 @@ async def run_evaluation(config) -> dict:
 
             results.append(result)
 
-            print(f"\n✅ Completed in {final_state.turn_idx} turns | Reward: {reward}")
+            logger.info(f"\n✅ Completed in {final_state.turn_idx} turns | Reward: {reward}")
 
         except Exception as e:
-            print(f"\n❌ Error: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"Sample {i+1} failed: {e}", exc_info=True)
 
             result = {
                 "sample_id": i,
@@ -167,13 +168,13 @@ async def run_evaluation(config) -> dict:
             results.append(result)
 
     # Compute summary
-    print(f"\n{'=' * 60}")
-    print("📊 SUMMARY")
-    print(f"{'=' * 60}")
-    print(f"Total samples: {len(dataset)}")
-    print(f"Completed: {num_completed}")
-    print(f"Errors: {len(dataset) - num_completed}")
-    print(f"Mean reward: {total_reward / num_completed if num_completed > 0 else 0.0:.3f}")
+    logger.info(f"\n{'=' * 60}")
+    logger.info("📊 SUMMARY")
+    logger.info(f"{'=' * 60}")
+    logger.info(f"Total samples: {len(dataset)}")
+    logger.info(f"Completed: {num_completed}")
+    logger.info(f"Errors: {len(dataset) - num_completed}")
+    logger.info(f"Mean reward: {total_reward / num_completed if num_completed > 0 else 0.0:.3f}")
 
     summary = {
         "experiment_name": config.experiment_name,
@@ -193,7 +194,7 @@ async def run_evaluation(config) -> dict:
 def main():
     parser = argparse.ArgumentParser(description="Run generic evaluation")
     parser.add_argument("--config", type=Path, required=True, help="Config file path")
-    parser.add_argument("--output", type=Path, help="Output JSON file (default: results/<experiment_name>.json)")
+    parser.add_argument("--output", type=Path, help="Output JSON file (optional, overrides default timestamped path)")
 
     args = parser.parse_args()
 
@@ -217,18 +218,26 @@ def main():
         print("   This config appears to be old-style. Please update to rollouts-style.")
         return 1
 
-    # Run evaluation
-    results_dict = asyncio.run(run_evaluation(config))
+    # Initialize logging with timestamped results directory
+    result_dir = init_rollout_logging(
+        experiment_name=config.experiment_name,
+        results_base_dir=config.save_dir if hasattr(config, "save_dir") else Path("results"),
+        log_level="INFO",
+    )
 
-    # Save results
+    logger.info(f"🚀 Running evaluation: {config.experiment_name}")
+
+    # Run evaluation
+    results_dict = asyncio.run(run_evaluation(config, result_dir))
+
+    # Save results to timestamped directory
     if config.save_json:
-        output_path = args.output or (config.save_dir / f"{config.experiment_name}.json")
-        config.save_dir.mkdir(parents=True, exist_ok=True)
+        output_path = args.output or (result_dir / f"{config.experiment_name}_results.json")
 
         with open(output_path, 'w') as f:
             json.dump(results_dict, f, indent=2)
 
-        print(f"\n💾 Saved results to: {output_path}")
+        logger.info(f"💾 Saved results to: {output_path}")
 
     return 0
 
