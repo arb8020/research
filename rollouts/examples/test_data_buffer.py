@@ -7,10 +7,10 @@ Simple smoke test to verify DataBuffer works correctly.
 import sys
 from pathlib import Path
 
-# Add rollouts to path
+# Add parent to path for both rollouts and training packages
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from rollouts.training.data_buffer import DataBuffer, load_prompts_from_list
+from training.data_buffer import DataBuffer, load_prompts_from_list
 
 
 def test_basic_get_prompts():
