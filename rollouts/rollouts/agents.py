@@ -1,7 +1,6 @@
 # Core agent execution framework
 
 import sys
-import asyncio
 import json
 import logging
 import os

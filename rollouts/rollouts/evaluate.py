@@ -7,11 +7,11 @@ by accepting adapter functions as parameters.
 Style: Tiger Style + tuple returns + single assignment.
 """
 
-import asyncio
 import logging
 from dataclasses import asdict
 from typing import Dict, Any, List, Callable, Iterator, Tuple
 from tqdm.asyncio import tqdm
+import trio
 
 from .dtypes import Endpoint, Trajectory, Message
 from .rollout_legacy import generate  # TODO: Migrate to providers.rollout_openai
@@ -144,7 +144,7 @@ async def evaluate_dataset(
     assert isinstance(dataset_list, list)
 
     # Evaluate with concurrency control and progress tracking
-    semaphore = asyncio.Semaphore(max_concurrent)
+    semaphore = trio.Semaphore(max_concurrent)
     pbar = tqdm(total=len(dataset_list), desc=eval_name, unit="sample", disable=not verbose)
     completed_count = 0
     total_accuracy = 0.0
@@ -165,8 +165,14 @@ async def evaluate_dataset(
             return result
 
     # Run all evaluations with progress bar
-    tasks = [eval_with_semaphore(i, s) for i, s in enumerate(dataset_list)]
-    results = await asyncio.gather(*tasks)
+    results = []
+    async with trio.open_nursery() as nursery:
+        async def run_and_collect(idx: int, sample: Dict[str, Any]):
+            result = await eval_with_semaphore(idx, sample)
+            results.append(result)
+
+        for i, s in enumerate(dataset_list):
+            nursery.start_soon(run_and_collect, i, s)
     pbar.close()
 
     # Compute summary metrics for all reward functions

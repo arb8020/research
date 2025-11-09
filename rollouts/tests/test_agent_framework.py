@@ -4,7 +4,8 @@
 Tests basic functionality without needing API keys.
 """
 
-import asyncio
+import pytest
+import trio
 from rollouts import (
     Message, Trajectory, Tool, ToolFunction, ToolFunctionParameter,
     ToolCall, ToolResult, Endpoint, Actor, Environment, AgentState,
@@ -48,6 +49,7 @@ def test_environment():
     print(f"  ✓ Calculator has {len(tools)} tools: {[t.function.name for t in tools]}")
 
 
+@pytest.mark.trio
 async def test_tool_execution():
     """Test that tools can be executed."""
     print("✓ Testing tool execution...")

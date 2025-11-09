@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import copy
 import json
 import logging
@@ -12,7 +11,8 @@ import time
 from dataclasses import replace
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional
 
-import aiohttp
+import httpx
+import trio
 from anthropic import AsyncAnthropic
 from dacite import from_dict
 from openai import AsyncOpenAI
@@ -440,50 +440,49 @@ async def rollout_sglang(
     print(f"🔥 Request params keys: {list(params.keys())}")
     sys.stdout.flush()
 
-    timeout = aiohttp.ClientTimeout(total=30)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
+    async with httpx.AsyncClient(timeout=30.0) as client:
         for attempt in range(1, max_api_retries + 1):
             try:
                 print(f"🔥 Attempt {attempt}: Sending HTTP request...")
                 sys.stdout.flush()
-                async with session.post(api_base, json=params, headers=headers) as response:
-                    if response.status != 200:
-                        error_body = await response.text()
-                        print(f"❌ Server returned {response.status}: {error_body}")
+                response = await client.post(api_base, json=params, headers=headers)
+                if response.status_code != 200:
+                    error_body = response.text
+                    print(f"❌ Server returned {response.status_code}: {error_body}")
 
-                        if "maximum context length" in error_body.lower():
-                            print("💡 CONTEXT LENGTH ERROR DETECTED:")
-                            print("   • This is NOT a server startup failure - server is working correctly")
-                            print(
-                                f"   • Your max_tokens ({params.get('max_tokens')}) exceeds server's limit"
-                            )
-                            print(
-                                "   • FIX: Reduce max_tokens to a smaller value (try "
-                                f"{params.get('max_tokens', 8192) // 2})"
-                            )
-                            print(
-                                "   • OR: Redeploy server with larger --max-model-len"
-                            )
-                            print(
-                                "🛑 Stopping retries - context length errors cannot be fixed by retrying"
-                            )
-                            raise Exception(f"Context length exceeded: {error_body}")
-                        elif "not a valid parameter" in error_body.lower():
-                            print("💡 PARAMETER ERROR DETECTED:")
-                            print(
-                                "   • Server doesn't support one of your parameters"
-                            )
-                            print(
-                                f"   • Your parameters: {list(params.keys())}"
-                            )
-                            print(
-                                "   • Try removing 'logprobs' or 'echo' parameters"
-                            )
+                    if "maximum context length" in error_body.lower():
+                        print("💡 CONTEXT LENGTH ERROR DETECTED:")
+                        print("   • This is NOT a server startup failure - server is working correctly")
+                        print(
+                            f"   • Your max_tokens ({params.get('max_tokens')}) exceeds server's limit"
+                        )
+                        print(
+                            "   • FIX: Reduce max_tokens to a smaller value (try "
+                            f"{params.get('max_tokens', 8192) // 2})"
+                        )
+                        print(
+                            "   • OR: Redeploy server with larger --max-model-len"
+                        )
+                        print(
+                            "🛑 Stopping retries - context length errors cannot be fixed by retrying"
+                        )
+                        raise Exception(f"Context length exceeded: {error_body}")
+                    elif "not a valid parameter" in error_body.lower():
+                        print("💡 PARAMETER ERROR DETECTED:")
+                        print(
+                            "   • Server doesn't support one of your parameters"
+                        )
+                        print(
+                            f"   • Your parameters: {list(params.keys())}"
+                        )
+                        print(
+                            "   • Try removing 'logprobs' or 'echo' parameters"
+                        )
 
-                        response.raise_for_status()
-                    else:
-                        completion = await response.json()
-                        break
+                    response.raise_for_status()
+                else:
+                    completion = response.json()
+                    break
             except Exception as e:
                 print(f"llm_call failed with {e}")
                 if attempt < max_api_retries:
@@ -492,7 +491,7 @@ async def rollout_sglang(
                             "timed out request, retrying with "
                             f"{backoff_base * 2 ** (attempt - 1)} seconds"
                         )
-                    await asyncio.sleep(backoff_base * 2 ** (attempt - 1))
+                    await trio.sleep(backoff_base * 2 ** (attempt - 1))
     assert completion
     message = completion["choices"][0]["message"]
     raw_tool_calls = message.get("tool_calls")
@@ -931,7 +930,7 @@ async def rollout_anthropic(
             if attempt < max_retries:
                 delay = base_delay * (2 ** attempt)
                 print(f"   Retrying in {delay}s...")
-                await asyncio.sleep(delay)
+                await trio.sleep(delay)
                 continue
             else:
                 # Log error with sanitized request details
