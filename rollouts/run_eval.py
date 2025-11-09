@@ -16,9 +16,14 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from dotenv import load_dotenv
+
 from rollouts.dtypes import Endpoint, Actor, AgentState
 from rollouts.agents import run_agent, RunConfig, stdout_handler
 from rollouts.logging_utils import init_rollout_logging
+
+# Load environment variables from .env file
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
