@@ -137,6 +137,7 @@ class Trajectory(JsonSerializable):
     group: int = 0
     replica: int = 0
     advantages: float = 0.0     # scalar; broadcast later if needed
+    metadata: Dict[str, Any] = field(default_factory=dict)  # For dataset-specific info (e.g., ground truth)
 
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> "Trajectory":
