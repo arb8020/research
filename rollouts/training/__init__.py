@@ -19,7 +19,7 @@ Usage:
 """
 
 from training.data_buffer import DataBuffer, load_prompts_from_jsonl, load_prompts_from_list
-from training.types import Sample, RolloutConfig, RolloutBatch, TrainingConfig
+from training.types import Sample, RolloutConfig, RolloutBatch, TrainingConfig, RLTrainingConfig
 from training.sft import (
     compute_loss_mask,
     tokenize_conversation,
@@ -50,6 +50,21 @@ from training.weight_sync import (
     update_vllm_weights_from_disk,
     sync_weights_to_engines,
 )
+from training.sft_loop import (
+    run_sft_training,
+    collate_batch,
+    prepare_sft_batch,
+)
+from training.rl_loop import (
+    run_rl_training,
+    compute_reward,
+    prepare_grpo_batch,
+    compute_advantages,
+)
+from training.rl_losses import (
+    grpo_loss,
+    ppo_loss,
+)
 
 __all__ = [
     # Data management
@@ -61,6 +76,7 @@ __all__ = [
     "RolloutConfig",
     "RolloutBatch",
     "TrainingConfig",
+    "RLTrainingConfig",
     # SFT functions
     "compute_loss_mask",
     "tokenize_conversation",
@@ -89,4 +105,16 @@ __all__ = [
     "update_sglang_weights_from_disk",
     "update_vllm_weights_from_disk",
     "sync_weights_to_engines",
+    # SFT training loop (Phase 2)
+    "run_sft_training",
+    "collate_batch",
+    "prepare_sft_batch",
+    # RL training loop (Phase 3)
+    "run_rl_training",
+    "compute_reward",
+    "prepare_grpo_batch",
+    "compute_advantages",
+    # RL losses (Phase 3)
+    "grpo_loss",
+    "ppo_loss",
 ]

@@ -168,23 +168,54 @@ class RolloutConfig:
 
 @dataclass
 class TrainingConfig:
-    """High-level training configuration.
+    """Configuration for SFT training loop.
+
+    Pure dataclass - all parameters explicit.
 
     Attributes:
-        algorithm: Training algorithm ("sft", "grpo", "ppo")
-        num_epochs: Number of epochs to train
-        learning_rate: Learning rate
-        batch_size: Training batch size
+        num_steps: Total training steps
+        batch_size: Batch size (used for cycling through samples)
+        log_every: Log metrics every N steps
+        checkpoint_every: Save checkpoint every N steps
 
     Example:
         >>> config = TrainingConfig(
-        ...     algorithm="sft",
-        ...     num_epochs=3,
-        ...     learning_rate=1e-5,
+        ...     num_steps=1000,
+        ...     batch_size=4,
+        ...     log_every=100,
+        ...     checkpoint_every=500,
         ... )
     """
 
-    algorithm: str
-    num_epochs: int
-    learning_rate: float
-    batch_size: int = 32
+    num_steps: int
+    batch_size: int
+    log_every: int = 100
+    checkpoint_every: int = 500
+
+
+@dataclass
+class RLTrainingConfig:
+    """Configuration for RL training loop.
+
+    Extends TrainingConfig with RL-specific settings.
+
+    Attributes:
+        num_steps: Total training steps
+        sync_every: Sync weights to inference engines every N steps
+        baseline: Baseline for advantage computation
+        log_every: Log metrics every N steps
+        checkpoint_every: Save checkpoint every N steps
+
+    Example:
+        >>> config = RLTrainingConfig(
+        ...     num_steps=1000,
+        ...     sync_every=10,
+        ...     baseline=0.5,
+        ... )
+    """
+
+    num_steps: int
+    sync_every: int = 10
+    baseline: float = 0.0
+    log_every: int = 10
+    checkpoint_every: int = 100
