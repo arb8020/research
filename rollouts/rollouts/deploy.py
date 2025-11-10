@@ -520,6 +520,11 @@ def build_sglang_command(config: ServerConfig) -> str:
     # Engine configuration
     if config.attention_backend:
         cmd_parts.append(f"--attention-backend {config.attention_backend}")
+        # Also set multimodal attention backend to avoid FA3 on vision components
+        cmd_parts.append(f"--mm-attention-backend {config.attention_backend}")
+
+    # Note: flash_attn_version could be set via environment variable if needed
+    # SGLANG_FLASHINFER_FORCE_FLASHINFER_ATTN_VERSION in the tmux session
 
     return " \\\n    ".join(cmd_parts)
 
