@@ -140,41 +140,58 @@ def collate_batch(
 
 
 def prepare_sft_batch(samples: List[Sample]) -> Dict[str, Any]:
-    """Pure function: Convert samples to training batch.
+    """Pure function: Convert samples to training batch using sequence packing.
+
+    Uses SLIME-style packing: concatenates sequences instead of padding.
+    More efficient than padding (no wasted computation on pad tokens).
 
     Args:
         samples: List of Sample objects
 
     Returns:
-        Batch dict with {input_ids, labels, loss_mask}
+        Batch dict with:
+        - tokens: Concatenated token sequence [total_tokens]
+        - labels: Same as tokens (for causal LM)
+        - loss_mask: Concatenated loss mask [total_tokens]
+        - cu_seqlens: Cumulative sequence lengths [batch_size + 1]
+        - position_ids: Position IDs for each token [total_tokens]
+
+    Example:
+        >>> samples = [Sample(tokens=[1,2,3]), Sample(tokens=[4,5])]
+        >>> batch = prepare_sft_batch(samples)
+        >>> batch["tokens"]  # tensor([1,2,3,4,5])
+        >>> batch["cu_seqlens"]  # tensor([0, 3, 5])
     """
     import torch
 
-    # Stack tensors
-    # Note: Samples should already have torch tensors in tokens/loss_mask
-    # If they're lists, convert them
-    input_ids_list = []
-    labels_list = []
-    loss_mask_list = []
+    # Packing (SLIME pattern): concatenate sequences instead of padding
+    # This is more efficient - no wasted computation on padding tokens
+    flat_tokens = []
+    flat_masks = []
+    flat_position_ids = []
+    cu_seqlens = [0]  # Cumulative sequence lengths
 
     for s in samples:
-        # Convert to tensors if needed
-        if isinstance(s.tokens, list):
-            input_ids_list.append(torch.tensor(s.tokens, dtype=torch.long))
-            labels_list.append(torch.tensor(s.tokens, dtype=torch.long))  # Same as input for causal LM
-            loss_mask_list.append(torch.tensor(s.loss_mask, dtype=torch.float))
-        else:
-            input_ids_list.append(s.tokens)
-            labels_list.append(s.tokens)
-            loss_mask_list.append(s.loss_mask)
+        # Convert to lists if needed
+        tokens = s.tokens if isinstance(s.tokens, list) else s.tokens.tolist()
+        mask = s.loss_mask if isinstance(s.loss_mask, list) else s.loss_mask.tolist()
 
-    # Stack into batch
-    input_ids = torch.stack(input_ids_list)
-    labels = torch.stack(labels_list)
-    loss_mask = torch.stack(loss_mask_list)
+        # Concatenate this sequence
+        flat_tokens.extend(tokens)
+        flat_masks.extend(mask)
+        # Position IDs reset for each sequence
+        flat_position_ids.extend(range(len(tokens)))
 
+        # Track sequence boundary
+        cu_seqlens.append(cu_seqlens[-1] + len(tokens))
+
+    # Convert to tensors
+    # Add batch dimension [1, total_tokens] for compatibility with HF models
+    # Note: For Flash Attention / advanced packing, this would stay 1D with cu_seqlens
     return {
-        "input_ids": input_ids,
-        "labels": labels,
-        "loss_mask": loss_mask,
+        "input_ids": torch.tensor(flat_tokens, dtype=torch.long).unsqueeze(0),  # [1, total_tokens]
+        "labels": torch.tensor(flat_tokens, dtype=torch.long).unsqueeze(0),  # [1, total_tokens]
+        "loss_mask": torch.tensor(flat_masks, dtype=torch.float).unsqueeze(0),  # [1, total_tokens]
+        "cu_seqlens": torch.tensor(cu_seqlens, dtype=torch.long),  # [batch_size + 1]
+        "position_ids": torch.tensor(flat_position_ids, dtype=torch.long).unsqueeze(0),  # [1, total_tokens]
     }
