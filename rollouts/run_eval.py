@@ -18,11 +18,11 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from tqdm import tqdm
 
 from rollouts.dtypes import Endpoint, Actor, AgentState
 from rollouts.agents import run_agent, RunConfig, stdout_handler
 from rollouts.logging_utils import init_rollout_logging
+from rollouts.progress import tqdm
 
 # Load environment variables from .env file
 load_dotenv()
