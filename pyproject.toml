@@ -11,7 +11,8 @@ requires-python = ">=3.10"
 dependencies = [
     "broker",
     "bifrost",
-    "shared"
+    "shared",
+    "rollouts"
 ]
 
 [project.optional-dependencies]
@@ -152,9 +153,26 @@ ignore = []
 [tool.ty.src]
 exclude = [
     "**/originals/**",  # Exclude all third-party code in originals/ directories
+    "references/**",  # Exclude all reference repositories
+    "dev/corpus-proximity/**",  # Exclude corpus-proximity experimental code
     "dev/speedrun/history/**",  # Exclude historical speedrun versions
     "dev/speedrun/single-file.py",  # Speedrun example with type issues
     "dev/speedrun/single-file-smoke.py",  # Speedrun example with type issues
     "dev/speedrun/train/00_test_deployment.py",  # Training deployment test
     "dev/nano-inference/basic_blocks.py",  # Incomplete/skeleton code
 ]
+
+[tool.ty.rules]
+# Keep unresolved-import as error by default (for internal packages)
+# We'll override to warning for specific directories with external deps
+unresolved-import = "error"
+
+# Override: Downgrade to warnings for dev directories that use external deps
+[[tool.ty.overrides]]
+include = [
+    "dev/**",  # Dev experiments use various external deps
+    "scripts/**",  # Scripts may use optional deps
+]
+
+[tool.ty.overrides.rules]
+unresolved-import = "warn"

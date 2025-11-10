@@ -9,15 +9,9 @@ actual SSH connections.
 import asyncio
 import os
 import stat
-import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
-
-# Add research root to path for imports (relative to this file)
-_research_root = Path(__file__).parent.parent
-if str(_research_root) not in sys.path:
-    sys.path.insert(0, str(_research_root))
 
 from shared.ssh_foundation import (
     SSHConnectionInfo, 

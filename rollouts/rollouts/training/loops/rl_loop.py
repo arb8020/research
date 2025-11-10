@@ -5,10 +5,10 @@ No classes, no hidden state - just explicit orchestration.
 """
 
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from rollouts.training.backends import PyTorchTrainingBackend
-from rollouts.training.data.data_buffer import DataBuffer
+from rollouts.training.datasets.data_buffer import DataBuffer
 from rollouts.training.metrics import MetricsLogger
 from rollouts.training.rollout_gen.async_rollout_manager import AsyncRolloutManager
 from rollouts.training.types import RLTrainingConfig, RolloutBatch, Sample
@@ -150,7 +150,7 @@ def prepare_grpo_batch(
     batch: RolloutBatch,
     rewards: List[float],
     config: RLTrainingConfig,
-) -> Dict[str, any]:
+) -> Dict[str, Any]:
     """Pure function: Prepare GRPO training batch.
 
     Args:

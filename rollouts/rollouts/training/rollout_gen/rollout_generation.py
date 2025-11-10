@@ -13,7 +13,7 @@ See docs/ROLLOUTMANAGER_DEPRECATION.md for migration guide.
 
 from typing import Any, Iterator
 
-from rollouts.training.data.data_buffer import DataBuffer
+from rollouts.training.datasets.data_buffer import DataBuffer
 from rollouts.training.types import RolloutBatch, RolloutConfig, Sample
 
 

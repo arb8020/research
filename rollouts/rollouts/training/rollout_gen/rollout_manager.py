@@ -37,7 +37,7 @@ Following Casey Muratori's principles:
 import warnings
 from typing import Any, Iterator
 
-from rollouts.training.data.data_buffer import DataBuffer
+from rollouts.training.datasets.data_buffer import DataBuffer
 from rollouts.training.rollout_gen.rollout_generation import (
     apply_sample_transforms,
     convert_to_batch,

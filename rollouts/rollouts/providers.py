@@ -456,9 +456,11 @@ async def rollout_sglang(
                         print(
                             f"   • Your max_tokens ({params.get('max_tokens')}) exceeds server's limit"
                         )
+                        max_tokens_value = params.get('max_tokens', 8192)
+                        suggested_value = int(max_tokens_value) // 2 if isinstance(max_tokens_value, (int, float)) else 4096
                         print(
                             "   • FIX: Reduce max_tokens to a smaller value (try "
-                            f"{params.get('max_tokens', 8192) // 2})"
+                            f"{suggested_value})"
                         )
                         print(
                             "   • OR: Redeploy server with larger --max-model-len"
