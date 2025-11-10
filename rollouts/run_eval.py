@@ -54,17 +54,26 @@ async def run_evaluation(config, result_dir: Path) -> dict:
     assert config.load_dataset is not None, "Config must have load_dataset function"
     assert config.dataset.dataset_path.exists(), f"Dataset not found: {config.dataset.dataset_path}"
 
-    # Call dataset loader with appropriate arguments
-    # Different loaders need different args, so we pass relevant config fields
-    dataset = config.load_dataset(
-        data_path=config.dataset.dataset_path,
-        annotation_file=config.dataset.annotation_files[0] if config.dataset.annotation_files else None,
-        limit=config.filters.limit,
-        platforms=config.filters.platforms if config.filters.platforms else None,
-        applications=config.filters.applications if config.filters.applications else None,
-        ui_types=config.filters.ui_types if config.filters.ui_types else None,
-    )
-    logger.info(f"📊 Loaded {len(dataset)} samples from {config.dataset.dataset_path}")
+    # Load from all annotation files and concatenate
+    dataset = []
+    for annotation_file in config.dataset.annotation_files:
+        logger.info(f"📂 Loading {annotation_file}...")
+        file_dataset = config.load_dataset(
+            data_path=config.dataset.dataset_path,
+            annotation_file=annotation_file,
+            limit=None,  # Don't limit per file, apply global limit later
+            platforms=config.filters.platforms if config.filters.platforms else None,
+            applications=config.filters.applications if config.filters.applications else None,
+            ui_types=config.filters.ui_types if config.filters.ui_types else None,
+        )
+        dataset.extend(file_dataset)
+        logger.info(f"   Loaded {len(file_dataset)} samples from {annotation_file}")
+
+    # Apply global limit if specified
+    if config.filters.limit is not None:
+        dataset = dataset[:config.filters.limit]
+
+    logger.info(f"📊 Total: {len(dataset)} samples from {len(config.dataset.annotation_files)} file(s)")
 
     # Create endpoint - read API key from environment
     api_key = ""
