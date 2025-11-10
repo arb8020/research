@@ -34,6 +34,14 @@ from training.async_rollout_manager import (
     AsyncRolloutManager,
     generate_rollout_batch,
 )
+from training.weight_sync import (
+    InferenceEngine,
+    SGLangEngine,
+    VLLMEngine,
+    update_sglang_weights_from_disk,
+    update_vllm_weights_from_disk,
+    sync_weights_to_engines,
+)
 
 __all__ = [
     # Data management
@@ -60,4 +68,11 @@ __all__ = [
     # Async orchestration (D4)
     "AsyncRolloutManager",
     "generate_rollout_batch",
+    # Weight sync (D5)
+    "InferenceEngine",
+    "SGLangEngine",
+    "VLLMEngine",
+    "update_sglang_weights_from_disk",
+    "update_vllm_weights_from_disk",
+    "sync_weights_to_engines",
 ]
