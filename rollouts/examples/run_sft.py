@@ -11,6 +11,7 @@ Demonstrates:
 """
 
 import sys
+import logging
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -22,6 +23,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from rollouts.training.backends import PyTorchTrainingBackend
 from training.sft_loop import run_sft_training
 from training.types import Sample, SFTTrainingConfig
+
+# Setup basic logging for examples
+logging.basicConfig(level=logging.INFO, format='%(message)s')
+logger = logging.getLogger(__name__)
 
 
 # ────────────────────── Simple Model ──────────────────────
