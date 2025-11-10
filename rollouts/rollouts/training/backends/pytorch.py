@@ -33,14 +33,16 @@ class PyTorchTrainingBackend:
     Example:
         >>> model = GPT(config).to("cuda")
         >>> optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+        >>> device = torch.device("cuda:0")
         >>> backend = PyTorchTrainingBackend(
         ...     model=model,
         ...     optimizer=optimizer,
         ...     loss_fn=my_loss_fn,
         ...     checkpoint_dir=Path("/checkpoints"),
+        ...     device=device,
         ... )
         >>>
-        >>> # Training loop
+        >>> # Training loop (batches automatically moved to device)
         >>> metrics = await backend.forward_backward(batch).result()
         >>> step_metrics = await backend.optim_step().result()
         >>>
@@ -52,6 +54,7 @@ class PyTorchTrainingBackend:
     optimizer: torch.optim.Optimizer
     loss_fn: Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]
     checkpoint_dir: Path
+    device: Optional[torch.device] = None  # Tiger Style: Explicit device (optional for CPU-only)
 
     # State (SLIME-inspired)
     weight_version: int = 0
@@ -98,6 +101,11 @@ class PyTorchTrainingBackend:
         try:
             # Zero gradients
             self.optimizer.zero_grad()
+
+            # Move batch to device if specified (Tiger Style: explicit device handling)
+            if self.device is not None:
+                batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v
+                        for k, v in batch.items()}
 
             # Forward pass
             logits = self.model(batch["input_ids"])
