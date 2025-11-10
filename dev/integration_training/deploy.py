@@ -33,6 +33,86 @@ logger = logging.getLogger(__name__)
 # Remote workspace path constant
 REMOTE_WORKSPACE_PATH = "~/.bifrost/workspace/dev/integration_training"
 
+# GPU availability thresholds (from clicker pattern)
+DEFAULT_MEMORY_THRESHOLD_MB = 1000  # Consider GPU busy if > 1GB used
+DEFAULT_UTIL_THRESHOLD_PCT = 5      # Consider GPU busy if > 5% utilized
+
+
+def check_gpus_available(
+    bifrost_client: BifrostClient,
+    gpu_ids: list[int],
+    memory_threshold_mb: int = DEFAULT_MEMORY_THRESHOLD_MB,
+    util_threshold_pct: int = DEFAULT_UTIL_THRESHOLD_PCT,
+) -> tuple[bool, str]:
+    """Check if specified GPUs exist and are free (clicker pattern).
+
+    GPU is "available" if:
+    1. GPU ID exists on remote (from nvidia-smi)
+    2. Memory used ≤ memory_threshold_mb (default 1GB)
+    3. Utilization ≤ util_threshold_pct (default 5%)
+
+    Tiger Style: Assert preconditions, explicit error messages.
+
+    Args:
+        bifrost_client: Connected bifrost client
+        gpu_ids: List of GPU IDs to check (e.g., [0, 2, 4])
+        memory_threshold_mb: Memory threshold in MB (default 1000 = 1GB)
+        util_threshold_pct: Utilization threshold % (default 5%)
+
+    Returns:
+        (True, "") if all GPUs are available
+        (False, error_message) if any GPU is unavailable or busy
+
+    Example:
+        >>> available, msg = check_gpus_available(client, [0, 1, 2])
+        >>> if not available:
+        ...     print(f"GPU check failed: {msg}")
+    """
+    assert len(gpu_ids) > 0, "Must specify at least one GPU to check"
+
+    try:
+        # Query all GPUs on remote
+        result = bifrost_client.exec(
+            "nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader,nounits"
+        )
+
+        if result.exit_code != 0:
+            return False, f"Failed to run nvidia-smi: {result.stderr}"
+
+        # Parse nvidia-smi output
+        gpu_stats = {}
+        for line in result.stdout.strip().splitlines():
+            parts = [p.strip() for p in line.split(',')]
+            if len(parts) != 3:
+                continue
+
+            try:
+                gpu_id = int(parts[0])
+                memory_mb = int(parts[1])
+                util_pct = int(parts[2])
+                gpu_stats[gpu_id] = {'memory_mb': memory_mb, 'util_pct': util_pct}
+            except ValueError:
+                continue
+
+        # Check each requested GPU
+        for gpu_id in gpu_ids:
+            # Check 1: Does GPU exist?
+            if gpu_id not in gpu_stats:
+                return False, f"GPU {gpu_id} not found on remote (available: {sorted(gpu_stats.keys())})"
+
+            # Check 2: Is GPU free?
+            stats = gpu_stats[gpu_id]
+            mem_mb = stats['memory_mb']
+            util = stats['util_pct']
+
+            if mem_mb > memory_threshold_mb or util > util_threshold_pct:
+                return False, f"GPU {gpu_id} is busy ({mem_mb}MB used, {util}% util)"
+
+        return True, ""
+
+    except Exception as e:
+        return False, f"GPU availability check failed: {e}"
+
 
 def load_config_from_file(config_path: str) -> Config:
     """Load config from Python file.
@@ -365,6 +445,21 @@ def main():
             logger.error("💡 After installing, retry the deployment")
             return 1
         logger.info("✅ All prerequisites present (uv, tmux)")
+
+        # Check GPU availability (Tiger Style: fail fast before deploying code)
+        gpu_ids = config.target.gpu_ranks
+        if gpu_ids:
+            logger.info(f"🔍 Checking GPU availability for GPUs: {gpu_ids}")
+            available, error_msg = check_gpus_available(bifrost_client, gpu_ids)
+            if not available:
+                logger.error(f"❌ GPU availability check failed: {error_msg}")
+                logger.error("")
+                logger.error("💡 Options:")
+                logger.error("   • Update gpu_ranks in config to use different GPUs")
+                logger.error("   • Wait for GPUs to become free")
+                logger.error("   • Check if GPU IDs are correct for this machine")
+                return 1
+            logger.info(f"✅ All requested GPUs are available: {gpu_ids}")
 
         # Deploy code
         workspace_path = deploy_code(bifrost_client)
