@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Optional
 
+import trio
+
 
 @dataclass
 class Sample:
@@ -223,3 +225,64 @@ class RLTrainingConfig:
     baseline: float = 0.0
     log_every: int = 10
     checkpoint_every: int = 100
+
+
+# ────────────────────── Futures (Tinker) ──────────────────────
+
+
+@dataclass
+class TrainFuture[T]:
+    """Future for training operations (Tinker-inspired).
+
+    Enables pipelining: submit work, wait later.
+
+    Uses trio primitives for async coordination.
+
+    Type parameter T is the result type (e.g., Dict[str, float]).
+
+    Example:
+        >>> future: TrainFuture[Dict[str, float]] = TrainFuture(operation="forward_backward")
+        >>> future.set_result({"loss": 0.5})
+        >>> result = await future.result()
+        >>> assert result["loss"] == 0.5
+    """
+
+    _event: trio.Event = field(default_factory=trio.Event)
+    _result: Optional[T] = None
+    operation: str = ""  # "forward_backward", "optim_step", etc.
+
+    async def result(self) -> T:
+        """Wait for completion and return result.
+
+        Blocks until set_result() is called.
+
+        Returns:
+            The result value set via set_result()
+
+        Raises:
+            AssertionError: If future completed without a result
+        """
+        await self._event.wait()
+        assert self._result is not None, f"Future for {self.operation} completed without result"
+        return self._result
+
+    def set_result(self, value: T) -> None:
+        """Set result and mark future as complete.
+
+        Args:
+            value: The result value to store
+
+        Side effects:
+            - Sets internal event, unblocking any waiters
+            - Future transitions to done state
+        """
+        self._result = value
+        self._event.set()
+
+    def done(self) -> bool:
+        """Check if future is complete (non-blocking).
+
+        Returns:
+            True if set_result() has been called, False otherwise
+        """
+        return self._event.is_set()
