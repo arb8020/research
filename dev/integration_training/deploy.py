@@ -449,7 +449,40 @@ def main():
         # Check GPU availability (Tiger Style: fail fast before deploying code)
         gpu_ids = config.target.gpu_ranks
         if gpu_ids:
-            logger.info(f"🔍 Checking GPU availability for GPUs: {gpu_ids}")
+            # First enumerate all physical GPUs on the node
+            logger.info("🔍 Enumerating GPUs on remote...")
+            result = bifrost_client.exec(
+                "nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader,nounits"
+            )
+            if result.exit_code == 0:
+                all_gpu_ids = []
+                free_gpu_ids = []
+                busy_gpu_ids = []
+
+                for line in result.stdout.strip().splitlines():
+                    parts = [p.strip() for p in line.split(',')]
+                    if len(parts) >= 3:
+                        try:
+                            gpu_id = int(parts[0])
+                            mem_mb = int(parts[1])
+                            util = int(parts[2])
+                            all_gpu_ids.append(gpu_id)
+
+                            # Check if free using same thresholds
+                            if mem_mb <= DEFAULT_MEMORY_THRESHOLD_MB and util <= DEFAULT_UTIL_THRESHOLD_PCT:
+                                free_gpu_ids.append(gpu_id)
+                            else:
+                                busy_gpu_ids.append(gpu_id)
+                        except ValueError:
+                            pass
+
+                logger.info(f"   Physical GPUs on node: {sorted(all_gpu_ids)}")
+                logger.info(f"   Available (free) GPUs:  {sorted(free_gpu_ids)}")
+                if busy_gpu_ids:
+                    logger.info(f"   Busy GPUs:              {sorted(busy_gpu_ids)}")
+
+            # Now check if requested GPUs are available
+            logger.info(f"🔍 Checking availability for requested GPUs: {gpu_ids}")
             available, error_msg = check_gpus_available(bifrost_client, gpu_ids)
             if not available:
                 logger.error(f"❌ GPU availability check failed: {error_msg}")
