@@ -145,7 +145,9 @@ def start_training(
     config_name = Path(config_path).name
 
     # Build training command
+    # Note: workspace_path is ~/.bifrost/workspace, we need to cd to dev/integration_training
     venv_path = f"{workspace_path}/.venv/bin/activate"
+    project_dir = f"{workspace_path}/dev/integration_training"
     gpu_ranks_str = ",".join(str(r) for r in config.target.gpu_ranks)
 
     # Get HF_TOKEN from local environment
@@ -153,6 +155,7 @@ def start_training(
 
     # Base command with environment variables
     cmd_parts = [
+        f"cd {project_dir}",
         f"source {venv_path}",
         f"export CUDA_VISIBLE_DEVICES={gpu_ranks_str}",
     ]
@@ -274,10 +277,11 @@ def sync_results(
     # Create local directory
     local_output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Download results
+    # Download results (recursive since remote_result_dir is a directory)
     result = bifrost_client.download_files(
         remote_path=f"{remote_result_dir}/",
-        local_path=str(local_output_dir)
+        local_path=str(local_output_dir),
+        recursive=True
     )
 
     if result and result.success:
@@ -361,8 +365,9 @@ def main():
         # Deploy code
         workspace_path = deploy_code(bifrost_client)
 
-        # Construct remote result directory
-        remote_result_dir = f"{workspace_path}/results/{result_dir_name}"
+        # Construct remote result directory (in project subdirectory)
+        project_dir = f"{workspace_path}/dev/integration_training"
+        remote_result_dir = f"{project_dir}/results/{result_dir_name}"
 
         # Start training
         tmux_session, error = start_training(
