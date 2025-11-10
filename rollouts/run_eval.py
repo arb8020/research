@@ -234,6 +234,17 @@ def main():
     assert hasattr(module, "config"), "Config file must export 'config' variable"
     config = module.config
 
+    # Resolve relative dataset paths relative to config file location
+    if hasattr(config, "dataset") and hasattr(config.dataset, "dataset_path"):
+        dataset_path = config.dataset.dataset_path
+        if not dataset_path.is_absolute():
+            # Make path relative to config file's directory
+            config_dir = Path(args.config).parent.absolute()
+            absolute_path = (config_dir / dataset_path).resolve()
+            # Update the dataset_path - need to work around frozen dataclass
+            object.__setattr__(config.dataset, "dataset_path", absolute_path)
+            print(f"📂 Resolved dataset path: {absolute_path}")
+
     # Check if we need rollouts-style evaluation
     if config.environment is None or config.to_trajectory is None:
         print("❌ Config missing environment or to_trajectory fields")
@@ -269,7 +280,7 @@ def main():
     logger.info(f"🚀 Running evaluation: {config.experiment_name}")
 
     # Run evaluation
-    results_dict = trio.run(run_evaluation(config, result_dir))
+    results_dict = trio.run(run_evaluation, config, result_dir)
 
     # Save results to timestamped directory
     if config.save_json:
