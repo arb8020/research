@@ -238,9 +238,11 @@ def main():
     if hasattr(config, "dataset") and hasattr(config.dataset, "dataset_path"):
         dataset_path = config.dataset.dataset_path
         if not dataset_path.is_absolute():
-            # Make path relative to config file's directory
-            config_dir = Path(args.config).parent.absolute()
-            absolute_path = (config_dir / dataset_path).resolve()
+            # Make path relative to project root (config file's grandparent directory)
+            # Config structure: <project_root>/configs/<config.py>
+            config_path = Path(args.config).absolute()
+            project_root = config_path.parent.parent  # Go up from configs/ to project root
+            absolute_path = (project_root / dataset_path).resolve()
             # Update the dataset_path - need to work around frozen dataclass
             object.__setattr__(config.dataset, "dataset_path", absolute_path)
             print(f"📂 Resolved dataset path: {absolute_path}")
