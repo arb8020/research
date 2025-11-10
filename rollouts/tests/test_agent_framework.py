@@ -61,7 +61,9 @@ async def test_tool_execution():
     endpoint = Endpoint(provider="test", model="test")
     actor = Actor(trajectory=Trajectory(), endpoint=endpoint, tools=env.get_tools())
     state = AgentState(actor=actor, environment=env, max_turns=1)
-    run_config = RunConfig(on_chunk=lambda x: asyncio.sleep(0))  # Dummy
+    async def _dummy_chunk(x):
+        await trio.lowlevel.checkpoint()
+    run_config = RunConfig(on_chunk=_dummy_chunk)  # Dummy
 
     result = await env.exec_tool(tool_call, state, run_config)
 
@@ -135,4 +137,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    trio.run(main)

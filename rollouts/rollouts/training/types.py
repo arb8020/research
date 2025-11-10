@@ -5,8 +5,10 @@ Tinker: Token-level loss weights for fine-grained control.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, TypeVar, Generic
 import trio
+
+T = TypeVar('T')
 
 # ────────────────────── Training Samples ──────────────────────
 
@@ -46,7 +48,7 @@ class Sample:
 
 
 @dataclass
-class TrainFuture[T]:
+class TrainFuture(Generic[T]):
     """Future for training operations (Tinker-inspired)
 
     Enables pipelining: submit work, wait later.

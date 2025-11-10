@@ -14,7 +14,6 @@ from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessageParam
 from openai.types import CompletionUsage
 
-import aiohttp
 from dacite import from_dict
 
 import copy

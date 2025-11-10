@@ -7,7 +7,6 @@ Adds conjunctive (decompose) and disjunctive (branch) search to any Environment.
 
 from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Callable
-import asyncio
 import json
 
 from ..dtypes import (

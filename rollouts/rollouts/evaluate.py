@@ -14,7 +14,7 @@ from tqdm.asyncio import tqdm
 import trio
 
 from .dtypes import Endpoint, Trajectory, Message
-from .rollout_legacy import generate  # TODO: Migrate to providers.rollout_openai
+from .providers import rollout_openai, rollout_anthropic, rollout_sglang
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,24 @@ async def evaluate_sample(
     assert rollout is not None
 
     # Generate response (Tiger Style: tuple return for explicit error handling)
-    result_rollout, error = await generate(endpoint, rollout)
+    # Route to appropriate provider based on endpoint
+    try:
+        if endpoint.provider == "anthropic":
+            completion = await rollout_anthropic(endpoint, rollout)
+        elif endpoint.provider == "sglang":
+            completion = await rollout_sglang(endpoint, rollout)
+        else:  # openai or compatible
+            completion = await rollout_openai(endpoint, rollout)
+
+        # Extract response and update trajectory
+        result_rollout = rollout
+        # Add assistant message from completion
+        assistant_msg = Message(role="assistant", content=completion.choices[0].message.content or "")
+        result_rollout = Trajectory(messages=result_rollout.messages + [assistant_msg])
+        error = None
+    except Exception as e:
+        result_rollout = None
+        error = str(e)
 
     if error:
         # Failed after retries - return zeros for all reward functions with error info

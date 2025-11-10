@@ -126,8 +126,11 @@ class FileCheckpointStore:
 
         path = self.directory / f"{checkpoint_id}.json"
         assert path.parent == self.directory  # Ensure no path traversal
-        with open(path, 'w') as f:
-            json.dump(data, f, indent=2)
+
+        # Use trio.Path for async file I/O
+        import trio
+        json_str = json.dumps(data, indent=2)
+        await trio.Path(path).write_text(json_str)
         assert path.exists()  # Verify file was written
     
     async def load(self, checkpoint_id: str) -> AgentState:
@@ -143,8 +146,10 @@ class FileCheckpointStore:
         assert path.exists(), f"Checkpoint file not found: {path}"
         assert path.is_file()
 
-        with open(path, 'r') as f:
-            data = json.load(f)
+        # Use trio.Path for async file I/O
+        import trio
+        json_str = await trio.Path(path).read_text()
+        data = json.loads(json_str)
 
         assert data is not None
         assert isinstance(data, dict)

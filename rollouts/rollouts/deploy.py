@@ -18,7 +18,7 @@ Usage:
     server_info, error = await deploy_sglang_server(config)
 """
 
-import asyncio
+import trio
 import logging
 import subprocess
 import time
@@ -614,10 +614,10 @@ async def _deploy_local(
 
     # Check if tmux session exists
     try:
-        result = subprocess.run(
+        result = await trio.run_process(
             ["tmux", "has-session", "-t", config.tmux_session_name],
-            capture_output=True,
-            timeout=5,
+            capture_stdout=True,
+            capture_stderr=True,
         )
         if result.returncode == 0:
             error_msg = (
@@ -639,15 +639,14 @@ tmux new-session -d -s {config.tmux_session_name} "
 
     logger.info("📦 Starting SGLang server in tmux...")
     try:
-        result = subprocess.run(
+        result = await trio.run_process(
             tmux_cmd,
             shell=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
+            capture_stdout=True,
+            capture_stderr=True,
         )
         if result.returncode != 0:
-            error_msg = f"Failed to start tmux: {result.stderr}"
+            error_msg = f"Failed to start tmux: {result.stderr.decode()}"
             logger.error(f"❌ {error_msg}")
             return None, error_msg
     except Exception as e:
@@ -926,30 +925,30 @@ async def _wait_for_health(
     Tiger Style: Tuple return for success/failure.
     Checks tmux session first to detect crashes early.
     """
-    import aiohttp
+    import httpx
 
     health_url = f"{server_info.url}/health"
     poll_interval = 5
     max_iterations = timeout_seconds // poll_interval
 
-    async with aiohttp.ClientSession() as session:
+    async with httpx.AsyncClient() as client:
         for i in range(max_iterations):
             # First check if tmux session is still alive
             try:
-                result = subprocess.run(
+                result = await trio.run_process(
                     ["tmux", "has-session", "-t", server_info.tmux_session],
-                    capture_output=True,
-                    timeout=5,
+                    capture_stdout=True,
+                    capture_stderr=True,
                 )
                 if result.returncode != 0:
                     error_msg = "Server crashed during startup (tmux session exited)"
                     logger.error(f"❌ {error_msg}")
                     # Fetch last 50 lines from log file
                     try:
-                        log_result = subprocess.run(
+                        log_result = await trio.run_process(
                             ["tail", "-50", "sglang_server.log"],
-                            capture_output=True,
-                            timeout=5,
+                            capture_stdout=True,
+                            capture_stderr=True,
                         )
                         if log_result.returncode == 0 and log_result.stdout:
                             logger.error("📋 Last 50 lines of server log:")
@@ -964,15 +963,15 @@ async def _wait_for_health(
 
             # Then check health endpoint
             try:
-                async with session.get(health_url, timeout=5) as resp:
-                    if resp.status == 200:
-                        logger.info(f"✅ Server is ready (took ~{(i+1)*poll_interval}s)")
-                        return True, None
+                resp = await client.get(health_url, timeout=5.0)
+                if resp.status_code == 200:
+                    logger.info(f"✅ Server is ready (took ~{(i+1)*poll_interval}s)")
+                    return True, None
             except Exception:
                 pass
 
             if i < max_iterations - 1:
-                await asyncio.sleep(poll_interval)
+                await trio.sleep(poll_interval)
 
     error_msg = f"Server failed to become ready within {timeout_seconds}s"
     logger.error(f"❌ {error_msg}")
@@ -1021,7 +1020,7 @@ async def _wait_for_health_remote(
             return True, None
 
         if i < max_iterations - 1:
-            await asyncio.sleep(poll_interval)
+            await trio.sleep(poll_interval)
 
     error_msg = f"Server failed to become ready within {timeout_seconds}s"
     logger.error(f"❌ {error_msg}")

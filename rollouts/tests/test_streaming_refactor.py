@@ -5,7 +5,7 @@ Validates that the refactored streaming functions maintain behavior
 while following Tiger Style patterns.
 """
 
-import asyncio
+import trio
 import json
 from typing import List
 from dataclasses import dataclass, field
@@ -268,5 +268,5 @@ async def main():
     return 0
 
 if __name__ == "__main__":
-    exit_code = asyncio.run(main())
+    exit_code = trio.run(main)
     exit(exit_code)
