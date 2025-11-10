@@ -520,8 +520,10 @@ def build_sglang_command(config: ServerConfig) -> str:
     # Engine configuration
     if config.attention_backend:
         cmd_parts.append(f"--attention-backend {config.attention_backend}")
-        # Also set multimodal attention backend to avoid FA3 on vision components
-        cmd_parts.append(f"--mm-attention-backend {config.attention_backend}")
+        # Set multimodal attention backend to avoid FA3 on Blackwell
+        # Valid mm backends: sdpa, fa3, triton_attn, ascend_attn, aiter_attn
+        # Use triton_attn for Blackwell (fa3 not supported)
+        cmd_parts.append("--mm-attention-backend triton_attn")
 
     # Note: flash_attn_version could be set via environment variable if needed
     # SGLANG_FLASHINFER_FORCE_FLASHINFER_ATTN_VERSION in the tmux session
@@ -532,7 +534,7 @@ def build_sglang_command(config: ServerConfig) -> str:
 async def deploy_sglang_server(
     config: ServerConfig,
     wait_for_ready: bool = True,
-    timeout_seconds: int = 300,
+    timeout_seconds: int = 600,  # 10 minutes for large model loading
 ) -> Tuple[Optional[ServerInfo], Optional[str]]:
     """Deploy SGLang server to local or remote GPU.
 
@@ -1029,6 +1031,20 @@ async def _wait_for_health_remote(
 
     error_msg = f"Server failed to become ready within {timeout_seconds}s"
     logger.error(f"❌ {error_msg}")
+
+    # Fetch logs on timeout to help debug
+    try:
+        log_result = bifrost_client.exec(
+            "tail -100 sglang_server.log 2>/dev/null || echo 'Could not read log file'"
+        )
+        if log_result.stdout and "Could not read log file" not in log_result.stdout:
+            logger.error("📋 Last 100 lines of server log:")
+            logger.error("=" * 60)
+            logger.error(log_result.stdout)
+            logger.error("=" * 60)
+    except Exception as e:
+        logger.warning(f"Could not fetch logs: {e}")
+
     return False, error_msg
 
 
