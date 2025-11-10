@@ -96,113 +96,121 @@ async def run_evaluation(config, result_dir: Path) -> dict:
     logger.info(f"🌍 Environment: {environment.__class__.__name__}")
     logger.info("")
 
-    # Run on each sample
-    results = []
-    total_reward = 0.0
-    num_completed = 0
+    # Run on each sample concurrently
+    results = [None] * len(dataset)  # Pre-allocate results list
+    max_concurrent = int(os.getenv("MAX_CONCURRENT", "10"))
+    semaphore = trio.Semaphore(max_concurrent)
 
-    for i, row in enumerate(dataset):
-        logger.info(f"\n{'─' * 60}")
-        # Log sample identifier (different for each dataset)
-        if "question" in row:
-            logger.info(f"Sample {i+1}/{len(dataset)}: {row['question'][:80]}")
-        elif "instruction" in row:
-            logger.info(f"Sample {i+1}/{len(dataset)}: {row['instruction'][:80]}")
-        else:
-            logger.info(f"Sample {i+1}/{len(dataset)}")
-        logger.info(f"{'─' * 60}\n")
+    logger.info(f"🚀 Running {len(dataset)} samples with max concurrency: {max_concurrent}")
+    logger.info("")
 
-        # Transform to trajectory
-        assert config.to_trajectory is not None, "Config must have to_trajectory"
-        trajectory = config.to_trajectory(row)
+    async def run_sample(i: int, row: dict):
+        """Run a single sample evaluation."""
+        async with semaphore:
+            # Log start
+            sample_id = f"Sample {i+1}/{len(dataset)}"
+            if "question" in row:
+                logger.info(f"▶️  {sample_id}: {row['question'][:60]}...")
+            elif "instruction" in row:
+                logger.info(f"▶️  {sample_id}: {row['instruction'][:60]}...")
+            else:
+                logger.info(f"▶️  {sample_id}")
 
-        # Create actor
-        actor = Actor(
-            trajectory=trajectory,
-            endpoint=endpoint,
-        )
+            try:
+                # Transform to trajectory
+                assert config.to_trajectory is not None, "Config must have to_trajectory"
+                trajectory = config.to_trajectory(row)
 
-        # Create initial state
-        state = AgentState(
-            actor=actor,
-            environment=environment,
-            max_turns=config.max_turns,
-        )
+                # Create actor
+                actor = Actor(
+                    trajectory=trajectory,
+                    endpoint=endpoint,
+                )
 
-        # Run agent
-        # Use no-op handler to avoid printing streaming chunks
-        async def noop_chunk_handler(chunk):
-            pass
+                # Create initial state
+                state = AgentState(
+                    actor=actor,
+                    environment=environment,
+                    max_turns=config.max_turns,
+                )
 
-        run_config = RunConfig(on_chunk=noop_chunk_handler)
+                # Run agent
+                # Use no-op handler to avoid printing streaming chunks
+                async def noop_chunk_handler(chunk):
+                    pass
 
-        try:
-            states = await run_agent(state, run_config)
-            final_state = states[-1]
+                run_config = RunConfig(on_chunk=noop_chunk_handler)
 
-            # Get final message
-            final_message = final_state.actor.trajectory.messages[-1]
+                states = await run_agent(state, run_config)
+                final_state = states[-1]
 
-            # Compute reward
-            reward = 0.0
-            if final_state.stop:
-                # Tool-based environments (calculator) use stop.reward
-                # But for ScreenSpot we need to compute reward from response
-                pass
+                # Get final message
+                final_message = final_state.actor.trajectory.messages[-1]
 
-            # Check if environment has compute_reward method (ScreenSpot)
-            if hasattr(environment, "compute_reward") and hasattr(trajectory, "metadata"):
-                if "bbox" in trajectory.metadata and "img_size" in trajectory.metadata:
-                    reward = environment.compute_reward(
-                        final_message.content,
-                        trajectory.metadata["bbox"],
-                        trajectory.metadata["img_size"]
-                    )
+                # Compute reward
+                reward = 0.0
+                if final_state.stop:
+                    # Tool-based environments (calculator) use stop.reward
+                    # But for ScreenSpot we need to compute reward from response
+                    pass
 
-            total_reward += reward
-            num_completed += 1
+                # Check if environment has compute_reward method (ScreenSpot)
+                if hasattr(environment, "compute_reward") and hasattr(trajectory, "metadata"):
+                    if "bbox" in trajectory.metadata and "img_size" in trajectory.metadata:
+                        reward = environment.compute_reward(
+                            final_message.content,
+                            trajectory.metadata["bbox"],
+                            trajectory.metadata["img_size"]
+                        )
 
-            result = {
-                "sample_id": i,
-                "response": final_message.content,
-                "turns": final_state.turn_idx,
-                "reward": reward,
-                "stop_reason": final_state.stop.value if final_state.stop else None,
-                "success": final_state.stop is not None,
-            }
+                result = {
+                    "sample_id": i,
+                    "response": final_message.content,
+                    "turns": final_state.turn_idx,
+                    "reward": reward,
+                    "stop_reason": final_state.stop.value if final_state.stop else None,
+                    "success": final_state.stop is not None,
+                }
 
-            # Include metadata from trajectory if present
-            if hasattr(trajectory, "metadata") and trajectory.metadata:
-                result["metadata"] = trajectory.metadata
+                # Include metadata from trajectory if present
+                if hasattr(trajectory, "metadata") and trajectory.metadata:
+                    result["metadata"] = trajectory.metadata
 
-            results.append(result)
+                results[i] = result
+                logger.info(f"✅ {sample_id}: Reward={reward:.3f} | Turns={final_state.turn_idx}")
 
-            logger.info(f"\n✅ Completed in {final_state.turn_idx} turns | Reward: {reward}")
+            except Exception as e:
+                logger.error(f"❌ {sample_id} failed: {e}")
+                result = {
+                    "sample_id": i,
+                    "error": str(e),
+                    "success": False,
+                }
+                results[i] = result
 
-        except Exception as e:
-            logger.error(f"Sample {i+1} failed: {e}", exc_info=True)
-
-            result = {
-                "sample_id": i,
-                "error": str(e),
-                "success": False,
-            }
-            results.append(result)
+    # Run all samples concurrently
+    async with trio.open_nursery() as nursery:
+        for i, row in enumerate(dataset):
+            nursery.start_soon(run_sample, i, row)
 
     # Compute summary
+    num_completed = sum(1 for r in results if r and r.get("success", False))
+    total_reward = sum(r.get("reward", 0.0) for r in results if r and "reward" in r)
+    num_errors = len(dataset) - num_completed
+
     logger.info(f"\n{'=' * 60}")
     logger.info("📊 SUMMARY")
     logger.info(f"{'=' * 60}")
     logger.info(f"Total samples: {len(dataset)}")
     logger.info(f"Completed: {num_completed}")
-    logger.info(f"Errors: {len(dataset) - num_completed}")
+    logger.info(f"Errors: {num_errors}")
     logger.info(f"Mean reward: {total_reward / num_completed if num_completed > 0 else 0.0:.3f}")
 
     summary = {
         "experiment_name": config.experiment_name,
         "total_samples": len(dataset),
         "completed": num_completed,
-        "errors": len(dataset) - num_completed,
+        "errors": num_errors,
         "mean_reward": total_reward / num_completed if num_completed > 0 else 0.0,
         "total_reward": total_reward,
     }
