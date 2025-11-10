@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Test dataset loaders with HuggingFace datasets.
 
+⚠️ NOTE: This example requires torch and datasets libraries.
+Cannot run locally without GPU environment.
+For remote testing, use deploy.py pattern.
+
 Demonstrates loading common datasets for SFT and RL training.
 """
 

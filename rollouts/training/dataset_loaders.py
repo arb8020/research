@@ -5,11 +5,24 @@ Supports common datasets for SFT and RL training.
 """
 
 import logging
-from typing import List, Optional, Dict, Any
-from datasets import load_dataset
+from typing import List, Optional, Dict, Any, Callable
+
+try:
+    from datasets import load_dataset
+    HAS_DATASETS = True
+except ImportError:
+    HAS_DATASETS = False
 
 from training.types import Sample
-from training.sft import tokenize_conversation, compute_loss_mask
+
+# Import tokenization functions lazily to avoid torch dependency at import time
+def _get_tokenize_conversation():
+    from training.sft import tokenize_conversation
+    return tokenize_conversation
+
+def _get_compute_loss_mask():
+    from training.sft import compute_loss_mask
+    return compute_loss_mask
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +58,9 @@ def load_sft_dataset(
         >>> len(samples)
         1000
     """
+    if not HAS_DATASETS:
+        raise ImportError("datasets library not installed. Install with: pip install datasets")
+
     logger.info(f"Loading dataset: {dataset_name} (split={split})")
 
     # Load dataset from HuggingFace
@@ -67,7 +83,10 @@ def load_sft_dataset(
 
         # Create sample
         if tokenizer is not None:
-            # Tokenize conversation
+            # Tokenize conversation (lazy import to avoid torch at module load)
+            tokenize_conversation = _get_tokenize_conversation()
+            compute_loss_mask = _get_compute_loss_mask()
+
             tokens, user_spans = tokenize_conversation(conversation, tokenizer)
             loss_mask = compute_loss_mask(tokens, user_spans)
 
@@ -167,6 +186,9 @@ def load_rl_prompts(
         >>> prompts[0]
         'Janet's ducks lay 16 eggs per day...'
     """
+    if not HAS_DATASETS:
+        raise ImportError("datasets library not installed. Install with: pip install datasets")
+
     logger.info(f"Loading RL prompts: {dataset_name} (split={split})")
 
     # Load dataset
@@ -238,6 +260,9 @@ def load_dataset_with_answers(
         >>> data[0]["answer"]
         '18'
     """
+    if not HAS_DATASETS:
+        raise ImportError("datasets library not installed. Install with: pip install datasets")
+
     logger.info(f"Loading dataset with answers: {dataset_name} (split={split})")
 
     dataset = load_dataset(dataset_name, split=split)
