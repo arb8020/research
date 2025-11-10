@@ -25,8 +25,15 @@ from training.sft import (
     tokenize_conversation,
     prepare_sft_sample,
     example_sft_rollout_fn,
+    export_samples_to_jsonl,
+    load_samples_from_jsonl,
+    export_samples_to_huggingface_format,
 )
 from training.rollout_manager import RolloutManager, convert_to_batch
+from training.async_rollout_manager import (
+    AsyncRolloutManager,
+    generate_rollout_batch,
+)
 
 __all__ = [
     # Data management
@@ -43,7 +50,14 @@ __all__ = [
     "tokenize_conversation",
     "prepare_sft_sample",
     "example_sft_rollout_fn",
+    # JSONL export (D2)
+    "export_samples_to_jsonl",
+    "load_samples_from_jsonl",
+    "export_samples_to_huggingface_format",
     # Orchestration
     "RolloutManager",
     "convert_to_batch",
+    # Async orchestration (D4)
+    "AsyncRolloutManager",
+    "generate_rollout_batch",
 ]
