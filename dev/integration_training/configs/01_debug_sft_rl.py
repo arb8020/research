@@ -27,7 +27,7 @@ from base_config import (
 # Following qwen3_next pattern: configs/01_baseline.py
 config = Config(
     target=TargetConfig(
-        gpu_ranks=[0],  # Single GPU for debug (machine only has GPUs 0-3)
+        gpu_ranks=[3],  # Single GPU for debug (machine has GPUs 0-3)
         device_type="cuda",  # cuda|cpu|mps
     ),
     model=ModelConfig(
