@@ -13,8 +13,8 @@ See docs/ROLLOUTMANAGER_DEPRECATION.md for migration guide.
 
 from typing import Any, Iterator
 
-from training.data_buffer import DataBuffer
-from training.types import Sample, RolloutConfig, RolloutBatch
+from rollouts.training.data.data_buffer import DataBuffer
+from rollouts.training.types import RolloutBatch, RolloutConfig, Sample
 
 
 def generate_rollout_batches(

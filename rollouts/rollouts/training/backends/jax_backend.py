@@ -21,7 +21,6 @@ from typing import Any, Callable, Dict, Optional
 # import jax.numpy as jnp
 # import optax
 # import orbax.checkpoint as ocp
-
 from rollouts.training.types import TrainFuture
 
 

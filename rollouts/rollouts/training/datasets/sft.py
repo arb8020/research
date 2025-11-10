@@ -8,7 +8,7 @@ This is the simplest rollout type - for RL rollouts, see rl.py.
 
 from typing import Any, Callable
 
-from training.types import Sample
+from rollouts.training.types import Sample
 
 
 def compute_loss_mask(

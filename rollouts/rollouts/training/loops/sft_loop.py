@@ -7,13 +7,11 @@ Design: Casey Muratori (no retention), Tiger Style (explicit state).
 """
 
 import logging
-import trio
-from typing import List, Dict, Optional
-from pathlib import Path
+from typing import Dict, List, Optional
 
 from rollouts.training.backends import PyTorchTrainingBackend
 from rollouts.training.metrics import MetricsLogger
-from training.types import Sample, SFTTrainingConfig
+from rollouts.training.types import Sample, SFTTrainingConfig
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +123,6 @@ def collate_batch(
 
     Tiger Style: Explicit parameters, no hidden state.
     """
-    import torch
 
     # Cycle through dataset (simple modulo indexing)
     start_idx = (step * batch_size) % len(samples)

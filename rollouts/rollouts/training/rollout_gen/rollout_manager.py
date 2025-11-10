@@ -35,17 +35,14 @@ Following Casey Muratori's principles:
 """
 
 import warnings
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, Iterator
 
-from training.data_buffer import DataBuffer
-from training.types import Sample, RolloutConfig, RolloutBatch
-from training.rollout_generation import (
+from rollouts.training.data.data_buffer import DataBuffer
+from rollouts.training.rollout_gen.rollout_generation import (
     apply_sample_transforms,
     convert_to_batch,
-    extract_sample_fields,
-    compute_response_lengths,
-    build_batch_metadata,
 )
+from rollouts.training.types import RolloutBatch, RolloutConfig
 
 
 class RolloutManager:

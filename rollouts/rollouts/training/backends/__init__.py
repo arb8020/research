@@ -9,10 +9,10 @@ Available implementations:
 All backends implement the TrainingBackend protocol.
 """
 
+from rollouts.training.backends.jax_backend import JAXTrainingBackend
 from rollouts.training.backends.protocol import TrainingBackend
 from rollouts.training.backends.pytorch import PyTorchTrainingBackend
 from rollouts.training.backends.torch_func import TorchFuncTrainingBackend
-from rollouts.training.backends.jax_backend import JAXTrainingBackend
 from rollouts.training.backends.torchax_backend import TorchaxTrainingBackend
 
 __all__ = [

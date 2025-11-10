@@ -13,15 +13,15 @@ try:
 except ImportError:
     HAS_DATASETS = False
 
-from training.types import Sample
+from rollouts.training.types import Sample
 
 # Import tokenization functions lazily to avoid torch dependency at import time
 def _get_tokenize_conversation():
-    from training.sft import tokenize_conversation
+    from rollouts.training.data.sft import tokenize_conversation
     return tokenize_conversation
 
 def _get_compute_loss_mask():
-    from training.sft import compute_loss_mask
+    from rollouts.training.data.sft import compute_loss_mask
     return compute_loss_mask
 
 logger = logging.getLogger(__name__)

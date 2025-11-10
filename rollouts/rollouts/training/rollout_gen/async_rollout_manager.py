@@ -12,13 +12,14 @@ Tiger Style: Explicit abort handling, clear state transitions.
 SLIME: Dynamic sampling strategy, quality filtering.
 """
 
-import trio
-from typing import Any, Callable, Optional
 from dataclasses import dataclass, field
+from typing import Any, Callable, Optional
 
-from training.data_buffer import DataBuffer
-from training.types import Sample, RolloutConfig, RolloutBatch
-from training.rollout_generation import convert_to_batch
+import trio
+
+from rollouts.training.data.data_buffer import DataBuffer
+from rollouts.training.rollout_gen.rollout_generation import convert_to_batch
+from rollouts.training.types import RolloutBatch, RolloutConfig, Sample
 
 
 @dataclass

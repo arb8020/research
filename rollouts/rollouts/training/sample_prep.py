@@ -6,10 +6,10 @@ Tiger Style: Pure functions, explicit transformations.
 Tinker: Token-level loss weights.
 """
 
-from typing import List, Dict, Any
-from rollouts.dtypes import Trajectory, Message
-from rollouts.training.types import Sample
+from typing import Any, Dict, List
 
+from rollouts.dtypes import Message, Trajectory
+from rollouts.training.types import Sample
 
 # ────────────────────── Core Transform ──────────────────────
 
