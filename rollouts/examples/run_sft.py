@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from rollouts.training.backends import PyTorchTrainingBackend
 from training.sft_loop import run_sft_training
-from training.types import Sample, TrainingConfig
+from training.types import Sample, SFTTrainingConfig
 
 
 # ────────────────────── Simple Model ──────────────────────
@@ -151,7 +151,7 @@ async def main():
 
     # 3. Configure training
     print("\n3. Configuring training...")
-    config = TrainingConfig(
+    config = SFTTrainingConfig(
         num_steps=50,  # Short run for demo
         batch_size=4,
         log_every=10,

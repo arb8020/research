@@ -167,8 +167,8 @@ class RolloutConfig:
 
 
 @dataclass
-class TrainingConfig:
-    """Configuration for SFT training loop.
+class SFTTrainingConfig:
+    """Configuration for SFT (Supervised Fine-Tuning) training loop.
 
     Pure dataclass - all parameters explicit.
 
@@ -179,7 +179,7 @@ class TrainingConfig:
         checkpoint_every: Save checkpoint every N steps
 
     Example:
-        >>> config = TrainingConfig(
+        >>> config = SFTTrainingConfig(
         ...     num_steps=1000,
         ...     batch_size=4,
         ...     log_every=100,
@@ -191,6 +191,10 @@ class TrainingConfig:
     batch_size: int
     log_every: int = 100
     checkpoint_every: int = 500
+
+
+# Alias for backward compatibility
+TrainingConfig = SFTTrainingConfig
 
 
 @dataclass
