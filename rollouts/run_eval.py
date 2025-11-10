@@ -255,18 +255,29 @@ def main():
     assert hasattr(module, "config"), "Config file must export 'config' variable"
     config = module.config
 
-    # Resolve relative dataset paths relative to config file location
+    # Resolve relative paths relative to config file location
+    config_path = Path(args.config).absolute()
+    project_root = config_path.parent.parent  # Go up from configs/ to project root
+
+    # Resolve dataset path
     if hasattr(config, "dataset") and hasattr(config.dataset, "dataset_path"):
         dataset_path = config.dataset.dataset_path
         if not dataset_path.is_absolute():
             # Make path relative to project root (config file's grandparent directory)
             # Config structure: <project_root>/configs/<config.py>
-            config_path = Path(args.config).absolute()
-            project_root = config_path.parent.parent  # Go up from configs/ to project root
             absolute_path = (project_root / dataset_path).resolve()
             # Update the dataset_path - need to work around frozen dataclass
             object.__setattr__(config.dataset, "dataset_path", absolute_path)
             print(f"📂 Resolved dataset path: {absolute_path}")
+
+    # Resolve save_dir path
+    if hasattr(config, "output") and hasattr(config.output, "save_dir"):
+        save_dir = config.output.save_dir
+        if not save_dir.is_absolute():
+            # Make path relative to project root
+            absolute_save_dir = (project_root / save_dir).resolve()
+            object.__setattr__(config.output, "save_dir", absolute_save_dir)
+            print(f"💾 Resolved save directory: {absolute_save_dir}")
 
     # Check if we need rollouts-style evaluation
     if config.environment is None or config.to_trajectory is None:
