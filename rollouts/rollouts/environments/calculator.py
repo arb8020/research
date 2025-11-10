@@ -1,5 +1,6 @@
 from typing import List
 from dataclasses import dataclass
+import trio
 
 from ..dtypes import (
     Tool, ToolFunction, ToolFunctionParameter,
@@ -194,4 +195,4 @@ async def main():
     print("Use the simple_calculator.py example in examples/ instead!")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    trio.run(main)

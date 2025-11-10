@@ -6,7 +6,7 @@ No model inference - just tokenization and loss masking.
 This is the simplest rollout type - for RL rollouts, see rl.py.
 """
 
-from typing import Any, Callable
+from typing import Any
 
 from rollouts.training.types import Sample
 

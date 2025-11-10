@@ -7,7 +7,7 @@ Design: Casey Muratori (no retention), Tiger Style (explicit state).
 """
 
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from rollouts.training.backends import PyTorchTrainingBackend
 from rollouts.training.metrics import MetricsLogger
@@ -110,7 +110,7 @@ def collate_batch(
     samples: List[Sample],
     batch_size: int,
     step: int,
-) -> Dict[str, any]:
+) -> Dict[str, Any]:
     """Pure function: Collate samples into training batch.
 
     Args:
@@ -139,7 +139,7 @@ def collate_batch(
     return prepare_sft_batch(batch_samples)
 
 
-def prepare_sft_batch(samples: List[Sample]) -> Dict[str, any]:
+def prepare_sft_batch(samples: List[Sample]) -> Dict[str, Any]:
     """Pure function: Convert samples to training batch.
 
     Args:

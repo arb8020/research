@@ -12,13 +12,6 @@ All advanced features from the deprecated ssh_clients.py are now available:
 """
 
 # Direct re-exports from shared foundation (simplified)
-import sys
-from pathlib import Path
-
-# Add research root to Python path for shared module access
-_research_root = Path(__file__).parent.parent.parent
-if str(_research_root) not in sys.path:
-    sys.path.insert(0, str(_research_root))
 
 # Import generic functions from shared foundation
 from shared.ssh_foundation import (

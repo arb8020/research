@@ -9,10 +9,10 @@ This is the ONLY stateful component in the training system.
 Everything else is pure functions.
 """
 
-from dataclasses import dataclass, field
-from pathlib import Path
 import json
 import random
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 

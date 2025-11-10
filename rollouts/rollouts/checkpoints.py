@@ -27,7 +27,7 @@ async def serialize_agent_state(state: AgentState) -> Dict[str, Any]:
     assert state.turn_idx <= state.max_turns
 
     from dataclasses import asdict
-    result = {
+    result: Dict[str, Any] = {
         "actor": asdict(state.actor),  # asdict handles nested dataclasses!
         "environment": {
             "class_name": state.environment.__class__.__name__,
@@ -42,7 +42,9 @@ async def serialize_agent_state(state: AgentState) -> Dict[str, Any]:
 
     assert "actor" in result
     assert "environment" in result
-    assert "class_name" in result["environment"]
+    env_dict = result["environment"]
+    assert isinstance(env_dict, dict)
+    assert "class_name" in env_dict
     return result
 
 

@@ -1,5 +1,6 @@
 import argparse
 from typing import List
+import trio
 
 from ..dtypes import (
     Message, Trajectory, Endpoint, Actor, AgentState, Environment,
@@ -173,4 +174,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    trio.run(main)

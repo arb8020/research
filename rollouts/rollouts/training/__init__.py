@@ -2,7 +2,7 @@
 
 Includes:
 - Training loops (SFT, RL)
-- Data loading and preparation
+- Dataset loading and preparation
 - Rollout generation for RL
 - Training backends (PyTorch, etc.)
 - Metrics logging
@@ -13,8 +13,8 @@ Includes:
 from rollouts.training.backends import PyTorchTrainingBackend
 from rollouts.training.backends.protocol import TrainingBackend
 
-# Data
-from rollouts.training.data import DataBuffer, load_hf_sft_dataset
+# Datasets
+from rollouts.training.datasets import DataBuffer, load_hf_sft_dataset
 from rollouts.training.loops import run_rl_training, run_sft_training
 
 # Metrics
@@ -25,10 +25,6 @@ from rollouts.training.rollout_gen import (
     AsyncRolloutManager,
     generate_rollout_batches,
 )
-from rollouts.training.sample_prep import (
-    prepare_sft_batch,
-    trajectory_to_sample,
-)
 
 # Types and utilities
 from rollouts.training.types import (
@@ -37,15 +33,13 @@ from rollouts.training.types import (
     RolloutConfig,
     Sample,
     SFTTrainingConfig,
-    TrainFuture,
-    WeightVersion,
 )
 
 __all__ = [
     # Loops
     "run_sft_training",
     "run_rl_training",
-    # Data
+    # Datasets
     "DataBuffer",
     "load_hf_sft_dataset",
     # Rollout generation
@@ -63,9 +57,4 @@ __all__ = [
     "RLTrainingConfig",
     "RolloutConfig",
     "RolloutBatch",
-    "TrainFuture",
-    "WeightVersion",
-    # Utilities
-    "trajectory_to_sample",
-    "prepare_sft_batch",
 ]
