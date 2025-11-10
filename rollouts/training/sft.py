@@ -295,3 +295,158 @@ def _lookup_data_item(
                 return item
 
     raise ValueError(f"Could not find data item for prompt: {prompt}")
+
+
+# ────────────────────── JSONL Export (D2 requirement) ──────────────────────
+
+
+def export_samples_to_jsonl(
+    samples: list[Sample],
+    output_path: str,
+    include_tokens: bool = False,
+) -> None:
+    """Export samples to JSONL file.
+
+    Args:
+        samples: List of Sample objects to export
+        output_path: Path to output JSONL file
+        include_tokens: Whether to include token IDs (can be large)
+
+    Example:
+        >>> samples = [Sample(prompt="Q1", response="A1"), ...]
+        >>> export_samples_to_jsonl(samples, "sft_data.jsonl")
+    """
+    import json
+    from pathlib import Path
+
+    # Preconditions
+    assert len(samples) > 0, "Cannot export empty sample list"
+    assert output_path, "Output path cannot be empty"
+
+    output_file = Path(output_path)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(output_file, "w") as f:
+        for sample in samples:
+            # Convert to dict
+            data = {
+                "prompt": sample.prompt,
+                "response": sample.response,
+                "reward": sample.reward,
+                "metadata": sample.metadata,
+                "status": sample.status.value,
+            }
+
+            # Optionally include tokens (can make file large)
+            if include_tokens:
+                data["tokens"] = sample.tokens
+                data["loss_mask"] = sample.loss_mask
+
+            # Write as JSON line
+            json.dump(data, f, ensure_ascii=False)
+            f.write("\n")
+
+
+def load_samples_from_jsonl(
+    input_path: str,
+    limit: int | None = None,
+) -> list[Sample]:
+    """Load samples from JSONL file.
+
+    Args:
+        input_path: Path to input JSONL file
+        limit: Optional limit on number of samples to load
+
+    Returns:
+        List of Sample objects
+
+    Example:
+        >>> samples = load_samples_from_jsonl("sft_data.jsonl", limit=100)
+        >>> assert len(samples) <= 100
+    """
+    import json
+    from pathlib import Path
+
+    # Preconditions
+    assert input_path, "Input path cannot be empty"
+    input_file = Path(input_path)
+    assert input_file.exists(), f"Input file not found: {input_path}"
+
+    samples = []
+
+    with open(input_file, "r") as f:
+        for line_num, line in enumerate(f, start=1):
+            if limit and line_num > limit:
+                break
+
+            line = line.strip()
+            if not line:
+                continue
+
+            # Parse JSON
+            data = json.loads(line)
+
+            # Create Sample from dict
+            sample = Sample.from_dict(data)
+            samples.append(sample)
+
+    # Postcondition
+    assert len(samples) > 0 or limit == 0, "Loaded zero samples from non-empty file"
+
+    return samples
+
+
+def export_samples_to_huggingface_format(
+    samples: list[Sample],
+    output_path: str,
+) -> None:
+    """Export samples to HuggingFace datasets JSONL format.
+
+    This format is compatible with HuggingFace's datasets library
+    and can be loaded with datasets.load_dataset("json", data_files=...).
+
+    Args:
+        samples: List of Sample objects to export
+        output_path: Path to output JSONL file
+
+    Example:
+        >>> samples = [Sample(prompt="Q1", response="A1"), ...]
+        >>> export_samples_to_huggingface_format(samples, "train.jsonl")
+        >>> # Load with: datasets.load_dataset("json", data_files="train.jsonl")
+    """
+    import json
+    from pathlib import Path
+
+    # Preconditions
+    assert len(samples) > 0, "Cannot export empty sample list"
+    assert output_path, "Output path cannot be empty"
+
+    output_file = Path(output_path)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(output_file, "w") as f:
+        for sample in samples:
+            # HuggingFace format: messages array
+            if isinstance(sample.prompt, str):
+                # Simple prompt/response
+                messages = [
+                    {"role": "user", "content": sample.prompt},
+                    {"role": "assistant", "content": sample.response},
+                ]
+            elif isinstance(sample.prompt, list):
+                # Multi-turn conversation
+                messages = list(sample.prompt) + [
+                    {"role": "assistant", "content": sample.response}
+                ]
+            else:
+                raise ValueError(f"Unsupported prompt type: {type(sample.prompt)}")
+
+            # Create HuggingFace-compatible record
+            record = {
+                "messages": messages,
+                "metadata": sample.metadata,
+            }
+
+            # Write as JSON line
+            json.dump(record, f, ensure_ascii=False)
+            f.write("\n")
