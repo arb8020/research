@@ -35,6 +35,25 @@ from rollouts.training.types import (
     SFTTrainingConfig,
 )
 
+# Filters (SLIME-style)
+from rollouts.training.filters import (
+    check_reward_nonzero_std,
+    check_min_reward,
+    check_response_diversity,
+    check_reasonable_length,
+    check_any_success,
+    check_quality_and_diversity,
+    make_threshold_filter,
+    make_length_filter,
+)
+
+# Agent integration
+from rollouts.training.agent_integration import (
+    agent_rollout_to_sample,
+    generate_rollout_batch,
+    trajectory_to_sample,
+)
+
 __all__ = [
     # Loops
     "run_sft_training",
@@ -57,4 +76,17 @@ __all__ = [
     "RLTrainingConfig",
     "RolloutConfig",
     "RolloutBatch",
+    # Filters (SLIME-style)
+    "check_reward_nonzero_std",
+    "check_min_reward",
+    "check_response_diversity",
+    "check_reasonable_length",
+    "check_any_success",
+    "check_quality_and_diversity",
+    "make_threshold_filter",
+    "make_length_filter",
+    # Agent integration
+    "agent_rollout_to_sample",
+    "generate_rollout_batch",
+    "trajectory_to_sample",
 ]
