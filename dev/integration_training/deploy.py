@@ -235,10 +235,12 @@ def start_training(
     hf_token = os.getenv("HF_TOKEN", "")
 
     # Base command with environment variables
+    # Note: We DON'T set CUDA_VISIBLE_DEVICES (see train.py:144-147)
+    # Instead, train.py uses explicit device placement (cuda:N means physical GPU N)
+    # This avoids remapping confusion and works with non-contiguous GPU allocations
     cmd_parts = [
         f"cd {project_dir}",
         f"source {venv_path}",
-        f"export CUDA_VISIBLE_DEVICES={gpu_ranks_str}",
     ]
 
     # Add HF_TOKEN if available
