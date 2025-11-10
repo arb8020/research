@@ -17,6 +17,7 @@ import argparse
 import logging
 from pathlib import Path
 from datetime import datetime, timezone
+from dotenv import load_dotenv
 
 # Import bifrost for deployment
 from bifrost.client import BifrostClient
@@ -315,6 +316,9 @@ def main():
         help="Start training and exit immediately (don't wait for completion)"
     )
     args = parser.parse_args()
+
+    # Load environment variables (for HF_TOKEN, etc.)
+    load_dotenv()
 
     # Track deployment start time
     import time
