@@ -1,15 +1,32 @@
+"""Shared logging configuration for research monorepo.
+
+Tiger Style: Explicit configuration, bounded resources, fail-fast.
+Sean Goedecke: Boring, well-tested patterns (Python's logging module).
+"""
 import logging.config
+import logging.handlers
 import os
 from typing import Any, Dict, Optional
 
 
-def setup_logging(level: Optional[str] = None, use_json: Optional[bool] = None, use_rich: Optional[bool] = None,
-                  logger_levels: Optional[Dict[str, str]] = None, log_file: Optional[str] = None,
-                  rich_tracebacks: bool = False):
+def setup_logging(
+    level: Optional[str] = None,
+    use_json: Optional[bool] = None,
+    use_rich: Optional[bool] = None,
+    logger_levels: Optional[Dict[str, str]] = None,
+    log_file: Optional[str] = None,
+    rich_tracebacks: bool = False,
+    use_queue_handler: bool = True,
+    max_log_bytes: int = 100_000_000,
+    backup_count: int = 5,
+) -> None:
     """Setup standardized logging configuration using dict config.
 
+    Tiger Style: Bounded log files, explicit parameters, assertions.
+    Sean Goedecke: Uses Python's standard logging.config (boring, reliable).
+
     Args:
-        level: Default log level for root logger
+        level: Default log level for root logger (default: INFO or LOG_LEVEL env var)
         use_json: Whether to use JSON formatter for console (default: False for human-readable)
         use_rich: Whether to use RichHandler for console output (default: False).
                  If True, produces clean CLI output with colors and formatting.
@@ -17,9 +34,27 @@ def setup_logging(level: Optional[str] = None, use_json: Optional[bool] = None, 
         logger_levels: Dict mapping logger names to specific log levels
                       e.g. {"bifrost": "DEBUG", "broker": "WARNING", "paramiko": "ERROR"}
         log_file: Optional log file path. If provided, logs in JSONL format to file
-                 while keeping human-readable console output
+                 with automatic rotation when file reaches max_log_bytes
         rich_tracebacks: Whether to enable rich tracebacks (only applies when use_rich=True)
+        use_queue_handler: Whether to use QueueHandler for async-safe logging (default: True).
+                          Recommended for async code (trio/asyncio) to prevent blocking.
+        max_log_bytes: Maximum bytes per log file before rotation (default: 100MB).
+                       Tiger Style: All files must be bounded!
+        backup_count: Number of rotated log files to keep (default: 5)
+
+    Returns:
+        None. Configures Python's global logging state.
+
+    Example:
+        >>> from shared.logging_config import setup_logging
+        >>> setup_logging(level="DEBUG", log_file="logs/app.jsonl")
+        >>> import logging
+        >>> logger = logging.getLogger(__name__)
+        >>> logger.info("Application started")
     """
+    # Tiger Style: Assert preconditions
+    assert max_log_bytes > 0, f"max_log_bytes must be > 0, got {max_log_bytes}"
+    assert backup_count >= 0, f"backup_count must be >= 0, got {backup_count}"
     level = level or os.getenv("LOG_LEVEL", "INFO")
     use_json = use_json if use_json is not None else os.getenv("LOG_JSON", "").lower() == "true"
     use_rich = use_rich if use_rich is not None else False
@@ -72,16 +107,30 @@ def setup_logging(level: Optional[str] = None, use_json: Optional[bool] = None, 
         }
 
     # Add file handler for JSONL logging if log_file specified
+    # Tiger Style: Bounded! Use RotatingFileHandler to prevent unbounded growth
     handler_list = ["console"]
     if log_file:
         handlers["file"] = {
-            "class": "logging.FileHandler",
+            "class": "logging.handlers.RotatingFileHandler",
             "level": "DEBUG",
             "formatter": "json",  # Always use JSON for file output
             "filename": log_file,
-            "mode": "a"
+            "mode": "a",
+            "maxBytes": max_log_bytes,  # Tiger: Bounded!
+            "backupCount": backup_count,  # Keep N rotated files
         }
         handler_list.append("file")
+
+    # mCoding pattern: Use QueueHandler for async-safe logging
+    # Python 3.12+ QueueHandler in dictConfig automatically creates QueueListener!
+    # The listener runs in a background thread, prevents blocking in async code
+    if use_queue_handler:
+        handlers["queue_handler"] = {
+            "class": "logging.handlers.QueueHandler",
+            "handlers": handler_list.copy(),  # Wrap our actual handlers
+            "respect_handler_level": True,  # Each handler keeps its own level
+        }
+        handler_list = ["queue_handler"]  # Route all logs through queue
 
     config: Dict[str, Any] = {
         "version": 1,
@@ -108,33 +157,12 @@ def setup_logging(level: Optional[str] = None, use_json: Optional[bool] = None, 
 
     logging.config.dictConfig(config)
 
-
-def parse_logger_levels(log_level_specs: Optional[list] = None) -> Dict[str, str]:
-    """Parse logger level specifications from command line format.
-    
-    Args:
-        log_level_specs: List of strings in format "logger_name:level"
-                        e.g. ["bifrost:DEBUG", "broker:WARNING", "paramiko:ERROR"]
-    
-    Returns:
-        Dict mapping logger names to log levels
-    """
-    if not log_level_specs:
-        return {}
-    
-    result = {}
-    for spec in log_level_specs:
-        if ":" not in spec:
-            raise ValueError(f"Invalid log level spec: {spec}. Expected format: logger_name:level")
-        
-        logger_name, level = spec.split(":", 1)
-        level = level.upper()
-        
-        # Validate log level
-        valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
-        if level not in valid_levels:
-            raise ValueError(f"Invalid log level: {level}. Must be one of {valid_levels}")
-        
-        result[logger_name] = level
-    
-    return result
+    # mCoding pattern: Start QueueListener and register cleanup
+    # Python 3.12+ creates the listener automatically, we just need to start it
+    if use_queue_handler:
+        queue_handler = logging.getHandlerByName("queue_handler")
+        if queue_handler is not None and hasattr(queue_handler, 'listener'):
+            queue_handler.listener.start()
+            # Register cleanup on exit (mCoding pattern)
+            import atexit
+            atexit.register(queue_handler.listener.stop)
