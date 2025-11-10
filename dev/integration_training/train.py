@@ -268,15 +268,13 @@ async def run_sft(config: Config, output_dir: Path):
     loss_fn = create_loss_fn()
 
     # Create backend
-    import torch
-    # Use first GPU rank as primary device
-    device = torch.device(f"{config.target.device_type}:{config.target.gpu_ranks[0]}" if config.target.device_type == "cuda" else config.target.device_type)
+    # Note: PyTorchTrainingBackend doesn't take device parameter
+    # The model is already on the correct device from load_model()
     backend = PyTorchTrainingBackend(
         model=model,
         optimizer=optimizer,
         loss_fn=loss_fn,
         checkpoint_dir=output_dir / "checkpoints",
-        device=device,
     )
 
     # Load SFT data mixture (TaskMixture-style)
@@ -367,15 +365,13 @@ async def run_rl(config: Config, output_dir: Path, source_checkpoint: str | None
     loss_fn = create_loss_fn()
 
     # Create backend
-    import torch
-    # Use first GPU rank as primary device
-    device = torch.device(f"{config.target.device_type}:{config.target.gpu_ranks[0]}" if config.target.device_type == "cuda" else config.target.device_type)
+    # Note: PyTorchTrainingBackend doesn't take device parameter
+    # The model is already on the correct device from load_model()
     backend = PyTorchTrainingBackend(
         model=model,
         optimizer=optimizer,
         loss_fn=loss_fn,
         checkpoint_dir=output_dir / "checkpoints",
-        device=device,
     )
 
     # Load RL dataset (GSM8K)
