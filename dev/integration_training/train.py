@@ -19,36 +19,30 @@ Following:
 Split into functions <70 lines (Tiger Style).
 """
 
-import sys
-import os
-import logging
 import importlib.util
-import trio
-from pathlib import Path
+import logging
+import os
+import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Literal
+
+import trio
 
 # Add project root to path so we can import rollouts/
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 # Import from rollouts module (like how outlier-features imports broker/bifrost)
-from rollouts.training.backends import PyTorchTrainingBackend
-from rollouts.training.metrics import JSONLLogger
-from training.sft_loop import run_sft_training
-from training.rl_loop import run_rl_training
-from training.data_buffer import DataBuffer
-from training.async_rollout_manager import AsyncRolloutManager
-from training.types import (
-    Sample,
-    SFTTrainingConfig,
-    RLTrainingConfig,
-    RolloutConfig,
-)
-from training.dataset_loaders import load_hf_sft_dataset
-
 # Import base_config
-from base_config import Config
+from base_config import Config  # noqa: E402
+from rollouts.training.backends import PyTorchTrainingBackend  # noqa: E402
+from rollouts.training.metrics import JSONLLogger  # noqa: E402
+from training.dataset_loaders import load_hf_sft_dataset  # noqa: E402
+from training.sft_loop import run_sft_training  # noqa: E402
+from training.types import (  # noqa: E402
+    SFTTrainingConfig,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +68,7 @@ def load_config_from_file(config_path: str) -> Config:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    assert hasattr(module, 'config'), f"Config file must define 'config' variable"
+    assert hasattr(module, 'config'), "Config file must define 'config' variable"
     config: Config = getattr(module, 'config')
     assert isinstance(config, Config), f"Expected Config object, got {type(config)}"
 
@@ -132,7 +126,6 @@ def load_model(model_name: str, device_type: str, dtype: str, gpu_ranks: list[in
     """
     import torch
     from transformers import AutoModelForCausalLM
-    import os
 
     logger.info(f"Loading model: {model_name}")
     logger.info(f"  Device: {device_type}")
@@ -204,7 +197,6 @@ def create_loss_fn():
 
     Casey Muratori: Pure function, explicit.
     """
-    import torch
     import torch.nn.functional as F
 
     def cross_entropy_loss(logits, labels, loss_mask=None):
@@ -302,7 +294,8 @@ async def run_sft(config: Config, output_dir: Path):
         for _ in range(spec.repeat):
             samples.extend(dataset_samples)
 
-        logger.info(f"    Loaded {len(dataset_samples)} samples (x{spec.repeat} = {len(dataset_samples) * spec.repeat})")
+        total_samples = len(dataset_samples) * spec.repeat
+        logger.info(f"    Loaded {len(dataset_samples)} samples (x{spec.repeat} = {total_samples})")
 
     logger.info(f"Total training samples: {len(samples)}")
     assert len(samples) > 0, "No samples loaded from mixture!"
@@ -329,7 +322,7 @@ async def run_sft(config: Config, output_dir: Path):
     )
 
     logger.info("=" * 60)
-    logger.info(f"SFT Training Complete!")
+    logger.info("SFT Training Complete!")
     logger.info(f"  Total steps: {len(metrics)}")
     logger.info(f"  Final loss: {metrics[-1]['loss']:.4f}")
     logger.info("=" * 60)
@@ -352,7 +345,7 @@ async def run_rl(config: Config, output_dir: Path, source_checkpoint: str | None
     logger.info("=" * 60)
 
     # Load model and tokenizer
-    tokenizer = load_tokenizer(config.model.name)
+    load_tokenizer(config.model.name)
 
     if source_checkpoint:
         logger.info(f"Loading from checkpoint: {source_checkpoint}")
@@ -376,7 +369,7 @@ async def run_rl(config: Config, output_dir: Path, source_checkpoint: str | None
                          if config.target.device_type == "cuda"
                          else config.target.device_type)
 
-    backend = PyTorchTrainingBackend(
+    PyTorchTrainingBackend(
         model=model,
         optimizer=optimizer,
         loss_fn=loss_fn,
@@ -456,7 +449,7 @@ def main():
 
         # Step 1: SFT
         logger.info("Step 1/2: Running SFT training")
-        sft_metrics = trio.run(run_sft, config, output_dir)
+        trio.run(run_sft, config, output_dir)
 
         # Find the latest checkpoint from SFT
         sft_checkpoint_dir = output_dir / "checkpoints"
@@ -473,7 +466,7 @@ def main():
 
         # Step 2: RL
         logger.info("Step 2/2: Running RL training")
-        rl_metrics = trio.run(run_rl, config, output_dir, latest_checkpoint)
+        trio.run(run_rl, config, output_dir, latest_checkpoint)
 
     logger.info("=" * 60)
     logger.info("Training Complete!")

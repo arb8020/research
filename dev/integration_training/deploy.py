@@ -12,21 +12,21 @@ Usage:
     python deploy.py configs/01_debug_sft_rl.py --ssh root@host:port --detached
 """
 
-import sys
 import argparse
 import logging
-from pathlib import Path
+import sys
 from datetime import datetime, timezone
-from dotenv import load_dotenv
-
-# Import bifrost for deployment
-from bifrost.client import BifrostClient
-
-# Import shared logging
-from shared.logging_config import setup_logging
+from pathlib import Path
 
 # Import local config
 from base_config import Config
+
+# Import bifrost for deployment
+from bifrost.client import BifrostClient
+from dotenv import load_dotenv
+
+# Import shared logging
+from shared.logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ def load_config_from_file(config_path: str) -> Config:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    assert hasattr(module, 'config'), f"Config file must define 'config' variable"
+    assert hasattr(module, 'config'), "Config file must define 'config' variable"
     config: Config = getattr(module, 'config')
     assert isinstance(config, Config), f"Expected Config object, got {type(config)}"
 
@@ -341,7 +341,7 @@ def main():
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     result_dir_name = f"{config.output.experiment_name}_{timestamp}"
 
-    logger.info(f"🎯 Integration Training Deployment")
+    logger.info("🎯 Integration Training Deployment")
     logger.info(f"📅 Experiment: {result_dir_name}")
     logger.info(f"🤖 Model: {config.model.name}")
     logger.info(f"🔧 Mode: {config.output.mode}")
