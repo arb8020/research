@@ -8,10 +8,11 @@ Design: Casey Muratori (no retention), Tiger Style (explicit state).
 
 import logging
 import trio
-from typing import List, Dict
+from typing import List, Dict, Optional
 from pathlib import Path
 
 from rollouts.training.backends import PyTorchTrainingBackend
+from rollouts.training.metrics import MetricsLogger
 from training.types import Sample, SFTTrainingConfig
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,7 @@ async def run_sft_training(
     backend: PyTorchTrainingBackend,
     samples: List[Sample],
     config: SFTTrainingConfig,
+    metrics_logger: Optional[MetricsLogger] = None,
 ) -> List[Dict[str, float]]:
     """Run SFT training (pure function, no hidden state).
 
@@ -28,16 +30,20 @@ async def run_sft_training(
         backend: Training backend (has its own state)
         samples: Training samples (immutable)
         config: Training configuration (immutable)
+        metrics_logger: Optional metrics logger (Casey: explicit parameter)
 
     Returns:
         List of metrics dicts (one per step)
 
     Example:
+        >>> from rollouts.training.metrics import JSONLLogger
+        >>>
         >>> backend = PyTorchTrainingBackend(model, optimizer, loss_fn)
         >>> samples = load_sft_samples("dataset.jsonl")
         >>> config = SFTTrainingConfig(num_steps=1000, batch_size=4)
+        >>> logger = JSONLLogger(Path("logs/exp_001"))
         >>>
-        >>> metrics = await run_sft_training(backend, samples, config)
+        >>> metrics = await run_sft_training(backend, samples, config, logger)
         >>> print(f"Final loss: {metrics[-1]['loss']:.4f}")
 
     Casey Muratori: No retention, explicit inputs/outputs.
@@ -71,7 +77,9 @@ async def run_sft_training(
         }
         metrics_history.append(step_metrics)
 
-        # Log (side effect, but explicit)
+        # ═══════════════════════════════════════════════════════
+        # ERROR LOGGING: Events (sporadic)
+        # ═══════════════════════════════════════════════════════
         if step % config.log_every == 0:
             logger.info(
                 f"Step {step}: "
@@ -80,12 +88,23 @@ async def run_sft_training(
                 f"lr={opt_metrics['lr']:.4e}"
             )
 
+        # ═══════════════════════════════════════════════════════
+        # METRICS LOGGING: Timeseries (regular)
+        # ═══════════════════════════════════════════════════════
+        if metrics_logger and step % config.log_every == 0:
+            metrics_logger.log(step_metrics, step=step)
+
         # Checkpoint (side effect, but explicit)
         if step % config.checkpoint_every == 0 and step > 0:
             ckpt_path = await backend.save_checkpoint(step, step_metrics)
             logger.info(f"  Saved checkpoint to {ckpt_path}")
 
     logger.info("Training complete!")
+
+    # Finish metrics logging
+    if metrics_logger:
+        metrics_logger.finish()
+
     return metrics_history
 
 
