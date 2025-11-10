@@ -12,11 +12,11 @@ Tiger Style: Explicit state, assert preconditions.
 Casey Muratori: Minimal coupling, futures for pipelining.
 """
 
+import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
-import time
-import json
 
 import torch
 import trio
@@ -209,8 +209,8 @@ class PyTorchTrainingBackend:
             "metrics": metrics,
         }
         metadata_path = ckpt_dir / "metadata.json"
-        with open(metadata_path, "w") as f:
-            json.dump(metadata, f, indent=2)
+        # Use trio.to_thread for async-safe file I/O
+        await trio.to_thread.run_sync(self._write_json_metadata, metadata_path, metadata)
 
         return ckpt_dir
 
@@ -236,8 +236,8 @@ class PyTorchTrainingBackend:
         metadata_path = checkpoint_path / "metadata.json"
         assert metadata_path.exists(), f"metadata.json not found in {checkpoint_path}"
 
-        with open(metadata_path, "r") as f:
-            metadata = json.load(f)
+        # Use trio.to_thread for async-safe file I/O
+        metadata = await trio.to_thread.run_sync(self._read_json_metadata, metadata_path)
 
         # Load model state
         model_path = checkpoint_path / "pytorch_model.bin"
@@ -298,3 +298,16 @@ class PyTorchTrainingBackend:
             # Poison backend on error
             self._poisoned = True
             raise RuntimeError(f"Failed to load weights: {e}") from e
+
+    # Helper methods for async file I/O (Tiger Style: explicit sync methods)
+    @staticmethod
+    def _write_json_metadata(path: Path, data: Dict[str, Any]) -> None:
+        """Blocking helper to write JSON metadata (called via trio.to_thread)."""
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+
+    @staticmethod
+    def _read_json_metadata(path: Path) -> Dict[str, Any]:
+        """Blocking helper to read JSON metadata (called via trio.to_thread)."""
+        with open(path, "r") as f:
+            return json.load(f)
