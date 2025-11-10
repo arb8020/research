@@ -1,0 +1,22 @@
+[project]
+name = "integration-training"
+version = "0.1.0"
+description = "SFT+RL training using rollouts module"
+requires-python = ">=3.10"
+
+# No local dependencies - this is a standalone experiment
+dependencies = []
+
+[project.optional-dependencies]
+# Remote deployment - training dependencies for remote GPU
+remote = [
+    "torch>=2.4.0",
+    "transformers>=4.30.0",
+    "datasets>=4.0.0",
+    "trio>=0.27.0",
+    "accelerate>=0.20.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
