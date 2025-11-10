@@ -167,6 +167,58 @@ class RolloutConfig:
     reward_fn: Optional[Callable] = None
     filter_fn: Optional[Callable] = None
 
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dict for serialization.
+
+        Note: Functions (generate_fn, reward_fn, filter_fn) are not serialized.
+        They must be re-provided when using from_dict().
+
+        Returns:
+            Dict representation (functions excluded)
+
+        Example:
+            >>> config = RolloutConfig(batch_size=32, n_samples_per_prompt=4)
+            >>> d = config.to_dict()
+            >>> assert d["batch_size"] == 32
+        """
+        from dataclasses import asdict
+        data = asdict(self)
+        # Remove non-serializable functions
+        data.pop("generate_fn", None)
+        data.pop("reward_fn", None)
+        data.pop("filter_fn", None)
+        return data
+
+    @staticmethod
+    def from_dict(
+        data: dict[str, Any],
+        generate_fn: Optional[Callable] = None,
+        reward_fn: Optional[Callable] = None,
+        filter_fn: Optional[Callable] = None,
+    ) -> "RolloutConfig":
+        """Create RolloutConfig from dict.
+
+        Args:
+            data: Dict from to_dict()
+            generate_fn: User-provided generation function (not serializable)
+            reward_fn: User-provided reward function (not serializable)
+            filter_fn: User-provided filter function (not serializable)
+
+        Returns:
+            RolloutConfig instance
+
+        Example:
+            >>> d = {"batch_size": 32, "n_samples_per_prompt": 4}
+            >>> config = RolloutConfig.from_dict(d, generate_fn=my_generate)
+            >>> assert config.batch_size == 32
+        """
+        return RolloutConfig(
+            **data,
+            generate_fn=generate_fn,
+            reward_fn=reward_fn,
+            filter_fn=filter_fn,
+        )
+
 
 @dataclass(frozen=True)
 class SFTTrainingConfig:
@@ -194,9 +246,36 @@ class SFTTrainingConfig:
     log_every: int = 100
     checkpoint_every: int = 500
 
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dict for serialization.
 
-# Alias for backward compatibility
-TrainingConfig = SFTTrainingConfig
+        Returns:
+            Dict representation
+
+        Example:
+            >>> config = SFTTrainingConfig(num_steps=1000, batch_size=4)
+            >>> d = config.to_dict()
+            >>> assert d["num_steps"] == 1000
+        """
+        from dataclasses import asdict
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(data: dict[str, Any]) -> "SFTTrainingConfig":
+        """Create SFTTrainingConfig from dict.
+
+        Args:
+            data: Dict from to_dict()
+
+        Returns:
+            SFTTrainingConfig instance
+
+        Example:
+            >>> d = {"num_steps": 1000, "batch_size": 4}
+            >>> config = SFTTrainingConfig.from_dict(d)
+            >>> assert config.num_steps == 1000
+        """
+        return SFTTrainingConfig(**data)
 
 
 @dataclass(frozen=True)
@@ -225,6 +304,37 @@ class RLTrainingConfig:
     baseline: float = 0.0
     log_every: int = 10
     checkpoint_every: int = 100
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dict for serialization.
+
+        Returns:
+            Dict representation
+
+        Example:
+            >>> config = RLTrainingConfig(num_steps=1000, sync_every=10)
+            >>> d = config.to_dict()
+            >>> assert d["num_steps"] == 1000
+        """
+        from dataclasses import asdict
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(data: dict[str, Any]) -> "RLTrainingConfig":
+        """Create RLTrainingConfig from dict.
+
+        Args:
+            data: Dict from to_dict()
+
+        Returns:
+            RLTrainingConfig instance
+
+        Example:
+            >>> d = {"num_steps": 1000, "sync_every": 10}
+            >>> config = RLTrainingConfig.from_dict(d)
+            >>> assert config.num_steps == 1000
+        """
+        return RLTrainingConfig(**data)
 
 
 # ────────────────────── Futures (Tinker) ──────────────────────
