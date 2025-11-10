@@ -14,7 +14,7 @@ from rollouts.training.backends import PyTorchTrainingBackend
 from rollouts.training.backends.protocol import TrainingBackend
 
 # Datasets
-from rollouts.training.datasets import DataBuffer, load_hf_sft_dataset
+from rollouts.training.datasets import DataBuffer, load_sft_dataset
 from rollouts.training.loops import run_rl_training, run_sft_training
 
 # Metrics
@@ -41,7 +41,7 @@ __all__ = [
     "run_rl_training",
     # Datasets
     "DataBuffer",
-    "load_hf_sft_dataset",
+    "load_sft_dataset",
     # Rollout generation
     "generate_rollout_batches",
     "AsyncRolloutManager",

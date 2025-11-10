@@ -37,7 +37,7 @@ from rollouts.training import (
     JSONLLogger,
     PyTorchTrainingBackend,
     SFTTrainingConfig,
-    load_hf_sft_dataset,
+    load_sft_dataset,
     run_sft_training,
 )
 
@@ -278,7 +278,7 @@ async def run_sft(config: Config, output_dir: Path):
         logger.info(f"  Loading {spec.name} (split={spec.split}, subset={spec.subset}, max={spec.max_samples})")
 
         # Load dataset based on spec
-        dataset_samples = load_hf_sft_dataset(
+        dataset_samples = load_sft_dataset(
             spec.name,
             tokenizer=tokenizer,
             split=spec.split,

@@ -34,6 +34,7 @@ def load_sft_dataset(
     subset: Optional[str] = None,
     tokenizer: Optional[Any] = None,
     max_samples: Optional[int] = None,
+    max_length: int = 2048,
 ) -> List[Sample]:
     """Load HuggingFace dataset and convert to SFT samples.
 
@@ -46,6 +47,7 @@ def load_sft_dataset(
         subset: Optional dataset subset (e.g., "ARC-Easy" for ai2_arc)
         tokenizer: Tokenizer for encoding conversations (if None, tokens will be empty)
         max_samples: Optional limit on number of samples to load
+        max_length: Maximum sequence length for tokenization (default: 2048)
 
     Returns:
         List of Sample objects with tokenized conversations
@@ -93,7 +95,7 @@ def load_sft_dataset(
             tokenize_conversation = _get_tokenize_conversation()
             compute_loss_mask = _get_compute_loss_mask()
 
-            tokens, user_spans = tokenize_conversation(conversation, tokenizer)
+            tokens, user_spans = tokenize_conversation(conversation, tokenizer, max_length)
             loss_mask = compute_loss_mask(tokens, user_spans)
 
             sample = Sample(
@@ -119,10 +121,6 @@ def load_sft_dataset(
 
     logger.info(f"  Converted to {len(samples)} samples")
     return samples
-
-
-# Convenience alias (matches deploy.py naming)
-load_hf_sft_dataset = load_sft_dataset
 
 
 def _extract_conversation(example: Dict[str, Any]) -> Optional[List[Dict[str, str]]]:
