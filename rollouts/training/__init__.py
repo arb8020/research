@@ -29,7 +29,15 @@ from training.sft import (
     load_samples_from_jsonl,
     export_samples_to_huggingface_format,
 )
-from training.rollout_manager import RolloutManager, convert_to_batch
+from training.rollout_generation import (
+    generate_rollout_batches,
+    convert_to_batch,
+    apply_sample_transforms,
+    extract_sample_fields,
+    compute_response_lengths,
+    build_batch_metadata,
+)
+from training.rollout_manager import RolloutManager  # Deprecated
 from training.async_rollout_manager import (
     AsyncRolloutManager,
     generate_rollout_batch,
@@ -62,9 +70,15 @@ __all__ = [
     "export_samples_to_jsonl",
     "load_samples_from_jsonl",
     "export_samples_to_huggingface_format",
-    # Orchestration
-    "RolloutManager",
+    # Rollout generation (pure functions)
+    "generate_rollout_batches",
     "convert_to_batch",
+    "apply_sample_transforms",
+    "extract_sample_fields",
+    "compute_response_lengths",
+    "build_batch_metadata",
+    # Orchestration (deprecated)
+    "RolloutManager",  # DEPRECATED: Use generate_rollout_batches instead
     # Async orchestration (D4)
     "AsyncRolloutManager",
     "generate_rollout_batch",

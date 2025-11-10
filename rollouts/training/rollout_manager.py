@@ -1,4 +1,27 @@
-"""Rollout Manager - orchestrates DataBuffer + user rollout functions.
+"""Rollout Manager - DEPRECATED.
+
+⚠️ DEPRECATION WARNING ⚠️
+
+RolloutManager is deprecated and will be removed in a future version.
+
+Use generate_rollout_batches() from training.rollout_generation instead:
+
+    # OLD (deprecated):
+    manager = RolloutManager(data_buffer, config)
+    for batch in manager:
+        train_on_batch(batch)
+
+    # NEW (recommended):
+    from training.rollout_generation import generate_rollout_batches
+    batches = generate_rollout_batches(data_buffer, config)
+    for batch in batches:
+        train_on_batch(batch)
+
+For async rollout generation with over-sampling, use AsyncRolloutManager instead.
+
+See docs/ROLLOUTMANAGER_DEPRECATION.md for migration guide.
+
+---
 
 This is the main orchestration layer that connects:
 - DataBuffer (prompt iteration)
@@ -11,10 +34,18 @@ Following Casey Muratori's principles:
 - No hidden coupling
 """
 
+import warnings
 from typing import Any, Callable, Iterator, Optional
 
 from training.data_buffer import DataBuffer
 from training.types import Sample, RolloutConfig, RolloutBatch
+from training.rollout_generation import (
+    apply_sample_transforms,
+    convert_to_batch,
+    extract_sample_fields,
+    compute_response_lengths,
+    build_batch_metadata,
+)
 
 
 class RolloutManager:
@@ -35,12 +66,22 @@ class RolloutManager:
     ):
         """Initialize rollout manager.
 
+        ⚠️ DEPRECATED: Use generate_rollout_batches() from training.rollout_generation instead.
+
         Args:
             data_buffer: DataBuffer for prompt iteration
             config: RolloutConfig with batch_size and generate_fn
             **rollout_kwargs: Additional kwargs passed to generate_fn
                              (e.g., tokenizer, dataset, etc.)
         """
+        warnings.warn(
+            "RolloutManager is deprecated and will be removed in a future version. "
+            "Use generate_rollout_batches() from training.rollout_generation instead. "
+            "For async rollout generation with over-sampling, use AsyncRolloutManager.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
         self.data_buffer = data_buffer
         self.config = config
         self.rollout_kwargs = rollout_kwargs
@@ -80,7 +121,7 @@ class RolloutManager:
         assert len(samples) > 0, "generate_fn must return non-empty sample list"
 
         # Apply optional transforms
-        samples = _apply_sample_transforms(samples, self.config)
+        samples = apply_sample_transforms(samples, self.config)
 
         # Convert to batch
         batch = convert_to_batch(
@@ -111,115 +152,3 @@ class RolloutManager:
         """
         self.data_buffer.load_state(state["buffer_state"])
         self._step_count = state["step_count"]
-
-
-def _apply_sample_transforms(samples: list[Sample], config: RolloutConfig) -> list[Sample]:
-    """Apply optional filter and reward functions to samples.
-
-    Isolates optional transform logic from main iteration flow.
-    """
-    if config.filter_fn is not None:
-        samples = config.filter_fn(samples)
-        assert len(samples) > 0, "filter_fn must not filter out all samples"
-
-    if config.reward_fn is not None:
-        samples = config.reward_fn(samples)
-        assert len(samples) > 0, "reward_fn must not remove all samples"
-
-    return samples
-
-
-def convert_to_batch(
-    samples: list[Sample],
-    epoch_id: int = 0,
-    step_id: int = 0,
-) -> RolloutBatch:
-    """Convert list of samples to RolloutBatch.
-
-    Pure function - no side effects.
-
-    Args:
-        samples: List of Sample objects
-        epoch_id: Current epoch number
-        step_id: Current step number
-
-    Returns:
-        RolloutBatch ready for training backend
-
-    Example:
-        >>> samples = [Sample(...), Sample(...)]
-        >>> batch = convert_to_batch(samples, epoch_id=0, step_id=42)
-        >>> batch.tokens  # list of token lists
-        >>> batch.loss_masks  # list of loss masks
-    """
-    # Preconditions
-    assert len(samples) > 0, "Cannot convert empty sample list to batch"
-    assert all(len(s.tokens) == len(s.loss_mask) for s in samples), \
-        "All samples must have matching token/loss_mask lengths"
-
-    # Extract fields
-    tokens, loss_masks, rewards = _extract_sample_fields(samples)
-    response_lengths = _compute_response_lengths(loss_masks)
-    metadata = _build_batch_metadata(samples, epoch_id, step_id)
-
-    # Postcondition
-    assert len(tokens) == len(loss_masks) == len(rewards) == len(response_lengths), \
-        "All batch fields must have same length"
-
-    return RolloutBatch(
-        tokens=tokens,
-        loss_masks=loss_masks,
-        rewards=rewards,
-        response_lengths=response_lengths,
-        metadata=metadata,
-    )
-
-
-def _extract_sample_fields(samples: list[Sample]) -> tuple[list, list, list]:
-    """Extract tokens, loss_masks, and rewards from samples.
-
-    Pure extraction - no computation.
-    """
-    tokens = [s.tokens for s in samples]
-    loss_masks = [s.loss_mask for s in samples]
-    rewards = [s.reward for s in samples]
-    return tokens, loss_masks, rewards
-
-
-def _compute_response_lengths(loss_masks: list[list[float]]) -> list[int]:
-    """Compute response lengths from loss masks.
-
-    Response tokens are where loss_mask > 0.
-    Pure computation - no side effects.
-    """
-    response_lengths = []
-    for mask in loss_masks:
-        response_len = sum(1 for m in mask if m > 0.0)
-        response_lengths.append(response_len)
-    return response_lengths
-
-
-def _build_batch_metadata(
-    samples: list[Sample],
-    epoch_id: int,
-    step_id: int,
-) -> dict[str, Any]:
-    """Build metadata dict for batch.
-
-    Aggregates sample-level metadata and adds batch-level info.
-    """
-    metadata = {
-        "epoch_id": epoch_id,
-        "step_id": step_id,
-        "batch_size": len(samples),
-        "prompts": [s.prompt for s in samples],
-        "responses": [s.response for s in samples],
-    }
-
-    # Aggregate custom metadata if present
-    if samples[0].metadata:
-        for key in samples[0].metadata.keys():
-            values = [s.metadata.get(key) for s in samples]
-            metadata[f"sample_{key}"] = values
-
-    return metadata
