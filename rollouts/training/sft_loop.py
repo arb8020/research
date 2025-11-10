@@ -11,13 +11,13 @@ from typing import List, Dict
 from pathlib import Path
 
 from rollouts.training.backends import PyTorchTrainingBackend
-from training.types import Sample, TrainingConfig
+from training.types import Sample, SFTTrainingConfig
 
 
 async def run_sft_training(
     backend: PyTorchTrainingBackend,
     samples: List[Sample],
-    config: TrainingConfig,
+    config: SFTTrainingConfig,
 ) -> List[Dict[str, float]]:
     """Run SFT training (pure function, no hidden state).
 
@@ -32,7 +32,7 @@ async def run_sft_training(
     Example:
         >>> backend = PyTorchTrainingBackend(model, optimizer, loss_fn)
         >>> samples = load_sft_samples("dataset.jsonl")
-        >>> config = TrainingConfig(num_steps=1000, batch_size=4)
+        >>> config = SFTTrainingConfig(num_steps=1000, batch_size=4)
         >>>
         >>> metrics = await run_sft_training(backend, samples, config)
         >>> print(f"Final loss: {metrics[-1]['loss']:.4f}")

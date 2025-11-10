@@ -19,7 +19,14 @@ Usage:
 """
 
 from training.data_buffer import DataBuffer, load_prompts_from_jsonl, load_prompts_from_list
-from training.types import Sample, RolloutConfig, RolloutBatch, TrainingConfig, RLTrainingConfig
+from training.types import (
+    Sample,
+    RolloutConfig,
+    RolloutBatch,
+    SFTTrainingConfig,
+    TrainingConfig,  # Alias for SFTTrainingConfig (backward compat)
+    RLTrainingConfig,
+)
 from training.sft import (
     compute_loss_mask,
     tokenize_conversation,
@@ -75,7 +82,8 @@ __all__ = [
     "Sample",
     "RolloutConfig",
     "RolloutBatch",
-    "TrainingConfig",
+    "SFTTrainingConfig",
+    "TrainingConfig",  # Alias for backward compatibility
     "RLTrainingConfig",
     # SFT functions
     "compute_loss_mask",
