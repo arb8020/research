@@ -5,12 +5,13 @@ from typing import Dict, Optional, Any
 
 
 # Built-in log record attributes that shouldn't be included in extras
-LOG_RECORD_BUILTIN_ATTRS = {
+# Tiger Style: Use frozenset (immutable) for module-level constants
+LOG_RECORD_BUILTIN_ATTRS = frozenset({
     'name', 'msg', 'args', 'levelname', 'levelno', 'pathname', 'filename',
     'module', 'exc_info', 'exc_text', 'stack_info', 'lineno', 'funcName',
     'created', 'msecs', 'relativeCreated', 'thread', 'threadName',
     'processName', 'process', 'getMessage'
-}
+})
 
 
 class JSONFormatter(logging.Formatter):
@@ -39,12 +40,17 @@ class JSONFormatter(logging.Formatter):
             always_fields["stack_info"] = self.formatStack(record.stack_info)
 
         # Map custom keys from config
-        message = {
-            key: msg_val
-            if (msg_val := always_fields.pop(val, None)) is not None
-            else getattr(record, val)
-            for key, val in self.fmt_keys.items()
-        }
+        # Tiger Style: Explicit over clever (no walrus operator)
+        message = {}
+        for key, val in self.fmt_keys.items():
+            # Try to get from always_fields first, then from record
+            msg_val = always_fields.pop(val, None)
+            if msg_val is not None:
+                message[key] = msg_val
+            else:
+                message[key] = getattr(record, val)
+
+        # Add remaining always_fields that weren't mapped
         message.update(always_fields)
 
         # Add any extra attributes not in built-in attrs
