@@ -127,7 +127,14 @@ class PyTorchTrainingBackend:
                         for k, v in batch.items()}
 
             # Forward pass
-            logits = self.model(batch["input_ids"])
+            output = self.model(batch["input_ids"])
+
+            # Extract logits from model output (HuggingFace models return ModelOutput objects)
+            # Handle both raw tensors and ModelOutput objects
+            if hasattr(output, 'logits'):
+                logits = output.logits  # HuggingFace ModelOutput
+            else:
+                logits = output  # Raw tensor
 
             # Compute loss (user-provided loss function)
             loss = self.loss_fn(logits, batch["labels"], batch["loss_mask"])
