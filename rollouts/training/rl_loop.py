@@ -6,10 +6,11 @@ No classes, no hidden state - just explicit orchestration.
 
 import logging
 import trio
-from typing import List, Dict
+from typing import List, Dict, Optional
 from pathlib import Path
 
 from rollouts.training.backends import PyTorchTrainingBackend
+from rollouts.training.metrics import MetricsLogger
 from training.data_buffer import DataBuffer
 from training.async_rollout_manager import AsyncRolloutManager
 from training.weight_sync import sync_weights_to_engines, InferenceEngine
@@ -24,6 +25,7 @@ async def run_rl_training(
     rollout_manager: AsyncRolloutManager,
     inference_engines: List[InferenceEngine],
     config: RLTrainingConfig,
+    metrics_logger: Optional[MetricsLogger] = None,
 ) -> List[Dict[str, float]]:
     """Run RL training (pure function, no hidden state).
 
@@ -33,19 +35,23 @@ async def run_rl_training(
         rollout_manager: Rollout manager (stateful)
         inference_engines: Inference engines for weight sync
         config: RL training configuration (immutable)
+        metrics_logger: Optional metrics logger (Casey: explicit parameter)
 
     Returns:
         List of metrics dicts (one per step)
 
     Example:
+        >>> from rollouts.training.metrics import JSONLLogger
+        >>>
         >>> backend = PyTorchTrainingBackend(...)
         >>> data_buffer = DataBuffer(prompts=[...])
         >>> rollout_manager = AsyncRolloutManager(data_buffer, rollout_config)
         >>> engines = [SGLangEngine(...)]
         >>> config = RLTrainingConfig(num_steps=1000, sync_every=10)
+        >>> logger = JSONLLogger(Path("logs/exp_001"))
         >>>
         >>> metrics = await run_rl_training(
-        ...     backend, data_buffer, rollout_manager, engines, config
+        ...     backend, data_buffer, rollout_manager, engines, config, logger
         ... )
 
     SLIME-inspired: Generation → Training → Weight Sync loop.
@@ -94,7 +100,9 @@ async def run_rl_training(
                 await sync_weights_to_engines(inference_engines, str(ckpt_path))
                 logger.info(f"  Synced weights to {len(inference_engines)} engines")
 
-            # Log
+            # ═══════════════════════════════════════════════════
+            # ERROR LOGGING: Events (sporadic)
+            # ═══════════════════════════════════════════════════
             if step % config.log_every == 0:
                 logger.info(
                     f"Step {step}: "
@@ -103,12 +111,23 @@ async def run_rl_training(
                     f"grad_norm={fwd_metrics['grad_norm']:.4f}"
                 )
 
+            # ═══════════════════════════════════════════════════
+            # METRICS LOGGING: Timeseries (regular)
+            # ═══════════════════════════════════════════════════
+            if metrics_logger and step % config.log_every == 0:
+                metrics_logger.log(step_metrics, step=step)
+
             # Checkpoint
             if step % config.checkpoint_every == 0 and step > 0:
                 ckpt_path = await backend.save_checkpoint(step, step_metrics)
                 logger.info(f"  Saved checkpoint to {ckpt_path}")
 
     logger.info("RL training complete!")
+
+    # Finish metrics logging
+    if metrics_logger:
+        metrics_logger.finish()
+
     return metrics_history
 
 
