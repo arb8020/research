@@ -103,7 +103,7 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
 
     # Deploy code with bootstrap
     # Note: Need to add uv to PATH since it's installed in ~/.local/bin
-    bootstrap_cmd = 'export PATH="$HOME/.local/bin:$PATH" && uv sync --extra remote'
+    bootstrap_cmd = 'export PATH="$HOME/.local/bin:$PATH" && uv sync --extra dev-integration-training'
     workspace_path = bifrost_client.push(
         bootstrap_cmd=bootstrap_cmd
     )

@@ -1,5 +1,5 @@
 [tool.uv.workspace]
-members = ["bifrost", "broker", "shared", "dev/kernel-learning"]
+members = ["bifrost", "broker", "shared", "rollouts", "dev/kernel-learning"]
 
 [project]
 name = "gpu-research-tools"
@@ -65,6 +65,18 @@ dev-outlier-features = [
     "kernels; sys_platform == 'linux'",  # Optimized MXFP4 kernels from PyPI for GPT-OSS
 ]
 
+# Integration training - SFT + RL using rollouts module
+dev-integration-training = [
+    "rollouts",
+    "shared",
+    "torch>=2.4.0",
+    "transformers>=4.30.0",
+    "datasets>=2.14.0",
+    "trio>=0.27.0",
+    "accelerate>=0.20.0",
+    "huggingface-hub>=0.20.0",
+]
+
 # LeetGPU CLI for GPU kernel learning challenges
 dev-kernel-learning = [
     "kernel-learning",
@@ -97,6 +109,7 @@ corpus-proximity = "corpus_proximity_cli:main"
 broker = { workspace = true }
 bifrost = { workspace = true }
 shared = { workspace = true }
+rollouts = { workspace = true }
 kernel-learning = { workspace = true }
 
 [build-system]
