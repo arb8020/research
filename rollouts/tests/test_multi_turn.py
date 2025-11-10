@@ -9,7 +9,7 @@ This tests whether the agent can:
 Without a real LLM, we'll manually simulate the agent loop.
 """
 
-import asyncio
+import trio
 from rollouts import (
     Message, Trajectory, ToolCall, ToolResult,
     Endpoint, Actor, AgentState, RunConfig, CalculatorEnvironment,
@@ -38,7 +38,9 @@ async def test_manual_multi_turn():
     endpoint = Endpoint(provider="test", model="test")
     actor = Actor(trajectory=Trajectory(), endpoint=endpoint, tools=env.get_tools())
     state = AgentState(actor=actor, environment=env, max_turns=10)
-    run_config = RunConfig(on_chunk=lambda x: asyncio.sleep(0))
+    async def _dummy_chunk(x):
+        await trio.lowlevel.checkpoint()
+    run_config = RunConfig(on_chunk=_dummy_chunk)
 
     # Turn 1: Calculate 5*5 = 25
     print("Turn 1: Calculate 5*5")
@@ -129,4 +131,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    trio.run(main)

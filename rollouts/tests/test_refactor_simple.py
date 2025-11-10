@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Simple test of refactored streaming code."""
 
-import asyncio
+import trio
 import os
 from rollouts.dtypes import Endpoint, Actor, AgentState, Message, Trajectory
 from rollouts.environments.calculator import CalculatorEnvironment
@@ -82,5 +82,5 @@ async def main():
         return 1
 
 if __name__ == "__main__":
-    exit_code = asyncio.run(main())
+    exit_code = trio.run(main)
     exit(exit_code)

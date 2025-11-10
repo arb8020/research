@@ -10,7 +10,7 @@ This tests the full agent loop:
 Requires: OPENAI_API_KEY environment variable
 """
 
-import asyncio
+import trio
 import os
 from rollouts import (
     Message, Trajectory, Endpoint, Actor, AgentState, RunConfig,
@@ -116,4 +116,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    trio.run(main)

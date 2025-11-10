@@ -8,7 +8,7 @@ Usage:
     python run_eval.py --config configs/screenspot.py
 """
 
-import asyncio
+import trio
 import argparse
 import json
 import logging
@@ -269,7 +269,7 @@ def main():
     logger.info(f"🚀 Running evaluation: {config.experiment_name}")
 
     # Run evaluation
-    results_dict = asyncio.run(run_evaluation(config, result_dir))
+    results_dict = trio.run(run_evaluation(config, result_dir))
 
     # Save results to timestamped directory
     if config.save_json:
