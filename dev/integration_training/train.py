@@ -134,6 +134,11 @@ def load_model(model_name: str, device_type: str, dtype: str, gpu_ranks: list[in
     assert dtype in ["bfloat16", "float32"], f"Invalid dtype: {dtype}"
     assert len(gpu_ranks) > 0, "gpu_ranks cannot be empty"
 
+    # Tiger Style: Warn about multi-GPU limitations
+    if len(gpu_ranks) > 1:
+        logger.warning(f"  gpu_ranks has {len(gpu_ranks)} GPUs but only gpu_ranks[0]={gpu_ranks[0]} will be used")
+        logger.warning(f"  Multi-GPU training requires DataParallel/DDP (not yet implemented)")
+
     torch_dtype = torch.bfloat16 if dtype == "bfloat16" else torch.float32
 
     # Note: We DON'T set CUDA_VISIBLE_DEVICES here
@@ -143,7 +148,12 @@ def load_model(model_name: str, device_type: str, dtype: str, gpu_ranks: list[in
 
     # Explicit device placement: use first GPU in gpu_ranks
     # device_map="auto" would use CUDA_VISIBLE_DEVICES (confusing on shared nodes)
-    # Instead, explicitly place on the first GPU we're allocated
+    # Instead, explicitly place on the specified physical GPU
+    #
+    # Note: Current code is single-GPU only. If gpu_ranks=[4,5,6,7], only GPU 4 is used.
+    # For multi-GPU training, would need DataParallel/DDP or tensor parallelism.
+    # Using explicit GPU index (not CUDA_VISIBLE_DEVICES) works with non-contiguous
+    # allocations like gpu_ranks=[0,2,4,6] - each refers to physical GPU index.
     if device_type == "cuda":
         device_map = {"": gpu_ranks[0]}  # Place entire model on first allocated GPU
     else:
