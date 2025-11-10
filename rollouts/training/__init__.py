@@ -72,6 +72,11 @@ from training.rl_losses import (
     grpo_loss,
     ppo_loss,
 )
+from training.dataset_loaders import (
+    load_sft_dataset,
+    load_rl_prompts,
+    load_dataset_with_answers,
+)
 
 __all__ = [
     # Data management
@@ -125,4 +130,8 @@ __all__ = [
     # RL losses (Phase 3)
     "grpo_loss",
     "ppo_loss",
+    # Dataset loaders
+    "load_sft_dataset",
+    "load_rl_prompts",
+    "load_dataset_with_answers",
 ]
