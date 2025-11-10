@@ -4,6 +4,7 @@ SLIME-inspired: Generation → Training → Weight Sync loop.
 No classes, no hidden state - just explicit orchestration.
 """
 
+import logging
 import trio
 from typing import List, Dict
 from pathlib import Path
@@ -13,6 +14,8 @@ from training.data_buffer import DataBuffer
 from training.async_rollout_manager import AsyncRolloutManager
 from training.weight_sync import sync_weights_to_engines, InferenceEngine
 from training.types import RLTrainingConfig, Sample, RolloutBatch
+
+logger = logging.getLogger(__name__)
 
 
 async def run_rl_training(
@@ -54,10 +57,10 @@ async def run_rl_training(
 
     metrics_history = []
 
-    print(f"Starting RL training...")
-    print(f"  Steps: {config.num_steps}")
-    print(f"  Weight sync every: {config.sync_every} steps")
-    print(f"  Inference engines: {len(inference_engines)}")
+    logger.info("Starting RL training...")
+    logger.info(f"  Steps: {config.num_steps}")
+    logger.info(f"  Weight sync every: {config.sync_every} steps")
+    logger.info(f"  Inference engines: {len(inference_engines)}")
 
     async with rollout_manager:  # Context manager for cleanup
         for step in range(config.num_steps):
@@ -89,11 +92,11 @@ async def run_rl_training(
             if step % config.sync_every == 0 and step > 0:
                 ckpt_path = await backend.save_checkpoint(step, step_metrics)
                 await sync_weights_to_engines(inference_engines, str(ckpt_path))
-                print(f"  Synced weights to {len(inference_engines)} engines")
+                logger.info(f"  Synced weights to {len(inference_engines)} engines")
 
             # Log
             if step % config.log_every == 0:
-                print(
+                logger.info(
                     f"Step {step}: "
                     f"reward={step_metrics['mean_reward']:.2f}, "
                     f"loss={fwd_metrics['loss']:.4f}, "
@@ -103,9 +106,9 @@ async def run_rl_training(
             # Checkpoint
             if step % config.checkpoint_every == 0 and step > 0:
                 ckpt_path = await backend.save_checkpoint(step, step_metrics)
-                print(f"  Saved checkpoint to {ckpt_path}")
+                logger.info(f"  Saved checkpoint to {ckpt_path}")
 
-    print(f"\nRL training complete!")
+    logger.info("RL training complete!")
     return metrics_history
 
 

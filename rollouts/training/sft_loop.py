@@ -6,12 +6,15 @@ stateful dependencies (backend, data).
 Design: Casey Muratori (no retention), Tiger Style (explicit state).
 """
 
+import logging
 import trio
 from typing import List, Dict
 from pathlib import Path
 
 from rollouts.training.backends import PyTorchTrainingBackend
 from training.types import Sample, SFTTrainingConfig
+
+logger = logging.getLogger(__name__)
 
 
 async def run_sft_training(
@@ -47,10 +50,10 @@ async def run_sft_training(
 
     metrics_history = []
 
-    print(f"Starting SFT training...")
-    print(f"  Samples: {len(samples)}")
-    print(f"  Steps: {config.num_steps}")
-    print(f"  Batch size: {config.batch_size}")
+    logger.info("Starting SFT training...")
+    logger.info(f"  Samples: {len(samples)}")
+    logger.info(f"  Steps: {config.num_steps}")
+    logger.info(f"  Batch size: {config.batch_size}")
 
     for step in range(config.num_steps):
         # Get batch (pure function)
@@ -70,7 +73,7 @@ async def run_sft_training(
 
         # Log (side effect, but explicit)
         if step % config.log_every == 0:
-            print(
+            logger.info(
                 f"Step {step}: "
                 f"loss={fwd_metrics['loss']:.4f}, "
                 f"grad_norm={fwd_metrics['grad_norm']:.4f}, "
@@ -80,9 +83,9 @@ async def run_sft_training(
         # Checkpoint (side effect, but explicit)
         if step % config.checkpoint_every == 0 and step > 0:
             ckpt_path = await backend.save_checkpoint(step, step_metrics)
-            print(f"  Saved checkpoint to {ckpt_path}")
+            logger.info(f"  Saved checkpoint to {ckpt_path}")
 
-    print(f"\nTraining complete!")
+    logger.info("Training complete!")
     return metrics_history
 
 

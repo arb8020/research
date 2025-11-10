@@ -13,6 +13,7 @@ Demonstrates:
 """
 
 import sys
+import logging
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -27,6 +28,10 @@ from training.rl_losses import grpo_loss
 from training.data_buffer import DataBuffer, load_prompts_from_list
 from training.async_rollout_manager import AsyncRolloutManager
 from training.types import Sample, RolloutConfig, RLTrainingConfig
+
+# Setup basic logging for examples
+logging.basicConfig(level=logging.INFO, format='%(message)s')
+logger = logging.getLogger(__name__)
 
 
 # ────────────────────── Simple Model ──────────────────────
