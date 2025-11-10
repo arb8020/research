@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 
 from training.data_buffer import DataBuffer
 from training.types import Sample, RolloutConfig, RolloutBatch
-from training.rollout_manager import convert_to_batch
+from training.rollout_generation import convert_to_batch
 
 
 @dataclass
