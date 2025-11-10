@@ -98,7 +98,7 @@ async def run_evaluation(config, result_dir: Path) -> dict:
 
     # Run on each sample concurrently
     results = [None] * len(dataset)  # Pre-allocate results list
-    max_concurrent = int(os.getenv("MAX_CONCURRENT", "10"))
+    max_concurrent = config.max_concurrent if hasattr(config, "max_concurrent") else 10
     semaphore = trio.Semaphore(max_concurrent)
 
     logger.info(f"🚀 Running {len(dataset)} samples with max concurrency: {max_concurrent}")
