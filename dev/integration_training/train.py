@@ -136,15 +136,23 @@ def load_model(model_name: str, device_type: str, dtype: str, gpu_ranks: list[in
 
     torch_dtype = torch.bfloat16 if dtype == "bfloat16" else torch.float32
 
-    # Set CUDA_VISIBLE_DEVICES to restrict to specified GPUs
-    if device_type == "cuda" and len(gpu_ranks) > 0:
-        os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(r) for r in gpu_ranks)
-        logger.info(f"  Set CUDA_VISIBLE_DEVICES={os.environ['CUDA_VISIBLE_DEVICES']}")
+    # Note: We DON'T set CUDA_VISIBLE_DEVICES here
+    # Instead, we use explicit device placement (cuda:4 means physical GPU 4)
+    # This is clearer and avoids remapping confusion on shared nodes
+    # The backend will place model/data on the exact GPU index we specify
+
+    # Explicit device placement: use first GPU in gpu_ranks
+    # device_map="auto" would use CUDA_VISIBLE_DEVICES (confusing on shared nodes)
+    # Instead, explicitly place on the first GPU we're allocated
+    if device_type == "cuda":
+        device_map = {"": gpu_ranks[0]}  # Place entire model on first allocated GPU
+    else:
+        device_map = None
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype=torch_dtype,
-        device_map="auto" if device_type == "cuda" else None,
+        device_map=device_map,
     )
 
     if device_type != "cuda":
