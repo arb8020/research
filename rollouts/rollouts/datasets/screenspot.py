@@ -112,6 +112,12 @@ def screenspot_to_trajectory(row: Dict[str, Any]) -> Trajectory:
     if image_format == "jpg":
         image_format = "jpeg"
 
+    # Create system message (matches official ScreenSpot-Pro evaluation)
+    system_msg = Message(
+        role="system",
+        content="You are an expert in using electronic devices and interacting with graphic interfaces. You should not call any external tools."
+    )
+
     # Create user message with vision content
     user_msg = Message(
         role="user",
@@ -128,7 +134,7 @@ def screenspot_to_trajectory(row: Dict[str, Any]) -> Trajectory:
 
     # Create trajectory with ground truth metadata for environment
     trajectory = Trajectory(
-        messages=[user_msg],
+        messages=[system_msg, user_msg],
         metadata={
             "bbox": row["bbox"],  # Ground truth bbox in pixels
             "img_size": row["img_size"],  # Image size [width, height]
@@ -140,7 +146,7 @@ def screenspot_to_trajectory(row: Dict[str, Any]) -> Trajectory:
         }
     )
     assert trajectory is not None
-    assert len(trajectory.messages) == 1
+    assert len(trajectory.messages) == 2  # system + user
     assert "bbox" in trajectory.metadata
     assert "img_size" in trajectory.metadata
 
