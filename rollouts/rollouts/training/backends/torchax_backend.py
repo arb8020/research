@@ -14,11 +14,11 @@ Recommendation: Skip for now, revisit in 6-12 months
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict
 
 import torch
-# import torchax  # Experimental, v0.0.4
 
+# import torchax  # Experimental, v0.0.4
 from rollouts.training.types import TrainFuture
 
 

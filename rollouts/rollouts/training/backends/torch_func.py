@@ -12,11 +12,12 @@ Status: STUB - Not yet implemented
 Estimated effort: ~1-2 days
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict
 
 import torch
+
 # import torchopt  # External dependency, install when implementing
 from rollouts.training.types import TrainFuture
 

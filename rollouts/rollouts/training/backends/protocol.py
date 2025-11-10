@@ -8,7 +8,8 @@ Minimal surface area (Tinker-inspired):
 Tiger Style: Protocol-based, explicit operations.
 """
 
-from typing import Protocol, Dict, Any
+from typing import Any, Dict, Protocol
+
 from rollouts.training.types import TrainFuture
 
 

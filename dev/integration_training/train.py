@@ -33,12 +33,13 @@ import trio
 from base_config import Config
 
 # Import from rollouts module (installed via workspace)
-from rollouts.training.backends import PyTorchTrainingBackend
-from rollouts.training.metrics import JSONLLogger
-
-from rollouts.training.dataset_loaders import load_hf_sft_dataset
-from rollouts.training.sft_loop import run_sft_training
-from rollouts.training.types import SFTTrainingConfig
+from rollouts.training import (
+    JSONLLogger,
+    PyTorchTrainingBackend,
+    SFTTrainingConfig,
+    load_hf_sft_dataset,
+    run_sft_training,
+)
 
 logger = logging.getLogger(__name__)
 

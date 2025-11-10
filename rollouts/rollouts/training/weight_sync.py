@@ -15,11 +15,11 @@ Architecture:
 - Orchestration: sync_weights_to_engines() coordinates parallel sync
 """
 
-import trio
-import httpx
-from typing import Any, Protocol
 from dataclasses import dataclass
+from typing import Any, Protocol
 
+import httpx
+import trio
 
 # ══════════════════════════════════════════════════════════════
 # Fine-grained immediate mode (Casey Muratori style)
@@ -29,8 +29,6 @@ from dataclasses import dataclass
 async def update_sglang_weights_from_disk(
     base_url: str,
     checkpoint_path: str,
-    *,
-    timeout: float = 300.0,
 ) -> dict[str, Any]:
     """Update SGLang server weights from checkpoint on disk.
 
@@ -39,7 +37,6 @@ async def update_sglang_weights_from_disk(
     Args:
         base_url: SGLang server URL (e.g. "http://localhost:30000")
         checkpoint_path: Path to checkpoint (local path or HF model ID)
-        timeout: Request timeout in seconds (default 5 minutes)
 
     Returns:
         Response dict with keys:
@@ -49,21 +46,23 @@ async def update_sglang_weights_from_disk(
     Raises:
         httpx.HTTPError: If HTTP request fails
         AssertionError: If preconditions violated
+        trio.TooSlowError: If request takes >5 minutes (use trio.fail_after for custom timeout)
 
     Example:
-        >>> response = await update_sglang_weights_from_disk(
-        ...     "http://localhost:30000",
-        ...     "/checkpoints/step_1000",
-        ... )
+        >>> with trio.fail_after(300):  # 5 minute timeout
+        ...     response = await update_sglang_weights_from_disk(
+        ...         "http://localhost:30000",
+        ...         "/checkpoints/step_1000",
+        ...     )
         >>> assert response["success"]
     """
     # Tiger Style: assert preconditions
     assert base_url, "base_url cannot be empty"
     assert checkpoint_path, "checkpoint_path cannot be empty"
-    assert timeout > 0, f"timeout must be > 0, got {timeout}"
 
     # Simple HTTP POST - no abstraction, no state
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    # Note: No timeout parameter - caller should use trio.fail_after
+    async with httpx.AsyncClient() as client:
         response = await client.post(
             f"{base_url}/update_weights_from_disk",
             json={"model_path": checkpoint_path},
@@ -80,8 +79,6 @@ async def update_sglang_weights_from_disk(
 async def update_vllm_weights_from_disk(
     base_url: str,
     checkpoint_path: str,
-    *,
-    timeout: float = 300.0,
 ) -> dict[str, Any]:
     """Update vLLM server weights from checkpoint on disk.
 
@@ -90,7 +87,6 @@ async def update_vllm_weights_from_disk(
     Args:
         base_url: vLLM server URL (e.g. "http://localhost:30001")
         checkpoint_path: Path to checkpoint (local path or HF model ID)
-        timeout: Request timeout in seconds (default 5 minutes)
 
     Returns:
         Response dict from vLLM RPC
@@ -98,20 +94,22 @@ async def update_vllm_weights_from_disk(
     Raises:
         httpx.HTTPError: If HTTP request fails
         AssertionError: If preconditions violated
+        trio.TooSlowError: If request takes >5 minutes (use trio.fail_after for custom timeout)
 
     Example:
-        >>> response = await update_vllm_weights_from_disk(
-        ...     "http://localhost:30001",
-        ...     "/checkpoints/step_1000",
-        ... )
+        >>> with trio.fail_after(300):  # 5 minute timeout
+        ...     response = await update_vllm_weights_from_disk(
+        ...         "http://localhost:30001",
+        ...         "/checkpoints/step_1000",
+        ...     )
     """
     # Tiger Style: assert preconditions
     assert base_url, "base_url cannot be empty"
     assert checkpoint_path, "checkpoint_path cannot be empty"
-    assert timeout > 0, f"timeout must be > 0, got {timeout}"
 
     # Call vLLM's reload_weights RPC
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    # Note: No timeout parameter - caller should use trio.fail_after
+    async with httpx.AsyncClient() as client:
         response = await client.post(
             f"{base_url}/collective_rpc",
             json={
