@@ -85,7 +85,17 @@ def tokenize_conversation(
     # Postconditions
     assert len(full_tokens) > 0, "Tokenization produced no tokens"
     assert len(user_spans) <= len(messages), "Cannot have more user spans than messages"
-    assert all(0 <= start < end <= len(full_tokens) for start, end in user_spans), "User spans must be valid ranges"
+
+    # Validate each span with detailed error message (Tiger Style)
+    for i, (start, end) in enumerate(user_spans):
+        assert start >= 0, f"Span {i} has negative start: {start}"
+        assert start < end, f"Span {i} is empty or inverted: start={start}, end={end}"
+        assert end <= len(full_tokens), \
+            f"Span {i} exceeds token length: end={end} > len(full_tokens)={len(full_tokens)}\n" \
+            f"  This usually means max_length truncation is inconsistent.\n" \
+            f"  max_length={max_length}, Message count: {len(messages)}\n" \
+            f"  User spans: {user_spans}\n" \
+            f"  Messages: {messages}"
 
     return full_tokens, user_spans
 
