@@ -110,11 +110,16 @@ async def run_evaluation(config, result_dir: Path) -> dict:
     max_concurrent = config.max_concurrent if hasattr(config, "max_concurrent") else 10
     semaphore = trio.Semaphore(max_concurrent)
 
+    # Progress tracking
+    completed_count = 0
+    completed_lock = trio.Lock()
+
     logger.info(f"🚀 Running {len(dataset)} samples with max concurrency: {max_concurrent}")
     logger.info("")
 
     async def run_sample(i: int, row: dict):
         """Run a single sample evaluation."""
+        nonlocal completed_count
         async with semaphore:
             # Log start
             sample_id = f"Sample {i+1}/{len(dataset)}"
@@ -186,10 +191,16 @@ async def run_evaluation(config, result_dir: Path) -> dict:
                     result["metadata"] = trajectory.metadata
 
                 results[i] = result
-                logger.info(f"✅ {sample_id}: Reward={reward:.3f} | Turns={final_state.turn_idx}")
+
+                # Update progress
+                async with completed_lock:
+                    completed_count += 1
+                    logger.info(f"✅ [{completed_count}/{len(dataset)}] {sample_id}: Reward={reward:.3f}")
 
             except Exception as e:
-                logger.error(f"❌ {sample_id} failed: {e}")
+                async with completed_lock:
+                    completed_count += 1
+                    logger.error(f"❌ [{completed_count}/{len(dataset)}] {sample_id} failed: {e}")
                 result = {
                     "sample_id": i,
                     "error": str(e),
