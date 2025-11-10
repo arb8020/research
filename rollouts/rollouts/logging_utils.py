@@ -2,35 +2,14 @@
 
 Tiger Style: Simple, bounded logging with timestamped results directories.
 
-Note: This assumes 'shared' package is available (from /Users/chiraagbalu/research/shared/).
-For standalone usage without shared, use standard logging.getLogger(__name__) directly.
+Requires 'shared' package from /Users/chiraagbalu/research/shared/
 """
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-try:
-    from shared.logging_config import setup_logging
-except ImportError:
-    # Fallback if shared is not available
-    def setup_logging(
-        level: str = "INFO",
-        use_json: bool = False,
-        use_rich: bool = False,
-        logger_levels: Optional[dict] = None,
-        log_file: Optional[str] = None,
-    ) -> None:
-        """Simple logging setup without shared dependency."""
-        format_str = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        logging.basicConfig(level=getattr(logging, level.upper()), format=format_str)
-        if logger_levels:
-            for logger_name, logger_level in logger_levels.items():
-                logging.getLogger(logger_name).setLevel(getattr(logging, logger_level.upper()))
-        if log_file:
-            file_handler = logging.FileHandler(log_file)
-            file_handler.setFormatter(logging.Formatter(format_str))
-            logging.getLogger().addHandler(file_handler)
+from shared.logging_config import setup_logging
 
 
 def init_rollout_logging(
