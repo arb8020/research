@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 def load_sft_dataset(
     dataset_name: str,
     split: str = "train",
+    subset: Optional[str] = None,
     tokenizer: Optional[Any] = None,
     max_samples: Optional[int] = None,
 ) -> List[Sample]:
@@ -41,6 +42,7 @@ def load_sft_dataset(
     Args:
         dataset_name: HuggingFace dataset name (e.g., "HuggingFaceTB/smoltalk")
         split: Dataset split to load (default: "train")
+        subset: Optional dataset subset (e.g., "ARC-Easy" for ai2_arc)
         tokenizer: Tokenizer for encoding conversations (if None, tokens will be empty)
         max_samples: Optional limit on number of samples to load
 
@@ -61,10 +63,13 @@ def load_sft_dataset(
     if not HAS_DATASETS:
         raise ImportError("datasets library not installed. Install with: pip install datasets")
 
-    logger.info(f"Loading dataset: {dataset_name} (split={split})")
+    logger.info(f"Loading dataset: {dataset_name} (split={split}, subset={subset})")
 
-    # Load dataset from HuggingFace
-    dataset = load_dataset(dataset_name, split=split)
+    # Load dataset from HuggingFace (with optional subset)
+    if subset:
+        dataset = load_dataset(dataset_name, subset, split=split)
+    else:
+        dataset = load_dataset(dataset_name, split=split)
 
     if max_samples is not None:
         dataset = dataset.select(range(min(max_samples, len(dataset))))
@@ -113,6 +118,10 @@ def load_sft_dataset(
 
     logger.info(f"  Converted to {len(samples)} samples")
     return samples
+
+
+# Convenience alias (matches deploy.py naming)
+load_hf_sft_dataset = load_sft_dataset
 
 
 def _extract_conversation(example: Dict[str, Any]) -> Optional[List[Dict[str, str]]]:

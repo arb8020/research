@@ -132,7 +132,7 @@ class RolloutBatch:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass
+@dataclass(frozen=True)
 class RolloutConfig:
     """Configuration for rollout generation.
 
@@ -166,7 +166,7 @@ class RolloutConfig:
     filter_fn: Optional[Callable] = None
 
 
-@dataclass
+@dataclass(frozen=True)
 class SFTTrainingConfig:
     """Configuration for SFT (Supervised Fine-Tuning) training loop.
 
@@ -197,7 +197,7 @@ class SFTTrainingConfig:
 TrainingConfig = SFTTrainingConfig
 
 
-@dataclass
+@dataclass(frozen=True)
 class RLTrainingConfig:
     """Configuration for RL training loop.
 
