@@ -81,6 +81,8 @@ def load_sft_dataset(
 
     # Convert to samples
     samples = []
+    skipped_too_long = 0
+
     for idx, example in enumerate(dataset):
         # Extract conversation (handle different formats)
         conversation = _extract_conversation(example)
@@ -91,6 +93,13 @@ def load_sft_dataset(
 
         # Create sample
         if tokenizer is not None:
+            # Pre-filter conversations that exceed max_length (SLIME pattern)
+            # This prevents truncation-related bugs (empty spans, invalid loss masks)
+            estimated_tokens = _estimate_conversation_length(conversation, tokenizer)
+            if estimated_tokens > max_length:
+                skipped_too_long += 1
+                continue
+
             # Tokenize conversation (lazy import to avoid torch at module load)
             tokenize_conversation = _get_tokenize_conversation()
             compute_loss_mask = _get_compute_loss_mask()
@@ -119,8 +128,39 @@ def load_sft_dataset(
 
         samples.append(sample)
 
+    # Log filtering statistics (SLIME pattern: be transparent about data filtering)
     logger.info(f"  Converted to {len(samples)} samples")
+    if skipped_too_long > 0:
+        logger.info(f"  Skipped {skipped_too_long} samples (exceeded max_length={max_length})")
+
     return samples
+
+
+def _estimate_conversation_length(
+    conversation: List[Dict[str, str]],
+    tokenizer: Any,
+) -> int:
+    """Estimate token length of conversation without full tokenization.
+
+    Fast approximation - applies chat template and encodes without special tokens.
+    Used for pre-filtering long conversations (SLIME pattern).
+
+    Args:
+        conversation: List of {role, content} message dicts
+        tokenizer: HuggingFace tokenizer
+
+    Returns:
+        Estimated token count
+    """
+    # Apply chat template to get formatted text
+    full_text = tokenizer.apply_chat_template(
+        conversation,
+        tokenize=False,
+        add_generation_prompt=False,
+    )
+    # Encode without special tokens for length estimation
+    tokens = tokenizer.encode(full_text, add_special_tokens=False)
+    return len(tokens)
 
 
 def _extract_conversation(example: Dict[str, Any]) -> Optional[List[Dict[str, str]]]:

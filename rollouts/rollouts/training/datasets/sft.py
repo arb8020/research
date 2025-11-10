@@ -108,13 +108,17 @@ def _tokenize_full_conversation(
     """Tokenize complete conversation into tokens.
 
     Pure helper - no control flow, just tokenization.
+
+    Note: No truncation here - conversations should be pre-filtered at dataset
+    load time (SLIME pattern). This prevents empty spans and invalid loss masks.
     """
     full_text = tokenizer.apply_chat_template(
         messages,
         tokenize=False,
         add_generation_prompt=False,
     )
-    tokens = tokenizer.encode(full_text, max_length=max_length, truncation=True)
+    # No truncation - caller filters conversations that exceed max_length
+    tokens = tokenizer.encode(full_text, add_special_tokens=False)
     return tokens
 
 
@@ -154,15 +158,16 @@ def _tokenize_partial_length(
     """Get token length of partial conversation.
 
     Pure helper - just computes length, no side effects.
+
+    Note: No truncation - conversations are pre-filtered (SLIME pattern).
     """
     partial_text = tokenizer.apply_chat_template(
         messages,
         tokenize=False,
         add_generation_prompt=False,
     )
-    partial_tokens = tokenizer.encode(
-        partial_text, max_length=max_length, truncation=True
-    )
+    # No truncation - caller ensures conversation fits
+    partial_tokens = tokenizer.encode(partial_text, add_special_tokens=False)
     return len(partial_tokens)
 
 
