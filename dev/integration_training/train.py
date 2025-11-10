@@ -29,20 +29,16 @@ from typing import Literal
 
 import trio
 
-# Add project root to path so we can import rollouts/
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
+# Import local config (from same directory - no sys.path needed!)
+from base_config import Config
 
-# Import from rollouts module (like how outlier-features imports broker/bifrost)
-# Import base_config
-from base_config import Config  # noqa: E402
-from rollouts.training.backends import PyTorchTrainingBackend  # noqa: E402
-from rollouts.training.metrics import JSONLLogger  # noqa: E402
-from training.dataset_loaders import load_hf_sft_dataset  # noqa: E402
-from training.sft_loop import run_sft_training  # noqa: E402
-from training.types import (  # noqa: E402
-    SFTTrainingConfig,
-)
+# Import from rollouts module (installed via workspace)
+from rollouts.training.backends import PyTorchTrainingBackend
+from rollouts.training.metrics import JSONLLogger
+
+from rollouts.training.dataset_loaders import load_hf_sft_dataset
+from rollouts.training.sft_loop import run_sft_training
+from rollouts.training.types import SFTTrainingConfig
 
 logger = logging.getLogger(__name__)
 
