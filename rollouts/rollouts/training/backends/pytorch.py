@@ -131,12 +131,15 @@ class PyTorchTrainingBackend:
 
             # Extract logits from model output (HuggingFace models return ModelOutput objects)
             # Handle both raw tensors and ModelOutput objects
+            # Type check would catch if we passed wrong type to loss_fn
+            logits: torch.Tensor
             if hasattr(output, 'logits'):
-                logits = output.logits  # HuggingFace ModelOutput
+                logits = output.logits  # HuggingFace ModelOutput -> extract tensor
             else:
-                logits = output  # Raw tensor
+                logits = output  # Raw tensor (custom models)
 
             # Compute loss (user-provided loss function)
+            # Type hint on loss_fn ensures logits is torch.Tensor, not ModelOutput
             loss = self.loss_fn(logits, batch["labels"], batch["loss_mask"])
 
             # Backward pass
