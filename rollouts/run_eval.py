@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
+from tqdm import tqdm
 
 from rollouts.dtypes import Endpoint, Actor, AgentState
 from rollouts.agents import run_agent, RunConfig, stdout_handler
@@ -110,25 +111,16 @@ async def run_evaluation(config, result_dir: Path) -> dict:
     max_concurrent = config.max_concurrent if hasattr(config, "max_concurrent") else 10
     semaphore = trio.Semaphore(max_concurrent)
 
-    # Progress tracking
-    completed_count = 0
-    completed_lock = trio.Lock()
-
     logger.info(f"🚀 Running {len(dataset)} samples with max concurrency: {max_concurrent}")
     logger.info("")
 
+    # Create progress bar
+    pbar = tqdm(total=len(dataset), desc="Evaluating", unit="sample")
+
     async def run_sample(i: int, row: dict):
         """Run a single sample evaluation."""
-        nonlocal completed_count
         async with semaphore:
-            # Log start
             sample_id = f"Sample {i+1}/{len(dataset)}"
-            if "question" in row:
-                logger.info(f"▶️  {sample_id}: {row['question'][:60]}...")
-            elif "instruction" in row:
-                logger.info(f"▶️  {sample_id}: {row['instruction'][:60]}...")
-            else:
-                logger.info(f"▶️  {sample_id}")
 
             try:
                 # Transform to trajectory
@@ -192,26 +184,27 @@ async def run_evaluation(config, result_dir: Path) -> dict:
 
                 results[i] = result
 
-                # Update progress
-                async with completed_lock:
-                    completed_count += 1
-                    logger.info(f"✅ [{completed_count}/{len(dataset)}] {sample_id}: Reward={reward:.3f}")
+                # Update progress bar with reward in postfix
+                pbar.set_postfix({"last_reward": f"{reward:.3f}"})
+                pbar.update(1)
 
             except Exception as e:
-                async with completed_lock:
-                    completed_count += 1
-                    logger.error(f"❌ [{completed_count}/{len(dataset)}] {sample_id} failed: {e}")
+                logger.error(f"❌ {sample_id} failed: {e}")
                 result = {
                     "sample_id": i,
                     "error": str(e),
                     "success": False,
                 }
                 results[i] = result
+                pbar.update(1)
 
     # Run all samples concurrently
     async with trio.open_nursery() as nursery:
         for i, row in enumerate(dataset):
             nursery.start_soon(run_sample, i, row)
+
+    # Close progress bar
+    pbar.close()
 
     # Compute summary
     num_completed = sum(1 for r in results if r and r.get("success", False))

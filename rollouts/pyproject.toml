@@ -10,6 +10,7 @@ dependencies = [
     "aiohttp>=3.9.0",
     "trio>=0.32.0",
     "httpx>=0.28.1",
+    "tqdm>=4.66.0",
 ]
 
 [project.optional-dependencies]
@@ -17,6 +18,12 @@ dependencies = [
 deploy = [
     "bifrost @ git+https://github.com/arb8020/research.git#subdirectory=bifrost",
     "broker @ git+https://github.com/arb8020/research.git#subdirectory=broker",
+]
+
+# Training (distributed training with FSDP/DDP)
+training = [
+    "miniray @ file:///${PROJECT_ROOT}/../miniray",
+    "torch>=2.0.0",
 ]
 
 # Development
