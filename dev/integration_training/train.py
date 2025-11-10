@@ -471,12 +471,13 @@ def main():
         if not sft_checkpoint_dir.exists():
             raise RuntimeError(f"SFT checkpoint directory not found: {sft_checkpoint_dir}")
 
-        # Get latest checkpoint (assuming naming like step_100.pt)
-        checkpoints = sorted(sft_checkpoint_dir.glob("*.pt"))
-        if not checkpoints:
+        # Get latest checkpoint directory (PyTorchTrainingBackend saves as step_NNNN/ dirs)
+        # Each checkpoint dir contains: pytorch_model.bin, optimizer.bin, metadata.json
+        checkpoint_dirs = sorted(sft_checkpoint_dir.glob("step_*"))
+        if not checkpoint_dirs:
             raise RuntimeError(f"No checkpoints found in {sft_checkpoint_dir}")
 
-        latest_checkpoint = str(checkpoints[-1])
+        latest_checkpoint = str(checkpoint_dirs[-1])
         logger.info(f"Using SFT checkpoint for RL: {latest_checkpoint}")
 
         # Step 2: RL
