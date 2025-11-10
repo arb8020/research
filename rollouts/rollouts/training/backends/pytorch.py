@@ -71,6 +71,25 @@ class PyTorchTrainingBackend:
         assert self.loss_fn is not None, "loss_fn cannot be None"
         assert self.checkpoint_dir is not None, "checkpoint_dir cannot be None"
 
+        # Validate device if specified (Tiger Style: fail fast with clear error)
+        if self.device is not None:
+            if self.device.type == "cuda":
+                device_index = self.device.index if self.device.index is not None else 0
+                num_gpus = torch.cuda.device_count()
+                assert device_index < num_gpus, \
+                    f"Device {self.device} is invalid: only {num_gpus} GPU(s) available " \
+                    f"(indices 0-{num_gpus-1}). Check your gpu_ranks config."
+
+                # Verify device is actually accessible (not just in range)
+                try:
+                    # Small allocation to verify device works
+                    _ = torch.zeros(1, device=self.device)
+                except RuntimeError as e:
+                    raise AssertionError(
+                        f"Device {self.device} exists but is not accessible: {e}\n"
+                        f"This may indicate the device is in use or misconfigured."
+                    ) from e
+
         # Create checkpoint directory if needed
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
