@@ -241,10 +241,18 @@ class BifrostClient:
         """
         return generate_job_id(session_name)
 
-    def push(self, bootstrap_cmd: Optional[Union[str, List[str]]] = None) -> str:
+    def push(
+        self,
+        workspace_name: Optional[str] = None,
+        bootstrap_cmd: Optional[Union[str, List[str]]] = None
+    ) -> str:
         """Deploy code to remote workspace.
 
         Args:
+            workspace_name: Optional workspace name for project isolation.
+                          If provided, workspace will be at ~/.bifrost/workspaces/{workspace_name}
+                          If None, uses default ~/.bifrost/workspace (for backward compatibility)
+                          Example: workspace_name="clicker" → ~/.bifrost/workspaces/clicker
             bootstrap_cmd: Optional bootstrap command(s) - either single string or list of commands
                           (e.g., "uv sync --frozen" or ["pip install uv", "uv sync --frozen"])
 
@@ -260,7 +268,14 @@ class BifrostClient:
             bootstrap_cmd = validate_bootstrap_cmd(bootstrap_cmd)
 
         ssh_client = self._get_ssh_client()
-        workspace_path = "~/.bifrost/workspace"
+
+        # Construct workspace path based on workspace_name
+        if workspace_name:
+            # Named workspace: ~/.bifrost/workspaces/{name}
+            workspace_path = f"~/.bifrost/workspaces/{workspace_name}"
+        else:
+            # Default workspace for backward compatibility
+            workspace_path = "~/.bifrost/workspace"
 
         # Deploy code (pure function)
         workspace_path = git_sync.deploy_code(ssh_client, self._remote_config, workspace_path)
