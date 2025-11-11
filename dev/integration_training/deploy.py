@@ -442,10 +442,12 @@ def main():
         workspace_path = deploy_code(bifrost_client)
 
         # Run type check on deployed code (catch errors early)
+        # Tiger Style: Fail fast on type errors (warnings are ok)
         type_errors = run_type_check(bifrost_client, workspace_path)
         if type_errors:
-            logger.warning("⚠️  Type check found errors, but continuing deployment")
-            logger.warning("💡 Consider fixing type errors to prevent runtime failures")
+            logger.error("❌ Type check failed - deployment aborted")
+            logger.error("💡 Fix type errors and redeploy")
+            return 1
 
         # Construct remote result directory (in project subdirectory)
         project_dir = f"{workspace_path}/dev/integration_training"
