@@ -510,6 +510,9 @@ async def rollout_sglang(
             )
 
         message["tool_calls"] = conformed_tool_calls
+    else:
+        # No tool calls - set to empty list for dacite parsing
+        message["tool_calls"] = []
     print(completion)
     completion = from_dict(ChatCompletion, completion)
     if completion.prompt_logprobs:
