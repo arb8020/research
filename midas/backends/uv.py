@@ -17,7 +17,8 @@ Casey principles:
 import logging
 from typing import TYPE_CHECKING
 
-from midas.protocol import CommandResult, EnvBackend
+from midas.protocol import CommandResult, EnvBackend, DependencyConfig
+from midas.pyproject_gen import generate_pyproject_toml
 
 if TYPE_CHECKING:
     from bifrost import BifrostClient
@@ -44,21 +45,23 @@ class UvBackend:
         self,
         client: "BifrostClient",
         workspace: str,
-        extra: str,
+        dependencies: DependencyConfig,
+        extra: str | None = None,
     ) -> None:
         """Bootstrap UV environment from unknown state.
 
         Steps:
         1. Check if UV exists, install if not
         2. Ensure UV is in PATH
-        3. Run uv sync to install dependencies
-        4. Verify Python venv is working
+        3. Generate pyproject.toml from dependencies
+        4. Run uv sync to install dependencies
+        5. Verify Python venv is working
 
         Tiger Style: < 70 lines, explicit steps.
         """
         assert client is not None, "BifrostClient instance required"
         assert workspace, "workspace path required"
-        assert extra, "Python extra group required (e.g., 'dev-speedrun')"
+        assert dependencies is not None, "DependencyConfig required"
 
         logger.info("🔧 Bootstrapping UV environment...")
 
@@ -73,11 +76,16 @@ class UvBackend:
         # Step 2: Ensure UV is in PATH
         self._ensure_uv_in_path(client)
 
-        # Step 3: Sync dependencies
-        logger.info(f"📚 Syncing dependencies (extra: {extra})...")
+        # Step 3: Generate and upload pyproject.toml
+        logger.info(f"📝 Generating pyproject.toml for {dependencies.project_name}...")
+        self._generate_pyproject(client, workspace, dependencies)
+
+        # Step 4: Sync dependencies
+        extra_msg = f" with extra '{extra}'" if extra else ""
+        logger.info(f"📚 Syncing dependencies{extra_msg}...")
         self._sync_dependencies(client, workspace, extra)
 
-        # Step 4: Verify environment works
+        # Step 5: Verify environment works
         logger.info("🔍 Verifying Python environment...")
         self._verify_python_env(client, workspace)
 
@@ -191,27 +199,55 @@ class UvBackend:
         else:
             logger.info(f"✅ UV added to PATH ({status})")
 
+    def _generate_pyproject(
+        self,
+        client: "BifrostClient",
+        workspace: str,
+        dependencies: DependencyConfig,
+    ) -> None:
+        """Generate pyproject.toml on remote from DependencyConfig.
+
+        Tiger Style: Explicit generation, assert success.
+        """
+        # Generate pyproject.toml content
+        toml_content = generate_pyproject_toml(dependencies)
+
+        # Escape single quotes for shell
+        escaped_content = toml_content.replace("'", "'\\''")
+
+        # Write to remote
+        write_cmd = f"cat > {workspace}/pyproject.toml << 'EOF'\n{toml_content}\nEOF"
+        result = client.exec(write_cmd)
+
+        assert result.exit_code == 0, f"Failed to write pyproject.toml: {result.stderr}"
+        logger.info(f"✅ Generated pyproject.toml ({dependencies.project_name})")
+
     def _sync_dependencies(
         self,
         client: "BifrostClient",
         workspace: str,
-        extra: str,
+        extra: str | None,
     ) -> None:
         """Sync Python dependencies using uv.
 
         Tiger Style: Explicit command, assert success.
         """
-        # Ensure UV is accessible (add to PATH if needed)
+        # Build sync command
+        extra_flag = f" --extra {extra}" if extra else ""
         sync_cmd = f"""
         export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
         cd {workspace}
-        uv sync --extra {extra}
+        uv sync{extra_flag}
         """
 
         result = client.exec(sync_cmd)
 
         assert result.exit_code == 0, f"uv sync failed: {result.stderr}"
-        logger.info(f"✅ Dependencies synced ({extra})")
+
+        if extra:
+            logger.info(f"✅ Dependencies synced with extra '{extra}'")
+        else:
+            logger.info("✅ Dependencies synced")
 
     def _verify_python_env(
         self,
