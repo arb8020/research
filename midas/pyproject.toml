@@ -1,0 +1,13 @@
+[project]
+name = "midas"
+version = "0.1.0"
+description = "The Midas touch - turning bare machines into golden Python environments"
+requires-python = ">=3.10"
+
+dependencies = [
+    "bifrost",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"

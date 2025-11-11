@@ -1,0 +1,13 @@
+[project]
+name = "kerbal"
+version = "0.1.0"
+description = "Remote execution helpers - launch your code into production like Kerbal Space Program"
+requires-python = ">=3.10"
+
+dependencies = [
+    "bifrost",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
