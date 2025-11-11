@@ -215,9 +215,9 @@ def _generate_pyproject(
     assert result.exit_code == 0, f"Failed to write pyproject.toml: {result.stderr}"
     logger.info(f"✅ Generated pyproject.toml ({dependencies.project_name})")
 
-    # DEBUG: Show the generated pyproject.toml
-    logger.info(f"🔍 DEBUG: Generated pyproject.toml at: {workspace}/pyproject.toml")
-    logger.info(f"🔍 DEBUG: pyproject.toml contents:\n{toml_content}")
+    # Show the generated pyproject.toml for debugging
+    logger.debug(f"Generated pyproject.toml at: {workspace}/pyproject.toml")
+    logger.debug(f"pyproject.toml contents:\n{toml_content}")
 
 
 def _sync_dependencies(
@@ -255,10 +255,10 @@ def _sync_dependencies(
     uv sync{extra_flags}
     """
 
-    # DEBUG: Log the exact sync command being run
-    logger.info(f"🔍 DEBUG: Running uv sync in: {workspace}")
-    logger.info(f"🔍 DEBUG: uv sync flags: {extra_flags if extra_flags else '(none)'}")
-    logger.info(f"🔍 DEBUG: Full command: cd {workspace} && uv sync{extra_flags}")
+    # Log the sync command for debugging
+    logger.debug(f"Running uv sync in: {workspace}")
+    logger.debug(f"uv sync flags: {extra_flags if extra_flags else '(none)'}")
+    logger.debug(f"Full command: cd {workspace} && uv sync{extra_flags}")
 
     result = client.exec(sync_cmd)
 
@@ -327,36 +327,7 @@ def _verify_python_env(
                 logger.warning(f"   Error: {result.stderr.strip() if result.stderr else 'unknown'}")
                 # Don't assert - this is a soft check for now
             else:
-                logger.info(f"✅ {import_name} importable")
-
-                # DEBUG: For rollouts, show what files are actually installed
-                if import_name == "rollouts":
-                    # Show package location and contents
-                    list_cmd = f"{venv_python} -c \"import {import_name}, os; print(os.path.dirname({import_name}.__file__))\""
-                    list_result = client.exec(list_cmd)
-                    if list_result.exit_code == 0:
-                        rollouts_path = list_result.stdout.strip()
-                        logger.info(f"🔍 DEBUG: rollouts installed at: {rollouts_path}")
-
-                    # List files in package
-                    files_cmd = f"{venv_python} -c \"import {import_name}, os; print(os.listdir(os.path.dirname({import_name}.__file__)))\""
-                    files_result = client.exec(files_cmd)
-                    if files_result.exit_code == 0:
-                        logger.info(f"🔍 DEBUG: rollouts package contains: {files_result.stdout.strip()}")
-
-                    # Try to get git commit hash from package metadata
-                    # For git packages, uv often stores metadata in METADATA file
-                    git_info_cmd = f"grep -r 'Commit' {rollouts_path}/../rollouts-*.dist-info/direct_url.json 2>/dev/null || echo 'no git info'"
-                    git_result = client.exec(git_info_cmd)
-                    logger.info(f"🔍 DEBUG: rollouts git info: {git_result.stdout.strip()}")
-
-                    # Check specifically for run_eval.py
-                    check_cmd = f"{venv_python} -c \"import {import_name}.run_eval; print('run_eval.py found at:', {import_name}.run_eval.__file__)\""
-                    check_result = client.exec(check_cmd)
-                    if check_result.exit_code == 0:
-                        logger.info(f"🔍 DEBUG: ✅ {check_result.stdout.strip()}")
-                    else:
-                        logger.warning(f"🔍 DEBUG: ❌ rollouts.run_eval NOT importable: {check_result.stderr.strip() if check_result.stderr else 'unknown'}")
+                logger.debug(f"✅ {import_name} importable")
 
 
 def _extract_package_name(dep_string: str) -> str:
