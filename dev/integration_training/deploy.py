@@ -97,6 +97,41 @@ def check_remote_prerequisites(bifrost_client: BifrostClient) -> list[str]:
     return missing
 
 
+def run_type_check(bifrost_client: BifrostClient, workspace_path: str) -> list[str]:
+    """Run type checker on deployed code to catch runtime errors early.
+
+    Args:
+        bifrost_client: Bifrost client instance
+        workspace_path: Remote workspace path
+
+    Returns:
+        List of type errors found (empty if no errors)
+    """
+    logger.info("🔍 Running type check on deployed code...")
+
+    project_dir = f"{workspace_path}/dev/integration_training"
+
+    # Run ty check on train.py (filter out import warnings)
+    result = bifrost_client.exec(
+        f"cd {project_dir} && "
+        f"uvx ty check train.py 2>&1 | "
+        f"grep -E '^error\\[' || true"
+    )
+
+    errors = []
+    if result.stdout.strip():
+        errors = result.stdout.strip().split('\n')
+        logger.warning(f"⚠️  Found {len(errors)} type error(s):")
+        for error in errors[:5]:  # Show first 5
+            logger.warning(f"  {error}")
+        if len(errors) > 5:
+            logger.warning(f"  ... and {len(errors) - 5} more")
+    else:
+        logger.info("✅ Type check passed (no errors)")
+
+    return errors
+
+
 def deploy_code(bifrost_client: BifrostClient) -> str:
     """Deploy code to remote and bootstrap environment using kerbal.
 
@@ -405,6 +440,12 @@ def main():
 
         # Deploy code
         workspace_path = deploy_code(bifrost_client)
+
+        # Run type check on deployed code (catch errors early)
+        type_errors = run_type_check(bifrost_client, workspace_path)
+        if type_errors:
+            logger.warning("⚠️  Type check found errors, but continuing deployment")
+            logger.warning("💡 Consider fixing type errors to prevent runtime failures")
 
         # Construct remote result directory (in project subdirectory)
         project_dir = f"{workspace_path}/dev/integration_training"
