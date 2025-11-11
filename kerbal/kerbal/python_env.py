@@ -66,8 +66,8 @@ def setup_script_deps(
     # Step 2: Sync dependencies with uv
     _sync_dependencies(client, workspace, install_extras)
 
-    # Step 3: Verify Python environment works
-    _verify_python_env(client, workspace)
+    # Step 3: Verify Python environment works and packages are importable
+    _verify_python_env(client, workspace, dependencies)
 
     logger.info("✅ Python environment ready")
 
@@ -252,10 +252,16 @@ def _sync_dependencies(
 def _verify_python_env(
     client: "BifrostClient",
     workspace: str,
+    dependencies: "DependencyConfig | None" = None,
 ) -> None:
-    """Verify Python venv is working.
+    """Verify Python venv is working and packages are importable.
 
     Tiger Style: Assert the postcondition.
+
+    NOTE: The import verification is experimental and may be removed.
+    It catches installation issues early but might be too aggressive
+    for complex dependency scenarios (e.g., optional dependencies,
+    platform-specific packages, etc.)
     """
     venv_python = f"{workspace}/.venv/bin/python"
     result = client.exec(f"{venv_python} --version")
@@ -264,6 +270,60 @@ def _verify_python_env(
 
     version = result.stdout.strip() if result.stdout else "unknown"
     logger.info(f"✅ Python venv verified: {version}")
+
+    # EXPERIMENTAL: Verify declared packages are importable
+    # TODO: Consider removing this if it causes false positives
+    if dependencies and dependencies.dependencies:
+        logger.info("🔍 Verifying installed packages are importable...")
+        for dep in dependencies.dependencies:
+            # Extract package name from dependency string
+            # Examples:
+            #   "rollouts @ git+..." -> "rollouts"
+            #   "torch>=2.0" -> "torch"
+            #   "python-dotenv>=1.0.0" -> "python-dotenv"
+            package_name = _extract_package_name(dep)
+
+            # Skip if we couldn't extract a valid name
+            if not package_name:
+                continue
+
+            # Python package names use underscores, but pip uses hyphens
+            # Try the hyphenated name first, then try with underscores
+            import_name = package_name.replace("-", "_")
+
+            import_cmd = f"{venv_python} -c 'import {import_name}'"
+            result = client.exec(import_cmd)
+
+            if result.exit_code != 0:
+                logger.warning(f"⚠️  Package '{package_name}' installed but import '{import_name}' failed")
+                logger.warning(f"   Error: {result.stderr.strip() if result.stderr else 'unknown'}")
+                # Don't assert - this is a soft check for now
+            else:
+                logger.info(f"✅ {import_name} importable")
+
+
+def _extract_package_name(dep_string: str) -> str:
+    """Extract package name from dependency string.
+
+    Examples:
+        "rollouts @ git+https://..." -> "rollouts"
+        "torch>=2.0.0" -> "torch"
+        "python-dotenv>=1.0" -> "python-dotenv"
+
+    Returns:
+        Package name or empty string if can't parse
+    """
+    # Handle git URLs: "package @ git+..."
+    if " @ " in dep_string:
+        return dep_string.split(" @ ")[0].strip()
+
+    # Handle version specifiers: "package>=1.0"
+    for op in [">=", "<=", "==", "!=", ">", "<", "~="]:
+        if op in dep_string:
+            return dep_string.split(op)[0].strip()
+
+    # Plain package name
+    return dep_string.strip()
 
 
 def _ensure_uv(client: "BifrostClient") -> None:
