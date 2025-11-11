@@ -77,6 +77,41 @@ def _check_untracked_files() -> Optional[List[str]]:
         return None  # Git command failed
 
 
+def _check_uncommitted_changes() -> Optional[List[str]]:
+    """Check for uncommitted changes (modified, staged, or deleted files).
+
+    Returns:
+        List of uncommitted files, or None if not in a git repo
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ['git', 'status', '--porcelain'],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+
+        if result.returncode != 0:
+            return None  # Not a git repo
+
+        # Parse git status output
+        # Modified/staged files have status codes in first 2 columns (not '??')
+        # Examples: ' M' (modified), 'M ' (staged), 'MM' (staged + modified)
+        uncommitted = []
+        for line in result.stdout.splitlines():
+            if line and not line.startswith('??'):
+                # Extract filename (skip first 3 chars: status codes + space)
+                filename = line[3:].strip()
+                uncommitted.append(filename)
+
+        return uncommitted if uncommitted else None
+
+    except Exception:
+        return None  # Git command failed
+
+
 def deploy_code(ssh_client: paramiko.SSHClient,
                 config: RemoteConfig,
                 workspace_path: str) -> str:
@@ -194,7 +229,17 @@ def _create_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> No
             logger.warning(f"  - {file}")
         if len(untracked) > 5:
             logger.warning(f"  ... and {len(untracked) - 5} more")
-        logger.warning("Tip: Use 'git add' to track these files, or add them to .gitignore")
+        logger.warning("💡 Tip: Use 'git add' to track these files, or add them to .gitignore")
+
+    # Check for uncommitted changes and warn user
+    uncommitted = _check_uncommitted_changes()
+    if uncommitted:
+        logger.warning(f"⚠️  Found {len(uncommitted)} uncommitted change(s) that will NOT be deployed:")
+        for file in uncommitted[:5]:  # Show first 5
+            logger.warning(f"  - {file}")
+        if len(uncommitted) > 5:
+            logger.warning(f"  ... and {len(uncommitted) - 5} more")
+        logger.warning("💡 Tip: Use 'git commit' to include these changes in deployment")
 
     logger.debug("Creating git bundle of current repo...")
 
@@ -259,7 +304,17 @@ def _update_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> No
             logger.warning(f"  - {file}")
         if len(untracked) > 5:
             logger.warning(f"  ... and {len(untracked) - 5} more")
-        logger.warning("Tip: Use 'git add' to track these files, or add them to .gitignore")
+        logger.warning("💡 Tip: Use 'git add' to track these files, or add them to .gitignore")
+
+    # Check for uncommitted changes and warn user
+    uncommitted = _check_uncommitted_changes()
+    if uncommitted:
+        logger.warning(f"⚠️  Found {len(uncommitted)} uncommitted change(s) that will NOT be deployed:")
+        for file in uncommitted[:5]:  # Show first 5
+            logger.warning(f"  - {file}")
+        if len(uncommitted) > 5:
+            logger.warning(f"  ... and {len(uncommitted) - 5} more")
+        logger.warning("💡 Tip: Use 'git commit' to include these changes in deployment")
 
     logger.debug("Creating git bundle of current repo...")
 
