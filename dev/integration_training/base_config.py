@@ -23,6 +23,14 @@ class TargetConfig:
     gpu_ranks: list[int]  # GPU indices to use (e.g., [0], [0,1], [0,1,2,3])
     device_type: str = "cuda"  # cuda|cpu|mps
 
+    # Optional: Backend selection for multi-GPU training
+    # If len(gpu_ranks) > 1, can use "fsdp" for distributed training
+    train_backend: str = "pytorch"  # "pytorch" (default) or "fsdp" (multi-GPU)
+
+    # Distributed training parameters (for FSDP/DDP)
+    master_addr: str = "localhost"
+    master_port: int = 29500
+
 
 @dataclass
 class ModelConfig:
