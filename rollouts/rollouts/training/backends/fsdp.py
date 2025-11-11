@@ -103,6 +103,7 @@ class FSDPTrainingBackend:
     world_size: Optional[int] = None
     step: int = 0
     _fsdp_model: Optional[FSDP] = None
+    scheduler: Optional[Any] = None  # Optional LR scheduler
 
     def __post_init__(self):
         """Initialize FSDP backend.
@@ -287,6 +288,10 @@ class FSDPTrainingBackend:
         # Apply gradients
         self.optimizer.step()
         self.optimizer.zero_grad()
+
+        # Step learning rate scheduler if provided
+        if self.scheduler is not None:
+            self.scheduler.step()
 
         # Increment step
         self.step += 1

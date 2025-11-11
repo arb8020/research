@@ -187,28 +187,25 @@ def start_training(
     # Get HF_TOKEN from local environment
     hf_token = os.getenv("HF_TOKEN", "")
 
-    # Base command with environment variables
-    # Note: We DON'T set CUDA_VISIBLE_DEVICES (see train.py:144-147)
+    # Build environment variables
+    # Note: We DON'T set CUDA_VISIBLE_DEVICES in env_vars here (see train.py:144-147)
     # Instead, train.py uses explicit device placement (cuda:N means physical GPU N)
     # This avoids remapping confusion and works with non-contiguous GPU allocations
-    cmd_parts = [
-        f"cd {project_dir}",
-        f"source {venv_path}",
-    ]
+    env_vars = {}
 
     # Add HF_TOKEN if available
     if hf_token:
-        cmd_parts.append(f"export HF_TOKEN='{hf_token}'")
+        env_vars["HF_TOKEN"] = hf_token
         logger.info("🔑 Using HF_TOKEN for model download")
     else:
         logger.warning("⚠️  HF_TOKEN not set - training may hit rate limits")
 
-    # Build training command
+    # Build training command (without venv activation - kerbal handles that)
     # Use torchrun for FSDP (multi-GPU training)
     if config.target.train_backend == "fsdp" and len(config.target.gpu_ranks) > 1:
         # Set CUDA_VISIBLE_DEVICES to limit to requested GPUs
         gpu_list = ",".join(str(r) for r in config.target.gpu_ranks)
-        cmd_parts.append(f"export CUDA_VISIBLE_DEVICES={gpu_list}")
+        env_vars["CUDA_VISIBLE_DEVICES"] = gpu_list
         # Launch with torchrun for distributed training
         nproc = len(config.target.gpu_ranks)
         train_cmd = f"torchrun --nproc_per_node={nproc} train.py configs/{config_name}"
@@ -216,12 +213,12 @@ def start_training(
     else:
         train_cmd = f"python train.py configs/{config_name}"
 
-    cmd_parts.append(train_cmd)
-
-    full_cmd = " && ".join(cmd_parts)
+    # Activate venv and run training command
+    full_cmd = f"source {venv_path} && {train_cmd}"
 
     # Generate tmux session name from config
     tmux_session = f"training_{config.output.experiment_name}"
+    training_log = f"{remote_result_dir}/training.log"
 
     logger.info(f"🚀 Starting training in tmux session: {tmux_session}")
     logger.info(f"   Mode: {config.output.mode}")
@@ -234,77 +231,23 @@ def start_training(
     # Create result directory
     bifrost_client.exec(f"mkdir -p {remote_result_dir}")
 
-    # Start new tmux session
-    tmux_cmd = (
-        f"cd {workspace_path} && "
-        f"tmux new-session -d -s {tmux_session} "
-        f"'{full_cmd} 2>&1 | tee {remote_result_dir}/training.log'"
+    # Start training using kerbal (automatically adds exit code tracking)
+    session, err = start_tmux_session(
+        bifrost_client,
+        session_name=tmux_session,
+        command=full_cmd,
+        workspace=project_dir,
+        log_file=training_log,
+        env_vars=env_vars,
     )
 
-    result = bifrost_client.exec(tmux_cmd)
-    if result.exit_code != 0:
-        return tmux_session, f"Failed to start tmux session: {result.stderr}"
+    if err:
+        return session, f"Failed to start tmux session: {err}"
 
-    logger.info(f"✅ Training started in tmux session: {tmux_session}")
-    return tmux_session, None
+    logger.info(f"✅ Training started in tmux session: {session}")
+    return session, None
 
 
-def tail_log_until_complete(
-    bifrost_client: BifrostClient,
-    log_path: str,
-    tmux_session: str,
-    check_interval: int = 5,
-) -> bool:
-    """Tail training log and wait for completion.
-
-    Args:
-        bifrost_client: Bifrost client instance
-        log_path: Path to training log file on remote
-        tmux_session: Tmux session name
-        check_interval: Seconds between checks
-
-    Returns:
-        True if training completed successfully, False otherwise
-    """
-    import time
-
-    logger.info("📊 Tailing training log (Ctrl+C to detach)...")
-    logger.info("=" * 60)
-
-    last_line = 0
-
-    try:
-        while True:
-            # Check if tmux session still exists
-            check_result = bifrost_client.exec(f"tmux has-session -t {tmux_session} 2>&1")
-            session_exists = check_result.exit_code == 0
-
-            # Tail new lines from log
-            tail_result = bifrost_client.exec(f"tail -n +{last_line + 1} {log_path} 2>/dev/null")
-            if tail_result.stdout:
-                lines = tail_result.stdout.splitlines()
-                for line in lines:
-                    print(line)
-                last_line += len(lines)
-
-            # If session ended, training is complete
-            if not session_exists:
-                logger.info("=" * 60)
-                logger.info("✅ Training session completed")
-
-                # Check for success indicators in log
-                success_check = bifrost_client.exec(
-                    f"grep -i 'Training Complete' {log_path} || "
-                    f"grep -i 'complete!' {log_path}"
-                )
-                return success_check.exit_code == 0
-
-            time.sleep(check_interval)
-
-    except KeyboardInterrupt:
-        logger.info("\n⚠️  Detached from log (training continues in background)")
-        logger.info(f"   Attach: bifrost exec '<ssh-string>' 'tmux attach -t {tmux_session}'")
-        return False
 
 
 def sync_results(
@@ -481,9 +424,27 @@ def main():
             logger.info(f"   Results will be in: {remote_result_dir}")
             return 0
 
-        # Tail log and wait for completion
+        # Monitor training with real-time log streaming
         log_path = f"{remote_result_dir}/training.log"
-        success = tail_log_until_complete(bifrost_client, log_path, tmux_session)
+        logger.info("📊 Monitoring training with real-time log streaming...")
+
+        monitor_config = LogStreamConfig(
+            session_name=tmux_session,
+            log_file=log_path,
+            timeout_sec=86400,  # 24 hours max for training
+        )
+
+        success, exit_code, err = stream_log_until_complete(
+            bifrost_client,
+            monitor_config,
+        )
+
+        if not success:
+            logger.error(f"❌ Training failed: {err}")
+            # Continue to sync results anyway
+            success = False
+        else:
+            logger.info("✅ Training completed successfully")
 
         # Sync results
         logger.info("\n💾 Syncing results to local...")
