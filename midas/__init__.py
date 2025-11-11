@@ -16,7 +16,7 @@ Available backends:
 - DockerBackend: Docker-based environment (future)
 """
 
-from midas.protocol import EnvBackend, CommandResult
+from midas.protocol import EnvBackend, CommandResult, DependencyConfig
 from midas.backends.uv import UvBackend
 
-__all__ = ["EnvBackend", "CommandResult", "UvBackend"]
+__all__ = ["EnvBackend", "CommandResult", "DependencyConfig", "UvBackend"]

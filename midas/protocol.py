@@ -15,7 +15,7 @@ Available backends:
 """
 
 from typing import Protocol, runtime_checkable, TYPE_CHECKING
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 if TYPE_CHECKING:
     from bifrost import BifrostClient
@@ -37,6 +37,37 @@ class CommandResult:
         return self.exit_code == 0
 
 
+@dataclass
+class DependencyConfig:
+    """Dependency specification for Python environment.
+
+    This replaces brittle pyproject.toml extras with explicit dependency management.
+    The backend generates pyproject.toml from this specification.
+
+    Tiger Style: Explicit is better than implicit.
+    Casey: No hidden magic - dependencies are data, not configuration files.
+
+    Example:
+        deps = DependencyConfig(
+            project_name="my-training",
+            python_version=">=3.10",
+            dependencies=[
+                "torch>=2.0",
+                "transformers>=4.30",
+                "wandb",
+            ],
+            optional_dependencies={
+                "dev": ["pytest", "black"],
+                "training": ["accelerate", "datasets"],
+            }
+        )
+    """
+    project_name: str  # Name for generated pyproject.toml
+    dependencies: list[str] = field(default_factory=list)  # Core dependencies
+    optional_dependencies: dict[str, list[str]] = field(default_factory=dict)  # Extras
+    python_version: str = ">=3.10"  # Python version requirement
+
+
 @runtime_checkable
 class EnvBackend(Protocol):
     """Protocol for environment setup backends.
@@ -51,7 +82,8 @@ class EnvBackend(Protocol):
         self,
         client: "BifrostClient",
         workspace: str,
-        extra: str,
+        dependencies: DependencyConfig,
+        extra: str | None = None,
     ) -> None:
         """Bootstrap environment from unknown state to working Python.
 
@@ -62,7 +94,8 @@ class EnvBackend(Protocol):
         Args:
             client: BifrostClient instance for SSH operations
             workspace: Remote workspace path (absolute)
-            extra: Python extra group to install (e.g., "dev-speedrun")
+            dependencies: DependencyConfig specifying project dependencies
+            extra: Optional extra group to install from optional_dependencies
 
         Raises:
             AssertionError: If preconditions fail or bootstrap fails
@@ -70,9 +103,16 @@ class EnvBackend(Protocol):
 
         Example:
             from bifrost import BifrostClient
+            from midas import UvBackend, DependencyConfig
+
             client = BifrostClient("root@gpu:22", ssh_key_path="~/.ssh/id_rsa")
+            deps = DependencyConfig(
+                project_name="training",
+                dependencies=["torch>=2.0", "transformers"],
+                optional_dependencies={"dev": ["pytest"]},
+            )
             backend = UvBackend()
-            backend.bootstrap(client, "/root/workspace", "dev-training")
+            backend.bootstrap(client, "/root/workspace", deps, extra="dev")
         """
         ...
 
@@ -128,6 +168,6 @@ class EnvBackend(Protocol):
         Example:
             if not backend.verify_env(client, workspace):
                 print("Environment broken, re-bootstrapping...")
-                backend.bootstrap(client, workspace, extra)
+                backend.bootstrap(client, workspace, dependencies, extra)
         """
         ...
