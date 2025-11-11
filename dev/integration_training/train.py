@@ -356,28 +356,40 @@ async def create_fsdp_backend(config: Config, output_dir: Path):
 
     # Create learning rate scheduler with warmup (SLIME pattern)
     # Warmup prevents initial instability from large learning rate
+    # Tiger Style: All parameters explicit
     total_steps = config.sft.num_iterations
-    warmup_steps = max(1, int(total_steps * 0.03))  # 3% warmup (SLIME default)
+    warmup_ratio = 0.03  # SLIME default: 3% warmup
+    warmup_steps = max(1, int(total_steps * warmup_ratio))
+    decay_steps = total_steps - warmup_steps
 
     from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
 
+    # Warmup: ramp from 10% to 100% of base LR
     warmup = LinearLR(
-        optimizer,
-        start_factor=0.1,  # Start at 10% of base LR
+        optimizer=optimizer,
+        start_factor=0.1,
         end_factor=1.0,
-        total_iters=warmup_steps
+        total_iters=warmup_steps,
+        last_epoch=-1,
+        verbose=False,
     )
 
+    # Decay: cosine from 100% to 10% of base LR
     decay = CosineAnnealingLR(
-        optimizer,
-        T_max=total_steps - warmup_steps,
-        eta_min=config.sft.matrix_lr * 0.1  # End at 10% of base LR
+        optimizer=optimizer,
+        T_max=decay_steps,
+        eta_min=config.sft.matrix_lr * 0.1,
+        last_epoch=-1,
+        verbose=False,
     )
 
+    # Combine: warmup then decay
     backend.scheduler = SequentialLR(
-        optimizer,
+        optimizer=optimizer,
         schedulers=[warmup, decay],
-        milestones=[warmup_steps]
+        milestones=[warmup_steps],
+        last_epoch=-1,
+        verbose=False,
     )
 
     logger.info(f"[Rank {rank}/{world_size}] LR scheduler: {warmup_steps} warmup steps + cosine decay")
