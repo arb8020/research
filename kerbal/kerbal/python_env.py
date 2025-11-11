@@ -224,16 +224,17 @@ def _sync_dependencies(
     client: "BifrostClient",
     workspace: str,
     install_extras: list[str] | None,
-    refresh: bool = True,
+    upgrade: bool = True,
 ) -> None:
     """Sync Python dependencies using uv.
 
     Tiger Style: Explicit command, assert success, < 70 lines.
 
     Args:
-        refresh: If True, add --refresh to force uv to check for latest
-                 git commits. Default True because deployments should
-                 always get latest code (not cached versions).
+        upgrade: If True, add --upgrade to update git dependencies to latest
+                 commits. Default True because deployments should always get
+                 latest code. Uses --upgrade which properly updates git refs,
+                 not --refresh which only re-resolves the lock file.
     """
     # Build sync command with extras
     extra_flags = ""
@@ -242,10 +243,11 @@ def _sync_dependencies(
             assert extra, "extra name cannot be empty"
             extra_flags += f" --extra {extra}"
 
-    # Add --refresh to get latest git commits (not cached versions)
-    # This is critical for git dependencies without pinned commits
-    if refresh:
-        extra_flags += " --refresh"
+    # Add --upgrade to get latest git commits (not cached versions)
+    # This is critical for git dependencies - --upgrade updates git refs
+    # while --refresh only re-resolves the lock file
+    if upgrade:
+        extra_flags += " --upgrade"
 
     sync_cmd = f"""
     export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
