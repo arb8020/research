@@ -12,7 +12,7 @@ GPU provisioning and remote execution utilities for ML research.
 
 ### Compute
 - **miniray**: Lightweight distributed computing (~600 lines, Heinrich's pattern + TCP)
-- **rollouts**: LLM evaluation and agentic RL framework (Tiger Style)
+- **rollouts**: LLM evaluation and agentic RL framework
 
 ### Documentation
 - **docs/**: Repository-wide documentation (code style, research advice, project notes)
