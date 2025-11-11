@@ -277,6 +277,13 @@ class FSDPTrainingBackend:
         """
         from rollouts.training.types import ImmediateTrainFuture
 
+        # Clip gradients (standard practice: 1.0 for transformers)
+        # This prevents exploding gradients during training
+        grad_norm_clipped = torch.nn.utils.clip_grad_norm_(
+            self._fsdp_model.parameters(),
+            max_norm=1.0
+        )
+
         # Apply gradients
         self.optimizer.step()
         self.optimizer.zero_grad()
@@ -290,6 +297,7 @@ class FSDPTrainingBackend:
         metrics = {
             "lr": lr,
             "step": self.step,
+            "grad_norm_clipped": float(grad_norm_clipped),
         }
 
         return ImmediateTrainFuture(metrics)
