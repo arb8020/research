@@ -215,6 +215,10 @@ def _generate_pyproject(
     assert result.exit_code == 0, f"Failed to write pyproject.toml: {result.stderr}"
     logger.info(f"✅ Generated pyproject.toml ({dependencies.project_name})")
 
+    # DEBUG: Show the generated pyproject.toml
+    logger.info(f"🔍 DEBUG: Generated pyproject.toml at: {workspace}/pyproject.toml")
+    logger.info(f"🔍 DEBUG: pyproject.toml contents:\n{toml_content}")
+
 
 def _sync_dependencies(
     client: "BifrostClient",
@@ -250,7 +254,9 @@ def _sync_dependencies(
     """
 
     # DEBUG: Log the exact sync command being run
-    logger.info(f"🔍 DEBUG: Running uv sync with flags: {extra_flags if extra_flags else '(none)'}")
+    logger.info(f"🔍 DEBUG: Running uv sync in: {workspace}")
+    logger.info(f"🔍 DEBUG: uv sync flags: {extra_flags if extra_flags else '(none)'}")
+    logger.info(f"🔍 DEBUG: Full command: cd {workspace} && uv sync{extra_flags}")
 
     result = client.exec(sync_cmd)
 
