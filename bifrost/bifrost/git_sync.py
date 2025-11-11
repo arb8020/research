@@ -241,7 +241,16 @@ def _create_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> No
             logger.warning(f"  ... and {len(uncommitted) - 5} more")
         logger.warning("💡 Tip: Use 'git commit' to include these changes in deployment")
 
-    logger.debug("Creating git bundle of current repo...")
+    # Get current HEAD commit hash for logging
+    hash_result = subprocess.run(
+        ['git', 'rev-parse', 'HEAD'],
+        capture_output=True,
+        text=True
+    )
+    commit_hash = hash_result.stdout.strip() if hash_result.returncode == 0 else "unknown"
+    short_hash = commit_hash[:7] if commit_hash != "unknown" else "unknown"
+
+    logger.info(f"📦 Creating git bundle from HEAD: {short_hash} ({commit_hash})")
 
     # Create git bundle locally
     with tempfile.NamedTemporaryFile(suffix='.bundle', delete=False) as bundle_file:
@@ -279,7 +288,17 @@ def _create_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> No
             error_output = stderr.read().decode()
             raise RuntimeError(f"Git clone from bundle failed: {error_output}")
 
-        logger.debug("Workspace created successfully")
+        # Verify what commit was deployed
+        verify_cmd = f"cd {workspace_path} && git rev-parse HEAD"
+        stdin, stdout, stderr = ssh_client.exec_command(verify_cmd)
+        deployed_hash = stdout.read().decode().strip()
+        deployed_short = deployed_hash[:7] if deployed_hash else "unknown"
+
+        logger.info(f"✅ Workspace created at: {deployed_short} ({deployed_hash})")
+        if deployed_hash != commit_hash:
+            logger.warning(f"⚠️  Deployed hash doesn't match local HEAD!")
+            logger.warning(f"   Local:  {short_hash} ({commit_hash})")
+            logger.warning(f"   Remote: {deployed_short} ({deployed_hash})")
 
     finally:
         # Clean up local bundle
@@ -316,7 +335,16 @@ def _update_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> No
             logger.warning(f"  ... and {len(uncommitted) - 5} more")
         logger.warning("💡 Tip: Use 'git commit' to include these changes in deployment")
 
-    logger.debug("Creating git bundle of current repo...")
+    # Get current HEAD commit hash for logging
+    hash_result = subprocess.run(
+        ['git', 'rev-parse', 'HEAD'],
+        capture_output=True,
+        text=True
+    )
+    commit_hash = hash_result.stdout.strip() if hash_result.returncode == 0 else "unknown"
+    short_hash = commit_hash[:7] if commit_hash != "unknown" else "unknown"
+
+    logger.info(f"📦 Creating git bundle from HEAD: {short_hash} ({commit_hash})")
 
     # Create git bundle locally
     with tempfile.NamedTemporaryFile(suffix='.bundle', delete=False) as bundle_file:
@@ -358,7 +386,17 @@ rm {remote_bundle}
             error_output = stderr.read().decode()
             raise RuntimeError(f"Git update from bundle failed: {error_output}")
 
-        logger.debug("Workspace updated successfully")
+        # Verify what commit was deployed
+        verify_cmd = f"cd {workspace_path} && git rev-parse HEAD"
+        stdin, stdout, stderr = ssh_client.exec_command(verify_cmd)
+        deployed_hash = stdout.read().decode().strip()
+        deployed_short = deployed_hash[:7] if deployed_hash else "unknown"
+
+        logger.info(f"✅ Workspace updated to: {deployed_short} ({deployed_hash})")
+        if deployed_hash != commit_hash:
+            logger.warning(f"⚠️  Deployed hash doesn't match local HEAD!")
+            logger.warning(f"   Local:  {short_hash} ({commit_hash})")
+            logger.warning(f"   Remote: {deployed_short} ({deployed_hash})")
 
     finally:
         # Clean up local bundle
