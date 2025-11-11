@@ -243,82 +243,44 @@ class BifrostClient:
 
     def push(
         self,
-        workspace_name: Optional[str] = None,
-        workspace_path: Optional[str] = None,
+        workspace_path: str,
         bootstrap_cmd: Optional[Union[str, List[str]]] = None
     ) -> str:
         """Deploy code to remote workspace.
 
         Args:
-            workspace_name: Project name for workspace isolation (RECOMMENDED).
-                          Expands to ~/.bifrost/workspaces/{workspace_name}
+            workspace_path: Remote workspace path (REQUIRED).
+                          Must be explicit to prevent accidental collisions.
 
-                          Use this to prevent collisions when running multiple projects
-                          on the same remote node. Each project gets its own isolated
-                          workspace directory.
+                          Recommended convention: ~/.bifrost/workspaces/{project-name}
 
                           Examples:
-                            push(workspace_name="clicker")
-                              → ~/.bifrost/workspaces/clicker
-
-                            push(workspace_name="integration_training")
-                              → ~/.bifrost/workspaces/integration_training
-
-                          Cannot be used with workspace_path.
-
-            workspace_path: Custom workspace path for full control.
-                          Use this if you need a specific directory structure.
-
-                          Examples:
-                            push(workspace_path="~/projects/my-ml-project")
-                            push(workspace_path="/opt/deployments/prod")
-
-                          Cannot be used with workspace_name.
+                            push(workspace_path="~/.bifrost/workspaces/clicker")
+                            push(workspace_path="~/.bifrost/workspaces/integration_training")
+                            push(workspace_path="~/projects/my-custom-project")
+                            push(workspace_path="/opt/production/deployment")
 
             bootstrap_cmd: Optional bootstrap command(s) - either single string or list of commands
                           (e.g., "uv sync --frozen" or ["pip install uv", "uv sync --frozen"])
 
         Returns:
-            Path to deployed workspace
+            Path to deployed workspace (absolute, tilde-expanded)
 
         Raises:
             ConnectionError: SSH connection failed
             RuntimeError: Deployment failed
-            ValueError: If both workspace_name and workspace_path provided
 
         Note:
-            If neither workspace_name nor workspace_path provided:
-            Uses shared ~/.bifrost/workspace (legacy behavior).
-            Projects will overwrite each other's code and venvs!
+            Each project should use a unique workspace_path to prevent
+            collisions when running multiple projects on the same remote node.
         """
-        # Validate mutually exclusive parameters
-        if workspace_name and workspace_path:
-            raise ValueError(
-                "Cannot specify both workspace_name and workspace_path. "
-                "Use workspace_name for automatic path generation, "
-                "or workspace_path for full control."
-            )
-
-        # Validate input (validation helper contains all assertions)
+        # Validate input
+        assert workspace_path, "workspace_path is required and cannot be empty"
         if bootstrap_cmd is not None:
             bootstrap_cmd = validate_bootstrap_cmd(bootstrap_cmd)
 
         ssh_client = self._get_ssh_client()
-
-        # Construct workspace path based on parameters
-        if workspace_path:
-            # Custom path provided
-            self.logger.info(f"📁 Using custom workspace: {workspace_path}")
-        elif workspace_name:
-            # Named workspace: ~/.bifrost/workspaces/{name}
-            workspace_path = f"~/.bifrost/workspaces/{workspace_name}"
-            self.logger.info(f"📁 Using isolated workspace: {workspace_path}")
-        else:
-            # Default workspace for backward compatibility
-            workspace_path = "~/.bifrost/workspace"
-            self.logger.warning("⚠️  Using shared workspace: ~/.bifrost/workspace")
-            self.logger.warning("   Multiple projects will overwrite each other!")
-            self.logger.warning("   Consider: push(workspace_name='my-project') for isolation")
+        self.logger.info(f"📁 Deploying to workspace: {workspace_path}")
 
         # Deploy code (pure function)
         workspace_path = git_sync.deploy_code(ssh_client, self._remote_config, workspace_path)
