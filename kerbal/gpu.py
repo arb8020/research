@@ -11,12 +11,16 @@ Tiger Style:
 
 import logging
 import time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from bifrost import BifrostClient
 
 logger = logging.getLogger(__name__)
 
 
 def check_gpus_available(
-    bifrost: "BifrostClient",
+    client: "BifrostClient",
     gpu_ids: list[int],
     memory_threshold_mb: int = 1000,
 ) -> tuple[bool, str]:
@@ -26,7 +30,7 @@ def check_gpus_available(
     Tiger Style: < 70 lines, tuple return for error.
 
     Args:
-        bifrost: Connected bifrost client
+        client: BifrostClient instance for SSH operations
         gpu_ids: List of GPU IDs to check (e.g., [0, 1])
         memory_threshold_mb: Minimum free memory required in MB (default: 1000)
 
@@ -35,16 +39,16 @@ def check_gpus_available(
         (False, error_message) if GPUs unavailable or insufficient memory
 
     Example:
-        available, err = check_gpus_available(bifrost, [0, 1], memory_threshold_mb=2000)
+        available, err = check_gpus_available(client, [0, 1], memory_threshold_mb=2000)
         if not available:
             print(f"GPUs not ready: {err}")
     """
-    assert bifrost is not None, "bifrost client required"
+    assert bifrost is not None, "BifrostClient instance required"
     assert gpu_ids, "gpu_ids list required"
     assert memory_threshold_mb > 0, "memory_threshold_mb must be positive"
 
     # Check if nvidia-smi exists
-    result = bifrost.exec("command -v nvidia-smi")
+    result = client.exec("command -v nvidia-smi")
     if result.exit_code != 0:
         return False, "nvidia-smi not found (no GPU support)"
 
@@ -52,7 +56,7 @@ def check_gpus_available(
     gpu_ids_str = ",".join(str(i) for i in gpu_ids)
     query_cmd = f"nvidia-smi --query-gpu=index,memory.free,memory.total,utilization.gpu --format=csv,noheader,nounits -i {gpu_ids_str}"
 
-    result = bifrost.exec(query_cmd)
+    result = client.exec(query_cmd)
     if result.exit_code != 0:
         return False, f"Failed to query GPUs: {result.stderr}"
 
@@ -81,7 +85,7 @@ def check_gpus_available(
 
 
 def wait_for_gpus(
-    bifrost: "BifrostClient",
+    client: "BifrostClient",
     gpu_ids: list[int],
     timeout_sec: int = 3600,
     memory_threshold_mb: int = 1000,
@@ -93,7 +97,7 @@ def wait_for_gpus(
     Tiger Style: < 70 lines, explicit control flow, tuple return.
 
     Args:
-        bifrost: Connected bifrost client
+        client: BifrostClient instance for SSH operations
         gpu_ids: List of GPU IDs to wait for
         timeout_sec: Maximum time to wait in seconds (default: 3600 = 1 hour)
         memory_threshold_mb: Minimum free memory required in MB (default: 1000)
@@ -104,11 +108,11 @@ def wait_for_gpus(
         (False, error_message) if timeout or permanent error
 
     Example:
-        success, err = wait_for_gpus(bifrost, [0, 1], timeout_sec=600)
+        success, err = wait_for_gpus(client, [0, 1], timeout_sec=600)
         if not success:
             print(f"GPUs not available: {err}")
     """
-    assert bifrost is not None, "bifrost client required"
+    assert bifrost is not None, "BifrostClient instance required"
     assert gpu_ids, "gpu_ids list required"
     assert timeout_sec > 0, "timeout_sec must be positive"
     assert poll_interval_sec > 0, "poll_interval_sec must be positive"
@@ -119,7 +123,7 @@ def wait_for_gpus(
 
     while True:
         # Check if GPUs are available
-        available, err = check_gpus_available(bifrost, gpu_ids, memory_threshold_mb)
+        available, err = check_gpus_available(client, gpu_ids, memory_threshold_mb)
 
         if available:
             logger.info(f"✅ GPUs {gpu_ids} are available")
