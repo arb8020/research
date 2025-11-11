@@ -435,16 +435,17 @@ async def rollout_sglang(
         "Accept": "application/json",
     }
     completion = None
-    print(f"🔥 Making HTTP POST to: {api_base}")
-    print(f"🔥 Headers: {headers}")
-    print(f"🔥 Request params keys: {list(params.keys())}")
-    sys.stdout.flush()
+    # Debug logging disabled for cleaner output
+    # print(f"🔥 Making HTTP POST to: {api_base}")
+    # print(f"🔥 Headers: {headers}")
+    # print(f"🔥 Request params keys: {list(params.keys())}")
+    # sys.stdout.flush()
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         for attempt in range(1, max_api_retries + 1):
             try:
-                print(f"🔥 Attempt {attempt}: Sending HTTP request...")
-                sys.stdout.flush()
+                # print(f"🔥 Attempt {attempt}: Sending HTTP request...")
+                # sys.stdout.flush()
                 response = await client.post(api_base, json=params, headers=headers)
                 if response.status_code != 200:
                     error_body = response.text
