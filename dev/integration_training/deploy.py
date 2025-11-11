@@ -194,8 +194,8 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
     deps = DependencyConfig(
         project_name="integration-training",
         dependencies=[
-            f"rollouts @ file://{workspace_path}/rollouts",
-            f"shared @ file://{workspace_path}/shared",
+            "rollouts @ git+https://github.com/arb8020/research.git#subdirectory=rollouts",
+            "shared @ git+https://github.com/arb8020/research.git#subdirectory=shared",
             "torch>=2.4.0",
             "transformers>=4.30.0",
             "datasets>=2.14.0",
