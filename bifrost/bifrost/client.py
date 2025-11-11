@@ -249,10 +249,25 @@ class BifrostClient:
         """Deploy code to remote workspace.
 
         Args:
-            workspace_name: Optional workspace name for project isolation.
-                          If provided, workspace will be at ~/.bifrost/workspaces/{workspace_name}
-                          If None, uses default ~/.bifrost/workspace (for backward compatibility)
-                          Example: workspace_name="clicker" → ~/.bifrost/workspaces/clicker
+            workspace_name: Project name for workspace isolation (RECOMMENDED).
+
+                          Use this to prevent collisions when running multiple projects
+                          on the same remote node. Each project gets its own isolated
+                          workspace directory.
+
+                          Examples:
+                            push(workspace_name="clicker")
+                              → ~/.bifrost/workspaces/clicker
+
+                            push(workspace_name="integration_training")
+                              → ~/.bifrost/workspaces/integration_training
+
+                            push()  # No workspace_name (not recommended)
+                              → ~/.bifrost/workspace (shared by all projects)
+
+                          If None: Uses shared ~/.bifrost/workspace (legacy behavior).
+                                  Projects will overwrite each other's code and venvs!
+
             bootstrap_cmd: Optional bootstrap command(s) - either single string or list of commands
                           (e.g., "uv sync --frozen" or ["pip install uv", "uv sync --frozen"])
 
@@ -273,9 +288,13 @@ class BifrostClient:
         if workspace_name:
             # Named workspace: ~/.bifrost/workspaces/{name}
             workspace_path = f"~/.bifrost/workspaces/{workspace_name}"
+            self.logger.info(f"📁 Using isolated workspace: {workspace_path}")
         else:
             # Default workspace for backward compatibility
             workspace_path = "~/.bifrost/workspace"
+            self.logger.warning("⚠️  Using shared workspace: ~/.bifrost/workspace")
+            self.logger.warning("   Multiple projects will overwrite each other!")
+            self.logger.warning("   Consider: push(workspace_name='my-project') for isolation")
 
         # Deploy code (pure function)
         workspace_path = git_sync.deploy_code(ssh_client, self._remote_config, workspace_path)
