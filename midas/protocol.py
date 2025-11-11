@@ -14,8 +14,11 @@ Available backends:
 - DockerBackend: Docker-based environment (future)
 """
 
-from typing import Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable, TYPE_CHECKING
 from dataclasses import dataclass
+
+if TYPE_CHECKING:
+    from bifrost import BifrostClient
 
 
 @dataclass
@@ -46,7 +49,7 @@ class EnvBackend(Protocol):
 
     def bootstrap(
         self,
-        bifrost: "BifrostClient",
+        client: "BifrostClient",
         workspace: str,
         extra: str,
     ) -> None:
@@ -57,7 +60,7 @@ class EnvBackend(Protocol):
         Tiger Style: Assert preconditions, fail fast if something is wrong.
 
         Args:
-            bifrost: Connected bifrost client for SSH operations
+            client: BifrostClient instance for SSH operations
             workspace: Remote workspace path (absolute)
             extra: Python extra group to install (e.g., "dev-speedrun")
 
@@ -66,14 +69,16 @@ class EnvBackend(Protocol):
             RuntimeError: If environment setup fails
 
         Example:
+            from bifrost import BifrostClient
+            client = BifrostClient("root@gpu:22", ssh_key_path="~/.ssh/id_rsa")
             backend = UvBackend()
-            backend.bootstrap(bifrost, "/root/workspace", "dev-training")
+            backend.bootstrap(client, "/root/workspace", "dev-training")
         """
         ...
 
     def run_in_env(
         self,
-        bifrost: "BifrostClient",
+        client: "BifrostClient",
         workspace: str,
         command: str,
         env_vars: dict[str, str] | None = None,
@@ -85,7 +90,7 @@ class EnvBackend(Protocol):
         Casey: Immediate mode - just execute, no retained state.
 
         Args:
-            bifrost: Connected bifrost client
+            client: BifrostClient instance for SSH operations
             workspace: Remote workspace path (absolute)
             command: Command to execute (e.g., "python train.py")
             env_vars: Environment variables to export (e.g., {"HF_TOKEN": "...", "CUDA_VISIBLE_DEVICES": "0,1"})
@@ -95,7 +100,7 @@ class EnvBackend(Protocol):
 
         Example:
             result = backend.run_in_env(
-                bifrost, "/root/workspace", "python --version",
+                client, "/root/workspace", "python --version",
                 env_vars={"CUDA_VISIBLE_DEVICES": "0"}
             )
             assert result.success
@@ -105,7 +110,7 @@ class EnvBackend(Protocol):
 
     def verify_env(
         self,
-        bifrost: "BifrostClient",
+        client: "BifrostClient",
         workspace: str,
     ) -> bool:
         """Verify that environment is working.
@@ -114,15 +119,15 @@ class EnvBackend(Protocol):
         to provide custom verification logic.
 
         Args:
-            bifrost: Connected bifrost client
+            client: BifrostClient instance for SSH operations
             workspace: Remote workspace path
 
         Returns:
             True if environment is working, False otherwise
 
         Example:
-            if not backend.verify_env(bifrost, workspace):
+            if not backend.verify_env(client, workspace):
                 print("Environment broken, re-bootstrapping...")
-                backend.bootstrap(bifrost, workspace, extra)
+                backend.bootstrap(client, workspace, extra)
         """
         ...

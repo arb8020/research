@@ -15,7 +15,12 @@ Casey principles:
 """
 
 import logging
+from typing import TYPE_CHECKING
+
 from midas.protocol import CommandResult, EnvBackend
+
+if TYPE_CHECKING:
+    from bifrost import BifrostClient
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +42,7 @@ class UvBackend:
 
     def bootstrap(
         self,
-        bifrost: "BifrostClient",
+        client: "BifrostClient",
         workspace: str,
         extra: str,
     ) -> None:
@@ -51,36 +56,36 @@ class UvBackend:
 
         Tiger Style: < 70 lines, explicit steps.
         """
-        assert bifrost is not None, "bifrost client required"
+        assert client is not None, "BifrostClient instance required"
         assert workspace, "workspace path required"
         assert extra, "Python extra group required (e.g., 'dev-speedrun')"
 
         logger.info("🔧 Bootstrapping UV environment...")
 
         # Step 1: Ensure UV is installed
-        result = bifrost.exec("command -v uv")
+        result = client.exec("command -v uv")
         if result.exit_code != 0:
             logger.info("📦 UV not found, installing...")
-            self._install_uv(bifrost)
+            self._install_uv(client)
         else:
             logger.info("✅ UV already installed")
 
         # Step 2: Ensure UV is in PATH
-        self._ensure_uv_in_path(bifrost)
+        self._ensure_uv_in_path(client)
 
         # Step 3: Sync dependencies
         logger.info(f"📚 Syncing dependencies (extra: {extra})...")
-        self._sync_dependencies(bifrost, workspace, extra)
+        self._sync_dependencies(client, workspace, extra)
 
         # Step 4: Verify environment works
         logger.info("🔍 Verifying Python environment...")
-        self._verify_python_env(bifrost, workspace)
+        self._verify_python_env(client, workspace)
 
         logger.info("✅ UV environment ready")
 
     def run_in_env(
         self,
-        bifrost: "BifrostClient",
+        client: "BifrostClient",
         workspace: str,
         command: str,
         env_vars: dict[str, str] | None = None,
@@ -92,7 +97,7 @@ class UvBackend:
 
         Tiger Style: < 70 lines.
         """
-        assert bifrost is not None, "bifrost client required"
+        assert client is not None, "BifrostClient instance required"
         assert workspace, "workspace path required"
         assert command, "command required"
 
@@ -114,7 +119,7 @@ class UvBackend:
         # Execute in workspace with venv python
         full_command = f"cd {workspace} && {env_prefix}{venv_python} -c 'import sys; sys.exit(0)' && {env_prefix}{venv_python} -m {command}" if command.startswith("-m ") else f"cd {workspace} && {env_prefix}{venv_python} {command}"
 
-        result = bifrost.exec(full_command)
+        result = client.exec(full_command)
 
         return CommandResult(
             exit_code=result.exit_code,
@@ -124,36 +129,36 @@ class UvBackend:
 
     def verify_env(
         self,
-        bifrost: "BifrostClient",
+        client: "BifrostClient",
         workspace: str,
     ) -> bool:
         """Verify UV environment is working.
 
         Checks that Python venv exists and is runnable.
         """
-        assert bifrost is not None, "bifrost client required"
+        assert client is not None, "BifrostClient instance required"
         assert workspace, "workspace path required"
 
         venv_python = f"{workspace}/.venv/bin/python"
-        result = bifrost.exec(f"{venv_python} --version")
+        result = client.exec(f"{venv_python} --version")
 
         return result.exit_code == 0
 
     # === Private helper functions (< 70 lines each) ===
 
-    def _install_uv(self, bifrost: "BifrostClient") -> None:
+    def _install_uv(self, client: "BifrostClient") -> None:
         """Install UV via official installer.
 
         Uses the standalone installer from astral.sh.
         Tiger Style: Assert success.
         """
         install_cmd = "curl -LsSf https://astral.sh/uv/install.sh | sh"
-        result = bifrost.exec(install_cmd)
+        result = client.exec(install_cmd)
 
         assert result.exit_code == 0, f"UV installation failed: {result.stderr}"
         logger.info("✅ UV installed successfully")
 
-    def _ensure_uv_in_path(self, bifrost: "BifrostClient") -> None:
+    def _ensure_uv_in_path(self, client: "BifrostClient") -> None:
         """Ensure UV is in PATH.
 
         UV installs to ~/.local/bin or ~/.cargo/bin depending on the system.
@@ -176,7 +181,7 @@ class UvBackend:
         fi
         """
 
-        result = bifrost.exec(check_cmd)
+        result = client.exec(check_cmd)
         status = result.stdout.strip() if result.stdout else "NOT_FOUND"
 
         assert status != "NOT_FOUND", "UV not found after installation"
@@ -188,7 +193,7 @@ class UvBackend:
 
     def _sync_dependencies(
         self,
-        bifrost: "BifrostClient",
+        client: "BifrostClient",
         workspace: str,
         extra: str,
     ) -> None:
@@ -203,14 +208,14 @@ class UvBackend:
         uv sync --extra {extra}
         """
 
-        result = bifrost.exec(sync_cmd)
+        result = client.exec(sync_cmd)
 
         assert result.exit_code == 0, f"uv sync failed: {result.stderr}"
         logger.info(f"✅ Dependencies synced ({extra})")
 
     def _verify_python_env(
         self,
-        bifrost: "BifrostClient",
+        client: "BifrostClient",
         workspace: str,
     ) -> None:
         """Verify Python venv is working.
@@ -218,7 +223,7 @@ class UvBackend:
         Tiger Style: Assert the postcondition.
         """
         venv_python = f"{workspace}/.venv/bin/python"
-        result = bifrost.exec(f"{venv_python} --version")
+        result = client.exec(f"{venv_python} --version")
 
         assert result.exit_code == 0, f"Python venv verification failed: {result.stderr}"
 

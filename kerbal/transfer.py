@@ -11,22 +11,26 @@ Tiger Style:
 
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from bifrost import BifrostClient
 
 logger = logging.getLogger(__name__)
 
 
 def push_code(
-    bifrost: "BifrostClient",
+    client: "BifrostClient",
     local_path: str = ".",
     remote_path: str | None = None,
     exclude: list[str] | None = None,
 ) -> str:
-    """Push code to remote machine (bifrost primitive wrapper).
+    """Push code to remote machine (client primitive wrapper).
 
     Casey: Granular operation - just push code, nothing else.
 
     Args:
-        bifrost: Connected bifrost client
+        client: BifrostClient instance for SSH operations
         local_path: Local path to push (default: current directory)
         remote_path: Remote path (default: ~/.bifrost/workspace)
         exclude: Patterns to exclude from sync (e.g., ["*.pyc", ".git/**"])
@@ -35,26 +39,26 @@ def push_code(
         Absolute remote workspace path
 
     Example:
-        workspace = push_code(bifrost, "dev/integration_training")
+        workspace = push_code(client, "dev/integration_training")
     """
-    assert bifrost is not None, "bifrost client required"
+    assert bifrost is not None, "BifrostClient instance required"
 
     logger.info(f"📦 Pushing code from {local_path}...")
 
     # Use bifrost's push with excludes if provided
     if exclude:
-        # TODO: bifrost.push needs to support exclude parameter
+        # TODO: client.push needs to support exclude parameter
         # For now, just use default push
-        logger.warning("Exclude patterns not yet supported by bifrost.push()")
+        logger.warning("Exclude patterns not yet supported by client.push()")
 
-    workspace = bifrost.push(local_path=local_path, remote_path=remote_path)
+    workspace = client.push(local_path=local_path, remote_path=remote_path)
 
     logger.info(f"✅ Code pushed to {workspace}")
     return workspace
 
 
 def sync_results(
-    bifrost: "BifrostClient",
+    client: "BifrostClient",
     remote_path: str,
     local_path: str,
 ) -> None:
@@ -64,14 +68,14 @@ def sync_results(
     Tiger Style: < 70 lines.
 
     Args:
-        bifrost: Connected bifrost client
+        client: BifrostClient instance for SSH operations
         remote_path: Remote path to download from
         local_path: Local path to download to
 
     Example:
-        sync_results(bifrost, "results/exp_123", "./local_results")
+        sync_results(client, "results/exp_123", "./local_results")
     """
-    assert bifrost is not None, "bifrost client required"
+    assert bifrost is not None, "BifrostClient instance required"
     assert remote_path, "remote path required"
     assert local_path, "local path required"
 
@@ -81,7 +85,7 @@ def sync_results(
     Path(local_path).mkdir(parents=True, exist_ok=True)
 
     # Download using bifrost
-    result = bifrost.download_files(
+    result = client.download_files(
         remote_path=remote_path,
         local_path=local_path,
         recursive=True,

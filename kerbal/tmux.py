@@ -10,12 +10,16 @@ Tiger Style:
 """
 
 import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from bifrost import BifrostClient
 
 logger = logging.getLogger(__name__)
 
 
 def start_tmux_session(
-    bifrost: "BifrostClient",
+    client: "BifrostClient",
     session_name: str,
     command: str,
     workspace: str | None = None,
@@ -28,7 +32,7 @@ def start_tmux_session(
     Tiger Style: < 70 lines.
 
     Args:
-        bifrost: Connected bifrost client
+        client: BifrostClient instance for SSH operations
         session_name: Tmux session name
         command: Command to run in tmux
         workspace: Working directory (optional)
@@ -36,20 +40,22 @@ def start_tmux_session(
         env_vars: Environment variables to export (e.g., {"HF_TOKEN": "...", "CUDA_VISIBLE_DEVICES": "0,1"})
 
     Example:
+        from bifrost import BifrostClient
+        client = BifrostClient("root@gpu:22", ssh_key_path="~/.ssh/id_rsa")
         start_tmux_session(
-            bifrost, "training", "python train.py",
+            client, "training", "python train.py",
             workspace=workspace,
             env_vars={"CUDA_VISIBLE_DEVICES": "0,1"}
         )
     """
-    assert bifrost is not None, "bifrost client required"
+    assert client is not None, "BifrostClient instance required"
     assert session_name, "session name required"
     assert command, "command required"
 
     logger.info(f"🚀 Starting tmux session: {session_name}")
 
     # Kill existing session if it exists
-    bifrost.exec(f"tmux kill-session -t {session_name} 2>/dev/null || true")
+    client.exec(f"tmux kill-session -t {session_name} 2>/dev/null || true")
 
     # Build env prefix if needed
     env_prefix = ""
@@ -72,7 +78,7 @@ def start_tmux_session(
     else:
         tmux_cmd += f" '{full_command}'"
 
-    result = bifrost.exec(tmux_cmd)
+    result = client.exec(tmux_cmd)
     assert result.exit_code == 0, f"Failed to start tmux session: {result.stderr}"
 
     logger.info(f"✅ Tmux session started: {session_name}")
