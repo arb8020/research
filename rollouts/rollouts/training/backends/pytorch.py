@@ -138,9 +138,9 @@ class PyTorchTrainingBackend:
             else:
                 logits = output  # Raw tensor (custom models)
 
-            # Compute loss (user-provided loss function)
+            # Compute loss (SLIME pattern: pass logits and batch dict)
             # Type hint on loss_fn ensures logits is torch.Tensor, not ModelOutput
-            loss = self.loss_fn(logits, batch["labels"], batch["loss_mask"])
+            loss = self.loss_fn(logits=logits, batch=batch)
 
             # Backward pass
             loss.backward()
