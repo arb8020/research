@@ -244,12 +244,14 @@ class BifrostClient:
     def push(
         self,
         workspace_name: Optional[str] = None,
+        workspace_path: Optional[str] = None,
         bootstrap_cmd: Optional[Union[str, List[str]]] = None
     ) -> str:
         """Deploy code to remote workspace.
 
         Args:
             workspace_name: Project name for workspace isolation (RECOMMENDED).
+                          Expands to ~/.bifrost/workspaces/{workspace_name}
 
                           Use this to prevent collisions when running multiple projects
                           on the same remote node. Each project gets its own isolated
@@ -262,11 +264,16 @@ class BifrostClient:
                             push(workspace_name="integration_training")
                               → ~/.bifrost/workspaces/integration_training
 
-                            push()  # No workspace_name (not recommended)
-                              → ~/.bifrost/workspace (shared by all projects)
+                          Cannot be used with workspace_path.
 
-                          If None: Uses shared ~/.bifrost/workspace (legacy behavior).
-                                  Projects will overwrite each other's code and venvs!
+            workspace_path: Custom workspace path for full control.
+                          Use this if you need a specific directory structure.
+
+                          Examples:
+                            push(workspace_path="~/projects/my-ml-project")
+                            push(workspace_path="/opt/deployments/prod")
+
+                          Cannot be used with workspace_name.
 
             bootstrap_cmd: Optional bootstrap command(s) - either single string or list of commands
                           (e.g., "uv sync --frozen" or ["pip install uv", "uv sync --frozen"])
@@ -277,15 +284,32 @@ class BifrostClient:
         Raises:
             ConnectionError: SSH connection failed
             RuntimeError: Deployment failed
+            ValueError: If both workspace_name and workspace_path provided
+
+        Note:
+            If neither workspace_name nor workspace_path provided:
+            Uses shared ~/.bifrost/workspace (legacy behavior).
+            Projects will overwrite each other's code and venvs!
         """
+        # Validate mutually exclusive parameters
+        if workspace_name and workspace_path:
+            raise ValueError(
+                "Cannot specify both workspace_name and workspace_path. "
+                "Use workspace_name for automatic path generation, "
+                "or workspace_path for full control."
+            )
+
         # Validate input (validation helper contains all assertions)
         if bootstrap_cmd is not None:
             bootstrap_cmd = validate_bootstrap_cmd(bootstrap_cmd)
 
         ssh_client = self._get_ssh_client()
 
-        # Construct workspace path based on workspace_name
-        if workspace_name:
+        # Construct workspace path based on parameters
+        if workspace_path:
+            # Custom path provided
+            self.logger.info(f"📁 Using custom workspace: {workspace_path}")
+        elif workspace_name:
             # Named workspace: ~/.bifrost/workspaces/{name}
             workspace_path = f"~/.bifrost/workspaces/{workspace_name}"
             self.logger.info(f"📁 Using isolated workspace: {workspace_path}")
