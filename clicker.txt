@@ -1,0 +1,212 @@
+(clicker) chiraagbalu@mac clicker % python run_sglang_eval.py configs/16_gelato_30b_a
+3b_17.py --ssh ubuntu@150.136.217.70:22
+/Users/chiraagbalu/wafer_stuff/clicker/run_sglang_eval.py:272: SyntaxWarning: invalid
+ escape sequence '\$'
+  --output {remote_result_dir}/results.json"""
+/Users/chiraagbalu/wafer_stuff/clicker/run_sglang_eval.py:274: SyntaxWarning: invalid
+ escape sequence '\$'
+  # Run in tmux session
+/Users/chiraagbalu/wafer_stuff/clicker/run_sglang_eval.py:273: SyntaxWarning: invalid
+ escape sequence '\$'
+  
+INFO     🚀 SGLang Evaluation Pipeline                                               
+INFO     📅 Experiment: 16_gelato_30b_a3b_17_20251111-055026                         
+INFO     📂 Local results: results/16_gelato_30b_a3b_17_20251111-055026              
+INFO     ============================================================                
+INFO                                                                                 
+INFO     📦 Step 1: Deploying SGLang Server                                          
+INFO     ------------------------------------------------------------                
+INFO        Model: mlfoundations/Gelato-30B-A3B                                      
+INFO        Port: 30000                                                              
+INFO        Location: Remote                                                         
+INFO        SSH: ubuntu@150.136.217.70:22                                            
+INFO                                                                                 
+INFO     🚀 Deploying SGLang server...                                               
+INFO        Model: mlfoundations/Gelato-30B-A3B                                      
+INFO        GPUs: [4, 5] (TP=2)                                                      
+INFO        Port: 30000                                                              
+INFO     🔗 Connecting to ubuntu@150.136.217.70:22...                                
+INFO                                                                                 
+INFO     🔍 Preflight Checks (Remote)                                                
+INFO     ------------------------------------------------------------                
+INFO     Checking remote prerequisites...                                            
+INFO     Connected (version 2.0, client OpenSSH_8.9p1)                               
+INFO     Authentication (publickey) successful!                                      
+INFO     Connected to ubuntu@150.136.217.70:22                                       
+INFO     ✅ Prerequisites OK                                                         
+INFO     Checking remote GPU availability: [4, 5]...                                 
+INFO     Connected (version 2.0, client OpenSSH_8.9p1)                               
+INFO     Authentication (publickey) successful!                                      
+INFO     Connected to ubuntu@150.136.217.70:22                                       
+INFO     ✅ GPUs available: [4, 5]                                                   
+INFO     Checking remote port 30000...                                               
+INFO     Connected (version 2.0, client OpenSSH_8.9p1)                               
+INFO     Authentication (publickey) successful!                                      
+INFO     Connected to ubuntu@150.136.217.70:22                                       
+INFO     ✅ Port 30000 available                                                     
+INFO                                                                                 
+INFO     ✅ All preflight checks passed!                                             
+INFO                                                                                 
+INFO     📦 Deploying code...                                                        
+INFO     Connected (version 2.0, client OpenSSH_8.9p1)                               
+INFO     Authentication (publickey) successful!                                      
+INFO     Connected to ubuntu@150.136.217.70:22                                       
+INFO     Deploying code to ~/.bifrost/workspace                                      
+INFO     [chan 1] Opened sftp connection (server version 3)                          
+INFO     [chan 1] sftp session closed.                                               
+INFO     Code deployed to ~/.bifrost/workspace                                       
+INFO     ✅ Code deployed to ~/.bifrost/workspace                                    
+INFO     📍 Expanded workspace path: /home/ubuntu/.bifrost/workspace                 
+INFO     🔧 Running bootstrap to install SGLang...                                   
+INFO        Bootstrap command: export PATH="$HOME/.local/bin:$PATH" && [ -d          
+         .venv-sglang ] && echo "Using existing venv: .venv-sgla...                  
+INFO     ============================================================                
+Using existing venv: .venv-sglangUsing Python 3.12.12 environment at: .venv-sglang⠋ R
+Resolved 162 packages in 132msAudited 162 packages in 1mswarning: The package `sglang
+ @ git+https://github.com/sgl-project/sglang.git@6a7322ffbc3b6949694c7c17f9b8501c9efd
+c21f#subdirectory=python` does not have an extra named `all`=== Installed SGLang vers
+ion ===Using Python 3.12.12 environment at: .venv-sglangVersion: 0.5.5.post1INFO     
+📊 Bootstrap exit code: 0                                                   
+INFO     ============================================================                
+INFO     ✅ Bootstrap completed successfully                                         
+INFO     ✅ Verified venv exists: .venv-sglang                                       
+INFO     🔍 Verifying SGLang installation...                                         
+INFO     ✅ SGLang 0.5.5.post1 verified installed                                    
+INFO     ✅ Installation complete at /home/ubuntu/.bifrost/workspace                 
+INFO     🚀 Starting SGLang server on remote...                                      
+INFO     ✅ Server started in tmux session: sglang-gelato-30b                        
+INFO     ⏳ Waiting for server to be ready...                                        
+INFO     ✅ Server is ready (took ~50s)                                              
+INFO     ✅ Server is ready!                                                         
+INFO                                                                                 
+INFO     ✅ Server deployed successfully!                                            
+INFO        URL: http://150.136.217.70:30000                                         
+INFO        API Base: http://150.136.217.70:30000/v1                                 
+INFO                                                                                 
+INFO     📊 Step 2: Running ScreenSpot-Pro Evaluation                                
+INFO     ------------------------------------------------------------                
+INFO        Config: configs/16_gelato_30b_a3b_17.py                                  
+INFO                                                                                 
+INFO     🚀 Running evaluation on remote machine...                                  
+INFO     Connected (version 2.0, client OpenSSH_8.9p1)                               
+INFO     Authentication (publickey) successful!                                      
+INFO     Connected to ubuntu@150.136.217.70:22                                       
+INFO     📦 Deploying clicker codebase via git...                                    
+INFO     Deploying code to ~/.bifrost/workspace                                      
+INFO     [chan 3] Opened sftp connection (server version 3)                          
+INFO     [chan 3] sftp session closed.                                               
+INFO     Code deployed to ~/.bifrost/workspace                                       
+INFO     Running 1 bootstrap step(s)...                                              
+INFO     Step 1/1: export PATH="$HOME/.local/bin:$PATH"                              
+         uv sync --frozen                                                            
+INFO     All bootstrap steps completed successfully                                  
+INFO     ✅ Codebase deployed to ~/.bifrost/workspace                                
+INFO     [chan 16] Opened sftp connection (server version 3)                         
+INFO     [chan 16] sftp session closed.                                              
+INFO     ✅ Config uploaded to ~/.bifrost/workspace/configs/16_gelato_30b_a3b_17.py  
+INFO     📝 Starting evaluation in tmux session: eval-16_gelato_30b_a3b_17           
+INFO     📝 Full eval command being executed:                                        
+INFO     export PATH=\$HOME/.local/bin:\$PATH && cd ~/.bifrost/workspace && \        
+         echo '=== Debug: Environment Check ===' && \                                
+         echo 'PWD: '\$(pwd) && \                                                    
+         echo 'PATH: '\$PATH && \                                                    
+         echo 'uv location: '\$(command -v uv || echo 'NOT FOUND') && \              
+         echo 'python location (before activation): '\$(command -v python || echo    
+         'NOT FOUND') && \                                                           
+         echo '.venv exists: '\$([ -d .venv ] && echo 'YES' || echo 'NO') && \       
+         echo '.venv/bin/activate exists: '\$([ -f .venv/bin/activate ] && echo 'YES'
+         || echo 'NO') && \                                                          
+         echo '=== Activating venv ===' && \                                         
+         source .venv/bin/activate || { echo 'ERROR: Failed to activate venv'; exit  
+         1; } && \                                                                   
+         echo 'python location (after activation): '\$(command -v python) && \       
+         echo 'python version: '\$(python --version) && \                            
+         echo 'VIRTUAL_ENV: '\$VIRTUAL_ENV && \                                      
+         [ -n "\$VIRTUAL_ENV" ] || { echo 'ERROR: VIRTUAL_ENV not set after          
+         activation'; exit 1; } && \                                                 
+         echo '=== Starting evaluation ===' && \                                     
+         python run_rollouts.py --config                                             
+         ~/.bifrost/workspace/configs/16_gelato_30b_a3b_17.py \                      
+         --output ~/clicker_results/16_gelato_30b_a3b_17_20251111-055026/results.json
+INFO     📝 Full tmux command:                                                       
+INFO                                                                                 
+         tmux new-session -d -s eval-16_gelato_30b_a3b_17 "                          
+         export PATH=\$HOME/.local/bin:\$PATH && cd ~/.bifrost/workspace && \        
+         echo '=== Debug: Environment Check ===' && \                                
+         echo 'PWD: '\$(pwd) && \                                                    
+         echo 'PATH: '\$PATH && \                                                    
+         echo 'uv location: '\$(command -v uv || echo 'NOT FOUND') && \              
+         echo 'python location (before activation): '\$(command -v python || echo    
+         'NOT FOUND') && \                                                           
+         echo '.venv exists: '\$([ -d .venv ] && echo 'YES' || echo 'NO') && \       
+         echo '.venv/bin/activate exists: '\$([ -f .venv/bin/activate ] && echo 'YES'
+         || echo 'NO') && \                                                          
+         echo '=== Activating venv ===' && \                                         
+         source .venv/bin/activate || { echo 'ERROR: Failed to activate venv'; exit  
+         1; } && \                                                                   
+         echo 'python location (after activation): '\$(command -v python) && \       
+         echo 'python version: '\$(python --version) && \                            
+         echo 'VIRTUAL_ENV: '\$VIRTUAL_ENV && \                                      
+         [ -n "\$VIRTUAL_ENV" ] || { echo 'ERROR: VIRTUAL_ENV not set after          
+         activation'; exit 1; } && \                                                 
+         echo '=== Starting evaluation ===' && \                                     
+         python run_rollouts.py --config                                             
+         ~/.bifrost/workspace/configs/16_gelato_30b_a3b_17.py \                      
+         --output ~/clicker_results/16_gelato_30b_a3b_17_20251111-055026/results.json
+         2>&1 | tee ~/clicker_results/16_gelato_30b_a3b_17_20251111-055026/eval.log  
+         echo 'Eval exit code: '$? >>                                                
+         ~/clicker_results/16_gelato_30b_a3b_17_20251111-055026/eval.log             
+         "                                                                           
+                                                                                     
+INFO     ✅ Evaluation started in tmux session: eval-16_gelato_30b_a3b_17            
+INFO                                                                                 
+INFO     📊 Streaming evaluation logs (Ctrl+C to stop streaming, eval continues)...  
+INFO     ============================================================                
+Traceback (most recent call last):
+  File "/home/ubuntu/.bifrost/workspace/run_rollouts.py", line 13, in <module>
+    import trio
+ModuleNotFoundError: No module named 'trio'
+Eval exit code: 0
+INFO                                                                                 
+INFO     ============================================================                
+INFO     ✅ Evaluation completed successfully!                                       
+INFO                                                                                 
+INFO     💾 Step 3: Syncing Results                                                  
+INFO     ------------------------------------------------------------                
+INFO     📊 Syncing final evaluation results...                                      
+INFO     📋 Syncing evaluation logs...                                               
+INFO     Connected (version 2.0, client OpenSSH_8.9p1)                               
+INFO     Authentication (publickey) successful!                                      
+INFO     Connected to ubuntu@150.136.217.70:22                                       
+INFO     [chan 2] Opened sftp connection (server version 3)                          
+INFO     [chan 2] sftp session closed.                                               
+WARNING  ⚠️  Could not download eval logs: [Errno 13] Permission denied              
+ 
+INFO     📋 Remote file status: -rw-rw-r-- 1 ubuntu ubuntu 192 Nov 11 05:51          
+         /home/ubuntu/clicker_results/16_gelato_30b_a3b_17_20251111-055026/eval.log  
+INFO     📋 Last 50 lines of remote eval.log:                                        
+INFO     ============================================================                
+Traceback (most recent call last):
+  File "/home/ubuntu/.bifrost/workspace/run_rollouts.py", line 13, in <module>
+    import trio
+ModuleNotFoundError: No module named 'trio'
+Eval exit code: 0
+
+INFO     ============================================================                
+WARNING  ⚠️  Could not sync files: Remote path not found:                            
+ 
+         ~/clicker_results/16_gelato_30b_a3b_17_20251111-055026/results.json         
+INFO                                                                                 
+INFO     🧹 Step 4: Cleanup                                                          
+INFO     ------------------------------------------------------------                
+INFO     🛑 Stopping server...                                                       
+INFO     Connected (version 2.0, client OpenSSH_8.9p1)                               
+INFO     Authentication (publickey) successful!                                      
+INFO     Connected to ubuntu@150.136.217.70:22                                       
+INFO     ✅ Server stopped                                                           
+INFO                                                                                 
+INFO     ============================================================                
+INFO     🎉 Pipeline Complete!                                                       
+INFO     📂 Results directory: results/16_gelato_30b_a3b_17_20251111-055026          
+INFO                                                                                 
+

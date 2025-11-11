@@ -1,0 +1,71 @@
+{
+  "target": {
+    "actor_num_gpus": 4,
+    "rollout_num_gpus": 0,
+    "train_backend": "fsdp",
+    "device_type": "cuda"
+  },
+  "model": {
+    "name": "Qwen/Qwen2.5-0.5B-Instruct",
+    "dtype": "bfloat16",
+    "compile": false
+  },
+  "data": {
+    "sft_mixture": [
+      {
+        "name": "HuggingFaceTB/smol-smoltalk",
+        "split": "train",
+        "subset": null,
+        "max_samples": 1000,
+        "filepath": null,
+        "size": null,
+        "repeat": 1
+      }
+    ],
+    "rl_mixture": [],
+    "max_length": 512,
+    "shuffle_seed": 42
+  },
+  "sft": {
+    "num_epochs": 1,
+    "num_iterations": 100,
+    "batch_size": 2,
+    "target_examples_per_step": 8,
+    "unembedding_lr": 0.004,
+    "embedding_lr": 0.2,
+    "matrix_lr": 0.02,
+    "weight_decay": 0.0,
+    "init_lr_frac": 0.02,
+    "eval_every": 25,
+    "eval_steps": 10,
+    "checkpoint_every": 50,
+    "log_every": 10
+  },
+  "rl": {
+    "num_epochs": 1,
+    "examples_per_step": 8,
+    "num_samples": 8,
+    "batch_size": 4,
+    "max_new_tokens": 128,
+    "temperature": 1.0,
+    "top_k": 50,
+    "unembedding_lr": 0.004,
+    "embedding_lr": 0.2,
+    "matrix_lr": 0.02,
+    "weight_decay": 0.0,
+    "init_lr_frac": 0.05,
+    "eval_every": 20,
+    "eval_examples": 100,
+    "save_every": 20,
+    "baseline": 0.0
+  },
+  "output": {
+    "save_dir": "results",
+    "log_level": "INFO",
+    "experiment_name": "02_debug_sft_fsdp",
+    "use_wandb": false,
+    "wandb_project": "integration_training",
+    "mode": "sft",
+    "source_checkpoint": null
+  }
+}

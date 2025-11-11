@@ -1,28 +1,51 @@
-"""Kerbal package - Remote execution helpers.
+"""Kerbal package - Script execution orchestration for remote machines.
 
 Like Kerbal Space Program, this package helps you orchestrate complex remote operations
 with modular, composable components. Launch your code into production!
 
-This package provides generic utilities for remote execution:
+This package provides utilities for remote script execution:
+- python_env: Python dependency setup and script execution (uv-based)
 - tmux: Process management (sessions, detached execution)
 - gpu: Hardware checking (nvidia-smi queries, availability)
 - env: Environment variable helpers (export building)
 - transfer: File transfer (push, sync)
+- protocol: Data structures (DependencyConfig, CommandResult)
 
 These are orthogonal concerns that can be composed together.
 
-Separation of concerns:
-- midas/ - Python environment setup (the Midas touch)
-- kerbal/ - Generic remote execution helpers (this package)
-- deploy/ - High-level composition of midas + kerbal
+Example:
+    from bifrost import BifrostClient
+    from kerbal import DependencyConfig, setup_script_deps, start_tmux_session
+
+    client = BifrostClient("root@gpu:22", ssh_key_path="~/.ssh/id_rsa")
+
+    deps = DependencyConfig(
+        project_name="training",
+        dependencies=["torch>=2.0"],
+        extras={"training": ["wandb"]},
+    )
+    setup_script_deps(client, workspace, deps, install_extras=["training"])
+
+    # Run in tmux
+    start_tmux_session(
+        client, "training",
+        f"cd {workspace} && .venv/bin/python train.py",
+        env_vars={"CUDA_VISIBLE_DEVICES": "0,1"}
+    )
 """
 
+from kerbal.protocol import DependencyConfig, CommandResult
+from kerbal.python_env import setup_script_deps, run_script
 from kerbal.tmux import start_tmux_session
 from kerbal.gpu import check_gpus_available, wait_for_gpus
 from kerbal.env import build_env_prefix
 from kerbal.transfer import push_code, sync_results
 
 __all__ = [
+    "DependencyConfig",
+    "CommandResult",
+    "setup_script_deps",
+    "run_script",
     "start_tmux_session",
     "check_gpus_available",
     "wait_for_gpus",

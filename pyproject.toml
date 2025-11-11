@@ -1,5 +1,5 @@
 [tool.uv.workspace]
-members = ["bifrost", "broker", "shared", "rollouts", "dev/kernel-learning"]
+members = ["bifrost", "broker", "shared", "rollouts", "miniray", "kerbal", "dev/kernel-learning"]
 
 [project]
 name = "gpu-research-tools"
@@ -12,7 +12,8 @@ dependencies = [
     "broker",
     "bifrost",
     "shared",
-    "rollouts"
+    "rollouts",
+    "kerbal"
 ]
 
 [project.optional-dependencies]
@@ -112,6 +113,8 @@ broker = { workspace = true }
 bifrost = { workspace = true }
 shared = { workspace = true }
 rollouts = { workspace = true }
+miniray = { workspace = true }
+kerbal = { workspace = true }
 kernel-learning = { workspace = true }
 
 [build-system]
