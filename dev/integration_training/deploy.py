@@ -25,6 +25,9 @@ from base_config import Config
 from bifrost.client import BifrostClient
 from dotenv import load_dotenv
 
+# Import kerbal for dependency management
+from kerbal import DependencyConfig, setup_script_deps
+
 # Import shared logging
 from shared.logging_config import setup_logging
 
@@ -153,16 +156,6 @@ def check_remote_prerequisites(bifrost_client: BifrostClient) -> list[str]:
     """
     missing = []
 
-    # Check for uv (Python package installer)
-    # uv installs to ~/.local/bin, need to add to PATH since installer modifies shell profiles
-    # but we're running in a fresh shell each time
-    result = bifrost_client.exec(
-        'export PATH="$HOME/.local/bin:$PATH" && '
-        'command -v uv >/dev/null 2>&1 && echo "OK" || echo "MISSING"'
-    )
-    if result.stdout.strip() != 'OK':
-        missing.append("uv")
-
     # Check for tmux (terminal multiplexer)
     result = bifrost_client.exec("command -v tmux >/dev/null 2>&1 && echo 'OK' || echo 'MISSING'")
     if result.stdout.strip() != 'OK':
@@ -172,7 +165,7 @@ def check_remote_prerequisites(bifrost_client: BifrostClient) -> list[str]:
 
 
 def deploy_code(bifrost_client: BifrostClient) -> str:
-    """Deploy code to remote and bootstrap environment.
+    """Deploy code to remote and bootstrap environment using kerbal.
 
     Args:
         bifrost_client: Bifrost client instance
@@ -182,12 +175,8 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
     """
     logger.info("📦 Deploying code and bootstrapping environment...")
 
-    # Deploy code with bootstrap
-    # Note: Need to add uv to PATH since it's installed in ~/.local/bin
-    bootstrap_cmd = 'export PATH="$HOME/.local/bin:$PATH" && uv sync --extra dev-integration-training'
-    workspace_path = bifrost_client.push(
-        bootstrap_cmd=bootstrap_cmd
-    )
+    # Deploy code (no bootstrap command - kerbal handles it)
+    workspace_path = bifrost_client.push()
 
     logger.info(f"✅ Code deployed to {workspace_path}")
 
@@ -196,6 +185,34 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
     if result.exit_code == 0 and result.stdout:
         workspace_path = result.stdout.strip()
         logger.info(f"📍 Expanded workspace path: {workspace_path}")
+
+    # Define dependencies for dev/integration_training
+    # Using kerbal's DependencyConfig to avoid monorepo sync issues
+    # Note: rollouts and shared are workspace packages pushed to remote
+    # Use absolute paths on remote (workspace_path is already expanded)
+    deps = DependencyConfig(
+        project_name="integration-training",
+        dependencies=[
+            f"rollouts @ file://{workspace_path}/rollouts",
+            f"shared @ file://{workspace_path}/shared",
+            "torch>=2.4.0",
+            "transformers>=4.30.0",
+            "datasets>=2.14.0",
+            "trio>=0.27.0",
+            "accelerate>=0.20.0",
+            "huggingface-hub>=0.20.0",
+            "python-dotenv>=1.0.0",
+        ],
+        extras={
+            "dev": ["pytest", "black"],
+        },
+        python_version=">=3.10",
+    )
+
+    # Setup dependencies using kerbal (handles uv installation + sync)
+    # Kerbal generates pyproject.toml in the project workspace and runs uv sync
+    project_workspace = f"{workspace_path}/dev/integration_training"
+    setup_script_deps(bifrost_client, project_workspace, deps, install_extras=None)
 
     return workspace_path
 
@@ -227,8 +244,9 @@ def start_training(
 
     # Build training command
     # Note: workspace_path is ~/.bifrost/workspace, we need to cd to dev/integration_training
-    venv_path = f"{workspace_path}/.venv/bin/activate"
+    # Kerbal creates .venv in the project workspace (dev/integration_training)
     project_dir = f"{workspace_path}/dev/integration_training"
+    venv_path = f"{project_dir}/.venv/bin/activate"
     gpu_ranks_str = ",".join(str(r) for r in config.target.gpu_ranks)
 
     # Get HF_TOKEN from local environment
@@ -457,7 +475,7 @@ def main():
             logger.error("")
             logger.error("💡 After installing, retry the deployment")
             return 1
-        logger.info("✅ All prerequisites present (uv, tmux)")
+        logger.info("✅ All prerequisites present (tmux)")
 
         # Check GPU availability (Tiger Style: fail fast before deploying code)
         gpu_ids = config.target.gpu_ranks
