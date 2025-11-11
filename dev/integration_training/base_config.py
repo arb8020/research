@@ -108,6 +108,7 @@ class SFTConfig:
     """SFT (Supervised Fine-Tuning) configuration.
 
     Hyperparameters from nanochat/scripts/chat_sft.py (proven defaults).
+    Tiger Style: ALL parameters explicit, no hidden defaults.
     """
     # Training schedule
     num_epochs: int = 1
@@ -120,7 +121,19 @@ class SFTConfig:
     embedding_lr: float = 0.2
     matrix_lr: float = 0.02
     weight_decay: float = 0.0
-    init_lr_frac: float = 0.02  # Start at 2% of base LR
+    init_lr_frac: float = 0.02  # Start at 2% of base LR (legacy, prefer warmup_ratio)
+
+    # Optimizer parameters (SLIME/LLM standards)
+    adam_beta1: float = 0.9  # First moment momentum
+    adam_beta2: float = 0.95  # Second moment momentum (LLM standard, not 0.999)
+    adam_eps: float = 1e-8  # Numerical stability epsilon
+
+    # Gradient control (SLIME defaults)
+    clip_grad: float = 1.0  # Gradient norm clipping (prevents explosions)
+
+    # Learning rate schedule (SLIME defaults)
+    warmup_ratio: float = 0.03  # Warmup as fraction of total steps (3%)
+    lr_decay_style: str = "cosine"  # Options: cosine, linear, constant
 
     # Evaluation and logging
     eval_every: int = 100
@@ -135,6 +148,7 @@ class RLConfig:
 
     Hyperparameters from nanochat/scripts/chat_rl.py.
     Uses simplified GRPO (REINFORCE-style).
+    Tiger Style: ALL parameters explicit, no hidden defaults.
     """
     # Training schedule
     num_epochs: int = 1
@@ -152,7 +166,19 @@ class RLConfig:
     embedding_lr: float = 0.2
     matrix_lr: float = 0.02
     weight_decay: float = 0.0
-    init_lr_frac: float = 0.05  # Start at 5% of base LR
+    init_lr_frac: float = 0.05  # Start at 5% of base LR (legacy, prefer warmup_ratio)
+
+    # Optimizer parameters (SLIME/LLM standards)
+    adam_beta1: float = 0.9  # First moment momentum
+    adam_beta2: float = 0.95  # Second moment momentum (LLM standard, not 0.999)
+    adam_eps: float = 1e-8  # Numerical stability epsilon
+
+    # Gradient control (SLIME defaults)
+    clip_grad: float = 1.0  # Gradient norm clipping (prevents explosions)
+
+    # Learning rate schedule (SLIME defaults)
+    warmup_ratio: float = 0.03  # Warmup as fraction of total steps (3%)
+    lr_decay_style: str = "cosine"  # Options: cosine, linear, constant
 
     # Evaluation and logging
     eval_every: int = 60

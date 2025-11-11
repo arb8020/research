@@ -1,0 +1,274 @@
+{
+  "optimizer_parameters": {
+    "optimizer": {
+      "default": "adam",
+      "type": "str",
+      "options": ["adam", "deepspeed_cpu_adam"],
+      "description": "Optimizer type"
+    },
+    "lr": {
+      "default_fsdp": 0.00002,
+      "default_megatron": 0.000001,
+      "type": "float",
+      "description": "Base learning rate"
+    },
+    "lr_decay_style": {
+      "default": "constant",
+      "type": "str",
+      "description": "Learning rate decay schedule"
+    },
+    "warmup_ratio": {
+      "default": 0.03,
+      "type": "float",
+      "range": [0.0, 0.5],
+      "description": "Fraction of training steps for linear warmup"
+    },
+    "adam_beta1": {
+      "default": 0.9,
+      "type": "float",
+      "range": [0.8, 0.99],
+      "description": "Exponential decay rate for 1st moment estimates"
+    },
+    "adam_beta2": {
+      "default": 0.95,
+      "type": "float",
+      "range": [0.9, 0.999],
+      "description": "Exponential decay rate for 2nd moment estimates"
+    },
+    "adam_eps": {
+      "default": 1e-8,
+      "type": "float",
+      "description": "Numerical stability constant for Adam"
+    },
+    "weight_decay": {
+      "default": 0.0,
+      "type": "float",
+      "range": [0.0, 0.1],
+      "description": "L2 regularization coefficient"
+    }
+  },
+  "gradient_parameters": {
+    "clip_grad": {
+      "default": 1.0,
+      "type": "float",
+      "range": [0.1, 10.0],
+      "description": "Maximum gradient norm for clipping"
+    },
+    "micro_batch_size": {
+      "default": 1,
+      "type": "int",
+      "description": "Per-GPU batch size"
+    },
+    "use_dynamic_batch_size": {
+      "default": false,
+      "type": "bool",
+      "description": "Adjust batch size based on max_tokens_per_gpu"
+    },
+    "max_tokens_per_gpu": {
+      "default": null,
+      "type": "int",
+      "description": "Maximum tokens per GPU for dynamic batching"
+    }
+  },
+  "training_parameters": {
+    "rollout_batch_size": {
+      "required": true,
+      "type": "int",
+      "description": "Number of prompts per rollout step"
+    },
+    "global_batch_size": {
+      "default": null,
+      "type": "int",
+      "description": "Total batch size across all GPUs (auto-calculated)"
+    },
+    "n_samples_per_prompt": {
+      "default": 1,
+      "type": "int",
+      "description": "Number of responses per prompt"
+    },
+    "num_steps_per_rollout": {
+      "default": null,
+      "type": "int",
+      "description": "Training steps per rollout iteration"
+    },
+    "seed": {
+      "default": 1234,
+      "type": "int",
+      "description": "Random seed for reproducibility"
+    },
+    "save_interval": {
+      "default": null,
+      "type": "int",
+      "description": "Steps between checkpoint saves"
+    }
+  },
+  "rl_parameters": {
+    "eps_clip": {
+      "default": 0.2,
+      "type": "float",
+      "range": [0.1, 0.5],
+      "description": "PPO clip range"
+    },
+    "eps_clip_high": {
+      "default": null,
+      "type": "float",
+      "description": "Upper bound for asymmetric PPO clipping"
+    },
+    "value_clip": {
+      "default": 0.2,
+      "type": "float",
+      "description": "Clip range for value function loss"
+    },
+    "kl_coef": {
+      "default": 0.0,
+      "type": "float",
+      "range": [0.0, 1.0],
+      "description": "KL penalty coefficient for reward shaping"
+    },
+    "kl_loss_coef": {
+      "default": 0.0,
+      "type": "float",
+      "description": "KL penalty coefficient for loss function"
+    },
+    "kl_loss_type": {
+      "default": "k1",
+      "type": "str",
+      "options": ["k1", "k2", "k3", "low_var_kl"],
+      "description": "KL divergence calculation method"
+    },
+    "advantage_estimator": {
+      "default": "grpo",
+      "type": "str",
+      "options": ["grpo", "gspo", "reinforce_plus_plus", "reinforce_plus_plus_baseline", "ppo"],
+      "description": "Advantage estimation algorithm"
+    },
+    "gamma": {
+      "default": 1.0,
+      "type": "float",
+      "range": [0.9, 1.0],
+      "description": "Discount factor for future rewards"
+    },
+    "lambd": {
+      "default": 1.0,
+      "type": "float",
+      "range": [0.0, 1.0],
+      "description": "GAE lambda for TD-lambda"
+    },
+    "entropy_coef": {
+      "default": 0.0,
+      "type": "float",
+      "description": "Entropy bonus coefficient"
+    },
+    "normalize_advantages": {
+      "default": false,
+      "type": "bool",
+      "description": "Normalize advantages to zero mean, unit variance"
+    }
+  },
+  "generation_parameters": {
+    "rollout_temperature": {
+      "default": 1.0,
+      "type": "float",
+      "range": [0.0, 2.0],
+      "description": "Sampling temperature"
+    },
+    "rollout_top_p": {
+      "default": 1.0,
+      "type": "float",
+      "range": [0.0, 1.0],
+      "description": "Nucleus (top-p) sampling parameter"
+    },
+    "rollout_top_k": {
+      "default": -1,
+      "type": "int",
+      "description": "Top-k sampling (-1 = disabled)"
+    },
+    "rollout_max_response_len": {
+      "default": 1024,
+      "type": "int",
+      "description": "Maximum tokens to generate"
+    },
+    "rollout_max_context_len": {
+      "default": null,
+      "type": "int",
+      "description": "Maximum context size for inference"
+    },
+    "rollout_seed": {
+      "default": 42,
+      "type": "int",
+      "description": "Random seed for rollout"
+    }
+  },
+  "distributed_parameters": {
+    "actor_num_nodes": {
+      "default": 1,
+      "type": "int",
+      "description": "Number of nodes for training"
+    },
+    "actor_num_gpus_per_node": {
+      "default": 8,
+      "type": "int",
+      "description": "GPUs per node for training"
+    },
+    "rollout_num_gpus_per_engine": {
+      "default": 1,
+      "type": "int",
+      "description": "GPUs per inference engine (tensor parallelism)"
+    },
+    "colocate": {
+      "default": false,
+      "type": "bool",
+      "description": "Colocate inference and training"
+    },
+    "offload_train": {
+      "default": null,
+      "type": "bool",
+      "description": "Offload training to CPU"
+    },
+    "offload_rollout": {
+      "default": null,
+      "type": "bool",
+      "description": "Offload inference to CPU"
+    },
+    "train_backend": {
+      "default": "megatron",
+      "type": "str",
+      "options": ["megatron", "fsdp"],
+      "description": "Training framework"
+    }
+  },
+  "megatron_defaults": {
+    "use_distributed_optimizer": {
+      "default": true,
+      "type": "bool",
+      "description": "Use zero optimizer"
+    },
+    "bf16": {
+      "default": true,
+      "type": "bool",
+      "description": "Use bfloat16 precision"
+    },
+    "seq_length": {
+      "default": 4096,
+      "type": "int",
+      "description": "Maximum sequence length"
+    },
+    "variable_seq_lengths": {
+      "default": true,
+      "type": "bool",
+      "description": "Support variable sequence lengths"
+    }
+  },
+  "fsdp_defaults": {
+    "attn_implementation": {
+      "default": "flash_attention_2",
+      "type": "str",
+      "description": "Attention implementation"
+    },
+    "gradient_checkpointing": {
+      "default": false,
+      "type": "bool",
+      "description": "Trade compute for memory"
+    }
+  }
+}
