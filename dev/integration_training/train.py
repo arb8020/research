@@ -225,13 +225,14 @@ def create_loss_fn():
     """
     import torch.nn.functional as F
 
-    def cross_entropy_loss(logits, labels, loss_mask=None):
+    def cross_entropy_loss(logits, labels, loss_mask=None, advantages=None):
         """Compute cross-entropy loss with optional masking.
 
         Args:
             logits: Model logits [batch, seq_len, vocab_size]
             labels: Target labels [batch, seq_len]
             loss_mask: Loss mask [batch, seq_len] (optional)
+            advantages: Advantages for RL (unused for SFT, accepted for compatibility)
 
         Returns:
             Scalar loss
