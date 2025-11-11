@@ -20,6 +20,7 @@ Usage:
 
 import trio
 import logging
+import os
 import subprocess
 import time
 from dataclasses import dataclass, field, asdict
@@ -157,6 +158,76 @@ def generate_bootstrap_command(config: ServerConfig) -> str:
     result = ' && '.join(steps)
     assert len(result) > 0
     return result
+
+
+def check_hf_token_and_model(model_name: str) -> Tuple[bool, Optional[str]]:
+    """Check if HF_TOKEN is set and validate model accessibility.
+
+    Tiger Style: Fail-fast validation before expensive deployment.
+
+    Args:
+        model_name: HuggingFace model ID (e.g., "mlfoundations/Gelato-30B-A3B")
+
+    Returns:
+        (True, None) if token is set and model is accessible
+        (False, error_message) if token missing or model inaccessible
+    """
+    # Check if HF_TOKEN is set
+    hf_token = os.getenv("HF_TOKEN")
+    if not hf_token:
+        return False, (
+            "HF_TOKEN not found in environment. "
+            "Set it with: export HF_TOKEN=hf_... "
+            "or add to your .env file"
+        )
+
+    # Validate model name format (org/repo)
+    if "/" not in model_name:
+        return False, (
+            f"Invalid model name: {model_name}. "
+            "Expected format: 'org/model-name' (e.g., 'mlfoundations/Gelato-30B-A3B')"
+        )
+
+    # Try to validate token and model access via HF API
+    try:
+        import httpx
+        headers = {"Authorization": f"Bearer {hf_token}"}
+        url = f"https://huggingface.co/api/models/{model_name}"
+
+        response = httpx.get(url, headers=headers, timeout=10.0)
+
+        if response.status_code == 404:
+            return False, (
+                f"Model not found: {model_name}. "
+                "Check that the model name is correct and you have access to it."
+            )
+        elif response.status_code == 401:
+            return False, (
+                "HF_TOKEN is invalid or expired. "
+                "Get a new token from https://huggingface.co/settings/tokens"
+            )
+        elif response.status_code == 403:
+            return False, (
+                f"Access denied to model: {model_name}. "
+                "You may need to accept the model's license agreement on HuggingFace."
+            )
+        elif response.status_code != 200:
+            return False, (
+                f"Failed to validate model access (HTTP {response.status_code}). "
+                "Check your internet connection and try again."
+            )
+
+        # Success - model is accessible
+        return True, None
+
+    except ImportError:
+        # httpx not available - skip validation but warn
+        logger.warning("⚠️  httpx not available, skipping HF model validation")
+        return True, None
+    except Exception as e:
+        # Network error or other issue - warn but don't fail
+        logger.warning(f"⚠️  Could not validate HF model access: {e}")
+        return True, None
 
 
 def check_local_prerequisites() -> Tuple[bool, Optional[str]]:
@@ -577,7 +648,15 @@ async def _deploy_local(
     logger.info("🔍 Preflight Checks")
     logger.info("-" * 60)
 
-    # Check 1: Prerequisites
+    # Check 1: HuggingFace token and model access
+    logger.info(f"Checking HuggingFace token and model access...")
+    hf_ok, hf_error = check_hf_token_and_model(config.model)
+    if not hf_ok:
+        logger.error(f"❌ {hf_error}")
+        return None, hf_error
+    logger.info(f"✅ HF token valid, model accessible: {config.model}")
+
+    # Check 2: Prerequisites
     logger.info("Checking prerequisites...")
     prereq_ok, prereq_error = check_local_prerequisites()
     if not prereq_ok:
@@ -585,7 +664,7 @@ async def _deploy_local(
         return None, prereq_error
     logger.info("✅ Prerequisites OK")
 
-    # Check 2: GPU availability
+    # Check 3: GPU availability
     logger.info(f"Checking GPU availability: {config.gpu_ranks}...")
     gpu_ok, gpu_error = check_gpus_available_local(config.gpu_ranks)
     if not gpu_ok:
@@ -593,7 +672,7 @@ async def _deploy_local(
         return None, gpu_error
     logger.info(f"✅ GPUs available: {config.gpu_ranks}")
 
-    # Check 3: Port availability
+    # Check 4: Port availability
     logger.info(f"Checking port {config.port}...")
     port_ok, port_error = check_port_available_local(config.port)
     if not port_ok:
