@@ -30,6 +30,54 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
+def load_config_from_file(config_path: Path):
+    """Load and resolve config from Python file.
+
+    This is a reusable function for loading configs, suitable for
+    importing from wrapper scripts like clicker's run_eval.py.
+
+    Args:
+        config_path: Path to config .py file
+
+    Returns:
+        Loaded config object with resolved paths
+    """
+    print(f"📝 Loading config from: {config_path}")
+
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("exp_config", config_path)
+    assert spec is not None
+    assert spec.loader is not None
+
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert hasattr(module, "config"), "Config file must export 'config' variable"
+    config = module.config
+
+    # Resolve relative paths relative to config file location
+    config_path_abs = Path(config_path).absolute()
+    project_root = config_path_abs.parent.parent  # Go up from configs/ to project root
+
+    # Resolve dataset path
+    if hasattr(config, "dataset") and hasattr(config.dataset, "dataset_path"):
+        dataset_path = config.dataset.dataset_path
+        if not dataset_path.is_absolute():
+            absolute_path = (project_root / dataset_path).resolve()
+            object.__setattr__(config.dataset, "dataset_path", absolute_path)
+            print(f"📂 Resolved dataset path: {absolute_path}")
+
+    # Resolve save_dir path
+    if hasattr(config, "output") and hasattr(config.output, "save_dir"):
+        save_dir = config.output.save_dir
+        if not save_dir.is_absolute():
+            absolute_save_dir = (project_root / save_dir).resolve()
+            object.__setattr__(config.output, "save_dir", absolute_save_dir)
+            print(f"💾 Resolved save directory: {absolute_save_dir}")
+
+    return config
+
+
 async def run_evaluation(config, result_dir: Path) -> dict:
     """Run evaluation on dataset with environment.
 
@@ -268,43 +316,8 @@ def main():
 
     args = parser.parse_args()
 
-    # Load config from file
-    print(f"📝 Loading config from: {args.config}")
-
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("exp_config", args.config)
-    assert spec is not None
-    assert spec.loader is not None
-
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    assert hasattr(module, "config"), "Config file must export 'config' variable"
-    config = module.config
-
-    # Resolve relative paths relative to config file location
-    config_path = Path(args.config).absolute()
-    project_root = config_path.parent.parent  # Go up from configs/ to project root
-
-    # Resolve dataset path
-    if hasattr(config, "dataset") and hasattr(config.dataset, "dataset_path"):
-        dataset_path = config.dataset.dataset_path
-        if not dataset_path.is_absolute():
-            # Make path relative to project root (config file's grandparent directory)
-            # Config structure: <project_root>/configs/<config.py>
-            absolute_path = (project_root / dataset_path).resolve()
-            # Update the dataset_path - need to work around frozen dataclass
-            object.__setattr__(config.dataset, "dataset_path", absolute_path)
-            print(f"📂 Resolved dataset path: {absolute_path}")
-
-    # Resolve save_dir path
-    if hasattr(config, "output") and hasattr(config.output, "save_dir"):
-        save_dir = config.output.save_dir
-        if not save_dir.is_absolute():
-            # Make path relative to project root
-            absolute_save_dir = (project_root / save_dir).resolve()
-            object.__setattr__(config.output, "save_dir", absolute_save_dir)
-            print(f"💾 Resolved save directory: {absolute_save_dir}")
+    # Load config from file using reusable function
+    config = load_config_from_file(args.config)
 
     # Check if we need rollouts-style evaluation
     if config.environment is None or config.to_trajectory is None:
