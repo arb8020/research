@@ -169,7 +169,10 @@ class FSDPTrainingBackend:
             )
 
         # Configure auto-wrap policy (wrap large submodules)
-        auto_wrap_policy = size_based_auto_wrap_policy(
+        # Note: size_based_auto_wrap_policy returns a callable that FSDP will invoke
+        from functools import partial
+        auto_wrap_policy = partial(
+            size_based_auto_wrap_policy,
             min_num_params=self.config.auto_wrap_min_params
         )
 
