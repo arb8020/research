@@ -185,6 +185,13 @@ def _generate_pyproject_toml(deps: "DependencyConfig") -> str:
     lines.append("[build-system]")
     lines.append('requires = ["setuptools>=61.0"]')
     lines.append('build-backend = "setuptools.build_meta"')
+    lines.append("")
+
+    # Setuptools config - exclude subdirectories from package discovery
+    # This prevents "Multiple top-level packages discovered" errors
+    # when workspace has subdirs like configs/, results/, etc.
+    lines.append("[tool.setuptools]")
+    lines.append('py-modules = []')
 
     return "\n".join(lines)
 
