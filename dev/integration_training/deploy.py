@@ -202,6 +202,7 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
             "accelerate>=0.20.0",
             "huggingface-hub>=0.20.0",
             "python-dotenv>=1.0.0",
+            "rich>=13.0.0",  # For shared.logging_config RichHandler
         ],
         extras={
             "dev": ["pytest", "black"],
