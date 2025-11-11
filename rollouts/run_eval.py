@@ -117,6 +117,15 @@ async def run_evaluation(config, result_dir: Path) -> dict:
     # Create progress bar
     pbar = tqdm(total=len(dataset), desc="Evaluating", unit="sample")
 
+    # Open JSONL file for incremental writing (if enabled)
+    jsonl_file = None
+    jsonl_lock = trio.Lock()
+    if config.save_jsonl:
+        jsonl_path = result_dir / f"{config.experiment_name}_results.jsonl"
+        jsonl_file = open(jsonl_path, 'w')
+        logger.info(f"📝 Writing incremental results to: {jsonl_path}")
+        logger.info("")
+
     async def run_sample(i: int, row: dict):
         """Run a single sample evaluation."""
         async with semaphore:
@@ -184,6 +193,12 @@ async def run_evaluation(config, result_dir: Path) -> dict:
 
                 results[i] = result
 
+                # Write to JSONL incrementally
+                if jsonl_file:
+                    async with jsonl_lock:
+                        jsonl_file.write(json.dumps(result) + "\n")
+                        jsonl_file.flush()  # Ensure it's written to disk
+
                 # Update progress bar with reward in postfix
                 pbar.set_postfix({"last_reward": f"{reward:.3f}"})
                 pbar.update(1)
@@ -196,6 +211,13 @@ async def run_evaluation(config, result_dir: Path) -> dict:
                     "success": False,
                 }
                 results[i] = result
+
+                # Write error to JSONL incrementally
+                if jsonl_file:
+                    async with jsonl_lock:
+                        jsonl_file.write(json.dumps(result) + "\n")
+                        jsonl_file.flush()
+
                 pbar.update(1)
 
     # Run all samples concurrently
@@ -205,6 +227,11 @@ async def run_evaluation(config, result_dir: Path) -> dict:
 
     # Close progress bar
     pbar.close()
+
+    # Close JSONL file
+    if jsonl_file:
+        jsonl_file.close()
+        logger.info(f"✅ JSONL results written to: {jsonl_path}")
 
     # Compute summary
     num_completed = sum(1 for r in results if r and r.get("success", False))
