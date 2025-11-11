@@ -1,8 +1,9 @@
-"""Debug config for SFT with FSDP (multi-GPU).
+"""Debug config for SFT with FSDP (2 GPUs).
 
-Tests FSDP training backend on 4 GPUs with minimal data for quick iteration.
+Minimal FSDP test on just 2 GPUs to validate distributed training.
+If this works, 4/8/16 GPUs should work the same way.
 
-Expected runtime: ~10 minutes on 4 GPUs.
+Expected runtime: ~15 minutes on 2 GPUs.
 
 Tiger Style: ALL parameters explicit, no defaults.
 """
@@ -21,8 +22,8 @@ from base_config import (
 # Tiger Style: Construct config with ALL parameters explicit
 config = Config(
     target=TargetConfig(
-        # Training: 4 GPUs with FSDP
-        gpu_ranks=[4, 5, 6, 7],
+        # Training: 2 GPUs with FSDP (minimal test)
+        gpu_ranks=[1, 2],
         device_type="cuda",
 
         # Backend: FSDP for multi-GPU training
@@ -60,7 +61,7 @@ config = Config(
         num_epochs=1,
         num_iterations=100,  # Just 100 steps for debug
         batch_size=2,  # Per-GPU batch size
-        target_examples_per_step=8,  # Total across 4 GPUs
+        target_examples_per_step=8,  # Total across 2 GPUs
 
         # Learning rates (nanochat defaults)
         unembedding_lr=0.004,
@@ -97,7 +98,7 @@ config = Config(
     output=OutputConfig(
         save_dir=Path("./results"),
         log_level="INFO",
-        experiment_name="02_debug_sft_fsdp",
+        experiment_name="03_debug_sft_fsdp_2gpu",
         use_wandb=False,
         wandb_project="integration_training",
         mode="sft",  # SFT only

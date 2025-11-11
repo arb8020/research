@@ -23,8 +23,14 @@ def check_gpus_available(
     client: "BifrostClient",
     gpu_ids: list[int],
     memory_threshold_mb: int = 1000,
+    util_threshold_pct: int = 5,
 ) -> tuple[bool, str]:
-    """Check if GPUs are available with sufficient free memory.
+    """Check if GPUs are available (free memory + low utilization).
+
+    Pattern from integration_training/deploy.py:44-117.
+    GPU is "available" if:
+    1. Memory used <= threshold (default 1GB)
+    2. Utilization <= threshold (default 5%)
 
     Casey: Granular operation - just check GPU state, nothing else.
     Tiger Style: < 70 lines, tuple return for error.
@@ -32,54 +38,67 @@ def check_gpus_available(
     Args:
         client: BifrostClient instance for SSH operations
         gpu_ids: List of GPU IDs to check (e.g., [0, 1])
-        memory_threshold_mb: Minimum free memory required in MB (default: 1000)
+        memory_threshold_mb: Max memory used in MB (default: 1000)
+        util_threshold_pct: Max utilization % (default: 5)
 
     Returns:
-        (True, "") if all GPUs available with sufficient memory
-        (False, error_message) if GPUs unavailable or insufficient memory
+        (True, "") if all GPUs available
+        (False, error_message) if GPUs unavailable or busy
 
     Example:
         available, err = check_gpus_available(client, [0, 1], memory_threshold_mb=2000)
         if not available:
             print(f"GPUs not ready: {err}")
     """
-    assert bifrost is not None, "BifrostClient instance required"
+    assert client is not None, "BifrostClient instance required"
     assert gpu_ids, "gpu_ids list required"
     assert memory_threshold_mb > 0, "memory_threshold_mb must be positive"
+    assert util_threshold_pct >= 0, "util_threshold_pct must be non-negative"
 
     # Check if nvidia-smi exists
     result = client.exec("command -v nvidia-smi")
     if result.exit_code != 0:
         return False, "nvidia-smi not found (no GPU support)"
 
-    # Query GPU info in CSV format
-    gpu_ids_str = ",".join(str(i) for i in gpu_ids)
-    query_cmd = f"nvidia-smi --query-gpu=index,memory.free,memory.total,utilization.gpu --format=csv,noheader,nounits -i {gpu_ids_str}"
+    # Query GPU memory used + utilization
+    query_cmd = (
+        "nvidia-smi --query-gpu=index,memory.used,utilization.gpu "
+        "--format=csv,noheader,nounits"
+    )
 
     result = client.exec(query_cmd)
     if result.exit_code != 0:
         return False, f"Failed to query GPUs: {result.stderr}"
 
-    # Parse output (one line per GPU)
-    lines = result.stdout.strip().split("\n") if result.stdout else []
-    if len(lines) != len(gpu_ids):
-        return False, f"Expected {len(gpu_ids)} GPUs, got {len(lines)}"
-
-    # Check each GPU
-    for line in lines:
+    # Parse output and build GPU stats map
+    gpu_stats = {}
+    for line in result.stdout.strip().splitlines() if result.stdout else []:
         parts = [p.strip() for p in line.split(",")]
-        if len(parts) < 4:
-            return False, f"Invalid nvidia-smi output: {line}"
-
-        gpu_id, free_mem, total_mem, util = parts[0], parts[1], parts[2], parts[3]
+        if len(parts) != 3:
+            continue
 
         try:
-            free_mb = int(free_mem)
+            gpu_id = int(parts[0])
+            memory_mb = int(parts[1])
+            util_pct = int(parts[2])
+            gpu_stats[gpu_id] = {"memory_mb": memory_mb, "util_pct": util_pct}
         except ValueError:
-            return False, f"Invalid memory value for GPU {gpu_id}: {free_mem}"
+            continue
 
-        if free_mb < memory_threshold_mb:
-            return False, f"GPU {gpu_id} has only {free_mb}MB free (need {memory_threshold_mb}MB)"
+    # Check each requested GPU
+    for gpu_id in gpu_ids:
+        # Check 1: Does GPU exist?
+        if gpu_id not in gpu_stats:
+            available = sorted(gpu_stats.keys())
+            return False, f"GPU {gpu_id} not found (available: {available})"
+
+        # Check 2: Is GPU free?
+        stats = gpu_stats[gpu_id]
+        mem_mb = stats["memory_mb"]
+        util = stats["util_pct"]
+
+        if mem_mb > memory_threshold_mb or util > util_threshold_pct:
+            return False, f"GPU {gpu_id} busy ({mem_mb}MB used, {util}% util)"
 
     return True, ""
 
