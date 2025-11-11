@@ -252,20 +252,51 @@ def _sync_dependencies(
     if upgrade:
         extra_flags += " --upgrade"
 
+    # Log the sync command for debugging
+    logger.debug(f"Running uv sync in: {workspace}")
+    logger.debug(f"uv sync flags: {extra_flags if extra_flags else '(none)'}")
+    logger.info("🔧 Installing dependencies with uv...")
+    logger.info("=" * 60)
+
+    # Use exec_stream to show progress in real-time (prevents hanging appearance)
+    # Tiger Style: Capture exit code from marker, stream output for user visibility
     sync_cmd = f"""
     export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
     cd {workspace}
     uv sync{extra_flags}
+    EXIT=$?
+    echo '::EXIT_CODE::'$EXIT
+    exit $EXIT
     """
 
-    # Log the sync command for debugging
-    logger.debug(f"Running uv sync in: {workspace}")
-    logger.debug(f"uv sync flags: {extra_flags if extra_flags else '(none)'}")
-    logger.debug(f"Full command: cd {workspace} && uv sync{extra_flags}")
+    exit_code = None
+    output_lines = []
 
-    result = client.exec(sync_cmd)
+    try:
+        for line in client.exec_stream(sync_cmd):
+            # Capture exit code from marker line
+            if line.startswith("::EXIT_CODE::"):
+                exit_code_str = line.replace("::EXIT_CODE::", "").strip()
+                if exit_code_str.isdigit():
+                    exit_code = int(exit_code_str)
+                else:
+                    logger.warning(f"⚠️  Could not parse exit code from: {line.rstrip()}")
+            else:
+                # Print output in real-time
+                print(line, end='', flush=True)
+                output_lines.append(line)
+    except Exception as e:
+        logger.error(f"❌ uv sync streaming failed: {e}")
+        raise RuntimeError(f"uv sync execution failed: {e}")
 
-    assert result.exit_code == 0, f"uv sync failed: {result.stderr}"
+    logger.info("=" * 60)
+
+    # Check if we got an exit code
+    if exit_code is None:
+        logger.error("❌ Could not determine uv sync exit code")
+        raise RuntimeError("uv sync failed - could not determine exit code")
+
+    assert exit_code == 0, f"uv sync failed with exit code {exit_code}"
 
     if install_extras:
         extras_str = ", ".join(install_extras)
