@@ -435,17 +435,10 @@ async def rollout_sglang(
         "Accept": "application/json",
     }
     completion = None
-    # Debug logging disabled for cleaner output
-    # print(f"🔥 Making HTTP POST to: {api_base}")
-    # print(f"🔥 Headers: {headers}")
-    # print(f"🔥 Request params keys: {list(params.keys())}")
-    # sys.stdout.flush()
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         for attempt in range(1, max_api_retries + 1):
             try:
-                # print(f"🔥 Attempt {attempt}: Sending HTTP request...")
-                # sys.stdout.flush()
                 response = await client.post(api_base, json=params, headers=headers)
                 if response.status_code != 200:
                     error_body = response.text
@@ -514,14 +507,7 @@ async def rollout_sglang(
     else:
         # No tool calls - set to empty list for dacite parsing
         message["tool_calls"] = []
-    print(completion)
     completion = from_dict(ChatCompletion, completion)
-    if completion.prompt_logprobs:
-        print(
-            f"🔥 prompt_logprobs available: {len(completion.prompt_logprobs)} items"
-        )
-    else:
-        print("🔥 No prompt_logprobs (expected for amplified sampling server)")
     assert completion is not None
     completion = replace(completion, model=actor.endpoint.model)
     assert completion.choices is not None
