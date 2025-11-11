@@ -249,6 +249,9 @@ def _sync_dependencies(
     uv sync{extra_flags}
     """
 
+    # DEBUG: Log the exact sync command being run
+    logger.info(f"🔍 DEBUG: Running uv sync with flags: {extra_flags if extra_flags else '(none)'}")
+
     result = client.exec(sync_cmd)
 
     assert result.exit_code == 0, f"uv sync failed: {result.stderr}"
@@ -282,6 +285,14 @@ def _verify_python_env(
     version = result.stdout.strip() if result.stdout else "unknown"
     logger.info(f"✅ Python venv verified: {version}")
 
+    # DEBUG: Log what version of kerbal is running
+    try:
+        import kerbal
+        kerbal_file = kerbal.__file__ if hasattr(kerbal, '__file__') else 'unknown'
+        logger.info(f"🔍 DEBUG: kerbal running from: {kerbal_file}")
+    except Exception as e:
+        logger.info(f"🔍 DEBUG: Could not inspect kerbal: {e}")
+
     # EXPERIMENTAL: Verify declared packages are importable
     # TODO: Consider removing this if it causes false positives
     if dependencies and dependencies.dependencies:
@@ -311,6 +322,21 @@ def _verify_python_env(
                 # Don't assert - this is a soft check for now
             else:
                 logger.info(f"✅ {import_name} importable")
+
+                # DEBUG: For rollouts, show what files are actually installed
+                if import_name == "rollouts":
+                    list_cmd = f"{venv_python} -c \"import {import_name}, os; print(os.listdir(os.path.dirname({import_name}.__file__)))\""
+                    list_result = client.exec(list_cmd)
+                    if list_result.exit_code == 0:
+                        logger.info(f"🔍 DEBUG: rollouts package contains: {list_result.stdout.strip()}")
+
+                    # Check specifically for run_eval.py
+                    check_cmd = f"{venv_python} -c \"import {import_name}.run_eval; print('run_eval.py found at:', {import_name}.run_eval.__file__)\""
+                    check_result = client.exec(check_cmd)
+                    if check_result.exit_code == 0:
+                        logger.info(f"🔍 DEBUG: ✅ {check_result.stdout.strip()}")
+                    else:
+                        logger.warning(f"🔍 DEBUG: ❌ rollouts.run_eval NOT importable: {check_result.stderr.strip() if check_result.stderr else 'unknown'}")
 
 
 def _extract_package_name(dep_string: str) -> str:
