@@ -366,13 +366,13 @@ async def create_fsdp_backend(config: Config, output_dir: Path):
     from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
 
     # Warmup: ramp from 10% to 100% of base LR
+    # Note: verbose param added in PyTorch 2.5+, omit for compatibility
     warmup = LinearLR(
         optimizer=optimizer,
         start_factor=0.1,
         end_factor=1.0,
         total_iters=warmup_steps,
         last_epoch=-1,
-        verbose=False,
     )
 
     # Decay: uses lr_decay_style from config
@@ -382,7 +382,6 @@ async def create_fsdp_backend(config: Config, output_dir: Path):
             T_max=decay_steps,
             eta_min=config.sft.matrix_lr * 0.1,
             last_epoch=-1,
-            verbose=False,
         )
     elif config.sft.lr_decay_style == "linear":
         decay = LinearLR(
@@ -391,7 +390,6 @@ async def create_fsdp_backend(config: Config, output_dir: Path):
             end_factor=0.1,
             total_iters=decay_steps,
             last_epoch=-1,
-            verbose=False,
         )
     elif config.sft.lr_decay_style == "constant":
         # No decay - just use a dummy scheduler
@@ -400,7 +398,6 @@ async def create_fsdp_backend(config: Config, output_dir: Path):
             optimizer=optimizer,
             lr_lambda=lambda step: 1.0,
             last_epoch=-1,
-            verbose=False,
         )
     else:
         raise ValueError(f"Unknown lr_decay_style: {config.sft.lr_decay_style}")
@@ -411,7 +408,6 @@ async def create_fsdp_backend(config: Config, output_dir: Path):
         schedulers=[warmup, decay],
         milestones=[warmup_steps],
         last_epoch=-1,
-        verbose=False,
     )
 
     logger.info(f"[Rank {rank}/{world_size}] LR scheduler: {warmup_steps} warmup steps + {config.sft.lr_decay_style} decay")
