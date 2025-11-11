@@ -285,13 +285,12 @@ def _verify_python_env(
     version = result.stdout.strip() if result.stdout else "unknown"
     logger.info(f"✅ Python venv verified: {version}")
 
-    # DEBUG: Log what version of kerbal is running
-    try:
-        import kerbal
-        kerbal_file = kerbal.__file__ if hasattr(kerbal, '__file__') else 'unknown'
-        logger.info(f"🔍 DEBUG: kerbal running from: {kerbal_file}")
-    except Exception as e:
-        logger.info(f"🔍 DEBUG: Could not inspect kerbal: {e}")
+    # DEBUG: Log what version of kerbal is installed in REMOTE venv
+    kerbal_check = client.exec(f"{venv_python} -c 'import kerbal; print(kerbal.__file__)'")
+    if kerbal_check.exit_code == 0:
+        logger.info(f"🔍 DEBUG: kerbal in remote venv: {kerbal_check.stdout.strip()}")
+    else:
+        logger.info(f"🔍 DEBUG: kerbal not in remote venv (expected if not in dependencies)")
 
     # EXPERIMENTAL: Verify declared packages are importable
     # TODO: Consider removing this if it causes false positives
@@ -325,10 +324,24 @@ def _verify_python_env(
 
                 # DEBUG: For rollouts, show what files are actually installed
                 if import_name == "rollouts":
-                    list_cmd = f"{venv_python} -c \"import {import_name}, os; print(os.listdir(os.path.dirname({import_name}.__file__)))\""
+                    # Show package location and contents
+                    list_cmd = f"{venv_python} -c \"import {import_name}, os; print(os.path.dirname({import_name}.__file__))\""
                     list_result = client.exec(list_cmd)
                     if list_result.exit_code == 0:
-                        logger.info(f"🔍 DEBUG: rollouts package contains: {list_result.stdout.strip()}")
+                        rollouts_path = list_result.stdout.strip()
+                        logger.info(f"🔍 DEBUG: rollouts installed at: {rollouts_path}")
+
+                    # List files in package
+                    files_cmd = f"{venv_python} -c \"import {import_name}, os; print(os.listdir(os.path.dirname({import_name}.__file__)))\""
+                    files_result = client.exec(files_cmd)
+                    if files_result.exit_code == 0:
+                        logger.info(f"🔍 DEBUG: rollouts package contains: {files_result.stdout.strip()}")
+
+                    # Try to get git commit hash from package metadata
+                    # For git packages, uv often stores metadata in METADATA file
+                    git_info_cmd = f"grep -r 'Commit' {rollouts_path}/../rollouts-*.dist-info/direct_url.json 2>/dev/null || echo 'no git info'"
+                    git_result = client.exec(git_info_cmd)
+                    logger.info(f"🔍 DEBUG: rollouts git info: {git_result.stdout.strip()}")
 
                     # Check specifically for run_eval.py
                     check_cmd = f"{venv_python} -c \"import {import_name}.run_eval; print('run_eval.py found at:', {import_name}.run_eval.__file__)\""
