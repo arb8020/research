@@ -56,6 +56,9 @@ def setup_script_deps(
     assert dependencies is not None, "DependencyConfig required"
 
     logger.info(f"📝 Setting up Python environment for {dependencies.project_name}...")
+    logger.info(f"📍 Remote workspace: {workspace}")
+    logger.info(f"   - pyproject.toml will be generated at: {workspace}/pyproject.toml")
+    logger.info(f"   - venv will be created at: {workspace}/.venv/")
 
     # Step 0: Ensure uv is installed
     _ensure_uv(client)
