@@ -48,6 +48,7 @@ class FSDPConfig:
         cpu_offload: Offload to CPU (saves GPU memory, slower)
         auto_wrap_min_params: Minimum parameters for auto-wrapping submodules
         gradient_checkpointing: Enable activation checkpointing (saves memory)
+        clip_grad: Gradient norm clipping (SLIME default: 1.0)
     """
 
     sharding_strategy: str = "FULL_SHARD"
@@ -55,6 +56,7 @@ class FSDPConfig:
     cpu_offload: bool = False
     auto_wrap_min_params: int = 1_000_000
     gradient_checkpointing: bool = False
+    clip_grad: float = 1.0
 
 
 @dataclass
@@ -278,11 +280,11 @@ class FSDPTrainingBackend:
         """
         from rollouts.training.types import ImmediateTrainFuture
 
-        # Clip gradients (standard practice: 1.0 for transformers)
+        # Clip gradients (from config, SLIME default: 1.0)
         # This prevents exploding gradients during training
         grad_norm_clipped = torch.nn.utils.clip_grad_norm_(
             self._fsdp_model.parameters(),
-            max_norm=1.0
+            max_norm=self.config.clip_grad
         )
 
         # Apply gradients

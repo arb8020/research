@@ -204,14 +204,14 @@ def create_optimizer(model, config: Config, mode: Literal["sft", "rl"]):
     # Tiger Style: Use explicit LR (nanochat's matrix_lr as default)
     lr = train_config.matrix_lr
 
-    logger.info(f"Creating AdamW optimizer with LR={lr}")
+    # Tiger Style: All optimizer parameters explicit from config
+    logger.info(f"Creating AdamW optimizer with LR={lr}, betas=({train_config.adam_beta1}, {train_config.adam_beta2})")
 
-    # SLIME/LLM standard: beta2=0.95 (not PyTorch's default 0.999)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=lr,
-        betas=(0.9, 0.95),
-        eps=1e-8,
+        betas=(train_config.adam_beta1, train_config.adam_beta2),
+        eps=train_config.adam_eps,
         weight_decay=train_config.weight_decay,
     )
 
@@ -336,13 +336,14 @@ async def create_fsdp_backend(config: Config, output_dir: Path):
     # Create loss function
     loss_fn = create_loss_fn()
 
-    # Create FSDP config
+    # Create FSDP config (Tiger Style: explicit parameters from user config)
     fsdp_config = FSDPConfig(
         sharding_strategy="FULL_SHARD",
         mixed_precision=True,
         cpu_offload=False,
         auto_wrap_min_params=1_000_000,
         gradient_checkpointing=False,
+        clip_grad=config.sft.clip_grad,
     )
 
     # Create FSDP backend
@@ -356,9 +357,9 @@ async def create_fsdp_backend(config: Config, output_dir: Path):
 
     # Create learning rate scheduler with warmup (SLIME pattern)
     # Warmup prevents initial instability from large learning rate
-    # Tiger Style: All parameters explicit
+    # Tiger Style: All parameters from config
     total_steps = config.sft.num_iterations
-    warmup_ratio = 0.03  # SLIME default: 3% warmup
+    warmup_ratio = config.sft.warmup_ratio
     warmup_steps = max(1, int(total_steps * warmup_ratio))
     decay_steps = total_steps - warmup_steps
 
@@ -374,14 +375,35 @@ async def create_fsdp_backend(config: Config, output_dir: Path):
         verbose=False,
     )
 
-    # Decay: cosine from 100% to 10% of base LR
-    decay = CosineAnnealingLR(
-        optimizer=optimizer,
-        T_max=decay_steps,
-        eta_min=config.sft.matrix_lr * 0.1,
-        last_epoch=-1,
-        verbose=False,
-    )
+    # Decay: uses lr_decay_style from config
+    if config.sft.lr_decay_style == "cosine":
+        decay = CosineAnnealingLR(
+            optimizer=optimizer,
+            T_max=decay_steps,
+            eta_min=config.sft.matrix_lr * 0.1,
+            last_epoch=-1,
+            verbose=False,
+        )
+    elif config.sft.lr_decay_style == "linear":
+        decay = LinearLR(
+            optimizer=optimizer,
+            start_factor=1.0,
+            end_factor=0.1,
+            total_iters=decay_steps,
+            last_epoch=-1,
+            verbose=False,
+        )
+    elif config.sft.lr_decay_style == "constant":
+        # No decay - just use a dummy scheduler
+        from torch.optim.lr_scheduler import LambdaLR
+        decay = LambdaLR(
+            optimizer=optimizer,
+            lr_lambda=lambda step: 1.0,
+            last_epoch=-1,
+            verbose=False,
+        )
+    else:
+        raise ValueError(f"Unknown lr_decay_style: {config.sft.lr_decay_style}")
 
     # Combine: warmup then decay
     backend.scheduler = SequentialLR(
@@ -392,7 +414,7 @@ async def create_fsdp_backend(config: Config, output_dir: Path):
         verbose=False,
     )
 
-    logger.info(f"[Rank {rank}/{world_size}] LR scheduler: {warmup_steps} warmup steps + cosine decay")
+    logger.info(f"[Rank {rank}/{world_size}] LR scheduler: {warmup_steps} warmup steps + {config.sft.lr_decay_style} decay")
     logger.info(f"[Rank {rank}/{world_size}] FSDP backend created")
 
     return backend
