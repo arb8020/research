@@ -225,18 +225,26 @@ def create_loss_fn():
     """
     import torch.nn.functional as F
 
-    def cross_entropy_loss(logits, labels, loss_mask=None, advantages=None):
+    def cross_entropy_loss(logits, batch):
         """Compute cross-entropy loss with optional masking.
+
+        Following SLIME's pattern: pass entire batch dict, extract fields inside.
 
         Args:
             logits: Model logits [batch, seq_len, vocab_size]
-            labels: Target labels [batch, seq_len]
-            loss_mask: Loss mask [batch, seq_len] (optional)
-            advantages: Advantages for RL (unused for SFT, accepted for compatibility)
+            batch: Training batch dict containing:
+                - labels: Target labels [batch, seq_len]
+                - loss_mask: Loss mask [batch, seq_len] (optional)
+                - advantages: For RL training (optional, unused for SFT)
 
         Returns:
             Scalar loss
         """
+        # Extract fields from batch (SLIME pattern)
+        labels = batch["labels"]
+        loss_mask = batch.get("loss_mask")
+        # advantages = batch.get("advantages")  # Available but unused for SFT
+
         # Reshape for cross_entropy
         batch_size, seq_len, vocab_size = logits.shape
         logits_flat = logits.view(-1, vocab_size)

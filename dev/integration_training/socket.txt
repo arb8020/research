@@ -1,0 +1,60 @@
+[14:34:01] WARNING: _upload_bundle_with_retry() attempt 2/3 failed: Socket is closed. Retry
+ing in 2s...
+[14:34:03] ERROR: ✗ Deployment failed: Socket is closed
+Traceback (most recent call last):
+  File "/Users/chiraagbalu/research/dev/integration_training/deploy.py", line 546, in main
+    workspace_path = deploy_code(bifrost_client)
+  File "/Users/chiraagbalu/research/dev/integration_training/deploy.py", line 180, in deplo
+y_code
+    workspace_path = bifrost_client.push(workspace_path="~/.bifrost/workspaces/integration_
+training")
+  File "/Users/chiraagbalu/research/bifrost/bifrost/client.py", line 286, in push
+    workspace_path = git_sync.deploy_code(ssh_client, self._remote_config, workspace_path)
+  File "/Users/chiraagbalu/research/bifrost/bifrost/git_sync.py", line 146, in deploy_code
+    _update_workspace(ssh_client, workspace_path)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/chiraagbalu/research/bifrost/bifrost/git_sync.py", line 341, in _update_work
+space
+    _upload_bundle_with_retry(sftp, bundle_path, remote_bundle)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/chiraagbalu/research/shared/shared/retry.py", line 53, in wrapper
+    return func(*args, **kwargs)
+  File "/Users/chiraagbalu/research/bifrost/bifrost/git_sync.py", line 41, in _upload_bundl
+e_with_retry
+    sftp.put(local_bundle_path, remote_bundle_path)
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/chiraagbalu/research/.venv/lib/python3.13/site-packages/paramiko/sftp_client
+.py", line 759, in put
+    return self.putfo(fl, remotepath, file_size, callback, confirm)
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/chiraagbalu/research/.venv/lib/python3.13/site-packages/paramiko/sftp_client
+.py", line 714, in putfo
+    with self.file(remotepath, "wb") as fr:
+         ~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/Users/chiraagbalu/research/.venv/lib/python3.13/site-packages/paramiko/sftp_client
+.py", line 372, in open
+    t, msg = self._request(CMD_OPEN, filename, imode, attrblock)
+             ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/chiraagbalu/research/.venv/lib/python3.13/site-packages/paramiko/sftp_client
+.py", line 856, in _request
+    num = self._async_request(type(None), t, *args)
+  File "/Users/chiraagbalu/research/.venv/lib/python3.13/site-packages/paramiko/sftp_client
+.py", line 881, in _async_request
+    self._send_packet(t, msg)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^
+  File "/Users/chiraagbalu/research/.venv/lib/python3.13/site-packages/paramiko/sftp.py", l
+ine 209, in _send_packet
+    self._write_all(out)
+    ~~~~~~~~~~~~~~~^^^^^
+  File "/Users/chiraagbalu/research/.venv/lib/python3.13/site-packages/paramiko/sftp.py", l
+ine 173, in _write_all
+    n = self.sock.send(out)
+  File "/Users/chiraagbalu/research/.venv/lib/python3.13/site-packages/paramiko/channel.py"
+, line 799, in send
+    return self._send(s, m)
+           ~~~~~~~~~~^^^^^^
+  File "/Users/chiraagbalu/research/.venv/lib/python3.13/site-packages/paramiko/channel.py"
+, line 1196, in _send
+    raise socket.error("Socket is closed")
+OSError: Socket is closed
+

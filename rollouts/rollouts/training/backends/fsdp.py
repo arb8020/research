@@ -223,13 +223,8 @@ class FSDPTrainingBackend:
         else:
             logits = outputs
 
-        # Compute loss
-        loss = self.loss_fn(
-            logits=logits,
-            labels=batch["labels"],
-            loss_mask=batch.get("loss_mask"),
-            advantages=batch.get("advantages"),
-        )
+        # Compute loss (SLIME pattern: pass logits and batch dict)
+        loss = self.loss_fn(logits=logits, batch=batch)
 
         # Backward pass (FSDP syncs gradients)
         loss.backward()
