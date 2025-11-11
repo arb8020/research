@@ -168,22 +168,20 @@ class FSDPTrainingBackend:
                 buffer_dtype=torch.bfloat16,
             )
 
-        # Configure auto-wrap policy (wrap large submodules)
-        # Note: size_based_auto_wrap_policy returns a callable that FSDP will invoke
-        from functools import partial
-        auto_wrap_policy = partial(
-            size_based_auto_wrap_policy,
-            min_num_params=self.config.auto_wrap_min_params
-        )
+        # Don't use auto-wrap policy - it causes issues with tied weights
+        # SLIME uses FSDP2 with manual per-layer wrapping to avoid this
+        # For FSDP1, safest approach is no auto-wrap for models with tied embeddings
 
         # Wrap model
         fsdp_model = FSDP(
             self.model,
             sharding_strategy=sharding_strategy,
-            auto_wrap_policy=auto_wrap_policy,
+            auto_wrap_policy=None,  # No auto-wrap - avoid tied weight issues
             mixed_precision=mixed_precision,
             device_id=self.device,
             use_orig_params=True,  # Preserve parameter names
+            sync_module_states=True,  # Sync tied weights across ranks
+            ignored_modules=None,
         )
 
         return fsdp_model
