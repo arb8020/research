@@ -21,7 +21,7 @@ deploy = [
 
 # Training (distributed training with FSDP/DDP)
 training = [
-    "miniray @ file:///${PROJECT_ROOT}/../miniray",
+    "miniray",
     "torch>=2.0.0",
 ]
 
