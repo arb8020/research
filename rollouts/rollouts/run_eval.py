@@ -30,14 +30,19 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
-def load_config_from_file(config_path: Path):
+def load_config_from_file(config_path: Path, workspace_root: Optional[Path] = None):
     """Load and resolve config from Python file.
 
     This is a reusable function for loading configs, suitable for
     importing from wrapper scripts like clicker's run_eval.py.
 
+    Tiger Style: Explicit workspace_root parameter, no path inference magic.
+
     Args:
         config_path: Path to config .py file
+        workspace_root: Optional workspace root for resolving relative paths.
+                       If provided, relative paths in config are resolved relative to this.
+                       If None, uses config file location to infer project root (legacy).
 
     Returns:
         Loaded config object with resolved paths
@@ -55,9 +60,16 @@ def load_config_from_file(config_path: Path):
     assert hasattr(module, "config"), "Config file must export 'config' variable"
     config = module.config
 
-    # Resolve relative paths relative to config file location
-    config_path_abs = Path(config_path).absolute()
-    project_root = config_path_abs.parent.parent  # Go up from configs/ to project root
+    # Determine project root for path resolution
+    if workspace_root:
+        # Explicit workspace root provided (e.g., from bifrost deployment)
+        project_root = workspace_root
+        print(f"📁 Using explicit workspace root: {workspace_root}")
+    else:
+        # Legacy: Infer from config file location
+        config_path_abs = Path(config_path).absolute()
+        project_root = config_path_abs.parent.parent  # Go up from configs/ to project root
+        print(f"📁 Inferred project root: {project_root}")
 
     # Resolve dataset path
     if hasattr(config, "dataset") and hasattr(config.dataset, "dataset_path"):
@@ -313,11 +325,17 @@ def main():
     parser = argparse.ArgumentParser(description="Run generic evaluation")
     parser.add_argument("--config", type=Path, required=True, help="Config file path")
     parser.add_argument("--output", type=Path, help="Output JSON file (optional, overrides default timestamped path)")
+    parser.add_argument(
+        "--workspace-root",
+        type=Path,
+        help="Workspace root for resolving relative paths (e.g., from bifrost deployment)"
+    )
 
     args = parser.parse_args()
 
     # Load config from file using reusable function
-    config = load_config_from_file(args.config)
+    # Pass workspace_root if provided for explicit path resolution
+    config = load_config_from_file(args.config, workspace_root=args.workspace_root)
 
     # Check if we need rollouts-style evaluation
     if config.environment is None or config.to_trajectory is None:
