@@ -4,24 +4,34 @@ GPU provisioning and remote execution utilities for ML research.
 
 ## Components
 
+### Infrastructure
 - **broker**: GPU cloud provisioning across multiple providers (RunPod, etc.)
-- **bifrost**: Remote code deployment and execution
+- **bifrost**: Remote code deployment and execution via SSH
+- **kerbal**: Script execution orchestration (dependency setup, tmux, GPU management)
 - **shared**: Common utilities and SSH foundation
 
-## Development
+### Compute
+- **miniray**: Lightweight distributed computing (~600 lines, Heinrich's pattern + TCP)
+- **rollouts**: LLM evaluation and agentic RL framework (Tiger Style)
 
-Active research experiments live in `dev/`. Once published, projects are promoted to top-level packages.
-
-## Workflow
-
-This repository uses [git-branchless](https://github.com/arxanas/git-branchless) for workflow management.
+### Documentation
+- **docs/**: Repository-wide documentation (code style, research advice, project notes)
+- **dev/**: Active research experiments (promoted to top-level when published)
 
 ## Quick Start
 
 ```bash
-# Install dependencies
+# Install all dependencies
 uv sync
 
-# Install dependencies for specific experiment
+# Install with specific experiment dependencies
 uv sync --extra dev-outlier-features
+
+# Install individual packages
+uv pip install -e miniray/
+uv pip install -e rollouts/
 ```
+
+## Workflow
+
+This repository uses [git-branchless](https://github.com/arxanas/git-branchless) for workflow management.
