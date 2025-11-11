@@ -175,8 +175,9 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
     """
     logger.info("📦 Deploying code and bootstrapping environment...")
 
-    # Deploy code (no bootstrap command - kerbal handles it)
-    workspace_path = bifrost_client.push()
+    # Deploy code with explicit workspace path for isolation
+    # This deploys the entire monorepo to prevent path issues with local packages
+    workspace_path = bifrost_client.push(workspace_path="~/.bifrost/workspaces/integration_training")
 
     logger.info(f"✅ Code deployed to {workspace_path}")
 
