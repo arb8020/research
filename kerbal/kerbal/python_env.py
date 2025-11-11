@@ -293,12 +293,11 @@ def _verify_python_env(
     version = result.stdout.strip() if result.stdout else "unknown"
     logger.info(f"✅ Python venv verified: {version}")
 
-    # DEBUG: Log what version of kerbal is installed in REMOTE venv
-    kerbal_check = client.exec(f"{venv_python} -c 'import kerbal; print(kerbal.__file__)'")
-    if kerbal_check.exit_code == 0:
-        logger.info(f"🔍 DEBUG: kerbal in remote venv: {kerbal_check.stdout.strip()}")
-    else:
-        logger.info(f"🔍 DEBUG: kerbal not in remote venv (expected if not in dependencies)")
+    # Log git commit info for all git dependencies
+    if dependencies and dependencies.dependencies:
+        logger.info("")
+        logger.info("🔍 Git dependency commit info:")
+        _log_git_dependency_commits(client, workspace, dependencies)
 
     # EXPERIMENTAL: Verify declared packages are importable
     # TODO: Consider removing this if it causes false positives
@@ -382,6 +381,96 @@ def _extract_package_name(dep_string: str) -> str:
 
     # Plain package name
     return dep_string.strip()
+
+
+def _is_git_dependency(dep_string: str) -> bool:
+    """Check if dependency string is a git dependency.
+
+    Examples:
+        "rollouts @ git+https://..." -> True
+        "torch>=2.0.0" -> False
+    """
+    return " @ git+" in dep_string
+
+
+def _get_git_commit_hash(client: "BifrostClient", workspace: str, package_name: str) -> str | None:
+    """Get the git commit hash for an installed package.
+
+    Args:
+        client: BifrostClient instance
+        workspace: Remote workspace path
+        package_name: Package name (e.g., "rollouts")
+
+    Returns:
+        Commit hash as string, or None if not found
+    """
+    venv_python = f"{workspace}/.venv/bin/python"
+
+    # Try to get package location
+    import_name = package_name.replace("-", "_")
+    location_cmd = f"{venv_python} -c \"import {import_name}, os; print(os.path.dirname({import_name}.__file__))\""
+    location_result = client.exec(location_cmd)
+
+    if location_result.exit_code != 0:
+        return None
+
+    package_path = location_result.stdout.strip()
+
+    # Try to extract commit hash from direct_url.json
+    # This is where uv stores git metadata
+    git_info_cmd = f"cat {package_path}/../{package_name}-*.dist-info/direct_url.json 2>/dev/null"
+    git_result = client.exec(git_info_cmd)
+
+    if git_result.exit_code == 0 and git_result.stdout:
+        import json
+        try:
+            # Parse the direct_url.json to extract commit hash
+            # Format: {"url": "git+https://...", "vcs_info": {"commit_id": "abc123", "vcs": "git"}}
+            data = json.loads(git_result.stdout)
+            if "vcs_info" in data and "commit_id" in data["vcs_info"]:
+                return data["vcs_info"]["commit_id"]
+        except:
+            pass
+
+    return None
+
+
+def _log_git_dependency_commits(
+    client: "BifrostClient",
+    workspace: str,
+    dependencies: "DependencyConfig",
+) -> None:
+    """Log git commit hashes for all git dependencies.
+
+    This helps debug issues where code changes aren't being picked up
+    because uv is using a cached/old commit.
+
+    Tiger Style: < 70 lines, explicit logging.
+    """
+    git_deps = [dep for dep in dependencies.dependencies if _is_git_dependency(dep)]
+
+    if not git_deps:
+        logger.info("   No git dependencies found")
+        return
+
+    for dep in git_deps:
+        package_name = _extract_package_name(dep)
+        commit_hash = _get_git_commit_hash(client, workspace, package_name)
+
+        if commit_hash:
+            # Show first 7 chars of commit hash (git short hash)
+            short_hash = commit_hash[:7]
+            logger.info(f"   • {package_name}: {short_hash} ({commit_hash})")
+        else:
+            logger.warning(f"   • {package_name}: ⚠️  Could not determine commit hash")
+            logger.warning(f"     This may indicate the package wasn't installed correctly")
+
+    logger.info("")
+    logger.info("💡 TIP: If you made code changes but they're not showing up:")
+    logger.info("   1. Make sure you committed AND pushed your changes")
+    logger.info("   2. Check the commit hashes above match your latest commits")
+    logger.info("   3. If hashes are stale, kerbal uses --upgrade which should fetch latest")
+    logger.info("")
 
 
 def _ensure_uv(client: "BifrostClient") -> None:
