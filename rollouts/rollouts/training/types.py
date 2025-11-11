@@ -396,3 +396,39 @@ class TrainFuture[T]:
             True if set_result() has been called, False otherwise
         """
         return self._event.is_set()
+
+
+@dataclass
+class ImmediateTrainFuture[T]:
+    """Immediate future that's already completed (synchronous operations).
+
+    For operations that complete immediately (like FSDP forward/backward),
+    wrapping the result in a future enables a uniform async API.
+
+    Type parameter T is the result type (e.g., Dict[str, float]).
+
+    Example:
+        >>> metrics = {"loss": 0.5}
+        >>> future: ImmediateTrainFuture[Dict[str, float]] = ImmediateTrainFuture(metrics)
+        >>> result = await future.result()
+        >>> assert result["loss"] == 0.5
+    """
+
+    _result: T
+    operation: str = ""  # "forward_backward", "optim_step", etc.
+
+    async def result(self) -> T:
+        """Return the result immediately (no blocking).
+
+        Returns:
+            The result value provided at construction
+        """
+        return self._result
+
+    def done(self) -> bool:
+        """Check if future is complete (always True for immediate futures).
+
+        Returns:
+            True (immediate futures are always done)
+        """
+        return True
