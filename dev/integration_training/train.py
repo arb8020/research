@@ -206,9 +206,12 @@ def create_optimizer(model, config: Config, mode: Literal["sft", "rl"]):
 
     logger.info(f"Creating AdamW optimizer with LR={lr}")
 
+    # SLIME/LLM standard: beta2=0.95 (not PyTorch's default 0.999)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=lr,
+        betas=(0.9, 0.95),
+        eps=1e-8,
         weight_decay=train_config.weight_decay,
     )
 
@@ -351,6 +354,33 @@ async def create_fsdp_backend(config: Config, output_dir: Path):
         config=fsdp_config,
     )
 
+    # Create learning rate scheduler with warmup (SLIME pattern)
+    # Warmup prevents initial instability from large learning rate
+    total_steps = config.sft.num_iterations
+    warmup_steps = max(1, int(total_steps * 0.03))  # 3% warmup (SLIME default)
+
+    from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
+
+    warmup = LinearLR(
+        optimizer,
+        start_factor=0.1,  # Start at 10% of base LR
+        end_factor=1.0,
+        total_iters=warmup_steps
+    )
+
+    decay = CosineAnnealingLR(
+        optimizer,
+        T_max=total_steps - warmup_steps,
+        eta_min=config.sft.matrix_lr * 0.1  # End at 10% of base LR
+    )
+
+    backend.scheduler = SequentialLR(
+        optimizer,
+        schedulers=[warmup, decay],
+        milestones=[warmup_steps]
+    )
+
+    logger.info(f"[Rank {rank}/{world_size}] LR scheduler: {warmup_steps} warmup steps + cosine decay")
     logger.info(f"[Rank {rank}/{world_size}] FSDP backend created")
 
     return backend
