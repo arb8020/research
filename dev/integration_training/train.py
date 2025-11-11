@@ -41,6 +41,9 @@ from rollouts.training import (
     run_sft_training,
 )
 
+# Import shared logging
+from shared.logging_config import setup_logging
+
 logger = logging.getLogger(__name__)
 
 
@@ -72,15 +75,23 @@ def load_config_from_file(config_path: str) -> Config:
     return config
 
 
-def setup_logging(config: Config):
-    """Setup logging configuration.
+def setup_logging_from_config(config: Config):
+    """Setup logging configuration from Config object.
 
     Args:
         config: Configuration object
+
+    Uses shared logging infrastructure with:
+    - Rich console output (colored, formatted)
+    - Async-safe QueueHandler
+    - File rotation support
     """
-    logging.basicConfig(
-        level=getattr(logging, config.output.log_level.upper()),
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    # Use shared logging setup
+    setup_logging(
+        level=config.output.log_level.upper(),
+        use_rich=True,  # Nice colored output
+        rich_tracebacks=True,  # Better error messages
+        use_queue_handler=True,  # Async-safe
     )
 
 
@@ -250,6 +261,92 @@ def create_loss_fn():
     return cross_entropy_loss
 
 
+async def create_fsdp_backend(config: Config, output_dir: Path):
+    """Create FSDP backend for multi-GPU training.
+
+    Args:
+        config: Configuration object
+        output_dir: Output directory
+
+    Returns:
+        FSDPTrainingBackend instance
+
+    Tiger Style: Explicit initialization, clear error messages.
+
+    Note: This function assumes torch.distributed is already initialized by torchrun.
+    For FSDP training, launch with:
+        torchrun --nproc_per_node=4 train.py configs/02_debug_sft_fsdp.py
+    """
+    import torch
+    import torch.distributed as dist
+    from rollouts.training.backends.fsdp import FSDPConfig, FSDPTrainingBackend
+
+    # Tiger Style: Assert torch.distributed is initialized
+    if not dist.is_available():
+        raise RuntimeError(
+            "torch.distributed is not available. "
+            "Please install PyTorch with distributed support."
+        )
+
+    if not dist.is_initialized():
+        # Initialize torch.distributed for FSDP
+        # Set environment variables for distributed training
+        rank = int(os.environ.get("RANK", "0"))
+        world_size = int(os.environ.get("WORLD_SIZE", "1"))
+        local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+
+        logger.info(f"Initializing torch.distributed: rank={rank}/{world_size}, local_rank={local_rank}")
+
+        # Initialize process group
+        dist.init_process_group(backend="nccl")
+
+        # Set CUDA device for this rank
+        torch.cuda.set_device(local_rank)
+
+    # Get distributed info
+    rank = dist.get_rank()
+    world_size = dist.get_world_size()
+    local_rank = int(os.environ.get("LOCAL_RANK", str(rank)))
+
+    logger.info(f"[Rank {rank}/{world_size}] Creating FSDP backend on GPU {local_rank}")
+
+    # Load model (will be wrapped by FSDP)
+    model = load_model(
+        config.model.name,
+        config.target.device_type,
+        config.model.dtype,
+        [local_rank],  # Each rank uses its local GPU
+    )
+
+    # Create optimizer (after model is on device, before FSDP wrapping)
+    optimizer = create_optimizer(model, config, mode="sft")
+
+    # Create loss function
+    loss_fn = create_loss_fn()
+
+    # Create FSDP config
+    fsdp_config = FSDPConfig(
+        sharding_strategy="FULL_SHARD",
+        mixed_precision=True,
+        cpu_offload=False,
+        auto_wrap_min_params=1_000_000,
+        gradient_checkpointing=False,
+    )
+
+    # Create FSDP backend
+    backend = FSDPTrainingBackend(
+        model=model,
+        optimizer=optimizer,
+        loss_fn=loss_fn,
+        checkpoint_dir=output_dir / "checkpoints",
+        config=fsdp_config,
+    )
+
+    logger.info(f"[Rank {rank}/{world_size}] FSDP backend created")
+
+    return backend
+
+
 async def run_sft(config: Config, output_dir: Path):
     """Run SFT training.
 
@@ -263,31 +360,40 @@ async def run_sft(config: Config, output_dir: Path):
     logger.info("Starting SFT Training")
     logger.info("=" * 60)
 
-    # Load model and tokenizer
+    # Load tokenizer
     tokenizer = load_tokenizer(config.model.name)
-    model = load_model(
-        config.model.name,
-        config.target.device_type,
-        config.model.dtype,
-        config.target.gpu_ranks,
-    )
-    optimizer = create_optimizer(model, config, mode="sft")
-    loss_fn = create_loss_fn()
 
-    # Create backend
-    # Tiger Style: Explicit device handling
-    import torch
-    device = torch.device(f"{config.target.device_type}:{config.target.gpu_ranks[0]}"
-                         if config.target.device_type == "cuda"
-                         else config.target.device_type)
+    # Check if we should use FSDP (multi-GPU training)
+    use_fsdp = (config.target.train_backend == "fsdp" and
+                len(config.target.gpu_ranks) > 1)
 
-    backend = PyTorchTrainingBackend(
-        model=model,
-        optimizer=optimizer,
-        loss_fn=loss_fn,
-        checkpoint_dir=output_dir / "checkpoints",
-        device=device,
-    )
+    if use_fsdp:
+        # FSDP multi-GPU training
+        backend = await create_fsdp_backend(config, output_dir)
+    else:
+        # Single-GPU PyTorch backend
+        model = load_model(
+            config.model.name,
+            config.target.device_type,
+            config.model.dtype,
+            config.target.gpu_ranks,
+        )
+        optimizer = create_optimizer(model, config, mode="sft")
+        loss_fn = create_loss_fn()
+
+        # Create backend
+        import torch
+        device = torch.device(f"{config.target.device_type}:{config.target.gpu_ranks[0]}"
+                             if config.target.device_type == "cuda"
+                             else config.target.device_type)
+
+        backend = PyTorchTrainingBackend(
+            model=model,
+            optimizer=optimizer,
+            loss_fn=loss_fn,
+            checkpoint_dir=output_dir / "checkpoints",
+            device=device,
+        )
 
     # Load SFT data mixture (TaskMixture-style)
     logger.info("Loading SFT data mixture:")
@@ -403,18 +509,20 @@ def main():
     """Main orchestrator.
 
     Usage:
-        python deploy.py configs/01_debug_sft.py
-        python deploy.py configs/03_debug_rl_04.py
+        python train.py configs/01_debug_sft.py
+        python train.py configs/02_debug_sft_fsdp.py
 
     Mode (sft|rl) is auto-detected from config.output.mode.
+    FSDP is auto-detected and re-launches with torchrun if needed.
 
     Tiger Style: Clear control flow, explicit steps.
     """
     import argparse
+    import subprocess
 
     parser = argparse.ArgumentParser(
         description="Post-training with rollouts/",
-        epilog="Example: python deploy.py configs/01_debug_sft.py"
+        epilog="Example: python train.py configs/01_debug_sft.py"
     )
     parser.add_argument("config", help="Path to config file")
     args = parser.parse_args()
@@ -425,7 +533,41 @@ def main():
 
     # Load config
     config = load_config_from_file(str(config_path))
-    setup_logging(config)
+
+    # Check if FSDP multi-GPU and not already launched by torchrun
+    use_fsdp = (config.target.train_backend == "fsdp" and
+                len(config.target.gpu_ranks) > 1)
+    already_distributed = os.environ.get("RANK") is not None
+
+    if use_fsdp and not already_distributed:
+        # Auto-relaunch with torchrun
+        # Note: GPU preflight check is done by deploy.py before calling train.py
+        logger.info("=" * 60)
+        logger.info("FSDP backend detected - relaunching with torchrun")
+        logger.info(f"GPUs: {config.target.gpu_ranks}")
+        logger.info("=" * 60)
+
+        nproc = len(config.target.gpu_ranks)
+        gpu_list = ",".join(str(r) for r in config.target.gpu_ranks)
+
+        cmd = [
+            "torchrun",
+            f"--nproc_per_node={nproc}",
+            "--nnodes=1",
+            "--node_rank=0",
+            f"--master_addr={config.target.master_addr}",
+            f"--master_port={config.target.master_port}",
+            sys.argv[0],  # train.py
+            str(config_path),
+        ]
+
+        env = os.environ.copy()
+        env["CUDA_VISIBLE_DEVICES"] = gpu_list
+
+        result = subprocess.run(cmd, env=env)
+        sys.exit(result.returncode)
+
+    setup_logging_from_config(config)
 
     # Extract mode from config
     mode = config.output.mode

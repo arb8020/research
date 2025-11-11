@@ -251,7 +251,18 @@ def start_training(
         logger.warning("⚠️  HF_TOKEN not set - training may hit rate limits")
 
     # Build training command
-    train_cmd = f"python train.py configs/{config_name}"
+    # Use torchrun for FSDP (multi-GPU training)
+    if config.target.train_backend == "fsdp" and len(config.target.gpu_ranks) > 1:
+        # Set CUDA_VISIBLE_DEVICES to limit to requested GPUs
+        gpu_list = ",".join(str(r) for r in config.target.gpu_ranks)
+        cmd_parts.append(f"export CUDA_VISIBLE_DEVICES={gpu_list}")
+        # Launch with torchrun for distributed training
+        nproc = len(config.target.gpu_ranks)
+        train_cmd = f"torchrun --nproc_per_node={nproc} train.py configs/{config_name}"
+        logger.info(f"🚀 Using torchrun with {nproc} processes for FSDP training")
+    else:
+        train_cmd = f"python train.py configs/{config_name}"
+
     cmd_parts.append(train_cmd)
 
     full_cmd = " && ".join(cmd_parts)
