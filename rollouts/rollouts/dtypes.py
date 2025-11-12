@@ -396,11 +396,14 @@ class Endpoint(JsonSerializable):
     api_key: str = ""
     max_tokens: int = 8192
     temperature: float = 1.0
-    tool_choice: Optional[Union[str, Dict[str, Any]]] = None  
-    parallel_tool_calls: Optional[bool] = None  
+    tool_choice: Optional[Union[str, Dict[str, Any]]] = None
+    parallel_tool_calls: Optional[bool] = None
     reasoning_effort: Optional[str] = None  # for openai
     max_completion_tokens: Optional[int] = None  # for openai
-    thinking: Optional[Dict[str, Any]] = None # for anthropic 
+    thinking: Optional[Dict[str, Any]] = None # for anthropic
+    # Retry configuration
+    max_retries: int = 3  # Number of retries for rate limits/transient errors
+    timeout: float = 120.0  # Timeout in seconds for API calls
     # Extra params merged into the raw chat request for custom servers
     extra_params: Optional[Dict[str, Any]] = None
 
