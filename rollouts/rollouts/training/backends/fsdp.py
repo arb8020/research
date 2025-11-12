@@ -135,19 +135,37 @@ class FSDPTrainingBackend:
             - Creates optimizer on wrapped model
             - Restores optimizer state (if checkpoint provided)
         """
-        # Tiger Style: Assert torch.distributed is initialized
+        # Tiger Style: Assert preconditions
         assert dist.is_initialized(), (
             "torch.distributed not initialized. "
             "Call dist.init_process_group() before creating FSDPTrainingBackend."
         )
+        assert callable(self.optimizer_fn), (
+            f"optimizer_fn must be callable, got {type(self.optimizer_fn)}"
+        )
+        assert callable(self.loss_fn), (
+            f"loss_fn must be callable, got {type(self.loss_fn)}"
+        )
+        assert self.checkpoint_dir is not None, "checkpoint_dir cannot be None"
 
         # Auto-detect distributed config
         self.rank = get_rank()
         self.world_size = get_world_size()
 
+        # Tiger Style: Assert postconditions
+        assert self.world_size > 0, f"Invalid world_size: {self.world_size}"
+        assert 0 <= self.rank < self.world_size, (
+            f"Invalid rank {self.rank} for world_size {self.world_size}"
+        )
+
         # Set device (one GPU per process)
         if self.device is None:
             self.device = torch.device(f"cuda:{self.rank}")
+
+        # Tiger Style: Assert valid device
+        assert self.device.type == "cuda", (
+            f"FSDP requires CUDA device, got {self.device.type}"
+        )
 
         # Phase 1: Load checkpoint weights BEFORE FSDP wrapping (THUDM pattern)
         checkpoint_payload = None
@@ -167,9 +185,20 @@ class FSDPTrainingBackend:
         logger.info(f"[Rank {self.rank}] Wrapping model with FSDP")
         self._fsdp_model = self._wrap_model_with_fsdp()
 
+        # Tiger Style: Assert FSDP wrapping succeeded
+        assert self._fsdp_model is not None, "FSDP wrapping failed, _fsdp_model is None"
+        assert self._fsdp_model is self.model, (
+            "FSDP wrapping should modify model in-place, but returned different object"
+        )
+
         # Create optimizer AFTER FSDP wrapping (CRITICAL!)
         logger.info(f"[Rank {self.rank}] Creating optimizer on FSDP-wrapped model")
         self.optimizer = self.optimizer_fn(self._fsdp_model)
+
+        # Tiger Style: Assert optimizer creation succeeded
+        assert self.optimizer is not None, "optimizer_fn returned None"
+        assert hasattr(self.optimizer, 'step'), "optimizer missing step() method"
+        assert hasattr(self.optimizer, 'zero_grad'), "optimizer missing zero_grad() method"
 
         # Phase 2: Load optimizer state AFTER FSDP wrapping (THUDM pattern)
         if checkpoint_payload and checkpoint_payload.get("optimizer"):
@@ -186,6 +215,12 @@ class FSDPTrainingBackend:
         logger.info(f"[FSDP DEBUG] Rank {self.rank}: Entering initialization barrier...")
         barrier()
         logger.info(f"[FSDP DEBUG] Rank {self.rank}: Passed initialization barrier")
+
+        # Tiger Style: Assert final invariants (all ranks must have these)
+        assert self._fsdp_model is not None, "Invariant violated: _fsdp_model is None after init"
+        assert self.optimizer is not None, "Invariant violated: optimizer is None after init"
+        assert self.device is not None, "Invariant violated: device is None after init"
+        assert self.rank is not None, "Invariant violated: rank is None after init"
 
         logger.info(
             f"[Rank {self.rank}/{self.world_size}] FSDPTrainingBackend initialized "
@@ -312,6 +347,11 @@ class FSDPTrainingBackend:
         """
         from rollouts.training.types import ImmediateTrainFuture
 
+        # Tiger Style: Assert preconditions
+        assert self._fsdp_model is not None, "Cannot call forward_backward before initialization"
+        assert "input_ids" in batch, "batch must contain 'input_ids'"
+        assert isinstance(batch["input_ids"], torch.Tensor), "input_ids must be a tensor"
+
         # Move batch to device
         batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
 
@@ -331,11 +371,21 @@ class FSDPTrainingBackend:
         # Compute loss (SLIME pattern: pass logits and batch dict)
         loss = self.loss_fn(logits=logits, batch=batch)
 
+        # Tiger Style: Assert loss is valid
+        assert isinstance(loss, torch.Tensor), f"loss_fn must return torch.Tensor, got {type(loss)}"
+        assert loss.dim() == 0, f"loss must be scalar (0-dim), got shape {loss.shape}"
+        assert not torch.isnan(loss), "loss is NaN - training is unstable!"
+        assert not torch.isinf(loss), "loss is infinite - training is unstable!"
+
         # Backward pass (FSDP syncs gradients)
         loss.backward()
 
         # Compute gradient norm (distributed)
         grad_norm = self._compute_grad_norm()
+
+        # Tiger Style: Assert gradient norm is valid
+        assert grad_norm >= 0, f"gradient norm must be non-negative, got {grad_norm}"
+        assert not torch.isnan(torch.tensor(grad_norm)), "gradient norm is NaN!"
 
         # Return metrics
         metrics = {
@@ -382,12 +432,19 @@ class FSDPTrainingBackend:
         """
         from rollouts.training.types import ImmediateTrainFuture
 
+        # Tiger Style: Assert preconditions
+        assert self.optimizer is not None, "Cannot call optim_step before initialization"
+        assert self._fsdp_model is not None, "Cannot call optim_step before initialization"
+
         # Clip gradients (from config, SLIME default: 1.0)
         # This prevents exploding gradients during training
         grad_norm_clipped = torch.nn.utils.clip_grad_norm_(
             self._fsdp_model.parameters(),
             max_norm=self.config.clip_grad
         )
+
+        # Tiger Style: Assert gradient clipping worked
+        assert grad_norm_clipped >= 0, f"Clipped grad norm must be non-negative, got {grad_norm_clipped}"
 
         # Apply gradients
         self.optimizer.step()
@@ -398,10 +455,17 @@ class FSDPTrainingBackend:
             self.scheduler.step()
 
         # Increment step
+        old_step = self.step
         self.step += 1
+
+        # Tiger Style: Assert step incremented
+        assert self.step == old_step + 1, f"Step counter did not increment correctly: {old_step} -> {self.step}"
 
         # Get current learning rate
         lr = self.optimizer.param_groups[0]["lr"]
+
+        # Tiger Style: Assert LR is valid
+        assert lr >= 0, f"Learning rate must be non-negative, got {lr}"
 
         metrics = {
             "lr": lr,
