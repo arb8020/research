@@ -73,7 +73,16 @@ def prime_reward_fn(
         model_response = ""
         for msg in reversed(trajectory.messages):
             if msg.role == "assistant":
-                model_response = msg.content or ""
+                content = msg.content or ""
+                # Handle both string and list content (vision messages)
+                if isinstance(content, str):
+                    model_response = content
+                else:
+                    # For list content, join text parts
+                    model_response = " ".join(
+                        str(part.get("text", "")) if isinstance(part, dict) else str(part)
+                        for part in content
+                    )
                 break
 
         # Parse response using Prime's parser

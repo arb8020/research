@@ -135,7 +135,7 @@ async def evaluate_sample(
     sample_data: Dict[str, Any],
     sample_id: str,
     prepare_messages: Callable[[Dict[str, Any]], List[Message]],
-    environment: Environment,
+    environment: Environment | None,
     endpoint: Endpoint,
     config: EvalConfig,
 ) -> EvalSample:
@@ -148,7 +148,7 @@ async def evaluate_sample(
         sample_data: The raw sample data
         sample_id: Unique identifier for this sample
         prepare_messages: Function to create initial messages
-        environment: Fresh Environment instance for this sample
+        environment: Fresh Environment instance for this sample (None for tool-free eval)
         endpoint: LLM endpoint
         config: Evaluation configuration
 
@@ -167,7 +167,7 @@ async def evaluate_sample(
     actor = Actor(
         trajectory=initial_trajectory,
         endpoint=endpoint,
-        tools=environment.get_tools()
+        tools=environment.get_tools() if environment else []
     )
 
     initial_state = AgentState(

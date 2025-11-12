@@ -571,8 +571,10 @@ async def rollout_openai(
 
     # Tiger Style: Minimal validation to catch common bugs before API call
     import json
+    from typing import cast
 
-    for i, msg in enumerate(params["messages"]):
+    messages = cast(list, params["messages"])
+    for i, msg in enumerate(messages):
         content = msg.get("content")
         assert isinstance(content, (str, list, type(None))), \
             f"Message {i} content must be str/list/None, got {type(content)}"
@@ -616,10 +618,12 @@ async def rollout_openai(
             assert False, f"API returned 400 Bad Request: {e}\nThis indicates a bug in request construction. See logs above for full request."
 
         # For other errors (rate limits, network issues, etc), just log and raise
+        msg_list = params.get('messages', [])
+        msg_count = len(cast(list, msg_list)) if isinstance(msg_list, list) else 0
         logger.error(
             f"OpenAI API call failed: {e}\n"
             f"  Model: {actor.endpoint.model}\n"
-            f"  Messages: {len(params.get('messages', []))} messages",
+            f"  Messages: {msg_count} messages",
             extra={
                 "exception": str(e),
                 "request_params": sanitized,
@@ -676,6 +680,7 @@ def _message_to_anthropic(
             and hasattr(m, "thinking_content")
             and m.thinking_content
             and m.content
+            and isinstance(m.content, str)
         ):
             combined_text = _apply_inline_thinking_template(
                 m.thinking_content, m.content, inline_thinking
@@ -708,6 +713,7 @@ def _message_to_anthropic(
             and hasattr(m, "thinking_content")
             and m.thinking_content
             and m.content
+            and isinstance(m.content, str)
         ):
             combined_text = _apply_inline_thinking_template(
                 m.thinking_content, m.content, inline_thinking
@@ -890,7 +896,9 @@ async def rollout_anthropic(
     inline_thinking: Optional[str] = None,
 ) -> Actor:
     """Call Anthropic's API using streaming and update the actor."""
-    client_kwargs = {"api_key": actor.endpoint.api_key}
+    from typing import Any
+
+    client_kwargs: dict[str, Any] = {"api_key": actor.endpoint.api_key}
     if actor.endpoint.api_base:
         client_kwargs["base_url"] = actor.endpoint.api_base
     client = AsyncAnthropic(**client_kwargs)
