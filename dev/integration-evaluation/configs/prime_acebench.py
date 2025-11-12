@@ -59,7 +59,9 @@ class IntegrationEvalConfig:
     # Evaluation configuration
     eval_name: str = "prime_acebench_eval"
     max_turns: int = 40  # ACEBench is multi-turn (up to 40 turns)
-    max_concurrent: int = 4  # Parallel evaluation (lower to 1-2 if hitting rate limits)
+    # WARNING: Gemini has 10 requests/min quota - use max_concurrent=1 or 2
+    # Higher values will hit rate limits and fail
+    max_concurrent: int = 1  # Parallel evaluation (Gemini quota: 10/min)
 
     # Output configuration
     output_dir: Path = Path("results/integration-evaluation")
