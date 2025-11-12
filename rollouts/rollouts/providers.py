@@ -718,28 +718,24 @@ async def rollout_openai(
             # Tiger Style: Assertion to fail fast and surface the bug
             assert False, f"API returned 400 Bad Request: {e}\nThis indicates a bug in request construction. See logs above for full request."
 
-        # Tiger Style: Clean error message for rate limits
-        # Don't spam traceback - this is an expected operational error
+        # Tiger Style: Rate limits are operational errors, not bugs
+        # Log helpful context but let caller decide whether to retry or fail
         if isinstance(e, RateLimitError):
             error_msg = str(e)
             # Extract quota info if available
             if "quota" in error_msg.lower() or "rate limit" in error_msg.lower():
-                logger.error(
+                logger.warning(
                     f"Rate limit exceeded for {actor.endpoint.model}\n"
                     f"  This is an operational limit, not a bug.\n"
                     f"  Solutions:\n"
                     f"    1. Reduce max_concurrent in your config (try 1-2 for Gemini)\n"
                     f"    2. Add delays between requests\n"
-                    f"    3. Use a model with higher quota\n"
-                    f"  Error: {error_msg}"
+                    f"    3. Use a model with higher quota"
                 )
             else:
-                logger.error(f"Rate limit error: {error_msg}")
-            # Re-raise but with cleaner message
-            raise RuntimeError(
-                f"Rate limit exceeded for {actor.endpoint.model}. "
-                f"Reduce max_concurrent or add delays. See logs for details."
-            ) from e
+                logger.warning(f"Rate limit error: {error_msg}")
+            # Re-raise - let evaluation layer handle gracefully
+            raise
 
         # For other errors (network issues, etc), just log and raise
         msg_list = params.get('messages', [])
