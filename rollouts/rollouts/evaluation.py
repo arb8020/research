@@ -182,10 +182,28 @@ async def evaluate_sample(
     )
 
     # Run agent
+    # Tiger Style: Catch operational errors (rate limits, network issues) at boundary
+    # These are expected errors that should be reported, not crash the eval
     if config.verbose:
         logger.info(f"Evaluating {sample_id}")
-    states = await run_agent(initial_state, run_config)
-    final_trajectory = states[-1].actor.trajectory
+
+    error_message = None
+    try:
+        states = await run_agent(initial_state, run_config)
+        final_trajectory = states[-1].actor.trajectory
+    except Exception as e:
+        # Tiger Style: Operational errors go in report, not traceback
+        error_message = f"{type(e).__name__}: {str(e)}"
+        logger.warning(f"Sample {sample_id} failed: {error_message}")
+
+        # Create minimal trajectory with error
+        states = [initial_state]
+        final_trajectory = initial_state.actor.trajectory
+        # Add error to metadata for analysis
+        final_trajectory = replace(
+            final_trajectory,
+            metadata={**final_trajectory.metadata, "error": error_message}
+        )
 
     # Compute reward (Trajectory -> Trajectory with rewards populated)
     try:
@@ -213,8 +231,15 @@ async def evaluate_sample(
     metadata = {
         "turns_used": states[-1].turn_idx,
         "stop_reason": str(states[-1].stop) if states[-1].stop else None,
-        "total_tokens": sum(len(m.content or "") for m in scored_trajectory.messages)
+        "total_tokens": sum(len(m.content or "") for m in scored_trajectory.messages),
     }
+
+    # Include error if agent execution failed
+    if error_message:
+        metadata["error"] = error_message
+        metadata["status"] = "failed"
+    else:
+        metadata["status"] = "success"
 
     if config.verbose and metrics:
         # Print key metrics inline
@@ -379,6 +404,22 @@ def compute_summary_metrics(results: List[EvalSample]) -> Dict[str, float]:
     summary["total_samples"] = len(results)
     summary["avg_turns"] = sum(r.metadata.get("turns_used", 0) for r in results) / len(results)
     summary["avg_tokens"] = sum(r.metadata.get("total_tokens", 0) for r in results) / len(results)
+
+    # Add error statistics
+    failed_samples = [r for r in results if r.metadata.get("status") == "failed"]
+    summary["failed_samples"] = len(failed_samples)
+    summary["success_rate"] = (len(results) - len(failed_samples)) / len(results) if results else 0.0
+
+    # Breakdown errors by type
+    error_types = {}
+    for r in failed_samples:
+        error = r.metadata.get("error", "Unknown error")
+        # Extract error type (e.g., "RateLimitError" from "RateLimitError: ...")
+        error_type = error.split(":")[0] if ":" in error else error
+        error_types[error_type] = error_types.get(error_type, 0) + 1
+
+    if error_types:
+        summary["error_breakdown"] = error_types
 
     return summary
 
