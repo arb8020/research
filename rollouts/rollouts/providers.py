@@ -543,6 +543,8 @@ async def rollout_openai(
     client = AsyncOpenAI(
         api_key=actor.endpoint.api_key,
         base_url=actor.endpoint.api_base,
+        max_retries=actor.endpoint.max_retries,
+        timeout=actor.endpoint.timeout,
     )
 
     messages = [_message_to_openai(m) for m in actor.trajectory.messages]
@@ -898,7 +900,11 @@ async def rollout_anthropic(
     """Call Anthropic's API using streaming and update the actor."""
     from typing import Any
 
-    client_kwargs: dict[str, Any] = {"api_key": actor.endpoint.api_key}
+    client_kwargs: dict[str, Any] = {
+        "api_key": actor.endpoint.api_key,
+        "max_retries": actor.endpoint.max_retries,
+        "timeout": actor.endpoint.timeout,
+    }
     if actor.endpoint.api_base:
         client_kwargs["base_url"] = actor.endpoint.api_base
     client = AsyncAnthropic(**client_kwargs)
