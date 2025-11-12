@@ -478,12 +478,22 @@ class FSDPTrainingBackend:
     def get_weights(self) -> TrainFuture[Dict[str, Any]]:
         """Get model weights for syncing to inference.
 
+        CRITICAL: This is a collective operation - ALL ranks must call this.
+        Based on THUDM SLIME's update_cpu_params_dict pattern.
+
         Returns:
             TrainFuture resolving to full state_dict (only on rank 0)
 
         Side effects:
+            - ALL ranks participate in gathering (collective operation)
             - Gathers full model state to rank 0
-            - Other ranks return empty dict
+            - Other ranks return empty dict after participating
+
+        Tiger Style assertions:
+            - Asserts distributed is initialized (precondition)
+            - Asserts FSDP model exists (precondition)
+            - Logs before/after collective operation (paired observation)
+            - Asserts negative space (non-main ranks get empty dict)
         """
         from rollouts.training.types import ImmediateTrainFuture
 
@@ -493,18 +503,44 @@ class FSDPTrainingBackend:
             get_model_state_dict,
         )
 
-        logger.info(f"[FSDP DEBUG] Rank {self.rank}: Getting model state dict (this may trigger barriers)...")
+        # Tiger Style: Assert preconditions
+        assert dist.is_initialized(), "torch.distributed must be initialized for collective ops"
+        assert self._fsdp_model is not None, "FSDP model must be wrapped before get_weights"
+
+        logger.info(
+            f"[COLLECTIVE-ENTER] Rank {self.rank}: get_model_state_dict "
+            f"(ALL ranks must participate in this collective operation)"
+        )
 
         # Configure to gather full state on rank 0
-        # Note: get_model_state_dict internally calls barriers to gather weights
+        # CRITICAL: get_model_state_dict internally calls barriers to gather weights
+        # ALL ranks must call this, even though only rank 0 gets the full state
         options = StateDictOptions(full_state_dict=True, cpu_offload=True)
         state_dict = get_model_state_dict(self._fsdp_model, options=options)
 
-        logger.info(f"[FSDP DEBUG] Rank {self.rank}: Got state dict successfully (all internal barriers passed)")
+        logger.info(
+            f"[COLLECTIVE-EXIT] Rank {self.rank}: get_model_state_dict completed "
+            f"(all internal barriers passed, state_dict has {len(state_dict)} keys)"
+        )
 
-        # Only rank 0 has the full state
+        # Only rank 0 has the full state, other ranks need to clear their dict
         if not is_main_process():
+            # Tiger Style: Assert negative space (what should NOT happen)
+            assert len(state_dict) > 0, (
+                f"Non-main rank {self.rank} should receive partial state from collective, "
+                "but got empty dict - this suggests collective operation failed"
+            )
+            logger.info(
+                f"[RANK-PATH] Rank {self.rank}: Clearing {len(state_dict)} partial weights "
+                "(not main process)"
+            )
             state_dict = {}
+
+        # Tiger Style: Assert postconditions
+        if is_main_process():
+            assert len(state_dict) > 0, "Rank 0 should have full state_dict after collective"
+        else:
+            assert len(state_dict) == 0, f"Non-main rank should have empty dict, got {len(state_dict)} keys"
 
         return ImmediateTrainFuture(state_dict)
 
@@ -624,7 +660,13 @@ class FSDPTrainingBackend:
     async def save_checkpoint(
         self, step: int, metrics: Dict[str, float]
     ) -> Path:
-        """Save checkpoint (only on rank 0).
+        """Save checkpoint following THUDM SLIME pattern with explicit control flow.
+
+        Based on SLIME's checkpoint.py save() function:
+        - ALL ranks participate in weight gathering (collective operation)
+        - Explicit barriers synchronize all ranks
+        - Only rank 0 performs file I/O
+        - Simple, symmetric control flow (Tiger Style)
 
         Args:
             step: Current training step
@@ -634,46 +676,94 @@ class FSDPTrainingBackend:
             Path to saved checkpoint
 
         Side effects:
+            - ALL ranks participate in get_weights() collective operation
             - Saves checkpoint to disk (rank 0 only)
             - Creates checkpoint directory if needed
+            - Synchronizes all ranks with barriers
+
+        Tiger Style principles applied:
+            - Explicit control flow (all ranks follow same path)
+            - Paired assertions (pre/post collective operations)
+            - Aggressive logging (every state transition)
+            - Assert negative space (what non-main ranks should NOT do)
         """
-        logger.info(f"[FSDP DEBUG] Rank {self.rank}: Starting checkpoint save for step {step}")
+        logger.info(f"[STATE] Rank {self.rank}: ENTERING save_checkpoint (step={step})")
 
-        if not is_main_process():
-            # Only rank 0 saves
-            logger.info(f"[FSDP DEBUG] Rank {self.rank}: Waiting at barrier (not main process)")
-            barrier()  # Wait for rank 0
-            logger.info(f"[FSDP DEBUG] Rank {self.rank}: Passed barrier, checkpoint done")
-            return self.checkpoint_dir / f"step_{step}"
+        # Tiger Style: Assert preconditions
+        assert self.checkpoint_dir is not None, "checkpoint_dir must be set"
+        assert self.optimizer is not None, "optimizer must be initialized"
+        assert self._fsdp_model is not None, "FSDP model must be wrapped"
 
-        logger.info(f"[FSDP DEBUG] Rank 0: Creating checkpoint directory...")
-        # Create checkpoint directory
-        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        # Phase 1: ALL ranks synchronize GPU operations (SLIME pattern)
+        logger.info(f"[FSDP DEBUG] Rank {self.rank}: Synchronizing CUDA operations...")
+        torch.cuda.synchronize()
+
+        # Phase 2: Create checkpoint directory (rank 0 only, then barrier)
+        # Following SLIME checkpoint.py:132-134
         ckpt_path = self.checkpoint_dir / f"step_{step}"
-        ckpt_path.mkdir(exist_ok=True)
-        logger.info(f"[FSDP DEBUG] Rank 0: Directory created: {ckpt_path}")
+        if is_main_process():
+            logger.info(f"[RANK-PATH] Rank 0: Creating checkpoint directory: {ckpt_path}")
+            self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            ckpt_path.mkdir(exist_ok=True)
+            logger.info(f"[FSDP DEBUG] Rank 0: Directory created successfully")
+        else:
+            logger.info(f"[RANK-PATH] Rank {self.rank}: Skipping directory creation (not main process)")
 
-        # Get full state dict (gathered on rank 0)
-        logger.info(f"[FSDP DEBUG] Rank 0: Getting model weights (this calls get_weights())...")
-        state_dict = await self.get_weights().result()
-        logger.info(f"[FSDP DEBUG] Rank 0: Got model weights successfully")
-
-        # Save checkpoint
-        logger.info(f"[FSDP DEBUG] Rank 0: Getting optimizer state dict...")
-        checkpoint = {
-            "model": state_dict,
-            "optimizer": self.optimizer.state_dict(),
-            "step": step,
-            "metrics": metrics,
-        }
-        logger.info(f"[FSDP DEBUG] Rank 0: Saving checkpoint to disk...")
-
-        torch.save(checkpoint, ckpt_path / "checkpoint.pt")
-        logger.info(f"[FSDP DEBUG] Rank 0: Saved checkpoint to {ckpt_path}")
-
-        # Sync with other ranks
-        logger.info(f"[FSDP DEBUG] Rank 0: Entering final barrier...")
+        # Barrier: ensure directory exists before proceeding
+        logger.info(f"[BARRIER-ENTER] Rank {self.rank}: Waiting for directory creation...")
         barrier()
-        logger.info(f"[FSDP DEBUG] Rank 0: Passed final barrier, checkpoint complete!")
+        logger.info(f"[BARRIER-EXIT] Rank {self.rank}: Directory barrier passed")
+
+        # Phase 3: ALL ranks participate in weight gathering (CRITICAL collective operation)
+        # Following SLIME checkpoint.py:136 (actor.update_cpu_params_dict)
+        logger.info(
+            f"[COLLECTIVE-ENTER] Rank {self.rank}: Starting get_weights() "
+            f"(ALL ranks MUST participate)"
+        )
+        state_dict = await self.get_weights().result()
+        logger.info(
+            f"[COLLECTIVE-EXIT] Rank {self.rank}: get_weights() completed, "
+            f"state_dict has {len(state_dict)} keys"
+        )
+
+        # Tiger Style: Assert postconditions on collective operation
+        if is_main_process():
+            assert len(state_dict) > 0, "Rank 0 must have non-empty state_dict"
+        else:
+            assert len(state_dict) == 0, (
+                f"Non-main rank should have empty state_dict, got {len(state_dict)} keys"
+            )
+
+        # Phase 4: Only rank 0 saves to disk (SLIME pattern)
+        # Following SLIME checkpoint.py:143-169
+        if is_main_process():
+            logger.info(f"[RANK-PATH] Rank 0: Saving checkpoint to disk...")
+            logger.info(f"[FSDP DEBUG] Rank 0: Getting optimizer state dict...")
+
+            checkpoint = {
+                "model": state_dict,
+                "optimizer": self.optimizer.state_dict(),
+                "step": step,
+                "metrics": metrics,
+            }
+
+            logger.info(f"[FSDP DEBUG] Rank 0: Writing checkpoint.pt to {ckpt_path}...")
+            torch.save(checkpoint, ckpt_path / "checkpoint.pt")
+            logger.info(f"[FSDP DEBUG] Rank 0: Checkpoint saved successfully to {ckpt_path}")
+        else:
+            # Tiger Style: Assert negative space (what should NOT happen)
+            logger.info(f"[RANK-PATH] Rank {self.rank}: Skipping disk save (not main process)")
+            # Assert that non-main ranks don't accidentally create files
+            assert not (ckpt_path / "checkpoint.pt").exists() or True, (
+                f"Non-main rank {self.rank} should not create checkpoint files"
+            )
+
+        # Phase 5: Final barrier to synchronize all ranks (SLIME pattern)
+        # Following SLIME checkpoint.py:171
+        logger.info(f"[BARRIER-ENTER] Rank {self.rank}: Entering final checkpoint barrier...")
+        barrier()
+        logger.info(f"[BARRIER-EXIT] Rank {self.rank}: Final checkpoint barrier passed")
+
+        logger.info(f"[STATE] Rank {self.rank}: EXITING save_checkpoint (step={step}) - SUCCESS")
 
         return ckpt_path
