@@ -229,9 +229,9 @@ async def run_agent_step(state: AgentState, rcfg: RunConfig) -> AgentState:
 
     
     state = rcfg.on_step_start(state)
-    
+
     # Otherwise, do a new rollout
-    available_tools = state.environment.get_tools()
+    available_tools = state.environment.get_tools() if state.environment else []
     updated_actor = replace(state.actor, tools=available_tools)
     
     # Make LLM call
@@ -283,8 +283,9 @@ async def run_agent_step(state: AgentState, rcfg: RunConfig) -> AgentState:
 
 async def process_pending_tools(state: AgentState, rcfg: RunConfig) -> AgentState:
     """Resume processing tools from next_tool_idx"""
+    assert state.environment is not None, "process_pending_tools requires environment"
     current_state = state
-    
+
     # SERIALIZE environment state before tool processing
     env_data = await current_state.environment.serialize()
     
