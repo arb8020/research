@@ -569,15 +569,57 @@ async def rollout_openai(
     if hasattr(actor.endpoint, "extra_params") and actor.endpoint.extra_params:
         params.update(actor.endpoint.extra_params)
 
+    # Tiger Style: Minimal validation to catch common bugs before API call
+    import json
+
+    for i, msg in enumerate(params["messages"]):
+        content = msg.get("content")
+        assert isinstance(content, (str, list, type(None))), \
+            f"Message {i} content must be str/list/None, got {type(content)}"
+
+        # Vision messages: content is list of parts with 'type' field
+        if isinstance(content, list):
+            for j, part in enumerate(content):
+                # Common bug: nested message dict instead of vision part
+                if "role" in part or ("content" in part and "type" not in part):
+                    sanitized = sanitize_request_for_logging(params)
+                    logger.error(
+                        f"Invalid message format - nested role/content in message {i} part {j}\n"
+                        f"Full request:\n{json.dumps(sanitized, indent=2)}"
+                    )
+                    assert False, (
+                        f"Message {i} content[{j}] has nested role/content fields.\n"
+                        f"This usually means you accidentally put a message dict inside content.\n"
+                        f"For vision: content should be [{{'type': 'text', 'text': '...'}}, ...]\n"
+                        f"Got: {part}"
+                    )
+
     try:
         stream = await client.chat.completions.create(**params)
         completion = await aggregate_stream(stream, on_chunk)
 
     except Exception as e:
         # Log error with sanitized request details
+        import json
+        from openai import BadRequestError
+
         sanitized = sanitize_request_for_logging(params)
+
+        # Tiger Style: Fail fast on 400 errors (invalid requests)
+        # These indicate bugs in our code, not transient issues
+        if isinstance(e, BadRequestError):
+            logger.error(
+                f"OpenAI API 400 Bad Request - Invalid argument in request\n"
+                f"Full sanitized request:\n{json.dumps(sanitized, indent=2)}"
+            )
+            # Tiger Style: Assertion to fail fast and surface the bug
+            assert False, f"API returned 400 Bad Request: {e}\nThis indicates a bug in request construction. See logs above for full request."
+
+        # For other errors (rate limits, network issues, etc), just log and raise
         logger.error(
-            "OpenAI API call failed",
+            f"OpenAI API call failed: {e}\n"
+            f"  Model: {actor.endpoint.model}\n"
+            f"  Messages: {len(params.get('messages', []))} messages",
             extra={
                 "exception": str(e),
                 "request_params": sanitized,

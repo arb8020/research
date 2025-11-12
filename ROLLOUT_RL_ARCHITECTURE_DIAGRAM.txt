@@ -1,0 +1,356 @@
+================================================================================
+                 RL TRAINING & ROLLOUT ARCHITECTURE
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          TRAINING ORCHESTRATION                             │
+│                    (/dev/integration_training/train.py)                     │
+│                                                                             │
+│  ┌─ SFT Mode ────────────────────────────────────────────────────────────┐ │
+│  │                                                                        │ │
+│  │  1. Load Data Mixture  ──→  2. Create Backend  ──→  3. Run Loop      │ │
+│  │     (Config-driven)         (PyTorch or FSDP)       (sft_loop.py)    │ │
+│  │         ↓                         ↓                       ↓            │ │
+│  │  SFT Samples            PyTorchTrainingBackend   run_sft_training()  │ │
+│  │  (DataBuffer)           FSDPTrainingBackend      (pure function)      │ │
+│  │                                                                        │ │
+│  │  Saves checkpoints to: output_dir/checkpoints/step_NNNN/             │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                ↓↓↓                                           │
+│  ┌─ RL Mode ─────────────────────────────────────────────────────────────┐ │
+│  │                                                                        │ │
+│  │  1. Load SFT Checkpoint  ──→  2. Create Backend  ──→  3. Run Loop    │ │
+│  │     (or init fresh)           (Same as SFT)           (rl_loop.py)   │ │
+│  │         ↓                         ↓                       ↓            │ │
+│  │  (Checkpoint loading)       PyTorchTrainingBackend   run_rl_training()│ │
+│  │  TODO: Implement!          FSDPTrainingBackend       (SLIME pattern)  │ │
+│  │                                                                        │ │
+│  │  Uses: DataBuffer + AsyncRolloutManager + InferenceEngines           │ │
+│  │  Saves checkpoints + syncs weights to SGLang/vLLM servers            │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     SFT TRAINING LOOP (Pure Function)                       │
+│                         (sft_loop.py)                                       │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+    For step in range(num_steps):
+        ┌──────────────────────────────────────────────────────┐
+        │ batch = collate_batch(samples, batch_size, step)     │
+        │         (pure function - round-robin through samples)│
+        └──────────────────────────────────────────────────────┘
+                            ↓
+        ┌──────────────────────────────────────────────────────┐
+        │ fwd_metrics = await backend.forward_backward(batch)  │
+        │ opt_metrics = await backend.optim_step()             │
+        │                                                      │
+        │ Futures (trio-based) allow pipelining:               │
+        │ - Submit work, continue, await result later          │
+        └──────────────────────────────────────────────────────┘
+                            ↓
+        ┌──────────────────────────────────────────────────────┐
+        │ step_metrics = {**fwd_metrics, **opt_metrics}         │
+        │ metrics_logger.log(step_metrics)                     │
+        │ save_checkpoint(step) if step % checkpoint_every==0  │
+        └──────────────────────────────────────────────────────┘
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     RL TRAINING LOOP (Pure Function)                        │
+│              (rl_loop.py - SLIME pattern: Generate → Train → Sync)          │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+    For step in range(num_steps):
+        ┌─────────────────────────────────────────────────────────────┐
+        │ Step 1: GENERATE ROLLOUTS (Async with over-sampling)       │
+        │                                                             │
+        │  batch = await rollout_manager.generate_batch()            │
+        │                                                             │
+        │  ┌──────────────────────────────────────────────────────┐  │
+        │  │ AsyncRolloutManager.generate_batch():               │  │
+        │  │   1. Get prompts from data_buffer                   │  │
+        │  │   2. Call user generate_fn(prompts) in parallel     │  │
+        │  │      - Over-sample: N * over_sampling_factor        │  │
+        │  │   3. Apply filter_fn (quality/diversity checks)     │  │
+        │  │   4. Select best N, cache overflow → next batch     │  │
+        │  │   5. Convert to RolloutBatch                        │  │
+        │  └──────────────────────────────────────────────────────┘  │
+        └─────────────────────────────────────────────────────────────┘
+                            ↓
+        ┌─────────────────────────────────────────────────────────────┐
+        │ Step 2: COMPUTE REWARDS (From environment)                 │
+        │                                                             │
+        │  rewards = [compute_reward(s) for s in batch.samples]      │
+        │  (Currently: 1.0 if correct, 0.0 otherwise)                │
+        │  TODO: Support reward models                               │
+        └─────────────────────────────────────────────────────────────┘
+                            ↓
+        ┌─────────────────────────────────────────────────────────────┐
+        │ Step 3: PREPARE RL BATCH (GRPO-style)                      │
+        │                                                             │
+        │  advantages = compute_advantages(rewards, baseline)        │
+        │  rl_batch = {                                              │
+        │    "input_ids": tokens,                                    │
+        │    "labels": tokens,                                       │
+        │    "loss_mask": loss_masks,                                │
+        │    "advantages": advantages,                               │
+        │  }                                                          │
+        └─────────────────────────────────────────────────────────────┘
+                            ↓
+        ┌─────────────────────────────────────────────────────────────┐
+        │ Step 4: TRAIN (Same backend as SFT)                        │
+        │                                                             │
+        │  fwd_metrics = await backend.forward_backward(rl_batch)    │
+        │    → Computes GRPO loss: -E[log_prob(sequence) * advantage]│
+        │    → Per-token loss masking applied                        │
+        │                                                             │
+        │  opt_metrics = await backend.optim_step()                  │
+        │    → Updates weights via optimizer step                    │
+        └─────────────────────────────────────────────────────────────┘
+                            ↓
+        ┌─────────────────────────────────────────────────────────────┐
+        │ Step 5: WEIGHT SYNC (Every N steps)                        │
+        │                                                             │
+        │  if step % sync_every == 0:                                │
+        │    ckpt_path = await backend.save_checkpoint(step)         │
+        │    responses = await sync_weights_to_engines(              │
+        │        engines=[SGLangEngine(...), VLLMEngine(...)]         │
+        │        checkpoint_path=ckpt_path                           │
+        │    )                                                        │
+        │                                                             │
+        │  ┌──────────────────────────────────────────────────────┐  │
+        │  │ Parallel sync using trio.open_nursery():            │  │
+        │  │   - SGLang: POST /update_weights_from_disk           │  │
+        │  │   - vLLM:   POST /collective_rpc reload_weights      │  │
+        │  │   - All engines updated in parallel (no waiting)      │  │
+        │  └──────────────────────────────────────────────────────┘  │
+        └─────────────────────────────────────────────────────────────┘
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    ROLLOUT GENERATION INFRASTRUCTURE                        │
+│              (/rollouts/training/rollout_gen/)                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────┐  ┌──────────────────────────────────────┐
+│  Sync Rollout Generation       │  │  Async Rollout Generation (SLIME D4) │
+│  (rollout_generation.py)       │  │  (async_rollout_manager.py)          │
+├────────────────────────────────┤  ├──────────────────────────────────────┤
+│                                │  │                                      │
+│ generate_rollout_batches()     │  │ AsyncRolloutManager:                 │
+│   ↓                            │  │   ↓                                  │
+│ Generator (yields forever)     │  │ Async context manager                │
+│   ├─ apply_sample_transforms() │  │   ├─ Over-sampling calculation      │
+│   ├─ convert_to_batch()        │  │   ├─ Parallel generation (trio)      │
+│   └─ build_batch_metadata()    │  │   ├─ Quality filtering              │
+│                                │  │   ├─ Partial sample caching (D4!)   │
+│ (Pure functions - no state)    │  │   └─ state_dict() for checkpointing │
+│                                │  │                                      │
+└────────────────────────────────┘  └──────────────────────────────────────┘
+         ↓                                         ↓
+    RolloutBatch                            RolloutBatch
+    (tokens, loss_masks, rewards,          (with over-sampled
+     response_lengths, metadata)            filtered samples)
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         DATA FLOW: Sample TYPES                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────┐         ┌──────────────────────────────┐
+│  Sample (Universal Currency)     │         │  RolloutBatch (Training)    │
+├──────────────────────────────────┤         ├──────────────────────────────┤
+│                                  │         │                              │
+│  ✓ prompt: str or chat messages  │ (n×)    │ ✓ tokens: list[list[int]]   │
+│  ✓ response: str (generated)     │  ──→    │ ✓ loss_masks: list[list]    │
+│  ✓ tokens: list[int]             │         │ ✓ rewards: list[float]      │
+│  ✓ loss_mask: list[float]        │         │ ✓ response_lengths: list    │
+│  ✓ reward: float (RL)            │         │ ✓ metadata: dict            │
+│  ✓ metadata: dict (grading info) │         │                              │
+│  ✓ group_index: int (GRPO)       │         └──────────────────────────────┘
+│  ✓ status: Enum                  │                    ↓
+│                                  │         ┌──────────────────────────────┐
+└──────────────────────────────────┘         │  Backend Batch (Training)   │
+         ↑↑↑                                  ├──────────────────────────────┤
+    Created by:                              │                              │
+    - generate_fn(prompts)                   │ ✓ input_ids: tensor         │
+    - Tokenization (SFT)                     │ ✓ labels: tensor            │
+    - Agent trajectories                     │ ✓ loss_mask: tensor         │
+    - Environment evaluation                 │ ✓ advantages: tensor (RL)   │
+                                             │                              │
+                                             └──────────────────────────────┘
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      TRAINING BACKENDS (Protocol-Based)                     │
+│            No inheritance! Just implement the protocol methods.              │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────┐  ┌─────────────────────────────┐
+│  PyTorchTrainingBackend (Single-GPU)     │  │  FSDPTrainingBackend        │
+│  (pytorch.py)                            │  │  (Multi-GPU FSDP)           │
+├──────────────────────────────────────────┤  ├─────────────────────────────┤
+│                                          │  │                             │
+│ ✓ model: torch.nn.Module                │  │ ✓ model: torch.nn.Module   │
+│ ✓ optimizer: torch.optim.Optimizer      │  │ ✓ optimizer_fn: callable    │
+│ ✓ loss_fn: (logits, labels, mask) → loss│  │   (called after FSDP wrap)  │
+│ ✓ checkpoint_dir: Path                  │  │ ✓ config: FSDPConfig        │
+│ ✓ device: torch.device                  │  │   - sharding_strategy       │
+│ ✓ weight_version: int (tracking)        │  │   - mixed_precision         │
+│ ✓ scheduler: Optional[LRScheduler]      │  │   - gradient_checkpointing  │
+│                                          │  │   - clip_grad               │
+│ forward_backward(batch) → TrainFuture   │  │ ✓ rank, world_size (dist)   │
+│ optim_step() → TrainFuture              │  │                             │
+│ save_checkpoint(step, metrics) → Path   │  │ forward_backward() → Future │
+│ get_weights() → Dict[str, Any]          │  │ optim_step() → Future       │
+│ load_weights(Dict) → None               │  │ save_checkpoint() → Path    │
+│                                          │  │ barrier() - sync all ranks  │
+└──────────────────────────────────────────┘  └─────────────────────────────┘
+            ↑                                              ↑
+       Factory: create_pytorch_backend()         Requires: torch.distributed
+                                                    (initialized by torchrun)
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     WEIGHT SYNCHRONIZATION (D5)                             │
+│              (weight_sync.py - Stateless coordination)                      │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+                    ┌──────────────────────────┐
+                    │  Training Backend        │
+                    │  (PyTorch or FSDP)       │
+                    │                          │
+                    │  save_checkpoint(step)   │
+                    │      ↓                   │
+                    │  → /checkpoints/step_N/  │
+                    └───────────┬──────────────┘
+                                │
+                    ┌───────────↓──────────────┐
+                    │  sync_weights_to_engines()│ (Parallel via trio)
+                    └───────────┬──────────────┘
+                                │
+                ┌───────────────┼───────────────┐
+                ↓               ↓               ↓
+        ┌───────────────┐ ┌───────────────┐ ┌──────────────┐
+        │ SGLangEngine  │ │ VLLMEngine    │ │ (Extensible) │
+        │ (Protocol)    │ │ (Protocol)    │ │              │
+        └───────────────┘ └───────────────┘ └──────────────┘
+                ↓               ↓
+        POST /update_     POST /collective_rpc
+        weights_from_disk  reload_weights
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      DATA BUFFER & EPOCH MANAGEMENT                         │
+│                        (data_buffer.py)                                     │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+DataBuffer:
+  ├─ prompts: list[str | dict] - All prompts in dataset
+  ├─ epoch_id: int - Current epoch (increments on wraparound)
+  ├─ sample_offset: int - Position in current epoch
+  ├─ seed: int - Base random seed
+  └─ _rng: Random - Deterministic RNG (seed + epoch_id)
+
+get_prompts(n):
+  1. Return next n prompts from current position
+  2. On wraparound:
+     - Increment epoch_id
+     - Reshuffle with new seed (seed + epoch_id)
+     - Reset sample_offset to 0
+  3. Deterministic: same seed + epoch_id = same shuffle order
+
+Use Cases:
+  ✓ SFT training: Cycle through samples over multiple epochs
+  ✓ RL training: Generate different prompts each generation step
+  ✓ Checkpointing: save_state() / load_state() for recovery
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      TRAINING FUTURES (Pipelining)                          │
+│                          (types.py)                                         │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────┐   ┌──────────────────────────────────────┐
+│  TrainFuture (Async)             │   │  ImmediateTrainFuture (Sync)         │
+├──────────────────────────────────┤   ├──────────────────────────────────────┤
+│                                  │   │                                      │
+│ _event: trio.Event               │   │ _result: T (pre-filled)              │
+│ _result: Optional[T]             │   │                                      │
+│ operation: str                   │   │ async def result() → T:              │
+│                                  │   │   return self._result (immediate)    │
+│ async def result() → T:          │   │                                      │
+│   await self._event.wait()       │   │ Used for: Synchronous ops like      │
+│   return self._result            │   │   - forward_backward() in PyTorch   │
+│                                  │   │   - optim_step()                    │
+│ Used for: Async operations       │   │                                      │
+│   - Parallel generation          │   │ Motivation: Uniform async API        │
+│   - Weight syncing               │   │   Callers: await future.result()    │
+│                                  │   │   No need to check sync vs async    │
+└──────────────────────────────────┘   └──────────────────────────────────────┘
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         LOSS FUNCTIONS                                      │
+│                      (rl_losses.py)                                         │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+GRPO Loss (Group Relative Policy Optimization):
+  Loss = -E[log_prob(sequence) * advantage]
+  
+  Where:
+    - log_prob(sequence) = avg log_prob over response tokens
+    - advantage = reward - baseline
+    - Response tokens: where loss_mask > 0
+    - Prompt tokens: ignored (loss_mask == 0)
+
+  Implements:
+    ✓ Per-token masking (don't train on prompts)
+    ✓ Sequence-level log probability
+    ✓ Advantage weighting
+    ✓ Efficient batch computation
+
+PPO Loss (Placeholder):
+  Loss = -E[min(ratio*adv, clamp(ratio, 1±ε)*adv)]
+  
+  Where:
+    - ratio = π_new / π_old
+    - Clip range: typically 0.2
+  
+  Status: Not yet implemented (future enhancement)
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    KEY INTEGRATION POINT: SFT → RL                          │
+│               (/dev/integration_training/train.py)                          │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+Mode: "sft+rl" (unified training pipeline):
+
+  Step 1: SFT Training
+    ├─ Load tokenizer + data mixture
+    ├─ Create backend (PyTorch or FSDP)
+    ├─ await run_sft_training(backend, samples, config, logger)
+    └─ Saves: output_dir/checkpoints/step_0/, step_1/, ...
+
+  Step 2: Find Latest SFT Checkpoint
+    ├─ List checkpoint_dir: glob("step_*")
+    └─ latest = sorted(...)[-1]  # Most recent step
+
+  Step 3: RL Training (TODO: Implement!)
+    ├─ Load SFT checkpoint into fresh backend
+    ├─ Create DataBuffer with RL prompts
+    ├─ Create AsyncRolloutManager
+    ├─ Create InferenceEngines (SGLang, vLLM)
+    ├─ Create RLTrainingConfig
+    └─ await run_rl_training(backend, buffer, mgr, engines, config)
+
+Key Points:
+  ✓ Model checkpoint continuity: step_N (SFT) → RL
+  ✓ Same backend code for both modes
+  ✓ Config auto-detection of mode
+  ✓ Tokenizer consistency across modes
+
+================================================================================
