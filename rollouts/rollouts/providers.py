@@ -18,8 +18,14 @@ from dacite import from_dict
 from openai import AsyncOpenAI
 from openai.types import CompletionUsage
 from openai.types.chat import ChatCompletionMessageParam
+from shared.retry import async_retry
 
 logger = logging.getLogger(__name__)
+
+
+class NonRetryableError(Exception):
+    """Exception for errors that should not be retried."""
+    pass
 
 from .dtypes import (
     Actor,
@@ -434,60 +440,57 @@ async def rollout_sglang(
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
-    completion = None
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        for attempt in range(1, max_api_retries + 1):
-            try:
-                response = await client.post(api_base, json=params, headers=headers)
-                if response.status_code != 200:
-                    error_body = response.text
-                    print(f"❌ Server returned {response.status_code}: {error_body}")
+    # Use async_retry decorator for clean retry logic
+    # Don't retry NonRetryableError - let it propagate immediately
+    @async_retry(
+        max_attempts=max_api_retries,
+        delay=backoff_base,
+        backoff=2,
+        jitter=True,
+        exceptions=(httpx.HTTPError, httpx.TimeoutException),
+    )
+    async def _call_vllm_with_retry():
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(api_base, json=params, headers=headers)
 
-                    if "maximum context length" in error_body.lower():
-                        print("💡 CONTEXT LENGTH ERROR DETECTED:")
-                        print("   • This is NOT a server startup failure - server is working correctly")
-                        print(
-                            f"   • Your max_tokens ({params.get('max_tokens')}) exceeds server's limit"
-                        )
-                        max_tokens_value = params.get('max_tokens', 8192)
-                        suggested_value = int(max_tokens_value) // 2 if isinstance(max_tokens_value, (int, float)) else 4096
-                        print(
-                            "   • FIX: Reduce max_tokens to a smaller value (try "
-                            f"{suggested_value})"
-                        )
-                        print(
-                            "   • OR: Redeploy server with larger --max-model-len"
-                        )
-                        print(
-                            "🛑 Stopping retries - context length errors cannot be fixed by retrying"
-                        )
-                        raise Exception(f"Context length exceeded: {error_body}")
-                    elif "not a valid parameter" in error_body.lower():
-                        print("💡 PARAMETER ERROR DETECTED:")
-                        print(
-                            "   • Server doesn't support one of your parameters"
-                        )
-                        print(
-                            f"   • Your parameters: {list(params.keys())}"
-                        )
-                        print(
-                            "   • Try removing 'logprobs' or 'echo' parameters"
-                        )
+            if response.status_code != 200:
+                error_body = response.text
+                print(f"❌ Server returned {response.status_code}: {error_body}")
 
-                    response.raise_for_status()
-                else:
-                    completion = response.json()
-                    break
-            except Exception as e:
-                print(f"llm_call failed with {e}")
-                if attempt < max_api_retries:
-                    if verbose(1):
-                        print(
-                            "timed out request, retrying with "
-                            f"{backoff_base * 2 ** (attempt - 1)} seconds"
-                        )
-                    await trio.sleep(backoff_base * 2 ** (attempt - 1))
+                # Check for non-retryable errors
+                if "maximum context length" in error_body.lower():
+                    print("💡 CONTEXT LENGTH ERROR DETECTED:")
+                    print("   • This is NOT a server startup failure - server is working correctly")
+                    print(
+                        f"   • Your max_tokens ({params.get('max_tokens')}) exceeds server's limit"
+                    )
+                    max_tokens_value = params.get('max_tokens', 8192)
+                    suggested_value = int(max_tokens_value) // 2 if isinstance(max_tokens_value, (int, float)) else 4096
+                    print(
+                        "   • FIX: Reduce max_tokens to a smaller value (try "
+                        f"{suggested_value})"
+                    )
+                    print(
+                        "   • OR: Redeploy server with larger --max-model-len"
+                    )
+                    print(
+                        "🛑 Stopping retries - context length errors cannot be fixed by retrying"
+                    )
+                    raise NonRetryableError(f"Context length exceeded: {error_body}")
+
+                elif "not a valid parameter" in error_body.lower():
+                    print("💡 PARAMETER ERROR DETECTED:")
+                    print("   • Server doesn't support one of your parameters")
+                    print(f"   • Your parameters: {list(params.keys())}")
+                    print("   • Try removing 'logprobs' or 'echo' parameters")
+                    raise NonRetryableError(f"Invalid parameter: {error_body}")
+
+                response.raise_for_status()
+
+            return response.json()
+
+    completion = await _call_vllm_with_retry()
     assert completion
     message = completion["choices"][0]["message"]
     raw_tool_calls = message.get("tool_calls")
