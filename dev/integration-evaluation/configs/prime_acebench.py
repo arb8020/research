@@ -105,3 +105,36 @@ class IntegrationEvalConfig:
 
 # Export config instance
 config = IntegrationEvalConfig()
+
+
+# Environment adapter for ACEBench - wraps Prime MultiTurnEnv to work with rollouts
+class ACEBenchEnvironment:
+    """Minimal adapter for ACEBench environment.
+
+    ACEBench is a Prime MultiTurnEnv that doesn't actually need tool execution
+    in our framework - Prime handles that internally via their own rollout.
+
+    For now, just provide empty tools since we're using Prime's reward function only.
+    """
+
+    def get_tools(self):
+        """Return empty tools - ACEBench doesn't expose tools to rollouts."""
+        return []
+
+    async def serialize(self):
+        """Serialize environment state."""
+        return {}
+
+    @staticmethod
+    async def deserialize(data):
+        """Deserialize environment state."""
+        return ACEBenchEnvironment()
+
+    def requires_confirmation(self, tool_call):
+        """No confirmation needed."""
+        return False
+
+
+def create_environment():
+    """Factory function to create fresh environment instances."""
+    return ACEBenchEnvironment()

@@ -54,8 +54,6 @@ from rollouts.integrations.prime import (
 )
 from rollouts.dtypes import Message
 
-# TODO: Add back MultiTurnEnvAdapter once we've validated the pattern with at least 2 environments
-
 # Import verifiers for loading Prime Hub environments
 from verifiers import load_environment
 
@@ -84,9 +82,11 @@ async def run_evaluation(config_path: Path):
 
     assert hasattr(config_module, "config"), "Config file must export 'config' variable"
     assert hasattr(config_module, "prepare_messages"), "Config file must export 'prepare_messages' function"
+    assert hasattr(config_module, "create_environment"), "Config file must export 'create_environment' function"
 
     config = config_module.config
     prepare_messages = config_module.prepare_messages
+    create_environment = config_module.create_environment
 
     print(f"🎯 Configuration loaded")
     print(f"   Model: {config.model_name}")
@@ -127,6 +127,7 @@ async def run_evaluation(config_path: Path):
     report = await evaluate(
         dataset=iter(rollouts_dataset),
         prepare_messages=prepare_messages,
+        environment_factory=create_environment,
         endpoint=endpoint,
         config=eval_config,
         dataset_path=f"{config.env_name}_dataset",
