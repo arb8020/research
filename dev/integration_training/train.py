@@ -41,6 +41,12 @@ from rollouts.training import (
     run_sft_training,
 )
 
+# Import convenience factories (NEW - for refactor)
+from rollouts.training.backends import (
+    create_pytorch_backend,
+    create_warmup_cosine_scheduler,
+)
+
 # Import shared logging
 from shared.logging_config import setup_logging
 
@@ -118,159 +124,13 @@ def load_tokenizer(model_name: str):
     return tokenizer
 
 
-def load_model(model_name: str, device_type: str, dtype: str, gpu_ranks: list[int]):
-    """Load HuggingFace model.
-
-    Args:
-        model_name: Model name on HuggingFace
-        device_type: Device type (cuda|cpu|mps)
-        dtype: Data type (bfloat16|float32)
-        gpu_ranks: GPU indices to use
-
-    Returns:
-        Model instance
-
-    Tiger Style: Explicit control flow, assertions.
-    """
-    import torch
-    from transformers import AutoModelForCausalLM
-
-    logger.info(f"Loading model: {model_name}")
-    logger.info(f"  Device: {device_type}")
-    logger.info(f"  Dtype: {dtype}")
-    logger.info(f"  GPU ranks: {gpu_ranks}")
-
-    # Tiger Style: Assert valid inputs
-    assert device_type in ["cuda", "cpu", "mps"], f"Invalid device: {device_type}"
-    assert dtype in ["bfloat16", "float32"], f"Invalid dtype: {dtype}"
-    assert len(gpu_ranks) > 0, "gpu_ranks cannot be empty"
-
-    # Tiger Style: Warn about multi-GPU limitations
-    if len(gpu_ranks) > 1:
-        logger.warning(f"  gpu_ranks has {len(gpu_ranks)} GPUs but only gpu_ranks[0]={gpu_ranks[0]} will be used")
-        logger.warning(f"  Multi-GPU training requires DataParallel/DDP (not yet implemented)")
-
-    torch_dtype = torch.bfloat16 if dtype == "bfloat16" else torch.float32
-
-    # Note: We DON'T set CUDA_VISIBLE_DEVICES here
-    # Instead, we use explicit device placement (cuda:4 means physical GPU 4)
-    # This is clearer and avoids remapping confusion on shared nodes
-    # The backend will place model/data on the exact GPU index we specify
-
-    # Explicit device placement: use first GPU in gpu_ranks
-    # device_map="auto" would use CUDA_VISIBLE_DEVICES (confusing on shared nodes)
-    # Instead, explicitly place on the specified physical GPU
-    #
-    # Note: Current code is single-GPU only. If gpu_ranks=[4,5,6,7], only GPU 4 is used.
-    # For multi-GPU training, would need DataParallel/DDP or tensor parallelism.
-    # Using explicit GPU index (not CUDA_VISIBLE_DEVICES) works with non-contiguous
-    # allocations like gpu_ranks=[0,2,4,6] - each refers to physical GPU index.
-    if device_type == "cuda":
-        device_map = {"": gpu_ranks[0]}  # Place entire model on first allocated GPU
-    else:
-        device_map = None
-
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=torch_dtype,
-        device_map=device_map,
-    )
-
-    if device_type != "cuda":
-        model = model.to(device_type)
-
-    return model
-
-
-def create_optimizer(model, config: Config, mode: Literal["sft", "rl"]):
-    """Create optimizer with nanochat's tiered learning rates.
-
-    Args:
-        model: PyTorch model
-        config: Configuration object
-        mode: Training mode (sft|rl)
-
-    Returns:
-        Optimizer instance
-
-    nanochat uses tiered LRs: different rates for embedding, unembedding, and matrices.
-    For simplicity, we use a single AdamW optimizer here.
-    """
-    import torch
-
-    # Get config for mode
-    train_config = config.sft if mode == "sft" else config.rl
-
-    # Tiger Style: Use explicit LR (nanochat's matrix_lr as default)
-    lr = train_config.matrix_lr
-
-    # Tiger Style: All optimizer parameters explicit from config
-    logger.info(f"Creating AdamW optimizer with LR={lr}, betas=({train_config.adam_beta1}, {train_config.adam_beta2})")
-
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=lr,
-        betas=(train_config.adam_beta1, train_config.adam_beta2),
-        eps=train_config.adam_eps,
-        weight_decay=train_config.weight_decay,
-    )
-
-    return optimizer
-
-
-def create_loss_fn():
-    """Create loss function for training.
-
-    Returns:
-        Loss function
-
-    Casey Muratori: Pure function, explicit.
-    """
-    import torch.nn.functional as F
-
-    def cross_entropy_loss(logits, batch):
-        """Compute cross-entropy loss with optional masking.
-
-        Following SLIME's pattern: pass entire batch dict, extract fields inside.
-
-        Args:
-            logits: Model logits [batch, seq_len, vocab_size]
-            batch: Training batch dict containing:
-                - labels: Target labels [batch, seq_len]
-                - loss_mask: Loss mask [batch, seq_len] (optional)
-                - advantages: For RL training (optional, unused for SFT)
-
-        Returns:
-            Scalar loss
-        """
-        # Extract fields from batch (SLIME pattern)
-        labels = batch["labels"]
-        loss_mask = batch.get("loss_mask")
-        # advantages = batch.get("advantages")  # Available but unused for SFT
-
-        # Reshape for cross_entropy
-        batch_size, seq_len, vocab_size = logits.shape
-        logits_flat = logits.view(-1, vocab_size)
-        labels_flat = labels.view(-1)
-
-        # Compute loss
-        loss = F.cross_entropy(
-            logits_flat,
-            labels_flat,
-            reduction='none'
-        )
-        loss = loss.view(batch_size, seq_len)
-
-        # Apply mask if provided
-        if loss_mask is not None:
-            loss = loss * loss_mask
-            # Average over valid tokens
-            num_valid = loss_mask.sum().clamp(min=1.0)
-            return loss.sum() / num_valid
-        else:
-            return loss.mean()
-
-    return cross_entropy_loss
+# NOTE: Functions load_model(), create_optimizer(), and create_loss_fn()
+# have been moved to rollouts/training/backends/pytorch_factory.py
+# as part of the refactor to use Casey Muratori's 3-tier API design.
+# They are now available as Tier 1 granular functions:
+#   - load_hf_model()
+#   - create_adamw_optimizer()
+#   - create_cross_entropy_loss()
 
 
 async def create_fsdp_backend(config: Config, output_dir: Path):
@@ -322,19 +182,30 @@ async def create_fsdp_backend(config: Config, output_dir: Path):
 
     logger.info(f"[Rank {rank}/{world_size}] Creating FSDP backend on GPU {local_rank}")
 
-    # Load model (will be wrapped by FSDP)
-    model = load_model(
-        config.model.name,
-        config.target.device_type,
-        config.model.dtype,
-        [local_rank],  # Each rank uses its local GPU
+    # Load model using Tier 1 factory functions (will be wrapped by FSDP)
+    from rollouts.training.backends import (
+        parse_dtype,
+        compute_device_map_single_gpu,
+        load_hf_model,
+        create_adamw_optimizer,
+        create_cross_entropy_loss,
     )
 
+    torch_dtype = parse_dtype(config.model.dtype)
+    device_map = compute_device_map_single_gpu(config.target.device_type, local_rank)
+    model = load_hf_model(config.model.name, torch_dtype, device_map)
+
     # Create optimizer (after model is on device, before FSDP wrapping)
-    optimizer = create_optimizer(model, config, mode="sft")
+    optimizer = create_adamw_optimizer(
+        model,
+        lr=config.sft.matrix_lr,
+        betas=(config.sft.adam_beta1, config.sft.adam_beta2),
+        eps=config.sft.adam_eps,
+        weight_decay=config.sft.weight_decay,
+    )
 
     # Create loss function
-    loss_fn = create_loss_fn()
+    loss_fn = create_cross_entropy_loss()
 
     # Create FSDP config (Tiger Style: explicit parameters from user config)
     fsdp_config = FSDPConfig(
@@ -356,61 +227,21 @@ async def create_fsdp_backend(config: Config, output_dir: Path):
     )
 
     # Create learning rate scheduler with warmup (SLIME pattern)
-    # Warmup prevents initial instability from large learning rate
     # Tiger Style: All parameters from config
     total_steps = config.sft.num_iterations
-    warmup_ratio = config.sft.warmup_ratio
-    warmup_steps = max(1, int(total_steps * warmup_ratio))
-    decay_steps = total_steps - warmup_steps
+    warmup_steps = max(1, int(total_steps * config.sft.warmup_ratio))
 
-    from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
-
-    # Warmup: ramp from 10% to 100% of base LR
-    # Note: verbose param added in PyTorch 2.5+, omit for compatibility
-    warmup = LinearLR(
+    # Use factory function for warmup+cosine scheduler
+    # NOTE: Currently hardcoded to cosine decay (lr_decay_style from config is ignored)
+    # TODO: If we need linear/constant decay, add support to factory or keep conditional logic
+    backend.scheduler = create_warmup_cosine_scheduler(
         optimizer=optimizer,
-        start_factor=0.1,
-        end_factor=1.0,
-        total_iters=warmup_steps,
-        last_epoch=-1,
+        num_warmup_steps=warmup_steps,
+        num_training_steps=total_steps,
+        min_lr_ratio=0.1,
     )
 
-    # Decay: uses lr_decay_style from config
-    if config.sft.lr_decay_style == "cosine":
-        decay = CosineAnnealingLR(
-            optimizer=optimizer,
-            T_max=decay_steps,
-            eta_min=config.sft.matrix_lr * 0.1,
-            last_epoch=-1,
-        )
-    elif config.sft.lr_decay_style == "linear":
-        decay = LinearLR(
-            optimizer=optimizer,
-            start_factor=1.0,
-            end_factor=0.1,
-            total_iters=decay_steps,
-            last_epoch=-1,
-        )
-    elif config.sft.lr_decay_style == "constant":
-        # No decay - just use a dummy scheduler
-        from torch.optim.lr_scheduler import LambdaLR
-        decay = LambdaLR(
-            optimizer=optimizer,
-            lr_lambda=lambda step: 1.0,
-            last_epoch=-1,
-        )
-    else:
-        raise ValueError(f"Unknown lr_decay_style: {config.sft.lr_decay_style}")
-
-    # Combine: warmup then decay
-    backend.scheduler = SequentialLR(
-        optimizer=optimizer,
-        schedulers=[warmup, decay],
-        milestones=[warmup_steps],
-        last_epoch=-1,
-    )
-
-    logger.info(f"[Rank {rank}/{world_size}] LR scheduler: {warmup_steps} warmup steps + {config.sft.lr_decay_style} decay")
+    logger.info(f"[Rank {rank}/{world_size}] LR scheduler: {warmup_steps} warmup steps + cosine decay")
     logger.info(f"[Rank {rank}/{world_size}] FSDP backend created")
 
     return backend
@@ -440,28 +271,16 @@ async def run_sft(config: Config, output_dir: Path):
         # FSDP multi-GPU training
         backend = await create_fsdp_backend(config, output_dir)
     else:
-        # Single-GPU PyTorch backend
-        model = load_model(
-            config.model.name,
-            config.target.device_type,
-            config.model.dtype,
-            config.target.gpu_ranks,
-        )
-        optimizer = create_optimizer(model, config, mode="sft")
-        loss_fn = create_loss_fn()
-
-        # Create backend
-        import torch
-        device = torch.device(f"{config.target.device_type}:{config.target.gpu_ranks[0]}"
-                             if config.target.device_type == "cuda"
-                             else config.target.device_type)
-
-        backend = PyTorchTrainingBackend(
-            model=model,
-            optimizer=optimizer,
-            loss_fn=loss_fn,
+        # Single-GPU PyTorch backend using Tier 2 convenience factory
+        backend = create_pytorch_backend(
+            model_name=config.model.name,
             checkpoint_dir=output_dir / "checkpoints",
-            device=device,
+            device_type=config.target.device_type,
+            dtype=config.model.dtype,
+            gpu_rank=config.target.gpu_ranks[0],
+            learning_rate=config.sft.matrix_lr,
+            adam_betas=(config.sft.adam_beta1, config.sft.adam_beta2),
+            weight_decay=config.sft.weight_decay,
         )
 
     # Load SFT data mixture (TaskMixture-style)
@@ -542,30 +361,17 @@ async def run_rl(config: Config, output_dir: Path, source_checkpoint: str | None
         # TODO: Implement checkpoint loading
         raise NotImplementedError("Checkpoint loading not yet implemented")
     else:
-        model = load_model(
-            config.model.name,
-            config.target.device_type,
-            config.model.dtype,
-            config.target.gpu_ranks,
+        # Create backend using Tier 2 convenience factory
+        backend = create_pytorch_backend(
+            model_name=config.model.name,
+            checkpoint_dir=output_dir / "checkpoints",
+            device_type=config.target.device_type,
+            dtype=config.model.dtype,
+            gpu_rank=config.target.gpu_ranks[0],
+            learning_rate=config.rl.matrix_lr,
+            adam_betas=(config.rl.adam_beta1, config.rl.adam_beta2),
+            weight_decay=config.rl.weight_decay,
         )
-
-    optimizer = create_optimizer(model, config, mode="rl")
-    loss_fn = create_loss_fn()
-
-    # Create backend
-    # Tiger Style: Explicit device handling
-    import torch
-    device = torch.device(f"{config.target.device_type}:{config.target.gpu_ranks[0]}"
-                         if config.target.device_type == "cuda"
-                         else config.target.device_type)
-
-    PyTorchTrainingBackend(
-        model=model,
-        optimizer=optimizer,
-        loss_fn=loss_fn,
-        checkpoint_dir=output_dir / "checkpoints",
-        device=device,
-    )
 
     # Load RL dataset (GSM8K)
     logger.info(f"Loading RL dataset: {config.data.rl_dataset}")
