@@ -321,16 +321,19 @@ class FSDPTrainingBackend:
         """
         from rollouts.training.types import ImmediateTrainFuture
 
-        # Use FSDP's state_dict API
-        from torch.distributed.fsdp import FullStateDictConfig, StateDictType
+        # Use new PyTorch checkpoint API (not deprecated state_dict_type)
+        from torch.distributed.checkpoint.state_dict import (
+            StateDictOptions,
+            get_model_state_dict,
+        )
+
+        logger.info(f"[FSDP DEBUG] Rank {self.rank}: Getting model state dict...")
 
         # Configure to gather full state on rank 0
-        with FSDP.state_dict_type(
-            self._fsdp_model,
-            StateDictType.FULL_STATE_DICT,
-            FullStateDictConfig(offload_to_cpu=True, rank0_only=True),
-        ):
-            state_dict = self._fsdp_model.state_dict()
+        options = StateDictOptions(full_state_dict=True, cpu_offload=True)
+        state_dict = get_model_state_dict(self._fsdp_model, options=options)
+
+        logger.info(f"[FSDP DEBUG] Rank {self.rank}: Got state dict successfully")
 
         # Only rank 0 has the full state
         if not is_main_process():
@@ -353,17 +356,23 @@ class FSDPTrainingBackend:
         """
         from rollouts.training.types import ImmediateTrainFuture
 
-        # Use FSDP's load_state_dict API
-        from torch.distributed.fsdp import FullStateDictConfig, StateDictType
+        # Use new PyTorch checkpoint API (not deprecated state_dict_type)
+        from torch.distributed.checkpoint.state_dict import (
+            StateDictOptions,
+            set_model_state_dict,
+        )
 
-        with FSDP.state_dict_type(
+        logger.info(f"[FSDP DEBUG] Rank {self.rank}: Loading model state dict...")
+
+        # Load with new API
+        options = StateDictOptions(full_state_dict=True, cpu_offload=True)
+        set_model_state_dict(
             self._fsdp_model,
-            StateDictType.FULL_STATE_DICT,
-            FullStateDictConfig(offload_to_cpu=True, rank0_only=True),
-        ):
-            self._fsdp_model.load_state_dict(weights)
+            model_state_dict=weights,
+            options=options
+        )
 
-        logger.info(f"[Rank {self.rank}] Loaded weights")
+        logger.info(f"[FSDP DEBUG] Rank {self.rank}: Loaded weights successfully")
 
         return ImmediateTrainFuture(None)
 
@@ -383,31 +392,43 @@ class FSDPTrainingBackend:
             - Saves checkpoint to disk (rank 0 only)
             - Creates checkpoint directory if needed
         """
+        logger.info(f"[FSDP DEBUG] Rank {self.rank}: Starting checkpoint save for step {step}")
+
         if not is_main_process():
             # Only rank 0 saves
+            logger.info(f"[FSDP DEBUG] Rank {self.rank}: Waiting at barrier (not main process)")
             barrier()  # Wait for rank 0
+            logger.info(f"[FSDP DEBUG] Rank {self.rank}: Passed barrier, checkpoint done")
             return self.checkpoint_dir / f"step_{step}"
 
+        logger.info(f"[FSDP DEBUG] Rank 0: Creating checkpoint directory...")
         # Create checkpoint directory
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         ckpt_path = self.checkpoint_dir / f"step_{step}"
         ckpt_path.mkdir(exist_ok=True)
+        logger.info(f"[FSDP DEBUG] Rank 0: Directory created: {ckpt_path}")
 
         # Get full state dict (gathered on rank 0)
+        logger.info(f"[FSDP DEBUG] Rank 0: Getting model weights (this calls get_weights())...")
         state_dict = await self.get_weights().result()
+        logger.info(f"[FSDP DEBUG] Rank 0: Got model weights successfully")
 
         # Save checkpoint
+        logger.info(f"[FSDP DEBUG] Rank 0: Getting optimizer state dict...")
         checkpoint = {
             "model": state_dict,
             "optimizer": self.optimizer.state_dict(),
             "step": step,
             "metrics": metrics,
         }
+        logger.info(f"[FSDP DEBUG] Rank 0: Saving checkpoint to disk...")
 
         torch.save(checkpoint, ckpt_path / "checkpoint.pt")
-        logger.info(f"[Rank {self.rank}] Saved checkpoint to {ckpt_path}")
+        logger.info(f"[FSDP DEBUG] Rank 0: Saved checkpoint to {ckpt_path}")
 
         # Sync with other ranks
+        logger.info(f"[FSDP DEBUG] Rank 0: Entering final barrier...")
         barrier()
+        logger.info(f"[FSDP DEBUG] Rank 0: Passed final barrier, checkpoint complete!")
 
         return ckpt_path
