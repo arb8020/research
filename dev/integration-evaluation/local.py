@@ -48,10 +48,7 @@ logging.getLogger("verifiers.utils.env_utils").setLevel(logging.WARNING)
 logging.getLogger("verifiers.rubrics").setLevel(logging.WARNING)
 
 from rollouts.evaluation import evaluate
-from rollouts.integrations.prime import (
-    prime_reward_fn,
-    convert_verifiers_dataset_to_rollouts,
-)
+from rollouts.integrations.prime import prime_reward_fn
 from rollouts.dtypes import Message
 
 # Import verifiers for loading Prime Hub environments
@@ -107,10 +104,10 @@ async def run_evaluation(config_path: Path):
     print(f"\n🏆 Creating reward function from Prime rubric")
     reward_fn = prime_reward_fn(prime_env)
 
-    # Convert Prime dataset to rollouts format
-    print(f"\n📊 Converting dataset to rollouts format")
-    rollouts_dataset = convert_verifiers_dataset_to_rollouts(prime_env)
-    print(f"   Converted {len(rollouts_dataset)} samples")
+    # Use Prime dataset directly (no conversion needed - prepare_messages handles format)
+    print(f"\n📊 Using Prime dataset")
+    rollouts_dataset = list(prime_env.dataset)
+    print(f"   Dataset size: {len(rollouts_dataset)} samples")
 
     # Setup rollouts evaluation config
     endpoint = config.to_endpoint()
