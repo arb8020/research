@@ -187,7 +187,6 @@ async def create_fsdp_backend(config: Config, output_dir: Path):
         parse_dtype,
         compute_device_map_single_gpu,
         load_hf_model,
-        create_adamw_optimizer,
         create_cross_entropy_loss,
     )
 
@@ -195,17 +194,20 @@ async def create_fsdp_backend(config: Config, output_dir: Path):
     device_map = compute_device_map_single_gpu(config.target.device_type, local_rank)
     model = load_hf_model(config.model.name, torch_dtype, device_map)
 
-    # Create optimizer (after model is on device, before FSDP wrapping)
-    optimizer = create_adamw_optimizer(
-        model,
-        lr=config.sft.matrix_lr,
-        betas=(config.sft.adam_beta1, config.sft.adam_beta2),
-        eps=config.sft.adam_eps,
-        weight_decay=config.sft.weight_decay,
-    )
-
     # Create loss function
     loss_fn = create_cross_entropy_loss()
+
+    # Create optimizer factory (will be called AFTER FSDP wrapping)
+    # This is CRITICAL: optimizer must be created on FSDP-wrapped parameters!
+    def make_optimizer(fsdp_model: torch.nn.Module) -> torch.optim.Optimizer:
+        """Create optimizer on FSDP-wrapped model."""
+        return torch.optim.AdamW(
+            fsdp_model.parameters(),
+            lr=config.sft.matrix_lr,
+            betas=(config.sft.adam_beta1, config.sft.adam_beta2),
+            eps=config.sft.adam_eps,
+            weight_decay=config.sft.weight_decay,
+        )
 
     # Create FSDP config (Tiger Style: explicit parameters from user config)
     fsdp_config = FSDPConfig(
@@ -217,10 +219,10 @@ async def create_fsdp_backend(config: Config, output_dir: Path):
         clip_grad=config.sft.clip_grad,
     )
 
-    # Create FSDP backend
+    # Create FSDP backend (optimizer will be created inside __post_init__)
     backend = FSDPTrainingBackend(
         model=model,
-        optimizer=optimizer,
+        optimizer_fn=make_optimizer,
         loss_fn=loss_fn,
         checkpoint_dir=output_dir / "checkpoints",
         config=fsdp_config,
@@ -235,7 +237,7 @@ async def create_fsdp_backend(config: Config, output_dir: Path):
     # NOTE: Currently hardcoded to cosine decay (lr_decay_style from config is ignored)
     # TODO: If we need linear/constant decay, add support to factory or keep conditional logic
     backend.scheduler = create_warmup_cosine_scheduler(
-        optimizer=optimizer,
+        optimizer=backend.optimizer,  # Now created inside FSDPTrainingBackend
         num_warmup_steps=warmup_steps,
         num_training_steps=total_steps,
         min_lr_ratio=0.1,

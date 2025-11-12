@@ -67,23 +67,28 @@ class FSDPTrainingBackend:
 
     Attributes:
         model: PyTorch model (will be wrapped with FSDP)
-        optimizer: Optimizer (must be created AFTER FSDP wrapping)
         loss_fn: Loss function (logits, labels, loss_mask) -> loss
         checkpoint_dir: Directory for checkpoints
         config: FSDP configuration
+        optimizer_fn: Function to create optimizer (called AFTER FSDP wrapping)
         device: Device to use (auto-detected from rank)
         rank: Process rank (auto-detected)
         world_size: Total processes (auto-detected)
-        step: Current training step
+        step: int = 0
+        checkpoint_path: Optional path to checkpoint for initialization
 
     Example:
         >>> # In each worker process (spawned by Worker pattern)
         >>> import torch.distributed as dist
         >>> dist.init_process_group(backend="nccl")
         >>>
+        >>> # Create optimizer factory
+        >>> def make_optimizer(model):
+        ...     return torch.optim.AdamW(model.parameters(), lr=1e-4)
+        >>>
         >>> backend = FSDPTrainingBackend(
         ...     model=model,
-        ...     optimizer=optimizer,
+        ...     optimizer_fn=make_optimizer,
         ...     loss_fn=grpo_loss,
         ...     checkpoint_dir=Path("checkpoints"),
         ...     config=FSDPConfig(sharding_strategy="FULL_SHARD"),
@@ -96,25 +101,36 @@ class FSDPTrainingBackend:
     """
 
     model: torch.nn.Module
-    optimizer: torch.optim.Optimizer
     loss_fn: Callable
     checkpoint_dir: Path
+    optimizer_fn: Callable[[torch.nn.Module], torch.optim.Optimizer]
     config: FSDPConfig = field(default_factory=FSDPConfig)
+    checkpoint_path: Optional[Path] = None
     device: Optional[torch.device] = None
     rank: Optional[int] = None
     world_size: Optional[int] = None
     step: int = 0
-    _fsdp_model: Optional[FSDP] = None
+    _fsdp_model: Optional[torch.nn.Module] = None
+    optimizer: Optional[torch.optim.Optimizer] = None
     scheduler: Optional[Any] = None  # Optional LR scheduler
 
     def __post_init__(self):
-        """Initialize FSDP backend.
+        """Initialize FSDP backend with two-phase checkpoint loading.
+
+        Initialization order (following THUDM SLIME pattern):
+            1. Load checkpoint to CPU (if provided)
+            2. Load model weights BEFORE FSDP wrapping
+            3. Wrap model with FSDP
+            4. Create optimizer AFTER FSDP wrapping
+            5. Load optimizer state (if checkpoint provided)
 
         Side effects:
             - Detects rank/world_size from torch.distributed
             - Sets device from rank
+            - Loads checkpoint weights (if checkpoint_path provided)
             - Wraps model with FSDP
-            - Moves optimizer to correct device
+            - Creates optimizer on wrapped model
+            - Restores optimizer state (if checkpoint provided)
         """
         # Tiger Style: Assert torch.distributed is initialized
         assert dist.is_initialized(), (
@@ -130,11 +146,40 @@ class FSDPTrainingBackend:
         if self.device is None:
             self.device = torch.device(f"cuda:{self.rank}")
 
+        # Phase 1: Load checkpoint weights BEFORE FSDP wrapping (THUDM pattern)
+        checkpoint_payload = None
+        if self.checkpoint_path is not None:
+            logger.info(f"[Rank {self.rank}] Loading checkpoint from {self.checkpoint_path}")
+            checkpoint_payload = self._load_checkpoint_cpu(self.checkpoint_path)
+
+            if checkpoint_payload and checkpoint_payload.get("model"):
+                logger.info(f"[Rank {self.rank}] Loading model weights before FSDP wrapping")
+                self.model.load_state_dict(checkpoint_payload["model"], strict=True)
+                checkpoint_payload["model"] = None  # Free memory
+
         # Move model to device BEFORE FSDP wrapping
         self.model = self.model.to(self.device)
 
         # Wrap model with FSDP
+        logger.info(f"[Rank {self.rank}] Wrapping model with FSDP")
         self._fsdp_model = self._wrap_model_with_fsdp()
+
+        # Create optimizer AFTER FSDP wrapping (CRITICAL!)
+        logger.info(f"[Rank {self.rank}] Creating optimizer on FSDP-wrapped model")
+        self.optimizer = self.optimizer_fn(self._fsdp_model)
+
+        # Phase 2: Load optimizer state AFTER FSDP wrapping (THUDM pattern)
+        if checkpoint_payload and checkpoint_payload.get("optimizer"):
+            logger.info(f"[Rank {self.rank}] Loading optimizer state")
+            self.optimizer.load_state_dict(checkpoint_payload["optimizer"])
+            checkpoint_payload["optimizer"] = None  # Free memory
+
+        # Restore step counter from checkpoint
+        if checkpoint_payload and checkpoint_payload.get("step"):
+            self.step = checkpoint_payload["step"]
+            logger.info(f"[Rank {self.rank}] Restored step counter: {self.step}")
+
+        barrier()  # Sync all ranks after initialization
 
         logger.info(
             f"[Rank {self.rank}/{self.world_size}] FSDPTrainingBackend initialized "
@@ -142,52 +187,100 @@ class FSDPTrainingBackend:
             f"mixed_precision={self.config.mixed_precision})"
         )
 
-    def _wrap_model_with_fsdp(self) -> FSDP:
-        """Wrap model with FSDP.
+    def _load_checkpoint_cpu(self, checkpoint_path: Path) -> Optional[Dict[str, Any]]:
+        """Load checkpoint to CPU (all ranks).
+
+        Args:
+            checkpoint_path: Path to checkpoint directory
 
         Returns:
-            FSDP-wrapped model
+            Dictionary with model, optimizer, step (or None if not found)
+
+        Side effects:
+            - Reads checkpoint.pt from disk
+            - All ranks load the same checkpoint
+        """
+        ckpt_file = checkpoint_path / "checkpoint.pt"
+        if not ckpt_file.exists():
+            logger.warning(f"[Rank {self.rank}] Checkpoint file not found: {ckpt_file}")
+            return None
+
+        # Load to CPU (all ranks)
+        checkpoint = torch.load(ckpt_file, map_location="cpu")
+
+        return {
+            "model": checkpoint.get("model"),
+            "optimizer": checkpoint.get("optimizer"),
+            "step": checkpoint.get("step", 0),
+            "metrics": checkpoint.get("metrics", {}),
+        }
+
+    def _wrap_model_with_fsdp(self) -> torch.nn.Module:
+        """Wrap model with FSDP v2 (per-layer wrapping).
+
+        Following THUDM SLIME pattern:
+        - Uses fully_shard() composable API (PyTorch 2.4+)
+        - Wraps individual transformer layers
+        - Wraps untied embeddings separately
+        - Wraps entire model at root
+
+        Returns:
+            FSDP-wrapped model (using fully_shard)
 
         Side effects:
             - Modifies model in-place with FSDP wrapper
         """
-        # Parse sharding strategy
-        strategy_map = {
-            "FULL_SHARD": ShardingStrategy.FULL_SHARD,
-            "SHARD_GRAD_OP": ShardingStrategy.SHARD_GRAD_OP,
-            "NO_SHARD": ShardingStrategy.NO_SHARD,
-        }
-        sharding_strategy = strategy_map.get(self.config.sharding_strategy)
-        assert sharding_strategy is not None, (
-            f"Unknown sharding strategy: {self.config.sharding_strategy}"
-        )
+        from packaging import version
 
-        # Configure mixed precision
-        mixed_precision = None
-        if self.config.mixed_precision:
-            mixed_precision = MixedPrecision(
-                param_dtype=torch.bfloat16,
-                reduce_dtype=torch.bfloat16,
-                buffer_dtype=torch.bfloat16,
+        # Import fully_shard based on PyTorch version
+        if version.parse(torch.__version__) >= version.parse("2.6"):
+            from torch.distributed.fsdp import fully_shard
+        elif version.parse(torch.__version__) >= version.parse("2.4"):
+            from torch.distributed._composable.fsdp import fully_shard
+        else:
+            raise ImportError(
+                f"FSDP v2 (fully_shard) requires PyTorch 2.4+, got {torch.__version__}"
             )
 
-        # Don't use auto-wrap policy - it causes issues with tied weights
-        # SLIME uses FSDP2 with manual per-layer wrapping to avoid this
-        # For FSDP1, safest approach is no auto-wrap for models with tied embeddings
+        # Get transformer layer classes to wrap (HuggingFace models expose this)
+        layer_cls_to_wrap = getattr(self.model, "_no_split_modules", [])
 
-        # Wrap model
-        fsdp_model = FSDP(
-            self.model,
-            sharding_strategy=sharding_strategy,
-            auto_wrap_policy=None,  # No auto-wrap - avoid tied weight issues
-            mixed_precision=mixed_precision,
-            device_id=self.device,
-            use_orig_params=True,  # Preserve parameter names
-            sync_module_states=True,  # Sync tied weights across ranks
-            ignored_modules=None,
+        if not layer_cls_to_wrap:
+            logger.warning(
+                f"[Rank {self.rank}] Model has no _no_split_modules, "
+                "falling back to whole-model wrapping"
+            )
+            # Just wrap the whole model
+            fully_shard(self.model)
+            return self.model
+
+        # Find all modules to wrap individually
+        # - Transformer layers (from _no_split_modules)
+        # - Untied embeddings (only if tie_word_embeddings=False)
+        modules_to_wrap = []
+        for name, module in self.model.named_modules():
+            # Wrap transformer layers
+            if module.__class__.__name__ in layer_cls_to_wrap:
+                modules_to_wrap.append((name, module))
+            # Wrap untied embeddings
+            elif isinstance(module, torch.nn.Embedding):
+                # Check if embeddings are tied
+                tie_embeddings = getattr(self.model.config, "tie_word_embeddings", True)
+                if not tie_embeddings:
+                    modules_to_wrap.append((name, module))
+
+        logger.info(
+            f"[Rank {self.rank}] Wrapping {len(modules_to_wrap)} modules with FSDP v2"
         )
 
-        return fsdp_model
+        # Wrap each module individually (THUDM pattern)
+        for name, module in modules_to_wrap:
+            fully_shard(module)
+
+        # Wrap the entire model (root wrapping)
+        fully_shard(self.model)
+
+        return self.model
 
     def forward_backward(self, batch: Dict[str, Any]) -> TrainFuture[Dict[str, float]]:
         """Compute loss and gradients (distributed across GPUs).
@@ -342,7 +435,11 @@ class FSDPTrainingBackend:
         return ImmediateTrainFuture(state_dict)
 
     def load_weights(self, weights: Dict[str, Any]) -> TrainFuture[None]:
-        """Load model weights from inference or checkpoint.
+        """Load model weights with explicit DTensor handling.
+
+        Following THUDM SLIME pattern:
+        - Try new PyTorch API first (set_model_state_dict)
+        - Fall back to manual DTensor distribution if needed
 
         Args:
             weights: state_dict to load
@@ -352,29 +449,103 @@ class FSDPTrainingBackend:
 
         Side effects:
             - Loads weights into model
-            - FSDP automatically shards weights across GPUs
+            - FSDP automatically shards weights across GPUs (or manual DTensor distribution)
         """
         from rollouts.training.types import ImmediateTrainFuture
 
-        # Use new PyTorch checkpoint API (not deprecated state_dict_type)
-        from torch.distributed.checkpoint.state_dict import (
-            StateDictOptions,
-            set_model_state_dict,
-        )
-
         logger.info(f"[FSDP DEBUG] Rank {self.rank}: Loading model state dict...")
 
-        # Load with new API
-        options = StateDictOptions(full_state_dict=True, cpu_offload=True)
-        set_model_state_dict(
-            self._fsdp_model,
-            model_state_dict=weights,
-            options=options
-        )
+        try:
+            # Try new PyTorch checkpoint API first
+            from torch.distributed.checkpoint.state_dict import (
+                StateDictOptions,
+                set_model_state_dict,
+            )
 
-        logger.info(f"[FSDP DEBUG] Rank {self.rank}: Loaded weights successfully")
+            options = StateDictOptions(full_state_dict=True, cpu_offload=True)
+            set_model_state_dict(
+                self._fsdp_model,
+                model_state_dict=weights,
+                options=options
+            )
+            logger.info(f"[FSDP DEBUG] Rank {self.rank}: Loaded weights successfully (PyTorch API)")
+
+        except Exception as e:
+            # Fall back to manual DTensor handling (THUDM pattern)
+            logger.warning(
+                f"[FSDP DEBUG] Rank {self.rank}: PyTorch API failed ({e}), "
+                "falling back to manual DTensor loading"
+            )
+            self._load_weights_with_dtensor(weights)
+            logger.info(f"[FSDP DEBUG] Rank {self.rank}: Loaded weights successfully (manual DTensor)")
 
         return ImmediateTrainFuture(None)
+
+    @torch.no_grad()
+    def _load_weights_with_dtensor(self, weights: Dict[str, torch.Tensor]) -> None:
+        """Load weights with explicit DTensor distribution (THUDM SLIME pattern).
+
+        Args:
+            weights: State dict to load (on CPU)
+
+        Side effects:
+            - Loads weights into FSDP model
+            - Handles DTensor distribution manually
+        """
+        # Import DTensor utilities
+        try:
+            from torch.distributed._tensor import DTensor, distribute_tensor
+        except ImportError:
+            logger.error("DTensor not available, cannot load weights")
+            raise
+
+        # Cache parameter and buffer maps for efficiency
+        if not hasattr(self, "_fsdp_param_map"):
+            self._fsdp_param_map = dict(self._fsdp_model.named_parameters())
+            self._fsdp_buffer_map = dict(self._fsdp_model.named_buffers())
+
+        param_map = self._fsdp_param_map
+        buffer_map = self._fsdp_buffer_map
+
+        for name, src in weights.items():
+            if not torch.is_tensor(src):
+                continue
+
+            # Find target parameter or buffer
+            target_param = param_map.get(name)
+            if target_param is None:
+                target_param = buffer_map.get(name)
+                if target_param is None:
+                    logger.warning(f"[Rank {self.rank}] Parameter not found: {name}")
+                    continue
+
+            dst_tensor = target_param.data
+            src_tensor = src.detach()
+
+            # Move to CPU if needed
+            if src_tensor.device.type != "cpu":
+                src_tensor = src_tensor.to(device=torch.device("cpu"))
+
+            # Convert dtype if needed
+            if src_tensor.dtype != dst_tensor.dtype:
+                src_tensor = src_tensor.to(dtype=dst_tensor.dtype)
+
+            # Handle DTensor distribution (THUDM pattern)
+            if isinstance(dst_tensor, DTensor):
+                # Distribute full tensor according to FSDP sharding
+                distributed = distribute_tensor(
+                    src_tensor.contiguous(),
+                    device_mesh=dst_tensor.device_mesh,
+                    placements=dst_tensor.placements,
+                )
+                dst_tensor.copy_(distributed)
+            else:
+                # Regular tensor: just copy to GPU
+                dst_tensor.copy_(
+                    src_tensor.to(device=dst_tensor.device, non_blocking=True)
+                )
+
+        torch.cuda.synchronize()
 
     async def save_checkpoint(
         self, step: int, metrics: Dict[str, float]
