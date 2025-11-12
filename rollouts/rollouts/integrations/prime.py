@@ -73,16 +73,11 @@ def prime_reward_fn(
         model_response = ""
         for msg in reversed(trajectory.messages):
             if msg.role == "assistant":
-                content = msg.content or ""
-                # Handle both string and list content (vision messages)
-                if isinstance(content, str):
-                    model_response = content
-                else:
-                    # For list content, join text parts
-                    model_response = " ".join(
-                        str(part.get("text", "")) if isinstance(part, dict) else str(part)
-                        for part in content
-                    )
+                content = msg.content
+                # Prime environments don't use vision messages - content should be string
+                assert isinstance(content, (str, type(None))), \
+                    f"Prime integration expects string content, got {type(content)}. Vision messages not supported."
+                model_response = content or ""
                 break
 
         # Parse response using Prime's parser
