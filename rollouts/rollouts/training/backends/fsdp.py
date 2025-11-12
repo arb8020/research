@@ -100,10 +100,13 @@ class FSDPTrainingBackend:
         ...     opt_result = await backend.optim_step().result()
     """
 
+    # Required fields (no defaults) - must come first
     model: torch.nn.Module
+    optimizer_fn: Callable[[torch.nn.Module], torch.optim.Optimizer]
     loss_fn: Callable
     checkpoint_dir: Path
-    optimizer_fn: Callable[[torch.nn.Module], torch.optim.Optimizer]
+
+    # Optional fields (with defaults) - must come after required fields
     config: FSDPConfig = field(default_factory=FSDPConfig)
     checkpoint_path: Optional[Path] = None
     device: Optional[torch.device] = None

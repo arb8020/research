@@ -220,6 +220,7 @@ async def create_fsdp_backend(config: Config, output_dir: Path):
     )
 
     # Create FSDP backend (optimizer will be created inside __post_init__)
+    # Note: Field order matters in dataclasses - required fields first
     backend = FSDPTrainingBackend(
         model=model,
         optimizer_fn=make_optimizer,
