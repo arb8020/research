@@ -182,7 +182,10 @@ class FSDPTrainingBackend:
             self.step = checkpoint_payload["step"]
             logger.info(f"[Rank {self.rank}] Restored step counter: {self.step}")
 
-        barrier()  # Sync all ranks after initialization
+        # Sync all ranks after initialization (critical barrier - all ranks must reach here)
+        logger.info(f"[FSDP DEBUG] Rank {self.rank}: Entering initialization barrier...")
+        barrier()
+        logger.info(f"[FSDP DEBUG] Rank {self.rank}: Passed initialization barrier")
 
         logger.info(
             f"[Rank {self.rank}/{self.world_size}] FSDPTrainingBackend initialized "
@@ -273,15 +276,18 @@ class FSDPTrainingBackend:
                     modules_to_wrap.append((name, module))
 
         logger.info(
-            f"[Rank {self.rank}] Wrapping {len(modules_to_wrap)} modules with FSDP v2"
+            f"[FSDP DEBUG] Rank {self.rank}: Wrapping {len(modules_to_wrap)} modules with FSDP v2"
         )
 
         # Wrap each module individually (THUDM pattern)
-        for name, module in modules_to_wrap:
+        for idx, (name, module) in enumerate(modules_to_wrap):
+            logger.debug(f"[FSDP DEBUG] Rank {self.rank}: Wrapping module {idx+1}/{len(modules_to_wrap)}: {name}")
             fully_shard(module)
 
+        logger.info(f"[FSDP DEBUG] Rank {self.rank}: All sub-modules wrapped, wrapping root model...")
         # Wrap the entire model (root wrapping)
         fully_shard(self.model)
+        logger.info(f"[FSDP DEBUG] Rank {self.rank}: Root model wrapped successfully")
 
         return self.model
 
@@ -423,13 +429,14 @@ class FSDPTrainingBackend:
             get_model_state_dict,
         )
 
-        logger.info(f"[FSDP DEBUG] Rank {self.rank}: Getting model state dict...")
+        logger.info(f"[FSDP DEBUG] Rank {self.rank}: Getting model state dict (this may trigger barriers)...")
 
         # Configure to gather full state on rank 0
+        # Note: get_model_state_dict internally calls barriers to gather weights
         options = StateDictOptions(full_state_dict=True, cpu_offload=True)
         state_dict = get_model_state_dict(self._fsdp_model, options=options)
 
-        logger.info(f"[FSDP DEBUG] Rank {self.rank}: Got state dict successfully")
+        logger.info(f"[FSDP DEBUG] Rank {self.rank}: Got state dict successfully (all internal barriers passed)")
 
         # Only rank 0 has the full state
         if not is_main_process():
