@@ -413,7 +413,7 @@ class Actor(JsonSerializable):
 @dataclass(frozen=True)
 class AgentState:
     actor: Actor
-    environment: Environment
+    environment: Environment | None
     max_turns: int
     stop: Optional[StopReason] = None
     turn_idx: int = 0
