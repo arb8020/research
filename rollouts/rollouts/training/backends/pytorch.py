@@ -267,41 +267,64 @@ class PyTorchTrainingBackend:
         assert step >= 0, f"step must be >= 0, got {step}"
         assert not self._poisoned, "Backend is poisoned (previous error)"
 
+        # Get rank early for logging
+        rank = dist.get_rank() if dist.is_initialized() else 0
+        is_distributed = dist.is_initialized()
+
+        # DEBUG: Log checkpoint start
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"[CHECKPOINT DEBUG] Rank {rank}: Starting checkpoint save for step {step}")
+        logger.info(f"[CHECKPOINT DEBUG] Rank {rank}: Distributed={is_distributed}, FSDP={self._fsdp_state_dict_opts is not None}")
+
         # Increment weight version (SLIME pattern)
         self.weight_version += 1
-
-        # Get rank for FSDP coordination
-        rank = dist.get_rank() if dist.is_initialized() else 0
+        logger.info(f"[CHECKPOINT DEBUG] Rank {rank}: Incremented weight_version to {self.weight_version}")
 
         # Create checkpoint directory (only rank 0, then barrier)
         ckpt_dir = self.checkpoint_dir / f"step_{step:04d}"
         if rank == 0:
+            logger.info(f"[CHECKPOINT DEBUG] Rank 0: Creating checkpoint directory: {ckpt_dir}")
             ckpt_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"[CHECKPOINT DEBUG] Rank 0: Directory created successfully")
 
         # Barrier to ensure directory exists before all ranks proceed
-        if dist.is_initialized():
+        if is_distributed:
+            logger.info(f"[CHECKPOINT DEBUG] Rank {rank}: Entering barrier #1 (before state_dict)")
             dist.barrier()
+            logger.info(f"[CHECKPOINT DEBUG] Rank {rank}: Passed barrier #1")
 
         # Get model state dict (FSDP-aware using SLIME pattern)
         # This is where SLIME's fsdp_utils/actor.py:667 pattern is used
         if self._fsdp_state_dict_opts is not None:
+            logger.info(f"[CHECKPOINT DEBUG] Rank {rank}: Getting FSDP state dict (this may take time)...")
             # FSDP model: use new PyTorch checkpoint API
             # get_model_state_dict handles gathering across ranks
             state_dict = get_model_state_dict(self.model, options=self._fsdp_state_dict_opts)
+            logger.info(f"[CHECKPOINT DEBUG] Rank {rank}: Got FSDP state dict successfully")
         else:
+            logger.info(f"[CHECKPOINT DEBUG] Rank {rank}: Getting regular PyTorch state dict...")
             # Regular PyTorch model
             state_dict = self.model.state_dict()
+            logger.info(f"[CHECKPOINT DEBUG] Rank {rank}: Got state dict successfully")
 
         # Only rank 0 saves to disk (SLIME pattern: checkpoint.py:143)
         if rank == 0:
+            logger.info(f"[CHECKPOINT DEBUG] Rank 0: Starting disk I/O...")
+
             # Save model state
             model_path = ckpt_dir / "pytorch_model.bin"
+            logger.info(f"[CHECKPOINT DEBUG] Rank 0: Saving model to {model_path}...")
             await trio.to_thread.run_sync(torch.save, state_dict, model_path)
+            logger.info(f"[CHECKPOINT DEBUG] Rank 0: Model saved successfully")
 
             # Save optimizer state
             optimizer_path = ckpt_dir / "optimizer.bin"
+            logger.info(f"[CHECKPOINT DEBUG] Rank 0: Getting optimizer state dict...")
             optimizer_state = self.optimizer.state_dict()
+            logger.info(f"[CHECKPOINT DEBUG] Rank 0: Saving optimizer to {optimizer_path}...")
             await trio.to_thread.run_sync(torch.save, optimizer_state, optimizer_path)
+            logger.info(f"[CHECKPOINT DEBUG] Rank 0: Optimizer saved successfully")
 
             # Save metadata (nanochat + SLIME pattern)
             metadata = {
@@ -311,13 +334,20 @@ class PyTorchTrainingBackend:
                 "metrics": metrics,
             }
             metadata_path = ckpt_dir / "metadata.json"
+            logger.info(f"[CHECKPOINT DEBUG] Rank 0: Saving metadata to {metadata_path}...")
             await trio.to_thread.run_sync(self._write_json_metadata, metadata_path, metadata)
+            logger.info(f"[CHECKPOINT DEBUG] Rank 0: Metadata saved successfully")
+        else:
+            logger.info(f"[CHECKPOINT DEBUG] Rank {rank}: Skipping disk I/O (not rank 0)")
 
         # Barrier to ensure rank 0 finishes before other ranks proceed
         # This prevents races if checkpoint path is used immediately after
-        if dist.is_initialized():
+        if is_distributed:
+            logger.info(f"[CHECKPOINT DEBUG] Rank {rank}: Entering barrier #2 (after save)")
             dist.barrier()
+            logger.info(f"[CHECKPOINT DEBUG] Rank {rank}: Passed barrier #2")
 
+        logger.info(f"[CHECKPOINT DEBUG] Rank {rank}: Checkpoint save completed successfully!")
         return ckpt_dir
 
     async def load_checkpoint(self, checkpoint_path: Path) -> Dict[str, Any]:
