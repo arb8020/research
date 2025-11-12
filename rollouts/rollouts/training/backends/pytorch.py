@@ -427,6 +427,50 @@ class PyTorchTrainingBackend:
             self._poisoned = True
             raise RuntimeError(f"Failed to load weights: {e}") from e
 
+    def get_state_snapshot(self) -> Dict[str, Any]:
+        """Get complete state for debugging/introspection.
+
+        Returns all state that affects training behavior.
+        Useful for debugging, logging, and understanding what's happening.
+
+        Tiger Style: Make hidden state visible when needed.
+
+        Returns:
+            Dict with all backend state including model, optimizer, and training state
+        """
+        try:
+            num_params = sum(p.numel() for p in self.model.parameters())
+            param_dtype = next(self.model.parameters()).dtype
+            param_device = next(self.model.parameters()).device
+        except StopIteration:
+            num_params = 0
+            param_dtype = None
+            param_device = None
+
+        return {
+            # Model state
+            "model_num_parameters": num_params,
+            "model_dtype": str(param_dtype) if param_dtype else None,
+            "model_device": str(param_device) if param_device else None,
+            "model_is_training": self.model.training,
+
+            # Optimizer state
+            "optimizer_type": type(self.optimizer).__name__,
+            "optimizer_num_param_groups": len(self.optimizer.param_groups),
+            "learning_rate": self.optimizer.param_groups[0]["lr"],
+            "betas": self.optimizer.param_groups[0].get("betas", None),
+            "weight_decay": self.optimizer.param_groups[0].get("weight_decay", 0),
+
+            # Training state
+            "current_step": self.current_step,
+            "weight_version": self.weight_version,
+
+            # Execution state
+            "is_poisoned": self._poisoned,
+            "is_fsdp": self._fsdp_state_dict_opts is not None,
+            "device": str(self.device) if self.device else None,
+        }
+
     # Helper methods for async file I/O (Tiger Style: explicit sync methods)
     @staticmethod
     def _write_json_metadata(path: Path, data: Dict[str, Any]) -> None:
