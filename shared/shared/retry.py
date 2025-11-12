@@ -32,6 +32,59 @@ class RetryState:
     result: Any = None
 
 
+# Pure helper functions (no control flow, just computation)
+def _calculate_sleep_time(base_delay: float, jitter: bool, max_delay: Optional[float]) -> float:
+    """Calculate sleep time with optional jitter and cap. Pure function."""
+    assert base_delay > 0, f"base_delay must be > 0, got {base_delay}"
+    assert isinstance(jitter, bool), f"jitter must be bool, got {type(jitter)}"
+
+    sleep_time = base_delay
+    if jitter:
+        # Add up to 100% jitter
+        sleep_time = base_delay * (0.5 + random.random())
+    if max_delay:
+        sleep_time = min(sleep_time, max_delay)
+
+    assert sleep_time > 0, f"sleep_time must be > 0, got {sleep_time}"
+    return sleep_time
+
+
+def _should_retry_on_result(result: Any, retry_predicate: Optional[Callable[[Any], bool]]) -> bool:
+    """Check if result should trigger retry. Pure function."""
+    if retry_predicate is None:
+        return False
+    return retry_predicate(result)
+
+
+def _log_retry_attempt(
+    func_name: str,
+    module_name: str,
+    attempt: int,
+    max_attempts: int,
+    sleep_time: float,
+    exception: Optional[Exception],
+    has_result_predicate: bool
+) -> None:
+    """Log retry attempt. Leaf function with no control flow."""
+    assert isinstance(func_name, str), f"func_name must be str, got {type(func_name)}"
+    assert isinstance(module_name, str), f"module_name must be str, got {type(module_name)}"
+    assert attempt > 0, f"attempt must be > 0, got {attempt}"
+    assert attempt <= max_attempts, f"attempt must be <= max_attempts, got {attempt} > {max_attempts}"
+    assert sleep_time > 0, f"sleep_time must be > 0, got {sleep_time}"
+
+    logger = logging.getLogger(module_name)
+    if exception:
+        logger.warning(
+            f"{func_name}() attempt {attempt}/{max_attempts} failed: {exception}. "
+            f"Retrying in {sleep_time:.2f}s..."
+        )
+    else:
+        logger.warning(
+            f"{func_name}() attempt {attempt}/{max_attempts} returned retriable result. "
+            f"Retrying in {sleep_time:.2f}s..."
+        )
+
+
 def retry(
     max_attempts: int = 3,
     delay: float = 1,
@@ -158,39 +211,34 @@ def retry_v2(
                 exception_to_retry = None
                 result = None
 
+                # Execute function
                 try:
                     result = func(*args, **kwargs)
-
-                    # Check if result should trigger retry
-                    if retry_on_result and retry_on_result(result):
-                        # Treat as retriable condition
-                        pass
-                    else:
-                        # Success - return result
-                        return result
-
                 except exceptions as e:
                     exception_to_retry = e
 
-                # If we got here, need to retry (either exception or retry_on_result)
+                # Tiger Style: Centralize control flow (push ifs up)
+                # Check if we should retry
+                should_retry = exception_to_retry is not None or _should_retry_on_result(result, retry_on_result)
+
+                if not should_retry:
+                    # Success - return result
+                    return result
+
+                # Prepare for retry
                 attempt += 1
+
                 if attempt >= max_attempts:
                     # Final attempt exhausted
                     if exception_to_retry:
                         raise exception_to_retry
-                    else:
-                        # Result failed predicate but no more retries
-                        return result
+                    # Result failed predicate but no more retries
+                    return result
 
-                # Calculate delay with optional jitter and cap
-                sleep_time = current_delay
-                if jitter:
-                    # Add up to 100% jitter
-                    sleep_time = current_delay * (0.5 + random.random())
-                if max_delay:
-                    sleep_time = min(sleep_time, max_delay)
+                # Calculate delay using pure helper
+                sleep_time = _calculate_sleep_time(current_delay, jitter, max_delay)
 
-                # Call on_retry callback if provided
+                # Handle callback or logging
                 if on_retry:
                     state = RetryState(
                         attempt=attempt,
@@ -200,18 +248,16 @@ def retry_v2(
                     )
                     on_retry(state)
                 else:
-                    # Default logging
-                    logger = logging.getLogger(getattr(func, '__module__', 'unknown'))
-                    if exception_to_retry:
-                        logger.warning(
-                            f"{getattr(func, '__name__', '<function>')}() attempt {attempt}/{max_attempts} failed: {exception_to_retry}. "
-                            f"Retrying in {sleep_time:.2f}s..."
-                        )
-                    else:
-                        logger.warning(
-                            f"{getattr(func, '__name__', '<function>')}() attempt {attempt}/{max_attempts} returned retriable result. "
-                            f"Retrying in {sleep_time:.2f}s..."
-                        )
+                    # Use leaf logging function
+                    _log_retry_attempt(
+                        func_name=getattr(func, '__name__', '<function>'),
+                        module_name=getattr(func, '__module__', 'unknown'),
+                        attempt=attempt,
+                        max_attempts=max_attempts,
+                        sleep_time=sleep_time,
+                        exception=exception_to_retry,
+                        has_result_predicate=retry_on_result is not None
+                    )
 
                 time.sleep(sleep_time)
                 current_delay *= backoff
@@ -283,39 +329,34 @@ def async_retry(
                 exception_to_retry = None
                 result = None
 
+                # Execute function
                 try:
                     result = await func(*args, **kwargs)
-
-                    # Check if result should trigger retry
-                    if retry_on_result and retry_on_result(result):
-                        # Treat as retriable condition
-                        pass
-                    else:
-                        # Success - return result
-                        return result
-
                 except exceptions as e:
                     exception_to_retry = e
 
-                # If we got here, need to retry (either exception or retry_on_result)
+                # Tiger Style: Centralize control flow (push ifs up)
+                # Check if we should retry
+                should_retry = exception_to_retry is not None or _should_retry_on_result(result, retry_on_result)
+
+                if not should_retry:
+                    # Success - return result
+                    return result
+
+                # Prepare for retry
                 attempt += 1
+
                 if attempt >= max_attempts:
                     # Final attempt exhausted
                     if exception_to_retry:
                         raise exception_to_retry
-                    else:
-                        # Result failed predicate but no more retries
-                        return result
+                    # Result failed predicate but no more retries
+                    return result
 
-                # Calculate delay with optional jitter and cap
-                sleep_time = current_delay
-                if jitter:
-                    # Add up to 100% jitter
-                    sleep_time = current_delay * (0.5 + random.random())
-                if max_delay:
-                    sleep_time = min(sleep_time, max_delay)
+                # Calculate delay using pure helper
+                sleep_time = _calculate_sleep_time(current_delay, jitter, max_delay)
 
-                # Call on_retry callback if provided
+                # Handle callback or logging
                 if on_retry:
                     state = RetryState(
                         attempt=attempt,
@@ -325,18 +366,16 @@ def async_retry(
                     )
                     on_retry(state)
                 else:
-                    # Default logging
-                    logger = logging.getLogger(getattr(func, '__module__', 'unknown'))
-                    if exception_to_retry:
-                        logger.warning(
-                            f"{getattr(func, '__name__', '<function>')}() attempt {attempt}/{max_attempts} failed: {exception_to_retry}. "
-                            f"Retrying in {sleep_time:.2f}s..."
-                        )
-                    else:
-                        logger.warning(
-                            f"{getattr(func, '__name__', '<function>')}() attempt {attempt}/{max_attempts} returned retriable result. "
-                            f"Retrying in {sleep_time:.2f}s..."
-                        )
+                    # Use leaf logging function
+                    _log_retry_attempt(
+                        func_name=getattr(func, '__name__', '<function>'),
+                        module_name=getattr(func, '__module__', 'unknown'),
+                        attempt=attempt,
+                        max_attempts=max_attempts,
+                        sleep_time=sleep_time,
+                        exception=exception_to_retry,
+                        has_result_predicate=retry_on_result is not None
+                    )
 
                 await trio.sleep(sleep_time)
                 current_delay *= backoff
