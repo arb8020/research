@@ -4,8 +4,9 @@ from enum import Enum
 import os
 import trio
 from abc import ABC
-from dataclasses import dataclass, field, asdict, fields
+from dataclasses import dataclass, field, asdict, fields, replace
 from typing import Any, Dict, List, Optional, Mapping, Union, TypeVar, Type, Iterator, Callable, Awaitable, Tuple, Protocol, runtime_checkable
+from pathlib import Path
 from datetime import datetime, timezone
 import dacite
 
@@ -449,3 +450,48 @@ class RunConfig:
     user_message_for_thinking: Optional[str] = None
     inline_thinking: Optional[str] = None
     checkpoint_store: Optional[Any] = None
+
+# ── Evaluation Types ──────────────────────────────────────────────────────────
+
+# Reward function: pure transform from Trajectory -> Trajectory with rewards populated
+RewardFunction = Callable[[Trajectory], Trajectory]
+
+@dataclass(frozen=True)
+class EvalConfig:
+    """Configuration for evaluation runs.
+
+    Tiger Style: All configuration explicit, immutable, composable.
+
+    Example:
+        >>> def my_reward(traj: Trajectory) -> Trajectory:
+        ...     score = 1.0 if check_correctness(traj) else 0.0
+        ...     return replace(traj, rewards=score)
+        >>>
+        >>> config = EvalConfig(
+        ...     reward_fn=my_reward,
+        ...     max_turns=10,
+        ...     max_concurrent=4,
+        ... )
+    """
+    # Required: how to compute rewards
+    reward_fn: RewardFunction
+
+    # Agent execution
+    run_config: Optional[RunConfig] = None  # If None, use silent default
+    max_turns: int = 10
+
+    # Dataset control
+    max_samples: Optional[int] = None  # If None, evaluate all
+    sample_id_fn: Callable[[int, Dict[str, Any]], str] = field(
+        default_factory=lambda: lambda i, _: f"sample_{i:04d}"
+    )
+
+    # Parallelization
+    max_concurrent: int = 1
+
+    # Output
+    output_dir: Optional[Path] = None
+    eval_name: str = "evaluation"
+
+    # Logging
+    verbose: bool = True
