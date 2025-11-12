@@ -65,7 +65,7 @@ class PyTorchTrainingBackend:
     model: torch.nn.Module
     optimizer: torch.optim.Optimizer
     loss_fn: Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]
-    checkpoint_dir: Path
+    checkpoint_dir: Path  # TODO(ray): Replace with CheckpointStorage protocol for S3/distributed storage
     device: Optional[torch.device] = None  # Tiger Style: Explicit device (optional for CPU-only)
 
     # State (SLIME-inspired)
@@ -241,6 +241,27 @@ class PyTorchTrainingBackend:
             - Uses new PyTorch checkpoint API (get_model_state_dict) for FSDP models
             - Only rank 0 saves to disk
             - All ranks participate in barrier for coordination
+
+        Ray/distributed storage readiness:
+            TODO(ray): This method currently couples state extraction with I/O.
+            When adding Ray/miniray, refactor to use dependency injection:
+
+            Pattern to use:
+                class CheckpointStorage(Protocol):
+                    async def save(self, state: Dict, metadata: Dict) -> str: ...
+                    async def load(self, checkpoint_id: str) -> Dict: ...
+
+                # Then inject storage at construction:
+                backend = PyTorchTrainingBackend(
+                    ...,
+                    checkpoint_storage=S3CheckpointStorage(bucket="..."),
+                )
+
+            This decouples:
+            - State extraction (get_model_state_dict) from I/O (torch.save)
+            - Local filesystem assumptions from distributed storage (S3, GCS)
+            - Matches Casey Muratori's decoupling principle
+            - Matches ray_design.txt: "Abstract Storage - Don't assume local filesystem"
         """
         # Tiger Style: Assert preconditions
         assert step >= 0, f"step must be >= 0, got {step}"
