@@ -18,10 +18,10 @@ from rollouts.dtypes import Endpoint, EvalConfig, Message
 def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
     """Prepare messages for ACEBench environment.
 
-    ACEBench uses 'question' field for the user prompt.
+    ACEBench uses 'prompt' field as a list of message dicts.
     """
-    question = sample_data.get("question", "")
-    return [Message(role="user", content=question)]
+    prompt = sample_data.get("prompt", [])
+    return [Message(role=msg["role"], content=msg["content"]) for msg in prompt]
 
 
 @dataclass(frozen=True)
