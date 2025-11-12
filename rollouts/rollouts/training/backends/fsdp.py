@@ -523,18 +523,12 @@ class FSDPTrainingBackend:
             f"(all internal barriers passed, state_dict has {len(state_dict)} keys)"
         )
 
-        # Only rank 0 has the full state, other ranks need to clear their dict
+        # Only rank 0 has the full state, other ranks get empty dict from API
         if not is_main_process():
-            # Tiger Style: Assert negative space (what should NOT happen)
-            assert len(state_dict) > 0, (
-                f"Non-main rank {self.rank} should receive partial state from collective, "
-                "but got empty dict - this suggests collective operation failed"
-            )
             logger.info(
-                f"[RANK-PATH] Rank {self.rank}: Clearing {len(state_dict)} partial weights "
-                "(not main process)"
+                f"[RANK-PATH] Rank {self.rank}: Non-main rank receives empty dict "
+                f"(get_model_state_dict behavior with full_state_dict=True)"
             )
-            state_dict = {}
 
         # Tiger Style: Assert postconditions
         if is_main_process():
