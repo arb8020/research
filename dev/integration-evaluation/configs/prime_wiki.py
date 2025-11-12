@@ -59,7 +59,7 @@ class IntegrationEvalConfig:
     # Evaluation configuration
     eval_name: str = "prime_wiki_eval"
     max_turns: int = 10  # Wiki-search is multi-turn (up to 10 turns)
-    max_concurrent: int = 4  # Parallel evaluation
+    max_concurrent: int = 4  # Parallel evaluation (lower to 1-2 if hitting rate limits)
 
     # Output configuration
     output_dir: Path = Path("results/integration-evaluation")
