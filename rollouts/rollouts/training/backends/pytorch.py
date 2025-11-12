@@ -19,9 +19,21 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 import torch
+import torch.distributed as dist
 import trio
 
 from rollouts.training.types import TrainFuture
+
+# FSDP checkpoint support (SLIME pattern)
+try:
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+    from torch.distributed.checkpoint.state_dict import StateDictOptions, get_model_state_dict
+    FSDP_AVAILABLE = True
+except ImportError:
+    FSDP_AVAILABLE = False
+    FSDP = None
+    StateDictOptions = None
+    get_model_state_dict = None
 
 
 @dataclass
@@ -64,6 +76,9 @@ class PyTorchTrainingBackend:
     _nursery: Optional[trio.Nursery] = field(default=None, init=False, repr=False)
     _poisoned: bool = field(default=False, init=False, repr=False)
 
+    # FSDP checkpoint options (SLIME pattern - set in __post_init__)
+    _fsdp_state_dict_opts: Optional[Any] = field(default=None, init=False, repr=False)
+
     def __post_init__(self):
         """Validate initialization (Tiger Style)."""
         assert self.model is not None, "model cannot be None"
@@ -92,6 +107,17 @@ class PyTorchTrainingBackend:
 
         # Create checkpoint directory if needed
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+        # Detect FSDP and configure state dict options (SLIME pattern)
+        if FSDP_AVAILABLE and isinstance(self.model, FSDP):
+            # Use new PyTorch checkpoint API with CPU offload for FSDP
+            # This matches SLIME's approach in fsdp_utils/actor.py:73-75
+            self._fsdp_state_dict_opts = StateDictOptions(
+                full_state_dict=True,
+                cpu_offload=True,  # Offload to CPU to avoid OOM during checkpoint
+            )
+        else:
+            self._fsdp_state_dict_opts = None
 
     def forward_backward(self, batch: Dict[str, Any]) -> TrainFuture[Dict[str, float]]:
         """Compute loss and gradients (returns future immediately).
@@ -210,6 +236,11 @@ class PyTorchTrainingBackend:
             - Increments self.weight_version
             - Creates checkpoint_dir/step_{step:04d}/
             - Saves pytorch_model.bin, optimizer.bin, metadata.json
+
+        FSDP support:
+            - Uses new PyTorch checkpoint API (get_model_state_dict) for FSDP models
+            - Only rank 0 saves to disk
+            - All ranks participate in barrier for coordination
         """
         # Tiger Style: Assert preconditions
         assert step >= 0, f"step must be >= 0, got {step}"
@@ -218,28 +249,53 @@ class PyTorchTrainingBackend:
         # Increment weight version (SLIME pattern)
         self.weight_version += 1
 
-        # Create checkpoint directory (nanochat pattern)
+        # Get rank for FSDP coordination
+        rank = dist.get_rank() if dist.is_initialized() else 0
+
+        # Create checkpoint directory (only rank 0, then barrier)
         ckpt_dir = self.checkpoint_dir / f"step_{step:04d}"
-        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        if rank == 0:
+            ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-        # Save model state
-        model_path = ckpt_dir / "pytorch_model.bin"
-        torch.save(self.model.state_dict(), model_path)
+        # Barrier to ensure directory exists before all ranks proceed
+        if dist.is_initialized():
+            dist.barrier()
 
-        # Save optimizer state
-        optimizer_path = ckpt_dir / "optimizer.bin"
-        torch.save(self.optimizer.state_dict(), optimizer_path)
+        # Get model state dict (FSDP-aware using SLIME pattern)
+        # This is where SLIME's fsdp_utils/actor.py:667 pattern is used
+        if self._fsdp_state_dict_opts is not None:
+            # FSDP model: use new PyTorch checkpoint API
+            # get_model_state_dict handles gathering across ranks
+            state_dict = get_model_state_dict(self.model, options=self._fsdp_state_dict_opts)
+        else:
+            # Regular PyTorch model
+            state_dict = self.model.state_dict()
 
-        # Save metadata (nanochat + SLIME pattern)
-        metadata = {
-            "step": step,
-            "weight_version": self.weight_version,
-            "timestamp": time.time(),
-            "metrics": metrics,
-        }
-        metadata_path = ckpt_dir / "metadata.json"
-        # Use trio.to_thread for async-safe file I/O
-        await trio.to_thread.run_sync(self._write_json_metadata, metadata_path, metadata)
+        # Only rank 0 saves to disk (SLIME pattern: checkpoint.py:143)
+        if rank == 0:
+            # Save model state
+            model_path = ckpt_dir / "pytorch_model.bin"
+            await trio.to_thread.run_sync(torch.save, state_dict, model_path)
+
+            # Save optimizer state
+            optimizer_path = ckpt_dir / "optimizer.bin"
+            optimizer_state = self.optimizer.state_dict()
+            await trio.to_thread.run_sync(torch.save, optimizer_state, optimizer_path)
+
+            # Save metadata (nanochat + SLIME pattern)
+            metadata = {
+                "step": step,
+                "weight_version": self.weight_version,
+                "timestamp": time.time(),
+                "metrics": metrics,
+            }
+            metadata_path = ckpt_dir / "metadata.json"
+            await trio.to_thread.run_sync(self._write_json_metadata, metadata_path, metadata)
+
+        # Barrier to ensure rank 0 finishes before other ranks proceed
+        # This prevents races if checkpoint path is used immediately after
+        if dist.is_initialized():
+            dist.barrier()
 
         return ckpt_dir
 
@@ -256,6 +312,10 @@ class PyTorchTrainingBackend:
             - Loads model and optimizer state
             - Restores self.weight_version from metadata
             - Updates self.current_step
+
+        FSDP support:
+            - FSDP models can load full state dicts directly
+            - Barrier ensures all ranks coordinate during load
         """
         # Tiger Style: Assert preconditions
         assert checkpoint_path.exists(), f"Checkpoint directory does not exist: {checkpoint_path}"
@@ -271,16 +331,25 @@ class PyTorchTrainingBackend:
         # Load model state
         model_path = checkpoint_path / "pytorch_model.bin"
         assert model_path.exists(), f"pytorch_model.bin not found in {checkpoint_path}"
-        self.model.load_state_dict(torch.load(model_path))
+
+        # Load state dict to CPU first, then load into model
+        # FSDP models can handle full state dicts via load_state_dict
+        state_dict = await trio.to_thread.run_sync(torch.load, model_path, {"map_location": "cpu"})
+        self.model.load_state_dict(state_dict)
 
         # Load optimizer state
         optimizer_path = checkpoint_path / "optimizer.bin"
         assert optimizer_path.exists(), f"optimizer.bin not found in {checkpoint_path}"
-        self.optimizer.load_state_dict(torch.load(optimizer_path))
+        optimizer_state = await trio.to_thread.run_sync(torch.load, optimizer_path, {"map_location": "cpu"})
+        self.optimizer.load_state_dict(optimizer_state)
 
         # Restore weight version and step (SLIME pattern)
         self.weight_version = metadata["weight_version"]
         self.current_step = metadata["step"]
+
+        # Barrier for FSDP coordination
+        if dist.is_initialized():
+            dist.barrier()
 
         return metadata
 
@@ -289,12 +358,21 @@ class PyTorchTrainingBackend:
 
         Returns:
             Future resolving to model.state_dict()
+
+        FSDP support:
+            - Uses new PyTorch checkpoint API for FSDP models
+            - Returns full state dict (gathered to rank 0 if needed)
         """
         # Tiger Style: Assert preconditions
         assert not self._poisoned, "Backend is poisoned (previous error)"
 
-        # Get state dict (simple synchronous operation)
-        state_dict = self.model.state_dict()
+        # Get state dict (FSDP-aware, same pattern as save_checkpoint)
+        if self._fsdp_state_dict_opts is not None:
+            # FSDP model: use new PyTorch checkpoint API
+            state_dict = get_model_state_dict(self.model, options=self._fsdp_state_dict_opts)
+        else:
+            # Regular PyTorch model
+            state_dict = self.model.state_dict()
 
         # Create future with immediate result
         future: TrainFuture[Dict[str, Any]] = TrainFuture(operation="get_weights")
