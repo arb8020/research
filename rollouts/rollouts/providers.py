@@ -157,7 +157,8 @@ async def _execute_vllm_request(
     params: dict,
     headers: dict,
     max_retries: int,
-    backoff_base: int
+    backoff_base: int,
+    timeout: float
 ) -> dict:
     """Execute vLLM API request with retry logic. Returns completion dict."""
     assert isinstance(api_base, str)
@@ -165,6 +166,7 @@ async def _execute_vllm_request(
     assert isinstance(headers, dict)
     assert max_retries > 0
     assert backoff_base > 0
+    assert timeout > 0
     assert "messages" in params, "params must contain messages"
     assert len(api_base) > 0, "api_base cannot be empty"
 
@@ -176,7 +178,7 @@ async def _execute_vllm_request(
         exceptions=(httpx.HTTPError, httpx.TimeoutException),
     )
     async def _call_with_retry():
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(api_base, json=params, headers=headers)
             error_type = _classify_vllm_error(response.status_code, response.text)
 
@@ -568,8 +570,6 @@ def verbose(level: int) -> bool:
 async def rollout_sglang(
     actor: Actor,
     on_chunk: Callable[[StreamChunk], Awaitable[None]],
-    max_api_retries: int = 16,
-    backoff_base: int = 4,
 ) -> Actor:
     """Invoke a vLLM server and return the updated actor."""
     # Tiger Style: Assert all inputs
@@ -579,9 +579,16 @@ async def rollout_sglang(
     assert actor.trajectory is not None
     assert on_chunk is not None
     assert callable(on_chunk)
+
+    # Use endpoint's retry configuration (consistent with OpenAI/Anthropic providers)
+    max_api_retries = actor.endpoint.max_retries
+    timeout = actor.endpoint.timeout
+    backoff_base = 4  # Keep this constant for now
+
     assert max_api_retries > 0
     assert max_api_retries <= 100
     assert backoff_base > 0
+    assert timeout > 0
 
     # Build request using pure helpers
     params = _build_vllm_params(actor)
@@ -589,7 +596,7 @@ async def rollout_sglang(
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
 
     # Execute API call
-    completion = await _execute_vllm_request(api_base, params, headers, max_api_retries, backoff_base)
+    completion = await _execute_vllm_request(api_base, params, headers, max_api_retries, backoff_base, timeout)
     assert completion
 
     # Process tool calls
@@ -697,7 +704,7 @@ async def rollout_openai(
     except Exception as e:
         # Log error with sanitized request details
         import json
-        from openai import BadRequestError
+        from openai import BadRequestError, RateLimitError
 
         sanitized = sanitize_request_for_logging(params)
 
@@ -711,7 +718,30 @@ async def rollout_openai(
             # Tiger Style: Assertion to fail fast and surface the bug
             assert False, f"API returned 400 Bad Request: {e}\nThis indicates a bug in request construction. See logs above for full request."
 
-        # For other errors (rate limits, network issues, etc), just log and raise
+        # Tiger Style: Clean error message for rate limits
+        # Don't spam traceback - this is an expected operational error
+        if isinstance(e, RateLimitError):
+            error_msg = str(e)
+            # Extract quota info if available
+            if "quota" in error_msg.lower() or "rate limit" in error_msg.lower():
+                logger.error(
+                    f"Rate limit exceeded for {actor.endpoint.model}\n"
+                    f"  This is an operational limit, not a bug.\n"
+                    f"  Solutions:\n"
+                    f"    1. Reduce max_concurrent in your config (try 1-2 for Gemini)\n"
+                    f"    2. Add delays between requests\n"
+                    f"    3. Use a model with higher quota\n"
+                    f"  Error: {error_msg}"
+                )
+            else:
+                logger.error(f"Rate limit error: {error_msg}")
+            # Re-raise but with cleaner message
+            raise RuntimeError(
+                f"Rate limit exceeded for {actor.endpoint.model}. "
+                f"Reduce max_concurrent or add delays. See logs for details."
+            ) from e
+
+        # For other errors (network issues, etc), just log and raise
         msg_list = params.get('messages', [])
         msg_count = len(cast(list, msg_list)) if isinstance(msg_list, list) else 0
         logger.error(
