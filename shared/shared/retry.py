@@ -2,16 +2,34 @@
 
 Tiger Style compliant: Use only at external boundaries (network I/O, file I/O).
 Internal code should use assertions and let it crash.
+
+This is a lightweight alternative to tenacity with the essential features:
+- Composable retry/stop/wait strategies
+- Retry on exceptions OR results
+- Exponential backoff with optional jitter
+- Before/after/on_retry callbacks
+- Async support via trio
 """
 
 import logging
 import time
-from typing import Callable, Tuple, Type, TypeVar, cast, Any
+import random
+from typing import Callable, Tuple, Type, TypeVar, cast, Any, Optional
+from dataclasses import dataclass
 import functools
 import inspect
 
 # Type variable for the decorated function
 F = TypeVar('F', bound=Callable)
+
+
+@dataclass
+class RetryState:
+    """State passed to callbacks during retry attempts."""
+    attempt: int
+    delay: float
+    exception: Optional[Exception] = None
+    result: Any = None
 
 
 def retry(
@@ -75,13 +93,147 @@ def retry(
     return decorator
 
 
+# Lightweight tenacity-style retry with composable strategies
+def retry_v2(
+    max_attempts: int = 3,
+    delay: float = 1,
+    backoff: float = 2,
+    max_delay: Optional[float] = None,
+    jitter: bool = False,
+    exceptions: Tuple[Type[Exception], ...] = (Exception,),
+    retry_on_result: Optional[Callable[[Any], bool]] = None,
+    on_retry: Optional[Callable[[RetryState], None]] = None,
+) -> Callable[[F], F]:
+    """Enhanced retry decorator with composable strategies (lightweight tenacity).
+
+    Use this ONLY at external boundaries (network I/O, API calls, file transfers).
+    Internal code should use assertions and fail fast.
+
+    Args:
+        max_attempts: Maximum number of attempts (default: 3)
+        delay: Initial delay in seconds (default: 1)
+        backoff: Backoff multiplier (default: 2, gives 1s, 2s, 4s)
+        max_delay: Maximum delay cap (default: None = no cap)
+        jitter: Add randomness to delay (default: False)
+        exceptions: Tuple of exceptions to catch (default: all Exception)
+        retry_on_result: Optional predicate to retry based on result (e.g., lambda x: x is None)
+        on_retry: Optional callback called before each retry with RetryState
+
+    Example:
+        # Retry on rate limit, with jitter
+        @retry_v2(
+            max_attempts=5,
+            delay=1,
+            backoff=2,
+            max_delay=60,
+            jitter=True,
+            exceptions=(openai.RateLimitError,),
+            on_retry=lambda state: logger.info(f"Retry {state.attempt}, waiting {state.delay}s")
+        )
+        def make_api_call():
+            return requests.get("https://api.example.com")
+
+        # Retry until non-None result
+        @retry_v2(
+            max_attempts=3,
+            retry_on_result=lambda x: x is None
+        )
+        def fetch_data():
+            return db.get_value()  # Returns None if not ready
+    """
+    # Tiger Style: Assert all inputs
+    assert max_attempts >= 1, f"max_attempts must be >= 1, got {max_attempts}"
+    assert delay > 0, f"delay must be > 0, got {delay}"
+    assert backoff >= 1, f"backoff must be >= 1, got {backoff}"
+    assert isinstance(exceptions, tuple), f"exceptions must be tuple, got {type(exceptions)}"
+    assert len(exceptions) > 0, "exceptions tuple cannot be empty"
+
+    def decorator(func: F) -> F:
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            attempt = 0
+            current_delay = delay
+
+            while attempt < max_attempts:
+                exception_to_retry = None
+                result = None
+
+                try:
+                    result = func(*args, **kwargs)
+
+                    # Check if result should trigger retry
+                    if retry_on_result and retry_on_result(result):
+                        # Treat as retriable condition
+                        pass
+                    else:
+                        # Success - return result
+                        return result
+
+                except exceptions as e:
+                    exception_to_retry = e
+
+                # If we got here, need to retry (either exception or retry_on_result)
+                attempt += 1
+                if attempt >= max_attempts:
+                    # Final attempt exhausted
+                    if exception_to_retry:
+                        raise exception_to_retry
+                    else:
+                        # Result failed predicate but no more retries
+                        return result
+
+                # Calculate delay with optional jitter and cap
+                sleep_time = current_delay
+                if jitter:
+                    # Add up to 100% jitter
+                    sleep_time = current_delay * (0.5 + random.random())
+                if max_delay:
+                    sleep_time = min(sleep_time, max_delay)
+
+                # Call on_retry callback if provided
+                if on_retry:
+                    state = RetryState(
+                        attempt=attempt,
+                        delay=sleep_time,
+                        exception=exception_to_retry,
+                        result=result
+                    )
+                    on_retry(state)
+                else:
+                    # Default logging
+                    logger = logging.getLogger(getattr(func, '__module__', 'unknown'))
+                    if exception_to_retry:
+                        logger.warning(
+                            f"{getattr(func, '__name__', '<function>')}() attempt {attempt}/{max_attempts} failed: {exception_to_retry}. "
+                            f"Retrying in {sleep_time:.2f}s..."
+                        )
+                    else:
+                        logger.warning(
+                            f"{getattr(func, '__name__', '<function>')}() attempt {attempt}/{max_attempts} returned retriable result. "
+                            f"Retrying in {sleep_time:.2f}s..."
+                        )
+
+                time.sleep(sleep_time)
+                current_delay *= backoff
+
+            # Tiger Style: Assert impossible states
+            assert False, "Retry loop exited without return or raise"
+
+        return cast(F, wrapper)
+    return decorator
+
+
 def async_retry(
     max_attempts: int = 3,
     delay: float = 1,
     backoff: float = 2,
-    exceptions: Tuple[Type[Exception], ...] = (Exception,)
+    max_delay: Optional[float] = None,
+    jitter: bool = False,
+    exceptions: Tuple[Type[Exception], ...] = (Exception,),
+    retry_on_result: Optional[Callable[[Any], bool]] = None,
+    on_retry: Optional[Callable[[RetryState], None]] = None,
 ) -> Callable[[F], F]:
-    """Async retry decorator with exponential backoff using trio.
+    """Async retry decorator with exponential backoff using trio (lightweight tenacity).
 
     Use this ONLY at external boundaries (network I/O, API calls).
     Internal code should use assertions and fail fast.
@@ -90,10 +242,22 @@ def async_retry(
         max_attempts: Maximum number of attempts (default: 3)
         delay: Initial delay in seconds (default: 1)
         backoff: Backoff multiplier (default: 2, gives 1s, 2s, 4s)
+        max_delay: Maximum delay cap (default: None = no cap)
+        jitter: Add randomness to delay (default: False)
         exceptions: Tuple of exceptions to catch (default: all Exception)
+        retry_on_result: Optional predicate to retry based on result (e.g., lambda x: x is None)
+        on_retry: Optional callback called before each retry with RetryState
 
     Example:
-        @async_retry(max_attempts=3, delay=1, backoff=2, exceptions=(openai.RateLimitError,))
+        @async_retry(
+            max_attempts=5,
+            delay=1,
+            backoff=2,
+            max_delay=60,
+            jitter=True,
+            exceptions=(openai.RateLimitError,),
+            on_retry=lambda state: logger.info(f"Retry {state.attempt}")
+        )
         async def make_api_call():
             return await client.chat.completions.create(...)
     """
@@ -116,23 +280,66 @@ def async_retry(
             current_delay = delay
 
             while attempt < max_attempts:
+                exception_to_retry = None
+                result = None
+
                 try:
-                    return await func(*args, **kwargs)
+                    result = await func(*args, **kwargs)
+
+                    # Check if result should trigger retry
+                    if retry_on_result and retry_on_result(result):
+                        # Treat as retriable condition
+                        pass
+                    else:
+                        # Success - return result
+                        return result
+
                 except exceptions as e:
-                    attempt += 1
-                    if attempt >= max_attempts:
-                        # Let the final exception propagate
-                        raise
+                    exception_to_retry = e
 
-                    # Log the retry for debugging
-                    logger = logging.getLogger(getattr(func, '__module__', 'unknown'))
-                    logger.warning(
-                        f"{getattr(func, '__name__', '<function>')}() attempt {attempt}/{max_attempts} failed: {e}. "
-                        f"Retrying in {current_delay}s..."
+                # If we got here, need to retry (either exception or retry_on_result)
+                attempt += 1
+                if attempt >= max_attempts:
+                    # Final attempt exhausted
+                    if exception_to_retry:
+                        raise exception_to_retry
+                    else:
+                        # Result failed predicate but no more retries
+                        return result
+
+                # Calculate delay with optional jitter and cap
+                sleep_time = current_delay
+                if jitter:
+                    # Add up to 100% jitter
+                    sleep_time = current_delay * (0.5 + random.random())
+                if max_delay:
+                    sleep_time = min(sleep_time, max_delay)
+
+                # Call on_retry callback if provided
+                if on_retry:
+                    state = RetryState(
+                        attempt=attempt,
+                        delay=sleep_time,
+                        exception=exception_to_retry,
+                        result=result
                     )
+                    on_retry(state)
+                else:
+                    # Default logging
+                    logger = logging.getLogger(getattr(func, '__module__', 'unknown'))
+                    if exception_to_retry:
+                        logger.warning(
+                            f"{getattr(func, '__name__', '<function>')}() attempt {attempt}/{max_attempts} failed: {exception_to_retry}. "
+                            f"Retrying in {sleep_time:.2f}s..."
+                        )
+                    else:
+                        logger.warning(
+                            f"{getattr(func, '__name__', '<function>')}() attempt {attempt}/{max_attempts} returned retriable result. "
+                            f"Retrying in {sleep_time:.2f}s..."
+                        )
 
-                    await trio.sleep(current_delay)
-                    current_delay *= backoff
+                await trio.sleep(sleep_time)
+                current_delay *= backoff
 
             # Tiger Style: Assert impossible states
             assert False, "Retry loop exited without return or raise"
