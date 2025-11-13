@@ -326,7 +326,7 @@ def profile_kernel(
 
         # Profile with torch.profiler
         trace_filename = f"{backend_name}_{test_name}_profile"
-        trace_path = output_dir / trace_filename
+        chrome_trace_path = str(output_dir / f"{trace_filename}.json")
 
         with torch.profiler.profile(
             activities=[
@@ -336,17 +336,16 @@ def profile_kernel(
             record_shapes=True,
             profile_memory=True,
             with_stack=True,
-            on_trace_ready=torch.profiler.tensorboard_trace_handler(str(output_dir)),
         ) as prof:
             for _ in range(num_profile_runs):
                 kernel_fn(test_input)
-                prof.step()
+                if num_profile_runs > 1:
+                    prof.step()
 
         if torch.cuda.is_available():
             torch.cuda.synchronize()
 
-        # Export chrome trace for easier viewing
-        chrome_trace_path = str(output_dir / f"{trace_filename}.json")
+        # Export chrome trace (don't use tensorboard handler to avoid double-save)
         prof.export_chrome_trace(chrome_trace_path)
 
         return chrome_trace_path, None
