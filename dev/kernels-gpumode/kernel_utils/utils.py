@@ -501,11 +501,22 @@ print("Kernel execution completed")
         if ncu_path is None:
             return "", "NCU not found - ensure NVIDIA Nsight Compute is installed and in PATH"
 
-        ncu_cmd = [
+        # NCU needs sudo for GPU performance counters access
+        # Check if we can use sudo
+        use_sudo = False
+        sudo_check = subprocess.run(["sudo", "-n", "true"], capture_output=True)
+        if sudo_check.returncode == 0:
+            use_sudo = True
+
+        ncu_cmd = []
+        if use_sudo:
+            ncu_cmd.extend(["sudo", "-E"])  # -E preserves environment
+
+        ncu_cmd.extend([
             ncu_path,
             "--export", str(report_path),
             "--force-overwrite",
-        ]
+        ])
 
         # Add custom metrics if provided
         if ncu_args:
