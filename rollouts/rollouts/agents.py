@@ -258,7 +258,17 @@ async def run_agent_step(state: AgentState, rcfg: RunConfig) -> AgentState:
     # Only call if we actually have an assistant message
     if (state.environment and hasattr(state.environment, 'on_assistant_message')
         and last_message and last_message.role == "assistant"):
-        current_state = await state.environment.on_assistant_message(last_message, current_state)
+        try:
+            current_state = await state.environment.on_assistant_message(last_message, current_state)
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"❌ ENVIRONMENT RESPONSE FAILED: {e}")
+            logger.error(f"   Environment type: {type(state.environment).__name__}")
+            import traceback
+            logger.error(f"   Full traceback:\n{traceback.format_exc()}")
+            # Re-raise to maintain error handling flow
+            raise
     
     # If no tools, we're done with this turn
     if not tool_calls:
