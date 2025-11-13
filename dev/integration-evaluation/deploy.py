@@ -159,7 +159,37 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
     )
 
     # Setup dependencies using kerbal
+    logger.info("📦 Installing dependencies via kerbal...")
+    logger.info(f"   Dependencies to install: {len(deps.dependencies)} packages")
+    for dep in deps.dependencies:
+        logger.info(f"   - {dep}")
     setup_script_deps(bifrost_client, project_workspace, deps, install_extras=None)
+
+    # Debug: Check the generated pyproject.toml
+    logger.info("🔍 Checking generated pyproject.toml...")
+    result = bifrost_client.exec(
+        f"cd {project_workspace} && "
+        f"cat pyproject.toml 2>&1"
+    )
+    logger.info(f"Generated pyproject.toml:\n{result.stdout}")
+
+    # Debug: Check what's actually in the venv
+    logger.info("🔍 Debugging venv state...")
+    result = bifrost_client.exec(
+        f"cd {project_workspace} && "
+        f"source .venv/bin/activate && "
+        f"echo '=== Python location ===' && "
+        f"which python && "
+        f"echo '=== Python version ===' && "
+        f"python --version && "
+        f"echo '=== pip list (backendbench-related) ===' && "
+        f"pip list | grep -i backend && "
+        f"echo '=== Site packages location ===' && "
+        f"python -c 'import site; print(site.getsitepackages())' && "
+        f"echo '=== List site-packages contents ===' && "
+        f"ls -la .venv/lib/*/site-packages/ | grep -i backend 2>&1"
+    )
+    logger.info(f"Debug output:\n{result.stdout}")
 
     # Verify backendbench was installed successfully
     logger.info("🔍 Verifying backendbench installation...")
@@ -171,6 +201,16 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
     if result.exit_code != 0:
         logger.error("❌ backendbench not installed correctly!")
         logger.error(f"Output: {result.stdout}")
+
+        # Additional debug: Show what IS importable
+        logger.info("🔍 Checking what packages ARE importable...")
+        debug = bifrost_client.exec(
+            f"cd {project_workspace} && "
+            f"source .venv/bin/activate && "
+            f"python -c 'import sys; print(\"\\n\".join(sys.path))' 2>&1"
+        )
+        logger.info(f"Python path:\n{debug.stdout}")
+
         raise RuntimeError("backendbench dependency missing - kerbal setup may have failed")
     else:
         logger.info(f"✅ backendbench installed at: {result.stdout.strip()}")
