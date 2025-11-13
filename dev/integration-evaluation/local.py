@@ -78,7 +78,14 @@ async def run_evaluation(config_path: Path, result_dir: Path):
     logger.info(f"\n🎮 Loading Prime environment: {config.env_name}")
     prime_env = load_environment(config.env_name)
 
-    logger.info(f"   Dataset size: {len(prime_env.dataset)}")
+    # Get dataset size - handle both dataset and eval_dataset
+    dataset_size = 0
+    if hasattr(prime_env, 'dataset') and prime_env.dataset is not None:
+        dataset_size = len(prime_env.dataset)
+    elif hasattr(prime_env, 'eval_dataset') and prime_env.eval_dataset is not None:
+        dataset_size = len(prime_env.eval_dataset)
+
+    logger.info(f"   Dataset size: {dataset_size}")
     logger.info(f"   Rubric: {type(prime_env.rubric).__name__}")
     logger.info(f"   Parser: {type(prime_env.parser).__name__}")
     logger.info(f"   Max turns: {prime_env.max_turns}")
@@ -88,8 +95,14 @@ async def run_evaluation(config_path: Path, result_dir: Path):
     reward_fn = prime_reward_fn(prime_env)
 
     # Use Prime dataset directly (no conversion needed - prepare_messages handles format)
+    # Some environments use 'dataset', others use 'eval_dataset'
     logger.info(f"\n📊 Using Prime dataset")
-    rollouts_dataset = list(prime_env.dataset)
+    if hasattr(prime_env, 'dataset') and prime_env.dataset is not None:
+        rollouts_dataset = list(prime_env.dataset)
+    elif hasattr(prime_env, 'eval_dataset') and prime_env.eval_dataset is not None:
+        rollouts_dataset = list(prime_env.eval_dataset)
+    else:
+        raise ValueError("Prime environment has no dataset or eval_dataset attribute")
     logger.info(f"   Dataset size: {len(rollouts_dataset)} samples")
 
     # Setup rollouts evaluation config
@@ -131,10 +144,28 @@ async def run_evaluation(config_path: Path, result_dir: Path):
     logger.info("📊 EVALUATION RESULTS")
     logger.info("="*50)
     logger.info(f"Total samples: {report.total_samples}")
-    logger.info(f"Mean reward: {report.summary_metrics['mean_reward']:.3f}")
-    logger.info(f"Min reward: {report.summary_metrics['min_reward']:.3f}")
-    logger.info(f"Max reward: {report.summary_metrics['max_reward']:.3f}")
-    logger.info(f"Std reward: {report.summary_metrics['std_reward']:.3f}")
+    logger.info(f"\nOverall Reward Statistics:")
+    logger.info(f"  Mean reward: {report.summary_metrics['mean_reward']:.3f}")
+    logger.info(f"  Min reward: {report.summary_metrics['min_reward']:.3f}")
+    logger.info(f"  Max reward: {report.summary_metrics['max_reward']:.3f}")
+    logger.info(f"  Std reward: {report.summary_metrics['std_reward']:.3f}")
+
+    # Compute aggregate metrics from Prime (e.g., for backend-bench)
+    if report.sample_results:
+        all_prime_metrics = {}
+        for sample in report.sample_results:
+            prime_metrics = sample.trajectory.metadata.get('prime_metrics', {})
+            for metric_name, metric_value in prime_metrics.items():
+                if isinstance(metric_value, (int, float)):
+                    if metric_name not in all_prime_metrics:
+                        all_prime_metrics[metric_name] = []
+                    all_prime_metrics[metric_name].append(metric_value)
+
+        if all_prime_metrics:
+            logger.info(f"\nAggregate Prime Metrics:")
+            for metric_name, values in all_prime_metrics.items():
+                mean_val = sum(values) / len(values)
+                logger.info(f"  Mean {metric_name}: {mean_val:.3f}")
 
     # Show sample-level details
     logger.info(f"\n📝 Sample-level results:")
@@ -146,8 +177,21 @@ async def run_evaluation(config_path: Path, result_dir: Path):
         if 'question' in sample.input_data:
             logger.info(f"  Question: {sample.input_data['question'][:80]}...")
 
-        logger.info(f"  Ground truth: {sample.trajectory.metadata.get('prime_ground_truth')}")
+        # Show ground truth if present (not present in backend-bench)
+        if sample.trajectory.metadata.get('prime_ground_truth') is not None:
+            logger.info(f"  Ground truth: {sample.trajectory.metadata.get('prime_ground_truth')}")
+
         logger.info(f"  Parsed answer: {sample.trajectory.metadata.get('prime_parsed_answer')}")
+
+        # Show Prime metrics (useful for backend-bench: correctness, performance, etc.)
+        prime_metrics = sample.trajectory.metadata.get('prime_metrics', {})
+        if prime_metrics:
+            logger.info(f"  Prime metrics:")
+            for metric_name, metric_value in prime_metrics.items():
+                if isinstance(metric_value, float):
+                    logger.info(f"    {metric_name}: {metric_value:.3f}")
+                else:
+                    logger.info(f"    {metric_name}: {metric_value}")
 
         # Show model response
         if sample.trajectory.messages:

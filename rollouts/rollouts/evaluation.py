@@ -261,8 +261,11 @@ async def evaluate_sample(
         else:
             scored_trajectory = reward_result
     except Exception as e:
+        # Always log reward computation errors loudly - these are critical issues
+        logger.error(f"❌ REWARD COMPUTATION FAILED: {e}")
         if config.verbose:
-            logger.warning(f"Error computing reward: {e}")
+            import traceback
+            logger.error(f"Full traceback:\n{traceback.format_exc()}")
         # Return trajectory with 0 reward on error
         scored_trajectory = replace(final_trajectory, rewards=0.0)
 
@@ -297,6 +300,21 @@ async def evaluate_sample(
         # Print key metrics inline
         metric_str = ", ".join(f"{k}={v:.3f}" for k, v in list(metrics.items())[:3])
         logger.info(f"  {metric_str}")
+
+        # Also log detailed metrics from metadata if available
+        # Look for any dict in metadata with rich metric information
+        # (useful for environments that provide detailed feedback beyond just reward)
+        for key, value in scored_trajectory.metadata.items():
+            if isinstance(value, dict) and any(isinstance(v, (int, float)) for v in value.values()):
+                # Found a dict with numeric values - likely detailed metrics
+                detail_items = [(k, v) for k, v in value.items()
+                               if isinstance(v, (int, float))][:3]
+                if detail_items:
+                    detail_str = ", ".join(f"{k}={v:.3f}" for k, v in detail_items)
+                    # Use the metadata key name (e.g., "prime_metrics" -> "prime")
+                    label = key.replace('_metrics', '').replace('_', ' ')
+                    logger.info(f"  {label}: {detail_str}")
+                break  # Only show first metrics dict to avoid spam
 
     # Cleanup environment if it has a cleanup method
     if environment and hasattr(environment, 'cleanup'):
@@ -365,7 +383,10 @@ async def evaluate(
             total=len(samples_to_eval),
             desc=f"{config.eval_name}",
             unit="sample",
-            disable=False
+            disable=False,
+            # Show s/sample instead of sample/s for slow operations
+            # This makes more sense when each sample takes multiple seconds
+            bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_inv_fmt}]'
         )
 
     if config.max_concurrent == 1:

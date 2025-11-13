@@ -78,12 +78,15 @@ async def _call_prime_scoring(
     rubric: Rubric,
     prompt: List[Dict],
     completion: List[Dict],
-    ground_truth: str,
+    ground_truth: str | None,
     sample_data: Dict[str, Any]
 ) -> Any:
     """Call Prime's asyncio scoring from trio context.
 
     Tiger Style: Isolate trio-asyncio bridge in single function.
+
+    Args:
+        ground_truth: Can be None for environments that don't use reference answers
     """
     assert env is not None
     assert rubric is not None
@@ -95,7 +98,7 @@ async def _call_prime_scoring(
         state = await trio_asyncio.aio_as_trio(env.init_state)(
             prompt=prompt,
             completion=completion,
-            answer=ground_truth,
+            answer=ground_truth or "",  # Use empty string if no ground truth
             task="default",
             info=sample_data,
             example_id=sample_data.get("example_id", 0)
@@ -105,7 +108,7 @@ async def _call_prime_scoring(
         score_result = await trio_asyncio.aio_as_trio(rubric.score_rollout)(
             prompt=prompt,
             completion=completion,
-            answer=ground_truth,
+            answer=ground_truth or "",  # Use empty string if no ground truth
             state=state,
             info=sample_data,
             example_id=sample_data.get("example_id", 0)
@@ -159,7 +162,8 @@ def prime_reward_fn(
         # Get sample data (injected by evaluate_sample)
         sample_data = trajectory.metadata.get("sample_data", {})
         ground_truth = sample_data.get(ground_truth_key)
-        assert ground_truth is not None
+        # Note: ground_truth can be None for environments like backend-bench
+        # that test code execution rather than comparing against reference answers
 
         # Extract model response (push for down to helper)
         model_response = _extract_model_response(trajectory)
@@ -190,7 +194,7 @@ def prime_reward_fn(
                 **trajectory.metadata,
                 "prime_grade_error": str(e),
                 "prime_parsed_answer": str(parsed_answer),
-                "prime_ground_truth": str(ground_truth),
+                "prime_ground_truth": str(ground_truth) if ground_truth is not None else None,
             }
             return replace(trajectory, rewards=0.0, metadata=metadata)
 
@@ -210,7 +214,7 @@ def prime_reward_fn(
         metadata = {
             **trajectory.metadata,
             "prime_parsed_answer": str(parsed_answer),
-            "prime_ground_truth": str(ground_truth),
+            "prime_ground_truth": str(ground_truth) if ground_truth is not None else None,
             "prime_raw_response": model_response,
             "prime_metrics": serialized_metrics
         }
