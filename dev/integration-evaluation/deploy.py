@@ -159,14 +159,14 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
     # Setup dependencies using kerbal
     setup_script_deps(bifrost_client, project_workspace, deps, install_extras=None)
 
-    # Install Prime CLI using system uv
+    # Install Prime CLI using system uv (full path since not in non-login shell PATH)
     logger.info("📦 Installing Prime CLI...")
-    result = bifrost_client.exec("uv tool install prime")
+    result = bifrost_client.exec("~/.local/bin/uv tool install prime")
     if result.exit_code != 0:
         # Check if it's already installed
-        check = bifrost_client.exec("command -v prime")
+        check = bifrost_client.exec("command -v prime || ls ~/.local/bin/prime")
         if check.exit_code == 0:
-            logger.info(f"✅ Prime CLI already installed at: {check.stdout.strip()}")
+            logger.info(f"✅ Prime CLI already installed")
         else:
             logger.warning(f"⚠️  Failed to install Prime CLI: {result.stderr}")
             logger.info("Attempting to continue anyway...")
@@ -175,11 +175,12 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
 
     # Install backend-bench environment via Prime Hub (official method)
     # This installs into the active venv
+    # Use full path to prime since it's in ~/.local/bin which may not be in non-login PATH
     logger.info("📦 Installing backend-bench environment from Prime Hub...")
     result = bifrost_client.exec(
         f"cd {project_workspace} && "
         f"source .venv/bin/activate && "
-        f"prime env install siro/backend-bench"
+        f"~/.local/bin/prime env install siro/backend-bench"
     )
     if result.exit_code != 0:
         logger.error(f"❌ Failed to install backend-bench: {result.stderr}")
