@@ -35,10 +35,31 @@ class EvalSample:
 
     def to_json(self) -> str:
         """Serialize to JSON."""
-        data = asdict(self)
-        data['trajectory'] = json.loads(self.trajectory.to_json())
-        # Serialize agent states using asdict (they're regular dataclasses)
-        data['agent_states'] = [asdict(state) for state in self.agent_states]
+        # Manually construct dict to avoid deep copying unpicklable objects (e.g., RLocks in environments)
+        data = {
+            'sample_id': self.sample_id,
+            'input_data': self.input_data,
+            'trajectory': json.loads(self.trajectory.to_json()),
+            'agent_states': [],
+            'metrics': self.metrics,
+            'metadata': self.metadata,
+            'timestamp': self.timestamp,
+        }
+
+        # Serialize agent states carefully, excluding unpicklable environment objects
+        for state in self.agent_states:
+            state_dict = {
+                'actor': asdict(state.actor) if hasattr(state.actor, '__dataclass_fields__') else str(state.actor),
+                'environment': None,  # Skip environment - contains unpicklable objects like RLocks
+                'max_turns': state.max_turns,
+                'stop': asdict(state.stop) if state.stop and hasattr(state.stop, '__dataclass_fields__') else str(state.stop) if state.stop else None,
+                'turn_idx': state.turn_idx,
+                'pending_tool_calls': [asdict(tc) if hasattr(tc, '__dataclass_fields__') else str(tc) for tc in state.pending_tool_calls],
+                'next_tool_idx': state.next_tool_idx,
+                'timestamp': state.timestamp,
+            }
+            data['agent_states'].append(state_dict)
+
         # Sanitize all API keys recursively
         data = sanitize_api_keys(data)
         return json.dumps(data, indent=2, default=str)  # default=str handles datetime objects
