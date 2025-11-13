@@ -192,11 +192,12 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
     logger.info(f"Debug output:\n{result.stdout}")
 
     # Verify backendbench was installed successfully
+    # Note: The package might be named BackendBench (capital B) in the module
     logger.info("🔍 Verifying backendbench installation...")
     result = bifrost_client.exec(
         f"cd {project_workspace} && "
         f"source .venv/bin/activate && "
-        f"python -c 'import backendbench; print(backendbench.__file__)' 2>&1"
+        f"python -c 'try: import BackendBench as backendbench; print(backendbench.__file__)\nexcept: import backendbench; print(backendbench.__file__)' 2>&1"
     )
     if result.exit_code != 0:
         logger.warning("⚠️  backendbench not found - likely uv sync skipped it (already resolved)")
