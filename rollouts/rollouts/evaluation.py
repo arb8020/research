@@ -194,12 +194,15 @@ async def evaluate_sample(
 
     # Use run_config from EvalConfig (or default silent)
     # If user provided run_config, respect it but override show_progress
+    # Disable inner turn-level progress bar during parallel execution to avoid conflicts
+    show_turn_progress = config.show_progress and config.max_concurrent == 1
+
     if config.run_config:
-        run_config = replace(config.run_config, show_progress=config.show_progress)
+        run_config = replace(config.run_config, show_progress=show_turn_progress)
     else:
         run_config = RunConfig(
             on_chunk=lambda _: trio.sleep(0),
-            show_progress=config.show_progress
+            show_progress=show_turn_progress
         )
 
     # Run agent
