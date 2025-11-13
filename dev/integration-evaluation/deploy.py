@@ -159,8 +159,7 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
     # Setup dependencies using kerbal
     setup_script_deps(bifrost_client, project_workspace, deps, install_extras=None)
 
-    # Install Prime CLI using system uv (not venv uv)
-    # uv tool install puts it in ~/.local/bin which should be in PATH
+    # Install Prime CLI using system uv
     logger.info("📦 Installing Prime CLI...")
     result = bifrost_client.exec("uv tool install prime")
     if result.exit_code != 0:
@@ -180,7 +179,7 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
     result = bifrost_client.exec(
         f"cd {project_workspace} && "
         f"source .venv/bin/activate && "
-        f"~/.local/bin/prime env install siro/backend-bench"
+        f"prime env install siro/backend-bench"
     )
     if result.exit_code != 0:
         logger.error(f"❌ Failed to install backend-bench: {result.stderr}")
