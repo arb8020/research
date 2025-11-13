@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from kernel_utils.task import SMOKE_TESTS
-from kernel_utils.utils import make_match_reference, benchmark_kernel, compare_backends, profile_kernel
+from kernel_utils.utils import make_match_reference, benchmark_kernel, compare_backends, profile_kernel, ncu_profile_kernel
 from kernel_utils.backends import BACKENDS
 from kernel_utils.results import (
     CorrectnessResult,
@@ -46,6 +46,7 @@ def run_smoke_tests(
     reference_backend: str = "reference",
     save_results: bool = False,
     enable_profiling: bool = False,
+    enable_ncu: bool = False,
 ) -> tuple[bool, str]:
     """Run smoke tests on specified backends.
 
@@ -54,6 +55,7 @@ def run_smoke_tests(
         reference_backend: Backend to use as reference for correctness/speedup
         save_results: Whether to save results to JSON
         enable_profiling: Whether to profile kernels with torch.profiler
+        enable_ncu: Whether to profile kernels with NVIDIA Nsight Compute
 
     Returns:
         (all_passed, summary_msg)
@@ -78,7 +80,9 @@ def run_smoke_tests(
     print(f"   Backends: {', '.join(backend_names)}")
     print(f"   Reference: {reference_backend}")
     if enable_profiling:
-        print(f"   Profiling: ENABLED")
+        print(f"   Torch Profiling: ENABLED")
+    if enable_ncu:
+        print(f"   NCU Profiling: ENABLED")
     print("=" * 80)
 
     # Reference for correctness checking
@@ -90,6 +94,7 @@ def run_smoke_tests(
 
     # Profile traces
     profile_traces = []
+    ncu_reports = []
 
     for backend_name in backend_names:
         backend = BACKENDS[backend_name]
@@ -160,7 +165,7 @@ def run_smoke_tests(
                     speedup_str = f" ({speedup:.2f}x)" if speedup else ""
                     print(f"   ⏱️  Performance: {avg_time:.3f}ms{speedup_str}")
 
-                    # Profile if enabled
+                    # Profile with torch.profiler if enabled
                     if enable_profiling:
                         # Profile this backend
                         test_input_prof = test.generate()
@@ -171,10 +176,10 @@ def run_smoke_tests(
                             num_warmup=5, num_profile_runs=1
                         )
                         if prof_err is None:
-                            print(f"   📊 Profile saved: {trace_path}")
+                            print(f"   📊 Torch profile saved: {trace_path}")
                             profile_traces.append((backend_name, test.name, trace_path))
                         else:
-                            print(f"   ⚠️  Profiling failed: {prof_err}")
+                            print(f"   ⚠️  Torch profiling failed: {prof_err}")
 
                         # Also profile reference for comparison (if not already reference)
                         if backend_name != reference_backend:
@@ -185,10 +190,38 @@ def run_smoke_tests(
                                 num_warmup=5, num_profile_runs=1
                             )
                             if ref_prof_err is None:
-                                print(f"   📊 Reference profile saved: {ref_trace_path}")
+                                print(f"   📊 Reference torch profile saved: {ref_trace_path}")
                                 profile_traces.append((reference_backend, test.name, ref_trace_path))
                             else:
-                                print(f"   ⚠️  Reference profiling failed: {ref_prof_err}")
+                                print(f"   ⚠️  Reference torch profiling failed: {ref_prof_err}")
+
+                    # Profile with NCU if enabled
+                    if enable_ncu:
+                        # Profile this backend
+                        test_input_ncu = test.generate()
+                        ncu_dir = Path("ncu_reports")
+                        ncu_report_path, ncu_err = ncu_profile_kernel(
+                            backend, test_input_ncu, ncu_dir,
+                            backend_name, test.name
+                        )
+                        if ncu_err is None:
+                            print(f"   📊 NCU report saved: {ncu_report_path}")
+                            ncu_reports.append((backend_name, test.name, ncu_report_path))
+                        else:
+                            print(f"   ⚠️  NCU profiling failed: {ncu_err}")
+
+                        # Also profile reference for comparison (if not already reference)
+                        if backend_name != reference_backend:
+                            test_input_ref_ncu = test.generate()
+                            ref_ncu_path, ref_ncu_err = ncu_profile_kernel(
+                                ref_backend_fn, test_input_ref_ncu, ncu_dir,
+                                reference_backend, test.name
+                            )
+                            if ref_ncu_err is None:
+                                print(f"   📊 Reference NCU report saved: {ref_ncu_path}")
+                                ncu_reports.append((reference_backend, test.name, ref_ncu_path))
+                            else:
+                                print(f"   ⚠️  Reference NCU profiling failed: {ref_ncu_err}")
                 else:
                     print(f"   ⚠️  Benchmark failed: {bench_err}")
             else:
@@ -238,12 +271,20 @@ def run_smoke_tests(
 
     # Print profile summary if profiling was enabled
     if enable_profiling and profile_traces:
-        print(f"\n📊 Profiling Summary:")
+        print(f"\n📊 Torch Profiling Summary:")
         print(f"   {len(profile_traces)} profile trace(s) generated")
         print(f"   Location: profiles/")
-        print(f"\n   To view profiles:")
+        print(f"\n   To view torch profiles:")
         print(f"   1. Chrome trace: Open chrome://tracing and load .json files")
         print(f"   2. TensorBoard: tensorboard --logdir=profiles/")
+
+    # Print NCU summary if NCU profiling was enabled
+    if enable_ncu and ncu_reports:
+        print(f"\n📊 NCU Profiling Summary:")
+        print(f"   {len(ncu_reports)} NCU report(s) generated")
+        print(f"   Location: ncu_reports/")
+        print(f"\n   To view NCU reports:")
+        print(f"   ncu-ui <report-file.ncu-rep>")
 
     # Determine overall success
     all_passed = all(br.all_correct for br in all_backend_results)
@@ -284,6 +325,11 @@ def main() -> int:
         action="store_true",
         help="Enable torch.profiler to generate detailed performance traces",
     )
+    parser.add_argument(
+        "--ncu",
+        action="store_true",
+        help="Enable NVIDIA Nsight Compute (ncu) profiling for kernel-level metrics",
+    )
 
     args = parser.parse_args()
 
@@ -303,6 +349,7 @@ def main() -> int:
             reference_backend=args.reference,
             save_results=args.save,
             enable_profiling=args.profile,
+            enable_ncu=args.ncu,
         )
 
         if success:
