@@ -23,12 +23,97 @@ Example:
 import asyncio
 import trio_asyncio
 from dataclasses import replace
-from typing import Any, Dict
+from typing import Any, Dict, List, Tuple
 
 from verifiers import Environment as VerifiersEnv
 from verifiers import Parser, Rubric
 
-from ..dtypes import Trajectory, RewardFunction
+from ..dtypes import Trajectory, RewardFunction, Message
+
+
+def _extract_model_response(trajectory: Trajectory) -> str:
+    """Extract last assistant message from trajectory.
+
+    Tiger Style: Pure function, push fors down.
+    """
+    assert trajectory is not None
+    assert trajectory.messages is not None
+
+    for msg in reversed(trajectory.messages):
+        if msg.role == "assistant":
+            content = msg.content
+            # Prime environments don't use vision messages
+            assert isinstance(content, (str, type(None))), \
+                f"Prime integration expects string content, got {type(content)}"
+            return content or ""
+
+    return ""
+
+
+def _convert_to_prime_format(trajectory: Trajectory) -> Tuple[List[Dict], List[Dict]]:
+    """Convert rollouts messages to Prime's OpenAI format.
+
+    Tiger Style: Pure function, push fors down.
+    Returns (prompt, completion) tuple.
+    """
+    assert trajectory is not None
+    assert trajectory.messages is not None
+
+    prompt = []
+    completion = []
+
+    for msg in trajectory.messages:
+        oai_msg = {"role": msg.role, "content": msg.content or ""}
+        if msg.role == "assistant":
+            completion.append(oai_msg)
+        else:
+            prompt.append(oai_msg)
+
+    assert len(prompt) > 0  # Must have at least system or user message
+    return prompt, completion
+
+
+async def _call_prime_scoring(
+    env: VerifiersEnv,
+    rubric: Rubric,
+    prompt: List[Dict],
+    completion: List[Dict],
+    ground_truth: str,
+    sample_data: Dict[str, Any]
+) -> Any:
+    """Call Prime's asyncio scoring from trio context.
+
+    Tiger Style: Isolate trio-asyncio bridge in single function.
+    """
+    assert env is not None
+    assert rubric is not None
+    assert prompt is not None
+    assert completion is not None
+
+    async with trio_asyncio.open_loop():
+        # Initialize state
+        state = await trio_asyncio.aio_as_trio(env.init_state)(
+            prompt=prompt,
+            completion=completion,
+            answer=ground_truth,
+            task="default",
+            info=sample_data,
+            example_id=sample_data.get("example_id", 0)
+        )
+
+        # Score the rollout
+        score_result = await trio_asyncio.aio_as_trio(rubric.score_rollout)(
+            prompt=prompt,
+            completion=completion,
+            answer=ground_truth,
+            state=state,
+            info=sample_data,
+            example_id=sample_data.get("example_id", 0)
+        )
+
+    assert score_result is not None
+    assert hasattr(score_result, 'reward')
+    return score_result
 
 
 def prime_reward_fn(
@@ -65,25 +150,21 @@ def prime_reward_fn(
     async def reward(trajectory: Trajectory) -> Trajectory:
         """Compute reward using Prime rubric.
 
-        Extracts answer from trajectory, parses it, grades against ground truth.
-        Stores breakdown in metadata for debugging.
+        Tiger Style: Keep control flow in parent, delegate work to helpers.
         """
+        # Preconditions
+        assert trajectory is not None
+        assert trajectory.metadata is not None
+
         # Get sample data (injected by evaluate_sample)
         sample_data = trajectory.metadata.get("sample_data", {})
         ground_truth = sample_data.get(ground_truth_key)
+        assert ground_truth is not None
 
-        # Extract model's response (last assistant message)
-        model_response = ""
-        for msg in reversed(trajectory.messages):
-            if msg.role == "assistant":
-                content = msg.content
-                # Prime environments don't use vision messages - content should be string
-                assert isinstance(content, (str, type(None))), \
-                    f"Prime integration expects string content, got {type(content)}. Vision messages not supported."
-                model_response = content or ""
-                break
+        # Extract model response (push for down to helper)
+        model_response = _extract_model_response(trajectory)
 
-        # Parse response using Prime's parser
+        # Parse response
         try:
             parsed_answer = _parser.parse(model_response)
         except Exception as e:
@@ -95,53 +176,16 @@ def prime_reward_fn(
             }
             return replace(trajectory, rewards=0.0, metadata=metadata)
 
-        # Grade using Prime's rubric with trio-asyncio bridge
+        # Convert format (push for down to helper)
+        prompt, completion = _convert_to_prime_format(trajectory)
+
+        # Score with Prime (isolate async bridge in helper)
         try:
-            # Convert trajectory messages to Prime's OpenAI format
-            prompt = []
-            completion = []
-            for msg in trajectory.messages:
-                oai_msg = {"role": msg.role, "content": msg.content or ""}
-                if msg.role == "assistant":
-                    completion.append(oai_msg)
-                else:
-                    prompt.append(oai_msg)
-
-            # Call Prime's asyncio functions from trio context
-            # Both init_state and score_rollout are asyncio functions
-            async with trio_asyncio.open_loop():
-                # Initialize state with required structure
-                state = await trio_asyncio.aio_as_trio(
-                    _env.init_state
-                )(
-                    prompt=prompt,
-                    completion=completion,
-                    answer=ground_truth,
-                    task="default",
-                    info=sample_data,
-                    example_id=sample_data.get("example_id", 0)
-                )
-
-                # Call Prime's scoring
-                score_result = await trio_asyncio.aio_as_trio(
-                    _rubric.score_rollout
-                )(
-                    prompt=prompt,
-                    completion=completion,
-                    answer=ground_truth,
-                    state=state,
-                    info=sample_data,
-                    example_id=sample_data.get("example_id", 0)
-                )
-
-            # Extract reward and metrics from Prime's result
-            reward_score = float(score_result.reward)
-            extra_metrics = {
-                "prime_metrics": score_result.metrics
-            }
-
+            score_result = await _call_prime_scoring(
+                _env, _rubric, prompt, completion, ground_truth, sample_data
+            )
         except Exception as e:
-            # Grading error - return 0 reward
+            # Scoring error - return 0 reward
             metadata = {
                 **trajectory.metadata,
                 "prime_grade_error": str(e),
@@ -150,13 +194,17 @@ def prime_reward_fn(
             }
             return replace(trajectory, rewards=0.0, metadata=metadata)
 
-        # Store Prime-specific metadata for debugging
+        # Extract score
+        reward_score = float(score_result.reward)
+        assert 0.0 <= reward_score <= 1.0, f"Invalid reward: {reward_score}"
+
+        # Build metadata
         metadata = {
             **trajectory.metadata,
             "prime_parsed_answer": str(parsed_answer),
             "prime_ground_truth": str(ground_truth),
             "prime_raw_response": model_response,
-            **extra_metrics,
+            "prime_metrics": score_result.metrics
         }
 
         return replace(trajectory, rewards=reward_score, metadata=metadata)
