@@ -370,7 +370,7 @@ def ncu_profile_kernel(
 
     Args:
         kernel_fn: Kernel to profile
-        test_input: Input data
+        test_input: Input data (tuple from TestCase.generate())
         output_dir: Directory to save NCU reports
         backend_name: Name of backend being profiled
         test_name: Name of test case
@@ -383,7 +383,7 @@ def ncu_profile_kernel(
     """
     import subprocess
     import sys
-    import pickle
+    import json
 
     assert callable(kernel_fn), "kernel_fn must be callable"
 
@@ -394,26 +394,52 @@ def ncu_profile_kernel(
 
         # Create a temporary script that runs the kernel
         script_path = output_dir / f"_ncu_temp_{backend_name}_{test_name}.py"
-        data_path = output_dir / f"_ncu_temp_{backend_name}_{test_name}.pkl"
+        params_path = output_dir / f"_ncu_temp_{backend_name}_{test_name}.json"
         report_filename = f"{backend_name}_{test_name}_ncu"
         report_path = output_dir / f"{report_filename}.ncu-rep"
 
-        # Save the test input to a pickle file
-        with open(data_path, 'wb') as f:
-            pickle.dump(test_input, f)
+        # Extract test parameters from SMOKE_TESTS by matching test_name
+        # This avoids pickling torch tensors
+        from kernel_utils.task import SMOKE_TESTS
+        test_case = None
+        for tc in SMOKE_TESTS:
+            if tc.name == test_name:
+                test_case = tc
+                break
+
+        if test_case is None:
+            return "", f"Test case '{test_name}' not found in SMOKE_TESTS"
+
+        # Save test parameters as JSON
+        test_params = {
+            "m": test_case.m,
+            "k": test_case.k,
+            "l": test_case.l,
+            "seed": test_case.seed,
+        }
+        with open(params_path, 'w') as f:
+            json.dump(test_params, f)
 
         # Create a standalone script that can be profiled by NCU
         script_content = f"""
 import sys
-import pickle
+import json
 import torch
 
-# Load the test input
-with open('{data_path}', 'rb') as f:
-    test_input = pickle.load(f)
+# Load test parameters
+with open('{params_path}', 'r') as f:
+    params = json.load(f)
+
+# Generate test input using reference kernel generator
+from nvfp4.reference_kernel import generate_input
+test_input = generate_input(
+    m=params['m'],
+    k=params['k'],
+    l=params['l'],
+    seed=params['seed']
+)
 
 # Import the kernel function
-# Note: This assumes the kernel is in the global BACKENDS registry
 from kernel_utils.backends import BACKENDS
 kernel_fn = BACKENDS['{backend_name}']
 
@@ -471,7 +497,7 @@ print("Kernel execution completed")
 
         # Clean up temporary files
         script_path.unlink(missing_ok=True)
-        data_path.unlink(missing_ok=True)
+        params_path.unlink(missing_ok=True)
 
         if result.returncode != 0:
             return "", f"NCU profiling failed: {result.stderr}"
