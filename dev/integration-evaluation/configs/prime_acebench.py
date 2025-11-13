@@ -66,6 +66,7 @@ class IntegrationEvalConfig:
     # Output configuration
     output_dir: Path = Path("results/integration-evaluation")
     verbose: bool = True
+    show_progress: bool = False  # Enable nested progress bars (outer: samples, inner: turns)
 
     def to_endpoint(self) -> Endpoint:
         """Convert to rollouts Endpoint."""
@@ -102,6 +103,7 @@ class IntegrationEvalConfig:
             output_dir=self.output_dir,
             eval_name=self.eval_name,
             verbose=self.verbose,
+            show_progress=self.show_progress,
         )
 
 

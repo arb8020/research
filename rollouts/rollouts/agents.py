@@ -18,6 +18,8 @@ from dacite import from_dict
 
 import copy
 
+from .progress import tqdm
+
 logger = logging.getLogger(__name__)
 
 # Environment class and other core types are now imported from dtypes
@@ -379,47 +381,66 @@ async def process_pending_tools(state: AgentState, rcfg: RunConfig) -> AgentStat
 
 
 async def run_agent(
-    state: AgentState, 
+    state: AgentState,
     run_config: RunConfig,
     session_id: Optional[str] = None
 ) -> List[AgentState]:
     """Run agent until stop condition, checkpointing each state"""
     if run_config.checkpoint_store and not session_id:
         session_id = f"session_{int(time.time() * 1000)}"  # ms timestamp
-    
+
     states = [state]
     current_state = state
-    
+
+    # Initialize inner progress bar for turn-level tracking
+    turn_pbar = None
+    if run_config.show_progress:
+        turn_pbar = tqdm(
+            total=state.max_turns,
+            desc="Turns",
+            unit="turn",
+            disable=False
+        )
+
     try:
         # Debug: Print environment type and available tools
         #print(f"[DEBUG] run_agent called with environment type: {type(current_state.environment).__name__}")
         if hasattr(current_state.environment, 'get_tools'):
             [tool.function.name for tool in current_state.environment.get_tools()]
             #print(f"[DEBUG] Available tools: {tools}")
-        
+
         # Save initial state
         await handle_checkpoint_event(state, "turn_start", run_config, session_id)
-        
+
         while not current_state.stop and current_state.turn_idx < current_state.max_turns:
             #print(f"[DEBUG] Agent loop - Turn {current_state.turn_idx}, Stop: {current_state.stop}, Max turns: {current_state.max_turns}")
             next_state = await run_agent_step(current_state, run_config)
             #print(f"[DEBUG] After step - Turn {next_state.turn_idx}, Stop: {next_state.stop}")
             current_state = next_state
             states.append(current_state)
-            
+
+            # Update inner progress bar
+            if turn_pbar:
+                turn_pbar.update(1)
+                postfix = {}
+                if current_state.stop:
+                    postfix['stop'] = str(current_state.stop).split('.')[-1]
+                turn_pbar.set_postfix(postfix)
+
             # Checkpoint after each state transition
             await handle_checkpoint_event(current_state, "turn_end", run_config, session_id)
-            
-        
+
+
         # Set stop reason if we hit max turns
         if current_state.turn_idx >= current_state.max_turns:
             current_state = replace(current_state, stop=StopReason.MAX_TURNS)
             states[-1] = current_state
-            
+
             # Save final state
             await handle_checkpoint_event(current_state, "final", run_config, session_id)
-        
+
         return states
     finally:
-        # Placeholder for any cleanup if needed in the future
-        pass
+        # Close inner progress bar
+        if turn_pbar:
+            turn_pbar.close()
