@@ -288,14 +288,15 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
         logger.info(f"Output: {result.stdout}")
 
     # Verify all required packages are importable
+    # Note: backendbench module is actually named BackendBench (capital B)
     logger.info("🔍 Verifying all required packages...")
     result = bifrost_client.exec(
         f"cd {project_workspace} && "
         f"source .venv/bin/activate && "
-        f"python -c 'import verifiers, backend_bench, backendbench; "
+        f"python -c 'import verifiers, backend_bench, BackendBench; "
         f"print(f\"verifiers: {{verifiers.__file__}}\"); "
         f"print(f\"backend_bench: {{backend_bench.__file__}}\"); "
-        f"print(f\"backendbench: {{backendbench.__file__}}\")' 2>&1"
+        f"print(f\"BackendBench: {{BackendBench.__file__}}\")' 2>&1"
     )
     if result.exit_code != 0:
         logger.error("❌ Package verification failed!")
