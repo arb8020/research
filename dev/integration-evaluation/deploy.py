@@ -175,12 +175,13 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
 
     # Install backend-bench environment via Prime Hub (official method)
     # This installs into the active venv
-    # Use full path to prime since it's in ~/.local/bin which may not be in non-login PATH
+    # Prime CLI needs uv in PATH, so add ~/.local/bin to PATH
     logger.info("📦 Installing backend-bench environment from Prime Hub...")
     result = bifrost_client.exec(
         f"cd {project_workspace} && "
         f"source .venv/bin/activate && "
-        f"~/.local/bin/prime env install siro/backend-bench 2>&1"
+        f"export PATH=$HOME/.local/bin:$PATH && "
+        f"prime env install siro/backend-bench 2>&1"
     )
     if result.exit_code != 0:
         logger.error(f"❌ Failed to install backend-bench (exit code {result.exit_code})")
