@@ -146,8 +146,6 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
             "trio>=0.27.0",
             "trio-asyncio>=0.15.0",
             "python-dotenv>=1.0.0",
-            "verifiers>=0.1.0",  # Prime Intellect verifiers framework
-            "backendbench @ git+https://github.com/meta-pytorch/BackendBench.git",  # Required by backend-bench
             "triton>=3.0.0",  # For GPU kernel compilation
             "rich>=13.0.0",
         ],
@@ -160,23 +158,48 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
     # Setup dependencies using kerbal
     setup_script_deps(bifrost_client, project_workspace, deps, install_extras=None)
 
-    # Install backend-bench directly via pip instead of Prime CLI
-    # Prime CLI's env install has issues with URL dependencies in uv
-    # We already have backendbench installed, so just install backend-bench package
-    logger.info("📦 Installing backend-bench package...")
+    # Install Prime CLI (official method from Prime Hub)
+    # Note: uv is typically installed in ~/.local/bin, so we need to add it to PATH
+    logger.info("📦 Installing Prime CLI...")
+    result = bifrost_client.exec(
+        f"export PATH=$HOME/.local/bin:$PATH && "
+        f"uv tool install prime 2>&1"
+    )
+    if result.exit_code != 0:
+        # Check if Prime CLI is already installed
+        check = bifrost_client.exec(
+            f"export PATH=$HOME/.local/bin:$PATH && "
+            f"command -v prime 2>&1"
+        )
+        if check.exit_code == 0:
+            logger.info(f"✅ Prime CLI already installed at: {check.stdout.strip()}")
+        else:
+            logger.error(f"❌ Failed to install Prime CLI (exit code {result.exit_code})")
+            logger.error(f"stdout: {result.stdout}")
+            logger.error(f"stderr: {result.stderr}")
+            raise RuntimeError("Failed to install Prime CLI")
+    else:
+        logger.info("✅ Prime CLI installed")
+        logger.info(f"Output: {result.stdout}")
+
+    # Install backend-bench environment using Prime CLI (official method)
+    # This installs verifiers, backend-bench, and backendbench dependencies
+    # Prime CLI needs both uv and prime in PATH (both in ~/.local/bin)
+    logger.info("📦 Installing backend-bench environment via Prime CLI...")
     result = bifrost_client.exec(
         f"cd {project_workspace} && "
         f"source .venv/bin/activate && "
-        f"uv pip install backend-bench --extra-index-url https://hub.primeintellect.ai/siro/simple/ 2>&1"
+        f"export PATH=$HOME/.local/bin:$PATH && "
+        f"prime env install siro/backend-bench 2>&1"
     )
     if result.exit_code != 0:
-        logger.error(f"❌ Failed to install backend-bench (exit code {result.exit_code})")
+        logger.error(f"❌ Failed to install backend-bench environment (exit code {result.exit_code})")
         logger.error(f"stdout: {result.stdout}")
         logger.error(f"stderr: {result.stderr}")
         logger.error("This is required for backend-bench evaluation")
-        raise RuntimeError("Failed to install backend-bench environment")
+        raise RuntimeError("Failed to install backend-bench environment via Prime CLI")
     else:
-        logger.info("✅ Backend-bench package installed")
+        logger.info("✅ Backend-bench environment installed")
         logger.info(f"Output: {result.stdout}")
 
     return workspace_path
