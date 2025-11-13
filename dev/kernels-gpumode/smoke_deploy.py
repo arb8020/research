@@ -186,8 +186,8 @@ def deploy_and_test(
         # Check if profiles directory exists
         check_result = client.exec(f"test -d {profiles_remote} && echo OK || echo MISSING")
         if check_result.stdout.strip() == "OK":
-            # List profile files
-            list_result = client.exec(f"find {profiles_remote} -name '*.json' -o -name '*.pt.trace.json'")
+            # List profile files (only .json, not tensorboard files)
+            list_result = client.exec(f"find {profiles_remote} -name '*.json' -type f")
             if list_result.exit_code == 0:
                 profile_files = [f.strip() for f in list_result.stdout.strip().split('\n') if f.strip()]
 
