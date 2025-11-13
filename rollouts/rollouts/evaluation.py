@@ -101,18 +101,33 @@ class EvalReport:
         # Save agent states separately for detailed analysis
         states_dir = output_dir / "agent_states"
         states_dir.mkdir(exist_ok=True)
+        failed_serializations = []
         for sample in self.sample_results:
             states_file = states_dir / f"{sample.sample_id}.json"
-            states_data = [asdict(state) for state in sample.agent_states]
-            # Sanitize all API keys recursively
-            states_data = sanitize_api_keys(states_data)
-            states_file.write_text(json.dumps(states_data, indent=2, default=str))
+            try:
+                states_data = [asdict(state) for state in sample.agent_states]
+                # Sanitize all API keys recursively
+                states_data = sanitize_api_keys(states_data)
+                states_file.write_text(json.dumps(states_data, indent=2, default=str))
+            except (TypeError, ValueError) as e:
+                # Some environments contain unpicklable objects (e.g., thread locks)
+                # Log warning but don't fail the entire evaluation
+                logger.warning(f"Failed to serialize agent states for {sample.sample_id}: {e}")
+                failed_serializations.append(sample.sample_id)
+                # Save a placeholder file indicating serialization failed
+                states_file.write_text(json.dumps({
+                    "error": "Serialization failed",
+                    "reason": str(e),
+                    "sample_id": sample.sample_id
+                }, indent=2))
 
         logger.info(f"Saved evaluation to {output_dir}")
         logger.info(f"  Summary: {report_file}")
         logger.info(f"  Samples: {samples_dir}")
         logger.info(f"  Trajectories: {trajectories_dir}")
         logger.info(f"  Agent States: {states_dir}")
+        if failed_serializations:
+            logger.warning(f"  Failed to serialize {len(failed_serializations)} agent states: {failed_serializations[:5]}")
 
 
 def sanitize_api_keys(data: Any) -> Any:
@@ -253,6 +268,13 @@ async def evaluate_sample(
         metric_str = ", ".join(f"{k}={v:.3f}" for k, v in list(metrics.items())[:3])
         logger.info(f"  {metric_str}")
 
+    # Cleanup environment if it has a cleanup method
+    if environment and hasattr(environment, 'cleanup'):
+        try:
+            await environment.cleanup()
+        except Exception as e:
+            logger.warning(f"Environment cleanup failed for {sample_id}: {e}")
+
     return EvalSample(
         sample_id=sample_id,
         input_data=sample_data,
@@ -269,7 +291,7 @@ async def evaluate(
     endpoint: Endpoint,
     config: EvalConfig,
     dataset_path: str = "unknown",
-    environment_factory: Callable[[], Environment] | None = None,
+    environment_factory: Callable[[Dict[str, Any]], Environment] | None = None,
 ) -> EvalReport:
     """Run evaluation on a dataset - analogous to run_agent.
 
@@ -282,8 +304,8 @@ async def evaluate(
         endpoint: LLM endpoint configuration
         config: Evaluation configuration
         dataset_path: Path/name of dataset for logging
-        environment_factory: Optional factory function that returns a fresh Environment
-                           instance for each sample. Example: `lambda: CalculatorEnvironment()`
+        environment_factory: Optional factory function that takes sample_data and returns
+                           a fresh Environment instance. Example: `lambda sample: MyEnv(sample)`
                            If None, samples run without environment (tool-free evaluation).
 
     Returns:
@@ -309,7 +331,7 @@ async def evaluate(
     if config.max_concurrent == 1:
         # Sequential evaluation - create fresh environment for each sample
         for sample_id, sample_data in samples_to_eval:
-            env = environment_factory() if environment_factory else None
+            env = await environment_factory(sample_data) if environment_factory else None
             result = await evaluate_sample(
                 sample_data=sample_data,
                 sample_id=sample_id,
@@ -324,7 +346,7 @@ async def evaluate(
         results = []
 
         async def eval_task(sample_id: str, sample_data: Dict[str, Any]) -> None:
-            env = environment_factory() if environment_factory else None
+            env = await environment_factory(sample_data) if environment_factory else None
             result = await evaluate_sample(
                 sample_data=sample_data,
                 sample_id=sample_id,
