@@ -439,19 +439,23 @@ if str(project_dir) not in sys.path:
 with open('{params_path}', 'r') as f:
     params = json.load(f)
 
-# Generate test input (imports nvfp4.reference_kernel)
-from nvfp4.reference_kernel import generate_input
-test_input = generate_input(
+# CRITICAL: Import entire nvfp4.reference_kernel module first to complete initialization
+# This must happen BEFORE importing BACKENDS to avoid circular imports
+import nvfp4.reference_kernel
+
+# Generate test input using the fully-initialized module
+test_input = nvfp4.reference_kernel.generate_input(
     m=params['m'],
     k=params['k'],
     l=params['l'],
     seed=params['seed']
 )
 
-# Import backends registry (this auto-registers reference backend)
-# Then import optimized kernels (they auto-register themselves)
+# Now import backends registry (this auto-registers reference backend)
+# The nvfp4.reference_kernel module is fully initialized now, so auto-registration works
 from kernel_utils.backends import BACKENDS
 
+# Import optimized kernels (they auto-register themselves)
 try:
     import nvfp4.optimized.triton_kernel
 except ImportError:
