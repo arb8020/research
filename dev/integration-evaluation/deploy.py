@@ -148,6 +148,9 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
             "python-dotenv>=1.0.0",
             "triton>=3.0.0",  # For GPU kernel compilation
             "rich>=13.0.0",
+            # Install backendbench BEFORE Prime CLI's backend-bench installation
+            # This satisfies the URL dependency so Prime CLI doesn't need to resolve it
+            "backendbench @ git+https://github.com/meta-pytorch/BackendBench.git",
         ],
         extras={
             "dev": ["pytest", "black"],
