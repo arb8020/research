@@ -226,11 +226,28 @@ def prime_reward_fn(
 
         # Serialize metrics to avoid unpicklable objects (e.g., thread locks)
         # Convert Pydantic model to plain dict for safe serialization
+        serialized_metrics = {}
         try:
-            serialized_metrics = score_result.model_dump()['metrics']
-        except (AttributeError, KeyError):
-            # Fallback: convert to dict if model_dump not available
-            serialized_metrics = dict(score_result.metrics) if score_result.metrics else {}
+            # Try model_dump() for Pydantic v2
+            dumped = score_result.model_dump()
+            if 'metrics' in dumped:
+                serialized_metrics = dumped['metrics']
+            else:
+                # No 'metrics' key, use all fields except known internal ones
+                serialized_metrics = {k: v for k, v in dumped.items()
+                                     if k not in ('reward',) and isinstance(v, (int, float, str, bool, type(None)))}
+        except (AttributeError, KeyError, TypeError) as e:
+            # Fallback: try direct dict conversion
+            try:
+                if hasattr(score_result, 'metrics') and score_result.metrics:
+                    serialized_metrics = dict(score_result.metrics)
+                elif hasattr(score_result, '__dict__'):
+                    # Last resort: extract numeric fields from __dict__
+                    serialized_metrics = {k: v for k, v in score_result.__dict__.items()
+                                         if k not in ('reward',) and isinstance(v, (int, float, str, bool, type(None)))}
+            except Exception as inner_e:
+                logger.warning(f"Failed to serialize Prime metrics: {inner_e}")
+                serialized_metrics = {}
 
         # Build metadata
         metadata = {
