@@ -206,8 +206,15 @@ async def evaluate_sample(
         )
 
     # Compute reward (Trajectory -> Trajectory with rewards populated)
+    # Support both sync and async reward functions
     try:
-        scored_trajectory = config.reward_fn(final_trajectory)
+        reward_result = config.reward_fn(final_trajectory)
+        # Check if result is a coroutine (async function)
+        import inspect
+        if inspect.iscoroutine(reward_result):
+            scored_trajectory = await reward_result
+        else:
+            scored_trajectory = reward_result
     except Exception as e:
         if config.verbose:
             logger.warning(f"Error computing reward: {e}")

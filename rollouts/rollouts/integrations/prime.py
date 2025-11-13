@@ -20,6 +20,8 @@ Example:
     >>> config = EvalConfig(reward_fn=reward_fn, ...)
 """
 
+import asyncio
+import trio_asyncio
 from dataclasses import replace
 from typing import Any, Dict
 
@@ -58,8 +60,9 @@ def prime_reward_fn(
     # Use environment's rubric/parser if not explicitly provided
     _rubric = rubric or verifiers_env.rubric
     _parser = parser or verifiers_env.parser
+    _env = verifiers_env
 
-    def reward(trajectory: Trajectory) -> Trajectory:
+    async def reward(trajectory: Trajectory) -> Trajectory:
         """Compute reward using Prime rubric.
 
         Extracts answer from trajectory, parses it, grades against ground truth.
@@ -92,21 +95,50 @@ def prime_reward_fn(
             }
             return replace(trajectory, rewards=0.0, metadata=metadata)
 
-        # Grade using Prime's rubric
+        # Grade using Prime's rubric with trio-asyncio bridge
         try:
-            # Rubric.grade typically takes (predicted, ground_truth, **kwargs)
-            score = _rubric.grade(parsed_answer, ground_truth)
+            # Convert trajectory messages to Prime's OpenAI format
+            prompt = []
+            completion = []
+            for msg in trajectory.messages:
+                oai_msg = {"role": msg.role, "content": msg.content or ""}
+                if msg.role == "assistant":
+                    completion.append(oai_msg)
+                else:
+                    prompt.append(oai_msg)
 
-            # Convert score to float (some rubrics return dict)
-            if isinstance(score, dict):
-                reward_score = float(score.get("reward", 0.0))
-                extra_metrics = {
-                    k: v for k, v in score.items()
-                    if k != "reward"
-                }
-            else:
-                reward_score = float(score)
-                extra_metrics = {}
+            # Call Prime's asyncio functions from trio context
+            # Both init_state and score_rollout are asyncio functions
+            async with trio_asyncio.open_loop():
+                # Initialize state with required structure
+                state = await trio_asyncio.aio_as_trio(
+                    _env.init_state
+                )(
+                    prompt=prompt,
+                    completion=completion,
+                    answer=ground_truth,
+                    task="default",
+                    info=sample_data,
+                    example_id=sample_data.get("example_id", 0)
+                )
+
+                # Call Prime's scoring
+                score_result = await trio_asyncio.aio_as_trio(
+                    _rubric.score_rollout
+                )(
+                    prompt=prompt,
+                    completion=completion,
+                    answer=ground_truth,
+                    state=state,
+                    info=sample_data,
+                    example_id=sample_data.get("example_id", 0)
+                )
+
+            # Extract reward and metrics from Prime's result
+            reward_score = float(score_result.reward)
+            extra_metrics = {
+                "prime_metrics": score_result.metrics
+            }
 
         except Exception as e:
             # Grading error - return 0 reward

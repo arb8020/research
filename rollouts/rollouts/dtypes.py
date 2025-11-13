@@ -457,7 +457,8 @@ class RunConfig:
 # ── Evaluation Types ──────────────────────────────────────────────────────────
 
 # Reward function: pure transform from Trajectory -> Trajectory with rewards populated
-RewardFunction = Callable[[Trajectory], Trajectory]
+# Supports both sync and async (for integrations like Prime that need async scoring)
+RewardFunction = Callable[[Trajectory], Trajectory] | Callable[[Trajectory], Awaitable[Trajectory]]
 
 @dataclass(frozen=True)
 class EvalConfig:
