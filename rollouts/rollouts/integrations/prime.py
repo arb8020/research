@@ -168,9 +168,19 @@ def prime_reward_fn(
         # Extract model response (push for down to helper)
         model_response = _extract_model_response(trajectory)
 
+        # Convert to Prime format for parsing
+        # Some parsers (like backend-bench) expect list of messages, not just string
+        _, completion_messages = _convert_to_prime_format(trajectory)
+
         # Parse response
         try:
-            parsed_answer = _parser.parse(model_response)
+            # Try passing full completion messages first (for env-specific parsers like backend-bench)
+            # Fall back to string if that fails
+            try:
+                parsed_answer = _parser.parse(completion_messages)
+            except (TypeError, KeyError):
+                # Parser expects string, not list
+                parsed_answer = _parser.parse(model_response)
         except Exception as e:
             # Parse error - return 0 reward
             metadata = {
