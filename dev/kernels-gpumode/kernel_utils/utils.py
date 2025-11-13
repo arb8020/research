@@ -424,6 +424,7 @@ def ncu_profile_kernel(
         project_dir = Path(__file__).parent.parent.absolute()
 
         # Create a standalone script that can be profiled by NCU
+        # Avoid using BACKENDS registry to sidestep circular import issues
         script_content = f"""
 import sys
 import json
@@ -439,11 +440,10 @@ if str(project_dir) not in sys.path:
 with open('{params_path}', 'r') as f:
     params = json.load(f)
 
-# CRITICAL: Import entire nvfp4.reference_kernel module first to complete initialization
-# This must happen BEFORE importing BACKENDS to avoid circular imports
+# Import kernel modules directly (avoid BACKENDS auto-registration)
 import nvfp4.reference_kernel
 
-# Generate test input using the fully-initialized module
+# Generate test input
 test_input = nvfp4.reference_kernel.generate_input(
     m=params['m'],
     k=params['k'],
@@ -451,23 +451,18 @@ test_input = nvfp4.reference_kernel.generate_input(
     seed=params['seed']
 )
 
-# Now import backends registry (this auto-registers reference backend)
-# The nvfp4.reference_kernel module is fully initialized now, so auto-registration works
-from kernel_utils.backends import BACKENDS
-
-# Import optimized kernels (they auto-register themselves)
-try:
+# Get kernel function directly from module (avoid BACKENDS registry)
+backend_name = '{backend_name}'
+if backend_name == 'reference':
+    kernel_fn = nvfp4.reference_kernel.ref_kernel
+elif backend_name == 'triton':
     import nvfp4.optimized.triton_kernel
-except ImportError:
-    pass
-
-try:
+    kernel_fn = nvfp4.optimized.triton_kernel.triton_kernel
+elif backend_name == 'cute':
     import nvfp4.optimized.cute_kernel
-except ImportError:
-    pass
-
-# Get the kernel function (should be registered by now)
-kernel_fn = BACKENDS['{backend_name}']
+    kernel_fn = nvfp4.optimized.cute_kernel.cute_kernel
+else:
+    raise ValueError(f"Unknown backend: {{backend_name}}")
 
 # Run the kernel once (NCU will profile this execution)
 result = kernel_fn(test_input)
