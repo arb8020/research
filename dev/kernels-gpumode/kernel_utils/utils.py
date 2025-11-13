@@ -439,59 +439,30 @@ if str(project_dir) not in sys.path:
 with open('{params_path}', 'r') as f:
     params = json.load(f)
 
-# Import all kernel modules first (complete imports before registering)
-import nvfp4.reference_kernel
-try:
-    import nvfp4.optimized.triton_kernel
-except ImportError:
-    pass
-try:
-    import nvfp4.optimized.cute_kernel
-except ImportError:
-    pass
-
-# Generate test input
-test_input = nvfp4.reference_kernel.generate_input(
+# Generate test input (imports nvfp4.reference_kernel)
+from nvfp4.reference_kernel import generate_input
+test_input = generate_input(
     m=params['m'],
     k=params['k'],
     l=params['l'],
     seed=params['seed']
 )
 
-# Now import and register backends (after all imports complete)
+# Import backends registry (this auto-registers reference backend)
+# Then import optimized kernels (they auto-register themselves)
 from kernel_utils.backends import BACKENDS
 
-# Register reference backend explicitly
-BACKENDS.register(
-    name="reference",
-    kernel_fn=nvfp4.reference_kernel.ref_kernel,
-    description="PyTorch reference using torch._scaled_mm",
-    language="pytorch"
-)
-
-# Register triton if available
 try:
-    BACKENDS.register(
-        name="triton",
-        kernel_fn=nvfp4.optimized.triton_kernel.triton_kernel,
-        description="Triton FP4 GEMV kernel",
-        language="triton"
-    )
-except (ImportError, AttributeError):
+    import nvfp4.optimized.triton_kernel
+except ImportError:
     pass
 
-# Register cute if available
 try:
-    BACKENDS.register(
-        name="cute",
-        kernel_fn=nvfp4.optimized.cute_kernel.cute_kernel,
-        description="CuTe/CUTLASS FP4 tensor core kernel",
-        language="cutlass"
-    )
-except (ImportError, AttributeError):
+    import nvfp4.optimized.cute_kernel
+except ImportError:
     pass
 
-# Get the kernel function
+# Get the kernel function (should be registered by now)
 kernel_fn = BACKENDS['{backend_name}']
 
 # Run the kernel once (NCU will profile this execution)
