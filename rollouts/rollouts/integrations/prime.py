@@ -21,6 +21,7 @@ Example:
 """
 
 import asyncio
+import logging
 import trio_asyncio
 from dataclasses import replace
 from typing import Any, Dict, List, Tuple
@@ -29,6 +30,8 @@ from verifiers import Environment as VerifiersEnv
 from verifiers import Parser, Rubric
 
 from ..dtypes import Trajectory, RewardFunction, Message
+
+logger = logging.getLogger(__name__)
 
 
 def _extract_model_response(trajectory: Trajectory) -> str:
@@ -182,7 +185,10 @@ def prime_reward_fn(
                 # Parser expects string, not list
                 parsed_answer = _parser.parse(model_response)
         except Exception as e:
-            # Parse error - return 0 reward
+            # Parse error - log loudly and return 0 reward
+            logger.error(f"❌ PARSE ERROR: {e}")
+            logger.error(f"   Parser type: {type(_parser).__name__}")
+            logger.error(f"   Response preview: {model_response[:200]}...")
             metadata = {
                 **trajectory.metadata,
                 "prime_parse_error": str(e),
@@ -199,7 +205,13 @@ def prime_reward_fn(
                 _env, _rubric, prompt, completion, ground_truth, sample_data
             )
         except Exception as e:
-            # Scoring error - return 0 reward
+            # Scoring error - log loudly and return 0 reward
+            logger.error(f"❌ GRADING ERROR: {e}")
+            logger.error(f"   Rubric type: {type(_rubric).__name__}")
+            logger.error(f"   Parsed answer: {parsed_answer}")
+            if trajectory.metadata.get("verbose"):
+                import traceback
+                logger.error(f"   Full traceback:\n{traceback.format_exc()}")
             metadata = {
                 **trajectory.metadata,
                 "prime_grade_error": str(e),
