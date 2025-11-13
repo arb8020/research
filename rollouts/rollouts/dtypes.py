@@ -453,6 +453,7 @@ class RunConfig:
     user_message_for_thinking: Optional[str] = None
     inline_thinking: Optional[str] = None
     checkpoint_store: Optional[Any] = None
+    show_progress: bool = False  # Enable turn-level progress tracking
 
 # ── Evaluation Types ──────────────────────────────────────────────────────────
 
@@ -499,3 +500,4 @@ class EvalConfig:
 
     # Logging
     verbose: bool = True
+    show_progress: bool = False  # Enable sample-level progress tracking

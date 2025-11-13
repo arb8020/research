@@ -17,6 +17,7 @@ from .dtypes import (
     Environment, EvalConfig, RunConfig, RewardFunction
 )
 from .agents import run_agent
+from .progress import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -192,9 +193,14 @@ async def evaluate_sample(
     )
 
     # Use run_config from EvalConfig (or default silent)
-    run_config = config.run_config or RunConfig(
-        on_chunk=lambda _: trio.sleep(0)
-    )
+    # If user provided run_config, respect it but override show_progress
+    if config.run_config:
+        run_config = replace(config.run_config, show_progress=config.show_progress)
+    else:
+        run_config = RunConfig(
+            on_chunk=lambda _: trio.sleep(0),
+            show_progress=config.show_progress
+        )
 
     # Run agent
     # Tiger Style: Catch operational errors (rate limits, network issues) at boundary
@@ -328,6 +334,16 @@ async def evaluate(
     # Evaluate samples (with concurrency control)
     results = []
 
+    # Initialize outer progress bar for sample-level tracking
+    sample_pbar = None
+    if config.show_progress:
+        sample_pbar = tqdm(
+            total=len(samples_to_eval),
+            desc=f"{config.eval_name}",
+            unit="sample",
+            disable=False
+        )
+
     if config.max_concurrent == 1:
         # Sequential evaluation - create fresh environment for each sample
         for sample_id, sample_data in samples_to_eval:
@@ -341,6 +357,14 @@ async def evaluate(
                 config=config,
             )
             results.append(result)
+
+            # Update outer progress bar with reward
+            if sample_pbar:
+                sample_pbar.update(1)
+                postfix = {'reward': f"{result.metrics.get('reward', 0):.3f}"}
+                if 'turns_used' in result.metadata:
+                    postfix['turns'] = result.metadata['turns_used']
+                sample_pbar.set_postfix(postfix)
     else:
         # Parallel evaluation with trio nursery - create fresh environment for each sample
         results = []
@@ -357,6 +381,14 @@ async def evaluate(
             )
             results.append(result)
 
+            # Update outer progress bar for parallel execution
+            if sample_pbar:
+                sample_pbar.update(1)
+                postfix = {'reward': f"{result.metrics.get('reward', 0):.3f}"}
+                if 'turns_used' in result.metadata:
+                    postfix['turns'] = result.metadata['turns_used']
+                sample_pbar.set_postfix(postfix)
+
         # Run tasks in parallel with bounded concurrency
         async with trio.open_nursery() as nursery:
             limiter = trio.CapacityLimiter(config.max_concurrent)
@@ -365,6 +397,10 @@ async def evaluate(
                     async with limiter:
                         await eval_task(sid, sdata)
                 nursery.start_soon(run_with_limit)
+
+    # Close outer progress bar
+    if sample_pbar:
+        sample_pbar.close()
 
     # Compute summary metrics
     summary_metrics = compute_summary_metrics(results)
