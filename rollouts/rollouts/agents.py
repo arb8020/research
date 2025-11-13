@@ -210,8 +210,10 @@ async def rollout(actor: Actor, on_chunk: Callable[[StreamChunk], Awaitable[None
     elif provider == "anthropic":
         new_actor = await rollout_anthropic(actor, on_chunk, user_message_for_thinking, turn_idx, inline_thinking)
     else:
-        print(f"Invalid provider {actor.endpoint.provider})")
-        sys.exit(0)
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Invalid provider {actor.endpoint.provider}")
+        sys.exit(1)
     return new_actor
 
 async def run_agent_step(state: AgentState, rcfg: RunConfig) -> AgentState:
