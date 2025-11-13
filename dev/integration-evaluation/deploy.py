@@ -147,6 +147,7 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
             "trio-asyncio>=0.15.0",
             "python-dotenv>=1.0.0",
             "verifiers>=0.1.0",  # Prime Intellect verifiers framework
+            "backendbench @ git+https://github.com/meta-pytorch/BackendBench.git",  # Required by backend-bench
             "triton>=3.0.0",  # For GPU kernel compilation
             "rich>=13.0.0",
         ],
