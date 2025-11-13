@@ -1,10 +1,11 @@
 # Prime Environment Setup Guide
 
-## Installation
+## Installation (Official Method)
 
-### Installing Prime Environments
+These instructions match the official Prime Hub documentation exactly:
+https://app.primeintellect.ai/dashboard/environments/siro/backend-bench
 
-Prime environments are distributed via the Prime Hub. To install an environment:
+### Step-by-Step Installation
 
 1. **Install uv** (if not already installed):
    ```bash
@@ -21,30 +22,31 @@ Prime environments are distributed via the Prime Hub. To install an environment:
    prime env install siro/backend-bench
    ```
 
-4. **Check installation info** (see alternate installation methods):
-   ```bash
-   prime env info siro/backend-bench
-   ```
-
-5. **Use the environment**:
+4. **Use the environment**:
    ```python
    from verifiers import load_environment
-   env = load_environment("siro/backend-bench", gpu="local")
+   env = load_environment("backend-bench", gpu="local")
+   # Note: Can also use full name "siro/backend-bench"
    ```
 
-### Backend-Bench Specific
+### What Gets Installed
 
-The backend-bench environment is available at:
-- **Prime Hub**: https://app.primeintellect.ai/dashboard/environments/siro/backend-bench
-- **Install command**: `prime env install siro/backend-bench`
-- **Package name**: `backend-bench` (on PyPI as `backend-bench>=0.2.0`)
+`prime env install siro/backend-bench` installs:
+- `verifiers` - Prime Intellect's verifiers framework (provides `load_environment`)
+- `backend-bench` - The backend-bench environment package
+- `backendbench` - The underlying PyTorch BackendBench library
+- All required dependencies
 
-For deployment, the package can be installed via pip (it's available on PyPI):
+### Alternate Installation Methods
+
+To see alternate installation methods:
 ```bash
-pip install backend-bench>=0.2.0
+prime env info siro/backend-bench
 ```
 
-This installs both `backend-bench` and its dependency `backendbench`, which provides the `backend_bench` module that verifiers uses.
+This includes:
+- **Package installation** (default): `prime env install siro/backend-bench`
+- **Source code**: `prime env pull siro/backend-bench` (for development)
 
 ## Configuration Pattern
 
@@ -191,6 +193,22 @@ To add explicit parameters for another environment (e.g., `siro/math-python`):
 | ❌ Can't see what's configurable | ✅ `inspect.signature()` shows all params |
 | ❌ Need to read source | ✅ All options in config comments |
 
+## Deployment (deploy.py)
+
+The `deploy.py` script follows the official Prime Hub installation method:
+
+1. **Installs standard dependencies** via kerbal (torch, trio, etc.)
+2. **Installs Prime CLI** using `uv tool install prime`
+3. **Installs backend-bench environment** using `prime env install siro/backend-bench`
+
+This matches the official Prime Hub instructions exactly. The Prime CLI handles:
+- Installing `verifiers` framework
+- Installing `backend-bench` environment package
+- Installing `backendbench` library and all dependencies
+- Proper version resolution and compatibility
+
+See `deploy.py:161-193` for implementation details.
+
 ## Files Modified
 
 1. **configs/prime_backend_bench.py**
@@ -203,7 +221,12 @@ To add explicit parameters for another environment (e.g., `siro/math-python`):
    - Passes them to load_environment()
    - Logs which parameters are explicit
 
-3. **shared/shared/print_interceptor.py** (new)
+3. **deploy.py**
+   - Installs Prime CLI via `uv tool install prime`
+   - Installs backend-bench via `prime env install siro/backend-bench`
+   - Follows official Prime Hub installation method
+
+4. **shared/shared/print_interceptor.py** (new)
    - Intercepts print() and converts to logging
    - Context manager for safe cleanup
    - Supports tee mode (print + log)
