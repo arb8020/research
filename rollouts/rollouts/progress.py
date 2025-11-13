@@ -30,12 +30,16 @@ class tqdm(Generic[T]):
     """
 
     def __init__(self, total: int | None = None, desc: str = '', disable: bool = False,
-                 unit: str = 'it', unit_scale: bool = False, rate: int = 100):
+                 unit: str = 'it', unit_scale: bool = False, rate: int = 100,
+                 bar_format: str | None = None):
         self.disable = disable
         self.unit = unit
         self.unit_scale = unit_scale
         self.rate = rate
         self.t = total
+        self.bar_format = bar_format
+        # Check if bar_format requests inverse rate (s/it instead of it/s)
+        self.use_inverse_rate = bar_format and '{rate_inv_fmt}' in bar_format if bar_format else False
 
         # Timing and counters
         self.st = time.perf_counter()  # start time
@@ -111,11 +115,18 @@ class tqdm(Generic[T]):
         else:
             est_text = ''
 
-        # Iteration rate
+        # Iteration rate - show as it/s or s/it depending on use_inverse_rate
         if self.n:
-            it_text = SI(self.n/elapsed) if self.unit_scale else f"{self.n/elapsed:5.2f}"
+            if self.use_inverse_rate:
+                # Show s/unit (e.g., "111.3s/sample") for slow operations
+                inv_rate = elapsed / self.n
+                it_text = f"{inv_rate:5.2f}s/{self.unit}"
+            else:
+                # Show unit/s (e.g., "0.01sample/s") - standard format
+                it_text = SI(self.n/elapsed) if self.unit_scale else f"{self.n/elapsed:5.2f}"
+                it_text = f"{it_text}{self.unit}/s"
         else:
-            it_text = "?"
+            it_text = f"?{self.unit}/s" if not self.use_inverse_rate else f"?s/{self.unit}"
 
         # Postfix (custom metrics like last_reward)
         postfix_str = ''
@@ -123,7 +134,7 @@ class tqdm(Generic[T]):
             postfix_str = ', ' + ', '.join(f'{k}={v}' for k, v in self.postfix_dict.items())
 
         # Build suffix: [elapsed<eta, rate, postfix]
-        suf = f'{prog_text} [{HMS(elapsed)}{est_text}, {it_text}{self.unit}/s{postfix_str}]'
+        suf = f'{prog_text} [{HMS(elapsed)}{est_text}, {it_text}{postfix_str}]'
 
         # Build progress bar
         sz = max(ncols - len(self.desc) - 3 - 2 - 2 - len(suf), 1)
