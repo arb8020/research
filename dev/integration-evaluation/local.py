@@ -99,6 +99,10 @@ async def run_evaluation(config_path: Path, result_dir: Path):
     # Override output directory to use timestamped result_dir
     eval_config = replace(eval_config, output_dir=result_dir)
 
+    # Create environment factory closure over prime_env
+    async def environment_factory(sample_data):
+        return await create_environment(prime_env, sample_data)
+
     logger.info(f"\n🚀 Starting evaluation")
     logger.info(f"   Output dir: {result_dir}")
     logger.info("="*50)
@@ -107,7 +111,7 @@ async def run_evaluation(config_path: Path, result_dir: Path):
     report = await evaluate(
         dataset=iter(rollouts_dataset),
         prepare_messages=prepare_messages,
-        environment_factory=create_environment,
+        environment_factory=environment_factory,
         endpoint=endpoint,
         config=eval_config,
         dataset_path=f"{config.env_name}_dataset",

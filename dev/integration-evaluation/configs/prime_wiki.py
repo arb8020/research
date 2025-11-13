@@ -32,19 +32,19 @@ class IntegrationEvalConfig:
     for Prime Intellect integration testing.
     """
     # Model configuration
-    # Option 1: Gemini (matches clicker pattern)
-    model_name: str = "gemini-2.0-flash-exp"
-    provider: str = "openai"  # Gemini through OpenAI-compatible API
-    api_base: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
-    api_key_env_var: str = "GEMINI_API_KEY"
+    # Option 1: OpenAI GPT-4.1 Mini (fast and cheap)
+    model_name: str = "gpt-4.1-mini"
+    provider: str = "openai"
+    api_base: str = "https://api.openai.com/v1"
+    api_key_env_var: str = "OPENAI_API_KEY"
     temperature: float = 0.0
     max_tokens: int = 2048
 
-    # Option 2: OpenAI
-    # model_name: str = "gpt-4o-mini"
-    # provider: str = "openai"
-    # api_base: str = "https://api.openai.com/v1"
-    # api_key_env_var: str = "OPENAI_API_KEY"
+    # Option 2: Gemini (10 req/min quota - use max_concurrent=1)
+    # model_name: str = "gemini-2.0-flash-exp"
+    # provider: str = "openai"  # Gemini through OpenAI-compatible API
+    # api_base: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
+    # api_key_env_var: str = "GEMINI_API_KEY"
 
     # Option 3: Anthropic
     # model_name: str = "claude-3-5-sonnet-20241022"
@@ -59,9 +59,7 @@ class IntegrationEvalConfig:
     # Evaluation configuration
     eval_name: str = "prime_wiki_eval"
     max_turns: int = 10  # Wiki-search is multi-turn (up to 10 turns)
-    # WARNING: Gemini has 10 requests/min quota - use max_concurrent=1 or 2
-    # Higher values will hit rate limits and fail
-    max_concurrent: int = 1  # Parallel evaluation (Gemini quota: 10/min)
+    max_concurrent: int = 4  # Parallel evaluation (OpenAI has higher limits)
 
     # Output configuration
     output_dir: Path = Path("results/integration-evaluation")
