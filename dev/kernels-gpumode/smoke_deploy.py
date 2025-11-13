@@ -223,33 +223,30 @@ def deploy_and_test(
         # Check if ncu_reports directory exists
         check_result = client.exec(f"test -d {ncu_remote} && echo OK || echo MISSING")
         if check_result.stdout.strip() == "OK":
-            # List NCU report files
-            list_result = client.exec(f"find {ncu_remote} -name '*.ncu-rep'")
-            if list_result.exit_code == 0:
-                ncu_files = [f.strip() for f in list_result.stdout.strip().split('\n') if f.strip()]
+            # Use bifrost's download_files for efficient binary transfer
+            ncu_local.mkdir(parents=True, exist_ok=True)
 
+            logger.info(f"   Downloading from {ncu_remote}...")
+            result = client.download_files(
+                remote_path=ncu_remote,
+                local_path=str(ncu_local),
+                recursive=True
+            )
+
+            if result.success:
+                # List what we downloaded
+                ncu_files = list(ncu_local.glob("*.ncu-rep"))
                 if ncu_files:
-                    ncu_local.mkdir(parents=True, exist_ok=True)
-                    for remote_file in ncu_files:
-                        filename = Path(remote_file).name
-                        local_file = ncu_local / filename
-
-                        # NCU reports are binary, use base64 encoding for transfer
-                        pull_result = client.exec(f"base64 {remote_file}")
-                        if pull_result.exit_code == 0:
-                            import base64
-                            decoded_data = base64.b64decode(pull_result.stdout)
-                            local_file.write_bytes(decoded_data)
-                            logger.info(f"   Downloaded: {local_file}")
-                        else:
-                            logger.warning(f"   Failed to download: {filename}")
+                    for local_file in ncu_files:
+                        size_mb = local_file.stat().st_size / (1024 * 1024)
+                        logger.info(f"   Downloaded: {local_file.name} ({size_mb:.1f} MB)")
 
                     logger.info(f"\n   📊 View NCU reports:")
                     logger.info(f"      ncu-ui {ncu_local}/<report-file.ncu-rep>")
                 else:
                     logger.warning("   No NCU report files found")
             else:
-                logger.warning("   Failed to list NCU report files")
+                logger.warning(f"   Failed to download NCU reports: {result.error}")
         else:
             logger.warning("   NCU reports directory not found on remote")
 
