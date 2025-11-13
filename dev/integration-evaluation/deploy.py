@@ -199,19 +199,36 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
         f"python -c 'import backendbench; print(backendbench.__file__)' 2>&1"
     )
     if result.exit_code != 0:
-        logger.error("❌ backendbench not installed correctly!")
-        logger.error(f"Output: {result.stdout}")
+        logger.warning("⚠️  backendbench not found - likely uv sync skipped it (already resolved)")
+        logger.info("📦 Installing backendbench manually via uv pip...")
 
-        # Additional debug: Show what IS importable
-        logger.info("🔍 Checking what packages ARE importable...")
-        debug = bifrost_client.exec(
+        # Install manually using uv pip
+        install_result = bifrost_client.exec(
             f"cd {project_workspace} && "
             f"source .venv/bin/activate && "
-            f"python -c 'import sys; print(\"\\n\".join(sys.path))' 2>&1"
+            f"export PATH=$HOME/.local/bin:$PATH && "
+            f"uv pip install 'backendbench @ git+https://github.com/meta-pytorch/BackendBench.git' 2>&1"
         )
-        logger.info(f"Python path:\n{debug.stdout}")
 
-        raise RuntimeError("backendbench dependency missing - kerbal setup may have failed")
+        if install_result.exit_code != 0:
+            logger.error(f"❌ Failed to install backendbench (exit code {install_result.exit_code})")
+            logger.error(f"Output: {install_result.stdout}")
+            raise RuntimeError("Failed to install backendbench")
+
+        logger.info("✅ backendbench installed manually")
+
+        # Verify it works now
+        verify = bifrost_client.exec(
+            f"cd {project_workspace} && "
+            f"source .venv/bin/activate && "
+            f"python -c 'import backendbench; print(backendbench.__file__)' 2>&1"
+        )
+        if verify.exit_code != 0:
+            logger.error("❌ backendbench still not importable!")
+            logger.error(f"Output: {verify.stdout}")
+            raise RuntimeError("backendbench installed but not importable")
+
+        logger.info(f"✅ backendbench verified at: {verify.stdout.strip()}")
     else:
         logger.info(f"✅ backendbench installed at: {result.stdout.strip()}")
 
