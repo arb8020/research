@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Dict, Any, List
 import trio_asyncio
 
-from rollouts.dtypes import Endpoint, EvalConfig, Message, Tool, ToolFunction, ToolFunctionParameter
+from rollouts.dtypes import Endpoint, EvalConfig, Message, Tool, ToolFunction, ToolFunctionParameter, AgentState
 
 
 def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
