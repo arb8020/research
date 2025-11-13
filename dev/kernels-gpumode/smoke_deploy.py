@@ -235,16 +235,16 @@ def deploy_and_test(
 
             if result.success:
                 # List what we downloaded
-                ncu_files = list(ncu_local.glob("*.ncu-rep"))
+                ncu_files = list(ncu_local.glob("*.csv"))
                 if ncu_files:
                     for local_file in ncu_files:
-                        size_mb = local_file.stat().st_size / (1024 * 1024)
-                        logger.info(f"   Downloaded: {local_file.name} ({size_mb:.1f} MB)")
+                        size_kb = local_file.stat().st_size / 1024
+                        logger.info(f"   Downloaded: {local_file.name} ({size_kb:.1f} KB)")
 
                     logger.info(f"\n   📊 View NCU reports:")
-                    logger.info(f"      ncu-ui {ncu_local}/<report-file.ncu-rep>")
+                    logger.info(f"      CSV files in {ncu_local}/")
                 else:
-                    logger.warning("   No NCU report files found")
+                    logger.warning("   No NCU CSV files found")
             else:
                 logger.warning(f"   Failed to download NCU reports: {result.error}")
         else:

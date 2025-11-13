@@ -292,7 +292,7 @@ def run_smoke_tests(
         print(f"   {len(ncu_reports)} NCU report(s) generated")
         print(f"   Location: ncu_reports/")
         print(f"\n   To view NCU reports:")
-        print(f"   ncu-ui <report-file.ncu-rep>")
+        print(f"   CSV files in ncu_reports/")
 
     # Determine overall success
     all_passed = all(br.all_correct for br in all_backend_results)

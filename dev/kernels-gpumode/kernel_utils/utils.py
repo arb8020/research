@@ -378,7 +378,7 @@ def ncu_profile_kernel(
 
     Returns:
         (report_path, error_msg | None)
-        report_path is the path to the saved .ncu-rep file
+        report_path is the path to the saved .csv file
         error_msg is None on success
     """
     import subprocess
@@ -396,7 +396,7 @@ def ncu_profile_kernel(
         script_path = output_dir / f"_ncu_temp_{backend_name}_{test_name}.py"
         params_path = output_dir / f"_ncu_temp_{backend_name}_{test_name}.json"
         report_filename = f"{backend_name}_{test_name}_ncu"
-        report_path = output_dir / f"{report_filename}.ncu-rep"
+        report_path = output_dir / f"{report_filename}.csv"
 
         # Extract test parameters from SMOKE_TESTS by matching test_name
         # This avoids pickling torch tensors
@@ -514,7 +514,8 @@ print("Kernel execution completed")
 
         ncu_cmd.extend([
             ncu_path,
-            "--export", str(report_path),
+            "--csv",
+            "--log-file", str(report_path),
             "--force-overwrite",
         ])
 
