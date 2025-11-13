@@ -115,6 +115,27 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
         workspace_path = result.stdout.strip()
         logger.info(f"📍 Expanded workspace path: {workspace_path}")
 
+    # Check what actually got deployed
+    logger.info("🔍 Checking deployed directory structure...")
+    result = bifrost_client.exec(f"ls -la {workspace_path}")
+    if result.exit_code == 0:
+        logger.info(f"Workspace contents:\n{result.stdout}")
+
+    # The project_workspace needs to point to where local.py is
+    # Bifrost pushes the entire monorepo, so we need to find integration-evaluation
+    project_workspace = f"{workspace_path}/dev/integration-evaluation"
+
+    # Verify the directory exists
+    result = bifrost_client.exec(f"test -d {project_workspace} && echo 'EXISTS' || echo 'MISSING'")
+    if result.stdout.strip() != 'EXISTS':
+        logger.error(f"❌ Project directory not found: {project_workspace}")
+        logger.info("Looking for integration-evaluation...")
+        result = bifrost_client.exec(f"find {workspace_path} -name 'integration-evaluation' -type d 2>/dev/null | head -5")
+        logger.info(f"Found:\n{result.stdout}")
+        raise RuntimeError(f"Project directory does not exist: {project_workspace}")
+
+    logger.info(f"✅ Project directory exists: {project_workspace}")
+
     # Define dependencies for dev/integration_evaluation
     deps = DependencyConfig(
         project_name="integration-evaluation",
@@ -135,7 +156,6 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
     )
 
     # Setup dependencies using kerbal
-    project_workspace = f"{workspace_path}/dev/integration_evaluation"
     setup_script_deps(bifrost_client, project_workspace, deps, install_extras=None)
 
     return workspace_path
@@ -409,6 +429,7 @@ def main():
         # Monitor evaluation with real-time log streaming
         log_path = f"{remote_result_dir}/evaluation.log"
         logger.info("📊 Monitoring evaluation with real-time log streaming...")
+        logger.info(f"💡 If evaluation fails early, check: tmux attach -t {tmux_session}")
 
         monitor_config = LogStreamConfig(
             session_name=tmux_session,
@@ -423,6 +444,14 @@ def main():
 
         if not success:
             logger.error(f"❌ Evaluation failed: {err}")
+
+            # Try to get more error details from tmux pane
+            logger.info("🔍 Checking tmux pane for error details...")
+            result = bifrost_client.exec(f"tmux capture-pane -t {tmux_session} -p")
+            if result.exit_code == 0 and result.stdout:
+                logger.error("Tmux pane output:")
+                logger.error(result.stdout[-2000:])  # Last 2000 chars
+
             # Continue to sync results anyway
             success = False
         else:
