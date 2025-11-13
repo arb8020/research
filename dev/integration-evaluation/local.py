@@ -13,7 +13,9 @@ import argparse
 import trio
 import importlib.util
 import sys
+import logging
 from pathlib import Path
+from dataclasses import replace
 
 from dotenv import load_dotenv
 
@@ -24,42 +26,23 @@ load_dotenv()
 sys.path.insert(0, str(Path.home() / "research" / "shared"))
 sys.path.insert(0, str(Path(__file__).parent.parent / "rollouts"))
 
-# Use shared logging config
-from shared.logging_config import setup_logging
-
-setup_logging(
-    level="INFO",  # Show info, warnings, and errors
-    logger_levels={
-        "httpx": "WARNING",  # Mute HTTP request logs
-        "httpcore": "WARNING",  # Mute HTTP core logs
-        "openai": "WARNING",  # Mute OpenAI client logs
-        "anthropic": "WARNING",  # Mute Anthropic client logs
-        "httpcore.http11": "WARNING",  # Mute HTTP/1.1 logs
-        "datasets": "WARNING",  # Mute HuggingFace datasets logs
-        "chromadb": "WARNING",  # Mute ChromaDB logs
-    }
-)
-
-# Silence verifiers module loggers specifically
-import logging
-logging.getLogger("verifiers").setLevel(logging.WARNING)
-logging.getLogger("verifiers.utils").setLevel(logging.WARNING)
-logging.getLogger("verifiers.utils.env_utils").setLevel(logging.WARNING)
-logging.getLogger("verifiers.rubrics").setLevel(logging.WARNING)
-
 from rollouts.evaluation import evaluate
 from rollouts.integrations.prime import prime_reward_fn
 from rollouts.dtypes import Message
+from rollouts.logging_utils import init_rollout_logging
 
 # Import verifiers for loading Prime Hub environments
 from verifiers import load_environment
 
+logger = logging.getLogger(__name__)
 
-async def run_evaluation(config_path: Path):
+
+async def run_evaluation(config_path: Path, result_dir: Path):
     """Run Prime integration evaluation.
 
     Args:
         config_path: Path to config file
+        result_dir: Timestamped results directory for outputs
 
     Pattern:
         1. Load config
@@ -67,7 +50,7 @@ async def run_evaluation(config_path: Path):
         3. Create reward function from Prime
         4. Run evaluation with rollouts framework
     """
-    print(f"📝 Loading config from: {config_path}")
+    logger.info(f"📝 Loading config from: {config_path}")
 
     # Load config module
     spec = importlib.util.spec_from_file_location("config", config_path)
@@ -85,40 +68,40 @@ async def run_evaluation(config_path: Path):
     prepare_messages = config_module.prepare_messages
     create_environment = config_module.create_environment
 
-    print(f"🎯 Configuration loaded")
-    print(f"   Model: {config.model_name}")
-    print(f"   Environment: {config.env_name}")
-    print(f"   Samples: {config.num_samples}")
-    print(f"   Max concurrent: {config.max_concurrent}")
+    logger.info(f"🎯 Configuration loaded")
+    logger.info(f"   Model: {config.model_name}")
+    logger.info(f"   Environment: {config.env_name}")
+    logger.info(f"   Samples: {config.num_samples}")
+    logger.info(f"   Max concurrent: {config.max_concurrent}")
 
     # Create Prime environment
-    print(f"\n🎮 Loading Prime environment: {config.env_name}")
+    logger.info(f"\n🎮 Loading Prime environment: {config.env_name}")
     prime_env = load_environment(config.env_name)
 
-    print(f"   Dataset size: {len(prime_env.dataset)}")
-    print(f"   Rubric: {type(prime_env.rubric).__name__}")
-    print(f"   Parser: {type(prime_env.parser).__name__}")
-    print(f"   Max turns: {prime_env.max_turns}")
+    logger.info(f"   Dataset size: {len(prime_env.dataset)}")
+    logger.info(f"   Rubric: {type(prime_env.rubric).__name__}")
+    logger.info(f"   Parser: {type(prime_env.parser).__name__}")
+    logger.info(f"   Max turns: {prime_env.max_turns}")
 
     # Create reward function from Prime environment
-    print(f"\n🏆 Creating reward function from Prime rubric")
+    logger.info(f"\n🏆 Creating reward function from Prime rubric")
     reward_fn = prime_reward_fn(prime_env)
 
     # Use Prime dataset directly (no conversion needed - prepare_messages handles format)
-    print(f"\n📊 Using Prime dataset")
+    logger.info(f"\n📊 Using Prime dataset")
     rollouts_dataset = list(prime_env.dataset)
-    print(f"   Dataset size: {len(rollouts_dataset)} samples")
+    logger.info(f"   Dataset size: {len(rollouts_dataset)} samples")
 
     # Setup rollouts evaluation config
     endpoint = config.to_endpoint()
     eval_config = config.to_eval_config(reward_fn)
 
-    # Create output directory
-    eval_config.output_dir.mkdir(parents=True, exist_ok=True)
+    # Override output directory to use timestamped result_dir
+    eval_config = replace(eval_config, output_dir=result_dir)
 
-    print(f"\n🚀 Starting evaluation")
-    print(f"   Output dir: {eval_config.output_dir}")
-    print("="*50)
+    logger.info(f"\n🚀 Starting evaluation")
+    logger.info(f"   Output dir: {result_dir}")
+    logger.info("="*50)
 
     # Run evaluation
     report = await evaluate(
@@ -131,35 +114,37 @@ async def run_evaluation(config_path: Path):
     )
 
     # Print detailed results
-    print("\n" + "="*50)
-    print("📊 EVALUATION RESULTS")
-    print("="*50)
-    print(f"Total samples: {report.total_samples}")
-    print(f"Mean reward: {report.summary_metrics['mean_reward']:.3f}")
-    print(f"Min reward: {report.summary_metrics['min_reward']:.3f}")
-    print(f"Max reward: {report.summary_metrics['max_reward']:.3f}")
-    print(f"Std reward: {report.summary_metrics['std_reward']:.3f}")
+    logger.info("\n" + "="*50)
+    logger.info("📊 EVALUATION RESULTS")
+    logger.info("="*50)
+    logger.info(f"Total samples: {report.total_samples}")
+    logger.info(f"Mean reward: {report.summary_metrics['mean_reward']:.3f}")
+    logger.info(f"Min reward: {report.summary_metrics['min_reward']:.3f}")
+    logger.info(f"Max reward: {report.summary_metrics['max_reward']:.3f}")
+    logger.info(f"Std reward: {report.summary_metrics['std_reward']:.3f}")
 
     # Show sample-level details
-    print(f"\n📝 Sample-level results:")
+    logger.info(f"\n📝 Sample-level results:")
     for i, sample in enumerate(report.sample_results[:5]):  # Show first 5
-        print(f"\n{sample.sample_id}:")
-        print(f"  Reward: {sample.metrics['reward']:.3f}")
-        print(f"  Question: {sample.input_data['question'][:80]}...")
-        print(f"  Ground truth: {sample.trajectory.metadata.get('prime_ground_truth')}")
-        print(f"  Parsed answer: {sample.trajectory.metadata.get('prime_parsed_answer')}")
+        logger.info(f"\n{sample.sample_id}:")
+        logger.info(f"  Reward: {sample.metrics['reward']:.3f}")
+        logger.info(f"  Question: {sample.input_data['question'][:80]}...")
+        logger.info(f"  Ground truth: {sample.trajectory.metadata.get('prime_ground_truth')}")
+        logger.info(f"  Parsed answer: {sample.trajectory.metadata.get('prime_parsed_answer')}")
 
         # Show model response
         if sample.trajectory.messages:
             last_msg = sample.trajectory.messages[-1]
             if last_msg.role == "assistant":
                 response_preview = (last_msg.content or "")[:100]
-                print(f"  Model response: {response_preview}...")
+                logger.info(f"  Model response: {response_preview}...")
 
-    print(f"\n✅ Results saved to: {eval_config.output_dir}")
-    print(f"   Report: {eval_config.output_dir}/report.json")
-    print(f"   Samples: {eval_config.output_dir}/samples/")
-    print(f"   Trajectories: {eval_config.output_dir}/trajectories/")
+    logger.info(f"\n✅ Results saved to: {result_dir}")
+    logger.info(f"   Report: {result_dir}/report.json")
+    logger.info(f"   Samples: {result_dir}/samples/")
+    logger.info(f"   Trajectories: {result_dir}/trajectories/")
+
+    return report
 
 
 def main():
@@ -179,8 +164,33 @@ def main():
         print(f"❌ Config file not found: {args.config}")
         sys.exit(1)
 
+    # Extract experiment name from config file name
+    experiment_name = args.config.stem  # e.g., "prime_wiki" from "prime_wiki.py"
+
+    # Initialize logging and create timestamped results directory
+    result_dir = init_rollout_logging(
+        experiment_name=experiment_name,
+        results_base_dir=Path("eval_results"),
+        log_level="INFO",
+        logger_levels={
+            "httpx": "WARNING",
+            "httpcore": "WARNING",
+            "openai": "WARNING",
+            "anthropic": "WARNING",
+            "httpcore.http11": "WARNING",
+            "datasets": "WARNING",
+            "chromadb": "WARNING",
+            "verifiers": "WARNING",
+            "verifiers.utils": "WARNING",
+            "verifiers.utils.env_utils": "WARNING",
+            "verifiers.rubrics": "WARNING",
+        }
+    )
+
+    logger.info(f"🚀 Running Prime integration evaluation: {experiment_name}")
+
     # Run evaluation
-    trio.run(run_evaluation, args.config)
+    trio.run(run_evaluation, args.config, result_dir)
 
 
 if __name__ == "__main__":
