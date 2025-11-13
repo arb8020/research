@@ -239,9 +239,11 @@ async def run_agent_step(state: AgentState, rcfg: RunConfig) -> AgentState:
     # Make LLM call
     next_actor = await rollout(updated_actor, rcfg.on_chunk, rcfg.user_message_for_thinking, state.turn_idx, rcfg.inline_thinking)
 
-    # Extract tool calls
-    last_message = next_actor.trajectory.messages[-1]
-    tool_calls = last_message.tool_calls if last_message.tool_calls else []
+    # Extract tool calls from last message (if it's an assistant message)
+    last_message = next_actor.trajectory.messages[-1] if next_actor.trajectory.messages else None
+    tool_calls = []
+    if last_message and last_message.role == "assistant":
+        tool_calls = last_message.tool_calls if last_message.tool_calls else []
 
     # Update state with new actor AND pending tools
     current_state = replace(
@@ -253,7 +255,9 @@ async def run_agent_step(state: AgentState, rcfg: RunConfig) -> AgentState:
 
     # Let environment respond to assistant message (e.g., execute code, provide feedback)
     # This happens AFTER updating state but BEFORE tool processing
-    if state.environment and hasattr(state.environment, 'on_assistant_message'):
+    # Only call if we actually have an assistant message
+    if (state.environment and hasattr(state.environment, 'on_assistant_message')
+        and last_message and last_message.role == "assistant"):
         current_state = await state.environment.on_assistant_message(last_message, current_state)
     
     # If no tools, we're done with this turn
