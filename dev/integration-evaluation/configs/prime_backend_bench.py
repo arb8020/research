@@ -311,7 +311,7 @@ async def create_environment(prime_env, sample_data):
             completion=[],
             answer=sample_data.get("answer", ""),
             task=sample_data.get("task", "backend_bench"),
-            info=sample_data,
+            info=sample_data.get("info", {}),  # Pass just the info dict, not all sample_data
             example_id=sample_data.get("example_id", 0)
         )
     )
