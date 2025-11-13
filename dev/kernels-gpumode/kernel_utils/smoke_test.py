@@ -28,6 +28,14 @@ from kernel_utils.results import (
 )
 from nvfp4.reference_kernel import ref_kernel
 
+# Register reference backend explicitly
+BACKENDS.register(
+    name="reference",
+    kernel_fn=ref_kernel,
+    description="PyTorch reference using torch._scaled_mm",
+    language="pytorch",
+)
+
 # Auto-register custom backends by importing them
 # Add your kernel implementations here:
 try:

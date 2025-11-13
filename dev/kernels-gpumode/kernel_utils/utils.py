@@ -424,7 +424,6 @@ def ncu_profile_kernel(
         project_dir = Path(__file__).parent.parent.absolute()
 
         # Create a standalone script that can be profiled by NCU
-        # Avoid using BACKENDS registry to sidestep circular import issues
         script_content = f"""
 import sys
 import json
@@ -440,7 +439,7 @@ if str(project_dir) not in sys.path:
 with open('{params_path}', 'r') as f:
     params = json.load(f)
 
-# Import kernel modules directly (avoid BACKENDS auto-registration)
+# Import kernel modules
 import nvfp4.reference_kernel
 
 # Generate test input
@@ -451,18 +450,28 @@ test_input = nvfp4.reference_kernel.generate_input(
     seed=params['seed']
 )
 
-# Get kernel function directly from module (avoid BACKENDS registry)
-backend_name = '{backend_name}'
-if backend_name == 'reference':
-    kernel_fn = nvfp4.reference_kernel.ref_kernel
-elif backend_name == 'triton':
+# Import BACKENDS and register backends explicitly (no auto-registration anymore)
+from kernel_utils.backends import BACKENDS
+
+BACKENDS.register(
+    name="reference",
+    kernel_fn=nvfp4.reference_kernel.ref_kernel,
+    description="PyTorch reference using torch._scaled_mm",
+    language="pytorch",
+)
+
+try:
     import nvfp4.optimized.triton_kernel
-    kernel_fn = nvfp4.optimized.triton_kernel.triton_kernel
-elif backend_name == 'cute':
+except ImportError:
+    pass
+
+try:
     import nvfp4.optimized.cute_kernel
-    kernel_fn = nvfp4.optimized.cute_kernel.cute_kernel
-else:
-    raise ValueError(f"Unknown backend: {{backend_name}}")
+except ImportError:
+    pass
+
+# Get the kernel function from registry
+kernel_fn = BACKENDS['{backend_name}']
 
 # Run the kernel once (NCU will profile this execution)
 result = kernel_fn(test_input)
