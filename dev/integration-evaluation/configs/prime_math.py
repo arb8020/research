@@ -183,10 +183,9 @@ class MathPythonEnvironment:
             self.messages.append(assistant_msg)
 
             # Call Prime's env_response to execute the tool
-            async with trio_asyncio.open_loop():
-                updated_messages, updated_state = await trio_asyncio.aio_as_trio(
-                    self.prime_env.env_response
-                )(self.messages, self.state)
+            updated_messages, updated_state = await trio_asyncio.run_aio_coroutine(
+                self.prime_env.env_response(self.messages, self.state)
+            )
 
             # Update state
             self.state = updated_state
@@ -274,10 +273,9 @@ class MathPythonEnvironment:
         sandbox_id = self.state.get("sandbox_id")
         if sandbox_id:
             # Use trio_asyncio bridge to call Prime's async destroy_sandbox
-            async with trio_asyncio.open_loop():
-                await trio_asyncio.aio_as_trio(
-                    self.prime_env.destroy_sandbox
-                )(sandbox_id)
+            await trio_asyncio.run_aio_coroutine(
+                self.prime_env.destroy_sandbox(sandbox_id)
+            )
 
 
 async def create_environment(prime_env, sample_data):
@@ -291,8 +289,8 @@ async def create_environment(prime_env, sample_data):
         MathPythonEnvironment instance initialized for this sample
     """
     # Initialize state using trio_asyncio bridge
-    async with trio_asyncio.open_loop():
-        state = await trio_asyncio.aio_as_trio(prime_env.init_state)(
+    state = await trio_asyncio.run_aio_coroutine(
+        prime_env.init_state(
             prompt=sample_data.get("prompt", []),
             completion=[],
             answer=sample_data.get("answer", ""),
@@ -300,8 +298,11 @@ async def create_environment(prime_env, sample_data):
             info=sample_data,
             example_id=sample_data.get("example_id", 0)
         )
+    )
 
-        # Setup environment-specific state (also async)
-        state = await trio_asyncio.aio_as_trio(prime_env.setup_state)(state)
+    # Setup environment-specific state (also async)
+    state = await trio_asyncio.run_aio_coroutine(
+        prime_env.setup_state(state)
+    )
 
     return MathPythonEnvironment(prime_env, state)

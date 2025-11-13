@@ -107,15 +107,24 @@ async def run_evaluation(config_path: Path, result_dir: Path):
     logger.info(f"   Output dir: {result_dir}")
     logger.info("="*50)
 
-    # Run evaluation
-    report = await evaluate(
-        dataset=iter(rollouts_dataset),
-        prepare_messages=prepare_messages,
-        environment_factory=environment_factory,
-        endpoint=endpoint,
-        config=eval_config,
-        dataset_path=f"{config.env_name}_dataset",
-    )
+    # Run evaluation within trio_asyncio loop context
+    # This allows all Prime API calls to share the same event loop
+    import trio_asyncio
+    async with trio_asyncio.open_loop():
+        try:
+            report = await evaluate(
+                dataset=iter(rollouts_dataset),
+                prepare_messages=prepare_messages,
+                environment_factory=environment_factory,
+                endpoint=endpoint,
+                config=eval_config,
+                dataset_path=f"{config.env_name}_dataset",
+            )
+        finally:
+            # Cleanup any remaining sandboxes (in case of errors during evaluation)
+            if hasattr(prime_env, 'cleanup_sandboxes'):
+                logger.info("\n🧹 Cleaning up sandboxes...")
+                prime_env.cleanup_sandboxes()
 
     # Print detailed results
     logger.info("\n" + "="*50)
