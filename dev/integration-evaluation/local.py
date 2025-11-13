@@ -128,7 +128,11 @@ async def run_evaluation(config_path: Path, result_dir: Path):
     for i, sample in enumerate(report.sample_results[:5]):  # Show first 5
         logger.info(f"\n{sample.sample_id}:")
         logger.info(f"  Reward: {sample.metrics['reward']:.3f}")
-        logger.info(f"  Question: {sample.input_data['question'][:80]}...")
+
+        # Handle different dataset formats (wiki-search has 'question', acebench doesn't)
+        if 'question' in sample.input_data:
+            logger.info(f"  Question: {sample.input_data['question'][:80]}...")
+
         logger.info(f"  Ground truth: {sample.trajectory.metadata.get('prime_ground_truth')}")
         logger.info(f"  Parsed answer: {sample.trajectory.metadata.get('prime_parsed_answer')}")
 
