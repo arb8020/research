@@ -432,8 +432,21 @@ print("Kernel execution completed")
             f.write(script_content)
 
         # Build NCU command
+        # Try common NCU paths if 'ncu' is not in PATH
+        import shutil
+        ncu_path = shutil.which("ncu")
+        if ncu_path is None:
+            # Check common CUDA installation paths
+            for cuda_path in ["/usr/local/cuda/bin/ncu", "/usr/local/cuda-12/bin/ncu", "/opt/nvidia/nsight-compute/ncu"]:
+                if Path(cuda_path).exists():
+                    ncu_path = cuda_path
+                    break
+
+        if ncu_path is None:
+            return "", "NCU not found - ensure NVIDIA Nsight Compute is installed and in PATH"
+
         ncu_cmd = [
-            "ncu",
+            ncu_path,
             "--export", str(report_path),
             "--force-overwrite",
         ]
