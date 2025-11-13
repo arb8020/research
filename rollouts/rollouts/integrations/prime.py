@@ -82,7 +82,8 @@ async def _call_prime_scoring(
     prompt: List[Dict],
     completion: List[Dict],
     ground_truth: str | None,
-    sample_data: Dict[str, Any]
+    sample_data: Dict[str, Any],
+    backend_bench_state: Dict[str, Any] | None = None
 ) -> Any:
     """Call Prime's asyncio scoring from trio context.
 
@@ -90,6 +91,7 @@ async def _call_prime_scoring(
 
     Args:
         ground_truth: Can be None for environments that don't use reference answers
+        backend_bench_state: Pre-computed state for stateful environments (e.g., backend-bench)
     """
     assert env is not None
     assert rubric is not None
@@ -97,15 +99,20 @@ async def _call_prime_scoring(
     assert completion is not None
 
     async with trio_asyncio.open_loop():
-        # Initialize state
-        state = await trio_asyncio.aio_as_trio(env.init_state)(
-            prompt=prompt,
-            completion=completion,
-            answer=ground_truth or "",  # Use empty string if no ground truth
-            task="default",
-            info=sample_data,
-            example_id=sample_data.get("example_id", 0)
-        )
+        # Check if stateful environment already provided updated state
+        # (e.g., backend-bench stores state with test results in metadata)
+        if backend_bench_state is not None:
+            state = backend_bench_state
+        else:
+            # No pre-computed state - initialize fresh (for stateless environments)
+            state = await trio_asyncio.aio_as_trio(env.init_state)(
+                prompt=prompt,
+                completion=completion,
+                answer=ground_truth or "",  # Use empty string if no ground truth
+                task="default",
+                info=sample_data,
+                example_id=sample_data.get("example_id", 0)
+            )
 
         # Score the rollout
         score_result = await trio_asyncio.aio_as_trio(rubric.score_rollout)(
@@ -168,6 +175,13 @@ def prime_reward_fn(
         # Note: ground_truth can be None for environments like backend-bench
         # that test code execution rather than comparing against reference answers
 
+        # Check if stateful environment stored updated state (e.g., backend-bench)
+        backend_bench_state = trajectory.metadata.get("backend_bench_state")
+        if backend_bench_state is not None:
+            logger.info(f"✅ Using stateful environment state with keys: {list(backend_bench_state.keys())}")
+            logger.info(f"   State has 'results': {'results' in backend_bench_state}")
+            logger.info(f"   State has 'best_result': {'best_result' in backend_bench_state}")
+
         # Extract model response (push for down to helper)
         model_response = _extract_model_response(trajectory)
 
@@ -202,7 +216,8 @@ def prime_reward_fn(
         # Score with Prime (isolate async bridge in helper)
         try:
             score_result = await _call_prime_scoring(
-                _env, _rubric, prompt, completion, ground_truth, sample_data
+                _env, _rubric, prompt, completion, ground_truth, sample_data,
+                backend_bench_state=backend_bench_state
             )
         except Exception as e:
             # Scoring error - log loudly and return 0 reward
