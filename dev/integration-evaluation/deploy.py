@@ -147,7 +147,6 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
             "trio-asyncio>=0.15.0",
             "python-dotenv>=1.0.0",
             "verifiers>=0.1.0",  # Prime Intellect verifiers framework
-            "backend-bench>=0.2.0",  # Backend-bench Prime environment (includes backendbench)
             "triton>=3.0.0",  # For GPU kernel compilation
             "rich>=13.0.0",
         ],
@@ -159,6 +158,32 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
 
     # Setup dependencies using kerbal
     setup_script_deps(bifrost_client, project_workspace, deps, install_extras=None)
+
+    # Install Prime CLI (for prime env install)
+    logger.info("📦 Installing Prime CLI...")
+    result = bifrost_client.exec(
+        f"cd {project_workspace} && "
+        f"source .venv/bin/activate && "
+        f"uv tool install prime"
+    )
+    if result.exit_code != 0:
+        logger.warning(f"⚠️  Prime CLI may already be installed: {result.stderr}")
+    else:
+        logger.info("✅ Prime CLI installed")
+
+    # Install backend-bench environment via Prime Hub (official method)
+    logger.info("📦 Installing backend-bench environment from Prime Hub...")
+    result = bifrost_client.exec(
+        f"cd {project_workspace} && "
+        f"source .venv/bin/activate && "
+        f"prime env install siro/backend-bench"
+    )
+    if result.exit_code != 0:
+        logger.error(f"❌ Failed to install backend-bench: {result.stderr}")
+        logger.error("This is required for backend-bench evaluation")
+        raise RuntimeError("Failed to install backend-bench environment")
+    else:
+        logger.info("✅ Backend-bench environment installed")
 
     return workspace_path
 
