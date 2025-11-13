@@ -160,29 +160,14 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
     # Setup dependencies using kerbal
     setup_script_deps(bifrost_client, project_workspace, deps, install_extras=None)
 
-    # Install Prime CLI using system uv (full path since not in non-login shell PATH)
-    logger.info("📦 Installing Prime CLI...")
-    result = bifrost_client.exec("~/.local/bin/uv tool install prime")
-    if result.exit_code != 0:
-        # Check if it's already installed
-        check = bifrost_client.exec("command -v prime || ls ~/.local/bin/prime")
-        if check.exit_code == 0:
-            logger.info(f"✅ Prime CLI already installed")
-        else:
-            logger.warning(f"⚠️  Failed to install Prime CLI: {result.stderr}")
-            logger.info("Attempting to continue anyway...")
-    else:
-        logger.info("✅ Prime CLI installed")
-
-    # Install backend-bench environment via Prime Hub (official method)
-    # This installs into the active venv
-    # Prime CLI needs uv in PATH, so add ~/.local/bin to PATH
-    logger.info("📦 Installing backend-bench environment from Prime Hub...")
+    # Install backend-bench directly via pip instead of Prime CLI
+    # Prime CLI's env install has issues with URL dependencies in uv
+    # We already have backendbench installed, so just install backend-bench package
+    logger.info("📦 Installing backend-bench package...")
     result = bifrost_client.exec(
         f"cd {project_workspace} && "
         f"source .venv/bin/activate && "
-        f"export PATH=$HOME/.local/bin:$PATH && "
-        f"prime env install siro/backend-bench 2>&1"
+        f"uv pip install backend-bench --extra-index-url https://hub.primeintellect.ai/siro/simple/ 2>&1"
     )
     if result.exit_code != 0:
         logger.error(f"❌ Failed to install backend-bench (exit code {result.exit_code})")
@@ -191,7 +176,7 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
         logger.error("This is required for backend-bench evaluation")
         raise RuntimeError("Failed to install backend-bench environment")
     else:
-        logger.info("✅ Backend-bench environment installed")
+        logger.info("✅ Backend-bench package installed")
         logger.info(f"Output: {result.stdout}")
 
     return workspace_path
