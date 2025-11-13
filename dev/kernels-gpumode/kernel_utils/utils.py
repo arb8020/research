@@ -7,6 +7,7 @@ from typing import Callable
 import torch
 import time
 import traceback
+from pathlib import Path
 
 
 def allclose_with_error(
@@ -280,3 +281,76 @@ def compare_backends(
             results[name] = (speedup, time_ms)
 
     return results
+
+
+def profile_kernel(
+    kernel_fn: Callable,
+    test_input,
+    output_dir: Path,
+    backend_name: str,
+    test_name: str,
+    num_warmup: int = 5,
+    num_profile_runs: int = 1,
+) -> tuple[str, str | None]:
+    """Profile kernel execution using torch.profiler.
+
+    Args:
+        kernel_fn: Kernel to profile
+        test_input: Input data
+        output_dir: Directory to save profile traces
+        backend_name: Name of backend being profiled
+        test_name: Name of test case
+        num_warmup: Warmup iterations before profiling
+        num_profile_runs: Number of profiling runs to capture
+
+    Returns:
+        (trace_path, error_msg | None)
+        trace_path is the path to the saved trace JSON file
+        error_msg is None on success
+    """
+    assert callable(kernel_fn), "kernel_fn must be callable"
+    assert num_warmup >= 0, f"num_warmup must be non-negative, got {num_warmup}"
+    assert num_profile_runs > 0, f"num_profile_runs must be positive, got {num_profile_runs}"
+
+    try:
+        # Create output directory
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Warmup
+        for _ in range(num_warmup):
+            _ = kernel_fn(test_input)
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+        # Profile with torch.profiler
+        trace_filename = f"{backend_name}_{test_name}_profile"
+        trace_path = output_dir / trace_filename
+
+        with torch.profiler.profile(
+            activities=[
+                torch.profiler.ProfilerActivity.CPU,
+                torch.profiler.ProfilerActivity.CUDA,
+            ],
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=True,
+            on_trace_ready=torch.profiler.tensorboard_trace_handler(str(output_dir)),
+        ) as prof:
+            for _ in range(num_profile_runs):
+                kernel_fn(test_input)
+                prof.step()
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+        # Export chrome trace for easier viewing
+        chrome_trace_path = str(output_dir / f"{trace_filename}.json")
+        prof.export_chrome_trace(chrome_trace_path)
+
+        return chrome_trace_path, None
+
+    except Exception as e:
+        tb = traceback.format_exc()
+        return "", f"Profiling failed: {type(e).__name__}: {e}\n{tb}"
