@@ -198,13 +198,21 @@ def prime_reward_fn(
         reward_score = float(score_result.reward)
         assert 0.0 <= reward_score <= 1.0, f"Invalid reward: {reward_score}"
 
+        # Serialize metrics to avoid unpicklable objects (e.g., thread locks)
+        # Convert Pydantic model to plain dict for safe serialization
+        try:
+            serialized_metrics = score_result.model_dump()['metrics']
+        except (AttributeError, KeyError):
+            # Fallback: convert to dict if model_dump not available
+            serialized_metrics = dict(score_result.metrics) if score_result.metrics else {}
+
         # Build metadata
         metadata = {
             **trajectory.metadata,
             "prime_parsed_answer": str(parsed_answer),
             "prime_ground_truth": str(ground_truth),
             "prime_raw_response": model_response,
-            "prime_metrics": score_result.metrics
+            "prime_metrics": serialized_metrics
         }
 
         return replace(trajectory, rewards=reward_score, metadata=metadata)
