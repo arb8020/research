@@ -76,7 +76,27 @@ async def run_evaluation(config_path: Path, result_dir: Path):
 
     # Create Prime environment
     logger.info(f"\n🎮 Loading Prime environment: {config.env_name}")
-    prime_env = load_environment(config.env_name)
+
+    # Extract environment-specific parameters from config if they exist
+    # This allows configs to explicitly specify backend-bench parameters
+    env_kwargs = {}
+    if hasattr(config, 'backend_bench_gpu'):
+        env_kwargs['gpu'] = config.backend_bench_gpu
+        logger.info(f"   GPU: {config.backend_bench_gpu}")
+    if hasattr(config, 'backend_bench_suite'):
+        env_kwargs['suite'] = config.backend_bench_suite
+        logger.info(f"   Suite: {config.backend_bench_suite}")
+    if hasattr(config, 'backend_bench_ops'):
+        env_kwargs['ops'] = config.backend_bench_ops
+    if hasattr(config, 'backend_bench_num_turns'):
+        env_kwargs['num_turns'] = config.backend_bench_num_turns
+    if hasattr(config, 'backend_bench_feedback_loop'):
+        env_kwargs['feedback_loop'] = config.backend_bench_feedback_loop
+
+    if env_kwargs:
+        logger.info(f"   Explicit parameters: {list(env_kwargs.keys())}")
+
+    prime_env = load_environment(config.env_name, **env_kwargs)
 
     # Get dataset size - handle both dataset and eval_dataset
     dataset_size = 0

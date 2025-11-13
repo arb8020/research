@@ -11,8 +11,17 @@ __version__ = "0.1.0"
 # Export main SSH foundation classes
 from .ssh_foundation import SSHConnectionInfo, UniversalSSHClient, secure_temp_ssh_key
 
+# Export logging utilities
+from .logging_config import setup_logging
+from .print_interceptor import intercept_prints, PrintToLogger
+
 __all__ = [
+    # SSH
     "SSHConnectionInfo",
-    "UniversalSSHClient", 
-    "secure_temp_ssh_key"
+    "UniversalSSHClient",
+    "secure_temp_ssh_key",
+    # Logging
+    "setup_logging",
+    "intercept_prints",
+    "PrintToLogger",
 ]

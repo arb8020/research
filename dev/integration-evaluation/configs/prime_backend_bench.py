@@ -7,14 +7,23 @@ Usage:
 This evaluates models on GPU kernel generation tasks. The environment tests
 the model's ability to generate correct and fast GPU kernels (Triton/CUDA)
 that pass PyTorch verification tests.
+
+Configuration:
+    - GPU: Explicitly set to 'local' (change to 'A100', 'T4', etc. for Modal)
+    - Suite: 'torchbench' (real workload traces)
+    - Print interception: Enabled to capture backend-bench print() output
 """
 
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, Any, List
 import trio_asyncio
+import logging
 
 from rollouts.dtypes import Endpoint, EvalConfig, Message, Tool, ToolFunction, ToolFunctionParameter, AgentState
+from shared import intercept_prints
+
+logger = logging.getLogger(__name__)
 
 
 def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
@@ -29,6 +38,10 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
 @dataclass(frozen=True)
 class IntegrationEvalConfig:
     """Configuration for backend-bench evaluation."""
+
+    # Hardware target (for remote deployment)
+    gpu_ranks: list[int] = field(default_factory=lambda: [4])  # Which GPUs to use on remote node
+    device_type: str = "cuda"  # cuda|cpu
 
     # Model configuration
     # Option 1: OpenAI GPT-4.1 Mini (fast and cheap)
@@ -53,15 +66,30 @@ class IntegrationEvalConfig:
 
     # Prime environment configuration
     env_name: str = "siro/backend-bench"
-    num_samples: int = 4  # Start small to test (136 total available)
+    num_samples: int = 1  # REDUCED TO 1 for debugging! (136 total available)
+
+    # Backend-bench specific parameters (explicit!)
+    # These are passed to verifiers.load_environment()
+    # Available options from backend_bench.load_environment signature:
+    #   - gpu: 'local' | 'T4' | 'L4' | 'A100' | 'H100' | 'H200' | 'B200'
+    #   - suite: 'smoke' | 'opinfo' | 'torchbench' | 'facto'
+    #   - ops: list[str] | None (specific ops to test, or None for all)
+    #   - num_turns: int (feedback loop iterations)
+    #   - feedback_loop: 'until_correct' | 'until_max_turns' | 'none'
+    backend_bench_gpu: str = "local"  # Use 'local' for remote node's GPU (no Modal)
+    backend_bench_suite: str = "torchbench"
+    backend_bench_ops: List[str] | None = None
+    backend_bench_num_turns: int = 1
+    backend_bench_feedback_loop: str = "until_max_turns"
 
     # Evaluation configuration
+    experiment_name: str = "backend_bench_eval"  # For result directory naming
     eval_name: str = "prime_backend_bench_eval"
     max_turns: int = 1  # Backend-bench is single-turn: generate once, test once
     max_concurrent: int = 4
 
     # Output configuration
-    output_dir: Path = Path("results/integration-evaluation")
+    output_dir: Path = Path("results")  # Results saved here on remote (then synced)
     verbose: bool = True
     show_progress: bool = True  # Enable nested progress bars (outer: samples, inner: turns)
 
@@ -101,7 +129,7 @@ config = IntegrationEvalConfig()
 
 
 class BackendBenchEnvironment:
-    """Adapter for backend-bench environment.
+    """Adapter for backend-bench environment with print interception.
 
     Similar to math-python, backend-bench is a StatefulToolEnv that uses
     OpenAI-style tool calling for code execution and testing.
@@ -110,6 +138,11 @@ class BackendBenchEnvironment:
     - Tools for generating and testing GPU kernels (Triton/CUDA)
     - Persistent state across turns for iterative development
     - Feedback on kernel correctness and performance
+
+    Print Interception:
+    - backend-bench uses print() instead of logging
+    - We intercept these prints and convert to logger.info()
+    - This ensures all output is captured in JSONL logs
     """
 
     def __init__(self, prime_env, initial_state):
@@ -122,6 +155,7 @@ class BackendBenchEnvironment:
         self.prime_env = prime_env
         self.state = initial_state
         self.messages = []
+        self.logger = logging.getLogger(f"{__name__}.BackendBenchEnvironment")
 
     def get_tools(self) -> List[Tool]:
         """Return OpenAI-style tools from Prime environment.
@@ -184,10 +218,11 @@ class BackendBenchEnvironment:
             }
             self.messages.append(assistant_msg)
 
-            # Call Prime's env_response to execute the tool
-            updated_messages, updated_state = await trio_asyncio.run_aio_coroutine(
-                self.prime_env.env_response(self.messages, self.state)
-            )
+            # Call Prime's env_response with print interception
+            with intercept_prints(self.logger):
+                updated_messages, updated_state = await trio_asyncio.run_aio_coroutine(
+                    self.prime_env.env_response(self.messages, self.state)
+                )
 
             # Update state
             self.state = updated_state
@@ -235,17 +270,63 @@ class BackendBenchEnvironment:
         """
         from dataclasses import replace
 
+        # Log state BEFORE env_response (concise)
+        self.logger.info("=" * 60)
+        self.logger.info("BEFORE env_response:")
+        self.logger.info(f"  self.state keys: {list(self.state.keys())}")
+        has_results = 'results' in self.state and self.state.get('results')
+        has_best = 'best_result' in self.state and self.state.get('best_result')
+        self.logger.info(f"  has results: {has_results}, has best_result: {has_best}")
+        self.logger.info(f"  messages so far: {len(self.messages)}")
+
         # Convert to OpenAI format
         oai_msg = {"role": message.role, "content": message.content or ""}
         self.messages.append(oai_msg)
 
-        # Call Prime's env_response to execute code and get feedback
-        async with trio_asyncio.open_loop():
-            updated_messages, updated_state = await trio_asyncio.aio_as_trio(
-                self.prime_env.env_response
-            )(self.messages, self.state)
+        # Call Prime's env_response with print interception
+        with intercept_prints(self.logger):
+            async with trio_asyncio.open_loop():
+                updated_messages, updated_state = await trio_asyncio.aio_as_trio(
+                    self.prime_env.env_response
+                )(self.messages, self.state)
 
         self.state = updated_state
+
+        # Log state AFTER env_response (concise and readable)
+        self.logger.info("AFTER env_response:")
+        self.logger.info(f"  updated_state keys: {list(updated_state.keys())}")
+
+        if updated_state.get('results'):
+            results = updated_state['results']
+            self.logger.info(f"  Number of results: {len(results)}")
+
+            # Log summary of last result (not the full object!)
+            if results:
+                last_result = results[-1]
+                self.logger.info(f"  Last result summary:")
+                self.logger.info(f"    - Correctness score: {last_result.correctness_score}")
+                self.logger.info(f"    - Performance score: {last_result.performance_score}")
+                self.logger.info(f"    - Is correct: {last_result.is_correct}")
+                self.logger.info(f"    - Correctness tests: {len(last_result.correctness_results)} tests")
+                self.logger.info(f"    - Performance tests: {len(last_result.performance_results)} tests")
+
+                # Log any errors (truncated)
+                for i, test in enumerate(last_result.correctness_results):
+                    if test.error_msg:
+                        error_preview = test.error_msg[:100] + "..." if len(test.error_msg) > 100 else test.error_msg
+                        self.logger.info(f"    - Correctness test {i}: ERROR - {error_preview}")
+                    else:
+                        self.logger.info(f"    - Correctness test {i}: {'PASS' if test.is_correct else 'FAIL'}")
+        else:
+            self.logger.info(f"  results: NOT FOUND")
+
+        best_result = updated_state.get('best_result')
+        if best_result:
+            self.logger.info(f"  best_result: correctness={best_result.correctness_score}, perf={best_result.performance_score}")
+        else:
+            self.logger.info(f"  best_result: NOT FOUND")
+
+        self.logger.info("=" * 60)
 
         # Extract new messages (feedback from environment)
         new_messages = updated_messages[len(self.messages):]
@@ -256,16 +337,32 @@ class BackendBenchEnvironment:
             feedback_messages = [Message(role=msg["role"], content=msg.get("content"))
                                for msg in new_messages]
 
-            # Inject feedback into state's trajectory
+            # Inject feedback into state's trajectory AND store updated backend-bench state
+            # The reward function needs access to the state with results/best_result
+            updated_metadata = {
+                **state.actor.trajectory.metadata,
+                "backend_bench_state": self.state  # Store the updated Prime state
+            }
+
             updated_trajectory = replace(
                 state.actor.trajectory,
-                messages=[*state.actor.trajectory.messages, *feedback_messages]
+                messages=[*state.actor.trajectory.messages, *feedback_messages],
+                metadata=updated_metadata
             )
             updated_actor = replace(state.actor, trajectory=updated_trajectory)
             return replace(state, actor=updated_actor)
 
-        # No feedback, return unchanged state
-        return state
+        # No feedback, store state anyway for reward function
+        updated_metadata = {
+            **state.actor.trajectory.metadata,
+            "backend_bench_state": self.state
+        }
+        updated_trajectory = replace(
+            state.actor.trajectory,
+            metadata=updated_metadata
+        )
+        updated_actor = replace(state.actor, trajectory=updated_trajectory)
+        return replace(state, actor=updated_actor)
 
     async def serialize(self):
         """Serialize environment state.
@@ -289,9 +386,10 @@ class BackendBenchEnvironment:
         """Cleanup resources when done."""
         # Backend-bench may have GPU resources or sandboxes to clean up
         if hasattr(self.prime_env, 'cleanup'):
-            await trio_asyncio.run_aio_coroutine(
-                self.prime_env.cleanup()
-            )
+            with intercept_prints(self.logger):
+                await trio_asyncio.run_aio_coroutine(
+                    self.prime_env.cleanup()
+                )
 
 
 async def create_environment(prime_env, sample_data):
