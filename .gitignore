@@ -55,3 +55,8 @@ references/
 # Test outputs and logs
 *.log
 *test_output.txt
+
+# Evaluation results and local data
+.chroma_db/
+dev/integration-evaluation/.chroma_db/
+dev/integration-evaluation/eval_results/
