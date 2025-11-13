@@ -448,8 +448,32 @@ test_input = generate_input(
     seed=params['seed']
 )
 
-# Import the kernel function
+# Import and register backends (avoid circular imports)
 from kernel_utils.backends import BACKENDS
+
+# Register backends explicitly to avoid import order issues
+try:
+    from nvfp4.reference_kernel import ref_kernel
+    BACKENDS.register(
+        name="reference",
+        kernel_fn=ref_kernel,
+        description="PyTorch reference using torch._scaled_mm",
+        language="pytorch"
+    )
+except ImportError:
+    pass
+
+try:
+    from nvfp4.optimized.triton_kernel import triton_kernel
+except ImportError:
+    pass
+
+try:
+    from nvfp4.optimized.cute_kernel import cute_kernel
+except ImportError:
+    pass
+
+# Get the kernel function
 kernel_fn = BACKENDS['{backend_name}']
 
 # Run the kernel once (NCU will profile this execution)
