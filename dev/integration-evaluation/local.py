@@ -178,10 +178,18 @@ async def run_evaluation(config_path: Path, result_dir: Path):
             logger.info(f"  Question: {sample.input_data['question'][:80]}...")
 
         # Show ground truth if present (not present in backend-bench)
-        if sample.trajectory.metadata.get('prime_ground_truth') is not None:
-            logger.info(f"  Ground truth: {sample.trajectory.metadata.get('prime_ground_truth')}")
+        ground_truth = sample.trajectory.metadata.get('prime_ground_truth')
+        if ground_truth is not None:
+            gt_preview = str(ground_truth)[:100]
+            logger.info(f"  Ground truth: {gt_preview}...")
 
-        logger.info(f"  Parsed answer: {sample.trajectory.metadata.get('prime_parsed_answer')}")
+        # Show parsed answer (truncated for code)
+        parsed_answer = sample.trajectory.metadata.get('prime_parsed_answer')
+        if parsed_answer:
+            answer_preview = str(parsed_answer)[:100]
+            logger.info(f"  Parsed answer: {answer_preview}...")
+        else:
+            logger.info(f"  Parsed answer: None")
 
         # Show Prime metrics (useful for backend-bench: correctness, performance, etc.)
         prime_metrics = sample.trajectory.metadata.get('prime_metrics', {})
