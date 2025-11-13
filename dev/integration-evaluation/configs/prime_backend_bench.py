@@ -57,7 +57,7 @@ class IntegrationEvalConfig:
 
     # Evaluation configuration
     eval_name: str = "prime_backend_bench_eval"
-    max_turns: int = 10  # Allow multiple attempts at kernel generation
+    max_turns: int = 1  # Backend-bench is single-turn: generate once, test once
     max_concurrent: int = 4
 
     # Output configuration
@@ -220,23 +220,26 @@ class BackendBenchEnvironment:
                 error=str(e)
             )
 
-    async def add_message_and_get_response(self, message: Message) -> List[Message]:
-        """Add assistant message and get environment response.
+    async def on_assistant_message(self, message: Message, state: AgentState) -> AgentState:
+        """Called after each assistant message to execute code and provide feedback.
 
-        For backend-bench, this is used when the agent sends a regular message
-        without tool calls.
+        Backend-bench parses code from assistant messages, executes it, and returns
+        feedback on correctness and performance.
 
         Args:
-            message: The assistant's message
+            message: The assistant's message (contains generated code)
+            state: Current agent state
 
         Returns:
-            List of response messages from the environment
+            Updated state with environment feedback injected
         """
+        from dataclasses import replace
+
         # Convert to OpenAI format
         oai_msg = {"role": message.role, "content": message.content or ""}
         self.messages.append(oai_msg)
 
-        # Call env_response
+        # Call Prime's env_response to execute code and get feedback
         async with trio_asyncio.open_loop():
             updated_messages, updated_state = await trio_asyncio.aio_as_trio(
                 self.prime_env.env_response
@@ -244,13 +247,25 @@ class BackendBenchEnvironment:
 
         self.state = updated_state
 
-        # Extract new messages
+        # Extract new messages (feedback from environment)
         new_messages = updated_messages[len(self.messages):]
         self.messages = updated_messages
 
-        # Convert back to rollouts format
-        return [Message(role=msg["role"], content=msg.get("content"))
-                for msg in new_messages]
+        # Convert back to rollouts format and inject into trajectory
+        if new_messages:
+            feedback_messages = [Message(role=msg["role"], content=msg.get("content"))
+                               for msg in new_messages]
+
+            # Inject feedback into state's trajectory
+            updated_trajectory = replace(
+                state.actor.trajectory,
+                messages=[*state.actor.trajectory.messages, *feedback_messages]
+            )
+            updated_actor = replace(state.actor, trajectory=updated_trajectory)
+            return replace(state, actor=updated_actor)
+
+        # No feedback, return unchanged state
+        return state
 
     async def serialize(self):
         """Serialize environment state.

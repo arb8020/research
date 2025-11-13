@@ -12,7 +12,7 @@ Example usage:
 
 from typing import List
 from dataclasses import dataclass
-from ..dtypes import Tool, Environment, ToolCall, ToolResult, AgentState, RunConfig
+from ..dtypes import Tool, Environment, ToolCall, ToolResult, AgentState, RunConfig, Message
 
 @dataclass
 class BasicEnvironment:
@@ -50,6 +50,10 @@ class BasicEnvironment:
                        run_config: RunConfig, checkpoint_store=None) -> ToolResult:
         """No tools available in basic environment."""
         return ToolResult(content="No tools available in basic environment")
+
+    async def on_assistant_message(self, message: Message, state: AgentState) -> AgentState:
+        """No feedback needed for basic environment."""
+        return state
 
 # Backward compatibility alias
 NoToolsEnvironment = BasicEnvironment

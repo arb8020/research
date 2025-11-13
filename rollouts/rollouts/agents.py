@@ -238,18 +238,23 @@ async def run_agent_step(state: AgentState, rcfg: RunConfig) -> AgentState:
     
     # Make LLM call
     next_actor = await rollout(updated_actor, rcfg.on_chunk, rcfg.user_message_for_thinking, state.turn_idx, rcfg.inline_thinking)
-    
+
     # Extract tool calls
     last_message = next_actor.trajectory.messages[-1]
     tool_calls = last_message.tool_calls if last_message.tool_calls else []
-    
+
     # Update state with new actor AND pending tools
     current_state = replace(
-        state, 
+        state,
         actor=next_actor,
         pending_tool_calls=tool_calls,
         next_tool_idx=0
     )
+
+    # Let environment respond to assistant message (e.g., execute code, provide feedback)
+    # This happens AFTER updating state but BEFORE tool processing
+    if state.environment and hasattr(state.environment, 'on_assistant_message'):
+        current_state = await state.environment.on_assistant_message(last_message, current_state)
     
     # If no tools, we're done with this turn
     if not tool_calls:
@@ -402,45 +407,35 @@ async def run_agent(
             disable=False
         )
 
-    try:
-        # Debug: Print environment type and available tools
-        #print(f"[DEBUG] run_agent called with environment type: {type(current_state.environment).__name__}")
-        if hasattr(current_state.environment, 'get_tools'):
-            [tool.function.name for tool in current_state.environment.get_tools()]
-            #print(f"[DEBUG] Available tools: {tools}")
+    # Save initial state
+    await handle_checkpoint_event(state, "turn_start", run_config, session_id)
 
-        # Save initial state
-        await handle_checkpoint_event(state, "turn_start", run_config, session_id)
+    while not current_state.stop and current_state.turn_idx < current_state.max_turns:
+        next_state = await run_agent_step(current_state, run_config)
+        current_state = next_state
+        states.append(current_state)
 
-        while not current_state.stop and current_state.turn_idx < current_state.max_turns:
-            #print(f"[DEBUG] Agent loop - Turn {current_state.turn_idx}, Stop: {current_state.stop}, Max turns: {current_state.max_turns}")
-            next_state = await run_agent_step(current_state, run_config)
-            #print(f"[DEBUG] After step - Turn {next_state.turn_idx}, Stop: {next_state.stop}")
-            current_state = next_state
-            states.append(current_state)
-
-            # Update inner progress bar
-            if turn_pbar:
-                turn_pbar.update(1)
-                postfix = {}
-                if current_state.stop:
-                    postfix['stop'] = str(current_state.stop).split('.')[-1]
-                turn_pbar.set_postfix(postfix)
-
-            # Checkpoint after each state transition
-            await handle_checkpoint_event(current_state, "turn_end", run_config, session_id)
-
-
-        # Set stop reason if we hit max turns
-        if current_state.turn_idx >= current_state.max_turns:
-            current_state = replace(current_state, stop=StopReason.MAX_TURNS)
-            states[-1] = current_state
-
-            # Save final state
-            await handle_checkpoint_event(current_state, "final", run_config, session_id)
-
-        return states
-    finally:
-        # Close inner progress bar
+        # Update inner progress bar
         if turn_pbar:
-            turn_pbar.close()
+            turn_pbar.update(1)
+            postfix = {}
+            if current_state.stop:
+                postfix['stop'] = str(current_state.stop).split('.')[-1]
+            turn_pbar.set_postfix(postfix)
+
+        # Checkpoint after each state transition
+        await handle_checkpoint_event(current_state, "turn_end", run_config, session_id)
+
+    # Set stop reason if we hit max turns
+    if current_state.turn_idx >= current_state.max_turns:
+        current_state = replace(current_state, stop=StopReason.MAX_TURNS)
+        states[-1] = current_state
+
+        # Save final state
+        await handle_checkpoint_event(current_state, "final", run_config, session_id)
+
+    # Close progress bar on normal completion
+    if turn_pbar:
+        turn_pbar.close()
+
+    return states

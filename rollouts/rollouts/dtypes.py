@@ -379,6 +379,37 @@ class Environment(Protocol):
         """Check if tool requires confirmation."""
         ...
 
+    async def on_assistant_message(self, message: 'Message', state: 'AgentState') -> 'AgentState':
+        """Called after each assistant message, before tool processing.
+
+        Allows environment to respond to assistant messages with feedback, regardless
+        of whether tools were called. Useful for message-based environments that need
+        to execute code, provide feedback, or inject responses.
+
+        Args:
+            message: The assistant's message (may contain tool calls)
+            state: Current agent state
+
+        Returns:
+            Updated agent state with environment feedback injected into trajectory.
+            Return unchanged state for no response.
+
+        Example (backend-bench):
+            Parse code from message, execute it, inject feedback:
+            ```python
+            async def on_assistant_message(self, message, state):
+                code = self.parser.parse([{"role": "assistant", "content": message.content}])
+                result = await self.code_evaluator(code)
+                feedback_msg = Message(role="user", content=result.feedback)
+                # Inject feedback into trajectory
+                return replace(state, actor=replace(state.actor, trajectory=replace(
+                    state.actor.trajectory,
+                    messages=[*state.actor.trajectory.messages, feedback_msg]
+                )))
+            ```
+        """
+        ...
+
     async def serialize(self) -> dict:
         """Serialize environment state to dictionary."""
         ...
