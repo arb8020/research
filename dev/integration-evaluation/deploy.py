@@ -161,49 +161,60 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
     # Setup dependencies using kerbal
     setup_script_deps(bifrost_client, project_workspace, deps, install_extras=None)
 
-    # Install Prime CLI (official method from Prime Hub)
-    # Note: uv is typically installed in ~/.local/bin, so we need to add it to PATH
-    logger.info("📦 Installing Prime CLI...")
+    # Verify backendbench was installed successfully
+    logger.info("🔍 Verifying backendbench installation...")
     result = bifrost_client.exec(
-        f"export PATH=$HOME/.local/bin:$PATH && "
-        f"uv tool install prime 2>&1"
+        f"cd {project_workspace} && "
+        f"source .venv/bin/activate && "
+        f"python -c 'import backendbench; print(backendbench.__file__)' 2>&1"
     )
     if result.exit_code != 0:
-        # Check if Prime CLI is already installed
-        check = bifrost_client.exec(
-            f"export PATH=$HOME/.local/bin:$PATH && "
-            f"command -v prime 2>&1"
-        )
-        if check.exit_code == 0:
-            logger.info(f"✅ Prime CLI already installed at: {check.stdout.strip()}")
-        else:
-            logger.error(f"❌ Failed to install Prime CLI (exit code {result.exit_code})")
-            logger.error(f"stdout: {result.stdout}")
-            logger.error(f"stderr: {result.stderr}")
-            raise RuntimeError("Failed to install Prime CLI")
+        logger.error("❌ backendbench not installed correctly!")
+        logger.error(f"Output: {result.stdout}")
+        raise RuntimeError("backendbench dependency missing - kerbal setup may have failed")
     else:
-        logger.info("✅ Prime CLI installed")
-        logger.info(f"Output: {result.stdout}")
+        logger.info(f"✅ backendbench installed at: {result.stdout.strip()}")
 
-    # Install backend-bench environment using Prime CLI (official method)
-    # This installs verifiers, backend-bench, and backendbench dependencies
-    # Prime CLI needs both uv and prime in PATH (both in ~/.local/bin)
-    logger.info("📦 Installing backend-bench environment via Prime CLI...")
+    # Install Prime packages directly from Prime's package index
+    # We use direct pip install instead of Prime CLI because:
+    # 1. Prime CLI can't handle URL dependencies (backendbench from GitHub)
+    # 2. Direct install from Prime's index works and is officially supported
+    # 3. We pre-install backendbench so it's satisfied when installing backend-bench
+    logger.info("📦 Installing Prime packages (verifiers + backend-bench)...")
     result = bifrost_client.exec(
         f"cd {project_workspace} && "
         f"source .venv/bin/activate && "
         f"export PATH=$HOME/.local/bin:$PATH && "
-        f"prime env install siro/backend-bench 2>&1"
+        f"uv pip install verifiers backend-bench --extra-index-url https://hub.primeintellect.ai/siro/simple/ 2>&1"
     )
     if result.exit_code != 0:
-        logger.error(f"❌ Failed to install backend-bench environment (exit code {result.exit_code})")
+        logger.error(f"❌ Failed to install Prime packages (exit code {result.exit_code})")
         logger.error(f"stdout: {result.stdout}")
         logger.error(f"stderr: {result.stderr}")
-        logger.error("This is required for backend-bench evaluation")
-        raise RuntimeError("Failed to install backend-bench environment via Prime CLI")
+        logger.error("These packages are required for backend-bench evaluation")
+        raise RuntimeError("Failed to install Prime packages (verifiers + backend-bench)")
     else:
-        logger.info("✅ Backend-bench environment installed")
+        logger.info("✅ Prime packages installed (verifiers + backend-bench)")
         logger.info(f"Output: {result.stdout}")
+
+    # Verify all required packages are importable
+    logger.info("🔍 Verifying all required packages...")
+    result = bifrost_client.exec(
+        f"cd {project_workspace} && "
+        f"source .venv/bin/activate && "
+        f"python -c 'import verifiers, backend_bench, backendbench; "
+        f"print(f\"verifiers: {{verifiers.__file__}}\"); "
+        f"print(f\"backend_bench: {{backend_bench.__file__}}\"); "
+        f"print(f\"backendbench: {{backendbench.__file__}}\")' 2>&1"
+    )
+    if result.exit_code != 0:
+        logger.error("❌ Package verification failed!")
+        logger.error(f"Output: {result.stdout}")
+        raise RuntimeError("Required packages not importable after installation")
+    else:
+        logger.info("✅ All packages verified:")
+        for line in result.stdout.strip().split('\n'):
+            logger.info(f"   {line}")
 
     return workspace_path
 
