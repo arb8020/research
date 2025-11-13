@@ -132,24 +132,5 @@ class BackendRegistry:
 BACKENDS = BackendRegistry()
 
 
-# Auto-register the reference PyTorch implementation
-def _register_reference():
-    """Register the PyTorch reference implementation.
-
-    This runs automatically when backends.py is imported.
-    """
-    try:
-        from nvfp4.reference_kernel import ref_kernel
-        BACKENDS.register(
-            name="reference",
-            kernel_fn=ref_kernel,
-            description="PyTorch reference using torch._scaled_mm",
-            language="pytorch",
-        )
-    except ImportError as e:
-        import warnings
-        warnings.warn(f"Could not register reference kernel: {e}")
-
-
-# Register reference on import
-_register_reference()
+# Auto-registration removed to avoid circular import issues
+# Backends are now registered explicitly in smoke_test.py and kernel modules
