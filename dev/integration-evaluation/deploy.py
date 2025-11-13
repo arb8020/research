@@ -180,14 +180,17 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
     result = bifrost_client.exec(
         f"cd {project_workspace} && "
         f"source .venv/bin/activate && "
-        f"~/.local/bin/prime env install siro/backend-bench"
+        f"~/.local/bin/prime env install siro/backend-bench 2>&1"
     )
     if result.exit_code != 0:
-        logger.error(f"❌ Failed to install backend-bench: {result.stderr}")
+        logger.error(f"❌ Failed to install backend-bench (exit code {result.exit_code})")
+        logger.error(f"stdout: {result.stdout}")
+        logger.error(f"stderr: {result.stderr}")
         logger.error("This is required for backend-bench evaluation")
         raise RuntimeError("Failed to install backend-bench environment")
     else:
         logger.info("✅ Backend-bench environment installed")
+        logger.info(f"Output: {result.stdout}")
 
     return workspace_path
 
