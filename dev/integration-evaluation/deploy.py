@@ -216,6 +216,17 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
             raise RuntimeError("Failed to install backendbench")
 
         logger.info("✅ backendbench installed manually")
+        logger.info(f"Install output: {install_result.stdout}")
+
+        # Check what was actually installed
+        logger.info("🔍 Checking site-packages after manual install...")
+        check = bifrost_client.exec(
+            f"cd {project_workspace} && "
+            f"source .venv/bin/activate && "
+            f"pip list | grep -i backend && "
+            f"ls -la .venv/lib/python*/site-packages/ | grep -i backend 2>&1"
+        )
+        logger.info(f"Post-install check:\n{check.stdout}")
 
         # Verify it works now
         verify = bifrost_client.exec(
@@ -226,6 +237,15 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
         if verify.exit_code != 0:
             logger.error("❌ backendbench still not importable!")
             logger.error(f"Output: {verify.stdout}")
+
+            # Try to understand why
+            logger.info("🔍 Checking if package files exist...")
+            debug = bifrost_client.exec(
+                f"cd {project_workspace} && "
+                f"find .venv/lib/python*/site-packages -name '*backend*' -o -name '*.dist-info' | grep -i backend 2>&1"
+            )
+            logger.info(f"Package files found:\n{debug.stdout}")
+
             raise RuntimeError("backendbench installed but not importable")
 
         logger.info(f"✅ backendbench verified at: {verify.stdout.strip()}")
