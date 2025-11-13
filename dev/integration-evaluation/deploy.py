@@ -187,7 +187,8 @@ def start_evaluation(
     config_name = Path(config_path).name
 
     # Build evaluation command
-    project_dir = f"{workspace_path}/dev/integration_evaluation"
+    # NOTE: Directory name uses hyphen, not underscore!
+    project_dir = f"{workspace_path}/dev/integration-evaluation"
     venv_path = f"{project_dir}/.venv/bin/activate"
 
     # Get API key from local environment
@@ -409,7 +410,8 @@ def main():
         workspace_path = deploy_code(bifrost_client)
 
         # Construct remote result directory
-        project_dir = f"{workspace_path}/dev/integration_evaluation"
+        # NOTE: Directory name uses hyphen, not underscore!
+        project_dir = f"{workspace_path}/dev/integration-evaluation"
         remote_result_dir = f"{project_dir}/eval_results/{result_dir_name}"
 
         # Start evaluation
@@ -447,10 +449,24 @@ def main():
 
             # Try to get more error details from tmux pane
             logger.info("🔍 Checking tmux pane for error details...")
-            result = bifrost_client.exec(f"tmux capture-pane -t {tmux_session} -p")
-            if result.exit_code == 0 and result.stdout:
-                logger.error("Tmux pane output:")
-                logger.error(result.stdout[-2000:])  # Last 2000 chars
+
+            # First check if session still exists
+            check_result = bifrost_client.exec(f"tmux has-session -t {tmux_session} 2>&1 && echo 'EXISTS' || echo 'GONE'")
+            if 'GONE' in check_result.stdout:
+                logger.warning(f"⚠️  Tmux session '{tmux_session}' already exited")
+                logger.info("💡 The script failed before writing to the log. Common causes:")
+                logger.info("   • Import error (missing dependency)")
+                logger.info("   • Python version mismatch")
+                logger.info("   • Config file not found")
+                logger.info("   • Syntax error in code")
+            else:
+                # Session exists, try to capture it
+                result = bifrost_client.exec(f"tmux capture-pane -t {tmux_session} -p")
+                if result.exit_code == 0 and result.stdout.strip():
+                    logger.error("Tmux pane output:")
+                    logger.error(result.stdout[-2000:])  # Last 2000 chars
+                else:
+                    logger.warning("⚠️  Tmux pane is empty or capture failed")
 
             # Continue to sync results anyway
             success = False
