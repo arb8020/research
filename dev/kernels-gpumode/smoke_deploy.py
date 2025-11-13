@@ -85,7 +85,7 @@ def deploy_and_test(
         dependencies=[
             "torch>=2.4.0",
             "triton",  # For GPU benchmarking
-            "cutlass @ git+https://github.com/NVIDIA/cutlass.git@main",  # For CUTLASS kernels
+            "nvidia-cutlass @ git+https://github.com/NVIDIA/cutlass.git@main",  # For CUTLASS kernels
         ],
         python_version=">=3.10",
     )
