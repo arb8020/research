@@ -420,11 +420,20 @@ def ncu_profile_kernel(
         with open(params_path, 'w') as f:
             json.dump(test_params, f)
 
+        # Get the project directory (parent of kernel_utils)
+        project_dir = Path(__file__).parent.parent.absolute()
+
         # Create a standalone script that can be profiled by NCU
         script_content = f"""
 import sys
 import json
 import torch
+from pathlib import Path
+
+# Add project directory to path so imports work
+project_dir = Path('{project_dir}')
+if str(project_dir) not in sys.path:
+    sys.path.insert(0, str(project_dir))
 
 # Load test parameters
 with open('{params_path}', 'r') as f:
