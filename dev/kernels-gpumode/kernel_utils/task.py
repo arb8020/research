@@ -46,6 +46,28 @@ class TestCase:
         assert self.seed >= 0, f"seed must be non-negative, got {self.seed}"
         assert len(self.name) > 0, "name cannot be empty"
 
+    def generate(self) -> input_t:
+        """Generate fresh test data each time (lazy evaluation).
+
+        This ensures:
+        - Kernels can't corrupt data for subsequent tests
+        - Each benchmark gets fresh tensors
+        - Cache behavior is realistic
+
+        Returns:
+            Fresh input tuple for this test case
+        """
+        from nvfp4.reference_kernel import generate_input
+        return generate_input(self.m, self.k, self.l, self.seed)
+
+    def serialize(self) -> str:
+        """Serialize test case parameters for logging.
+
+        Returns:
+            Human-readable string representation
+        """
+        return f"m={self.m}, k={self.k}, l={self.l}, seed={self.seed}"
+
 
 # Predefined test suites
 SMOKE_TESTS: list[TestCase] = [

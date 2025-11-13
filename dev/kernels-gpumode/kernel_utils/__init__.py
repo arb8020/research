@@ -17,6 +17,21 @@ from kernel_utils.utils import (
     allclose_with_error,
     make_match_reference,
     benchmark_kernel,
+    benchmark_vs_reference,
+    compare_backends,
+)
+
+from kernel_utils.results import (
+    CorrectnessResult,
+    PerformanceResult,
+    BackendResults,
+    TestSuiteResults,
+)
+
+from kernel_utils.backends import (
+    BACKENDS,
+    BackendRegistry,
+    BackendInfo,
 )
 
 __all__ = [
@@ -32,4 +47,15 @@ __all__ = [
     "allclose_with_error",
     "make_match_reference",
     "benchmark_kernel",
+    "benchmark_vs_reference",
+    "compare_backends",
+    # Result structures
+    "CorrectnessResult",
+    "PerformanceResult",
+    "BackendResults",
+    "TestSuiteResults",
+    # Backend registry
+    "BACKENDS",
+    "BackendRegistry",
+    "BackendInfo",
 ]

@@ -6,6 +6,7 @@ following backend-bench patterns but with explicit error handling.
 from typing import Callable
 import torch
 import time
+import traceback
 
 
 def allclose_with_error(
@@ -83,13 +84,15 @@ def make_match_reference(
             # Run reference
             ref_output = reference_fn(test_input)
         except Exception as e:
-            return False, f"Reference failed: {type(e).__name__}: {e}"
+            tb = traceback.format_exc()
+            return False, f"Reference failed: {type(e).__name__}: {e}\n{tb}"
 
         try:
             # Run implementation (must not mutate test_input!)
             impl_output = impl_fn(test_input)
         except Exception as e:
-            return False, f"Implementation failed: {type(e).__name__}: {e}"
+            tb = traceback.format_exc()
+            return False, f"Implementation failed: {type(e).__name__}: {e}\n{tb}"
 
         # Compare outputs
         is_match, max_abs_err, max_rel_err = allclose_with_error(
@@ -114,6 +117,7 @@ def benchmark_kernel(
     test_input,
     num_warmup: int = 10,
     num_runs: int = 100,
+    use_triton: bool = True,
 ) -> tuple[float, str | None]:
     """Benchmark kernel execution time.
 
@@ -122,6 +126,7 @@ def benchmark_kernel(
         test_input: Input data (will be called multiple times)
         num_warmup: Warmup iterations
         num_runs: Measurement iterations
+        use_triton: Use Triton's do_bench for GPU (more accurate)
 
     Returns:
         (avg_time_ms, error_msg | None)
@@ -133,6 +138,22 @@ def benchmark_kernel(
     assert num_runs > 0, f"num_runs must be positive, got {num_runs}"
 
     try:
+        # Try Triton benchmarking for GPU (more accurate)
+        if use_triton and torch.cuda.is_available():
+            try:
+                import triton.testing
+                # Triton's do_bench handles warmup and synchronization
+                time_ms = triton.testing.do_bench(
+                    lambda: kernel_fn(test_input),
+                    warmup=num_warmup,
+                    rep=num_runs,
+                )
+                return time_ms, None
+            except ImportError:
+                # Fall through to manual timing if Triton not available
+                pass
+
+        # Fallback: Manual timing (original implementation)
         # Warmup
         for _ in range(num_warmup):
             _ = kernel_fn(test_input)
@@ -155,4 +176,107 @@ def benchmark_kernel(
         return avg_time_ms, None
 
     except Exception as e:
-        return -1.0, f"Benchmark failed: {type(e).__name__}: {e}"
+        tb = traceback.format_exc()
+        return -1.0, f"Benchmark failed: {type(e).__name__}: {e}\n{tb}"
+
+
+def benchmark_vs_reference(
+    impl_fn: Callable,
+    reference_fn: Callable,
+    test_input,
+    num_warmup: int = 10,
+    num_runs: int = 100,
+    use_triton: bool = True,
+) -> tuple[float, float, float, str | None]:
+    """Benchmark implementation against reference and compute speedup.
+
+    Args:
+        impl_fn: Implementation kernel to benchmark
+        reference_fn: Reference kernel for comparison
+        test_input: Test data
+        num_warmup: Warmup iterations
+        num_runs: Measurement iterations
+        use_triton: Use Triton's do_bench if available
+
+    Returns:
+        (speedup, impl_time_ms, ref_time_ms, error_msg | None)
+        speedup = ref_time / impl_time
+        error_msg is None on success
+    """
+    try:
+        # Benchmark reference
+        ref_time, ref_err = benchmark_kernel(
+            reference_fn, test_input, num_warmup, num_runs, use_triton
+        )
+        if ref_err:
+            return 0.0, -1.0, -1.0, f"Reference benchmark failed: {ref_err}"
+
+        # Benchmark implementation
+        impl_time, impl_err = benchmark_kernel(
+            impl_fn, test_input, num_warmup, num_runs, use_triton
+        )
+        if impl_err:
+            return 0.0, impl_time, ref_time, f"Implementation benchmark failed: {impl_err}"
+
+        # Calculate speedup
+        speedup = ref_time / impl_time if impl_time > 0 else 0.0
+
+        return speedup, impl_time, ref_time, None
+
+    except Exception as e:
+        tb = traceback.format_exc()
+        return 0.0, -1.0, -1.0, f"Speedup comparison failed: {type(e).__name__}: {e}\n{tb}"
+
+
+def compare_backends(
+    backend_names: list[str],
+    test_input,
+    reference_backend: str = "reference",
+    num_warmup: int = 10,
+    num_runs: int = 100,
+    use_triton: bool = True,
+) -> dict[str, tuple[float, float]]:
+    """Compare performance of multiple backends against reference.
+
+    Args:
+        backend_names: List of backend names to compare
+        test_input: Test data
+        reference_backend: Name of reference backend for speedup calculation
+        num_warmup: Warmup iterations
+        num_runs: Measurement iterations
+        use_triton: Use Triton's do_bench if available
+
+    Returns:
+        Dict mapping backend_name -> (speedup, time_ms)
+        speedup is relative to reference_backend
+    """
+    from kernel_utils.backends import BACKENDS
+
+    # Benchmark reference first
+    ref_backend = BACKENDS[reference_backend]
+    ref_time, ref_err = benchmark_kernel(
+        ref_backend, test_input, num_warmup, num_runs, use_triton
+    )
+    if ref_err:
+        raise RuntimeError(f"Reference '{reference_backend}' benchmark failed: {ref_err}")
+
+    results = {}
+
+    for name in backend_names:
+        if name == reference_backend:
+            # Reference has speedup of 1.0
+            results[name] = (1.0, ref_time)
+            continue
+
+        backend = BACKENDS[name]
+        time_ms, err = benchmark_kernel(
+            backend, test_input, num_warmup, num_runs, use_triton
+        )
+
+        if err:
+            results[name] = (0.0, -1.0)
+        else:
+            speedup = ref_time / time_ms if time_ms > 0 else 0.0
+            results[name] = (speedup, time_ms)
+
+    return results
