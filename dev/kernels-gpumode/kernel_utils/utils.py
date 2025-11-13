@@ -530,7 +530,12 @@ print("Kernel execution completed")
         params_path.unlink(missing_ok=True)
 
         if result.returncode != 0:
-            return "", f"NCU profiling failed: {result.stderr}"
+            error_msg = f"NCU exit code {result.returncode}\n"
+            if result.stdout:
+                error_msg += f"stdout: {result.stdout}\n"
+            if result.stderr:
+                error_msg += f"stderr: {result.stderr}"
+            return "", error_msg
 
         return str(report_path), None
 
