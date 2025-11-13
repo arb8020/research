@@ -254,16 +254,28 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
         logger.info(f"✅ backendbench installed at: {result.stdout.strip()}")
 
     # Install Prime packages directly from Prime's package index
-    # We use direct pip install instead of Prime CLI because:
-    # 1. Prime CLI can't handle URL dependencies (backendbench from GitHub)
-    # 2. Direct install from Prime's index works and is officially supported
-    # 3. We pre-install backendbench so it's satisfied when installing backend-bench
-    logger.info("📦 Installing Prime packages (verifiers + backend-bench)...")
+    # Install verifiers first, then try backend-bench with --no-deps to skip URL dependency check
+    logger.info("📦 Installing verifiers from Prime's index...")
     result = bifrost_client.exec(
         f"cd {project_workspace} && "
         f"source .venv/bin/activate && "
         f"export PATH=$HOME/.local/bin:$PATH && "
-        f"uv pip install verifiers backend-bench --extra-index-url https://hub.primeintellect.ai/siro/simple/ 2>&1"
+        f"uv pip install verifiers --extra-index-url https://hub.primeintellect.ai/siro/simple/ 2>&1"
+    )
+    if result.exit_code != 0:
+        logger.error(f"❌ Failed to install verifiers (exit code {result.exit_code})")
+        logger.error(f"Output: {result.stdout}")
+        raise RuntimeError("Failed to install verifiers")
+
+    logger.info("✅ verifiers installed")
+
+    # Try installing backend-bench with --no-deps to skip dependency resolution
+    logger.info("📦 Installing backend-bench (with --no-deps to skip URL dependency check)...")
+    result = bifrost_client.exec(
+        f"cd {project_workspace} && "
+        f"source .venv/bin/activate && "
+        f"export PATH=$HOME/.local/bin:$PATH && "
+        f"uv pip install backend-bench --no-deps --extra-index-url https://hub.primeintellect.ai/siro/simple/ 2>&1"
     )
     if result.exit_code != 0:
         logger.error(f"❌ Failed to install Prime packages (exit code {result.exit_code})")
