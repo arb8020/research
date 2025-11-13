@@ -354,3 +354,122 @@ def profile_kernel(
     except Exception as e:
         tb = traceback.format_exc()
         return "", f"Profiling failed: {type(e).__name__}: {e}\n{tb}"
+
+
+def ncu_profile_kernel(
+    kernel_fn: Callable,
+    test_input,
+    output_dir: Path,
+    backend_name: str,
+    test_name: str,
+    ncu_args: str = "--metrics gpu__time_duration.sum,sm__throughput.avg.pct_of_peak_sustained_elapsed,dram__throughput.avg.pct_of_peak_sustained_elapsed",
+) -> tuple[str, str | None]:
+    """Profile kernel execution using NVIDIA Nsight Compute (ncu).
+
+    Note: This function creates a Python script that will be profiled by NCU.
+    NCU must be available in the system PATH.
+
+    Args:
+        kernel_fn: Kernel to profile
+        test_input: Input data
+        output_dir: Directory to save NCU reports
+        backend_name: Name of backend being profiled
+        test_name: Name of test case
+        ncu_args: Arguments to pass to ncu (default: basic metrics)
+
+    Returns:
+        (report_path, error_msg | None)
+        report_path is the path to the saved .ncu-rep file
+        error_msg is None on success
+    """
+    import subprocess
+    import sys
+    import pickle
+
+    assert callable(kernel_fn), "kernel_fn must be callable"
+
+    try:
+        # Create output directory
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create a temporary script that runs the kernel
+        script_path = output_dir / f"_ncu_temp_{backend_name}_{test_name}.py"
+        data_path = output_dir / f"_ncu_temp_{backend_name}_{test_name}.pkl"
+        report_filename = f"{backend_name}_{test_name}_ncu"
+        report_path = output_dir / f"{report_filename}.ncu-rep"
+
+        # Save the test input to a pickle file
+        with open(data_path, 'wb') as f:
+            pickle.dump(test_input, f)
+
+        # Create a standalone script that can be profiled by NCU
+        script_content = f"""
+import sys
+import pickle
+import torch
+
+# Load the test input
+with open('{data_path}', 'rb') as f:
+    test_input = pickle.load(f)
+
+# Import the kernel function
+# Note: This assumes the kernel is in the global BACKENDS registry
+from kernel_utils.backends import BACKENDS
+kernel_fn = BACKENDS['{backend_name}']
+
+# Run the kernel once (NCU will profile this execution)
+result = kernel_fn(test_input)
+
+# Synchronize to ensure kernel completes
+if torch.cuda.is_available():
+    torch.cuda.synchronize()
+
+print("Kernel execution completed")
+"""
+
+        # Write the script
+        with open(script_path, 'w') as f:
+            f.write(script_content)
+
+        # Build NCU command
+        ncu_cmd = [
+            "ncu",
+            "--export", str(report_path),
+            "--force-overwrite",
+        ]
+
+        # Add custom metrics if provided
+        if ncu_args:
+            ncu_cmd.extend(ncu_args.split())
+
+        # Add the Python command
+        ncu_cmd.extend([
+            sys.executable,
+            str(script_path)
+        ])
+
+        # Run NCU
+        result = subprocess.run(
+            ncu_cmd,
+            capture_output=True,
+            text=True,
+            timeout=300,  # 5 minute timeout
+        )
+
+        # Clean up temporary files
+        script_path.unlink(missing_ok=True)
+        data_path.unlink(missing_ok=True)
+
+        if result.returncode != 0:
+            return "", f"NCU profiling failed: {result.stderr}"
+
+        return str(report_path), None
+
+    except subprocess.TimeoutExpired:
+        return "", "NCU profiling timed out (>5 minutes)"
+    except FileNotFoundError:
+        return "", "NCU not found - ensure NVIDIA Nsight Compute is installed and in PATH"
+    except Exception as e:
+        tb = traceback.format_exc()
+        return "", f"NCU profiling failed: {type(e).__name__}: {e}\n{tb}"

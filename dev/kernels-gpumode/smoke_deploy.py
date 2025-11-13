@@ -17,8 +17,14 @@ Usage:
     # Enable profiling with torch.profiler
     python smoke_deploy.py --ssh root@host:port --new triton --profile
 
-    # Save results and profiles
-    python smoke_deploy.py --ssh root@host:port --new triton --save --profile
+    # Enable NCU profiling
+    python smoke_deploy.py --ssh root@host:port --new triton --ncu
+
+    # Enable both torch.profiler and NCU
+    python smoke_deploy.py --ssh root@host:port --new triton --profile --ncu
+
+    # Save results and all profiles
+    python smoke_deploy.py --ssh root@host:port --new triton --save --profile --ncu
 
     # Test on specific GPU
     python smoke_deploy.py --ssh root@host:port --gpu 1 --new triton
@@ -44,6 +50,7 @@ def deploy_and_test(
     backends: list[str] | None = None,
     save_results: bool = False,
     enable_profiling: bool = False,
+    enable_ncu: bool = False,
 ) -> tuple[bool, str]:
     """Deploy kernel utils and run smoke test on remote.
 
@@ -54,6 +61,7 @@ def deploy_and_test(
         backends: List of backend names to test (None = all registered)
         save_results: Save results to JSON on remote
         enable_profiling: Enable torch.profiler for detailed performance traces
+        enable_ncu: Enable NVIDIA Nsight Compute profiling
 
     Returns:
         (success, message)
@@ -122,6 +130,10 @@ def deploy_and_test(
     if enable_profiling:
         cmd_parts[1] += " --profile"
 
+    # Add --ncu flag if requested
+    if enable_ncu:
+        cmd_parts[1] += " --ncu"
+
     cmd = " && ".join(cmd_parts)
     logger.info(f"   Command: {cmd}")
 
@@ -167,7 +179,7 @@ def deploy_and_test(
 
     # Download profile traces if profiling was enabled
     if enable_profiling and success:
-        logger.info("\n📥 Downloading profile traces...")
+        logger.info("\n📥 Downloading torch profile traces...")
         profiles_remote = f"{project_dir}/profiles"
         profiles_local = Path("profiles_remote")
 
@@ -192,7 +204,7 @@ def deploy_and_test(
                         else:
                             logger.warning(f"   Failed to download: {filename}")
 
-                    logger.info(f"\n   📊 View profiles:")
+                    logger.info(f"\n   📊 View torch profiles:")
                     logger.info(f"      Chrome trace: Open chrome://tracing and load files from {profiles_local}/")
                     logger.info(f"      TensorBoard: tensorboard --logdir={profiles_local}/")
                 else:
@@ -201,6 +213,45 @@ def deploy_and_test(
                 logger.warning("   Failed to list profile files")
         else:
             logger.warning("   Profiles directory not found on remote")
+
+    # Download NCU reports if NCU profiling was enabled
+    if enable_ncu and success:
+        logger.info("\n📥 Downloading NCU reports...")
+        ncu_remote = f"{project_dir}/ncu_reports"
+        ncu_local = Path("ncu_reports_remote")
+
+        # Check if ncu_reports directory exists
+        check_result = client.exec(f"test -d {ncu_remote} && echo OK || echo MISSING")
+        if check_result.stdout.strip() == "OK":
+            # List NCU report files
+            list_result = client.exec(f"find {ncu_remote} -name '*.ncu-rep'")
+            if list_result.exit_code == 0:
+                ncu_files = [f.strip() for f in list_result.stdout.strip().split('\n') if f.strip()]
+
+                if ncu_files:
+                    ncu_local.mkdir(parents=True, exist_ok=True)
+                    for remote_file in ncu_files:
+                        filename = Path(remote_file).name
+                        local_file = ncu_local / filename
+
+                        # NCU reports are binary, use base64 encoding for transfer
+                        pull_result = client.exec(f"base64 {remote_file}")
+                        if pull_result.exit_code == 0:
+                            import base64
+                            decoded_data = base64.b64decode(pull_result.stdout)
+                            local_file.write_bytes(decoded_data)
+                            logger.info(f"   Downloaded: {local_file}")
+                        else:
+                            logger.warning(f"   Failed to download: {filename}")
+
+                    logger.info(f"\n   📊 View NCU reports:")
+                    logger.info(f"      ncu-ui {ncu_local}/<report-file.ncu-rep>")
+                else:
+                    logger.warning("   No NCU report files found")
+            else:
+                logger.warning("   Failed to list NCU report files")
+        else:
+            logger.warning("   NCU reports directory not found on remote")
 
     return success, message
 
@@ -251,6 +302,11 @@ Examples:
         action="store_true",
         help="Enable torch.profiler and download trace files",
     )
+    parser.add_argument(
+        "--ncu",
+        action="store_true",
+        help="Enable NVIDIA Nsight Compute profiling and download reports",
+    )
     args = parser.parse_args()
 
     # Handle --reference and --new shorthand
@@ -278,6 +334,7 @@ Examples:
         backends=args.backends,
         save_results=args.save,
         enable_profiling=args.profile,
+        enable_ncu=args.ncu,
     )
 
     if success:
