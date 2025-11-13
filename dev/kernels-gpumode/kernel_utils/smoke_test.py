@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from kernel_utils.task import SMOKE_TESTS
-from kernel_utils.utils import make_match_reference, benchmark_kernel, compare_backends
+from kernel_utils.utils import make_match_reference, benchmark_kernel, compare_backends, profile_kernel
 from kernel_utils.backends import BACKENDS
 from kernel_utils.results import (
     CorrectnessResult,
@@ -45,6 +45,7 @@ def run_smoke_tests(
     backend_names: list[str] | None = None,
     reference_backend: str = "reference",
     save_results: bool = False,
+    enable_profiling: bool = False,
 ) -> tuple[bool, str]:
     """Run smoke tests on specified backends.
 
@@ -52,6 +53,7 @@ def run_smoke_tests(
         backend_names: List of backend names to test, or None for all
         reference_backend: Backend to use as reference for correctness/speedup
         save_results: Whether to save results to JSON
+        enable_profiling: Whether to profile kernels with torch.profiler
 
     Returns:
         (all_passed, summary_msg)
@@ -75,6 +77,8 @@ def run_smoke_tests(
     print(f"   Test Suite: {len(SMOKE_TESTS)} tests")
     print(f"   Backends: {', '.join(backend_names)}")
     print(f"   Reference: {reference_backend}")
+    if enable_profiling:
+        print(f"   Profiling: ENABLED")
     print("=" * 80)
 
     # Reference for correctness checking
@@ -83,6 +87,9 @@ def run_smoke_tests(
 
     # Collect results for all backends
     all_backend_results = []
+
+    # Profile traces
+    profile_traces = []
 
     for backend_name in backend_names:
         backend = BACKENDS[backend_name]
@@ -152,6 +159,36 @@ def run_smoke_tests(
                 if bench_err is None:
                     speedup_str = f" ({speedup:.2f}x)" if speedup else ""
                     print(f"   ⏱️  Performance: {avg_time:.3f}ms{speedup_str}")
+
+                    # Profile if enabled
+                    if enable_profiling:
+                        # Profile this backend
+                        test_input_prof = test.generate()
+                        profile_dir = Path("profiles")
+                        trace_path, prof_err = profile_kernel(
+                            backend, test_input_prof, profile_dir,
+                            backend_name, test.name,
+                            num_warmup=5, num_profile_runs=1
+                        )
+                        if prof_err is None:
+                            print(f"   📊 Profile saved: {trace_path}")
+                            profile_traces.append((backend_name, test.name, trace_path))
+                        else:
+                            print(f"   ⚠️  Profiling failed: {prof_err}")
+
+                        # Also profile reference for comparison (if not already reference)
+                        if backend_name != reference_backend:
+                            test_input_ref_prof = test.generate()
+                            ref_trace_path, ref_prof_err = profile_kernel(
+                                ref_backend_fn, test_input_ref_prof, profile_dir,
+                                reference_backend, test.name,
+                                num_warmup=5, num_profile_runs=1
+                            )
+                            if ref_prof_err is None:
+                                print(f"   📊 Reference profile saved: {ref_trace_path}")
+                                profile_traces.append((reference_backend, test.name, ref_trace_path))
+                            else:
+                                print(f"   ⚠️  Reference profiling failed: {ref_prof_err}")
                 else:
                     print(f"   ⚠️  Benchmark failed: {bench_err}")
             else:
@@ -199,6 +236,15 @@ def run_smoke_tests(
         suite_results.to_json(output_path)
         print(f"\n💾 Results saved to: {output_path}")
 
+    # Print profile summary if profiling was enabled
+    if enable_profiling and profile_traces:
+        print(f"\n📊 Profiling Summary:")
+        print(f"   {len(profile_traces)} profile trace(s) generated")
+        print(f"   Location: profiles/")
+        print(f"\n   To view profiles:")
+        print(f"   1. Chrome trace: Open chrome://tracing and load .json files")
+        print(f"   2. TensorBoard: tensorboard --logdir=profiles/")
+
     # Determine overall success
     all_passed = all(br.all_correct for br in all_backend_results)
     summary = f"{len(backend_names)} backends tested"
@@ -233,6 +279,11 @@ def main() -> int:
         action="store_true",
         help="List available backends and exit",
     )
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Enable torch.profiler to generate detailed performance traces",
+    )
 
     args = parser.parse_args()
 
@@ -251,6 +302,7 @@ def main() -> int:
             backend_names=backend_names,
             reference_backend=args.reference,
             save_results=args.save,
+            enable_profiling=args.profile,
         )
 
         if success:

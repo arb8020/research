@@ -14,6 +14,12 @@ Usage:
     # Save results
     python smoke_deploy.py --ssh root@host:port --new triton --save
 
+    # Enable profiling with torch.profiler
+    python smoke_deploy.py --ssh root@host:port --new triton --profile
+
+    # Save results and profiles
+    python smoke_deploy.py --ssh root@host:port --new triton --save --profile
+
     # Test on specific GPU
     python smoke_deploy.py --ssh root@host:port --gpu 1 --new triton
 """
@@ -37,6 +43,7 @@ def deploy_and_test(
     gpu_id: int,
     backends: list[str] | None = None,
     save_results: bool = False,
+    enable_profiling: bool = False,
 ) -> tuple[bool, str]:
     """Deploy kernel utils and run smoke test on remote.
 
@@ -46,6 +53,7 @@ def deploy_and_test(
         gpu_id: GPU device ID to use (e.g., 0, 1, 2, ...)
         backends: List of backend names to test (None = all registered)
         save_results: Save results to JSON on remote
+        enable_profiling: Enable torch.profiler for detailed performance traces
 
     Returns:
         (success, message)
@@ -110,6 +118,10 @@ def deploy_and_test(
     if save_results:
         cmd_parts[1] += " --save"
 
+    # Add --profile flag if requested
+    if enable_profiling:
+        cmd_parts[1] += " --profile"
+
     cmd = " && ".join(cmd_parts)
     logger.info(f"   Command: {cmd}")
 
@@ -152,6 +164,43 @@ def deploy_and_test(
                 logger.warning("   Failed to download results")
         else:
             logger.warning("   Results file not found on remote")
+
+    # Download profile traces if profiling was enabled
+    if enable_profiling and success:
+        logger.info("\n📥 Downloading profile traces...")
+        profiles_remote = f"{project_dir}/profiles"
+        profiles_local = Path("profiles_remote")
+
+        # Check if profiles directory exists
+        check_result = client.exec(f"test -d {profiles_remote} && echo OK || echo MISSING")
+        if check_result.stdout.strip() == "OK":
+            # List profile files
+            list_result = client.exec(f"find {profiles_remote} -name '*.json' -o -name '*.pt.trace.json'")
+            if list_result.exit_code == 0:
+                profile_files = [f.strip() for f in list_result.stdout.strip().split('\n') if f.strip()]
+
+                if profile_files:
+                    profiles_local.mkdir(parents=True, exist_ok=True)
+                    for remote_file in profile_files:
+                        filename = Path(remote_file).name
+                        local_file = profiles_local / filename
+
+                        pull_result = client.exec(f"cat {remote_file}")
+                        if pull_result.exit_code == 0:
+                            local_file.write_text(pull_result.stdout)
+                            logger.info(f"   Downloaded: {local_file}")
+                        else:
+                            logger.warning(f"   Failed to download: {filename}")
+
+                    logger.info(f"\n   📊 View profiles:")
+                    logger.info(f"      Chrome trace: Open chrome://tracing and load files from {profiles_local}/")
+                    logger.info(f"      TensorBoard: tensorboard --logdir={profiles_local}/")
+                else:
+                    logger.warning("   No profile files found")
+            else:
+                logger.warning("   Failed to list profile files")
+        else:
+            logger.warning("   Profiles directory not found on remote")
 
     return success, message
 
@@ -197,6 +246,11 @@ Examples:
         action="store_true",
         help="Save results to JSON and download locally",
     )
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Enable torch.profiler and download trace files",
+    )
     args = parser.parse_args()
 
     # Handle --reference and --new shorthand
@@ -223,6 +277,7 @@ Examples:
         args.gpu,
         backends=args.backends,
         save_results=args.save,
+        enable_profiling=args.profile,
     )
 
     if success:
