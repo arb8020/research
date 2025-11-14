@@ -57,7 +57,13 @@ Example - Basic deployment:
 """
 
 from kerbal.protocol import DependencyConfig, CommandResult
-from kerbal.python_env import setup_script_deps, run_script
+from kerbal.python_env import (
+    setup_python_env,
+    setup_script_deps,  # DEPRECATED: Use setup_python_env instead
+    run_script,
+    create_venv,
+    install_packages,
+)
 from kerbal.tmux import start_tmux_session
 from kerbal.gpu import check_gpus_available, wait_for_gpus
 from kerbal.env import build_env_prefix
@@ -69,10 +75,16 @@ from kerbal.job_monitor import (
 )
 
 __all__ = [
+    # New API (preferred)
+    "setup_python_env",
+    "create_venv",
+    "install_packages",
+    # Old API (backward compatibility)
     "DependencyConfig",
     "CommandResult",
     "setup_script_deps",
     "run_script",
+    # Other modules
     "start_tmux_session",
     "check_gpus_available",
     "wait_for_gpus",
