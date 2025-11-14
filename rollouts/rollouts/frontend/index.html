@@ -251,19 +251,194 @@
             background: var(--border-hover);
         }
 
-        /* Placeholder content for development */
-        .placeholder-section {
-            padding: 20px;
+        /* Config tabs */
+        .config-tabs {
+            display: flex;
+            gap: 4px;
+            padding: 16px 16px 0 16px;
+            overflow-x: auto;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .config-tab {
+            padding: 8px 16px;
+            background: none;
+            border: none;
+            border-bottom: 2px solid transparent;
+            color: var(--text-secondary);
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: all 0.15s ease;
+        }
+
+        .config-tab:hover {
+            color: var(--text);
             background: var(--bg-secondary);
-            border-radius: 8px;
+            border-radius: 4px 4px 0 0;
+        }
+
+        .config-tab.active {
+            color: var(--accent);
+            border-bottom-color: var(--accent);
+        }
+
+        .config-tab.new {
+            color: var(--accent);
+        }
+
+        /* Form elements */
+        .form-section {
+            margin-bottom: 24px;
+        }
+
+        .form-section-title {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-secondary);
+            margin-bottom: 12px;
+        }
+
+        .form-field {
             margin-bottom: 16px;
         }
 
-        .placeholder-section h3 {
-            font-size: 14px;
-            font-weight: 600;
-            margin-bottom: 8px;
+        .form-label {
+            display: block;
+            font-size: 12px;
+            font-weight: 500;
             color: var(--text-secondary);
+            margin-bottom: 6px;
+        }
+
+        .form-input,
+        .form-select,
+        .form-textarea {
+            width: 100%;
+            padding: 8px 12px;
+            font-size: 14px;
+            font-family: inherit;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            background: var(--input-bg);
+            color: var(--text);
+            transition: all 0.15s ease;
+        }
+
+        .form-input:hover,
+        .form-select:hover,
+        .form-textarea:hover {
+            border-color: var(--border-hover);
+        }
+
+        .form-input:focus,
+        .form-select:focus,
+        .form-textarea:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(35, 131, 226, 0.1);
+        }
+
+        .form-textarea {
+            resize: vertical;
+            min-height: 100px;
+            font-family: 'SF Mono', Monaco, monospace;
+            line-height: 1.5;
+        }
+
+        .form-input.error,
+        .form-select.error,
+        .form-textarea.error {
+            border-color: var(--error);
+        }
+
+        .form-error {
+            font-size: 12px;
+            color: var(--error);
+            margin-top: 4px;
+        }
+
+        /* Range slider */
+        .range-input {
+            -webkit-appearance: none;
+            width: 100%;
+            height: 6px;
+            border-radius: 3px;
+            background: var(--border);
+            outline: none;
+        }
+
+        .range-input::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: var(--accent);
+            cursor: pointer;
+        }
+
+        .range-input::-moz-range-thumb {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: var(--accent);
+            cursor: pointer;
+        }
+
+        .range-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-top: 4px;
+        }
+
+        /* Validation errors */
+        .validation-errors {
+            background: rgba(235, 87, 87, 0.1);
+            border: 1px solid var(--error);
+            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 16px;
+        }
+
+        .validation-errors-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--error);
+            margin-bottom: 8px;
+        }
+
+        .validation-errors-list {
+            list-style: none;
+            font-size: 12px;
+            color: var(--error);
+        }
+
+        .validation-errors-list li {
+            margin-bottom: 4px;
+        }
+
+        .validation-errors-list li::before {
+            content: "• ";
+            margin-right: 4px;
+        }
+
+        /* Action buttons */
+        .action-buttons {
+            display: flex;
+            gap: 8px;
+            padding: 16px;
+            border-top: 1px solid var(--border);
+            background: var(--bg);
+        }
+
+        .action-buttons .btn {
+            flex: 1;
         }
     </style>
 </head>
@@ -297,19 +472,124 @@
                     <div class="sidebar-title">Config</div>
                     <button class="sidebar-close" onclick="toggleConfigSidebar()">✕</button>
                 </div>
-                <div class="sidebar-content">
-                    <div class="placeholder-section">
-                        <h3>BASE CONFIG</h3>
-                        <p>Dropdown for selecting base config will go here</p>
+                <!-- Config tabs -->
+                <div class="config-tabs" id="config-tabs">
+                    <button class="config-tab active" data-config-id="default">
+                        default_config
+                    </button>
+                    <button class="config-tab new" onclick="createNewConfig()">
+                        + New
+                    </button>
+                </div>
+
+                <div class="sidebar-content" id="config-content">
+                    <!-- Validation errors (hidden by default) -->
+                    <div class="validation-errors" id="validation-errors" style="display: none;">
+                        <div class="validation-errors-title">⚠️ Validation Errors:</div>
+                        <ul class="validation-errors-list" id="validation-errors-list"></ul>
                     </div>
-                    <div class="placeholder-section">
-                        <h3>MODEL SETTINGS</h3>
-                        <p>Model, temperature, prompt fields will go here</p>
+
+                    <!-- Base Config -->
+                    <div class="form-section">
+                        <div class="form-section-title">BASE CONFIG</div>
+                        <div class="form-field">
+                            <label class="form-label" for="base-config-select">Base Config</label>
+                            <select class="form-select" id="base-config-select" onchange="onBaseConfigChange()">
+                                <option value="">Loading...</option>
+                            </select>
+                        </div>
+                        <div class="form-field">
+                            <label class="form-label" for="config-name">Config Name</label>
+                            <input type="text" class="form-input" id="config-name" placeholder="my_experiment" />
+                        </div>
                     </div>
-                    <div class="placeholder-section">
-                        <h3>TOOLS</h3>
-                        <p>Tool builder will go here</p>
+
+                    <!-- Model Settings -->
+                    <div class="form-section">
+                        <div class="form-section-title">MODEL SETTINGS</div>
+                        <div class="form-field">
+                            <label class="form-label" for="model-select">Model</label>
+                            <select class="form-select" id="model-select">
+                                <option value="gpt-4o-mini">gpt-4o-mini</option>
+                                <option value="gpt-4o">gpt-4o</option>
+                                <option value="claude-3-5-sonnet-20241022">claude-3-5-sonnet-20241022</option>
+                                <option value="claude-3-5-haiku-20241022">claude-3-5-haiku-20241022</option>
+                            </select>
+                        </div>
+                        <div class="form-field">
+                            <label class="form-label" for="temperature">Temperature</label>
+                            <input type="number" class="form-input" id="temperature" min="0" max="2" step="0.1" value="0.2" />
+                        </div>
+                        <div class="form-field">
+                            <label class="form-label" for="system-prompt">System Prompt</label>
+                            <textarea class="form-textarea" id="system-prompt" placeholder="You are a helpful assistant..."></textarea>
+                        </div>
                     </div>
+
+                    <!-- Environment Settings -->
+                    <div class="form-section">
+                        <div class="form-section-title">ENVIRONMENT SETTINGS</div>
+                        <div class="form-field">
+                            <label class="form-label" for="ssh-target">SSH Target</label>
+                            <input type="text" class="form-input" id="ssh-target" placeholder="user@host:port" />
+                        </div>
+                        <div class="form-field">
+                            <label class="form-label" for="gpu-id">GPU ID</label>
+                            <input type="number" class="form-input" id="gpu-id" min="0" value="0" />
+                        </div>
+                        <div class="form-field">
+                            <label class="form-label" for="dataset-path">Dataset Path</label>
+                            <input type="text" class="form-input" id="dataset-path" placeholder="datasets/my_dataset.json" />
+                        </div>
+                    </div>
+
+                    <!-- Sampling Settings -->
+                    <div class="form-section">
+                        <div class="form-section-title">SAMPLING SETTINGS</div>
+                        <div class="form-field">
+                            <label class="form-label" for="seed">Seed</label>
+                            <input type="number" class="form-input" id="seed" value="42" />
+                        </div>
+                        <div class="form-field">
+                            <label class="form-label">Sample Range</label>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
+                                <div>
+                                    <input type="number" class="form-input" id="start-idx" min="0" value="0" placeholder="Start" />
+                                </div>
+                                <div>
+                                    <input type="number" class="form-input" id="end-idx" min="0" value="10" placeholder="End" />
+                                </div>
+                            </div>
+                            <input type="range" class="range-input" id="range-slider" min="0" max="100" value="10" oninput="updateRangeFromSlider()" />
+                            <div class="range-labels">
+                                <span id="range-start">0</span>
+                                <span id="range-end">10</span>
+                            </div>
+                        </div>
+                        <div class="form-field">
+                            <label class="form-label" for="max-turns">Max Turns</label>
+                            <input type="number" class="form-input" id="max-turns" min="1" value="5" />
+                        </div>
+                    </div>
+
+                    <!-- Tools -->
+                    <div class="form-section">
+                        <div class="form-section-title">TOOLS</div>
+                        <div id="tools-list">
+                            <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 12px;">
+                                No tools added yet. Click below to add your first tool.
+                            </p>
+                        </div>
+                        <button class="btn" onclick="openToolBuilder()" style="width: 100%; margin-top: 12px;">
+                            + Add Tool
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Action buttons at bottom -->
+                <div class="action-buttons">
+                    <button class="btn" onclick="validateConfig()">Validate</button>
+                    <button class="btn primary" onclick="saveConfig()">Save Config</button>
                 </div>
             </div>
 
@@ -422,16 +702,227 @@
             }
         }
 
+        // Config management
+        async function loadAvailableConfigs() {
+            try {
+                const response = await fetch('/api/configs');
+                const configs = await response.json();
+
+                const select = document.getElementById('base-config-select');
+                select.innerHTML = '<option value="">-- Select base config --</option>';
+
+                configs.forEach(config => {
+                    const option = document.createElement('option');
+                    option.value = config.name;
+                    option.textContent = config.name;
+                    select.appendChild(option);
+                });
+            } catch (error) {
+                console.error('Failed to load configs:', error);
+            }
+        }
+
+        async function onBaseConfigChange() {
+            const select = document.getElementById('base-config-select');
+            const configName = select.value;
+
+            if (!configName) return;
+
+            try {
+                const response = await fetch(`/api/load-config/${configName}`);
+                const config = await response.json();
+
+                // Populate form fields
+                if (config.model) {
+                    document.getElementById('model-select').value = config.model;
+                }
+                if (config.temperature !== undefined) {
+                    document.getElementById('temperature').value = config.temperature;
+                }
+                if (config.system_prompt) {
+                    document.getElementById('system-prompt').value = config.system_prompt;
+                }
+                if (config.ssh_target) {
+                    document.getElementById('ssh-target').value = config.ssh_target;
+                }
+                if (config.gpu_id !== undefined) {
+                    document.getElementById('gpu-id').value = config.gpu_id;
+                }
+                if (config.dataset_path) {
+                    document.getElementById('dataset-path').value = config.dataset_path;
+                }
+                if (config.seed !== undefined) {
+                    document.getElementById('seed').value = config.seed;
+                }
+                if (config.start_idx !== undefined) {
+                    document.getElementById('start-idx').value = config.start_idx;
+                }
+                if (config.end_idx !== undefined) {
+                    document.getElementById('end-idx').value = config.end_idx;
+                    updateRangeLabels();
+                }
+                if (config.max_turns !== undefined) {
+                    document.getElementById('max-turns').value = config.max_turns;
+                }
+
+                // Suggest a new config name
+                const newName = configName.replace(/^\d+_/, (match) => {
+                    const num = parseInt(match);
+                    return String(num + 1).padStart(2, '0') + '_';
+                });
+                document.getElementById('config-name').value = newName || configName + '_custom';
+
+            } catch (error) {
+                console.error('Failed to load config:', error);
+                alert('Failed to load config: ' + error.message);
+            }
+        }
+
+        function updateRangeFromSlider() {
+            const slider = document.getElementById('range-slider');
+            const endIdx = document.getElementById('end-idx');
+            endIdx.value = slider.value;
+            updateRangeLabels();
+        }
+
+        function updateRangeLabels() {
+            const startIdx = document.getElementById('start-idx').value;
+            const endIdx = document.getElementById('end-idx').value;
+            document.getElementById('range-start').textContent = startIdx;
+            document.getElementById('range-end').textContent = endIdx;
+
+            // Update slider
+            const slider = document.getElementById('range-slider');
+            slider.max = Math.max(100, parseInt(endIdx) + 10);
+            slider.value = endIdx;
+        }
+
+        function createNewConfig() {
+            // Clear form
+            document.getElementById('base-config-select').value = '';
+            document.getElementById('config-name').value = '';
+            document.getElementById('model-select').value = 'gpt-4o-mini';
+            document.getElementById('temperature').value = '0.2';
+            document.getElementById('system-prompt').value = '';
+            document.getElementById('ssh-target').value = '';
+            document.getElementById('gpu-id').value = '0';
+            document.getElementById('dataset-path').value = '';
+            document.getElementById('seed').value = '42';
+            document.getElementById('start-idx').value = '0';
+            document.getElementById('end-idx').value = '10';
+            document.getElementById('max-turns').value = '5';
+            updateRangeLabels();
+
+            // Clear validation errors
+            document.getElementById('validation-errors').style.display = 'none';
+        }
+
+        function validateConfig() {
+            const errors = [];
+
+            // Check required fields
+            const configName = document.getElementById('config-name').value.trim();
+            if (!configName) {
+                errors.push('Config name is required');
+            } else if (!/^[a-zA-Z0-9_]+$/.test(configName)) {
+                errors.push('Config name must contain only letters, numbers, and underscores');
+            }
+
+            const systemPrompt = document.getElementById('system-prompt').value.trim();
+            if (!systemPrompt) {
+                errors.push('System prompt is required');
+            }
+
+            const startIdx = parseInt(document.getElementById('start-idx').value);
+            const endIdx = parseInt(document.getElementById('end-idx').value);
+            if (startIdx >= endIdx) {
+                errors.push('Start index must be less than end index');
+            }
+
+            const maxTurns = parseInt(document.getElementById('max-turns').value);
+            if (maxTurns < 1) {
+                errors.push('Max turns must be at least 1');
+            }
+
+            // Display errors
+            const errorContainer = document.getElementById('validation-errors');
+            const errorList = document.getElementById('validation-errors-list');
+
+            if (errors.length > 0) {
+                errorList.innerHTML = errors.map(err => `<li>${err}</li>`).join('');
+                errorContainer.style.display = 'block';
+                return false;
+            } else {
+                errorContainer.style.display = 'none';
+                alert('✓ Config is valid!');
+                return true;
+            }
+        }
+
+        async function saveConfig() {
+            if (!validateConfig()) {
+                return;
+            }
+
+            const config = {
+                name: document.getElementById('config-name').value.trim(),
+                model: document.getElementById('model-select').value,
+                temperature: parseFloat(document.getElementById('temperature').value),
+                system_prompt: document.getElementById('system-prompt').value.trim(),
+                ssh_target: document.getElementById('ssh-target').value.trim(),
+                gpu_id: parseInt(document.getElementById('gpu-id').value),
+                dataset_path: document.getElementById('dataset-path').value.trim(),
+                seed: parseInt(document.getElementById('seed').value),
+                start_idx: parseInt(document.getElementById('start-idx').value),
+                end_idx: parseInt(document.getElementById('end-idx').value),
+                max_turns: parseInt(document.getElementById('max-turns').value),
+                tools: [], // TODO: Add tools from tool builder
+            };
+
+            try {
+                const response = await fetch('/api/generate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config),
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+                }
+
+                const result = await response.json();
+                alert(`✓ Config saved to: ${result.file_path}`);
+
+                // Reload available configs
+                await loadAvailableConfigs();
+
+            } catch (error) {
+                console.error('Failed to save config:', error);
+                alert('Failed to save config: ' + error.message);
+            }
+        }
+
+        function openToolBuilder() {
+            alert('Tool builder will be implemented in Phase 3');
+        }
+
         // Launch agent
         function launchAgent() {
             alert('Launch functionality will be implemented in Phase 5');
         }
 
         // Initialize
-        function init() {
+        async function init() {
             updateUI();
+            await loadAvailableConfigs();
+
+            // Set up input listeners
+            document.getElementById('start-idx').addEventListener('input', updateRangeLabels);
+            document.getElementById('end-idx').addEventListener('input', updateRangeLabels);
+
             console.log('Agent Dev Loop initialized');
             console.log('Phase 1: Core layout with sliding sidebars ✓');
+            console.log('Phase 2: Config sidebar with forms ✓');
         }
 
         // Start the app
