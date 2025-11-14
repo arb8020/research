@@ -1360,8 +1360,24 @@
         }
 
         // Launch agent
-        function launchAgent() {
-            alert('Launch functionality will be implemented in Phase 5');
+        async function launchAgent() {
+            // Get the most recent config name
+            const prefix = document.getElementById('config-prefix')?.value || '03_';
+            const suffix = document.getElementById('config-name')?.value?.trim() || 'my_config';
+            const configName = prefix + suffix;
+
+            // For now, just show instructions to run manually
+            // TODO: Add background execution with SSE streaming
+            const command = `python entrypoint.py configs/${configName}.py`;
+
+            const message = `To launch this evaluation, run:\n\n${command}\n\nThe results will appear in the Results sidebar when complete.\n\n(Automatic launch with live streaming will be added soon!)`;
+
+            alert(message);
+
+            // Optionally reload results after a delay
+            setTimeout(() => {
+                loadResults();
+            }, 2000);
         }
 
         // Initialize
