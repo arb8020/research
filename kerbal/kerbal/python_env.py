@@ -1,12 +1,15 @@
-"""Python environment orchestration for remote script execution.
+"""Python environment setup for remote machines.
 
-This module handles setting up Python dependencies and running scripts remotely.
-It uses uv for dependency management and venv creation.
+Casey Muratori philosophy:
+- Write usage code first
+- Semantic compression (no premature abstraction)
+- Continuous granularity (layers without holes)
 
 Tiger Style:
 - Functions < 70 lines
-- Assert preconditions
+- Assert all preconditions and postconditions
 - Explicit control flow
+- Fail fast with clear errors
 """
 
 import logging
@@ -14,7 +17,6 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from bifrost import BifrostClient
-    from kerbal.protocol import DependencyConfig, CommandResult
 
 logger = logging.getLogger(__name__)
 
@@ -25,54 +27,440 @@ def setup_script_deps(
     dependencies: "DependencyConfig",
     install_extras: list[str] | None = None,
 ) -> None:
-    """Setup Python dependencies for script execution.
+    """DEPRECATED: Use setup_python_env() instead.
 
-    Ensures uv is installed, generates pyproject.toml, and runs uv sync.
-    This is execution orchestration - "prepare to run THIS script".
+    This function is kept for backward compatibility.
+    It wraps the old DependencyConfig API around the new setup_python_env().
+    """
+    from kerbal.protocol import DependencyConfig
 
-    Tiger Style: Assert preconditions, explicit steps, < 70 lines.
+    # Convert DependencyConfig to new API
+    assert isinstance(dependencies, DependencyConfig), "dependencies must be DependencyConfig"
+
+    # Merge extras into requirements if requested
+    requirements = dependencies.dependencies.copy()
+    if install_extras and dependencies.extras:
+        for extra_name in install_extras:
+            if extra_name in dependencies.extras:
+                requirements.extend(dependencies.extras[extra_name])
+
+    # Call new API
+    setup_python_env(
+        client=client,
+        workspace=workspace,
+        requirements=requirements,
+        python_version=dependencies.python_version,
+    )
+
+
+def setup_python_env(
+    client: "BifrostClient",
+    workspace: str,
+    requirements: list[str],
+    git_packages: list[str] | None = None,
+    cli_tools: list[str] | None = None,
+    verify_imports: list[str] | None = None,
+    python_version: str = ">=3.10",
+    venv_path: str = ".venv",
+    timeout_sec: int = 600,
+) -> None:
+    """Setup Python environment with dependencies.
+
+    This is the main entry point. It replaces setup_script_deps() and DependencyConfig.
 
     Args:
-        client: BifrostClient instance
-        workspace: Remote workspace path (absolute)
-        dependencies: DependencyConfig specifying deps
-        install_extras: List of extra groups to install (e.g., ["training", "dev"])
+        client: Connected BifrostClient
+        workspace: Absolute path to workspace on remote
+        requirements: pip packages like ["torch>=2.0", "triton"]
+        git_packages: Git URLs for packages pip can't handle (installed with --no-deps)
+        cli_tools: CLI tools that must be in PATH (e.g., ["ncu", "prime"])
+        verify_imports: Import names to verify (e.g., ["torch", "BackendBench"])
+        python_version: Python version requirement (default ">=3.10")
+        venv_path: Venv location relative to workspace (default ".venv")
+        timeout_sec: Max seconds for entire setup (1-3600)
 
     Example:
-        from bifrost import BifrostClient
-        from kerbal import DependencyConfig, setup_script_deps
-
-        client = BifrostClient("root@gpu:22", ssh_key_path="~/.ssh/id_rsa")
-
-        deps = DependencyConfig(
-            project_name="training",
-            dependencies=["torch>=2.0"],
-            extras={"training": ["wandb"], "inference": ["vllm"]},
+        # Simple case (kernels-gpumode)
+        setup_python_env(
+            client,
+            workspace,
+            requirements=["torch>=2.4.0", "triton", "nvidia-cutlass-dsl"],
         )
-        setup_script_deps(client, workspace, deps, install_extras=["training"])
-    """
-    assert client is not None, "BifrostClient instance required"
-    assert workspace, "workspace path required"
-    assert dependencies is not None, "DependencyConfig required"
 
-    logger.info(f"📝 Setting up Python environment for {dependencies.project_name}...")
+        # With git packages (integration-evaluation)
+        setup_python_env(
+            client,
+            workspace,
+            requirements=["torch>=2.0"],
+            git_packages=["git+https://github.com/user/repo.git"],
+            verify_imports=["torch", "BackendBench"],
+            cli_tools=["prime"],
+        )
+    """
+    # Assert preconditions (Tiger Style)
+    assert client is not None, "client cannot be None"
+    assert workspace, "workspace must be non-empty string"
+    assert requirements, "requirements must be non-empty list"
+    assert len(requirements) <= 100, "requirements list too large (max 100)"
+    assert timeout_sec > 0 and timeout_sec <= 3600, "timeout must be 1-3600 sec"
+
+    if git_packages:
+        assert all(pkg.startswith("git+http"), "git packages must start with git+http")
+
+    logger.info(f"📝 Setting up Python environment")
     logger.info(f"📍 Remote workspace: {workspace}")
-    logger.info(f"   - pyproject.toml will be generated at: {workspace}/pyproject.toml")
-    logger.info(f"   - venv will be created at: {workspace}/.venv/")
+
+    # Expand workspace path (handle ~)
+    workspace = _expand_path(client, workspace)
+
+    # Assert workspace exists
+    result = client.exec(f"test -d {workspace}")
+    assert result.exit_code == 0, f"Workspace does not exist: {workspace}"
+
+    venv_full_path = f"{workspace}/{venv_path}"
 
     # Step 0: Ensure uv is installed
     _ensure_uv(client)
 
-    # Step 1: Generate and upload pyproject.toml
-    _generate_pyproject(client, workspace, dependencies)
+    # Step 1: Create venv
+    _create_venv(client, workspace, venv_full_path, python_version, timeout_sec)
 
-    # Step 2: Sync dependencies with uv
-    _sync_dependencies(client, workspace, install_extras)
+    # Step 2: Install requirements
+    if requirements:
+        _install_pip_packages(client, venv_full_path, requirements, timeout_sec)
 
-    # Step 3: Verify Python environment works and packages are importable
-    _verify_python_env(client, workspace, dependencies)
+    # Step 3: Install git packages (if any)
+    if git_packages:
+        _install_git_packages(client, venv_full_path, git_packages, timeout_sec)
+
+    # Step 4: Verify CLI tools (if any)
+    if cli_tools:
+        _verify_cli_tools(client, cli_tools)
+
+    # Step 5: Verify venv works
+    _verify_venv(client, venv_full_path)
+
+    # Step 6: Verify imports (if requested)
+    if verify_imports:
+        _verify_imports(client, venv_full_path, verify_imports)
 
     logger.info("✅ Python environment ready")
+
+
+# === Layer 2: Lower-level functions (continuous granularity) ===
+
+
+def create_venv(
+    client: "BifrostClient",
+    workspace: str,
+    python_version: str = ">=3.10",
+    venv_path: str = ".venv",
+    timeout_sec: int = 600,
+) -> None:
+    """Create virtualenv at workspace.
+
+    Layer 2 function - more control than setup_python_env().
+    """
+    assert client is not None
+    assert workspace
+
+    workspace = _expand_path(client, workspace)
+    venv_full_path = f"{workspace}/{venv_path}"
+
+    _ensure_uv(client)
+    _create_venv(client, workspace, venv_full_path, python_version, timeout_sec)
+    _verify_venv(client, venv_full_path)
+
+
+def install_packages(
+    client: "BifrostClient",
+    workspace: str,
+    requirements: list[str],
+    venv_path: str = ".venv",
+    timeout_sec: int = 600,
+) -> None:
+    """Install packages into existing venv.
+
+    Layer 2 function - assumes venv already exists.
+    """
+    assert client is not None
+    assert workspace
+    assert requirements
+
+    workspace = _expand_path(client, workspace)
+    venv_full_path = f"{workspace}/{venv_path}"
+
+    _install_pip_packages(client, venv_full_path, requirements, timeout_sec)
+
+
+# === Layer 1: Private helpers (lowest level) ===
+
+
+def _expand_path(client: "BifrostClient", path: str) -> str:
+    """Expand ~ in path to absolute path."""
+    result = client.exec(f"echo {path}")
+    assert result.exit_code == 0, f"Failed to expand path: {result.stderr}"
+    return result.stdout.strip()
+
+
+def _ensure_uv(client: "BifrostClient") -> None:
+    """Ensure uv is installed and available.
+
+    Tiger Style: < 70 lines, explicit steps.
+    """
+    # Check if uv is already available
+    result = client.exec("command -v uv")
+    if result.exit_code == 0:
+        logger.info("✅ uv already installed")
+        return
+
+    # Install uv via official installer
+    logger.info("📦 Installing uv...")
+    install_cmd = "curl -LsSf https://astral.sh/uv/install.sh | sh"
+    result = client.exec(install_cmd)
+
+    assert result.exit_code == 0, f"uv installation failed: {result.stderr}"
+    logger.info("✅ uv installed successfully")
+
+
+def _create_venv(
+    client: "BifrostClient",
+    workspace: str,
+    venv_full_path: str,
+    python_version: str,
+    timeout_sec: int,
+) -> None:
+    """Create venv using uv.
+
+    Tiger Style: Explicit command, assert success.
+    """
+    logger.info("🔧 Creating virtual environment...")
+
+    # Generate minimal pyproject.toml for uv
+    # uv needs this to create venv with correct Python version
+    pyproject_toml = f"""[project]
+name = "remote-env"
+version = "0.1.0"
+requires-python = "{python_version}"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+"""
+
+    # Write pyproject.toml
+    write_cmd = f"cat > {workspace}/pyproject.toml << 'EOF'\n{pyproject_toml}\nEOF"
+    result = client.exec(write_cmd, timeout=timeout_sec)
+    assert result.exit_code == 0, f"Failed to write pyproject.toml: {result.stderr}"
+
+    # Create venv with uv
+    cmd = f"""
+    export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+    cd {workspace}
+    uv venv {venv_full_path}
+    """
+    result = client.exec(cmd, timeout=timeout_sec)
+    assert result.exit_code == 0, f"venv creation failed: {result.stderr}"
+
+    logger.info(f"✅ Virtual environment created at {venv_full_path}")
+
+
+def _install_pip_packages(
+    client: "BifrostClient",
+    venv_full_path: str,
+    requirements: list[str],
+    timeout_sec: int,
+) -> None:
+    """Install pip packages into venv.
+
+    Tiger Style: Explicit installation, stream output for visibility.
+    """
+    logger.info(f"🔧 Installing {len(requirements)} package(s)...")
+    logger.info("=" * 60)
+
+    # Build pip install command
+    packages = " ".join(f'"{pkg}"' for pkg in requirements)
+    cmd = f"""
+    export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+    {venv_full_path}/bin/pip install {packages}
+    EXIT=$?
+    echo '::EXIT_CODE::'$EXIT
+    exit $EXIT
+    """
+
+    exit_code = None
+
+    try:
+        for line in client.exec_stream(cmd):
+            # Capture exit code from marker
+            if line.startswith("::EXIT_CODE::"):
+                exit_code_str = line.replace("::EXIT_CODE::", "").strip()
+                if exit_code_str.isdigit():
+                    exit_code = int(exit_code_str)
+            else:
+                # Print output in real-time
+                print(line, end='', flush=True)
+    except Exception as e:
+        raise RuntimeError(f"pip install execution failed: {e}")
+
+    logger.info("=" * 60)
+
+    if exit_code is None:
+        raise RuntimeError("pip install failed - could not determine exit code")
+
+    assert exit_code == 0, f"pip install failed with exit code {exit_code}"
+    logger.info("✅ Packages installed")
+
+
+def _install_git_packages(
+    client: "BifrostClient",
+    venv_full_path: str,
+    git_packages: list[str],
+    timeout_sec: int,
+) -> None:
+    """Install git packages that pip can't handle normally.
+
+    Strategy: pip install directly from git URL.
+    Falls back to --no-deps if standard install fails.
+
+    Tiger Style: < 70 lines, explicit strategy.
+    """
+    logger.info(f"🔧 Installing {len(git_packages)} git package(s)...")
+
+    for pkg_url in git_packages:
+        logger.info(f"   Installing: {pkg_url}")
+
+        # Try standard install first
+        packages = f'"{pkg_url}"'
+        cmd = f"{venv_full_path}/bin/pip install {packages}"
+        result = client.exec(cmd, timeout=timeout_sec)
+
+        if result.exit_code == 0:
+            logger.info(f"   ✅ Installed successfully")
+            continue
+
+        # If failed, try with --no-deps (works around URL dependency issues)
+        logger.warning(f"   Standard install failed, trying --no-deps...")
+        cmd = f"{venv_full_path}/bin/pip install --no-deps {packages}"
+        result = client.exec(cmd, timeout=timeout_sec)
+
+        assert result.exit_code == 0, (
+            f"Git package install failed: {pkg_url}\n"
+            f"Error: {result.stderr}"
+        )
+
+        logger.info(f"   ✅ Installed with --no-deps")
+
+    logger.info("✅ Git packages installed")
+
+
+def _verify_cli_tools(
+    client: "BifrostClient",
+    cli_tools: list[str],
+) -> None:
+    """Verify CLI tools exist and are in PATH.
+
+    If not found, search common locations and fail with actionable error.
+
+    Tiger Style: Fail fast, clear errors.
+    """
+    search_paths = [
+        "~/.local/bin",
+        "~/.cargo/bin",
+        "/usr/local/bin",
+        "/usr/local/cuda/bin",
+    ]
+
+    for tool in cli_tools:
+        # Try to find it in PATH
+        result = client.exec(f"which {tool}")
+
+        if result.exit_code == 0:
+            tool_path = result.stdout.strip()
+            logger.info(f"✅ Found {tool} at {tool_path}")
+            continue
+
+        # Not in PATH - search common locations
+        found_at = None
+        for path in search_paths:
+            result = client.exec(f"test -f {path}/{tool}")
+            if result.exit_code == 0:
+                found_at = f"{path}/{tool}"
+                break
+
+        if found_at:
+            # Found it, but not in PATH
+            assert False, (
+                f"Tool '{tool}' found at {found_at} but not in PATH.\n"
+                f"Fix: Add {path} to PATH or use absolute path."
+            )
+
+        # Not found anywhere
+        assert False, (
+            f"Tool '{tool}' not found.\n"
+            f"Searched: {', '.join(search_paths)}\n"
+            f"Install it on the remote machine first."
+        )
+
+
+def _verify_venv(client: "BifrostClient", venv_full_path: str) -> None:
+    """Verify venv works.
+
+    Tiger Style: Assert postcondition.
+    """
+    venv_python = f"{venv_full_path}/bin/python"
+    result = client.exec(f"{venv_python} --version")
+
+    assert result.exit_code == 0, f"Python venv verification failed: {result.stderr}"
+
+    version = result.stdout.strip() if result.stdout else "unknown"
+    logger.info(f"✅ Python venv verified: {version}")
+
+
+def _verify_imports(
+    client: "BifrostClient",
+    venv_full_path: str,
+    imports: list[str],
+) -> None:
+    """Verify imports work, suggest fixes if not.
+
+    Tiger Style: Fail fast with diagnostic info.
+    """
+    logger.info("🔍 Verifying imports...")
+
+    venv_python = f"{venv_full_path}/bin/python"
+
+    for import_name in imports:
+        import_cmd = f"{venv_python} -c 'import {import_name}'"
+        result = client.exec(import_cmd)
+
+        if result.exit_code == 0:
+            logger.info(f"   ✅ {import_name}")
+            continue
+
+        # Import failed - provide diagnostic info
+        logger.error(f"   ❌ Import verification failed: {import_name}")
+        logger.error(f"      Error: {result.stderr.strip() if result.stderr else 'unknown'}")
+
+        # Try to find the actual importable name
+        # List installed packages
+        list_cmd = f"{venv_python} -m pip list | grep -i {import_name}"
+        list_result = client.exec(list_cmd)
+
+        if list_result.exit_code == 0 and list_result.stdout:
+            logger.error(f"      Found installed packages:")
+            for line in list_result.stdout.strip().split('\n'):
+                logger.error(f"        {line}")
+            logger.error(f"      The package may be installed with a different name.")
+            logger.error(f"      Check the actual import name and update verify_imports.")
+        else:
+            logger.error(f"      Package not found in pip list.")
+            logger.error(f"      Make sure it's in requirements or git_packages.")
+
+        assert False, f"Import verification failed: {import_name}"
+
+
+# === Script execution (kept for backward compatibility) ===
 
 
 def run_script(
@@ -81,7 +469,7 @@ def run_script(
     script: str,
     env_vars: dict[str, str] | None = None,
 ) -> "CommandResult":
-    """Run a Python script in the uv venv.
+    """Run a Python script in the venv.
 
     Uses the venv's Python directly instead of shell activation.
     This is more reliable and avoids shell-specific issues.
@@ -107,6 +495,8 @@ def run_script(
         if result.success:
             print("Training completed!")
     """
+    from kerbal.protocol import CommandResult
+
     assert client is not None, "BifrostClient instance required"
     assert workspace, "workspace path required"
     assert script, "script required"
@@ -131,369 +521,8 @@ def run_script(
 
     result = client.exec(full_command)
 
-    # Import here to avoid circular dependency
-    from kerbal.protocol import CommandResult
     return CommandResult(
         exit_code=result.exit_code,
         stdout=result.stdout or "",
         stderr=result.stderr or "",
     )
-
-
-# === Private helper functions (< 70 lines each) ===
-
-
-def _generate_pyproject_toml(deps: "DependencyConfig") -> str:
-    """Generate pyproject.toml content from DependencyConfig.
-
-    Tiger Style: < 70 lines, asserts preconditions.
-
-    Args:
-        deps: DependencyConfig specifying project dependencies
-
-    Returns:
-        Complete pyproject.toml file content as a string
-    """
-    assert deps.project_name, "project_name required"
-    assert deps.python_version, "python_version required"
-
-    lines = []
-
-    # Header
-    lines.append("[project]")
-    lines.append(f'name = "{deps.project_name}"')
-    lines.append('version = "0.1.0"')
-    lines.append(f'requires-python = "{deps.python_version}"')
-    lines.append("")
-
-    # Core dependencies
-    if deps.dependencies:
-        lines.append("dependencies = [")
-        for dep in deps.dependencies:
-            lines.append(f'    "{dep}",')
-        lines.append("]")
-        lines.append("")
-
-    # Optional dependencies (extras)
-    if deps.extras:
-        lines.append("[project.optional-dependencies]")
-        for extra_name, extra_deps in deps.extras.items():
-            lines.append(f"{extra_name} = [")
-            for dep in extra_deps:
-                lines.append(f'    "{dep}",')
-            lines.append("]")
-        lines.append("")
-
-    # Build system (required for uv)
-    lines.append("[build-system]")
-    lines.append('requires = ["setuptools>=61.0"]')
-    lines.append('build-backend = "setuptools.build_meta"')
-    lines.append("")
-
-    # Setuptools config - exclude subdirectories from package discovery
-    # This prevents "Multiple top-level packages discovered" errors
-    # when workspace has subdirs like configs/, results/, etc.
-    lines.append("[tool.setuptools]")
-    lines.append('py-modules = []')
-
-    return "\n".join(lines)
-
-
-def _generate_pyproject(
-    client: "BifrostClient",
-    workspace: str,
-    dependencies: "DependencyConfig",
-) -> None:
-    """Generate pyproject.toml on remote from DependencyConfig.
-
-    Tiger Style: Explicit generation, assert success.
-    """
-    # Generate pyproject.toml content
-    toml_content = _generate_pyproject_toml(dependencies)
-
-    # Write to remote
-    write_cmd = f"cat > {workspace}/pyproject.toml << 'EOF'\n{toml_content}\nEOF"
-    result = client.exec(write_cmd)
-
-    assert result.exit_code == 0, f"Failed to write pyproject.toml: {result.stderr}"
-    logger.info(f"✅ Generated pyproject.toml ({dependencies.project_name})")
-
-    # Show the generated pyproject.toml for debugging
-    logger.debug(f"Generated pyproject.toml at: {workspace}/pyproject.toml")
-    logger.debug(f"pyproject.toml contents:\n{toml_content}")
-
-
-def _sync_dependencies(
-    client: "BifrostClient",
-    workspace: str,
-    install_extras: list[str] | None,
-    upgrade: bool = True,
-) -> None:
-    """Sync Python dependencies using uv.
-
-    Tiger Style: Explicit command, assert success, < 70 lines.
-
-    Args:
-        upgrade: If True, add --upgrade to update git dependencies to latest
-                 commits. Default True because deployments should always get
-                 latest code. Uses --upgrade which properly updates git refs,
-                 not --refresh which only re-resolves the lock file.
-    """
-    # Build sync command with extras
-    extra_flags = ""
-    if install_extras:
-        for extra in install_extras:
-            assert extra, "extra name cannot be empty"
-            extra_flags += f" --extra {extra}"
-
-    # Add --upgrade to get latest git commits (not cached versions)
-    # This is critical for git dependencies - --upgrade updates git refs
-    # while --refresh only re-resolves the lock file
-    if upgrade:
-        extra_flags += " --upgrade"
-
-    # Log the sync command for debugging
-    logger.debug(f"Running uv sync in: {workspace}")
-    logger.debug(f"uv sync flags: {extra_flags if extra_flags else '(none)'}")
-    logger.info("🔧 Installing dependencies with uv...")
-    logger.info("=" * 60)
-
-    # Use exec_stream to show progress in real-time (prevents hanging appearance)
-    # Tiger Style: Capture exit code from marker, stream output for user visibility
-    sync_cmd = f"""
-    export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
-    cd {workspace}
-    uv sync{extra_flags}
-    EXIT=$?
-    echo '::EXIT_CODE::'$EXIT
-    exit $EXIT
-    """
-
-    exit_code = None
-    output_lines = []
-
-    try:
-        for line in client.exec_stream(sync_cmd):
-            # Capture exit code from marker line
-            if line.startswith("::EXIT_CODE::"):
-                exit_code_str = line.replace("::EXIT_CODE::", "").strip()
-                if exit_code_str.isdigit():
-                    exit_code = int(exit_code_str)
-                else:
-                    logger.warning(f"⚠️  Could not parse exit code from: {line.rstrip()}")
-            else:
-                # Print output in real-time
-                print(line, end='', flush=True)
-                output_lines.append(line)
-    except Exception as e:
-        logger.error(f"❌ uv sync streaming failed: {e}")
-        raise RuntimeError(f"uv sync execution failed: {e}")
-
-    logger.info("=" * 60)
-
-    # Check if we got an exit code
-    if exit_code is None:
-        logger.error("❌ Could not determine uv sync exit code")
-        raise RuntimeError("uv sync failed - could not determine exit code")
-
-    assert exit_code == 0, f"uv sync failed with exit code {exit_code}"
-
-    if install_extras:
-        extras_str = ", ".join(install_extras)
-        logger.info(f"✅ Dependencies synced with extras: {extras_str}")
-    else:
-        logger.info("✅ Dependencies synced")
-
-
-def _verify_python_env(
-    client: "BifrostClient",
-    workspace: str,
-    dependencies: "DependencyConfig | None" = None,
-) -> None:
-    """Verify Python venv is working and packages are importable.
-
-    Tiger Style: Assert the postcondition.
-
-    NOTE: The import verification is experimental and may be removed.
-    It catches installation issues early but might be too aggressive
-    for complex dependency scenarios (e.g., optional dependencies,
-    platform-specific packages, etc.)
-    """
-    venv_python = f"{workspace}/.venv/bin/python"
-    result = client.exec(f"{venv_python} --version")
-
-    assert result.exit_code == 0, f"Python venv verification failed: {result.stderr}"
-
-    version = result.stdout.strip() if result.stdout else "unknown"
-    logger.info(f"✅ Python venv verified: {version}")
-
-    # Log git commit info for all git dependencies
-    if dependencies and dependencies.dependencies:
-        logger.info("")
-        logger.info("🔍 Git dependency commit info:")
-        _log_git_dependency_commits(client, workspace, dependencies)
-
-    # EXPERIMENTAL: Verify declared packages are importable
-    # TODO: Consider removing this if it causes false positives
-    if dependencies and dependencies.dependencies:
-        logger.info("🔍 Verifying installed packages are importable...")
-        for dep in dependencies.dependencies:
-            # Extract package name from dependency string
-            # Examples:
-            #   "rollouts @ git+..." -> "rollouts"
-            #   "torch>=2.0" -> "torch"
-            #   "python-dotenv>=1.0.0" -> "python-dotenv"
-            package_name = _extract_package_name(dep)
-
-            # Skip if we couldn't extract a valid name
-            if not package_name:
-                continue
-
-            # Python package names use underscores, but pip uses hyphens
-            # Try the hyphenated name first, then try with underscores
-            import_name = package_name.replace("-", "_")
-
-            import_cmd = f"{venv_python} -c 'import {import_name}'"
-            result = client.exec(import_cmd)
-
-            if result.exit_code != 0:
-                logger.warning(f"⚠️  Package '{package_name}' installed but import '{import_name}' failed")
-                logger.warning(f"   Error: {result.stderr.strip() if result.stderr else 'unknown'}")
-                # Don't assert - this is a soft check for now
-            else:
-                logger.debug(f"✅ {import_name} importable")
-
-
-def _extract_package_name(dep_string: str) -> str:
-    """Extract package name from dependency string.
-
-    Examples:
-        "rollouts @ git+https://..." -> "rollouts"
-        "torch>=2.0.0" -> "torch"
-        "python-dotenv>=1.0" -> "python-dotenv"
-
-    Returns:
-        Package name or empty string if can't parse
-    """
-    # Handle git URLs: "package @ git+..."
-    if " @ " in dep_string:
-        return dep_string.split(" @ ")[0].strip()
-
-    # Handle version specifiers: "package>=1.0"
-    for op in [">=", "<=", "==", "!=", ">", "<", "~="]:
-        if op in dep_string:
-            return dep_string.split(op)[0].strip()
-
-    # Plain package name
-    return dep_string.strip()
-
-
-def _is_git_dependency(dep_string: str) -> bool:
-    """Check if dependency string is a git dependency.
-
-    Examples:
-        "rollouts @ git+https://..." -> True
-        "torch>=2.0.0" -> False
-    """
-    return " @ git+" in dep_string
-
-
-def _get_git_commit_hash(client: "BifrostClient", workspace: str, package_name: str) -> str | None:
-    """Get the git commit hash for an installed package.
-
-    Args:
-        client: BifrostClient instance
-        workspace: Remote workspace path
-        package_name: Package name (e.g., "rollouts")
-
-    Returns:
-        Commit hash as string, or None if not found
-    """
-    venv_python = f"{workspace}/.venv/bin/python"
-
-    # Try to get package location
-    import_name = package_name.replace("-", "_")
-    location_cmd = f"{venv_python} -c \"import {import_name}, os; print(os.path.dirname({import_name}.__file__))\""
-    location_result = client.exec(location_cmd)
-
-    if location_result.exit_code != 0:
-        return None
-
-    package_path = location_result.stdout.strip()
-
-    # Try to extract commit hash from direct_url.json
-    # This is where uv stores git metadata
-    git_info_cmd = f"cat {package_path}/../{package_name}-*.dist-info/direct_url.json 2>/dev/null"
-    git_result = client.exec(git_info_cmd)
-
-    if git_result.exit_code == 0 and git_result.stdout:
-        import json
-        try:
-            # Parse the direct_url.json to extract commit hash
-            # Format: {"url": "git+https://...", "vcs_info": {"commit_id": "abc123", "vcs": "git"}}
-            data = json.loads(git_result.stdout)
-            if "vcs_info" in data and "commit_id" in data["vcs_info"]:
-                return data["vcs_info"]["commit_id"]
-        except:
-            pass
-
-    return None
-
-
-def _log_git_dependency_commits(
-    client: "BifrostClient",
-    workspace: str,
-    dependencies: "DependencyConfig",
-) -> None:
-    """Log git commit hashes for all git dependencies.
-
-    This helps debug issues where code changes aren't being picked up
-    because uv is using a cached/old commit.
-
-    Tiger Style: < 70 lines, explicit logging.
-    """
-    git_deps = [dep for dep in dependencies.dependencies if _is_git_dependency(dep)]
-
-    if not git_deps:
-        logger.info("   No git dependencies found")
-        return
-
-    for dep in git_deps:
-        package_name = _extract_package_name(dep)
-        commit_hash = _get_git_commit_hash(client, workspace, package_name)
-
-        if commit_hash:
-            # Show first 7 chars of commit hash (git short hash)
-            short_hash = commit_hash[:7]
-            logger.info(f"   • {package_name}: {short_hash} ({commit_hash})")
-        else:
-            logger.warning(f"   • {package_name}: ⚠️  Could not determine commit hash")
-            logger.warning(f"     This may indicate the package wasn't installed correctly")
-
-    logger.info("")
-    logger.info("💡 TIP: If you made code changes but they're not showing up:")
-    logger.info("   1. Make sure you committed AND pushed your changes")
-    logger.info("   2. Check the commit hashes above match your latest commits")
-    logger.info("   3. If hashes are stale, kerbal uses --upgrade which should fetch latest")
-    logger.info("")
-
-
-def _ensure_uv(client: "BifrostClient") -> None:
-    """Ensure uv is installed and available.
-
-    Checks if uv exists, installs if missing, ensures it's in PATH.
-    Tiger Style: < 70 lines, explicit steps.
-    """
-    # Check if uv is already available
-    result = client.exec("command -v uv")
-    if result.exit_code == 0:
-        logger.info("✅ uv already installed")
-        return
-
-    # Install uv via official installer
-    logger.info("📦 Installing uv...")
-    install_cmd = "curl -LsSf https://astral.sh/uv/install.sh | sh"
-    result = client.exec(install_cmd)
-
-    assert result.exit_code == 0, f"uv installation failed: {result.stderr}"
-    logger.info("✅ uv installed successfully")
