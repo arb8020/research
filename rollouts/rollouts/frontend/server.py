@@ -48,6 +48,10 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             # Extract trace ID from path like /api/trace/02_agent_multiturn_20231114_143022
             trace_id = path.split("/api/trace/")[1]
             self._get_trace(trace_id)
+        elif path.startswith("/api/load-config/"):
+            # Extract config name from path like /api/load-config/02_agent_multiturn
+            config_name = path.split("/api/load-config/")[1]
+            self._load_config(config_name)
         else:
             # Default behavior for other files
             super().do_GET()
@@ -164,6 +168,79 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
         self._json_response(trace_data)
 
+    def _load_config(self, config_name: str):
+        """Load and parse an existing config file."""
+        config_path = self.project_root / "configs" / f"{config_name}.py"
+
+        if not config_path.exists():
+            self.send_error(404, f"Config not found: {config_name}")
+            return
+
+        # Read the config file
+        config_source = config_path.read_text()
+
+        # Parse key settings from the config using simple regex/string matching
+        # This is intentionally simple - just extracting common patterns
+        import re
+
+        config_data = {
+            "name": config_name,
+            "source": config_source,
+        }
+
+        # Extract model name
+        model_match = re.search(r'model_name\s*[:=]\s*["\']([^"\']+)["\']', config_source)
+        if model_match:
+            config_data["model"] = model_match.group(1)
+
+        # Extract temperature
+        temp_match = re.search(r'temperature\s*[:=]\s*([0-9.]+)', config_source)
+        if temp_match:
+            config_data["temperature"] = float(temp_match.group(1))
+
+        # Extract system prompt (multiline string)
+        prompt_match = re.search(r'system_prompt\s*=\s*"""([^"]+)"""', config_source, re.DOTALL)
+        if prompt_match:
+            config_data["systemPrompt"] = prompt_match.group(1).strip()
+
+        # Extract max turns
+        turns_match = re.search(r'max_turns\s*[:=]\s*(\d+)', config_source)
+        if turns_match:
+            config_data["maxTurns"] = int(turns_match.group(1))
+
+        # Extract num samples
+        samples_match = re.search(r'num_samples\s*[:=]\s*(\d+)', config_source)
+        if samples_match:
+            config_data["numSamples"] = int(samples_match.group(1))
+
+        # Extract environment-specific fields (kernel env)
+        ssh_match = re.search(r'ssh_target\s*[:=]\s*["\']([^"\']+)["\']', config_source)
+        if ssh_match:
+            config_data["sshTarget"] = ssh_match.group(1)
+
+        gpu_match = re.search(r'gpu_id\s*[:=]\s*(\d+)', config_source)
+        if gpu_match:
+            config_data["gpuId"] = int(gpu_match.group(1))
+
+        dataset_match = re.search(r'dataset_path\s*[:=]\s*Path\(["\']([^"\']+)["\']\)', config_source)
+        if dataset_match:
+            config_data["datasetPath"] = dataset_match.group(1)
+
+        env_name_match = re.search(r'env_name\s*[:=]\s*["\']([^"\']+)["\']', config_source)
+        if env_name_match:
+            config_data["envName"] = env_name_match.group(1)
+
+        # Parse tools from get_tools() method
+        tools_section = re.search(r'def get_tools\(self\).*?return \[(.*?)\]', config_source, re.DOTALL)
+        if tools_section:
+            # This is a simplified parser - just check if it returns empty list or has tools
+            tools_content = tools_section.group(1).strip()
+            config_data["hasTools"] = len(tools_content) > 0 and "Tool(" in tools_content
+        else:
+            config_data["hasTools"] = False
+
+        self._json_response(config_data)
+
     def _generate_config(self):
         """Generate a new config file from JSON payload."""
         content_length = int(self.headers.get("Content-Length", 0))
@@ -194,6 +271,115 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         Returns:
             Python source code for config file
         """
+        # Check if we're building from a base config
+        base_name = data.get("baseName")
+
+        if base_name:
+            # Load base config and modify it
+            return self._build_from_base_config(data, base_name)
+        else:
+            # Build from scratch
+            return self._build_new_config(data)
+
+    def _build_from_base_config(self, data: dict[str, Any], base_name: str) -> str:
+        """Build config by copying and modifying base config."""
+        base_path = self.project_root / "configs" / f"{base_name}.py"
+
+        if not base_path.exists():
+            # Fallback to new config
+            return self._build_new_config(data)
+
+        # Read base config
+        config_source = base_path.read_text()
+
+        # Replace specific values
+        import re
+
+        # Update model if changed
+        if "model" in data:
+            config_source = re.sub(
+                r'(model_name\s*[:=]\s*)["\']([^"\']+)["\']',
+                f'\\1"{data["model"]}"',
+                config_source
+            )
+
+        # Update temperature if changed
+        if "temperature" in data:
+            config_source = re.sub(
+                r'(temperature\s*[:=]\s*)([0-9.]+)',
+                f'\\g<1>{data["temperature"]}',
+                config_source
+            )
+
+        # Update system prompt if changed
+        if "systemPrompt" in data:
+            prompt = data["systemPrompt"]
+            config_source = re.sub(
+                r'(system_prompt\s*=\s*""")([^"]+)(""")',
+                f'\\1{prompt}\\3',
+                config_source,
+                flags=re.DOTALL
+            )
+
+        # Update max turns if changed
+        if "maxTurns" in data:
+            config_source = re.sub(
+                r'(max_turns\s*[:=]\s*)(\d+)',
+                f'\\g<1>{data["maxTurns"]}',
+                config_source
+            )
+
+        # Update num samples if changed
+        if "numSamples" in data:
+            config_source = re.sub(
+                r'(num_samples\s*[:=]\s*)(\d+)',
+                f'\\g<1>{data["numSamples"]}',
+                config_source
+            )
+
+        # Update environment fields if present
+        env_fields = data.get("envFields", {})
+
+        if "sshTarget" in env_fields:
+            config_source = re.sub(
+                r'(ssh_target\s*[:=]\s*)["\']([^"\']+)["\']',
+                f'\\1"{env_fields["sshTarget"]}"',
+                config_source
+            )
+
+        if "gpuId" in env_fields:
+            config_source = re.sub(
+                r'(gpu_id\s*[:=]\s*)(\d+)',
+                f'\\g<1>{env_fields["gpuId"]}',
+                config_source
+            )
+
+        if "datasetPath" in env_fields:
+            config_source = re.sub(
+                r'(dataset_path\s*[:=]\s*Path\()["\']([^"\']+)(["\'])',
+                f'\\1"{env_fields["datasetPath"]}"\\3',
+                config_source
+            )
+
+        if "envName" in env_fields:
+            config_source = re.sub(
+                r'(env_name\s*[:=]\s*)["\']([^"\']+)["\']',
+                f'\\1"{env_fields["envName"]}"',
+                config_source
+            )
+
+        # Add generation comment at top
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        config_name = data.get("configName", "custom_config")
+        header = f'"""Agent configuration - {config_name}\n\nGenerated: {timestamp}\nBased on: {base_name}\n"""\n'
+
+        # Replace existing docstring or prepend
+        config_source = re.sub(r'^"""[^"]*"""\n', header, config_source)
+
+        return config_source
+
+    def _build_new_config(self, data: dict[str, Any]) -> str:
+        """Build a new config from scratch."""
         # Extract config params
         model_name = data.get("model", "gpt-4-turbo")
         system_prompt = data.get("systemPrompt", "You are an expert assistant.")

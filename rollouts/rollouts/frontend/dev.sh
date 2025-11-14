@@ -17,12 +17,23 @@ TS="$(date +%Y%m%d_%H%M%S)"
 SERVER_LOG="$LOG_DIR/devloop_${TS}.log"
 
 cleanup() {
-  echo "\n🛑 Stopping dev loop server..."
-  [[ -n "${SERVER_PID:-}" ]] && kill "$SERVER_PID" >/dev/null 2>&1 || true
-  wait >/dev/null 2>&1 || true
+  echo ""
+  echo "🛑 Stopping dev loop server..."
+
+  # Kill the entire process group
+  if [[ -n "${SERVER_PID:-}" ]]; then
+    kill -TERM -$SERVER_PID 2>/dev/null || true
+    sleep 0.5
+    kill -KILL -$SERVER_PID 2>/dev/null || true
+  fi
+
+  # Wait for background jobs to finish
+  wait 2>/dev/null || true
+
   echo "✅ Stopped."
+  exit 0
 }
-trap cleanup INT TERM
+trap cleanup INT TERM EXIT
 
 echo "🔧 Checking prerequisites..."
 
@@ -36,12 +47,16 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
-SERVER_CMD=(python3 "$SCRIPT_DIR/run.py" --project "$PROJECT_DIR" --port "$PORT")
+SERVER_CMD=(python3 "$SCRIPT_DIR/server.py" --project "$PROJECT_DIR" --port "$PORT")
 
 echo "🚀 Starting Agent Dev Loop Server on :$PORT"
 echo "   ↳ Project: $PROJECT_DIR"
 echo "   ↳ Logging to: $SERVER_LOG"
+
+# Run in new process group so we can kill entire tree
+set -m
 "${SERVER_CMD[@]}" 2>&1 | tee -a "$SERVER_LOG" | sed -e 's/^/[SERVER] /' & SERVER_PID=$!
+set +m
 
 sleep 2
 echo ""

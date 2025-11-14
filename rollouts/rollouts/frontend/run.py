@@ -15,7 +15,7 @@ from pathlib import Path
 rollouts_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(rollouts_root))
 
-from rollouts.frontend.server import main
-
+# Server doesn't need trio - it's standalone
 if __name__ == "__main__":
+    from rollouts.frontend.server import main
     main()

@@ -348,6 +348,15 @@
             <h1>Config Builder</h1>
 
             <section>
+                <label>Base Config</label>
+                <select id="base-config" onchange="loadBaseConfig()">
+                    <option value="">New config (from scratch)</option>
+                </select>
+            </section>
+
+            <h2>Model Settings</h2>
+
+            <section>
                 <label>Model</label>
                 <select id="model">
                     <option value="gpt-4-turbo">GPT-4 Turbo</option>
@@ -367,6 +376,12 @@
                 <textarea id="system-prompt" rows="8">You are an expert assistant. Think step by step and provide detailed explanations.</textarea>
             </section>
 
+            <h2>Environment Settings</h2>
+
+            <div id="env-fields">
+                <!-- Dynamically populated based on base config -->
+            </div>
+
             <h2>Evaluation Settings</h2>
 
             <section>
@@ -380,21 +395,23 @@
             </section>
 
             <h2>Tools</h2>
-            <section>
-                <div class="checkbox-group">
-                    <label class="checkbox-label">
-                        <input type="checkbox" id="tool-filesystem">
-                        Filesystem Access
-                    </label>
-                    <label class="checkbox-label">
-                        <input type="checkbox" id="tool-web">
-                        Web Search
-                    </label>
-                    <label class="checkbox-label">
-                        <input type="checkbox" id="tool-code-exec">
-                        Code Execution
-                    </label>
+            <section id="tools-section">
+                <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 12px;">
+                    Select a base config to see available tools, or add custom tools below.
+                </p>
+                <div id="tools-list">
+                    <!-- Tools will be populated here -->
                 </div>
+                <button onclick="addTool()" style="margin-top: 12px; background: var(--bg-secondary); color: var(--text); border: 1px solid var(--border);">
+                    + Add Tool
+                </button>
+            </section>
+
+            <h2>Save Config</h2>
+
+            <section>
+                <label>Config Name</label>
+                <input type="text" id="config-name" placeholder="03_my_experiment">
             </section>
 
             <div class="button-group">
@@ -423,17 +440,18 @@
     <script>
         // State machine - explicit state, no frameworks
         const state = {
+            availableConfigs: [],
+            baseConfig: null,
             config: {
+                baseName: '',
+                configName: '',
                 model: 'gpt-4-turbo',
                 temperature: 0.1,
                 systemPrompt: 'You are an expert assistant. Think step by step and provide detailed explanations.',
                 maxTurns: 5,
                 numSamples: 10,
-                tools: {
-                    filesystem: false,
-                    web: false,
-                    codeExec: false
-                }
+                envFields: {},
+                tools: []
             },
             traces: [],
             selectedTrace: null,
@@ -442,6 +460,7 @@
 
         // Initialize on page load
         async function init() {
+            loadConfigs();
             loadTraces();
 
             // Wire up input listeners
@@ -476,6 +495,164 @@
             document.getElementById('tool-code-exec').addEventListener('change', (e) => {
                 state.config.tools.codeExec = e.target.checked;
             });
+
+            document.getElementById('config-name').addEventListener('input', (e) => {
+                state.config.configName = e.target.value;
+            });
+        }
+
+        // Load available configs
+        async function loadConfigs() {
+            try {
+                const response = await fetch('/api/configs');
+                const configs = await response.json();
+
+                state.availableConfigs = configs;
+
+                // Populate dropdown
+                const select = document.getElementById('base-config');
+                configs.forEach(cfg => {
+                    const option = document.createElement('option');
+                    option.value = cfg.name;
+                    option.textContent = cfg.name;
+                    select.appendChild(option);
+                });
+            } catch (err) {
+                console.error('Failed to load configs:', err);
+            }
+        }
+
+        // Load a base config
+        async function loadBaseConfig() {
+            const configName = document.getElementById('base-config').value;
+
+            if (!configName) {
+                // Reset to defaults
+                state.baseConfig = null;
+                resetForm();
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/load-config/${configName}`);
+                const configData = await response.json();
+
+                state.baseConfig = configData;
+                state.config.baseName = configName;
+
+                // Populate form from loaded config
+                if (configData.model) {
+                    document.getElementById('model').value = configData.model;
+                    state.config.model = configData.model;
+                }
+                if (configData.temperature !== undefined) {
+                    document.getElementById('temperature').value = configData.temperature;
+                    state.config.temperature = configData.temperature;
+                }
+                if (configData.systemPrompt) {
+                    document.getElementById('system-prompt').value = configData.systemPrompt;
+                    state.config.systemPrompt = configData.systemPrompt;
+                }
+                if (configData.maxTurns) {
+                    document.getElementById('max-turns').value = configData.maxTurns;
+                    state.config.maxTurns = configData.maxTurns;
+                }
+                if (configData.numSamples) {
+                    document.getElementById('num-samples').value = configData.numSamples;
+                    state.config.numSamples = configData.numSamples;
+                }
+
+                // Populate environment fields
+                const envFields = {};
+                const envFieldsHTML = [];
+
+                if (configData.sshTarget) {
+                    envFields.sshTarget = configData.sshTarget;
+                    envFieldsHTML.push(`
+                        <section>
+                            <label>SSH Target</label>
+                            <input type="text" id="ssh-target" value="${configData.sshTarget}" oninput="state.config.envFields.sshTarget = this.value">
+                        </section>
+                    `);
+                }
+                if (configData.gpuId !== undefined) {
+                    envFields.gpuId = configData.gpuId;
+                    envFieldsHTML.push(`
+                        <section>
+                            <label>GPU ID</label>
+                            <input type="number" id="gpu-id" value="${configData.gpuId}" oninput="state.config.envFields.gpuId = parseInt(this.value)">
+                        </section>
+                    `);
+                }
+                if (configData.datasetPath) {
+                    envFields.datasetPath = configData.datasetPath;
+                    envFieldsHTML.push(`
+                        <section>
+                            <label>Dataset Path</label>
+                            <input type="text" id="dataset-path" value="${configData.datasetPath}" oninput="state.config.envFields.datasetPath = this.value">
+                        </section>
+                    `);
+                }
+                if (configData.envName) {
+                    envFields.envName = configData.envName;
+                    envFieldsHTML.push(`
+                        <section>
+                            <label>Environment Name</label>
+                            <input type="text" id="env-name" value="${configData.envName}" oninput="state.config.envFields.envName = this.value">
+                        </section>
+                    `);
+                }
+
+                state.config.envFields = envFields;
+                document.getElementById('env-fields').innerHTML = envFieldsHTML.join('');
+
+                // Show tool status
+                const toolsList = document.getElementById('tools-list');
+                if (configData.hasTools) {
+                    toolsList.innerHTML = '<p style="color: var(--success); font-size: 13px;">✓ Base config has tools defined. You can add more below or edit the generated config manually.</p>';
+                } else {
+                    toolsList.innerHTML = '<p style="color: var(--text-secondary); font-size: 13px;">Base config uses code block parsing (no explicit tools). Add tools below if needed.</p>';
+                }
+
+                // Suggest next config name
+                const match = configName.match(/^(\d+)_/);
+                if (match) {
+                    const nextNum = String(parseInt(match[1]) + 1).padStart(2, '0');
+                    document.getElementById('config-name').value = `${nextNum}_${configData.envName || 'custom'}`;
+                    state.config.configName = document.getElementById('config-name').value;
+                }
+
+            } catch (err) {
+                console.error('Failed to load config:', err);
+                alert('Failed to load config: ' + err.message);
+            }
+        }
+
+        function resetForm() {
+            document.getElementById('model').value = 'gpt-4-turbo';
+            document.getElementById('temperature').value = 0.1;
+            document.getElementById('system-prompt').value = 'You are an expert assistant. Think step by step and provide detailed explanations.';
+            document.getElementById('max-turns').value = 5;
+            document.getElementById('num-samples').value = 10;
+            document.getElementById('env-fields').innerHTML = '';
+            document.getElementById('tools-list').innerHTML = '';
+            document.getElementById('config-name').value = '';
+
+            state.config = {
+                baseName: '',
+                configName: '',
+                model: 'gpt-4-turbo',
+                temperature: 0.1,
+                systemPrompt: 'You are an expert assistant. Think step by step and provide detailed explanations.',
+                maxTurns: 5,
+                numSamples: 10,
+                envFields: {},
+                tools: []
+            };
+        }
+
+        function addTool() {
+            alert('Tool builder UI coming soon! For now, generate a config and add tools manually in get_tools() method.');
         }
 
         // Load available traces
@@ -627,7 +804,7 @@
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = getNextConfigName();
+                a.download = (state.config.configName || getNextConfigName()) + '.py';
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
