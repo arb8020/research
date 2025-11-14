@@ -533,6 +533,100 @@
             padding: 4px 8px;
             font-size: 12px;
         }
+
+        /* Results list */
+        .result-item {
+            border-bottom: 1px solid var(--border);
+            padding: 12px 16px;
+            cursor: pointer;
+            transition: background 0.15s ease;
+        }
+
+        .result-item:hover {
+            background: var(--bg-secondary);
+        }
+
+        .result-item.active {
+            background: var(--bg-secondary);
+            border-left: 3px solid var(--accent);
+            padding-left: 13px;
+        }
+
+        .result-config-name {
+            font-weight: 600;
+            font-size: 13px;
+            margin-bottom: 4px;
+        }
+
+        .result-timestamp {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-bottom: 4px;
+        }
+
+        .result-metrics {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        /* Trajectory viewer */
+        .trajectory {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        .trajectory-header {
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .trajectory-title {
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .trajectory-meta {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .message-block {
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            margin-bottom: 16px;
+            overflow: hidden;
+        }
+
+        .message-header {
+            padding: 12px 16px;
+            background: var(--bg-secondary);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .message-role {
+            font-weight: 600;
+            font-size: 13px;
+        }
+
+        .message-content {
+            padding: 16px;
+            font-size: 14px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto';
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .message-collapsed .message-content {
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -695,11 +789,10 @@
                     <div class="sidebar-title">Results</div>
                     <button class="sidebar-close" onclick="toggleResultsSidebar()">✕</button>
                 </div>
-                <div class="sidebar-content">
-                    <div class="placeholder-section">
-                        <h3>RECENT EVALUATIONS</h3>
-                        <p>Evaluation results list will go here</p>
-                    </div>
+                <div class="sidebar-content" id="results-content">
+                    <p style="color: var(--text-secondary); font-size: 13px; text-align: center; padding: 20px;">
+                        Loading results...
+                    </p>
                 </div>
             </div>
 
@@ -1164,6 +1257,108 @@
             }).join('');
         }
 
+        // Results management
+        async function loadResults() {
+            try {
+                const response = await fetch('/api/traces');
+                const results = await response.json();
+                state.results = results;
+                updateResultsList();
+            } catch (error) {
+                console.error('Failed to load results:', error);
+                document.getElementById('results-content').innerHTML =
+                    '<p style="color: var(--error); font-size: 13px; text-align: center; padding: 20px;">Failed to load results</p>';
+            }
+        }
+
+        function updateResultsList() {
+            const container = document.getElementById('results-content');
+
+            if (state.results.length === 0) {
+                container.innerHTML = '<p style="color: var(--text-secondary); font-size: 13px; text-align: center; padding: 20px;">No results yet</p>';
+                return;
+            }
+
+            container.innerHTML = state.results.map(result => {
+                const date = new Date(result.timestamp * 1000);
+                const dateStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+                const isActive = state.selectedResultId === result.id;
+
+                return `
+                    <div class="result-item ${isActive ? 'active' : ''}" onclick="viewResult('${result.id}')">
+                        <div class="result-config-name">${result.name}</div>
+                        <div class="result-timestamp">${dateStr}</div>
+                        <div class="result-metrics">Mean: ${result.mean_reward.toFixed(2)} | Samples: ${result.total_samples}</div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        async function viewResult(resultId) {
+            state.selectedResultId = resultId;
+            state.ui.mainPaneMode = 'trajectory-view';
+            updateResultsList();
+
+            // Load trajectory data
+            try {
+                const response = await fetch(`/api/trace/${resultId}`);
+                const trace = await response.json();
+                displayTrajectory(trace);
+            } catch (error) {
+                console.error('Failed to load trajectory:', error);
+                const mainPane = document.querySelector('.main-pane-content');
+                mainPane.innerHTML = '<div class="empty-state"><h2>Error</h2><p>Failed to load trajectory</p></div>';
+            }
+        }
+
+        function displayTrajectory(trace) {
+            const mainPane = document.querySelector('.main-pane-content');
+
+            // Simple trajectory display - just show the messages
+            const samples = trace.samples || [];
+            if (samples.length === 0) {
+                mainPane.innerHTML = '<div class="empty-state"><h2>No Samples</h2><p>This trace has no samples</p></div>';
+                return;
+            }
+
+            let html = `
+                <div class="trajectory">
+                    <div class="trajectory-header">
+                        <div class="trajectory-title">${trace.name || 'Trajectory'}</div>
+                        <div class="trajectory-meta">
+                            Samples: ${trace.total_samples || samples.length} |
+                            Mean Reward: ${trace.mean_reward?.toFixed(2) || 'N/A'}
+                        </div>
+                    </div>
+            `;
+
+            // Display first sample's messages
+            const sample = samples[0];
+            const messages = sample.messages || sample.trajectory || [];
+
+            messages.forEach((msg, idx) => {
+                const role = msg.role || 'unknown';
+                const content = msg.content || '';
+                html += `
+                    <div class="message-block" id="msg-${idx}">
+                        <div class="message-header" onclick="toggleMessage(${idx})">
+                            <div class="message-role">${role}</div>
+                            <div>▼</div>
+                        </div>
+                        <div class="message-content">${content}</div>
+                    </div>
+                `;
+            });
+
+            html += '</div>';
+            mainPane.innerHTML = html;
+        }
+
+        function toggleMessage(idx) {
+            const block = document.getElementById(`msg-${idx}`);
+            block.classList.toggle('message-collapsed');
+        }
+
         // Launch agent
         function launchAgent() {
             alert('Launch functionality will be implemented in Phase 5');
@@ -1172,7 +1367,10 @@
         // Initialize
         async function init() {
             updateUI();
-            await loadAvailableConfigs();
+            await Promise.all([
+                loadAvailableConfigs(),
+                loadResults()
+            ]);
 
             // Set up input listeners
             document.getElementById('start-idx').addEventListener('input', updateRangeLabels);
