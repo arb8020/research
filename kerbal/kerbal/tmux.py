@@ -112,12 +112,18 @@ def start_tmux_session(
         # - -f: flush output immediately (prevents buffering issues)
         # This ensures fast-exiting processes don't lose output
         # Note: util-linux script doesn't have -q flag, uses 'Script started' message
+
+        # Escape single quotes in full_command for shell safety
+        # We're wrapping in single quotes, so we need to escape any single quotes
+        # by ending the quote, adding escaped quote, and starting new quote: '\''
+        escaped_command = full_command.replace("'", "'\\''")
+
         if capture_exit_code:
             # Full capture with exit code marker
-            tmux_cmd += f" 'script -efc \"{full_command}\" {log_file}; echo EXIT_CODE: $? >> {log_file}'"
+            tmux_cmd += f" 'script -efc \"{escaped_command}\" {log_file}; echo EXIT_CODE: $? >> {log_file}'"
         else:
             # Casey: Granularity - can run without exit code marker
-            tmux_cmd += f" 'script -efc \"{full_command}\" {log_file}'"
+            tmux_cmd += f" 'script -efc \"{escaped_command}\" {log_file}'"
     else:
         tmux_cmd += f" '{full_command}'"
 
