@@ -250,7 +250,7 @@ build-backend = "setuptools.build_meta"
 
     # Write pyproject.toml
     write_cmd = f"cat > {workspace}/pyproject.toml << 'EOF'\n{pyproject_toml}\nEOF"
-    result = client.exec(write_cmd, timeout=timeout_sec)
+    result = client.exec(write_cmd)
     assert result.exit_code == 0, f"Failed to write pyproject.toml: {result.stderr}"
 
     # Create venv with uv
@@ -259,7 +259,7 @@ build-backend = "setuptools.build_meta"
     cd {workspace}
     uv venv {venv_full_path}
     """
-    result = client.exec(cmd, timeout=timeout_sec)
+    result = client.exec(cmd)
     assert result.exit_code == 0, f"venv creation failed: {result.stderr}"
 
     logger.info(f"✅ Virtual environment created at {venv_full_path}")
@@ -333,7 +333,7 @@ def _install_git_packages(
         # Try standard install first
         packages = f'"{pkg_url}"'
         cmd = f"{venv_full_path}/bin/pip install {packages}"
-        result = client.exec(cmd, timeout=timeout_sec)
+        result = client.exec(cmd)
 
         if result.exit_code == 0:
             logger.info(f"   ✅ Installed successfully")
@@ -342,7 +342,7 @@ def _install_git_packages(
         # If failed, try with --no-deps (works around URL dependency issues)
         logger.warning(f"   Standard install failed, trying --no-deps...")
         cmd = f"{venv_full_path}/bin/pip install --no-deps {packages}"
-        result = client.exec(cmd, timeout=timeout_sec)
+        result = client.exec(cmd)
 
         assert result.exit_code == 0, (
             f"Git package install failed: {pkg_url}\n"

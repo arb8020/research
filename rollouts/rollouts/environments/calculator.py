@@ -4,7 +4,7 @@ import trio
 
 from ..dtypes import (
     Tool, ToolFunction, ToolFunctionParameter,
-    ToolCall, ToolResult, StopReason, AgentState, RunConfig, Environment
+    ToolCall, ToolResult, StopReason, AgentState, RunConfig, Environment, Message
 )
 
 @dataclass
@@ -103,8 +103,12 @@ class CalculatorEnvironment:
         ]
     
     def requires_confirmation(self, tool_call: ToolCall) -> bool:
-        # e.g. only confirm “divide” calls:
+        # e.g. only confirm "divide" calls:
         return tool_call.name == "divide"
+
+    async def on_assistant_message(self, message: Message, state: AgentState) -> AgentState:
+        """No feedback needed for calculator environment."""
+        return state
 
     async def exec_tool(self, tool_call: ToolCall, current_state: 'AgentState',
                        run_config: 'RunConfig', checkpoint_store = None) -> ToolResult:

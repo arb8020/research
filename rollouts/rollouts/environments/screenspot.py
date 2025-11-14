@@ -6,7 +6,7 @@ Reward computation happens in evaluation script after generation.
 
 import re
 from typing import List, Optional
-from rollouts.dtypes import Tool
+from rollouts.dtypes import Tool, ToolCall, ToolResult, Message, AgentState
 
 
 class ScreenSpotEnvironment:
@@ -29,6 +29,22 @@ class ScreenSpotEnvironment:
             Empty list
         """
         return []
+
+    def requires_confirmation(self, tool_call: ToolCall) -> bool:
+        """No tools, so no confirmation needed."""
+        return False
+
+    async def on_assistant_message(self, message: Message, state: AgentState) -> AgentState:
+        """No feedback needed for ScreenSpot environment."""
+        return state
+
+    async def exec_tool(self, tool_call: ToolCall, current_state: AgentState, run_config, checkpoint_store=None) -> ToolResult:
+        """No tools available in ScreenSpot environment."""
+        return ToolResult(
+            call_id=tool_call.id,
+            ok=False,
+            error="No tools available in ScreenSpot environment"
+        )
 
     @staticmethod
     def extract_bbox(text: str) -> Optional[List[float]]:

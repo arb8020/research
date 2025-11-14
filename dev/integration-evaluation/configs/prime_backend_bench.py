@@ -40,7 +40,7 @@ class IntegrationEvalConfig:
     """Configuration for backend-bench evaluation."""
 
     # Hardware target (for remote deployment)
-    gpu_ranks: list[int] = field(default_factory=lambda: [4])  # Which GPUs to use on remote node
+    gpu_ranks: list[int] = field(default_factory=lambda: [5])  # Which GPUs to use on remote node
     device_type: str = "cuda"  # cuda|cpu
 
     # Model configuration
