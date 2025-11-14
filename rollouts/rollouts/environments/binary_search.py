@@ -57,6 +57,10 @@ class BinarySearchEnvironment(Environment):
     
     def requires_confirmation(self, tool_call: ToolCall) -> bool: return False
 
+    async def on_assistant_message(self, message: Message, state: AgentState) -> AgentState:
+        """No feedback needed for binary search environment."""
+        return state
+
     async def exec_tool(self, tool_call: ToolCall) -> ToolResult:
         try:
             if tool_call.name == "guess_answer":

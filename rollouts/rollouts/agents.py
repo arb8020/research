@@ -210,10 +210,7 @@ async def rollout(actor: Actor, on_chunk: Callable[[StreamChunk], Awaitable[None
     elif provider == "anthropic":
         new_actor = await rollout_anthropic(actor, on_chunk, user_message_for_thinking, turn_idx, inline_thinking)
     else:
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.error(f"Invalid provider {actor.endpoint.provider}")
-        sys.exit(1)
+        assert False, f"Invalid provider {actor.endpoint.provider}. Must be one of: openai, sglang, vllm, anthropic"
     return new_actor
 
 async def run_agent_step(state: AgentState, rcfg: RunConfig) -> AgentState:
@@ -258,13 +255,10 @@ async def run_agent_step(state: AgentState, rcfg: RunConfig) -> AgentState:
     # Let environment respond to assistant message (e.g., execute code, provide feedback)
     # This happens AFTER updating state but BEFORE tool processing
     # Only call if we actually have an assistant message
-    if (state.environment and hasattr(state.environment, 'on_assistant_message')
-        and last_message and last_message.role == "assistant"):
+    if state.environment and last_message and last_message.role == "assistant":
         try:
             current_state = await state.environment.on_assistant_message(last_message, current_state)
         except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
             logger.error(f"❌ ENVIRONMENT RESPONSE FAILED: {e}")
             logger.error(f"   Environment type: {type(state.environment).__name__}")
             import traceback
