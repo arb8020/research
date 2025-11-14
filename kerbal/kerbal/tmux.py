@@ -24,6 +24,7 @@ def start_tmux_session(
     command: str,
     workspace: str | None = None,
     log_file: str | None = None,
+    capture_exit_code: bool = True,
     env_vars: dict[str, str] | None = None,
 ) -> tuple[str, str | None]:
     """Start a tmux session running a command.
@@ -31,12 +32,25 @@ def start_tmux_session(
     Casey: Granular operation - just start tmux, nothing else.
     Tiger Style: < 70 lines, tuple return for error.
 
+    Why use 'script' command for logging:
+    - Properly captures ALL terminal output (not just stdout/stderr)
+    - Guarantees output is flushed before process exit (via -f flag)
+    - Preserves actual exit code of command (via -e flag)
+    - Prevents log file from missing output on fast-exiting processes
+    - Pattern from production systems requiring reliable log capture
+
+    Why append exit code marker:
+    - Enables programmatic monitoring of job completion
+    - Works even when tmux session dies unexpectedly
+    - Pattern from clicker:170a21c for reliable exit detection
+
     Args:
         client: BifrostClient instance for SSH operations
         session_name: Tmux session name
         command: Command to run in tmux
         workspace: Working directory (optional)
-        log_file: Path to log file (optional, for capturing output with exit code)
+        log_file: Path to log file (optional, for capturing output)
+        capture_exit_code: Append "EXIT_CODE: N" marker to log (default: True)
         env_vars: Environment variables to export (e.g., {"HF_TOKEN": "...", "CUDA_VISIBLE_DEVICES": "0,1"})
 
     Returns:
@@ -55,9 +69,19 @@ def start_tmux_session(
         if err:
             print(f"Failed: {err}")
     """
+    # Tiger Style: Assert preconditions
     assert client is not None, "BifrostClient instance required"
     assert session_name, "session name required"
     assert command, "command required"
+    assert isinstance(session_name, str), "session_name must be string"
+    assert isinstance(command, str), "command must be string"
+    if workspace is not None:
+        assert isinstance(workspace, str), "workspace must be string"
+    if log_file is not None:
+        assert isinstance(log_file, str), "log_file must be string"
+    if env_vars is not None:
+        assert isinstance(env_vars, dict), "env_vars must be dict"
+    assert isinstance(capture_exit_code, bool), "capture_exit_code must be bool"
 
     logger.info(f"🚀 Starting tmux session: {session_name}")
 
@@ -80,9 +104,20 @@ def start_tmux_session(
     # Add the command to run (with env vars if specified)
     full_command = env_prefix + command
     if log_file:
-        # Capture output to log file with exit code marker
-        # Pattern from clicker:170a21c - enables exit code extraction
-        tmux_cmd += f" '{full_command} 2>&1 | tee {log_file}; echo EXIT_CODE: $? >> {log_file}'"
+        # Use 'script' command for reliable output capture
+        # Why script instead of tee:
+        # - script captures ALL terminal output (including terminal control codes)
+        # - -q: quiet mode (suppress "Script started/done" messages)
+        # - -e: return exit code of child process
+        # - -f: flush output immediately (prevents buffering issues)
+        # - -c: run command directly
+        # This ensures fast-exiting processes don't lose output
+        if capture_exit_code:
+            # Full capture with exit code marker
+            tmux_cmd += f" 'script -qefc \"{full_command}\" {log_file}; echo EXIT_CODE: $? >> {log_file}'"
+        else:
+            # Casey: Granularity - can run without exit code marker
+            tmux_cmd += f" 'script -qefc \"{full_command}\" {log_file}'"
     else:
         tmux_cmd += f" '{full_command}'"
 
