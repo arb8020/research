@@ -263,8 +263,7 @@ def _create_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> No
             capture_output=True,
             text=True
         )
-        if result.returncode != 0:
-            raise RuntimeError(f"Git bundle create failed: {result.stderr}")
+        assert result.returncode == 0, f"Git bundle create failed: {result.stderr}\n\nNot in a git repository. Run 'git init' first."
 
         logger.debug("Uploading bundle to remote...")
 
@@ -357,8 +356,7 @@ def _update_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> No
             capture_output=True,
             text=True
         )
-        if result.returncode != 0:
-            raise RuntimeError(f"Git bundle create failed: {result.stderr}")
+        assert result.returncode == 0, f"Git bundle create failed: {result.stderr}\n\nNot in a git repository. Run 'git init' first."
 
         logger.debug("Uploading bundle to remote...")
 
