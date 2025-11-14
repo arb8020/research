@@ -1,0 +1,68 @@
+Here’s everything I can read from the screenshots, in order.
+
+**Blue (you):**
+
+> chiraag from heathers phone r u busy rn
+
+**Grey:**
+
+> lmao
+
+**Blue (you):**
+
+> what other than docs/profile/code do u need to write a good kernel
+
+**Grey:**
+
+> 1. All docs
+> 2. refernece kernels or examples using things that I want (examples of things in docs)
+> 3. Architecture spec of the b200
+> 4. ncu, torch profiler
+> 5. Chatbot to aggregate everything
+> 6. There’s the notion of using spreadsheets to map out the gpu — I will see at what point I get there w/ this challenge
+
+*(small “Edited” tag under this message)*
+
+**Grey (next message):**
+
+> 7. A playground for my own set of code + kernels (ik this is covered by having a computer) but I’d like to explicitly like to have an easy way to try out shapes and ensure my eval isn’t getting cooked
+
+---
+
+**Blue (you, partially visible):**
+Visible part of this message:
+
+> also what does the kernel writing process
+> ex: lean proof sort of looks like writing an
+
+(There’s also a little preview later that shows:)
+
+> the kernel writing process look like?
+> ort of looks like writing an outline a...
+
+So full text isn’t completely visible in the screenshots; that’s all I can reliably see.
+
+---
+
+**Grey:**
+
+> Yeah. the flow is as follows:
+>
+> 0. Maintain a checklist of possible optimization opperoutunities from easiest to hardest (compiling this list rn for blackwell)
+> 1. Get naive functional working
+> 2. Go donw the checklist looking for what items are applicable
+> 3. Implement; check if worked, if so profile, proceed with next sensible optimization
+> 4. If not, proceed with next sensible optimization
+>
+> Important thing is that all things in this checklist shouldn’t be scratched off once they don’t work as they may Work in other places later (an ejexample is j applcaiton of shared memory)
+
+**Blue (you):**
+
+> like what structure exists in the problem of writing a kernel that we can take advantage of here that’s not just ‘rewrite from scratch’ every time
+
+**Grey:**
+
+> So the primary advantage is that there is some just set amount of optimizations that can consistently be tried to lead to perf gain (for majority kernels ).
+>
+> the tldr of why kernels is hard is because its a large search space of things to try and it often times has todo with complex memory management
+

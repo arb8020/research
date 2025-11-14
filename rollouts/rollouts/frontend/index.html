@@ -500,7 +500,10 @@
                         </div>
                         <div class="form-field">
                             <label class="form-label" for="config-name">Config Name</label>
-                            <input type="text" class="form-input" id="config-name" placeholder="my_experiment" />
+                            <div style="display: flex; gap: 8px; align-items: center;">
+                                <input type="text" class="form-input" id="config-prefix" readonly style="width: 60px; background: var(--bg-secondary);" value="03_" />
+                                <input type="text" class="form-input" id="config-name" placeholder="my_experiment" style="flex: 1;" />
+                            </div>
                         </div>
                     </div>
 
@@ -521,8 +524,8 @@
                             <input type="number" class="form-input" id="temperature" min="0" max="2" step="0.1" value="0.2" />
                         </div>
                         <div class="form-field">
-                            <label class="form-label" for="system-prompt">System Prompt</label>
-                            <textarea class="form-textarea" id="system-prompt" placeholder="You are a helpful assistant..."></textarea>
+                            <label class="form-label" for="prepare-messages">Prepare Messages Function</label>
+                            <textarea class="form-textarea" id="prepare-messages" placeholder="def prepare_messages(sample_data):&#10;    return [&#10;        Message(role='system', content='...'),&#10;        Message(role='user', content=sample_data['problem']),&#10;    ]" style="min-height: 200px; font-family: 'SF Mono', Monaco, monospace; font-size: 12px;"></textarea>
                         </div>
                     </div>
 
@@ -739,38 +742,77 @@
                 if (config.temperature !== undefined) {
                     document.getElementById('temperature').value = config.temperature;
                 }
-                if (config.system_prompt) {
-                    document.getElementById('system-prompt').value = config.system_prompt;
-                }
-                if (config.ssh_target) {
-                    document.getElementById('ssh-target').value = config.ssh_target;
-                }
-                if (config.gpu_id !== undefined) {
-                    document.getElementById('gpu-id').value = config.gpu_id;
-                }
-                if (config.dataset_path) {
-                    document.getElementById('dataset-path').value = config.dataset_path;
-                }
-                if (config.seed !== undefined) {
-                    document.getElementById('seed').value = config.seed;
-                }
-                if (config.start_idx !== undefined) {
-                    document.getElementById('start-idx').value = config.start_idx;
-                }
-                if (config.end_idx !== undefined) {
-                    document.getElementById('end-idx').value = config.end_idx;
-                    updateRangeLabels();
-                }
-                if (config.max_turns !== undefined) {
-                    document.getElementById('max-turns').value = config.max_turns;
+
+                // Use prepareMessages if available, otherwise fall back to systemPrompt
+                if (config.prepareMessages) {
+                    document.getElementById('prepare-messages').value = config.prepareMessages;
+                } else if (config.systemPrompt) {
+                    // Convert old system prompt to prepare_messages format
+                    const prepareMsg = `def prepare_messages(self, sample_data: Dict[str, Any]) -> List[Message]:
+    """Prepare initial messages."""
+    system_prompt = """${config.systemPrompt}"""
+
+    user_prompt = sample_data["problem_description"]
+
+    return [
+        Message(role="system", content=system_prompt),
+        Message(role="user", content=user_prompt),
+    ]`;
+                    document.getElementById('prepare-messages').value = prepareMsg;
                 }
 
-                // Suggest a new config name
-                const newName = configName.replace(/^\d+_/, (match) => {
-                    const num = parseInt(match);
-                    return String(num + 1).padStart(2, '0') + '_';
-                });
-                document.getElementById('config-name').value = newName || configName + '_custom';
+                // Populate environment settings
+                if (config.sshTarget) {
+                    document.getElementById('ssh-target').value = config.sshTarget;
+                }
+                if (config.gpuId !== undefined) {
+                    document.getElementById('gpu-id').value = config.gpuId;
+                }
+                if (config.datasetPath) {
+                    document.getElementById('dataset-path').value = config.datasetPath;
+                }
+
+                // Populate sampling settings
+                if (config.seed !== undefined) {
+                    document.getElementById('seed').value = config.seed;
+                } else {
+                    document.getElementById('seed').value = 42; // default
+                }
+
+                if (config.startIdx !== undefined) {
+                    document.getElementById('start-idx').value = config.startIdx;
+                } else {
+                    document.getElementById('start-idx').value = 0;
+                }
+
+                if (config.endIdx !== undefined) {
+                    document.getElementById('end-idx').value = config.endIdx;
+                } else if (config.numSamples !== undefined) {
+                    document.getElementById('end-idx').value = config.numSamples;
+                } else {
+                    document.getElementById('end-idx').value = 10;
+                }
+
+                updateRangeLabels();
+
+                if (config.maxTurns !== undefined) {
+                    document.getElementById('max-turns').value = config.maxTurns;
+                }
+
+                // Handle config name with prefix/suffix split
+                const prefixMatch = configName.match(/^(\d+_)/);
+                if (prefixMatch) {
+                    const prefix = prefixMatch[1];
+                    const num = parseInt(prefix);
+                    const newPrefix = String(num + 1).padStart(2, '0') + '_';
+                    const suffix = configName.substring(prefix.length);
+
+                    document.getElementById('config-prefix').value = newPrefix;
+                    document.getElementById('config-name').value = suffix;
+                } else {
+                    document.getElementById('config-prefix').value = '03_';
+                    document.getElementById('config-name').value = configName + '_custom';
+                }
 
             } catch (error) {
                 console.error('Failed to load config:', error);
@@ -823,14 +865,14 @@
             // Check required fields
             const configName = document.getElementById('config-name').value.trim();
             if (!configName) {
-                errors.push('Config name is required');
+                errors.push('Config name suffix is required');
             } else if (!/^[a-zA-Z0-9_]+$/.test(configName)) {
                 errors.push('Config name must contain only letters, numbers, and underscores');
             }
 
-            const systemPrompt = document.getElementById('system-prompt').value.trim();
-            if (!systemPrompt) {
-                errors.push('System prompt is required');
+            const prepareMessages = document.getElementById('prepare-messages').value.trim();
+            if (!prepareMessages) {
+                errors.push('Prepare messages function is required');
             }
 
             const startIdx = parseInt(document.getElementById('start-idx').value);
@@ -864,11 +906,16 @@
                 return;
             }
 
+            // Combine prefix + suffix for full config name
+            const prefix = document.getElementById('config-prefix').value;
+            const suffix = document.getElementById('config-name').value.trim();
+            const fullName = prefix + suffix;
+
             const config = {
-                name: document.getElementById('config-name').value.trim(),
+                name: fullName,
                 model: document.getElementById('model-select').value,
                 temperature: parseFloat(document.getElementById('temperature').value),
-                system_prompt: document.getElementById('system-prompt').value.trim(),
+                prepare_messages: document.getElementById('prepare-messages').value.trim(),
                 ssh_target: document.getElementById('ssh-target').value.trim(),
                 gpu_id: parseInt(document.getElementById('gpu-id').value),
                 dataset_path: document.getElementById('dataset-path').value.trim(),

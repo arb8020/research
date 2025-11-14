@@ -1,0 +1,187 @@
+=============================================================================
+AGENT ARCHITECTURE DECISION: WHERE SHOULD KERNEL-WRITING AGENT RUN?
+=============================================================================
+
+RECOMMENDATION: Local Agent + Bifrost Exec to Remote GPU
+============================================================
+
+QUICK ANSWER:
+- Agent writes kernels: Run LOCALLY or via API (Claude, local LLM)
+- Kernel testing: Run REMOTELY via bifrost.exec() on GPU
+- Profiling/results: Transfer back via bifrost.copy_files()
+
+WHY THIS WINS:
+✓ Agent doesn't need GPU (reasoning is CPU-bound)
+✓ GPU 100% utilized (only for actual kernel execution)
+✓ One agent can manage multiple GPUs
+✓ Works from laptops, CI servers, anywhere
+✓ Matches existing patterns (deploy.py, smoke_deploy.py)
+✓ Network latency negligible (500ms << 100-500ms test time)
+
+LATENCY COMPARISON (per iteration):
+Local Agent + Bifrost Exec:     0.5-3.5 seconds
+Agent on GPU:                   0.5-3.5 seconds (same!)
+  ↑ Network latency is NOT the bottleneck
+  ↑ Agent reasoning (LLM API) time dominates
+
+COST COMPARISON (per iteration on H100):
+Local Agent + Bifrost Exec:     ~0.001 GPU-hours = ~0.1 cents
+Agent on GPU:                   ~0.001 GPU-hours = ~0.1 cents
+  ↑ But agent sits idle for 0.5-1s thinking = WASTE
+  ↑ 30 iterations: ~$0.003 vs ~$0.009 (3x more expensive)
+
+COMPLEXITY:
+Local Agent + Bifrost:          Very Simple (matches deploy.py pattern)
+Agent on GPU:                   Complex (async, CUDA mgmt, memory issues)
+
+=============================================================================
+ARCHITECTURE DIAGRAM
+=============================================================================
+
+Recommended Architecture:
+
+    ┌─────────────────────────────────┐
+    │   Kernel-Writing Agent          │
+    │                                 │
+    │ 1. Generate code                │
+    │ 2. Write kernel_*.py locally    │
+    │ 3. Update smoke_test.py         │
+    └────────────────┬────────────────┘
+                     │
+                     ├─→ bifrost.exec(
+                     │   "python -m kernel_utils.smoke_test triton"
+                     │ )
+                     │
+                     ├─→ bifrost.copy_files(
+                     │   "remote_profiles/", "./local/"
+                     │ )
+                     │
+                     └─→ Get results, iterate
+    
+    ┌─────────────────────────────────┐
+    │   Remote GPU Node               │
+    │                                 │
+    │ • Kernel code synced via push() │
+    │ • smoke_test.py framework       │
+    │ • Profiling tools (ncu)         │
+    │ • GPU (H100, A100, etc.)        │
+    └─────────────────────────────────┘
+
+=============================================================================
+HOW BIFROST EXEC WORKS (Key Methods)
+=============================================================================
+
+1. Synchronous Execution (waits for result):
+   result = client.exec("python -m kernel_utils.smoke_test triton")
+   print(result.stdout)  # Get test results
+   print(result.stderr)  # Get errors
+   print(result.exit_code)  # Status code
+
+2. Streaming Execution (real-time output):
+   for line in client.exec_stream("python -m kernel_utils.smoke_test"):
+       print(line)  # See output as it arrives
+
+3. File Transfer:
+   client.push(workspace_path="~/.bifrost/workspaces/kernels")
+   client.copy_files("remote_path/", "local_path/", recursive=True)
+   client.upload_files("local_path/", "remote_path/", recursive=True)
+
+4. Detached Execution (fire and forget):
+   job = client.run_detached("python -m kernel_utils.smoke_test triton")
+   status = client.get_job_status(job.job_id)  # Check later
+
+=============================================================================
+CURRENT WORKFLOW (For Reference)
+=============================================================================
+
+Manual kernel development workflow:
+1. Write nvfp4_triton_kernel.py locally
+2. Register in smoke_test.py
+3. Run: python -m kernel_utils.smoke_test triton  (if you have GPU)
+4. Deploy: python smoke_deploy.py --ssh root@host:port --backends triton
+5. Test on remote GPU, get results back
+
+Automated agent workflow (recommended):
+1. Agent generates nvfp4_triton_kernel.py (locally, no GPU)
+2. Agent updates smoke_test.py (locally, no GPU)
+3. bifrost.push() deploys code to remote GPU
+4. bifrost.exec() runs smoke_test.py on remote GPU
+5. bifrost.copy_files() downloads profiles/results
+6. Agent reads results, iterates
+7. Loop back to step 1
+
+=============================================================================
+IMPLEMENTATION EXAMPLE
+=============================================================================
+
+from bifrost.client import BifrostClient
+from anthropic import Anthropic
+
+client = BifrostClient("root@gpu-host:22", "~/.ssh/id_ed25519")
+llm = Anthropic()
+
+# 1. Get baseline
+result = client.exec("python -m kernel_utils.smoke_test reference")
+baseline = parse_output(result.stdout)
+
+# 2. Agent thinks
+prompt = f"Optimize Triton kernel. Baseline: {baseline}. Generate code:"
+response = llm.messages.create(
+    model="claude-3-5-sonnet-20241022",
+    messages=[{"role": "user", "content": prompt}]
+)
+
+# 3. Write locally
+code = extract_code(response.content[0].text)
+with open("nvfp4_triton_kernel.py", "w") as f:
+    f.write(code)
+
+# 4. Deploy and test
+client.push(workspace_path="~/.bifrost/workspaces/kernel_opt")
+result = client.exec("python -m kernel_utils.smoke_test triton")
+new_perf = parse_output(result.stdout)
+
+# 5. Compare
+if new_perf.speedup > 1.0:
+    print(f"✅ Success! {new_perf.speedup:.2f}x speedup")
+else:
+    print(f"❌ No improvement, agent tries again...")
+
+=============================================================================
+KEY INSIGHT: Network Latency is NOT the Bottleneck
+=============================================================================
+
+Timing breakdown for one iteration:
+                                Local        Remote (Bifrost)
+Agent thinking (LLM API):      1-2 sec     1-2 sec (same!)
+File I/O:                      <1 ms       <1 ms local + 500ms SSH
+Kernel compilation:            100-500 ms  100-500 ms (same GPU!)
+Result parsing:                <1 ms       <1 ms
+SSH transfer overhead:         N/A         500 ms total roundtrip
+                              ─────────────────────────
+Total time:                    1.1-2.5 sec 1.6-3 sec (only 25% slower!)
+
+The 500ms network latency is negligible compared to agent reasoning time!
+
+Running agent ON GPU wastes GPU resources during thinking (0.5-1 sec idle).
+Running agent LOCAL means GPU idles zero time - much more cost efficient!
+
+=============================================================================
+KEY FILES TO REFERENCE
+=============================================================================
+
+Bifrost Client (how exec works):
+  /Users/chiraagbalu/research/bifrost/bifrost/client.py (lines 296-357)
+
+Kernel Testing Framework:
+  /Users/chiraagbalu/research/dev/kernels-gpumode/kernel_utils/smoke_test.py
+  /Users/chiraagbalu/research/dev/kernels-gpumode/HOW_TO_ADD_KERNELS.md
+
+Existing Deployment Patterns (follow this style):
+  /Users/chiraagbalu/research/dev/integration-evaluation/deploy.py (line 88+)
+  /Users/chiraagbalu/research/dev/kernels-gpumode/smoke_deploy.py (line 46+)
+
+Full Architecture Analysis:
+  /Users/chiraagbalu/research/dev/AGENT_ARCHITECTURE_DECISION.md
+
+=============================================================================

@@ -1,0 +1,369 @@
+================================================================================
+BACKEND-BENCH PROFILING UTILITIES SEARCH - COMPLETE SUMMARY
+================================================================================
+
+SEARCH OBJECTIVE:
+Find profiling utilities, capabilities, and instrumentation code in the 
+BackendBench package from meta-pytorch.
+
+LOCATION:
+/Users/chiraagbalu/research/.venv/lib/python3.13/site-packages/BackendBench/
+
+================================================================================
+KEY FINDINGS
+================================================================================
+
+1. CORE PROFILING MODULES IDENTIFIED:
+
+   a) eval.py (284 lines)
+      - cpu_bench(fn, num_runs=100) - Simple CPU benchmarking
+      - eval_performance(op, impl, tests) - Main performance evaluation
+      - eval_correctness(op, impl, tests) - Correctness testing
+      - eval_one_op() - Complete operation evaluation
+      - PerformanceTestResult - Tracks speedup, times, success status
+      - CorrectnessTestResult - Tracks correctness, errors, accuracy
+
+   b) utils.py (444 lines)
+      - cleanup_memory_and_gpu() - CUDA synchronization & memory management
+      - uses_cuda_stream() - Detects problematic CUDA streams
+      - compute_errors() - Calculates absolute/relative accuracy errors
+      - serialize_args() / deserialize_args() - Test case serialization
+
+   c) multiprocessing_eval.py (396 lines)
+      - MultiprocessingEvaluator - Parallel evaluation framework
+      - _worker_process() - Per-GPU worker implementation
+      - EvalTask / EvalResult - Data structures for parallel execution
+      - ProcessDeathSignal - Error recovery mechanism
+
+   d) backends/llm.py (660+ lines)
+      - LLMBackend - Kernel generation with performance testing
+      - test_kernel_performance() - Performance measurement method
+      - test_kernel_correctness() - Correctness verification method
+      - FeedbackInfo - Performance feedback container with metrics
+      - overall_speedup property - Geometric mean aggregation
+
+   e) output.py (150+ lines)
+      - _prepare_results_data() - Results aggregation
+      - Metrics: correctness_rate, avg_speedup, geomean_speedup, errors
+
+2. PROFILING CAPABILITIES:
+
+   GPU Benchmarking:
+   - Triton's do_bench() for accurate GPU kernel timing
+   - Automatic warm-up and synchronization
+   - Millisecond precision
+
+   CPU Benchmarking:
+   - time.perf_counter() based timing
+   - 10x warm-up, 100x measurement runs
+   - Fallback when GPU unavailable
+
+   CUDA Utilities:
+   - torch.cuda.synchronize() - GPU synchronization
+   - torch.cuda.empty_cache() - Memory cleanup
+   - CUDA stream detection
+   - Device placement management
+
+   Performance Metrics:
+   - Speedup = reference_time / kernel_time
+   - Geometric mean aggregation
+   - Per-test-case tracking
+   - Reference vs implementation comparison
+
+   Accuracy Metrics:
+   - Absolute error = max(|ref - result|)
+   - Relative error = max(|ref - result| / (|ref| + eps))
+   - Per-test-case tracking
+   - Handles tensors, lists, tuples
+
+   Multiprocess Features:
+   - One worker per GPU device
+   - Dead worker detection and restart
+   - CPU-GPU transfer optimization (prevents OOM)
+   - Per-process GPU memory management
+   - Exception handling and recovery
+
+   Feedback System:
+   - LLM-formatted performance feedback
+   - Compilation error detection
+   - Performance summaries
+   - Iterative improvement support
+
+   Results Analysis:
+   - Correctness rate calculation
+   - Average and geometric mean speedups
+   - Error tracking and aggregation
+   - CSV/JSON export support
+
+3. PYTHON PROFILER INTEGRATION:
+
+   - No direct PyTorch profiler integration
+   - No nvprof/nsys support
+   - No NVIDIA Tools Profiler integration
+   - Uses Triton's testing utilities instead
+   - Falls back to time.perf_counter for CPU
+
+4. CUDA PROFILING UTILITIES:
+
+   Memory Management:
+   - gc.collect() for Python object cleanup
+   - torch.cuda.synchronize() for GPU sync
+   - torch.cuda.empty_cache() for cache clearing
+   - Device affinity (torch.cuda.set_device())
+
+   Stream Handling:
+   - Detects torch.cuda.Stream() usage
+   - Detects cupy.cuda.Stream() usage
+   - Detects PyCUDA streams
+   - Skips kernels with streams for safety
+
+5. DOCUMENTATION & INSTRUMENTATION:
+
+   Available:
+   - README.md generation in kernel directories
+   - Feedback file outputs
+   - Kernel generation summaries (JSON)
+   - Operation-level summaries (TXT)
+   - Overall summary statistics
+
+   NOT Available:
+   - Low-level kernel timeline tracing
+   - Per-instruction analysis
+   - Memory bandwidth profiling
+   - Power/energy metrics
+   - Register usage analysis
+
+================================================================================
+DATA STRUCTURES
+================================================================================
+
+PerformanceTestResult:
+  - op_name: str
+  - args: str (serialized)
+  - speedup: float
+  - benchmark_time_ms: float
+  - reference_time_ms: float
+  - successfully_ran: bool
+  - error_msg: str
+
+CorrectnessTestResult:
+  - op_name: str
+  - args: str (serialized)
+  - is_correct: bool
+  - max_abs_error: float
+  - max_rel_error: float
+  - error_msg: str
+  - traceback: str
+
+FeedbackInfo:
+  - compilation_error: Optional[str]
+  - correctness_results: List[CorrectnessTestResult]
+  - performance_results: List[PerformanceTestResult]
+  - overall_speedup: float (geometric mean)
+  - correctness_score: float
+
+EvalResult:
+  - task_id: int
+  - correctness_score: float
+  - performance_score: float
+  - correctness_results: List[CorrectnessTestResult]
+  - performance_results: List[PerformanceTestResult]
+  - error: Optional[str]
+
+================================================================================
+BENCHMARKING METHODOLOGY
+================================================================================
+
+For each test case:
+  1. Warm-up: Run kernel 10 times (cache priming)
+  2. Measurement: Run 100 times with benchmark timer
+  3. Calculate: speedup = reference_time / kernel_time
+  4. Aggregate: Geometric mean across all test cases
+  5. Report: Success status, times, speedup, errors
+
+Benchmark Function Selection:
+  - Try: triton.testing.do_bench (if CUDA available)
+  - Fallback: time.perf_counter (CPU timing)
+
+Memory Management Between Tests:
+  - gc.collect()
+  - torch.cuda.synchronize()
+  - torch.cuda.empty_cache()
+
+================================================================================
+KEY METRICS
+================================================================================
+
+Speedup Calculation:
+  - Per test: speedup = ref_time / impl_time
+  - Aggregate: geomean = exp(mean(log(speedups)))
+
+Error Metrics:
+  - Absolute: max(|reference - result|)
+  - Relative: max(|ref - result| / (|ref| + eps))
+  - Epsilon: 1e-10 (prevents division by zero)
+
+Performance Scores:
+  - 1.0 = No improvement
+  - 2.0 = 2x faster
+  - 0.5 = 2x slower
+
+Correctness Scores:
+  - 1.0 = All tests pass
+  - 0.5 = 50% pass rate
+  - 0.0 = No tests pass
+
+================================================================================
+FILES CREATED
+================================================================================
+
+Three comprehensive documentation files have been created:
+
+1. BACKEND_BENCH_PROFILING_ANALYSIS.md (379 lines, 11 KB)
+   - 13-section deep technical analysis
+   - Complete module and function documentation
+   - Architecture and design patterns
+   - Performance measurement workflows
+   - Metrics calculation and aggregation
+
+2. BACKEND_BENCH_PROFILING_QUICK_REFERENCE.md (439 lines, 12 KB)
+   - Quick lookup guide for functions and classes
+   - Code examples for common use cases
+   - Data structure definitions
+   - Practical workflow implementations
+   - Troubleshooting common pitfalls
+   - Performance profiling checklist
+
+3. BACKEND_BENCH_PROFILING_INDEX.md (353 lines, 12 KB)
+   - Complete navigation guide
+   - Key findings summary
+   - Module structure and data flows
+   - Use case navigation
+   - Function reference table
+   - Installation and availability info
+
+Total: 1,171 lines of documentation across 35 KB
+
+All files located in: /Users/chiraagbalu/research/
+
+================================================================================
+WHAT IS AVAILABLE
+================================================================================
+
+PROFILING CAPABILITIES:
+✓ GPU benchmarking via Triton
+✓ CPU benchmarking via time.perf_counter
+✓ CUDA memory management (synchronize, cache clear)
+✓ Performance metrics (speedup, times)
+✓ Accuracy metrics (absolute/relative errors)
+✓ Multiprocess evaluation with GPU isolation
+✓ Dead worker detection and restart
+✓ Performance feedback system
+✓ Results aggregation and analysis
+✓ LLM-formatted feedback
+
+NOT INCLUDED:
+✗ PyTorch profiler integration
+✗ Low-level kernel timeline tracing
+✗ nvprof/nsys support
+✗ Per-instruction analysis
+✗ Memory bandwidth profiling
+✗ Power/energy metrics
+✗ Register usage analysis
+
+================================================================================
+ARCHITECTURE SUMMARY
+================================================================================
+
+eval.py
+├─ cpu_bench() - CPU timing
+├─ eval_performance() - Kernel benchmark + speedup calculation
+├─ eval_correctness() - Numerical correctness testing
+├─ eval_one_op() - Complete op evaluation
+└─ Data classes: PerformanceTestResult, CorrectnessTestResult
+
+utils.py
+├─ cleanup_memory_and_gpu() - GPU resource cleanup
+├─ uses_cuda_stream() - Stream detection
+├─ compute_errors() - Error calculation
+└─ Serialization/deserialization utilities
+
+multiprocessing_eval.py
+├─ MultiprocessingEvaluator - Parallel eval orchestration
+├─ _worker_process() - Per-GPU worker
+├─ EvalTask/EvalResult - Data structures
+└─ ProcessDeathSignal - Error recovery
+
+backends/llm.py
+├─ LLMBackend - Kernel generation + profiling
+├─ test_kernel_performance() - Performance testing
+├─ test_kernel_correctness() - Correctness testing
+├─ FeedbackInfo - Performance feedback container
+└─ _kernel_feedback_loop() - Iterative improvement
+
+output.py
+├─ _prepare_results_data() - Results aggregation
+└─ Metrics calculation: correctness_rate, speedup, errors
+
+================================================================================
+USAGE PATTERNS
+================================================================================
+
+Single Kernel Benchmarking:
+  from BackendBench.eval import eval_performance
+  speedup, results = eval_performance(ref_op, custom_kernel, tests)
+
+Multiprocess Evaluation:
+  from BackendBench.multiprocessing_eval import MultiprocessingEvaluator
+  with MultiprocessingEvaluator(num_workers=4) as evaluator:
+      # submit tasks, start, get results
+
+LLM Kernel Generation + Profiling:
+  from BackendBench.backends.llm import LLMBackend
+  backend = LLMBackend(model, llm_client)
+  is_correct, feedback = backend.test_kernel_correctness(...)
+  performance_score, perf_results = backend.test_kernel_performance(...)
+
+Results Analysis:
+  from BackendBench.output import _prepare_results_data
+  all_results, failed, summaries = _prepare_results_data(corr, perf)
+
+================================================================================
+INSTALLATION INFO
+================================================================================
+
+Package: BackendBench
+Repository: https://github.com/meta-pytorch/BackendBench.git
+Commit: 7b159361816d66a6d3800abd845f8eb57488ce94
+Versions: backendbench 0.1.0, backend-bench 0.2.0
+
+Dependencies:
+- PyTorch with CUDA
+- Triton (optional, for GPU benchmarking)
+- NumPy, Arrow/Parquet (for data loading)
+
+================================================================================
+CONCLUSION
+================================================================================
+
+BackendBench provides a lightweight, focused profiling system specifically
+designed for evaluating custom CUDA/Triton kernels. It emphasizes:
+
+1. Accuracy: Geometric mean aggregation, statistical robustness
+2. Simplicity: End-to-end kernel timing without complex instrumentation
+3. Reliability: Multi-process isolation, error recovery, GPU management
+4. Integration: LLM-ready feedback for iterative kernel optimization
+5. Scalability: Per-GPU worker allocation
+
+It is complementary to (not a replacement for) low-level profilers like
+nvprof, nsys, or PyTorch profiler, focusing specifically on kernel-level
+performance measurement within the backend-bench framework.
+
+Comprehensive documentation has been generated covering:
+- Deep technical analysis (13 sections)
+- Quick reference with code examples (20+ examples)
+- Navigation guide for different use cases
+
+See: BACKEND_BENCH_PROFILING_*.md in /Users/chiraagbalu/research/
+
+================================================================================
