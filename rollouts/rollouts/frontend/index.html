@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Dev Loop</title>
+    <style>
+        /* Notion-like clean aesthetic */
+        :root {
+            --bg: #ffffff;
+            --bg-secondary: #f7f6f3;
+            --text: #37352f;
+            --text-secondary: #787774;
+            --border: #e3e2df;
+            --border-hover: #d3d1cb;
+            --accent: #2383e2;
+            --accent-hover: #1a6ec7;
+            --success: #0f7b6c;
+            --error: #eb5757;
+            --input-bg: #ffffff;
+            --sidebar-bg: #f7f6f3;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        /* Layout: Two column split with sidebar style */
+        .container {
+            display: grid;
+            grid-template-columns: 400px 1fr;
+            height: 100vh;
+        }
+
+        .panel {
+            overflow-y: auto;
+            padding: 32px;
+        }
+
+        .panel.sidebar {
+            background: var(--sidebar-bg);
+            border-right: 1px solid var(--border);
+        }
+
+        .panel.main {
+            background: var(--bg);
+        }
+
+        /* Headers */
+        h1 {
+            font-size: 24px;
+            font-weight: 600;
+            margin-bottom: 24px;
+            color: var(--text);
+        }
+
+        h2 {
+            font-size: 14px;
+            font-weight: 600;
+            margin-top: 24px;
+            margin-bottom: 12px;
+            color: var(--text);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-size: 11px;
+        }
+
+        /* Form elements */
+        section {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 6px;
+            color: var(--text-secondary);
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        input[type="text"],
+        input[type="number"],
+        select,
+        textarea {
+            width: 100%;
+            background: var(--input-bg);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 8px 12px;
+            font-family: inherit;
+            font-size: 14px;
+            border-radius: 4px;
+            transition: border-color 0.15s ease;
+        }
+
+        input:hover,
+        select:hover,
+        textarea:hover {
+            border-color: var(--border-hover);
+        }
+
+        input:focus,
+        select:focus,
+        textarea:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(35, 131, 226, 0.1);
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 120px;
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+            line-height: 1.5;
+        }
+
+        /* Checkboxes */
+        .checkbox-group {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .checkbox-label {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            cursor: pointer;
+            padding: 8px;
+            border-radius: 4px;
+            transition: background 0.15s ease;
+        }
+
+        .checkbox-label:hover {
+            background: rgba(0, 0, 0, 0.03);
+        }
+
+        input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+            border-radius: 3px;
+        }
+
+        /* Buttons */
+        button {
+            background: var(--accent);
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            font-family: inherit;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            border-radius: 6px;
+            transition: all 0.15s ease;
+        }
+
+        button:hover {
+            background: var(--accent-hover);
+        }
+
+        button:active {
+            transform: scale(0.98);
+        }
+
+        button:disabled {
+            background: var(--border);
+            color: var(--text-secondary);
+            cursor: not-allowed;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 8px;
+            margin-top: 24px;
+        }
+
+        /* Trace list */
+        .trace-list {
+            list-style: none;
+        }
+
+        .trace-item {
+            padding: 12px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            margin-bottom: 8px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            background: var(--bg);
+        }
+
+        .trace-item:hover {
+            border-color: var(--border-hover);
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04);
+        }
+
+        .trace-item.selected {
+            border-color: var(--accent);
+            background: rgba(35, 131, 226, 0.05);
+        }
+
+        .trace-item-header {
+            font-weight: 500;
+            margin-bottom: 6px;
+            color: var(--text);
+        }
+
+        .trace-item-meta {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        /* Messages */
+        .message {
+            padding: 16px;
+            border-radius: 8px;
+            margin-bottom: 12px;
+            border: 1px solid var(--border);
+            background: var(--bg);
+        }
+
+        .message.user {
+            border-left: 3px solid var(--accent);
+            background: rgba(35, 131, 226, 0.03);
+        }
+
+        .message.assistant {
+            border-left: 3px solid var(--success);
+            background: rgba(15, 123, 108, 0.03);
+        }
+
+        .message.system {
+            border-left: 3px solid var(--text-secondary);
+            background: var(--bg-secondary);
+        }
+
+        .message-role {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+            color: var(--text-secondary);
+        }
+
+        .message-content {
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        /* Empty state */
+        .empty-state {
+            color: var(--text-secondary);
+            text-align: center;
+            padding: 60px 20px;
+            font-size: 14px;
+        }
+
+        /* Status messages */
+        .status {
+            padding: 12px 16px;
+            margin-bottom: 12px;
+            border-radius: 6px;
+            font-size: 13px;
+        }
+
+        .status.success {
+            background: rgba(15, 123, 108, 0.1);
+            border: 1px solid var(--success);
+            color: var(--success);
+        }
+
+        .status.error {
+            background: rgba(235, 87, 87, 0.1);
+            border: 1px solid var(--error);
+            color: var(--error);
+        }
+
+        /* Scrollbar styling */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--border-hover);
+        }
+
+        /* Metrics summary */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+            margin-bottom: 24px;
+        }
+
+        .metric-card {
+            padding: 16px;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            border: 1px solid var(--border);
+        }
+
+        .metric-label {
+            font-size: 11px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 600;
+            margin-bottom: 6px;
+        }
+
+        .metric-value {
+            font-size: 24px;
+            font-weight: 600;
+            color: var(--text);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- CONFIG BUILDER -->
+        <div class="panel sidebar">
+            <h1>Config Builder</h1>
+
+            <section>
+                <label>Model</label>
+                <select id="model">
+                    <option value="gpt-4-turbo">GPT-4 Turbo</option>
+                    <option value="gpt-4.1-mini">GPT-4.1 Mini</option>
+                    <option value="claude-sonnet-4">Claude Sonnet 4</option>
+                    <option value="claude-opus-4">Claude Opus 4</option>
+                </select>
+            </section>
+
+            <section>
+                <label>Temperature</label>
+                <input type="number" id="temperature" value="0.1" min="0" max="2" step="0.1">
+            </section>
+
+            <section>
+                <label>System Prompt</label>
+                <textarea id="system-prompt" rows="8">You are an expert assistant. Think step by step and provide detailed explanations.</textarea>
+            </section>
+
+            <h2>Evaluation Settings</h2>
+
+            <section>
+                <label>Max Turns</label>
+                <input type="number" id="max-turns" value="5" min="1" max="50">
+            </section>
+
+            <section>
+                <label>Num Samples</label>
+                <input type="number" id="num-samples" value="10" min="1" max="1000">
+            </section>
+
+            <h2>Tools</h2>
+            <section>
+                <div class="checkbox-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="tool-filesystem">
+                        Filesystem Access
+                    </label>
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="tool-web">
+                        Web Search
+                    </label>
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="tool-code-exec">
+                        Code Execution
+                    </label>
+                </div>
+            </section>
+
+            <div class="button-group">
+                <button id="generate-btn" onclick="generateConfig()">Generate Config</button>
+            </div>
+
+            <div id="config-status"></div>
+        </div>
+
+        <!-- TRACE VIEWER -->
+        <div class="panel main">
+            <h1>Evaluation Results</h1>
+
+            <section>
+                <ul id="trace-list" class="trace-list">
+                    <li class="empty-state">Loading traces...</li>
+                </ul>
+            </section>
+
+            <div id="trace-details">
+                <div class="empty-state">Select an evaluation to view details</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // State machine - explicit state, no frameworks
+        const state = {
+            config: {
+                model: 'gpt-4-turbo',
+                temperature: 0.1,
+                systemPrompt: 'You are an expert assistant. Think step by step and provide detailed explanations.',
+                maxTurns: 5,
+                numSamples: 10,
+                tools: {
+                    filesystem: false,
+                    web: false,
+                    codeExec: false
+                }
+            },
+            traces: [],
+            selectedTrace: null,
+            currentTraceData: null
+        };
+
+        // Initialize on page load
+        async function init() {
+            loadTraces();
+
+            // Wire up input listeners
+            document.getElementById('model').addEventListener('change', (e) => {
+                state.config.model = e.target.value;
+            });
+
+            document.getElementById('temperature').addEventListener('change', (e) => {
+                state.config.temperature = parseFloat(e.target.value);
+            });
+
+            document.getElementById('system-prompt').addEventListener('input', (e) => {
+                state.config.systemPrompt = e.target.value;
+            });
+
+            document.getElementById('max-turns').addEventListener('change', (e) => {
+                state.config.maxTurns = parseInt(e.target.value);
+            });
+
+            document.getElementById('num-samples').addEventListener('change', (e) => {
+                state.config.numSamples = parseInt(e.target.value);
+            });
+
+            document.getElementById('tool-filesystem').addEventListener('change', (e) => {
+                state.config.tools.filesystem = e.target.checked;
+            });
+
+            document.getElementById('tool-web').addEventListener('change', (e) => {
+                state.config.tools.web = e.target.checked;
+            });
+
+            document.getElementById('tool-code-exec').addEventListener('change', (e) => {
+                state.config.tools.codeExec = e.target.checked;
+            });
+        }
+
+        // Load available traces
+        async function loadTraces() {
+            try {
+                const response = await fetch('/api/traces');
+                const traces = await response.json();
+
+                state.traces = traces;
+                renderTraceList();
+            } catch (err) {
+                console.error('Failed to load traces:', err);
+                document.getElementById('trace-list').innerHTML =
+                    '<li class="empty-state">Failed to load traces</li>';
+            }
+        }
+
+        // Render trace list
+        function renderTraceList() {
+            const traceList = document.getElementById('trace-list');
+
+            if (state.traces.length === 0) {
+                traceList.innerHTML = '<li class="empty-state">No traces found</li>';
+                return;
+            }
+
+            traceList.innerHTML = state.traces.map(trace => `
+                <li class="trace-item ${state.selectedTrace === trace.id ? 'selected' : ''}"
+                    onclick="selectTrace('${trace.id}')">
+                    <div class="trace-item-header">${trace.name}</div>
+                    <div class="trace-item-meta">
+                        Samples: ${trace.total_samples} |
+                        Mean Reward: ${trace.mean_reward.toFixed(3)} |
+                        ${new Date(trace.timestamp * 1000).toLocaleString()}
+                    </div>
+                </li>
+            `).join('');
+        }
+
+        // Select and load a trace
+        async function selectTrace(traceId) {
+            state.selectedTrace = traceId;
+            renderTraceList();
+
+            try {
+                const response = await fetch(`/api/trace/${traceId}`);
+                const traceData = await response.json();
+
+                state.currentTraceData = traceData;
+                renderTraceDetails();
+            } catch (err) {
+                console.error('Failed to load trace:', err);
+                document.getElementById('trace-details').innerHTML =
+                    '<div class="status error">Failed to load trace details</div>';
+            }
+        }
+
+        // Render trace details
+        function renderTraceDetails() {
+            const details = document.getElementById('trace-details');
+            const data = state.currentTraceData;
+
+            if (!data) {
+                details.innerHTML = '<div class="empty-state">Select an evaluation to view details</div>';
+                return;
+            }
+
+            const report = data.report;
+            const trajectories = data.trajectories || [];
+
+            // Metric cards
+            let html = '<h2>Summary Metrics</h2>';
+            html += '<div class="metrics-grid">';
+            html += `
+                <div class="metric-card">
+                    <div class="metric-label">Total Samples</div>
+                    <div class="metric-value">${report.total_samples}</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Mean Reward</div>
+                    <div class="metric-value">${report.summary_metrics.mean_reward.toFixed(3)}</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Min Reward</div>
+                    <div class="metric-value">${report.summary_metrics.min_reward.toFixed(3)}</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">Max Reward</div>
+                    <div class="metric-value">${report.summary_metrics.max_reward.toFixed(3)}</div>
+                </div>
+            `;
+            html += '</div>';
+
+            html += '<h2>Conversation</h2>';
+
+            if (trajectories.length === 0) {
+                html += '<div class="empty-state">No trajectory details available</div>';
+            } else {
+                // Show first trajectory as example
+                const traj = trajectories[0];
+                html += '<section>';
+
+                if (traj.messages) {
+                    traj.messages.forEach(msg => {
+                        html += `
+                            <div class="message ${msg.role}">
+                                <div class="message-role">${msg.role}</div>
+                                <div class="message-content">${escapeHtml(msg.content || '')}</div>
+                            </div>
+                        `;
+                    });
+                }
+
+                html += '</section>';
+
+                if (trajectories.length > 1) {
+                    html += `<div style="margin-top: 12px; padding: 12px; background: var(--bg-secondary); border-radius: 6px; text-align: center; color: var(--text-secondary); font-size: 13px;">+ ${trajectories.length - 1} more sample${trajectories.length > 2 ? 's' : ''}</div>`;
+                }
+            }
+
+            details.innerHTML = html;
+        }
+
+        // Generate config file
+        async function generateConfig() {
+            const btn = document.getElementById('generate-btn');
+            const status = document.getElementById('config-status');
+
+            btn.disabled = true;
+            status.innerHTML = '<div class="status">Generating config...</div>';
+
+            try {
+                const response = await fetch('/api/generate', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(state.config)
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Server error: ${response.status}`);
+                }
+
+                const configText = await response.text();
+
+                // Download file
+                const blob = new Blob([configText], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = getNextConfigName();
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+
+                status.innerHTML = '<div class="status success">✓ Config downloaded!</div>';
+
+                setTimeout(() => {
+                    status.innerHTML = '';
+                }, 3000);
+
+            } catch (err) {
+                console.error('Failed to generate config:', err);
+                status.innerHTML = '<div class="status error">✗ Failed to generate config</div>';
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        // Get next config filename
+        function getNextConfigName() {
+            const timestamp = new Date().toISOString().replace(/[-:]/g, '').split('.')[0];
+            return `config_${timestamp}.py`;
+        }
+
+        // Escape HTML for safe rendering
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Start the app
+        init();
+    </script>
+</body>
+</html>

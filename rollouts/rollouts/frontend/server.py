@@ -1,0 +1,373 @@
+#!/usr/bin/env python3
+"""HTTP server for agent dev loop tool.
+
+Provides:
+- Static file serving (index.html)
+- Config generation API
+- Trace viewing API
+
+Usage:
+    python -m rollouts.frontend.server
+    python -m rollouts.frontend.server --port 8080
+    python -m rollouts.frontend.server --project ~/wafer_stuff/kernels-gpumode-agent
+"""
+import argparse
+import json
+import webbrowser
+from datetime import datetime
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, urlparse
+
+
+class DevLoopServer(SimpleHTTPRequestHandler):
+    """HTTP server for agent dev loop tool.
+
+    Serves static files and provides API endpoints for:
+    - /api/configs - List available configs
+    - /api/traces - List/load evaluation traces
+    - /api/generate - Generate new config files
+    """
+
+    # Class variable to store project root (set by main())
+    project_root: Path = Path.cwd()
+
+    def do_GET(self):
+        """Handle GET requests."""
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        if path == "/" or path == "/index.html":
+            self._serve_index()
+        elif path == "/api/configs":
+            self._list_configs()
+        elif path == "/api/traces":
+            self._list_traces()
+        elif path.startswith("/api/trace/"):
+            # Extract trace ID from path like /api/trace/02_agent_multiturn_20231114_143022
+            trace_id = path.split("/api/trace/")[1]
+            self._get_trace(trace_id)
+        else:
+            # Default behavior for other files
+            super().do_GET()
+
+    def do_POST(self):
+        """Handle POST requests."""
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        if path == "/api/generate":
+            self._generate_config()
+        else:
+            self.send_error(404, "Not found")
+
+    def _serve_index(self):
+        """Serve the main HTML file."""
+        index_path = Path(__file__).parent / "index.html"
+
+        if not index_path.exists():
+            self.send_error(404, "index.html not found")
+            return
+
+        content = index_path.read_bytes()
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(content)))
+        self.end_headers()
+        self.wfile.write(content)
+
+    def _list_configs(self):
+        """List available config files in project."""
+        configs_dir = self.project_root / "configs"
+
+        if not configs_dir.exists():
+            self._json_response([])
+            return
+
+        configs = []
+        for config_file in sorted(configs_dir.glob("*.py")):
+            # Skip __init__.py and other special files
+            if config_file.stem.startswith("_"):
+                continue
+
+            configs.append({
+                "name": config_file.stem,
+                "path": str(config_file.relative_to(self.project_root)),
+                "modified": config_file.stat().st_mtime,
+            })
+
+        self._json_response(configs)
+
+    def _list_traces(self):
+        """List available evaluation traces in results/."""
+        results_dir = self.project_root / "results"
+
+        if not results_dir.exists():
+            self._json_response([])
+            return
+
+        traces = []
+        for trace_dir in sorted(results_dir.iterdir(), reverse=True):
+            if not trace_dir.is_dir():
+                continue
+
+            # Check if it has a report.json (indicates it's a valid trace)
+            report_path = trace_dir / "report.json"
+            if not report_path.exists():
+                continue
+
+            # Load report to get summary info
+            report = json.loads(report_path.read_text())
+
+            traces.append({
+                "id": trace_dir.name,
+                "name": trace_dir.name,
+                "timestamp": trace_dir.stat().st_mtime,
+                "total_samples": report.get("total_samples", 0),
+                "mean_reward": report.get("summary_metrics", {}).get("mean_reward", 0),
+            })
+
+        self._json_response(traces)
+
+    def _get_trace(self, trace_id: str):
+        """Load a specific evaluation trace."""
+        trace_dir = self.project_root / "results" / trace_id
+
+        if not trace_dir.exists():
+            self.send_error(404, f"Trace not found: {trace_id}")
+            return
+
+        report_path = trace_dir / "report.json"
+        if not report_path.exists():
+            self.send_error(404, f"No report.json in trace: {trace_id}")
+            return
+
+        # Load report
+        report = json.loads(report_path.read_text())
+
+        # Load trajectories (if they exist)
+        trajectories_dir = trace_dir / "trajectories"
+        trajectories = []
+
+        if trajectories_dir.exists():
+            for traj_file in sorted(trajectories_dir.glob("*.json")):
+                traj_data = json.loads(traj_file.read_text())
+                trajectories.append(traj_data)
+
+        trace_data = {
+            "id": trace_id,
+            "report": report,
+            "trajectories": trajectories,
+        }
+
+        self._json_response(trace_data)
+
+    def _generate_config(self):
+        """Generate a new config file from JSON payload."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+
+        try:
+            config_data = json.loads(body)
+        except json.JSONDecodeError as e:
+            self.send_error(400, f"Invalid JSON: {e}")
+            return
+
+        # Generate config file content
+        config_text = self._build_config_file(config_data)
+
+        # Return as text
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(config_text)))
+        self.end_headers()
+        self.wfile.write(config_text.encode("utf-8"))
+
+    def _build_config_file(self, data: dict[str, Any]) -> str:
+        """Build config file content from data.
+
+        Args:
+            data: Config parameters from frontend
+
+        Returns:
+            Python source code for config file
+        """
+        # Extract config params
+        model_name = data.get("model", "gpt-4-turbo")
+        system_prompt = data.get("systemPrompt", "You are an expert assistant.")
+        max_turns = data.get("maxTurns", 5)
+        num_samples = data.get("numSamples", 10)
+        temperature = data.get("temperature", 0.1)
+
+        # Build config file
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        config = f'''"""Agent configuration - Generated by dev loop tool
+
+Generated: {timestamp}
+Model: {model_name}
+"""
+from pathlib import Path
+from dataclasses import dataclass, field
+from typing import List, Dict, Any
+
+from rollouts.dtypes import Message, Tool
+from rollouts.config import BaseModelConfig, BaseEvaluationConfig
+
+
+@dataclass
+class CustomEnvironment:
+    """Custom agent environment."""
+
+    env_name: str = "custom-environment"
+
+    def get_tools(self) -> List[Tool]:
+        """Return tools available to agent."""
+        # TODO: Add custom tools here
+        return []
+
+    def prepare_messages(self, sample_data: Dict[str, Any]) -> List[Message]:
+        """Prepare initial messages for task.
+
+        Args:
+            sample_data: Sample from dataset
+
+        Returns:
+            List of messages to initialize conversation
+        """
+        system_prompt = """{system_prompt}"""
+
+        user_prompt = sample_data.get("prompt", "")
+
+        return [
+            Message(role="system", content=system_prompt),
+            Message(role="user", content=user_prompt),
+        ]
+
+    async def on_assistant_message(self, message: Message, state):
+        """Handle assistant messages.
+
+        This is where you process agent outputs, extract actions, etc.
+        """
+        # TODO: Implement environment reaction to agent
+        return state
+
+
+@dataclass(frozen=True)
+class Config:
+    """Main configuration."""
+
+    # Model configuration
+    model: BaseModelConfig = field(
+        default_factory=lambda: BaseModelConfig(
+            model_name="{model_name}",
+            temperature={temperature},
+            max_tokens=16384,
+        )
+    )
+
+    # Environment configuration
+    environment_class: type = CustomEnvironment
+    environment_config: dict = field(default_factory=dict)
+
+    # Evaluation settings
+    evaluation: BaseEvaluationConfig = field(
+        default_factory=lambda: BaseEvaluationConfig(
+            environment=None,  # Will be set by factory
+            eval_name="custom_eval",
+            max_turns={max_turns},
+            num_samples={num_samples},
+            output_dir=Path("results/custom"),
+            verbose=True,
+            show_progress=True,
+        )
+    )
+
+    experiment_name: str = "custom_experiment"
+
+    async def create_environment(self, sample_data: dict):
+        """Create environment instance for a sample."""
+        return self.environment_class(**self.environment_config)
+
+
+# Export config instance
+config = Config()
+
+
+# Export prepare_messages for backward compatibility
+def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
+    """Prepare initial messages from dataset sample."""
+    env = config.environment_class(**config.environment_config)
+    return env.prepare_messages(sample_data)
+'''
+
+        return config
+
+    def _json_response(self, data: Any):
+        """Send JSON response."""
+        json_data = json.dumps(data, indent=2)
+
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(json_data)))
+        self.end_headers()
+        self.wfile.write(json_data.encode("utf-8"))
+
+    def log_message(self, format, *args):
+        """Override to provide cleaner logging."""
+        print(f"[{self.log_date_time_string()}] {format % args}")
+
+
+def main():
+    """Run the dev loop server."""
+    parser = argparse.ArgumentParser(
+        description="Agent dev loop tool - config builder & trace viewer"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8080,
+        help="Port to run server on (default: 8080)"
+    )
+    parser.add_argument(
+        "--project",
+        type=Path,
+        default=Path.cwd(),
+        help="Project root directory (default: current directory)"
+    )
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Don't automatically open browser"
+    )
+
+    args = parser.parse_args()
+
+    # Set project root on server class
+    DevLoopServer.project_root = args.project.resolve()
+
+    # Create server
+    server = HTTPServer(("localhost", args.port), DevLoopServer)
+
+    url = f"http://localhost:{args.port}"
+    print(f"\n{'='*60}")
+    print(f"🚀 Agent Dev Loop Tool")
+    print(f"{'='*60}")
+    print(f"URL: {url}")
+    print(f"Project: {DevLoopServer.project_root}")
+    print(f"{'='*60}\n")
+
+    # Open browser
+    if not args.no_browser:
+        webbrowser.open(url)
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\n\n✅ Server stopped")
+
+
+if __name__ == "__main__":
+    main()
