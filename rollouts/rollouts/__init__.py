@@ -34,6 +34,16 @@ from .providers import rollout_openai, rollout_sglang, rollout_anthropic
 # Evaluation
 from .evaluate import evaluate_dataset, evaluate_sample
 
+# Configuration (new in 0.3.0)
+from .config import (
+    # Protocols
+    HasModelConfig, HasEnvironmentConfig, HasEvaluationConfig, HasOutputConfig,
+    # Base configs
+    BaseModelConfig, BaseEnvironmentConfig, BaseEvaluationConfig, BaseOutputConfig,
+    # Utilities
+    load_config_from_file,
+)
+
 __all__ = [
     # Core types
     'Endpoint', 'Actor', 'AgentState', 'RunConfig', 'Environment',
@@ -58,6 +68,10 @@ __all__ = [
     'rollout_openai', 'rollout_sglang', 'rollout_anthropic',
     # Evaluation
     'evaluate_dataset', 'evaluate_sample',
+    # Configuration
+    'HasModelConfig', 'HasEnvironmentConfig', 'HasEvaluationConfig', 'HasOutputConfig',
+    'BaseModelConfig', 'BaseEnvironmentConfig', 'BaseEvaluationConfig', 'BaseOutputConfig',
+    'load_config_from_file',
 ]
 
-__version__ = "0.2.0"  # Major update: agent framework added
+__version__ = "0.3.0"  # Added configuration protocols and base configs
