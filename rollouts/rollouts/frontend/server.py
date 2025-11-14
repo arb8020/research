@@ -198,7 +198,20 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         if temp_match:
             config_data["temperature"] = float(temp_match.group(1))
 
-        # Extract system prompt (multiline string)
+        # Extract prepare_messages method (full function)
+        prepare_msg_match = re.search(
+            r'(def prepare_messages\(self.*?^    def \w+|def prepare_messages\(self.*?^class \w+|def prepare_messages\(self.*?$)',
+            config_source,
+            re.DOTALL | re.MULTILINE
+        )
+        if prepare_msg_match:
+            # Clean up and dedent the function
+            func_text = prepare_msg_match.group(1)
+            # Remove trailing class/def if captured
+            func_text = re.sub(r'\n    (def |class )\w+.*$', '', func_text, flags=re.DOTALL)
+            config_data["prepareMessages"] = func_text.strip()
+
+        # Also extract just system_prompt for backward compatibility
         prompt_match = re.search(r'system_prompt\s*=\s*"""([^"]+)"""', config_source, re.DOTALL)
         if prompt_match:
             config_data["systemPrompt"] = prompt_match.group(1).strip()
@@ -213,16 +226,36 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         if samples_match:
             config_data["numSamples"] = int(samples_match.group(1))
 
-        # Extract environment-specific fields (kernel env)
-        ssh_match = re.search(r'ssh_target\s*[:=]\s*["\']([^"\']+)["\']', config_source)
+        # Extract seed
+        seed_match = re.search(r'seed\s*[:=]\s*(\d+)', config_source)
+        if seed_match:
+            config_data["seed"] = int(seed_match.group(1))
+
+        # Extract start_idx and end_idx
+        start_match = re.search(r'start_idx\s*[:=]\s*(\d+)', config_source)
+        if start_match:
+            config_data["startIdx"] = int(start_match.group(1))
+
+        end_match = re.search(r'end_idx\s*[:=]\s*(\d+)', config_source)
+        if end_match:
+            config_data["endIdx"] = int(end_match.group(1))
+
+        # Extract environment-specific fields from both direct assignment and environment_config dict
+        ssh_match = re.search(r'["\']ssh_target["\']\s*:\s*["\']([^"\']+)["\']', config_source)
+        if not ssh_match:
+            ssh_match = re.search(r'ssh_target\s*[:=]\s*["\']([^"\']+)["\']', config_source)
         if ssh_match:
             config_data["sshTarget"] = ssh_match.group(1)
 
-        gpu_match = re.search(r'gpu_id\s*[:=]\s*(\d+)', config_source)
+        gpu_match = re.search(r'["\']gpu_id["\']\s*:\s*(\d+)', config_source)
+        if not gpu_match:
+            gpu_match = re.search(r'gpu_id\s*[:=]\s*(\d+)', config_source)
         if gpu_match:
             config_data["gpuId"] = int(gpu_match.group(1))
 
-        dataset_match = re.search(r'dataset_path\s*[:=]\s*Path\(["\']([^"\']+)["\']\)', config_source)
+        dataset_match = re.search(r'["\']dataset_path["\']\s*:\s*Path\(["\']([^"\']+)["\']\)', config_source)
+        if not dataset_match:
+            dataset_match = re.search(r'dataset_path\s*[:=]\s*Path\(["\']([^"\']+)["\']\)', config_source)
         if dataset_match:
             config_data["datasetPath"] = dataset_match.group(1)
 

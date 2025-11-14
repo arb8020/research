@@ -1,0 +1,379 @@
+================================================================================
+BACKEND-BENCH GPU EXECUTION - COMPREHENSIVE SUMMARY
+================================================================================
+
+Your Questions Asked:
+1. How is the GPU configured? Look for gpu parameter usage in CodeEvaluator
+2. What happens when gpu != "local"? Is there a remote execution path?
+3. How does the compiled kernel actually run on GPU? Look at benchmark_op
+4. Are test inputs/outputs on GPU or CPU?
+5. Look for CUDA, torch.cuda, or GPU-specific code
+6. How does Triton kernel compilation work?
+7. What's the difference between local vs non-local GPU execution?
+
+================================================================================
+ANSWER 1: GPU CONFIGURATION
+================================================================================
+
+Location: /Users/chiraagbalu/research/.venv/lib/python3.13/site-packages/src/config.py
+
+@dataclass
+class BackendBenchConfig:
+    gpu: str = "T4"  # Default: "T4"
+
+GPU Options:
+- "local"      → Local GPU (no scheduling)
+- "T4"         → NVIDIA Tesla T4 on Modal
+- "L4"         → NVIDIA L4 on Modal
+- "A100"       → NVIDIA A100 (80GB) on Modal
+- "H100"       → NVIDIA H100 on Modal
+- "H200"       → NVIDIA H200 on Modal
+- "B200"       → NVIDIA B200 on Modal
+
+================================================================================
+ANSWER 2: REMOTE EXECUTION PATH (gpu != "local")
+================================================================================
+
+Location: /Users/chiraagbalu/research/.venv/lib/python3.13/site-packages/src/code_evaluator.py
+
+CodeEvaluator.__init__ (Lines 113-140):
+
+    if not self.is_modal:  # if gpu == "local"
+        from src.utils import run_code
+        self.callable = run_code  # Direct function reference
+    else:  # if gpu != "local"
+        import modal
+        fn = modal.Function.from_name(
+            "backend-bench-env-runner", 
+            f"eval_code_{self.cfg.gpu.lower()}"  # e.g., "eval_code_t4"
+        )
+        self.callable = lambda **kwargs: fn.remote(**kwargs)
+
+Remote Execution Process:
+1. CodeEvaluator detects gpu != "local"
+2. Imports Modal and gets remote function reference
+3. Calls fn.remote() which:
+   - Serializes code and test params
+   - Sends to Modal cloud infrastructure
+   - Runs in NVIDIA CUDA 12.8 Docker container
+   - Returns serialized results back to local machine
+
+Modal Setup (modal_runner.py Lines 100-104):
+    for gpu in {"T4", "L4", "A100-80GB", "H100!", "H200", "B200"}:
+        gpu_slug = gpu.lower().split("-")[0].strip("!").replace(":", "x")
+        app.function(
+            gpu=gpu, 
+            image=cuda_image,  # NVIDIA CUDA 12.8
+            name=f"eval_code_{gpu_slug}",
+            serialized=True
+        )(eval_code)
+
+================================================================================
+ANSWER 3: KERNEL COMPILATION AND GPU EXECUTION
+================================================================================
+
+Kernel Compilation: compile_kernel_from_string()
+Location: /Users/chiraagbalu/research/.venv/lib/python3.13/site-packages/BackendBench/utils.py
+Lines: 410-443
+
+Step 1: Save to file (adds necessary imports)
+    save_kernel_to_file(kernel_code, kernel_file_path)
+    
+Step 2: Load as Python module
+    spec = importlib.util.spec_from_file_location(module_name, kernel_file_path)
+    module = importlib.util.module_from_spec(spec)
+    
+Step 3: Execute module (TRITON JIT COMPILATION HAPPENS HERE)
+    spec.loader.exec_module(module)
+    # When @triton.jit decorator is evaluated, Triton JIT compiles to GPU code
+    
+Step 4: Extract kernel function
+    kernel_func = _find_kernel_function(module, expected_fn_name)
+    # Looks for function named "{op_name}_kernel_impl"
+
+GPU Execution: eval_correctness_test()
+Location: /Users/chiraagbalu/research/.venv/lib/python3.13/site-packages/BackendBench/eval.py
+Lines: 93-125
+
+    def eval_correctness_test(op, impl, test):
+        args, kwargs = test.args, test.kwargs  # GPU tensors
+        
+        # Run PyTorch reference operation on GPU
+        ref = op(*args, **kwargs)
+        
+        # Run user's kernel on GPU
+        res = impl(*args, **kwargs)
+        
+        # Compare outputs
+        is_correct = allclose(ref, res)
+        return CorrectnessTestResult(...)
+
+Key Point: Both ref and impl execute on GPU with same tensor data.
+           No explicit .to("cuda") needed.
+
+================================================================================
+ANSWER 4: TEST INPUT/OUTPUT DEVICE PLACEMENT
+================================================================================
+
+Test Tensor Creation: _deserialize_tensor()
+Location: /Users/chiraagbalu/research/.venv/lib/python3.13/site-packages/BackendBench/utils.py
+Lines: 100-113
+
+    def _deserialize_tensor(size, dtype, stride=None, device="cuda"):
+        # DEFAULT: Create on CUDA
+        if device == "cuda" and not torch.cuda.is_available():
+            device = "cpu"  # Fallback if no GPU available
+        
+        if stride is not None:
+            # Non-contiguous tensor
+            data = make_tensor(extent, dtype=dtype, device=device, **kwargs)
+            return data.as_strided(size, stride)
+        
+        # Contiguous tensor
+        return make_tensor(size, dtype=dtype, device=device, **kwargs)
+
+Device Placement:
+- Default: device="cuda" (creates tensors on GPU)
+- Fallback: CPU if torch.cuda.is_available() returns False
+- Both local and remote: GPU by default, CPU fallback
+- No explicit device transfers during test execution
+- Reference and implementation receive same tensor objects
+
+================================================================================
+ANSWER 5: CUDA AND GPU-SPECIFIC CODE
+================================================================================
+
+GPU Availability Check:
+Location: /Users/chiraagbalu/research/.venv/lib/python3.13/site-packages/BackendBench/eval.py
+Lines: 43-51
+
+    try:
+        if torch.cuda.is_available():
+            import triton.testing
+            TRITON_AVAILABLE = True
+        else:
+            TRITON_AVAILABLE = False
+    except ImportError:
+        TRITON_AVAILABLE = False
+
+Benchmarking Function Selection:
+Lines: 164-166
+
+    bench_fn = (
+        triton.testing.do_bench 
+        if TRITON_AVAILABLE and torch.cuda.is_available() 
+        else cpu_bench
+    )
+
+torch.cuda Usage Points in Code:
+
+1. GPU Availability Check
+   torch.cuda.is_available()  # Returns True if GPU present
+
+2. GPU Memory Management (available in utils.py)
+   def cleanup_memory_and_gpu():
+       gc.collect()
+       torch.cuda.synchronize()  # Wait for GPU operations
+       torch.cuda.empty_cache()  # Clear GPU memory
+
+3. CUDA Stream Detection: uses_cuda_stream()
+   Location: /Users/chiraagbalu/research/.venv/lib/python3.13/site-packages/BackendBench/utils.py
+   Lines: 50-97
+   
+   Detects patterns:
+   - torch.cuda.Stream()
+   - cupy.cuda.Stream()
+   - cuda.Stream()
+   - Generic Stream() calls
+   
+   Reason: CUDA streams break benchmarking (race conditions)
+
+4. CUDA Stream Skipping: eval_one_op()
+   Location: /Users/chiraagbalu/research/.venv/lib/python3.13/site-packages/BackendBench/eval.py
+   Lines: 236-262
+   
+   if uses_cuda_stream(impl):
+       logger.warning(f"Skipping {op.__name__} because it uses CUDA stream")
+       return 0, 1.0, failure_results, failure_results
+
+================================================================================
+ANSWER 6: TRITON KERNEL COMPILATION
+================================================================================
+
+Triton Detection: save_kernel_to_file()
+Location: /Users/chiraagbalu/research/.venv/lib/python3.13/site-packages/BackendBench/utils.py
+Lines: 355-407
+
+    is_triton = "triton.jit" in kernel_code or "@triton.jit" in kernel_code
+    
+    if is_triton:
+        imports = """
+import torch
+import triton
+import triton.language as tl
+"""
+    else:
+        imports = """
+import torch
+import torch.nn.functional as F
+"""
+
+Triton JIT Compilation: compile_kernel_from_string()
+Lines: 410-443
+
+    spec = importlib.util.spec_from_file_location(module_name, kernel_file_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)  # <-- TRITON JIT HAPPENS HERE
+
+Timeline:
+1. User submits code with @triton.jit decorated function
+2. Code saved to temp file with Triton imports
+3. exec_module() loads and parses file
+4. @triton.jit decorator is evaluated
+5. Triton performs JIT compilation to GPU bytecode (PTXAS)
+6. Kernel function returned as callable
+7. First actual call to kernel triggers lazy GPU compilation
+
+Compilation Context:
+- Local: Triton compiles on local machine
+- Remote: Triton compiles on Modal GPU container (CUDA 12.8)
+
+================================================================================
+ANSWER 7: LOCAL VS NON-LOCAL GPU EXECUTION
+================================================================================
+
+Configuration Decision:
+Location: code_evaluator.py Lines 124-136
+
+    if self._gpu == "local":
+        self.callable = run_code  # Local execution
+    else:
+        self.callable = lambda **kwargs: fn.remote(**kwargs)  # Remote
+
+LOCAL EXECUTION (gpu="local"):
+- Function: run_code() from src/utils.py
+- Location: Local machine
+- Execution: Thread pool (asyncio.to_thread)
+- torch.cuda: Uses local GPU
+- Test Loading: Full OpTest object
+- Docker: None (uses local environment)
+- Scheduling: None (can context switch)
+- Results: Unreliable (no scheduling)
+- Benchmark: triton.testing.do_bench
+
+Code Flow:
+    asyncio.to_thread(run_code, op_test, code, ...)
+        → Compiles kernel on local GPU
+        → Runs correctness tests on local GPU
+        → Runs performance tests on local GPU
+        → Returns scores and results
+
+REMOTE EXECUTION (gpu="T4"|"L4"|"A100"|"H100"|"H200"|"B200"):
+- Function: eval_code() from src/modal_runner.py
+- Location: Modal cloud GPU
+- Execution: Remote function call (fn.remote())
+- torch.cuda: Modal-allocated GPU
+- Test Loading: Suite name + ops metadata
+- Docker: NVIDIA CUDA 12.8 container
+- Scheduling: Modal handles allocation
+- Results: Reliable (proper scheduling)
+- Benchmark: triton.testing.do_bench
+
+Code Flow:
+    asyncio.to_thread(fn.remote, suite_name, ops, code, ...)
+        → Serializes args
+        → Sends to Modal cloud
+        → Modal allocates GPU (T4/L4/A100/H100/H200/B200)
+        → Compiles kernel on cloud GPU
+        → Runs correctness tests on cloud GPU
+        → Runs performance tests on cloud GPU
+        → Serializes results back to local machine
+
+DETAILED COMPARISON TABLE:
+
+Aspect                Local (gpu="local")    Remote (gpu=other)
+-------------------------------------------------------------------
+Function              run_code               eval_code
+Location              Local machine          Modal cloud
+Execution             Direct call            RPC via Modal
+Code Path             Direct Python          Serialized -> cloud
+Test Object           Full OpTest            Suite name + ops
+Docker Image          None                   NVIDIA CUDA 12.8
+GPU Device            torch.cuda             Modal-allocated
+Scheduling            None                   Modal handles
+Test Data Device      GPU (or CPU)           GPU (or CPU)
+Benchmarking          triton.testing.do_bench triton.testing.do_bench
+Result Delivery       Same process           Serialized back
+Cost                  Hardware cost          Modal credits
+Note                  Unreliable results     Reliable results
+
+================================================================================
+FILE LOCATIONS SUMMARY
+================================================================================
+
+Core GPU Execution Files:
+- src/config.py                          (GPU parameter definition)
+- src/code_evaluator.py                  (Local vs Modal decision)
+- src/utils.py                           (run_code function)
+- src/modal_runner.py                    (Remote eval_code function)
+
+Kernel Compilation:
+- BackendBench/utils.py:compile_kernel_from_string  (Lines 410-443)
+- BackendBench/utils.py:save_kernel_to_file         (Lines 355-407)
+
+GPU Test Execution:
+- BackendBench/eval.py:eval_one_op                  (Lines 227-271)
+- BackendBench/eval.py:eval_correctness_test        (Lines 93-125)
+- BackendBench/eval.py:eval_correctness             (Lines 128-146)
+- BackendBench/eval.py:eval_performance             (Lines 162-224)
+- BackendBench/eval.py:cpu_bench                    (Lines 149-159)
+
+GPU Utilities:
+- BackendBench/utils.py:_deserialize_tensor         (Lines 100-113)
+- BackendBench/utils.py:uses_cuda_stream            (Lines 50-97)
+- BackendBench/utils.py:cleanup_memory_and_gpu      (Lines 245-249)
+
+================================================================================
+KEY INSIGHTS
+================================================================================
+
+1. GPU Configuration:
+   - Single "gpu" parameter controls local vs remote
+   - gpu="local" uses local GPU without scheduling
+   - gpu in ["T4", "L4", "A100", "H100", "H200", "B200"] uses Modal
+
+2. Remote Execution:
+   - Uses Modal cloud infrastructure
+   - Runs in NVIDIA CUDA 12.8 Docker container
+   - All major GPU types supported
+   - Proper scheduling ensures reliable benchmarking
+
+3. Kernel Compilation:
+   - Via importlib.util module loading
+   - Triton JIT happens during exec_module()
+   - Detects Triton by "@triton.jit" pattern in code
+   - Automatically adds necessary imports
+
+4. GPU Test Execution:
+   - Default: GPU tensors (device="cuda")
+   - Fallback: CPU if torch.cuda.is_available() is False
+   - Reference and implementation receive same data
+   - No explicit device transfers
+
+5. GPU Detection:
+   - torch.cuda.is_available() checked at import
+   - Used again at runtime for benchmarking selection
+   - CUDA streams detected and skipped (race conditions)
+
+6. Triton Benchmarking:
+   - triton.testing.do_bench() for GPU
+   - Handles GPU synchronization internally
+   - cpu_bench() fallback if no CUDA/Triton
+
+7. Local vs Remote Trade-offs:
+   - Local: Fast, resource-owned, unreliable results
+   - Remote: Slower, Modal costs, reliable results
+
+================================================================================
+GENERATED: 2025-11-12
+================================================================================
