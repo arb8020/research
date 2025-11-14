@@ -24,8 +24,7 @@ from dotenv import load_dotenv
 
 # Import kerbal for dependency management and deployment patterns
 from kerbal import (
-    DependencyConfig,
-    setup_script_deps,
+    setup_python_env,
     check_gpus_available,
     start_tmux_session,
 )
@@ -136,34 +135,38 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
 
     logger.info(f"✅ Project directory exists: {project_workspace}")
 
-    # Define dependencies for dev/integration_evaluation
-    deps = DependencyConfig(
-        project_name="integration-evaluation",
-        dependencies=[
-            "rollouts @ git+https://github.com/arb8020/research.git#subdirectory=rollouts",
-            "shared @ git+https://github.com/arb8020/research.git#subdirectory=shared",
-            "torch>=2.4.0",
-            "trio>=0.27.0",
-            "trio-asyncio>=0.15.0",
-            "python-dotenv>=1.0.0",
-            "triton>=3.0.0",  # For GPU kernel compilation
-            "rich>=13.0.0",
-            # Install backendbench BEFORE Prime CLI's backend-bench installation
-            # This satisfies the URL dependency so Prime CLI doesn't need to resolve it
-            "backendbench @ git+https://github.com/meta-pytorch/BackendBench.git",
-        ],
-        extras={
-            "dev": ["pytest", "black"],
-        },
-        python_version=">=3.10",
-    )
-
     # Setup dependencies using kerbal
     logger.info("📦 Installing dependencies via kerbal...")
-    logger.info(f"   Dependencies to install: {len(deps.dependencies)} packages")
-    for dep in deps.dependencies:
+    requirements = [
+        "torch>=2.4.0",
+        "trio>=0.27.0",
+        "trio-asyncio>=0.15.0",
+        "python-dotenv>=1.0.0",
+        "triton>=3.0.0",  # For GPU kernel compilation
+        "rich>=13.0.0",
+    ]
+
+    git_packages = [
+        "git+https://github.com/arb8020/research.git#subdirectory=rollouts",
+        "git+https://github.com/arb8020/research.git#subdirectory=shared",
+        # Install backendbench via git - kerbal will handle --no-deps if needed
+        "git+https://github.com/meta-pytorch/BackendBench.git",
+    ]
+
+    logger.info(f"   Pip packages: {len(requirements)}")
+    for dep in requirements:
         logger.info(f"   - {dep}")
-    setup_script_deps(bifrost_client, project_workspace, deps, install_extras=None)
+    logger.info(f"   Git packages: {len(git_packages)}")
+    for dep in git_packages:
+        logger.info(f"   - {dep}")
+
+    setup_python_env(
+        bifrost_client,
+        project_workspace,
+        requirements=requirements,
+        git_packages=git_packages,
+        python_version=">=3.10",
+    )
 
     # Debug: Check the generated pyproject.toml
     logger.info("🔍 Checking generated pyproject.toml...")
