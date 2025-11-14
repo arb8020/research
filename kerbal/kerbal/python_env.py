@@ -279,10 +279,11 @@ def _install_pip_packages(
     logger.info("=" * 60)
 
     # Build pip install command
+    # Use 'uv pip install' instead of venv's pip (uv venv doesn't include pip)
     packages = " ".join(f'"{pkg}"' for pkg in requirements)
     cmd = f"""
     export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
-    {venv_full_path}/bin/pip install {packages}
+    uv pip install --python {venv_full_path}/bin/python {packages}
     EXIT=$?
     echo '::EXIT_CODE::'$EXIT
     exit $EXIT
@@ -331,8 +332,12 @@ def _install_git_packages(
         logger.info(f"   Installing: {pkg_url}")
 
         # Try standard install first
+        # Use 'uv pip install' instead of venv's pip
         packages = f'"{pkg_url}"'
-        cmd = f"{venv_full_path}/bin/pip install {packages}"
+        cmd = f"""
+        export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+        uv pip install --python {venv_full_path}/bin/python {packages}
+        """
         result = client.exec(cmd)
 
         if result.exit_code == 0:
@@ -341,7 +346,10 @@ def _install_git_packages(
 
         # If failed, try with --no-deps (works around URL dependency issues)
         logger.warning(f"   Standard install failed, trying --no-deps...")
-        cmd = f"{venv_full_path}/bin/pip install --no-deps {packages}"
+        cmd = f"""
+        export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+        uv pip install --python {venv_full_path}/bin/python --no-deps {packages}
+        """
         result = client.exec(cmd)
 
         assert result.exit_code == 0, (
@@ -443,8 +451,11 @@ def _verify_imports(
         logger.error(f"      Error: {result.stderr.strip() if result.stderr else 'unknown'}")
 
         # Try to find the actual importable name
-        # List installed packages
-        list_cmd = f"{venv_python} -m pip list | grep -i {import_name}"
+        # List installed packages using uv pip list
+        list_cmd = f"""
+        export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+        uv pip list --python {venv_full_path}/bin/python | grep -i {import_name}
+        """
         list_result = client.exec(list_cmd)
 
         if list_result.exit_code == 0 and list_result.stdout:
