@@ -107,17 +107,17 @@ def start_tmux_session(
         # Use 'script' command for reliable output capture
         # Why script instead of tee:
         # - script captures ALL terminal output (including terminal control codes)
-        # - -q: quiet mode (suppress "Script started/done" messages)
+        # - -c: run command directly
         # - -e: return exit code of child process
         # - -f: flush output immediately (prevents buffering issues)
-        # - -c: run command directly
         # This ensures fast-exiting processes don't lose output
+        # Note: util-linux script doesn't have -q flag, uses 'Script started' message
         if capture_exit_code:
             # Full capture with exit code marker
-            tmux_cmd += f" 'script -qefc \"{full_command}\" {log_file}; echo EXIT_CODE: $? >> {log_file}'"
+            tmux_cmd += f" 'script -efc \"{full_command}\" {log_file}; echo EXIT_CODE: $? >> {log_file}'"
         else:
             # Casey: Granularity - can run without exit code marker
-            tmux_cmd += f" 'script -qefc \"{full_command}\" {log_file}'"
+            tmux_cmd += f" 'script -efc \"{full_command}\" {log_file}'"
     else:
         tmux_cmd += f" '{full_command}'"
 
