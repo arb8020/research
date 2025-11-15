@@ -532,3 +532,4 @@ class EvalConfig:
     # Logging
     verbose: bool = True
     show_progress: bool = False  # Enable sample-level progress tracking
+    stream_tokens: bool = False  # Stream LLM tokens to stdout (used if run_config is None)

@@ -222,18 +222,26 @@ async def evaluate_sample(
         run_config = replace(config.run_config, show_progress=show_turn_progress)
     else:
         # Determine on_chunk handler based on stream_tokens flag
-        if hasattr(config, 'stream_tokens') and config.stream_tokens:
+        # Debug logging
+        has_stream_tokens = hasattr(config, 'stream_tokens')
+        stream_tokens_value = getattr(config, 'stream_tokens', None)
+        logger.debug(f"🔍 Checking stream_tokens: hasattr={has_stream_tokens}, value={stream_tokens_value}")
+
+        if has_stream_tokens and stream_tokens_value:
             # Import stdout_handler for streaming
             from rollouts.agents import stdout_handler
             on_chunk_handler = stdout_handler
+            logger.debug("🔍 Using stdout_handler for token streaming")
         else:
             # Silent mode (default)
             on_chunk_handler = lambda _: trio.sleep(0)
+            logger.debug("🔍 Using silent mode (no token streaming)")
 
         run_config = RunConfig(
             on_chunk=on_chunk_handler,
             show_progress=show_turn_progress
         )
+        logger.debug(f"🔍 RunConfig.on_chunk: {on_chunk_handler.__name__ if hasattr(on_chunk_handler, '__name__') else type(on_chunk_handler)}")
 
     # Run agent
     # Tiger Style: Catch operational errors (rate limits, network issues) at boundary

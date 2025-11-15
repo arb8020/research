@@ -21,6 +21,37 @@ import os
 from rollouts.dtypes import Endpoint, EvalConfig, Message, RunConfig
 
 
+def infer_provider_from_model(model_name: str) -> str:
+    """Infer provider from model name.
+
+    Tiger Style: Explicit mapping, fail explicitly if unknown.
+
+    Args:
+        model_name: Model name (e.g., "gpt-4o-mini", "claude-sonnet-4")
+
+    Returns:
+        Provider name: "openai", "anthropic", or original if can't infer
+
+    Examples:
+        >>> infer_provider_from_model("gpt-4o-mini")
+        'openai'
+        >>> infer_provider_from_model("claude-sonnet-4-20250514")
+        'anthropic'
+    """
+    model_lower = model_name.lower()
+
+    # Anthropic models
+    if "claude" in model_lower or "anthropic" in model_lower:
+        return "anthropic"
+
+    # OpenAI models
+    if any(prefix in model_lower for prefix in ["gpt-", "o1-", "o3-"]):
+        return "openai"
+
+    # If unknown, return as-is (caller should validate)
+    return model_name.split("-")[0] if "-" in model_name else "openai"
+
+
 @dataclass(frozen=True)
 class BaseModelConfig:
     """Reference implementation for model/endpoint configuration.
@@ -72,20 +103,44 @@ class BaseModelConfig:
         If API key is missing, we return Endpoint with empty key.
         Caller can validate and handle as needed.
 
+        Auto-infers provider from model name if config has mismatched provider.
+
         Returns:
             Endpoint configuration for rollouts providers
         """
-        api_key = os.getenv(self.api_key_env_var, "")
+        # Auto-infer provider from model name if needed
+        inferred_provider = infer_provider_from_model(self.model_name)
+
+        # Use inferred provider if config provider doesn't match model
+        # This handles cases where user specifies model name but wrong provider
+        actual_provider = self.provider
+        actual_api_base = self.api_base
+        actual_api_key_env_var = self.api_key_env_var
+
+        if inferred_provider != self.provider:
+            print(f"⚠️  Provider mismatch: config says '{self.provider}' but model '{self.model_name}' suggests '{inferred_provider}'")
+            print(f"   Auto-correcting to use provider: {inferred_provider}")
+            actual_provider = inferred_provider
+
+            # Also update api_base and api_key_env_var to match
+            if inferred_provider == "anthropic":
+                actual_api_base = "https://api.anthropic.com"  # SDK adds /v1 automatically
+                actual_api_key_env_var = "ANTHROPIC_API_KEY"
+            elif inferred_provider == "openai":
+                actual_api_base = "https://api.openai.com/v1"
+                actual_api_key_env_var = "OPENAI_API_KEY"
+
+        api_key = os.getenv(actual_api_key_env_var, "")
 
         # Tiger Style: No exceptions for missing env vars
         # Caller can check endpoint.api_key and handle as needed
         if not api_key and os.getenv("VERBOSE", "0") != "0":
-            print(f"⚠️  Warning: {self.api_key_env_var} not set")
+            print(f"⚠️  Warning: {actual_api_key_env_var} not set")
 
         return Endpoint(
-            provider=self.provider,
+            provider=actual_provider,
             model=self.model_name,
-            api_base=self.api_base,
+            api_base=actual_api_base,
             api_key=api_key,
             max_tokens=self.max_tokens,
             temperature=self.temperature,
@@ -230,6 +285,8 @@ class BaseEvaluationConfig:
             eval_name=self.eval_name,
             verbose=self.verbose,
             show_progress=self.show_progress,
+            stream_tokens=self.stream_tokens,  # Pass through streaming config
+            run_config=self.run_config,         # Pass through custom run config
         )
 
 

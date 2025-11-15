@@ -915,7 +915,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             if "claude" in model_name.lower() or "anthropic" in model_name.lower():
                 provider = "anthropic"
                 api_key_env_var = "ANTHROPIC_API_KEY"
-                api_base = "https://api.anthropic.com/v1"
+                api_base = "https://api.anthropic.com"  # SDK adds /v1 automatically
             elif "gpt" in model_name.lower() or "o1" in model_name.lower() or "o3" in model_name.lower():
                 provider = "openai"
                 api_key_env_var = "OPENAI_API_KEY"
@@ -1139,7 +1139,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         if "claude" in model_name.lower() or "anthropic" in model_name.lower():
             provider = "anthropic"
             api_key_env_var = "ANTHROPIC_API_KEY"
-            api_base = "https://api.anthropic.com/v1"
+            api_base = "https://api.anthropic.com"  # SDK adds /v1 automatically
         elif "gpt" in model_name.lower() or "o1" in model_name.lower() or "o3" in model_name.lower():
             provider = "openai"
             api_key_env_var = "OPENAI_API_KEY"
@@ -1194,7 +1194,14 @@ class CustomEnvironment:
         """
         system_prompt = """{system_prompt}"""
 
-        user_prompt = sample_data.get("prompt", "")
+        # Try common dataset field names
+        user_prompt = (
+            sample_data.get("problem_description") or
+            sample_data.get("prompt") or
+            sample_data.get("question") or
+            sample_data.get("input") or
+            str(sample_data)
+        )
 
         return [
             Message(role="system", content=system_prompt),
@@ -1417,14 +1424,19 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
 
             # Launch with tracked pipes
             try:
+                # Set PYTHONUNBUFFERED to disable Python's stdout buffering for token streaming
+                env = os.environ.copy()
+                env["PYTHONUNBUFFERED"] = "1"
+
                 process = subprocess.Popen(
                     command,
                     cwd=self.project_root,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,  # Merge stderr into stdout
                     text=True,
-                    bufsize=1,  # Line buffered
-                    start_new_session=True  # Detach from parent
+                    bufsize=0,  # Unbuffered - changed from 1 (line buffered) for token streaming
+                    start_new_session=True,  # Detach from parent
+                    env=env
                 )
                 logger.info(f"Process started with PID: {process.pid}")
             except Exception as e:
@@ -1487,17 +1499,39 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
         self.end_headers()
 
         try:
-            # Stream output line by line
-            for line in iter(process.stdout.readline, ''):
-                if not line:
+            # Stream output character-by-character for real-time token streaming
+            # Use a small buffer to accumulate characters for efficient SSE sending
+            logger.info(f"🔍 Starting character-by-character streaming for {run_id}")
+            buffer = ""
+            chunk_size = 1  # Read 1 char at a time for maximum responsiveness
+
+            while True:
+                char = process.stdout.read(chunk_size)
+                if not char:
+                    # Process ended
+                    logger.info(f"🔍 Stream ended (no more data) for {run_id}")
                     break
 
-                # Store output line
-                with _run_lock:
-                    run_data["output_lines"].append(line.rstrip())
+                buffer += char
 
-                # Send as SSE event
-                event_data = json.dumps({"line": line.rstrip(), "type": "stdout"})
+                # Send accumulated buffer when we hit newline or buffer reaches reasonable size
+                # This balances between real-time streaming and SSE overhead
+                if '\n' in char or len(buffer) >= 50:
+                    # Store output line (for full output history)
+                    if '\n' in buffer:
+                        with _run_lock:
+                            run_data["output_lines"].append(buffer.rstrip())
+
+                    # Send as SSE event (send buffer even if incomplete line for token streaming)
+                    event_data = json.dumps({"line": buffer, "type": "stdout"})
+                    self.wfile.write(f"data: {event_data}\n\n".encode())
+                    self.wfile.flush()
+                    logger.debug(f"🔍 Sent {len(buffer)} chars to frontend")
+                    buffer = ""  # Clear buffer after sending
+
+            # Send any remaining buffered data
+            if buffer:
+                event_data = json.dumps({"line": buffer, "type": "stdout"})
                 self.wfile.write(f"data: {event_data}\n\n".encode())
                 self.wfile.flush()
 
@@ -1584,14 +1618,21 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
         """Kill a running process."""
         global _active_runs
 
+        logger.info(f"🛑 Kill request received for run_id: {run_id}")
+
         if run_id not in _active_runs:
+            logger.error(f"Kill failed: Run not found: {run_id}")
+            logger.info(f"Available run_ids: {list(_active_runs.keys())}")
             self.send_error(404, f"Run not found: {run_id}")
             return
 
         run_data = _active_runs[run_id]
         process = run_data["process"]
 
+        logger.info(f"Run status: {run_data['status']}, PID: {process.pid}")
+
         if run_data["status"] != "running":
+            logger.warning(f"Cannot kill: Run is not running (status: {run_data['status']})")
             self._json_response({
                 "success": False,
                 "message": f"Run is not running (status: {run_data['status']})"
@@ -1602,27 +1643,36 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
             # Kill entire process group (includes child processes)
             if process.poll() is None:  # Process is still running
                 pgid = os.getpgid(process.pid)
+                logger.info(f"Killing process group {pgid} (SIGTERM)")
                 os.killpg(pgid, signal.SIGTERM)
 
                 # Wait a bit, then force kill if still alive
                 time.sleep(0.5)
                 if process.poll() is None:
+                    logger.info(f"Process still alive, force killing (SIGKILL)")
                     os.killpg(pgid, signal.SIGKILL)
+                else:
+                    logger.info(f"Process terminated successfully")
+            else:
+                logger.info(f"Process already terminated (exit code: {process.poll()})")
 
             # Release semaphore
             _run_semaphore.release()
+            logger.info(f"Released semaphore")
 
             # Update status
             with _run_lock:
                 run_data["status"] = "killed"
                 run_data["exit_code"] = -1
 
+            logger.info(f"✅ Successfully killed run {run_id}")
             self._json_response({
                 "success": True,
                 "message": f"Killed run {run_id}"
             })
 
         except Exception as e:
+            logger.error(f"❌ Failed to kill run: {str(e)}", exc_info=True)
             self._json_response({
                 "success": False,
                 "message": f"Failed to kill run: {str(e)}"
