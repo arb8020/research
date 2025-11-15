@@ -221,8 +221,17 @@ async def evaluate_sample(
     if config.run_config:
         run_config = replace(config.run_config, show_progress=show_turn_progress)
     else:
+        # Determine on_chunk handler based on stream_tokens flag
+        if hasattr(config, 'stream_tokens') and config.stream_tokens:
+            # Import stdout_handler for streaming
+            from rollouts.agents import stdout_handler
+            on_chunk_handler = stdout_handler
+        else:
+            # Silent mode (default)
+            on_chunk_handler = lambda _: trio.sleep(0)
+
         run_config = RunConfig(
-            on_chunk=lambda _: trio.sleep(0),
+            on_chunk=on_chunk_handler,
             show_progress=show_turn_progress
         )
 
