@@ -1243,14 +1243,25 @@
                     const baseName = prefixMatch[2];
                     const childIdx = prefixMatch[3];
 
+                    // Find next available suffix by checking existing configs
+                    const pattern = new RegExp(`^${parentIdx}_${baseName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}_(\\d+)$`);
+                    const existingIndices = state.configs
+                        .map(c => c.name.match(pattern))
+                        .filter(m => m)
+                        .map(m => parseInt(m[1]));
+
+                    let nextSuffix = 1;
                     if (childIdx) {
-                        // Already has a child index, increment it
-                        const nextChild = String(parseInt(childIdx) + 1).padStart(2, '0');
-                        setConfigName(`${parentIdx}_${baseName}_${nextChild}`);
-                    } else {
-                        // No child index yet, add _01
-                        setConfigName(`${parentIdx}_${baseName}_01`);
+                        nextSuffix = parseInt(childIdx) + 1;
                     }
+
+                    // Keep incrementing until we find an available suffix
+                    while (existingIndices.includes(nextSuffix)) {
+                        nextSuffix++;
+                    }
+
+                    const nextChild = String(nextSuffix).padStart(2, '0');
+                    setConfigName(`${parentIdx}_${baseName}_${nextChild}`);
                 } else {
                     // No prefix pattern, find next available index
                     const nextIdx = String(state.configs.length + 1).padStart(2, '0');

@@ -1086,7 +1086,13 @@ from rollouts.config import BaseModelConfig, BaseEvaluationConfig
 class CustomEnvironment:
     """Custom agent environment."""
 
+    # Environment identification
     env_name: str = "custom-environment"
+
+    # Infrastructure settings (passed from environment_config)
+    ssh_target: str = ""
+    gpu_ids: List[int] = field(default_factory=lambda: [0])
+    dataset_path: Path = field(default_factory=lambda: Path("datasets/default.json"))
 
     def get_tools(self) -> List[Tool]:
         """Return tools available to agent."""
