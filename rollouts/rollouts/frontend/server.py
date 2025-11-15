@@ -1060,6 +1060,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         max_turns = data.get("maxTurns", 5)
         num_samples = data.get("numSamples", 10)
         temperature = data.get("temperature", 0.1)
+        stream_tokens = data.get("stream_tokens", True)  # Default to True for dev loop
 
         # Extract environment-specific fields
         ssh_target = data.get("ssh_target", "")
@@ -1175,7 +1176,7 @@ class Config:
             output_dir=Path("results/custom"),
             verbose=True,
             show_progress=True,
-            stream_tokens=True,  # Enable token streaming to stdout for live dev loop
+            stream_tokens={stream_tokens},  # Enable/disable token streaming to stdout
         )
     )
 
