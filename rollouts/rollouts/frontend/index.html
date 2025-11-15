@@ -916,7 +916,14 @@
             messages: [],
 
             // Tool definitions (for editing descriptions)
-            toolDefinitions: []
+            toolDefinitions: [],
+
+            // Available models from API providers
+            models: {
+                data: [],
+                loading: false,
+                error: null
+            }
         };
 
         // Sidebar controls
@@ -1452,12 +1459,88 @@
             }, 2000);
         }
 
+        // ===== Model Loading =====
+        async function loadModels() {
+            state.models.loading = true;
+            state.models.error = null;
+            renderModelDropdown();
+
+            try {
+                const response = await fetch('/api/models');
+                const data = await response.json();
+
+                if (data.errors && data.errors.length > 0) {
+                    console.warn('Model loading warnings:', data.errors);
+                }
+
+                state.models.data = data.models || [];
+            } catch (error) {
+                state.models.error = 'Failed to load models from API providers';
+                console.error('Model loading error:', error);
+            } finally {
+                state.models.loading = false;
+                renderModelDropdown();
+            }
+        }
+
+        function renderModelDropdown() {
+            const select = document.getElementById('model-select');
+            if (!select) return;
+
+            if (state.models.loading) {
+                select.innerHTML = '<option value="">Loading models...</option>';
+                select.disabled = true;
+                return;
+            }
+
+            if (state.models.error) {
+                select.innerHTML = `<option value="">${state.models.error}</option>`;
+                select.disabled = true;
+                return;
+            }
+
+            // Group models by provider for better organization
+            const modelsByProvider = {};
+            for (const model of state.models.data) {
+                const provider = model.provider || 'other';
+                if (!modelsByProvider[provider]) {
+                    modelsByProvider[provider] = [];
+                }
+                modelsByProvider[provider].push(model);
+            }
+
+            // Build dropdown with optgroups
+            let html = '<option value="">Select a model...</option>';
+
+            const providerOrder = ['anthropic', 'openai', 'other'];
+            const providerLabels = {
+                'anthropic': 'Anthropic',
+                'openai': 'OpenAI',
+                'other': 'Other'
+            };
+
+            for (const provider of providerOrder) {
+                const models = modelsByProvider[provider];
+                if (!models || models.length === 0) continue;
+
+                html += `<optgroup label="${providerLabels[provider]}">`;
+                for (const model of models) {
+                    html += `<option value="${model.id}">${model.name}</option>`;
+                }
+                html += '</optgroup>';
+            }
+
+            select.innerHTML = html;
+            select.disabled = false;
+        }
+
         // Initialize
         async function init() {
             updateUI();
             await Promise.all([
                 loadAvailableConfigs(),
-                loadResults()
+                loadResults(),
+                loadModels()
             ]);
 
             // Set up input listeners
