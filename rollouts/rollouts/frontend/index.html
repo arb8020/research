@@ -1597,14 +1597,22 @@
             // Escape HTML first
             let formatted = escapeHtml(content);
 
-            // Replace code blocks with <pre><code> tags
+            // Replace code blocks with <pre><code> tags, using placeholder to protect from newline replacement
+            const codeBlocks = [];
             formatted = formatted.replace(/```(\w+)?\n([\s\S]*?)```/g, (match, lang, code) => {
                 const language = lang || 'python';
-                return `<pre><code class="language-${language}">${code.trim()}</code></pre>`;
+                const placeholder = `___CODE_BLOCK_${codeBlocks.length}___`;
+                codeBlocks.push(`<pre><code class="language-${language}">${code.trim()}</code></pre>`);
+                return placeholder;
             });
 
             // Convert newlines to <br> for non-code content
             formatted = formatted.replace(/\n/g, '<br>');
+
+            // Restore code blocks
+            codeBlocks.forEach((block, i) => {
+                formatted = formatted.replace(`___CODE_BLOCK_${i}___`, block);
+            });
 
             return formatted;
         }
