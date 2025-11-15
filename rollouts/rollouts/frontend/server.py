@@ -70,6 +70,8 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             self._view_hook(config_name)
         elif path == "/api/models":
             self._list_models()
+        elif path == "/api/list-datasets":
+            self._list_datasets()
         else:
             # Default behavior for other files
             super().do_GET()
@@ -618,6 +620,35 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             "models": models,
             "errors": errors if errors else None
         })
+
+    def _list_datasets(self):
+        """List available dataset files in the datasets directory."""
+        datasets_dir = self.project_root / "datasets"
+
+        if not datasets_dir.exists():
+            self._json_response({"datasets": [], "error": "datasets/ directory not found"})
+            return
+
+        try:
+            # Find all .json and .jsonl files
+            datasets = []
+            for file_path in datasets_dir.rglob("*"):
+                if file_path.suffix in [".json", ".jsonl"] and file_path.is_file():
+                    # Get relative path from project root
+                    relative_path = file_path.relative_to(self.project_root)
+                    datasets.append({
+                        "path": str(relative_path),
+                        "name": file_path.name,
+                        "size": file_path.stat().st_size
+                    })
+
+            # Sort by name
+            datasets.sort(key=lambda x: x["name"])
+
+            self._json_response({"datasets": datasets, "error": None})
+
+        except Exception as e:
+            self._json_response({"datasets": [], "error": f"Error listing datasets: {str(e)}"})
 
     def _generate_config(self):
         """Generate a new config file from JSON payload."""
