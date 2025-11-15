@@ -311,6 +311,20 @@ def _message_to_openai(m: Message) -> ChatCompletionMessageParam:
     assert isinstance(m.role, str)
     assert len(m.role) > 0
 
+    # Validate message content - catch empty messages early
+    # Tiger Style: Use assertions for programmer errors (bugs in our code)
+    if not m.content and not (hasattr(m, 'tool_calls') and m.tool_calls) and m.role != "tool":
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"❌ Empty message content detected! Role: {m.role}")
+        logger.error(f"   This usually means prepare_messages() is using the wrong dataset field.")
+        logger.error(f"   Message object: {m}")
+        assert False, (
+            f"Message has empty content (role={m.role}). "
+            f"Check that prepare_messages() is using the correct dataset field name. "
+            f"Common issue: using 'prompt' when dataset has 'problem_description'."
+        )
+
     msg: Dict[str, Any] = {"role": m.role}
 
     if m.content is not None:
@@ -790,6 +804,20 @@ def _message_to_anthropic(
     assert m.role is not None
     assert isinstance(m.role, str)
 
+    # Validate message content - catch empty messages early
+    # Tiger Style: Use assertions for programmer errors (bugs in our code)
+    if not m.content and not (hasattr(m, 'tool_calls') and m.tool_calls):
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"❌ Empty message content detected! Role: {m.role}")
+        logger.error(f"   This usually means prepare_messages() is using the wrong dataset field.")
+        logger.error(f"   Message object: {m}")
+        assert False, (
+            f"Message has empty content (role={m.role}). "
+            f"Check that prepare_messages() is using the correct dataset field name. "
+            f"Common issue: using 'prompt' when dataset has 'problem_description'."
+        )
+
     msg: Dict[str, Any] = {"role": m.role}
 
     if m.role == "assistant" and m.tool_calls:
@@ -840,11 +868,10 @@ def _message_to_anthropic(
             )
             msg["content"] = combined_text
         else:
-            msg["content"] = (
-                m.content
-                if m.content
-                else [{"type": "text", "text": "[Response truncated due to time limit]"}]
-            )
+            # Content should have been validated above, but double-check
+            # Tiger Style: Assertion for programmer error (should never happen)
+            assert m.content, f"Message content is empty after validation (role={m.role})"
+            msg["content"] = m.content
 
     return msg
 
@@ -1024,7 +1051,9 @@ async def rollout_anthropic(
         "timeout": actor.endpoint.timeout,
     }
     if actor.endpoint.api_base:
-        client_kwargs["base_url"] = actor.endpoint.api_base
+        # Anthropic SDK adds /v1 automatically, so remove it if present
+        base_url = actor.endpoint.api_base.rstrip('/v1').rstrip('/')
+        client_kwargs["base_url"] = base_url
     client = AsyncAnthropic(**client_kwargs)
 
     truncated_trajectory = actor.trajectory
@@ -1075,6 +1104,27 @@ async def rollout_anthropic(
     if actor.endpoint.thinking is not None:
         params["thinking"] = actor.endpoint.thinking
 
+    # Debug logging - show what we're sending
+    print(f"\n{'='*60}")
+    print(f"Anthropic API Request:")
+    print(f"{'='*60}")
+    print(f"Model: {actor.endpoint.model}")
+    print(f"Max tokens: {actor.endpoint.max_tokens}")
+    print(f"Temperature: {actor.endpoint.temperature}")
+    print(f"API base: {actor.endpoint.api_base}")
+    print(f"Messages count: {len(params['messages'])}")
+    if system_prompt:
+        print(f"System prompt length: {len(system_prompt)} chars")
+        print(f"System prompt preview: {system_prompt[:200]}...")
+    for i, msg in enumerate(params['messages']):
+        role = msg.get('role', 'unknown')
+        content = msg.get('content', '')
+        if isinstance(content, str):
+            print(f"Message {i} ({role}): {len(content)} chars - {content[:100]}...")
+        elif isinstance(content, list):
+            print(f"Message {i} ({role}): {len(content)} content blocks")
+    print(f"{'='*60}\n")
+
     max_retries = 10
     base_delay = 2
     completion = None
@@ -1092,6 +1142,9 @@ async def rollout_anthropic(
             print(
                 f"🔄 Anthropic API error (attempt {attempt + 1}/{max_retries + 1}): {str(e)}"
             )
+            if attempt == 0:  # Log detailed error info on first attempt
+                print(f"   Endpoint model: {actor.endpoint.model}")
+                print(f"   Endpoint api_base: {actor.endpoint.api_base}")
 
             if attempt < max_retries:
                 delay = base_delay * (2 ** attempt)

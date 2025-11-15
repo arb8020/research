@@ -799,6 +799,9 @@
                             <select class="form-select" id="model-select">
                                 <option value="">Loading models...</option>
                             </select>
+                            <div id="model-provider-info" style="font-size: 11px; color: var(--text-secondary); margin-top: 4px; display: none;">
+                                Provider: <span id="model-provider-name"></span>
+                            </div>
                         </div>
                         <div class="form-field">
                             <label class="form-label" for="temperature">Temperature</label>
@@ -2401,6 +2404,34 @@
 
             select.innerHTML = html;
             select.disabled = false;
+
+            // Add change listener to update provider info
+            select.addEventListener('change', updateModelProviderInfo);
+            // Also update on initial load if there's a selected value
+            updateModelProviderInfo();
+        }
+
+        function updateModelProviderInfo() {
+            const select = document.getElementById('model-select');
+            const providerInfo = document.getElementById('model-provider-info');
+            const providerName = document.getElementById('model-provider-name');
+
+            if (!select || !providerInfo || !providerName) return;
+
+            const selectedModelId = select.value;
+            if (!selectedModelId) {
+                providerInfo.style.display = 'none';
+                return;
+            }
+
+            // Find the selected model in state.models.data
+            const selectedModel = state.models.data.find(m => m.id === selectedModelId);
+            if (selectedModel && selectedModel.provider) {
+                providerName.textContent = selectedModel.provider;
+                providerInfo.style.display = 'block';
+            } else {
+                providerInfo.style.display = 'none';
+            }
         }
 
         // Initialize
