@@ -763,12 +763,22 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         # Generate config file content
         config_text = self._build_config_file(config_data)
 
-        # Return as text
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain")
-        self.send_header("Content-Length", str(len(config_text)))
-        self.end_headers()
-        self.wfile.write(config_text.encode("utf-8"))
+        # Save to file
+        config_name = config_data.get("configName", "untitled_config")
+        config_path = self.project_root / "configs" / f"{config_name}.py"
+
+        # Ensure configs directory exists
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Write config file
+        config_path.write_text(config_text)
+
+        # Return JSON response with file path
+        self._json_response({
+            "success": True,
+            "file_path": str(config_path.relative_to(self.project_root)),
+            "config_name": config_name
+        })
 
     def _build_config_file(self, data: dict[str, Any]) -> str:
         """Build config file content from data.
