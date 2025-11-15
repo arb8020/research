@@ -267,7 +267,7 @@
             left: 0;
             right: 0;
             bottom: 0;
-            background: rgba(0, 0, 0, 0.2);
+            background: rgba(0, 0, 0, 0.05);
             opacity: 0;
             pointer-events: none;
             transition: opacity 0.3s ease;
@@ -276,7 +276,8 @@
 
         .overlay.show {
             opacity: 1;
-            pointer-events: auto;
+            /* Keep pointer-events: none so main pane is still clickable/scrollable */
+            pointer-events: none;
         }
 
         /* Scrollbar styling */
