@@ -721,10 +721,13 @@
                             </select>
                         </div>
                         <div class="form-field">
-                            <label class="form-label" for="config-name">Config Name</label>
-                            <input type="text" class="form-input" id="config-name" placeholder="01_agent_eval_01" />
+                            <label class="form-label">Config Name</label>
+                            <div id="config-name-display" style="padding: 8px 12px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 4px; font-family: monospace; font-size: 14px; color: var(--text);">
+                                <!-- Auto-generated name will appear here -->
+                            </div>
+                            <input type="hidden" id="config-name" />
                             <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">
-                                Format: parent_idx_name_child_idx (e.g., 01_agent_eval_01)
+                                Auto-generated from base config
                             </div>
                         </div>
                     </div>
@@ -1145,15 +1148,15 @@
                     if (childIdx) {
                         // Already has a child index, increment it
                         const nextChild = String(parseInt(childIdx) + 1).padStart(2, '0');
-                        document.getElementById('config-name').value = `${parentIdx}_${baseName}_${nextChild}`;
+                        setConfigName(`${parentIdx}_${baseName}_${nextChild}`);
                     } else {
                         // No child index yet, add _01
-                        document.getElementById('config-name').value = `${parentIdx}_${baseName}_01`;
+                        setConfigName(`${parentIdx}_${baseName}_01`);
                     }
                 } else {
                     // No prefix pattern, find next available index
                     const nextIdx = String(state.configs.length + 1).padStart(2, '0');
-                    document.getElementById('config-name').value = `${nextIdx}_${configName}_custom`;
+                    setConfigName(`${nextIdx}_${configName}_custom`);
                 }
 
                 // Load message builder data
@@ -1189,7 +1192,7 @@
         function createNewConfig() {
             // Clear form
             document.getElementById('base-config-select').value = '';
-            document.getElementById('config-name').value = '';
+            setConfigName('');
             document.getElementById('model-select').value = 'gpt-4o-mini';
             document.getElementById('temperature').value = '0.2';
             document.getElementById('ssh-target').value = '';
@@ -1520,6 +1523,15 @@
             setTimeout(() => {
                 loadResults();
             }, 2000);
+        }
+
+        // ===== Config Name Management =====
+        function setConfigName(name) {
+            document.getElementById('config-name').value = name;
+            const display = document.getElementById('config-name-display');
+            if (display) {
+                display.textContent = name || 'Select a base config';
+            }
         }
 
         // ===== Max Turns Handling =====
