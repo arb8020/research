@@ -839,10 +839,10 @@
                             <label class="form-label">Sample Range</label>
                             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
                                 <div>
-                                    <input type="number" class="form-input" id="start-idx" min="0" value="0" placeholder="Start" />
+                                    <input type="number" class="form-input" id="start-idx" min="0" value="0" placeholder="Start" oninput="updateRangeLabels()" />
                                 </div>
                                 <div>
-                                    <input type="number" class="form-input" id="end-idx" min="0" value="10" placeholder="End" />
+                                    <input type="number" class="form-input" id="end-idx" min="0" value="10" placeholder="End" oninput="updateRangeLabels()" />
                                 </div>
                             </div>
                             <input type="range" class="range-input" id="range-slider" min="0" max="100" value="10" oninput="updateRangeFromSlider()" />
