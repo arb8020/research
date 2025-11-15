@@ -778,7 +778,12 @@
                         </div>
                         <div class="form-field">
                             <label class="form-label" for="dataset-path">Dataset Path</label>
-                            <input type="text" class="form-input" id="dataset-path" placeholder="datasets/my_dataset.json" />
+                            <select class="form-select" id="dataset-path">
+                                <option value="">Loading datasets...</option>
+                            </select>
+                            <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">
+                                Select from available datasets in datasets/ directory
+                            </div>
                         </div>
                     </div>
 
@@ -967,6 +972,13 @@
 
             // Available models from API providers
             models: {
+                data: [],
+                loading: false,
+                error: null
+            },
+
+            // Available datasets
+            datasets: {
                 data: [],
                 loading: false,
                 error: null
@@ -1606,6 +1618,57 @@
             }
         }
 
+        // ===== Dataset Loading =====
+        async function loadDatasets() {
+            state.datasets.loading = true;
+            state.datasets.error = null;
+            renderDatasetDropdown();
+
+            try {
+                const response = await fetch('/api/list-datasets');
+                const data = await response.json();
+
+                if (data.error) {
+                    state.datasets.error = data.error;
+                } else {
+                    state.datasets.data = data.datasets || [];
+                }
+            } catch (error) {
+                state.datasets.error = 'Failed to load datasets';
+                console.error('Dataset loading error:', error);
+            } finally {
+                state.datasets.loading = false;
+                renderDatasetDropdown();
+            }
+        }
+
+        function renderDatasetDropdown() {
+            const select = document.getElementById('dataset-path');
+            if (!select) return;
+
+            if (state.datasets.loading) {
+                select.innerHTML = '<option value="">Loading datasets...</option>';
+                select.disabled = true;
+                return;
+            }
+
+            if (state.datasets.error) {
+                select.innerHTML = `<option value="">${state.datasets.error}</option>`;
+                select.disabled = true;
+                return;
+            }
+
+            // Build dropdown
+            let html = '<option value="">Select a dataset...</option>';
+
+            for (const dataset of state.datasets.data) {
+                html += `<option value="${dataset.path}">${dataset.path}</option>`;
+            }
+
+            select.innerHTML = html;
+            select.disabled = false;
+        }
+
         // ===== Model Loading =====
         async function loadModels() {
             state.models.loading = true;
@@ -1689,7 +1752,8 @@
             await Promise.all([
                 loadAvailableConfigs(),
                 loadResults(),
-                loadModels()
+                loadModels(),
+                loadDatasets()
             ]);
 
             // Set up input listeners
