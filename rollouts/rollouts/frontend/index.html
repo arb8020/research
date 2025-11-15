@@ -19,6 +19,7 @@
             --error: #eb5757;
             --input-bg: #ffffff;
             --sidebar-bg: #f7f6f3;
+            --sidebar-width: 400px;
         }
 
         * {
@@ -33,262 +34,202 @@
             color: var(--text);
             font-size: 14px;
             line-height: 1.6;
+            overflow: hidden;
         }
 
-        /* Layout: Two column split with sidebar style */
-        .container {
-            display: grid;
-            grid-template-columns: 400px 1fr;
+        /* Main container */
+        .app {
             height: 100vh;
-        }
-
-        .panel {
-            overflow-y: auto;
-            padding: 32px;
-        }
-
-        .panel.sidebar {
-            background: var(--sidebar-bg);
-            border-right: 1px solid var(--border);
-        }
-
-        .panel.main {
-            background: var(--bg);
-        }
-
-        /* Headers */
-        h1 {
-            font-size: 24px;
-            font-weight: 600;
-            margin-bottom: 24px;
-            color: var(--text);
-        }
-
-        h2 {
-            font-size: 14px;
-            font-weight: 600;
-            margin-top: 24px;
-            margin-bottom: 12px;
-            color: var(--text);
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            font-size: 11px;
-        }
-
-        /* Form elements */
-        section {
-            margin-bottom: 20px;
-        }
-
-        label {
-            display: block;
-            margin-bottom: 6px;
-            color: var(--text-secondary);
-            font-size: 12px;
-            font-weight: 500;
-        }
-
-        input[type="text"],
-        input[type="number"],
-        select,
-        textarea {
-            width: 100%;
-            background: var(--input-bg);
-            border: 1px solid var(--border);
-            color: var(--text);
-            padding: 8px 12px;
-            font-family: inherit;
-            font-size: 14px;
-            border-radius: 4px;
-            transition: border-color 0.15s ease;
-        }
-
-        input:hover,
-        select:hover,
-        textarea:hover {
-            border-color: var(--border-hover);
-        }
-
-        input:focus,
-        select:focus,
-        textarea:focus {
-            outline: none;
-            border-color: var(--accent);
-            box-shadow: 0 0 0 3px rgba(35, 131, 226, 0.1);
-        }
-
-        textarea {
-            resize: vertical;
-            min-height: 120px;
-            font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
-            line-height: 1.5;
-        }
-
-        /* Checkboxes */
-        .checkbox-group {
             display: flex;
             flex-direction: column;
-            gap: 10px;
         }
 
-        .checkbox-label {
+        /* Top bar */
+        .top-bar {
+            height: 60px;
+            background: var(--bg);
+            border-bottom: 1px solid var(--border);
             display: flex;
             align-items: center;
-            gap: 10px;
-            cursor: pointer;
-            padding: 8px;
-            border-radius: 4px;
-            transition: background 0.15s ease;
+            justify-content: space-between;
+            padding: 0 24px;
+            z-index: 100;
         }
 
-        .checkbox-label:hover {
-            background: rgba(0, 0, 0, 0.03);
+        .top-bar-left {
+            display: flex;
+            gap: 12px;
+            align-items: center;
         }
 
-        input[type="checkbox"] {
-            width: 16px;
-            height: 16px;
-            cursor: pointer;
-            border-radius: 3px;
+        .top-bar-right {
+            display: flex;
+            gap: 12px;
+            align-items: center;
         }
 
-        /* Buttons */
-        button {
-            background: var(--accent);
-            color: white;
-            border: none;
+        /* Button styles */
+        .btn {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            color: var(--text);
             padding: 8px 16px;
-            font-family: inherit;
+            border-radius: 6px;
             font-size: 14px;
             font-weight: 500;
             cursor: pointer;
-            border-radius: 6px;
             transition: all 0.15s ease;
-        }
-
-        button:hover {
-            background: var(--accent-hover);
-        }
-
-        button:active {
-            transform: scale(0.98);
-        }
-
-        button:disabled {
-            background: var(--border);
-            color: var(--text-secondary);
-            cursor: not-allowed;
-        }
-
-        .button-group {
             display: flex;
-            gap: 8px;
-            margin-top: 24px;
+            align-items: center;
+            gap: 6px;
         }
 
-        /* Trace list */
-        .trace-list {
-            list-style: none;
-        }
-
-        .trace-item {
-            padding: 12px;
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            margin-bottom: 8px;
-            cursor: pointer;
-            transition: all 0.15s ease;
-            background: var(--bg);
-        }
-
-        .trace-item:hover {
+        .btn:hover {
             border-color: var(--border-hover);
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04);
-        }
-
-        .trace-item.selected {
-            border-color: var(--accent);
-            background: rgba(35, 131, 226, 0.05);
-        }
-
-        .trace-item-header {
-            font-weight: 500;
-            margin-bottom: 6px;
-            color: var(--text);
-        }
-
-        .trace-item-meta {
-            font-size: 12px;
-            color: var(--text-secondary);
-        }
-
-        /* Messages */
-        .message {
-            padding: 16px;
-            border-radius: 8px;
-            margin-bottom: 12px;
-            border: 1px solid var(--border);
             background: var(--bg);
         }
 
-        .message.user {
-            border-left: 3px solid var(--accent);
-            background: rgba(35, 131, 226, 0.03);
+        .btn.primary {
+            background: var(--accent);
+            color: white;
+            border-color: var(--accent);
         }
 
-        .message.assistant {
-            border-left: 3px solid var(--success);
-            background: rgba(15, 123, 108, 0.03);
+        .btn.primary:hover {
+            background: var(--accent-hover);
+            border-color: var(--accent-hover);
         }
 
-        .message.system {
-            border-left: 3px solid var(--text-secondary);
-            background: var(--bg-secondary);
+        .btn.active {
+            background: var(--accent);
+            color: white;
+            border-color: var(--accent);
         }
 
-        .message-role {
-            font-size: 11px;
+        /* Content area */
+        .content {
+            flex: 1;
+            display: flex;
+            position: relative;
+            overflow: hidden;
+        }
+
+        /* Sidebars */
+        .sidebar {
+            width: var(--sidebar-width);
+            background: var(--sidebar-bg);
+            border-right: 1px solid var(--border);
+            overflow-y: auto;
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            left: 0;
+            transform: translateX(-100%);
+            transition: transform 0.3s ease;
+            z-index: 50;
+        }
+
+        .sidebar.right {
+            left: auto;
+            right: 0;
+            border-right: none;
+            border-left: 1px solid var(--border);
+            transform: translateX(100%);
+        }
+
+        .sidebar.open {
+            transform: translateX(0);
+        }
+
+        .sidebar-header {
+            padding: 24px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .sidebar-title {
+            font-size: 18px;
             font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-bottom: 8px;
-            color: var(--text-secondary);
         }
 
-        .message-content {
-            white-space: pre-wrap;
-            word-break: break-word;
-            font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
-            font-size: 13px;
-            line-height: 1.6;
+        .sidebar-close {
+            background: none;
+            border: none;
+            font-size: 20px;
+            cursor: pointer;
+            color: var(--text-secondary);
+            padding: 4px 8px;
+            border-radius: 4px;
+        }
+
+        .sidebar-close:hover {
+            background: var(--border);
+        }
+
+        .sidebar-content {
+            padding: 24px;
+        }
+
+        /* Main pane */
+        .main-pane {
+            flex: 1;
+            background: var(--bg);
+            overflow-y: auto;
+            transition: margin 0.3s ease;
+        }
+
+        .main-pane.sidebar-left-open {
+            margin-left: var(--sidebar-width);
+        }
+
+        .main-pane.sidebar-right-open {
+            margin-right: var(--sidebar-width);
+        }
+
+        .main-pane-content {
+            padding: 48px;
+            max-width: 1200px;
+            margin: 0 auto;
         }
 
         /* Empty state */
         .empty-state {
-            color: var(--text-secondary);
             text-align: center;
-            padding: 60px 20px;
-            font-size: 14px;
+            padding: 80px 40px;
+            color: var(--text-secondary);
         }
 
-        /* Status messages */
-        .status {
-            padding: 12px 16px;
+        .empty-state h2 {
+            font-size: 24px;
+            font-weight: 600;
+            color: var(--text);
             margin-bottom: 12px;
-            border-radius: 6px;
-            font-size: 13px;
         }
 
-        .status.success {
-            background: rgba(15, 123, 108, 0.1);
-            border: 1px solid var(--success);
-            color: var(--success);
+        .empty-state p {
+            font-size: 16px;
+            margin-bottom: 24px;
         }
 
-        .status.error {
-            background: rgba(235, 87, 87, 0.1);
-            border: 1px solid var(--error);
-            color: var(--error);
+        /* Overlay for sidebar dimming */
+        .overlay {
+            position: fixed;
+            top: 60px;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.2);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+            z-index: 40;
+        }
+
+        .overlay.show {
+            opacity: 1;
+            pointer-events: auto;
         }
 
         /* Scrollbar styling */
@@ -310,193 +251,662 @@
             background: var(--border-hover);
         }
 
-        /* Metrics summary */
-        .metrics-grid {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 12px;
+        /* Config tabs */
+        .config-tabs {
+            display: flex;
+            gap: 4px;
+            padding: 16px 16px 0 16px;
+            overflow-x: auto;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .config-tab {
+            padding: 8px 16px;
+            background: none;
+            border: none;
+            border-bottom: 2px solid transparent;
+            color: var(--text-secondary);
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: all 0.15s ease;
+        }
+
+        .config-tab:hover {
+            color: var(--text);
+            background: var(--bg-secondary);
+            border-radius: 4px 4px 0 0;
+        }
+
+        .config-tab.active {
+            color: var(--accent);
+            border-bottom-color: var(--accent);
+        }
+
+        .config-tab.new {
+            color: var(--accent);
+        }
+
+        /* Form elements */
+        .form-section {
             margin-bottom: 24px;
         }
 
-        .metric-card {
-            padding: 16px;
-            background: var(--bg-secondary);
-            border-radius: 8px;
-            border: 1px solid var(--border);
-        }
-
-        .metric-label {
+        .form-section-title {
             font-size: 11px;
-            color: var(--text-secondary);
+            font-weight: 600;
             text-transform: uppercase;
             letter-spacing: 0.5px;
-            font-weight: 600;
+            color: var(--text-secondary);
+            margin-bottom: 12px;
+        }
+
+        .form-field {
+            margin-bottom: 16px;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text-secondary);
             margin-bottom: 6px;
         }
 
-        .metric-value {
-            font-size: 24px;
-            font-weight: 600;
+        .form-input,
+        .form-select,
+        .form-textarea {
+            width: 100%;
+            padding: 8px 12px;
+            font-size: 14px;
+            font-family: inherit;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            background: var(--input-bg);
             color: var(--text);
+            transition: all 0.15s ease;
+        }
+
+        .form-input:hover,
+        .form-select:hover,
+        .form-textarea:hover {
+            border-color: var(--border-hover);
+        }
+
+        .form-input:focus,
+        .form-select:focus,
+        .form-textarea:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(35, 131, 226, 0.1);
+        }
+
+        .form-textarea {
+            resize: vertical;
+            min-height: 100px;
+            font-family: 'SF Mono', Monaco, monospace;
+            line-height: 1.5;
+        }
+
+        .form-input.error,
+        .form-select.error,
+        .form-textarea.error {
+            border-color: var(--error);
+        }
+
+        .form-error {
+            font-size: 12px;
+            color: var(--error);
+            margin-top: 4px;
+        }
+
+        /* Range slider */
+        .range-input {
+            -webkit-appearance: none;
+            width: 100%;
+            height: 6px;
+            border-radius: 3px;
+            background: var(--border);
+            outline: none;
+        }
+
+        .range-input::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: var(--accent);
+            cursor: pointer;
+        }
+
+        .range-input::-moz-range-thumb {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: var(--accent);
+            cursor: pointer;
+        }
+
+        .range-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-top: 4px;
+        }
+
+        /* Validation errors */
+        .validation-errors {
+            background: rgba(235, 87, 87, 0.1);
+            border: 1px solid var(--error);
+            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 16px;
+        }
+
+        .validation-errors-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--error);
+            margin-bottom: 8px;
+        }
+
+        .validation-errors-list {
+            list-style: none;
+            font-size: 12px;
+            color: var(--error);
+        }
+
+        .validation-errors-list li {
+            margin-bottom: 4px;
+        }
+
+        .validation-errors-list li::before {
+            content: "• ";
+            margin-right: 4px;
+        }
+
+        /* Action buttons */
+        .action-buttons {
+            display: flex;
+            gap: 8px;
+            padding: 16px;
+            border-top: 1px solid var(--border);
+            background: var(--bg);
+        }
+
+        .action-buttons .btn {
+            flex: 1;
+        }
+
+        /* Modal */
+        .modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .modal.show {
+            display: flex;
+        }
+
+        .modal-content {
+            background: var(--bg);
+            border-radius: 8px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+            width: 90%;
+            max-width: 600px;
+            max-height: 80vh;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .modal-header {
+            padding: 20px 24px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-title {
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        .modal-body {
+            padding: 24px;
+            flex: 1;
+            overflow-y: auto;
+        }
+
+        .modal-footer {
+            padding: 16px 24px;
+            border-top: 1px solid var(--border);
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+        }
+
+        /* Tool list */
+        .tool-item {
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: start;
+        }
+
+        .tool-item-info {
+            flex: 1;
+        }
+
+        .tool-item-name {
+            font-weight: 600;
+            font-size: 13px;
+            margin-bottom: 4px;
+        }
+
+        .tool-item-desc {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .tool-item-actions {
+            display: flex;
+            gap: 4px;
+        }
+
+        .btn-small {
+            padding: 4px 8px;
+            font-size: 12px;
+        }
+
+        /* Results list */
+        .result-item {
+            border-bottom: 1px solid var(--border);
+            padding: 12px 16px;
+            cursor: pointer;
+            transition: background 0.15s ease;
+        }
+
+        .result-item:hover {
+            background: var(--bg-secondary);
+        }
+
+        .result-item.active {
+            background: var(--bg-secondary);
+            border-left: 3px solid var(--accent);
+            padding-left: 13px;
+        }
+
+        .result-config-name {
+            font-weight: 600;
+            font-size: 13px;
+            margin-bottom: 4px;
+        }
+
+        .result-timestamp {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-bottom: 4px;
+        }
+
+        .result-metrics {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        /* Trajectory viewer */
+        .trajectory {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        .trajectory-header {
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .trajectory-title {
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .trajectory-meta {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .message-block {
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            margin-bottom: 16px;
+            overflow: hidden;
+        }
+
+        .message-header {
+            padding: 12px 16px;
+            background: var(--bg-secondary);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .message-role {
+            font-weight: 600;
+            font-size: 13px;
+        }
+
+        .message-content {
+            padding: 16px;
+            font-size: 14px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto';
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .message-collapsed .message-content {
+            display: none;
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <!-- CONFIG BUILDER -->
-        <div class="panel sidebar">
-            <h1>Config Builder</h1>
-
-            <section>
-                <label>Base Config</label>
-                <select id="base-config" onchange="loadBaseConfig()">
-                    <option value="">New config (from scratch)</option>
-                </select>
-            </section>
-
-            <h2>Model Settings</h2>
-
-            <section>
-                <label>Model</label>
-                <select id="model">
-                    <option value="gpt-4-turbo">GPT-4 Turbo</option>
-                    <option value="gpt-4.1-mini">GPT-4.1 Mini</option>
-                    <option value="claude-sonnet-4">Claude Sonnet 4</option>
-                    <option value="claude-opus-4">Claude Opus 4</option>
-                </select>
-            </section>
-
-            <section>
-                <label>Temperature</label>
-                <input type="number" id="temperature" value="0.1" min="0" max="2" step="0.1">
-            </section>
-
-            <section>
-                <label>System Prompt</label>
-                <textarea id="system-prompt" rows="8">You are an expert assistant. Think step by step and provide detailed explanations.</textarea>
-            </section>
-
-            <h2>Environment Settings</h2>
-
-            <div id="env-fields">
-                <!-- Dynamically populated based on base config -->
+    <div class="app">
+        <!-- Top Bar -->
+        <div class="top-bar">
+            <div class="top-bar-left">
+                <button class="btn" id="config-toggle" onclick="toggleConfigSidebar()">
+                    ≡ Config
+                </button>
+                <button class="btn primary" id="launch-btn" onclick="launchAgent()">
+                    ▶ Launch
+                </button>
             </div>
-
-            <h2>Environment Hooks</h2>
-            <section id="hooks-section">
-                <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 12px;">
-                    Environment hooks control how the agent interacts with the environment.
-                </p>
-                <button onclick="viewOnAssistantMessage()" style="background: var(--bg-secondary); color: var(--text); border: 1px solid var(--border); padding: 8px 12px; border-radius: 4px; cursor: pointer; font-size: 13px; width: 100%;">
-                    📄 View on_assistant_message() Source
+            <div class="top-bar-right">
+                <button class="btn" id="results-toggle" onclick="toggleResultsSidebar()">
+                    Results ▼
                 </button>
-            </section>
-
-            <h2>Dataset Preview</h2>
-            <section id="dataset-preview-section">
-                <div id="dataset-preview" style="background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 12px; font-size: 12px; color: var(--text-secondary);">
-                    Select a base config to preview dataset fields
-                </div>
-            </section>
-
-            <h2>Initial Messages</h2>
-            <section id="messages-section">
-                <div id="messages-list">
-                    <!-- Messages will be populated here -->
-                </div>
-                <button onclick="addMessage()" style="margin-top: 12px; background: var(--bg-secondary); color: var(--text); border: 1px solid var(--border); padding: 8px 12px; border-radius: 4px; cursor: pointer; font-size: 13px;">
-                    + Add Message
-                </button>
-            </section>
-
-            <h2>Evaluation Settings</h2>
-
-            <section>
-                <label>Max Turns</label>
-                <input type="number" id="max-turns" value="5" min="1" max="50">
-            </section>
-
-            <section>
-                <label>Num Samples</label>
-                <input type="number" id="num-samples" value="10" min="1" max="1000">
-            </section>
-
-            <h2>Tools</h2>
-            <section id="tools-section">
-                <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 12px;">
-                    Select a base config to see available tools, or add custom tools below.
-                </p>
-                <div id="tools-list">
-                    <!-- Tools will be populated here -->
-                </div>
-                <button onclick="addTool()" style="margin-top: 12px; background: var(--bg-secondary); color: var(--text); border: 1px solid var(--border);">
-                    + Add Tool
-                </button>
-            </section>
-
-            <h2>Save Config</h2>
-
-            <section>
-                <label>Config Name</label>
-                <input type="text" id="config-name" placeholder="03_my_experiment">
-            </section>
-
-            <div class="button-group">
-                <button id="generate-btn" onclick="generateConfig()">Generate Config</button>
             </div>
-
-            <div id="config-status"></div>
         </div>
 
-        <!-- TRACE VIEWER -->
-        <div class="panel main">
-            <h1>Evaluation Results</h1>
+        <!-- Content Area -->
+        <div class="content">
+            <!-- Overlay for dimming -->
+            <div class="overlay" id="overlay" onclick="closeAllSidebars()"></div>
 
-            <section>
-                <ul id="trace-list" class="trace-list">
-                    <li class="empty-state">Loading traces...</li>
-                </ul>
-            </section>
+            <!-- Config Sidebar (Left) -->
+            <div class="sidebar" id="config-sidebar">
+                <div class="sidebar-header">
+                    <div class="sidebar-title">Config</div>
+                    <button class="sidebar-close" onclick="toggleConfigSidebar()">✕</button>
+                </div>
+                <!-- Config tabs -->
+                <div class="config-tabs" id="config-tabs">
+                    <button class="config-tab active" data-config-id="default">
+                        default_config
+                    </button>
+                    <button class="config-tab new" onclick="createNewConfig()">
+                        + New
+                    </button>
+                </div>
 
-            <div id="trace-details">
-                <div class="empty-state">Select an evaluation to view details</div>
+                <div class="sidebar-content" id="config-content">
+                    <!-- Validation errors (hidden by default) -->
+                    <div class="validation-errors" id="validation-errors" style="display: none;">
+                        <div class="validation-errors-title">⚠️ Validation Errors:</div>
+                        <ul class="validation-errors-list" id="validation-errors-list"></ul>
+                    </div>
+
+                    <!-- Base Config -->
+                    <div class="form-section">
+                        <div class="form-section-title">BASE CONFIG</div>
+                        <div class="form-field">
+                            <label class="form-label" for="base-config-select">Base Config</label>
+                            <select class="form-select" id="base-config-select" onchange="onBaseConfigChange()">
+                                <option value="">Loading...</option>
+                            </select>
+                        </div>
+                        <div class="form-field">
+                            <label class="form-label" for="config-name">Config Name</label>
+                            <div style="display: flex; gap: 8px; align-items: center;">
+                                <input type="text" class="form-input" id="config-prefix" readonly style="width: 60px; background: var(--bg-secondary);" value="03_" />
+                                <input type="text" class="form-input" id="config-name" placeholder="my_experiment" style="flex: 1;" />
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Model Settings -->
+                    <div class="form-section">
+                        <div class="form-section-title">MODEL SETTINGS</div>
+                        <div class="form-field">
+                            <label class="form-label" for="model-select">Model</label>
+                            <select class="form-select" id="model-select">
+                                <option value="gpt-4o-mini">gpt-4o-mini</option>
+                                <option value="gpt-4o">gpt-4o</option>
+                                <option value="claude-3-5-sonnet-20241022">claude-3-5-sonnet-20241022</option>
+                                <option value="claude-3-5-haiku-20241022">claude-3-5-haiku-20241022</option>
+                            </select>
+                        </div>
+                        <div class="form-field">
+                            <label class="form-label" for="temperature">Temperature</label>
+                            <input type="number" class="form-input" id="temperature" min="0" max="2" step="0.1" value="0.2" />
+                        </div>
+                    </div>
+
+                    <!-- Dataset Preview -->
+                    <div class="form-section">
+                        <div class="form-section-title">DATASET PREVIEW</div>
+                        <div id="dataset-preview" style="font-size: 12px;">
+                            <p style="color: var(--text-secondary); font-size: 13px;">
+                                Select a base config to view available dataset fields
+                            </p>
+                        </div>
+                    </div>
+
+                    <!-- Initial Messages -->
+                    <div class="form-section">
+                        <div class="form-section-title">INITIAL MESSAGES</div>
+                        <div id="messages-container"></div>
+                        <button class="btn" onclick="addMessage()" style="width: 100%; margin-top: 12px;">
+                            + Add Message
+                        </button>
+                    </div>
+
+                    <!-- Environment Settings -->
+                    <div class="form-section">
+                        <div class="form-section-title">ENVIRONMENT SETTINGS</div>
+                        <div class="form-field">
+                            <label class="form-label" for="ssh-target">SSH Target</label>
+                            <input type="text" class="form-input" id="ssh-target" placeholder="user@host:port" />
+                        </div>
+                        <div class="form-field">
+                            <label class="form-label" for="gpu-id">GPU ID</label>
+                            <input type="number" class="form-input" id="gpu-id" min="0" value="0" />
+                        </div>
+                        <div class="form-field">
+                            <label class="form-label" for="dataset-path">Dataset Path</label>
+                            <input type="text" class="form-input" id="dataset-path" placeholder="datasets/my_dataset.json" />
+                        </div>
+                    </div>
+
+                    <!-- Sampling Settings -->
+                    <div class="form-section">
+                        <div class="form-section-title">SAMPLING SETTINGS</div>
+                        <div class="form-field">
+                            <label class="form-label" for="seed">Seed</label>
+                            <input type="number" class="form-input" id="seed" value="42" />
+                        </div>
+                        <div class="form-field">
+                            <label class="form-label">Sample Range</label>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
+                                <div>
+                                    <input type="number" class="form-input" id="start-idx" min="0" value="0" placeholder="Start" />
+                                </div>
+                                <div>
+                                    <input type="number" class="form-input" id="end-idx" min="0" value="10" placeholder="End" />
+                                </div>
+                            </div>
+                            <input type="range" class="range-input" id="range-slider" min="0" max="100" value="10" oninput="updateRangeFromSlider()" />
+                            <div class="range-labels">
+                                <span id="range-start">0</span>
+                                <span id="range-end">10</span>
+                            </div>
+                        </div>
+                        <div class="form-field">
+                            <label class="form-label" for="max-turns">Max Turns</label>
+                            <input type="number" class="form-input" id="max-turns" min="1" value="5" />
+                        </div>
+                    </div>
+
+                    <!-- Tools -->
+                    <div class="form-section">
+                        <div class="form-section-title">TOOLS</div>
+                        <div id="tools-editor">
+                            <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 12px;">
+                                Select a base config to view and edit tool descriptions
+                            </p>
+                        </div>
+                    </div>
+
+                    <!-- Environment Hooks -->
+                    <div class="form-section">
+                        <div class="form-section-title">ENVIRONMENT HOOKS</div>
+                        <div class="form-field">
+                            <label class="form-label">on_assistant_message()</label>
+                            <p style="color: var(--text-secondary); font-size: 12px; margin-bottom: 8px;">
+                                This hook processes assistant messages (e.g., extracts code, runs tests).
+                            </p>
+                            <button class="btn" onclick="viewEnvironmentHook()" style="width: 100%;">
+                                View Source Code
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Action buttons at bottom -->
+                <div class="action-buttons">
+                    <button class="btn" onclick="validateConfig()">Validate</button>
+                    <button class="btn primary" onclick="saveConfig()">Save Config</button>
+                </div>
+            </div>
+
+            <!-- Results Sidebar (Right) -->
+            <div class="sidebar right" id="results-sidebar">
+                <div class="sidebar-header">
+                    <div class="sidebar-title">Results</div>
+                    <button class="sidebar-close" onclick="toggleResultsSidebar()">✕</button>
+                </div>
+                <div class="sidebar-content" id="results-content">
+                    <p style="color: var(--text-secondary); font-size: 13px; text-align: center; padding: 20px;">
+                        Loading results...
+                    </p>
+                </div>
+            </div>
+
+            <!-- Main Pane -->
+            <div class="main-pane" id="main-pane">
+                <div class="main-pane-content">
+                    <div class="empty-state">
+                        <h2>Welcome to Agent Dev Loop</h2>
+                        <p>Select a result to view or configure and launch a new agent evaluation.</p>
+                        <div style="display: flex; gap: 12px; justify-content: center; margin-top: 24px;">
+                            <button class="btn" onclick="toggleConfigSidebar()">
+                                Open Config
+                            </button>
+                            <button class="btn" onclick="toggleResultsSidebar()">
+                                View Results
+                            </button>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
 
-    <!-- Source Code Viewer Modal -->
-    <div id="source-modal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; padding: 40px;" onclick="closeSourceModal(event)">
-        <div style="background: var(--bg); border-radius: 8px; max-width: 900px; max-height: 90vh; margin: 0 auto; display: flex; flex-direction: column; box-shadow: 0 10px 40px rgba(0,0,0,0.3);" onclick="event.stopPropagation()">
-            <div style="padding: 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
-                <h2 style="margin: 0; font-size: 18px;" id="source-modal-title">Source Code</h2>
-                <button onclick="closeSourceModal()" style="background: transparent; border: none; font-size: 24px; cursor: pointer; color: var(--text-secondary); padding: 0; width: 32px; height: 32px;">&times;</button>
+    <!-- Tool Builder Modal -->
+    <div class="modal" id="tool-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div class="modal-title">Add Tool</div>
+                <button class="sidebar-close" onclick="closeToolBuilder()">✕</button>
             </div>
-            <div style="padding: 20px; overflow-y: auto; flex: 1;">
-                <pre id="source-modal-content" style="background: var(--bg-secondary); padding: 16px; border-radius: 4px; overflow-x: auto; font-size: 13px; line-height: 1.5; font-family: 'Monaco', 'Menlo', 'Consolas', monospace;"></pre>
+            <div class="modal-body">
+                <div class="form-field">
+                    <label class="form-label" for="tool-name">Tool Name</label>
+                    <input type="text" class="form-input" id="tool-name" placeholder="read_file" />
+                </div>
+                <div class="form-field">
+                    <label class="form-label" for="tool-description">Description</label>
+                    <textarea class="form-input" id="tool-description" placeholder="Read contents of a file" rows="2"></textarea>
+                </div>
+                <div class="form-field">
+                    <label class="form-label" for="tool-params">Parameters (JSON)</label>
+                    <textarea class="form-textarea" id="tool-params" placeholder='{"filePath": {"type": "string", "description": "Path to file", "required": true}}' style="min-height: 120px; font-family: monospace; font-size: 12px;"></textarea>
+                    <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">
+                        Format: {"paramName": {"type": "string|number|boolean", "description": "...", "required": true}}
+                    </div>
+                </div>
             </div>
-            <div style="padding: 20px; border-top: 1px solid var(--border); text-align: right;">
-                <button onclick="closeSourceModal()" style="background: var(--accent); color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 14px;">Close</button>
+            <div class="modal-footer">
+                <button class="btn" onclick="closeToolBuilder()">Cancel</button>
+                <button class="btn primary" onclick="saveTool()">Add Tool</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Environment Hook Viewer Modal -->
+    <div class="modal" id="hook-viewer-modal">
+        <div class="modal-content" style="max-width: 800px;">
+            <div class="modal-header">
+                <div class="modal-title">Environment Hook Source Code</div>
+                <button class="sidebar-close" onclick="closeEnvironmentHookViewer()">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-field">
+                    <label class="form-label">on_assistant_message() Implementation</label>
+                    <pre id="hook-source-code" style="background: var(--bg-secondary); padding: 16px; border-radius: 8px; overflow-x: auto; font-family: 'SF Mono', Monaco, monospace; font-size: 12px; line-height: 1.5; margin: 0;">Loading...</pre>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn" onclick="closeEnvironmentHookViewer()">Close</button>
             </div>
         </div>
     </div>
 
     <script>
-        // State machine - explicit state, no frameworks
+        // State machine - explicit state
         const state = {
-            availableConfigs: [],
-            baseConfig: null,
-            config: {
-                baseName: '',
-                configName: '',
-                model: 'gpt-4-turbo',
-                temperature: 0.1,
-                systemPrompt: 'You are an expert assistant. Think step by step and provide detailed explanations.',
-                maxTurns: 5,
-                numSamples: 10,
-                envFields: {},
-                tools: []
+            ui: {
+                configSidebarOpen: false,
+                resultsSidebarOpen: false,
+                mainPaneMode: 'idle', // 'idle' | 'live-stream' | 'trajectory-view'
             },
-            // NEW: Dataset preview
+            configs: [],
+            activeConfigId: null,
+            results: [],
+            selectedResultId: null,
+            liveRun: null,
+
+            // Dataset preview
             sampleData: {
                 datasetPath: '',
                 fields: [],
@@ -504,658 +914,836 @@
                 loading: false,
                 error: null
             },
-            // NEW: Messages for prepare_messages()
+
+            // Messages for prepare_messages()
             messages: [],
-            // NEW: Tool definitions (for editing descriptions)
-            toolDefinitions: [],
-            traces: [],
-            selectedTrace: null,
-            currentTraceData: null
+
+            // Tool definitions (for editing descriptions)
+            toolDefinitions: []
         };
 
-        // Initialize on page load
-        async function init() {
-            loadConfigs();
-            loadTraces();
-
-            // Wire up keyboard listeners
-            document.addEventListener('keydown', (e) => {
-                if (e.key === 'Escape') {
-                    closeSourceModal();
-                }
-            });
-
-            // Wire up input listeners
-            document.getElementById('model').addEventListener('change', (e) => {
-                state.config.model = e.target.value;
-            });
-
-            document.getElementById('temperature').addEventListener('change', (e) => {
-                state.config.temperature = parseFloat(e.target.value);
-            });
-
-            document.getElementById('system-prompt').addEventListener('input', (e) => {
-                state.config.systemPrompt = e.target.value;
-            });
-
-            document.getElementById('max-turns').addEventListener('change', (e) => {
-                state.config.maxTurns = parseInt(e.target.value);
-            });
-
-            document.getElementById('num-samples').addEventListener('change', (e) => {
-                state.config.numSamples = parseInt(e.target.value);
-            });
-
-            document.getElementById('tool-filesystem').addEventListener('change', (e) => {
-                state.config.tools.filesystem = e.target.checked;
-            });
-
-            document.getElementById('tool-web').addEventListener('change', (e) => {
-                state.config.tools.web = e.target.checked;
-            });
-
-            document.getElementById('tool-code-exec').addEventListener('change', (e) => {
-                state.config.tools.codeExec = e.target.checked;
-            });
-
-            document.getElementById('config-name').addEventListener('input', (e) => {
-                state.config.configName = e.target.value;
-            });
+        // Sidebar controls
+        function toggleConfigSidebar() {
+            state.ui.configSidebarOpen = !state.ui.configSidebarOpen;
+            updateUI();
         }
 
-        // Load available configs
-        async function loadConfigs() {
+        function toggleResultsSidebar() {
+            state.ui.resultsSidebarOpen = !state.ui.resultsSidebarOpen;
+            updateUI();
+        }
+
+        function closeAllSidebars() {
+            state.ui.configSidebarOpen = false;
+            state.ui.resultsSidebarOpen = false;
+            updateUI();
+        }
+
+        function updateUI() {
+            const configSidebar = document.getElementById('config-sidebar');
+            const resultsSidebar = document.getElementById('results-sidebar');
+            const mainPane = document.getElementById('main-pane');
+            const overlay = document.getElementById('overlay');
+            const configToggle = document.getElementById('config-toggle');
+            const resultsToggle = document.getElementById('results-toggle');
+
+            // Update config sidebar
+            if (state.ui.configSidebarOpen) {
+                configSidebar.classList.add('open');
+                configToggle.classList.add('active');
+            } else {
+                configSidebar.classList.remove('open');
+                configToggle.classList.remove('active');
+            }
+
+            // Update results sidebar
+            if (state.ui.resultsSidebarOpen) {
+                resultsSidebar.classList.add('open');
+                resultsToggle.classList.add('active');
+            } else {
+                resultsSidebar.classList.remove('open');
+                resultsToggle.classList.remove('active');
+            }
+
+            // Update main pane margins
+            mainPane.className = 'main-pane';
+            if (state.ui.configSidebarOpen) {
+                mainPane.classList.add('sidebar-left-open');
+            }
+            if (state.ui.resultsSidebarOpen) {
+                mainPane.classList.add('sidebar-right-open');
+            }
+
+            // Update overlay
+            if (state.ui.configSidebarOpen || state.ui.resultsSidebarOpen) {
+                overlay.classList.add('show');
+            } else {
+                overlay.classList.remove('show');
+            }
+        }
+
+        // Config management
+        async function loadAvailableConfigs() {
             try {
                 const response = await fetch('/api/configs');
                 const configs = await response.json();
 
-                state.availableConfigs = configs;
+                const select = document.getElementById('base-config-select');
+                select.innerHTML = '<option value="">-- Select base config --</option>';
 
-                // Populate dropdown
-                const select = document.getElementById('base-config');
-                configs.forEach(cfg => {
+                configs.forEach(config => {
                     const option = document.createElement('option');
-                    option.value = cfg.name;
-                    option.textContent = cfg.name;
+                    option.value = config.name;
+                    option.textContent = config.name;
                     select.appendChild(option);
                 });
-            } catch (err) {
-                console.error('Failed to load configs:', err);
+            } catch (error) {
+                console.error('Failed to load configs:', error);
             }
         }
 
-        // Load a base config
-        async function loadBaseConfig() {
-            const configName = document.getElementById('base-config').value;
+        async function onBaseConfigChange() {
+            const select = document.getElementById('base-config-select');
+            const configName = select.value;
 
-            if (!configName) {
-                // Reset to defaults
-                state.baseConfig = null;
-                resetForm();
-                return;
-            }
+            if (!configName) return;
 
             try {
                 const response = await fetch(`/api/load-config/${configName}`);
-                const configData = await response.json();
+                const config = await response.json();
 
-                state.baseConfig = configData;
-                state.config.baseName = configName;
-
-                // Populate form from loaded config
-                if (configData.model) {
-                    document.getElementById('model').value = configData.model;
-                    state.config.model = configData.model;
+                // Populate form fields
+                if (config.model) {
+                    document.getElementById('model-select').value = config.model;
                 }
-                if (configData.temperature !== undefined) {
-                    document.getElementById('temperature').value = configData.temperature;
-                    state.config.temperature = configData.temperature;
-                }
-                if (configData.systemPrompt) {
-                    document.getElementById('system-prompt').value = configData.systemPrompt;
-                    state.config.systemPrompt = configData.systemPrompt;
-                }
-                if (configData.maxTurns) {
-                    document.getElementById('max-turns').value = configData.maxTurns;
-                    state.config.maxTurns = configData.maxTurns;
-                }
-                if (configData.numSamples) {
-                    document.getElementById('num-samples').value = configData.numSamples;
-                    state.config.numSamples = configData.numSamples;
+                if (config.temperature !== undefined) {
+                    document.getElementById('temperature').value = config.temperature;
                 }
 
-                // Populate environment fields
-                const envFields = {};
-                const envFieldsHTML = [];
+                // Use prepareMessages if available, otherwise fall back to systemPrompt
+                if (config.prepareMessages) {
+                    document.getElementById('prepare-messages').value = config.prepareMessages;
+                } else if (config.systemPrompt) {
+                    // Convert old system prompt to prepare_messages format
+                    const prepareMsg = `def prepare_messages(self, sample_data: Dict[str, Any]) -> List[Message]:
+    """Prepare initial messages."""
+    system_prompt = """${config.systemPrompt}"""
 
-                if (configData.sshTarget) {
-                    envFields.sshTarget = configData.sshTarget;
-                    envFieldsHTML.push(`
-                        <section>
-                            <label>SSH Target</label>
-                            <input type="text" id="ssh-target" value="${configData.sshTarget}" oninput="state.config.envFields.sshTarget = this.value">
-                        </section>
-                    `);
-                }
-                if (configData.gpuId !== undefined) {
-                    envFields.gpuId = configData.gpuId;
-                    envFieldsHTML.push(`
-                        <section>
-                            <label>GPU ID</label>
-                            <input type="number" id="gpu-id" value="${configData.gpuId}" oninput="state.config.envFields.gpuId = parseInt(this.value)">
-                        </section>
-                    `);
-                }
-                if (configData.datasetPath) {
-                    envFields.datasetPath = configData.datasetPath;
-                    envFieldsHTML.push(`
-                        <section>
-                            <label>Dataset Path</label>
-                            <input type="text" id="dataset-path" value="${configData.datasetPath}" oninput="state.config.envFields.datasetPath = this.value">
-                        </section>
-                    `);
-                }
-                if (configData.envName) {
-                    envFields.envName = configData.envName;
-                    envFieldsHTML.push(`
-                        <section>
-                            <label>Environment Name</label>
-                            <input type="text" id="env-name" value="${configData.envName}" oninput="state.config.envFields.envName = this.value">
-                        </section>
-                    `);
+    user_prompt = sample_data["problem_description"]
+
+    return [
+        Message(role="system", content=system_prompt),
+        Message(role="user", content=user_prompt),
+    ]`;
+                    document.getElementById('prepare-messages').value = prepareMsg;
                 }
 
-                state.config.envFields = envFields;
-                document.getElementById('env-fields').innerHTML = envFieldsHTML.join('');
+                // Populate environment settings
+                if (config.sshTarget) {
+                    document.getElementById('ssh-target').value = config.sshTarget;
+                }
+                if (config.gpuId !== undefined) {
+                    document.getElementById('gpu-id').value = config.gpuId;
+                }
+                if (config.datasetPath) {
+                    document.getElementById('dataset-path').value = config.datasetPath;
+                }
 
-                // Show tool status
-                const toolsList = document.getElementById('tools-list');
-                if (configData.hasTools) {
-                    toolsList.innerHTML = '<p style="color: var(--success); font-size: 13px;">✓ Base config has tools defined. You can add more below or edit the generated config manually.</p>';
+                // Populate sampling settings
+                if (config.seed !== undefined) {
+                    document.getElementById('seed').value = config.seed;
                 } else {
-                    toolsList.innerHTML = '<p style="color: var(--text-secondary); font-size: 13px;">Base config uses code block parsing (no explicit tools). Add tools below if needed.</p>';
+                    document.getElementById('seed').value = 42; // default
                 }
 
-                // Suggest next config name
-                const match = configName.match(/^(\d+)_/);
-                if (match) {
-                    const nextNum = String(parseInt(match[1]) + 1).padStart(2, '0');
-                    document.getElementById('config-name').value = `${nextNum}_${configData.envName || 'custom'}`;
-                    state.config.configName = document.getElementById('config-name').value;
+                if (config.startIdx !== undefined) {
+                    document.getElementById('start-idx').value = config.startIdx;
+                } else {
+                    document.getElementById('start-idx').value = 0;
                 }
 
-                // Load dataset preview, messages, and tools
+                if (config.endIdx !== undefined) {
+                    document.getElementById('end-idx').value = config.endIdx;
+                } else if (config.numSamples !== undefined) {
+                    document.getElementById('end-idx').value = config.numSamples;
+                } else {
+                    document.getElementById('end-idx').value = 10;
+                }
+
+                updateRangeLabels();
+
+                if (config.maxTurns !== undefined) {
+                    document.getElementById('max-turns').value = config.maxTurns;
+                }
+
+                // Handle config name with prefix/suffix split
+                const prefixMatch = configName.match(/^(\d+_)/);
+                if (prefixMatch) {
+                    const prefix = prefixMatch[1];
+                    const num = parseInt(prefix);
+                    const newPrefix = String(num + 1).padStart(2, '0') + '_';
+                    const suffix = configName.substring(prefix.length);
+
+                    document.getElementById('config-prefix').value = newPrefix;
+                    document.getElementById('config-name').value = suffix;
+                } else {
+                    document.getElementById('config-prefix').value = '03_';
+                    document.getElementById('config-name').value = configName + '_custom';
+                }
+
+                // Load message builder data
                 await loadDatasetPreview(configName);
                 await loadMessages(configName);
                 await loadTools(configName);
 
-            } catch (err) {
-                console.error('Failed to load config:', err);
-                alert('Failed to load config: ' + err.message);
+            } catch (error) {
+                console.error('Failed to load config:', error);
+                alert('Failed to load config: ' + error.message);
             }
         }
 
-        function resetForm() {
-            document.getElementById('model').value = 'gpt-4-turbo';
-            document.getElementById('temperature').value = 0.1;
-            document.getElementById('system-prompt').value = 'You are an expert assistant. Think step by step and provide detailed explanations.';
-            document.getElementById('max-turns').value = 5;
-            document.getElementById('num-samples').value = 10;
-            document.getElementById('env-fields').innerHTML = '';
-            document.getElementById('tools-list').innerHTML = '';
+        function updateRangeFromSlider() {
+            const slider = document.getElementById('range-slider');
+            const endIdx = document.getElementById('end-idx');
+            endIdx.value = slider.value;
+            updateRangeLabels();
+        }
+
+        function updateRangeLabels() {
+            const startIdx = document.getElementById('start-idx').value;
+            const endIdx = document.getElementById('end-idx').value;
+            document.getElementById('range-start').textContent = startIdx;
+            document.getElementById('range-end').textContent = endIdx;
+
+            // Update slider
+            const slider = document.getElementById('range-slider');
+            slider.max = Math.max(100, parseInt(endIdx) + 10);
+            slider.value = endIdx;
+        }
+
+        function createNewConfig() {
+            // Clear form
+            document.getElementById('base-config-select').value = '';
             document.getElementById('config-name').value = '';
+            document.getElementById('model-select').value = 'gpt-4o-mini';
+            document.getElementById('temperature').value = '0.2';
+            document.getElementById('ssh-target').value = '';
+            document.getElementById('gpu-id').value = '0';
+            document.getElementById('dataset-path').value = '';
+            document.getElementById('seed').value = '42';
+            document.getElementById('start-idx').value = '0';
+            document.getElementById('end-idx').value = '10';
+            document.getElementById('max-turns').value = '5';
+            updateRangeLabels();
 
-            state.config = {
-                baseName: '',
-                configName: '',
-                model: 'gpt-4-turbo',
-                temperature: 0.1,
-                systemPrompt: 'You are an expert assistant. Think step by step and provide detailed explanations.',
-                maxTurns: 5,
-                numSamples: 10,
-                envFields: {},
-                tools: []
+            // Clear message builder state
+            state.messages = [];
+            state.toolDefinitions = [];
+            state.sampleData = {
+                datasetPath: '',
+                fields: [],
+                sample: {},
+                loading: false,
+                error: null
             };
+
+            renderDatasetPreview();
+            renderMessages();
+            renderToolsEditor();
+
+            // Clear validation errors
+            document.getElementById('validation-errors').style.display = 'none';
         }
 
-        function addTool() {
-            alert('Tool builder UI coming soon! For now, generate a config and add tools manually in get_tools() method.');
+        function validateConfig() {
+            const errors = [];
+
+            // Check required fields
+            const configName = document.getElementById('config-name').value.trim();
+            if (!configName) {
+                errors.push('Config name suffix is required');
+            } else if (!/^[a-zA-Z0-9_]+$/.test(configName)) {
+                errors.push('Config name must contain only letters, numbers, and underscores');
+            }
+
+            // Check that we have at least one message
+            if (state.messages.length === 0) {
+                errors.push('At least one message is required');
+            }
+
+            const startIdx = parseInt(document.getElementById('start-idx').value);
+            const endIdx = parseInt(document.getElementById('end-idx').value);
+            if (startIdx >= endIdx) {
+                errors.push('Start index must be less than end index');
+            }
+
+            const maxTurns = parseInt(document.getElementById('max-turns').value);
+            if (maxTurns < 1) {
+                errors.push('Max turns must be at least 1');
+            }
+
+            // Display errors
+            const errorContainer = document.getElementById('validation-errors');
+            const errorList = document.getElementById('validation-errors-list');
+
+            if (errors.length > 0) {
+                errorList.innerHTML = errors.map(err => `<li>${err}</li>`).join('');
+                errorContainer.style.display = 'block';
+                return false;
+            } else {
+                errorContainer.style.display = 'none';
+                alert('✓ Config is valid!');
+                return true;
+            }
         }
 
-        // ========== NEW: Dataset, Messages, and Tools Functions ==========
+        async function saveConfig() {
+            if (!validateConfig()) {
+                return;
+            }
 
+            // Combine prefix + suffix for full config name
+            const prefix = document.getElementById('config-prefix').value;
+            const suffix = document.getElementById('config-name').value.trim();
+            const fullName = prefix + suffix;
+
+            const baseName = document.getElementById('base-config-select').value;
+
+            const config = {
+                baseName: baseName,
+                configName: suffix,
+                model: document.getElementById('model-select').value,
+                temperature: parseFloat(document.getElementById('temperature').value),
+                ssh_target: document.getElementById('ssh-target').value.trim(),
+                gpu_id: parseInt(document.getElementById('gpu-id').value),
+                dataset_path: document.getElementById('dataset-path').value.trim(),
+                seed: parseInt(document.getElementById('seed').value),
+                start_idx: parseInt(document.getElementById('start-idx').value),
+                end_idx: parseInt(document.getElementById('end-idx').value),
+                max_turns: parseInt(document.getElementById('max-turns').value),
+                messages: state.messages,
+                tools: state.toolDefinitions,
+            };
+
+            try {
+                const response = await fetch('/api/generate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config),
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+                }
+
+                const result = await response.json();
+                alert(`✓ Config saved to: ${result.file_path}`);
+
+                // Reload available configs
+                await loadAvailableConfigs();
+
+            } catch (error) {
+                console.error('Failed to save config:', error);
+                alert('Failed to save config: ' + error.message);
+            }
+        }
+
+        // Tool management
+        function openToolBuilder() {
+            document.getElementById('tool-modal').classList.add('show');
+        }
+
+        function closeToolBuilder() {
+            document.getElementById('tool-modal').classList.remove('show');
+            // Clear form
+            document.getElementById('tool-name').value = '';
+            document.getElementById('tool-description').value = '';
+            document.getElementById('tool-params').value = '';
+        }
+
+        function saveTool() {
+            const name = document.getElementById('tool-name').value.trim();
+            const description = document.getElementById('tool-description').value.trim();
+            const paramsText = document.getElementById('tool-params').value.trim();
+
+            // Validate
+            if (!name) {
+                alert('Tool name is required');
+                return;
+            }
+
+            if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) {
+                alert('Tool name must be a valid Python identifier (letters, numbers, underscores, no spaces)');
+                return;
+            }
+
+            if (!description) {
+                alert('Tool description is required');
+                return;
+            }
+
+            // Parse parameters
+            let params = {};
+            if (paramsText) {
+                try {
+                    params = JSON.parse(paramsText);
+                } catch (e) {
+                    alert('Invalid JSON in parameters: ' + e.message);
+                    return;
+                }
+            }
+
+            // Add tool to state
+            state.tools.push({
+                name,
+                description,
+                parameters: params
+            });
+
+            // Update UI
+            updateToolsList();
+            closeToolBuilder();
+        }
+
+        function removeTool(index) {
+            state.tools.splice(index, 1);
+            updateToolsList();
+        }
+
+        function updateToolsList() {
+            const container = document.getElementById('tools-list');
+
+            if (state.tools.length === 0) {
+                container.innerHTML = '<p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 12px;">No tools added yet. Click below to add your first tool.</p>';
+                return;
+            }
+
+            container.innerHTML = state.tools.map((tool, index) => {
+                const paramsList = Object.keys(tool.parameters).length > 0
+                    ? Object.keys(tool.parameters).join(', ')
+                    : 'no parameters';
+
+                return `
+                    <div class="tool-item">
+                        <div class="tool-item-info">
+                            <div class="tool-item-name">${tool.name}</div>
+                            <div class="tool-item-desc">${tool.description}</div>
+                            <div class="tool-item-desc" style="margin-top: 4px; font-style: italic;">Params: ${paramsList}</div>
+                        </div>
+                        <div class="tool-item-actions">
+                            <button class="btn btn-small" onclick="removeTool(${index})">Remove</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // Results management
+        async function loadResults() {
+            try {
+                const response = await fetch('/api/traces');
+                const results = await response.json();
+                state.results = results;
+                updateResultsList();
+            } catch (error) {
+                console.error('Failed to load results:', error);
+                document.getElementById('results-content').innerHTML =
+                    '<p style="color: var(--error); font-size: 13px; text-align: center; padding: 20px;">Failed to load results</p>';
+            }
+        }
+
+        function updateResultsList() {
+            const container = document.getElementById('results-content');
+
+            if (state.results.length === 0) {
+                container.innerHTML = '<p style="color: var(--text-secondary); font-size: 13px; text-align: center; padding: 20px;">No results yet</p>';
+                return;
+            }
+
+            container.innerHTML = state.results.map(result => {
+                const date = new Date(result.timestamp * 1000);
+                const dateStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+                const isActive = state.selectedResultId === result.id;
+
+                return `
+                    <div class="result-item ${isActive ? 'active' : ''}" onclick="viewResult('${result.id}')">
+                        <div class="result-config-name">${result.name}</div>
+                        <div class="result-timestamp">${dateStr}</div>
+                        <div class="result-metrics">Mean: ${result.mean_reward.toFixed(2)} | Samples: ${result.total_samples}</div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        async function viewResult(resultId) {
+            state.selectedResultId = resultId;
+            state.ui.mainPaneMode = 'trajectory-view';
+            updateResultsList();
+
+            // Load trajectory data
+            try {
+                const response = await fetch(`/api/trace/${resultId}`);
+                const trace = await response.json();
+                displayTrajectory(trace);
+            } catch (error) {
+                console.error('Failed to load trajectory:', error);
+                const mainPane = document.querySelector('.main-pane-content');
+                mainPane.innerHTML = '<div class="empty-state"><h2>Error</h2><p>Failed to load trajectory</p></div>';
+            }
+        }
+
+        function displayTrajectory(trace) {
+            const mainPane = document.querySelector('.main-pane-content');
+
+            // Simple trajectory display - just show the messages
+            const samples = trace.samples || [];
+            if (samples.length === 0) {
+                mainPane.innerHTML = '<div class="empty-state"><h2>No Samples</h2><p>This trace has no samples</p></div>';
+                return;
+            }
+
+            let html = `
+                <div class="trajectory">
+                    <div class="trajectory-header">
+                        <div class="trajectory-title">${trace.name || 'Trajectory'}</div>
+                        <div class="trajectory-meta">
+                            Samples: ${trace.total_samples || samples.length} |
+                            Mean Reward: ${trace.mean_reward?.toFixed(2) || 'N/A'}
+                        </div>
+                    </div>
+            `;
+
+            // Display first sample's messages
+            const sample = samples[0];
+            const messages = sample.messages || sample.trajectory || [];
+
+            messages.forEach((msg, idx) => {
+                const role = msg.role || 'unknown';
+                const content = msg.content || '';
+                html += `
+                    <div class="message-block" id="msg-${idx}">
+                        <div class="message-header" onclick="toggleMessage(${idx})">
+                            <div class="message-role">${role}</div>
+                            <div>▼</div>
+                        </div>
+                        <div class="message-content">${content}</div>
+                    </div>
+                `;
+            });
+
+            html += '</div>';
+            mainPane.innerHTML = html;
+        }
+
+        function toggleMessage(idx) {
+            const block = document.getElementById(`msg-${idx}`);
+            block.classList.toggle('message-collapsed');
+        }
+
+        // Launch agent
+        async function launchAgent() {
+            // Get the most recent config name
+            const prefix = document.getElementById('config-prefix')?.value || '03_';
+            const suffix = document.getElementById('config-name')?.value?.trim() || 'my_config';
+            const configName = prefix + suffix;
+
+            // For now, just show instructions to run manually
+            // TODO: Add background execution with SSE streaming
+            const command = `python entrypoint.py configs/${configName}.py`;
+
+            const message = `To launch this evaluation, run:\n\n${command}\n\nThe results will appear in the Results sidebar when complete.\n\n(Automatic launch with live streaming will be added soon!)`;
+
+            alert(message);
+
+            // Optionally reload results after a delay
+            setTimeout(() => {
+                loadResults();
+            }, 2000);
+        }
+
+        // Initialize
+        async function init() {
+            updateUI();
+            await Promise.all([
+                loadAvailableConfigs(),
+                loadResults()
+            ]);
+
+            // Set up input listeners
+            document.getElementById('start-idx').addEventListener('input', updateRangeLabels);
+            document.getElementById('end-idx').addEventListener('input', updateRangeLabels);
+
+            console.log('Agent Dev Loop initialized');
+            console.log('Phase 1: Core layout with sliding sidebars ✓');
+            console.log('Phase 2: Config sidebar with forms ✓');
+        }
+
+        // ===== Dataset Preview =====
         async function loadDatasetPreview(configName) {
             state.sampleData.loading = true;
+            state.sampleData.error = null;
             renderDatasetPreview();
 
             try {
                 const response = await fetch(`/api/dataset-preview/${configName}`);
                 const data = await response.json();
 
-                state.sampleData = {...data, loading: false};
-                renderDatasetPreview();
-            } catch (err) {
-                console.error('Failed to load dataset preview:', err);
-                state.sampleData = {
-                    error: 'Failed to load dataset preview',
-                    datasetPath: '',
-                    fields: [],
-                    sample: {},
-                    loading: false
-                };
+                if (data.error) {
+                    state.sampleData.error = data.error;
+                } else {
+                    state.sampleData.datasetPath = data.datasetPath;
+                    state.sampleData.fields = data.fields;
+                    state.sampleData.sample = data.sample;
+                }
+            } catch (error) {
+                state.sampleData.error = 'Failed to load dataset preview';
+                console.error(error);
+            } finally {
+                state.sampleData.loading = false;
                 renderDatasetPreview();
             }
         }
 
         function renderDatasetPreview() {
-            const preview = document.getElementById('dataset-preview');
+            const container = document.getElementById('dataset-preview');
 
             if (state.sampleData.loading) {
-                preview.innerHTML = '<div style="color: var(--text-secondary);">Loading dataset...</div>';
+                container.innerHTML = '<p style="color: var(--text-secondary);">Loading dataset preview...</p>';
                 return;
             }
 
             if (state.sampleData.error) {
-                preview.innerHTML = `<div style="color: var(--error);">${state.sampleData.error}</div>`;
+                container.innerHTML = `<p style="color: var(--text-error);">${state.sampleData.error}</p>`;
                 return;
             }
 
             if (!state.sampleData.fields || state.sampleData.fields.length === 0) {
-                preview.innerHTML = '<div style="color: var(--text-secondary);">No dataset fields found</div>';
+                container.innerHTML = '<p style="color: var(--text-secondary);">No dataset loaded</p>';
                 return;
             }
 
-            const fieldsHTML = state.sampleData.fields.map(field => {
+            let html = `<div style="margin-bottom: 8px; color: var(--text-secondary); font-size: 12px;">${state.sampleData.datasetPath}</div>`;
+            html += '<div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">Click field to copy placeholder:</div>';
+
+            state.sampleData.fields.forEach(field => {
                 const value = state.sampleData.sample[field];
                 const displayValue = typeof value === 'string' && value.length > 50
                     ? value.substring(0, 50) + '...'
                     : JSON.stringify(value);
 
-                return `
-                    <div style="margin-bottom: 8px;">
-                        <code style="background: var(--bg-secondary); padding: 2px 6px; border-radius: 3px; cursor: pointer; user-select: all;"
-                              onclick="copyFieldName('${field}')"
-                              title="Click to copy {${field}}">{${field}}</code>
-                        <span style="color: var(--text-secondary); margin-left: 8px; font-size: 11px;">${displayValue}</span>
+                html += `
+                    <div onclick="copyFieldName('${field}')" style="cursor: pointer; padding: 6px 8px; background: var(--bg-secondary); border-radius: 4px; margin-bottom: 4px; font-family: monospace; font-size: 11px; display: flex; justify-content: space-between; align-items: center;">
+                        <span style="color: var(--text-link); font-weight: 500;">{${field}}</span>
+                        <span style="color: var(--text-secondary); margin-left: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 1;">${displayValue}</span>
                     </div>
                 `;
-            }).join('');
+            });
 
-            preview.innerHTML = `
-                <div style="margin-bottom: 12px; font-weight: 500; font-size: 12px;">📁 ${state.sampleData.datasetPath}</div>
-                <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 8px;">Available placeholders:</div>
-                ${fieldsHTML}
-            `;
+            container.innerHTML = html;
         }
 
-        function copyFieldName(field) {
-            const placeholder = `{${field}}`;
-            navigator.clipboard.writeText(placeholder);
-            // Show feedback
-            const preview = document.getElementById('dataset-preview');
-            const oldHTML = preview.innerHTML;
-            preview.innerHTML = `<div style="color: var(--success);">✓ Copied ${placeholder} to clipboard</div>`;
-            setTimeout(() => {
-                preview.innerHTML = oldHTML;
-            }, 1500);
+        function copyFieldName(fieldName) {
+            const placeholder = `{${fieldName}}`;
+            navigator.clipboard.writeText(placeholder).then(() => {
+                // Show temporary feedback
+                const event = new CustomEvent('show-toast', {
+                    detail: { message: `Copied: ${placeholder}` }
+                });
+                window.dispatchEvent(event);
+            });
         }
 
+        // ===== Message Builder =====
         async function loadMessages(configName) {
             try {
                 const response = await fetch(`/api/parse-messages/${configName}`);
                 const data = await response.json();
 
                 if (data.error) {
+                    console.warn('Could not parse messages:', data.error);
                     state.messages = [];
                 } else {
                     state.messages = data.messages || [];
                 }
 
                 renderMessages();
-            } catch (err) {
-                console.error('Failed to load messages:', err);
+            } catch (error) {
+                console.error('Failed to load messages:', error);
                 state.messages = [];
                 renderMessages();
             }
         }
 
         function renderMessages() {
-            const messagesList = document.getElementById('messages-list');
+            const container = document.getElementById('messages-container');
 
             if (state.messages.length === 0) {
-                messagesList.innerHTML = '<div style="color: var(--text-secondary); font-size: 13px; padding: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px;">No messages yet. Click "+ Add Message" to start building the conversation.</div>';
+                container.innerHTML = '<p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 12px;">No messages yet. Click below to add your first message.</p>';
                 return;
             }
 
-            const messagesHTML = state.messages.map((msg, idx) => `
-                <div style="background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 12px; margin-bottom: 12px;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                        <label style="margin: 0;">Message ${idx + 1}</label>
-                        <button onclick="deleteMessage(${idx})" style="background: transparent; border: none; color: var(--error); cursor: pointer; padding: 4px 8px; font-size: 16px;">×</button>
+            let html = '';
+            state.messages.forEach((msg, index) => {
+                html += `
+                    <div style="background: var(--bg-secondary); padding: 12px; border-radius: 8px; margin-bottom: 12px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <span style="font-weight: 500; font-size: 13px;">Message ${index + 1}</span>
+                            <button onclick="deleteMessage(${index})" class="btn" style="padding: 4px 8px; font-size: 12px;">×</button>
+                        </div>
+                        <div class="form-field" style="margin-bottom: 8px;">
+                            <label class="form-label" style="font-size: 12px;">Role</label>
+                            <select class="form-select" onchange="updateMessageRole(${index}, this.value)" style="font-size: 12px;">
+                                <option value="system" ${msg.role === 'system' ? 'selected' : ''}>system</option>
+                                <option value="user" ${msg.role === 'user' ? 'selected' : ''}>user</option>
+                                <option value="assistant" ${msg.role === 'assistant' ? 'selected' : ''}>assistant</option>
+                            </select>
+                        </div>
+                        <div class="form-field">
+                            <label class="form-label" style="font-size: 12px;">Content</label>
+                            <textarea
+                                class="form-textarea"
+                                oninput="updateMessageContent(${index}, this.value)"
+                                style="min-height: 80px; font-family: 'SF Mono', Monaco, monospace; font-size: 12px;"
+                                placeholder="Message content (use {field_name} for placeholders)"
+                            >${msg.content}</textarea>
+                        </div>
                     </div>
-                    <div style="margin-bottom: 8px;">
-                        <label style="font-size: 11px; margin-bottom: 4px;">Role</label>
-                        <select onchange="updateMessageRole(${idx}, this.value)" style="width: 100%; padding: 6px 8px; font-size: 13px;">
-                            <option value="system" ${msg.role === 'system' ? 'selected' : ''}>system</option>
-                            <option value="user" ${msg.role === 'user' ? 'selected' : ''}>user</option>
-                            <option value="assistant" ${msg.role === 'assistant' ? 'selected' : ''}>assistant</option>
-                        </select>
-                    </div>
-                    <div>
-                        <label style="font-size: 11px; margin-bottom: 4px;">Content</label>
-                        <textarea oninput="updateMessageContent(${idx}, this.value)" rows="6" style="width: 100%; padding: 8px; font-size: 13px; font-family: monospace; resize: vertical;">${msg.content}</textarea>
-                    </div>
-                </div>
-            `).join('');
+                `;
+            });
 
-            messagesList.innerHTML = messagesHTML;
+            container.innerHTML = html;
         }
 
         function addMessage() {
-            state.messages.push({
-                role: 'user',
-                content: ''
-            });
+            state.messages.push({ role: 'user', content: '' });
             renderMessages();
         }
 
-        function deleteMessage(idx) {
-            state.messages.splice(idx, 1);
+        function deleteMessage(index) {
+            state.messages.splice(index, 1);
             renderMessages();
         }
 
-        function updateMessageRole(idx, role) {
-            state.messages[idx].role = role;
+        function updateMessageRole(index, role) {
+            state.messages[index].role = role;
         }
 
-        function updateMessageContent(idx, content) {
-            state.messages[idx].content = content;
+        function updateMessageContent(index, content) {
+            state.messages[index].content = content;
         }
 
+        // ===== Tool Editor =====
         async function loadTools(configName) {
             try {
                 const response = await fetch(`/api/parse-tools/${configName}`);
                 const data = await response.json();
 
                 if (data.error) {
+                    console.warn('Could not parse tools:', data.error);
                     state.toolDefinitions = [];
                 } else {
                     state.toolDefinitions = data.tools || [];
                 }
 
                 renderToolsEditor();
-            } catch (err) {
-                console.error('Failed to load tools:', err);
+            } catch (error) {
+                console.error('Failed to load tools:', error);
                 state.toolDefinitions = [];
                 renderToolsEditor();
             }
         }
 
         function renderToolsEditor() {
-            const toolsList = document.getElementById('tools-list');
+            const container = document.getElementById('tools-editor');
 
             if (state.toolDefinitions.length === 0) {
-                toolsList.innerHTML = '<p style="color: var(--text-secondary); font-size: 13px;">No tools defined in this config. Tools are defined in the get_tools() method.</p>';
+                container.innerHTML = '<p style="color: var(--text-secondary); font-size: 13px;">No tools defined in this config</p>';
                 return;
             }
 
-            const toolsHTML = state.toolDefinitions.map((tool, toolIdx) => `
-                <details style="background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 12px; margin-bottom: 12px;">
-                    <summary style="cursor: pointer; font-weight: 500; margin-bottom: 12px;">${tool.name}</summary>
-
-                    <div style="margin-bottom: 12px;">
-                        <label style="font-size: 11px; margin-bottom: 4px;">Description</label>
-                        <textarea oninput="updateToolDescription(${toolIdx}, this.value)" rows="2" style="width: 100%; padding: 8px; font-size: 13px;">${tool.description}</textarea>
-                    </div>
-
-                    ${tool.parameters && tool.parameters.length > 0 ? `
-                        <div>
-                            <label style="font-size: 11px; margin-bottom: 8px; display: block;">Parameters</label>
-                            ${tool.parameters.map((param, paramIdx) => `
-                                <div style="margin-bottom: 12px; padding-left: 12px; border-left: 2px solid var(--border);">
-                                    <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 4px;">
-                                        <code>${param.name}</code>
-                                        <span style="font-size: 11px;">(${param.type}${param.required ? ', required' : ', optional'})</span>
-                                    </div>
-                                    <textarea oninput="updateParamDescription(${toolIdx}, ${paramIdx}, this.value)" rows="2" style="width: 100%; padding: 6px; font-size: 12px;" placeholder="Parameter description">${param.description}</textarea>
-                                </div>
-                            `).join('')}
-                        </div>
-                    ` : ''}
-                </details>
-            `).join('');
-
-            toolsList.innerHTML = toolsHTML;
-        }
-
-        function updateToolDescription(toolIdx, description) {
-            state.toolDefinitions[toolIdx].description = description;
-        }
-
-        function updateParamDescription(toolIdx, paramIdx, description) {
-            state.toolDefinitions[toolIdx].parameters[paramIdx].description = description;
-        }
-
-        async function viewOnAssistantMessage() {
-            if (!state.baseConfig || !state.baseConfig.source) {
-                alert('Please select a base config first');
-                return;
-            }
-
-            // Extract on_assistant_message method from source
-            const source = state.baseConfig.source;
-            const methodMatch = source.match(/async def on_assistant_message\(self[^)]*\):.*?(?=\n    async def |\n    def |\n    @|\nclass |\Z)/s);
-
-            if (!methodMatch) {
-                alert('Could not find on_assistant_message() method in this config');
-                return;
-            }
-
-            const methodSource = methodMatch[0];
-
-            // Show in modal
-            document.getElementById('source-modal-title').textContent = 'on_assistant_message() - Environment Hook';
-            document.getElementById('source-modal-content').textContent = methodSource;
-            document.getElementById('source-modal').style.display = 'block';
-        }
-
-        function closeSourceModal(event) {
-            // If event is provided and click was on modal content, don't close
-            if (event && event.target.id !== 'source-modal') {
-                return;
-            }
-            document.getElementById('source-modal').style.display = 'none';
-        }
-
-        // ========== End NEW Functions ==========
-
-        // Load available traces
-        async function loadTraces() {
-            try {
-                const response = await fetch('/api/traces');
-                const traces = await response.json();
-
-                state.traces = traces;
-                renderTraceList();
-            } catch (err) {
-                console.error('Failed to load traces:', err);
-                document.getElementById('trace-list').innerHTML =
-                    '<li class="empty-state">Failed to load traces</li>';
-            }
-        }
-
-        // Render trace list
-        function renderTraceList() {
-            const traceList = document.getElementById('trace-list');
-
-            if (state.traces.length === 0) {
-                traceList.innerHTML = '<li class="empty-state">No traces found</li>';
-                return;
-            }
-
-            traceList.innerHTML = state.traces.map(trace => `
-                <li class="trace-item ${state.selectedTrace === trace.id ? 'selected' : ''}"
-                    onclick="selectTrace('${trace.id}')">
-                    <div class="trace-item-header">${trace.name}</div>
-                    <div class="trace-item-meta">
-                        Samples: ${trace.total_samples} |
-                        Mean Reward: ${trace.mean_reward.toFixed(3)} |
-                        ${new Date(trace.timestamp * 1000).toLocaleString()}
-                    </div>
-                </li>
-            `).join('');
-        }
-
-        // Select and load a trace
-        async function selectTrace(traceId) {
-            state.selectedTrace = traceId;
-            renderTraceList();
-
-            try {
-                const response = await fetch(`/api/trace/${traceId}`);
-                const traceData = await response.json();
-
-                state.currentTraceData = traceData;
-                renderTraceDetails();
-            } catch (err) {
-                console.error('Failed to load trace:', err);
-                document.getElementById('trace-details').innerHTML =
-                    '<div class="status error">Failed to load trace details</div>';
-            }
-        }
-
-        // Render trace details
-        function renderTraceDetails() {
-            const details = document.getElementById('trace-details');
-            const data = state.currentTraceData;
-
-            if (!data) {
-                details.innerHTML = '<div class="empty-state">Select an evaluation to view details</div>';
-                return;
-            }
-
-            const report = data.report;
-            const trajectories = data.trajectories || [];
-
-            // Metric cards
-            let html = '<h2>Summary Metrics</h2>';
-            html += '<div class="metrics-grid">';
-            html += `
-                <div class="metric-card">
-                    <div class="metric-label">Total Samples</div>
-                    <div class="metric-value">${report.total_samples}</div>
-                </div>
-                <div class="metric-card">
-                    <div class="metric-label">Mean Reward</div>
-                    <div class="metric-value">${report.summary_metrics.mean_reward.toFixed(3)}</div>
-                </div>
-                <div class="metric-card">
-                    <div class="metric-label">Min Reward</div>
-                    <div class="metric-value">${report.summary_metrics.min_reward.toFixed(3)}</div>
-                </div>
-                <div class="metric-card">
-                    <div class="metric-label">Max Reward</div>
-                    <div class="metric-value">${report.summary_metrics.max_reward.toFixed(3)}</div>
-                </div>
-            `;
-            html += '</div>';
-
-            html += '<h2>Conversation</h2>';
-
-            if (trajectories.length === 0) {
-                html += '<div class="empty-state">No trajectory details available</div>';
-            } else {
-                // Show first trajectory as example
-                const traj = trajectories[0];
-                html += '<section>';
-
-                if (traj.messages) {
-                    traj.messages.forEach(msg => {
-                        html += `
-                            <div class="message ${msg.role}">
-                                <div class="message-role">${msg.role}</div>
-                                <div class="message-content">${escapeHtml(msg.content || '')}</div>
+            let html = '';
+            state.toolDefinitions.forEach((tool, toolIndex) => {
+                html += `
+                    <details style="background: var(--bg-secondary); padding: 12px; border-radius: 8px; margin-bottom: 12px;">
+                        <summary style="cursor: pointer; font-weight: 500; font-family: monospace; font-size: 13px; margin-bottom: 8px;">
+                            ${tool.name}
+                        </summary>
+                        <div style="padding-left: 16px; margin-top: 12px;">
+                            <div class="form-field" style="margin-bottom: 12px;">
+                                <label class="form-label" style="font-size: 12px;">Description</label>
+                                <textarea
+                                    class="form-textarea"
+                                    oninput="updateToolDescription(${toolIndex}, this.value)"
+                                    style="min-height: 60px; font-size: 12px;"
+                                >${tool.description}</textarea>
                             </div>
-                        `;
-                    });
-                }
+                            <div style="font-weight: 500; font-size: 12px; margin-bottom: 8px; color: var(--text-secondary);">Parameters:</div>
+                `;
 
-                html += '</section>';
-
-                if (trajectories.length > 1) {
-                    html += `<div style="margin-top: 12px; padding: 12px; background: var(--bg-secondary); border-radius: 6px; text-align: center; color: var(--text-secondary); font-size: 13px;">+ ${trajectories.length - 1} more sample${trajectories.length > 2 ? 's' : ''}</div>`;
-                }
-            }
-
-            details.innerHTML = html;
-        }
-
-        // Generate config file
-        async function generateConfig() {
-            const btn = document.getElementById('generate-btn');
-            const status = document.getElementById('config-status');
-
-            btn.disabled = true;
-            status.innerHTML = '<div class="status">Generating config...</div>';
-
-            try {
-                // Build payload with messages and tools
-                const payload = {
-                    ...state.config,
-                    messages: state.messages.length > 0 ? state.messages : undefined,
-                    tools: state.toolDefinitions.length > 0 ? state.toolDefinitions : undefined
-                };
-
-                const response = await fetch('/api/generate', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify(payload)
+                tool.parameters.forEach((param, paramIndex) => {
+                    html += `
+                        <div style="margin-bottom: 12px; padding-left: 12px; border-left: 2px solid var(--border);">
+                            <div style="font-family: monospace; font-size: 12px; margin-bottom: 4px;">
+                                <span style="color: var(--text-primary);">${param.name}</span>
+                                <span style="color: var(--text-secondary);"> (${param.type}${param.required ? ', required' : ', optional'})</span>
+                            </div>
+                            <textarea
+                                class="form-input"
+                                oninput="updateParamDescription(${toolIndex}, ${paramIndex}, this.value)"
+                                style="min-height: 50px; font-size: 11px;"
+                                placeholder="Parameter description"
+                            >${param.description}</textarea>
+                        </div>
+                    `;
                 });
 
-                if (!response.ok) {
-                    throw new Error(`Server error: ${response.status}`);
+                html += `
+                        </div>
+                    </details>
+                `;
+            });
+
+            container.innerHTML = html;
+        }
+
+        function updateToolDescription(toolIndex, description) {
+            state.toolDefinitions[toolIndex].description = description;
+        }
+
+        function updateParamDescription(toolIndex, paramIndex, description) {
+            state.toolDefinitions[toolIndex].parameters[paramIndex].description = description;
+        }
+
+        // ===== Environment Hook Viewer =====
+        async function viewEnvironmentHook() {
+            const modal = document.getElementById('hook-viewer-modal');
+            const sourceCode = document.getElementById('hook-source-code');
+
+            modal.style.display = 'flex';
+            sourceCode.textContent = 'Loading...';
+
+            try {
+                const configName = document.getElementById('base-config-select').value;
+                if (!configName) {
+                    sourceCode.textContent = 'Please select a config first';
+                    return;
                 }
 
-                const configText = await response.text();
+                const response = await fetch(`/api/view-hook/${configName}`);
+                const data = await response.json();
 
-                // Download file
-                const blob = new Blob([configText], { type: 'text/plain' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = (state.config.configName || getNextConfigName()) + '.py';
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
-
-                status.innerHTML = '<div class="status success">✓ Config downloaded!</div>';
-
-                setTimeout(() => {
-                    status.innerHTML = '';
-                }, 3000);
-
-            } catch (err) {
-                console.error('Failed to generate config:', err);
-                status.innerHTML = '<div class="status error">✗ Failed to generate config</div>';
-            } finally {
-                btn.disabled = false;
+                if (data.error) {
+                    sourceCode.textContent = `Error: ${data.error}`;
+                } else {
+                    sourceCode.textContent = data.source;
+                }
+            } catch (error) {
+                sourceCode.textContent = `Failed to load hook source: ${error.message}`;
             }
         }
 
-        // Get next config filename
-        function getNextConfigName() {
-            const timestamp = new Date().toISOString().replace(/[-:]/g, '').split('.')[0];
-            return `config_${timestamp}.py`;
-        }
-
-        // Escape HTML for safe rendering
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
+        function closeEnvironmentHookViewer() {
+            document.getElementById('hook-viewer-modal').style.display = 'none';
         }
 
         // Start the app
