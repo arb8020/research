@@ -399,6 +399,36 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
         method_body = method_match.group(1)
 
+        # Extract variable assignments for content
+        variable_values = {}
+        var_pattern = r'(\w+)\s*=\s*(.+?)(?=\n\s*(?:\w+\s*=|return))'
+        for var_match in re.finditer(var_pattern, method_body, re.DOTALL):
+            var_name = var_match.group(1)
+            var_value = var_match.group(2).strip()
+
+            # Extract string value
+            if var_value.startswith('"""') or var_value.startswith("'''"):
+                # Triple-quoted string
+                string_content = re.search(r'["\']{{3}}(.*?)["\']{{3}}', var_value, re.DOTALL)
+                if string_content:
+                    variable_values[var_name] = string_content.group(1).strip()
+            elif var_value.startswith('f"""') or var_value.startswith("f'''"):
+                # f-string triple-quoted
+                string_content = re.search(r'f["\']{{3}}(.*?)["\']{{3}}', var_value, re.DOTALL)
+                if string_content:
+                    variable_values[var_name] = string_content.group(1).strip()
+            elif var_value.startswith('"') or var_value.startswith("'"):
+                # Regular quoted string
+                quote_char = var_value[0]
+                end_idx = var_value.rfind(quote_char)
+                if end_idx > 0:
+                    variable_values[var_name] = var_value[1:end_idx]
+            elif var_value.startswith('sample_data'):
+                # Field access like sample_data["field"]
+                field_match = re.search(r'sample_data\[["\'](\w+)["\']\]', var_value)
+                if field_match:
+                    variable_values[var_name] = f'{{{field_match.group(1)}}}'
+
         # Find return statement with Message list
         return_match = re.search(r'return\s*\[(.*?)\]', method_body, re.DOTALL)
 
@@ -431,8 +461,11 @@ class DevLoopServer(SimpleHTTPRequestHandler):
                 # Regular string
                 quote_char = content_expr[0]
                 content = content_expr[1:content_expr.rfind(quote_char)]
+            elif content_expr in variable_values:
+                # Variable reference - look up the value
+                content = variable_values[content_expr]
             else:
-                # Variable reference or complex expression - use as-is
+                # Complex expression - use as-is
                 content = content_expr
 
             messages.append({"role": role, "content": content})
