@@ -821,9 +821,45 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
         # Update model if changed
         if "model" in data:
+            model_name = data["model"]
             config_source = re.sub(
                 r'(model_name\s*[:=]\s*)["\']([^"\']+)["\']',
-                f'\\1"{data["model"]}"',
+                f'\\1"{model_name}"',
+                config_source
+            )
+
+            # Also update provider and api_key_env_var based on new model
+            if "claude" in model_name.lower() or "anthropic" in model_name.lower():
+                provider = "anthropic"
+                api_key_env_var = "ANTHROPIC_API_KEY"
+                api_base = "https://api.anthropic.com/v1"
+            elif "gpt" in model_name.lower() or "o1" in model_name.lower() or "o3" in model_name.lower():
+                provider = "openai"
+                api_key_env_var = "OPENAI_API_KEY"
+                api_base = "https://api.openai.com/v1"
+            else:
+                provider = "openai"
+                api_key_env_var = "OPENAI_API_KEY"
+                api_base = "https://api.openai.com/v1"
+
+            # Update provider
+            config_source = re.sub(
+                r'(provider\s*[:=]\s*)["\']([^"\']+)["\']',
+                f'\\1"{provider}"',
+                config_source
+            )
+
+            # Update api_key_env_var
+            config_source = re.sub(
+                r'(api_key_env_var\s*[:=]\s*)["\']([^"\']+)["\']',
+                f'\\1"{api_key_env_var}"',
+                config_source
+            )
+
+            # Update api_base
+            config_source = re.sub(
+                r'(api_base\s*[:=]\s*)["\']([^"\']+)["\']',
+                f'\\1"{api_base}"',
                 config_source
             )
 
@@ -1010,6 +1046,26 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         num_samples = data.get("numSamples", 10)
         temperature = data.get("temperature", 0.1)
 
+        # Extract environment-specific fields
+        ssh_target = data.get("ssh_target", "")
+        gpu_ids = data.get("gpu_ids", [0])
+        dataset_path = data.get("dataset_path", "datasets/default.json")
+
+        # Infer provider and API key env var from model name
+        if "claude" in model_name.lower() or "anthropic" in model_name.lower():
+            provider = "anthropic"
+            api_key_env_var = "ANTHROPIC_API_KEY"
+            api_base = "https://api.anthropic.com/v1"
+        elif "gpt" in model_name.lower() or "o1" in model_name.lower() or "o3" in model_name.lower():
+            provider = "openai"
+            api_key_env_var = "OPENAI_API_KEY"
+            api_base = "https://api.openai.com/v1"
+        else:
+            # Default to OpenAI
+            provider = "openai"
+            api_key_env_var = "OPENAI_API_KEY"
+            api_base = "https://api.openai.com/v1"
+
         # Build config file
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -1072,6 +1128,9 @@ class Config:
     model: BaseModelConfig = field(
         default_factory=lambda: BaseModelConfig(
             model_name="{model_name}",
+            provider="{provider}",
+            api_base="{api_base}",
+            api_key_env_var="{api_key_env_var}",
             temperature={temperature},
             max_tokens=16384,
         )
@@ -1079,7 +1138,11 @@ class Config:
 
     # Environment configuration
     environment_class: type = CustomEnvironment
-    environment_config: dict = field(default_factory=dict)
+    environment_config: dict = field(default_factory=lambda: {{
+        'ssh_target': '{ssh_target}',
+        'gpu_ids': {gpu_ids},
+        'dataset_path': Path('{dataset_path}'),
+    }})
 
     # Evaluation settings
     evaluation: BaseEvaluationConfig = field(
@@ -1099,6 +1162,44 @@ class Config:
     async def create_environment(self, sample_data: dict):
         """Create environment instance for a sample."""
         return self.environment_class(**self.environment_config)
+
+    # Backward compatibility methods for entrypoint
+    def to_endpoint(self):
+        """Convert to rollouts Endpoint (delegates to model config)."""
+        return self.model.to_endpoint()
+
+    def to_eval_config(self, reward_fn):
+        """Convert to rollouts EvalConfig (delegates to evaluation config)."""
+        return self.evaluation.to_eval_config(reward_fn)
+
+    @property
+    def dataset_path(self):
+        """Access dataset path from environment config."""
+        return self.environment_config.get('dataset_path')
+
+    @property
+    def ssh_target(self) -> str:
+        return self.environment_config.get('ssh_target')
+
+    @property
+    def gpu_id(self) -> int:
+        # Return first GPU from gpu_ids list, or fallback to gpu_id
+        gpu_ids = self.environment_config.get('gpu_ids')
+        if gpu_ids and isinstance(gpu_ids, list) and len(gpu_ids) > 0:
+            return gpu_ids[0]
+        return self.environment_config.get('gpu_id', 0)
+
+    @property
+    def max_turns(self) -> int:
+        return self.evaluation.max_turns
+
+    @property
+    def num_samples(self) -> int:
+        return self.evaluation.num_samples
+
+    @property
+    def model_name(self) -> str:
+        return self.model.model_name
 
 
 # Export config instance
