@@ -1147,6 +1147,20 @@
         }
 
         // Config management
+        // Logging helper to send logs to backend
+        async function logToBackend(level, message, context = {}) {
+            try {
+                await fetch('/api/log', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ level, message, context })
+                });
+            } catch (error) {
+                // Silently fail - don't want logging to break the app
+                console.error('Failed to send log to backend:', error);
+            }
+        }
+
         async function loadAvailableConfigs() {
             try {
                 const response = await fetch('/api/configs');
@@ -1700,6 +1714,8 @@
             // Step 2: Launch the config
             launchBtn.textContent = '🚀 Launching...';
 
+            logToBackend('info', 'User clicked Launch Agent', { configName });
+
             try {
                 const response = await fetch('/api/launch', {
                     method: 'POST',
@@ -1708,10 +1724,13 @@
                 });
 
                 if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+                    const errorText = await response.text();
+                    logToBackend('error', 'Launch API request failed', { status: response.status, error: errorText });
+                    throw new Error(`HTTP ${response.status}: ${errorText}`);
                 }
 
                 const result = await response.json();
+                logToBackend('info', 'Launch API response received', result);
 
                 // Check for preflight failures
                 if (!result.success) {
@@ -1766,10 +1785,23 @@
         // Connect to SSE stream for a run
         function connectToStream(runId) {
             const run = state.liveRuns[runId];
-            if (!run) return;
+            if (!run) {
+                logToBackend('error', 'connectToStream called for unknown run', { runId });
+                return;
+            }
+
+            logToBackend('info', 'Opening SSE connection', { runId, configName: run.configName });
 
             const eventSource = new EventSource(`/api/stream/${runId}`);
             run.eventSource = eventSource;
+
+            eventSource.onopen = () => {
+                logToBackend('info', 'SSE connection opened', { runId });
+            };
+
+            eventSource.onerror = (error) => {
+                logToBackend('error', 'SSE connection error', { runId, error: error.toString() });
+            };
 
             eventSource.onmessage = (event) => {
                 const data = JSON.parse(event.data);
