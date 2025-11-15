@@ -687,9 +687,9 @@
                         </div>
                         <div class="form-field">
                             <label class="form-label" for="config-name">Config Name</label>
-                            <div style="display: flex; gap: 8px; align-items: center;">
-                                <input type="text" class="form-input" id="config-prefix" readonly style="width: 60px; background: var(--bg-secondary);" value="03_" />
-                                <input type="text" class="form-input" id="config-name" placeholder="my_experiment" style="flex: 1;" />
+                            <input type="text" class="form-input" id="config-name" placeholder="01_agent_eval_01" />
+                            <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">
+                                Format: parent_idx_name_child_idx (e.g., 01_agent_eval_01)
                             </div>
                         </div>
                     </div>
@@ -702,6 +702,8 @@
                             <select class="form-select" id="model-select">
                                 <option value="gpt-4o-mini">gpt-4o-mini</option>
                                 <option value="gpt-4o">gpt-4o</option>
+                                <option value="gpt-4.1-mini">gpt-4.1-mini</option>
+                                <option value="gpt-4.1">gpt-4.1</option>
                                 <option value="claude-3-5-sonnet-20241022">claude-3-5-sonnet-20241022</option>
                                 <option value="claude-3-5-haiku-20241022">claude-3-5-haiku-20241022</option>
                             </select>
@@ -1014,7 +1016,16 @@
 
                 // Populate form fields
                 if (config.model) {
-                    document.getElementById('model-select').value = config.model;
+                    const modelSelect = document.getElementById('model-select');
+                    // Check if model exists in dropdown, if not add it
+                    const modelExists = Array.from(modelSelect.options).some(opt => opt.value === config.model);
+                    if (!modelExists) {
+                        const option = document.createElement('option');
+                        option.value = config.model;
+                        option.textContent = config.model;
+                        modelSelect.appendChild(option);
+                    }
+                    modelSelect.value = config.model;
                 }
                 if (config.temperature !== undefined) {
                     document.getElementById('temperature').value = config.temperature;
@@ -1058,19 +1069,26 @@
                     document.getElementById('max-turns').value = config.maxTurns;
                 }
 
-                // Handle config name with prefix/suffix split
-                const prefixMatch = configName.match(/^(\d+_)/);
+                // Handle config name with parent_idx_name_child_idx pattern
+                // e.g., selecting 01_agent_eval suggests 01_agent_eval_01
+                const prefixMatch = configName.match(/^(\d+)_(.+?)(?:_(\d+))?$/);
                 if (prefixMatch) {
-                    const prefix = prefixMatch[1];
-                    const num = parseInt(prefix);
-                    const newPrefix = String(num + 1).padStart(2, '0') + '_';
-                    const suffix = configName.substring(prefix.length);
+                    const parentIdx = prefixMatch[1];
+                    const baseName = prefixMatch[2];
+                    const childIdx = prefixMatch[3];
 
-                    document.getElementById('config-prefix').value = newPrefix;
-                    document.getElementById('config-name').value = suffix;
+                    if (childIdx) {
+                        // Already has a child index, increment it
+                        const nextChild = String(parseInt(childIdx) + 1).padStart(2, '0');
+                        document.getElementById('config-name').value = `${parentIdx}_${baseName}_${nextChild}`;
+                    } else {
+                        // No child index yet, add _01
+                        document.getElementById('config-name').value = `${parentIdx}_${baseName}_01`;
+                    }
                 } else {
-                    document.getElementById('config-prefix').value = '03_';
-                    document.getElementById('config-name').value = configName + '_custom';
+                    // No prefix pattern, find next available index
+                    const nextIdx = String(state.configs.length + 1).padStart(2, '0');
+                    document.getElementById('config-name').value = `${nextIdx}_${configName}_custom`;
                 }
 
                 // Load message builder data
@@ -1143,9 +1161,9 @@
             // Check required fields
             const configName = document.getElementById('config-name').value.trim();
             if (!configName) {
-                errors.push('Config name suffix is required');
-            } else if (!/^[a-zA-Z0-9_]+$/.test(configName)) {
-                errors.push('Config name must contain only letters, numbers, and underscores');
+                errors.push('Config name is required');
+            } else if (!/^[0-9]+_[a-zA-Z0-9_]+(?:_[0-9]+)?$/.test(configName)) {
+                errors.push('Config name must follow pattern: parent_idx_name_child_idx (e.g., 01_agent_eval_01)');
             }
 
             // Check that we have at least one message
@@ -1184,16 +1202,12 @@
                 return;
             }
 
-            // Combine prefix + suffix for full config name
-            const prefix = document.getElementById('config-prefix').value;
-            const suffix = document.getElementById('config-name').value.trim();
-            const fullName = prefix + suffix;
-
+            const configName = document.getElementById('config-name').value.trim();
             const baseName = document.getElementById('base-config-select').value;
 
             const config = {
                 baseName: baseName,
-                configName: suffix,
+                configName: configName,
                 model: document.getElementById('model-select').value,
                 temperature: parseFloat(document.getElementById('temperature').value),
                 ssh_target: document.getElementById('ssh-target').value.trim(),
