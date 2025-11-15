@@ -1589,14 +1589,18 @@
             }
 
             let html = `
-                <div class="trajectory">
-                    <div class="trajectory-header">
-                        <div class="trajectory-title">${trace.name || 'Trajectory'}</div>
-                        <div class="trajectory-meta">
-                            Samples: ${trace.total_samples || samples.length} |
-                            Mean Reward: ${trace.mean_reward?.toFixed(2) || 'N/A'}
+                <div style="padding: 0;">
+                    <!-- Tabs -->
+                    ${renderTabs()}
+
+                    <div class="trajectory" style="padding: 24px;">
+                        <div class="trajectory-header">
+                            <div class="trajectory-title">${trace.name || 'Trajectory'}</div>
+                            <div class="trajectory-meta">
+                                Samples: ${trace.total_samples || samples.length} |
+                                Mean Reward: ${trace.mean_reward?.toFixed(2) || 'N/A'}
+                            </div>
                         </div>
-                    </div>
             `;
 
             // Display first sample's messages
@@ -1621,7 +1625,7 @@
                 `;
             });
 
-            html += '</div>';
+            html += '</div></div>';  // Close trajectory div and wrapper div
             mainPane.innerHTML = html;
 
             // Apply syntax highlighting to all code blocks
@@ -1924,6 +1928,20 @@
                 `);
             });
 
+            // Add result tab if viewing a result
+            if (state.ui.mainPaneMode === 'trajectory-view' && state.selectedResultId) {
+                const result = state.results.find(r => r.id === state.selectedResultId);
+                if (result) {
+                    const isActive = state.ui.activeTabId === result.id;
+                    tabs.push(`
+                        <div class="tab ${isActive ? 'active' : ''}" onclick="switchToTab('${result.id}', 'trajectory-view')">
+                            <span>📊 ${result.name}</span>
+                            <button class="tab-close" onclick="event.stopPropagation(); closeResultTab('${result.id}')">&times;</button>
+                        </div>
+                    `);
+                }
+            }
+
             if (tabs.length === 0) {
                 return '';
             }
@@ -1988,6 +2006,24 @@
                 }
             } else {
                 updateUI();
+            }
+        }
+
+        // Close a result tab
+        function closeResultTab(resultId) {
+            // If this was the active tab, switch to another or idle
+            if (state.ui.activeTabId === resultId) {
+                const remainingRuns = Object.keys(state.liveRuns);
+                if (remainingRuns.length > 0) {
+                    switchToTab(remainingRuns[0], 'live-stream');
+                } else {
+                    state.ui.activeTabId = null;
+                    state.ui.mainPaneMode = 'idle';
+                    state.selectedResultId = null;
+
+                    const mainPane = document.querySelector('.main-pane-content');
+                    mainPane.innerHTML = '<div class="empty-state"><h2>Welcome to Agent Dev Loop</h2><p>Select a result to view or configure and launch a new agent evaluation.</p></div>';
+                }
             }
         }
 
