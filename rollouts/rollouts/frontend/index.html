@@ -945,6 +945,7 @@
                 datasetPath: '',
                 fields: [],
                 sample: {},
+                datasetSize: 0,
                 loading: false,
                 error: null
             },
@@ -1677,6 +1678,12 @@
                     state.sampleData.datasetPath = data.datasetPath;
                     state.sampleData.fields = data.fields;
                     state.sampleData.sample = data.sample;
+                    state.sampleData.datasetSize = data.datasetSize || 0;
+
+                    // Auto-populate sample range based on dataset size
+                    if (state.sampleData.datasetSize > 0) {
+                        updateRangeMaxFromDataset(state.sampleData.datasetSize);
+                    }
                 }
             } catch (error) {
                 state.sampleData.error = 'Failed to load dataset preview';
@@ -1685,6 +1692,23 @@
                 state.sampleData.loading = false;
                 renderDatasetPreview();
             }
+        }
+
+        function updateRangeMaxFromDataset(datasetSize) {
+            // Update the range slider max value
+            const slider = document.getElementById('range-slider');
+            const endIdxInput = document.getElementById('end-idx');
+
+            slider.max = datasetSize;
+
+            // If current end_idx exceeds dataset size, cap it
+            const currentEnd = parseInt(endIdxInput.value);
+            if (currentEnd > datasetSize) {
+                endIdxInput.value = datasetSize;
+                slider.value = datasetSize;
+            }
+
+            updateRangeLabels();
         }
 
         function renderDatasetPreview() {
@@ -1705,7 +1729,10 @@
                 return;
             }
 
-            let html = `<div style="margin-bottom: 8px; color: var(--text-secondary); font-size: 12px;">${state.sampleData.datasetPath}</div>`;
+            let html = `<div style="margin-bottom: 4px; color: var(--text-secondary); font-size: 12px;">${state.sampleData.datasetPath}</div>`;
+            if (state.sampleData.datasetSize > 0) {
+                html += `<div style="margin-bottom: 8px; color: var(--text-secondary); font-size: 11px;">Dataset size: ${state.sampleData.datasetSize} samples</div>`;
+            }
             html += '<div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">Click field to copy placeholder:</div>';
 
             state.sampleData.fields.forEach(field => {

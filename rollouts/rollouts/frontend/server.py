@@ -332,18 +332,22 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             self._json_response({"error": f"Dataset not found: {dataset_path_str}"})
             return
 
-        # Read first sample from dataset
+        # Read first sample from dataset and count total
         try:
+            dataset_size = 0
             if dataset_path.suffix == ".jsonl":
-                # JSONL format - read first line
+                # JSONL format - read first line and count total
                 with dataset_path.open() as f:
                     first_line = f.readline()
                     sample = json.loads(first_line)
+                    # Count total lines
+                    dataset_size = 1 + sum(1 for _ in f)
             else:
                 # JSON array format
                 data = json.loads(dataset_path.read_text())
                 if isinstance(data, list) and len(data) > 0:
                     sample = data[0]
+                    dataset_size = len(data)
                 else:
                     self._json_response({"error": "Dataset is empty or not a list"})
                     return
@@ -361,6 +365,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
                 "datasetPath": dataset_path_str,
                 "fields": fields,
                 "sample": preview_sample,
+                "datasetSize": dataset_size,
                 "error": None
             })
 
