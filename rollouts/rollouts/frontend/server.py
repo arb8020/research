@@ -1175,6 +1175,7 @@ class Config:
             output_dir=Path("results/custom"),
             verbose=True,
             show_progress=True,
+            stream_tokens=True,  # Enable token streaming to stdout for live dev loop
         )
     )
 

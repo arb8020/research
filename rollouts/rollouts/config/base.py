@@ -14,11 +14,11 @@ All defaults are explicit (no magic).
 
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Dict, Any, List, Callable
+from typing import Dict, Any, List, Callable, Optional
 import json
 import os
 
-from rollouts.dtypes import Endpoint, EvalConfig, Message
+from rollouts.dtypes import Endpoint, EvalConfig, Message, RunConfig
 
 
 @dataclass(frozen=True)
@@ -207,6 +207,10 @@ class BaseEvaluationConfig:
     # Display settings
     verbose: bool = True
     show_progress: bool = True
+
+    # Streaming settings
+    stream_tokens: bool = False  # Whether to stream LLM tokens to stdout
+    run_config: Optional[RunConfig] = None  # Optional custom RunConfig
 
     def to_eval_config(self, reward_fn: Callable) -> EvalConfig:
         """Convert to rollouts EvalConfig.
