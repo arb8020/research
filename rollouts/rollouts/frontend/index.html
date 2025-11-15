@@ -760,12 +760,9 @@
                         </div>
                         <div class="form-field">
                             <label class="form-label">Config Name</label>
-                            <div id="config-name-display" style="padding: 8px 12px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 4px; font-family: monospace; font-size: 14px; color: var(--text);">
-                                <!-- Auto-generated name will appear here -->
-                            </div>
-                            <input type="hidden" id="config-name" />
+                            <input type="text" class="form-input" id="config-name" placeholder="01_custom_name_01" style="font-family: monospace;" />
                             <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">
-                                Auto-generated from base config
+                                Pattern: prefix_name_suffix (e.g., 01_agent_eval_01)
                             </div>
                         </div>
                     </div>
@@ -1932,10 +1929,6 @@
         // ===== Config Name Management =====
         function setConfigName(name) {
             document.getElementById('config-name').value = name;
-            const display = document.getElementById('config-name-display');
-            if (display) {
-                display.textContent = name || 'Select a base config';
-            }
         }
 
         // ===== Max Turns Handling =====
