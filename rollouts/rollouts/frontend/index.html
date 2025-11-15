@@ -4,6 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Agent Dev Loop</title>
+
+    <!-- Syntax highlighting -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+
     <style>
         /* Notion-like clean aesthetic */
         :root {
@@ -694,10 +700,20 @@
             padding: 16px;
             font-size: 14px;
             line-height: 1.6;
-            white-space: pre-wrap;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto';
-            max-height: 400px;
+            max-height: 600px;
             overflow-y: auto;
+        }
+
+        .message-content pre {
+            margin: 12px 0;
+            border-radius: 6px;
+            overflow-x: auto;
+        }
+
+        .message-content code {
+            font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+            font-size: 13px;
         }
 
         .message-collapsed .message-content {
@@ -1549,19 +1565,47 @@
             messages.forEach((msg, idx) => {
                 const role = msg.role || 'unknown';
                 const content = msg.content || '';
+
+                // Process content to highlight code blocks
+                const processedContent = formatMessageContent(content);
+
                 html += `
                     <div class="message-block" id="msg-${idx}">
                         <div class="message-header" onclick="toggleMessage(${idx})">
                             <div class="message-role">${role}</div>
                             <div>▼</div>
                         </div>
-                        <div class="message-content">${content}</div>
+                        <div class="message-content">${processedContent}</div>
                     </div>
                 `;
             });
 
             html += '</div>';
             mainPane.innerHTML = html;
+
+            // Apply syntax highlighting to all code blocks
+            document.querySelectorAll('pre code').forEach((block) => {
+                hljs.highlightElement(block);
+            });
+        }
+
+        function formatMessageContent(content) {
+            // Convert markdown code blocks to HTML with syntax highlighting
+            // Matches: ```python\ncode\n``` or ```\ncode\n```
+
+            // Escape HTML first
+            let formatted = escapeHtml(content);
+
+            // Replace code blocks with <pre><code> tags
+            formatted = formatted.replace(/```(\w+)?\n([\s\S]*?)```/g, (match, lang, code) => {
+                const language = lang || 'python';
+                return `<pre><code class="language-${language}">${code.trim()}</code></pre>`;
+            });
+
+            // Convert newlines to <br> for non-code content
+            formatted = formatted.replace(/\n/g, '<br>');
+
+            return formatted;
         }
 
         function toggleMessage(idx) {
