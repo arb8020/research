@@ -747,16 +747,6 @@
                         </div>
                     </div>
 
-                    <!-- Dataset Preview -->
-                    <div class="form-section">
-                        <div class="form-section-title">DATASET PREVIEW</div>
-                        <div id="dataset-preview" style="font-size: 12px;">
-                            <p style="color: var(--text-secondary); font-size: 13px;">
-                                Select a base config to view available dataset fields
-                            </p>
-                        </div>
-                    </div>
-
                     <!-- Initial Messages -->
                     <div class="form-section">
                         <div class="form-section-title">INITIAL MESSAGES</div>
@@ -786,6 +776,16 @@
                             </select>
                             <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">
                                 Select from available datasets in datasets/ directory
+                            </div>
+                        </div>
+
+                        <!-- Dataset Preview (moved here to be closer to dataset selector) -->
+                        <div class="form-field">
+                            <label class="form-label">Dataset Preview</label>
+                            <div id="dataset-preview" style="font-size: 12px; max-height: 300px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; background: var(--input-bg);">
+                                <p style="color: var(--text-secondary); font-size: 13px; padding: 12px;">
+                                    Select a base config to view dataset fields
+                                </p>
                             </div>
                         </div>
                     </div>
@@ -1810,17 +1810,27 @@
         }
 
         function updateRangeMaxFromDataset(datasetSize) {
-            // Update the range slider max value
+            // Update the range slider and input max values
             const slider = document.getElementById('range-slider');
+            const startIdxInput = document.getElementById('start-idx');
             const endIdxInput = document.getElementById('end-idx');
 
+            // Set max attributes on inputs to enforce bounds
             slider.max = datasetSize;
+            startIdxInput.max = datasetSize;
+            endIdxInput.max = datasetSize;
 
             // If current end_idx exceeds dataset size, cap it
             const currentEnd = parseInt(endIdxInput.value);
             if (currentEnd > datasetSize) {
                 endIdxInput.value = datasetSize;
                 slider.value = datasetSize;
+            }
+
+            // If current start_idx exceeds dataset size, cap it
+            const currentStart = parseInt(startIdxInput.value);
+            if (currentStart >= datasetSize) {
+                startIdxInput.value = Math.max(0, datasetSize - 1);
             }
 
             updateRangeLabels();
@@ -1830,39 +1840,54 @@
             const container = document.getElementById('dataset-preview');
 
             if (state.sampleData.loading) {
-                container.innerHTML = '<p style="color: var(--text-secondary);">Loading dataset preview...</p>';
+                container.innerHTML = '<p style="color: var(--text-secondary); padding: 12px;">Loading dataset preview...</p>';
                 return;
             }
 
             if (state.sampleData.error) {
-                container.innerHTML = `<p style="color: var(--text-error);">${state.sampleData.error}</p>`;
+                container.innerHTML = `<p style="color: var(--error); padding: 12px;">${state.sampleData.error}</p>`;
                 return;
             }
 
             if (!state.sampleData.fields || state.sampleData.fields.length === 0) {
-                container.innerHTML = '<p style="color: var(--text-secondary);">No dataset loaded</p>';
+                container.innerHTML = '<p style="color: var(--text-secondary); padding: 12px;">Select a base config to view dataset fields</p>';
                 return;
             }
 
-            let html = `<div style="margin-bottom: 4px; color: var(--text-secondary); font-size: 12px;">${state.sampleData.datasetPath}</div>`;
+            // Build table HTML
+            let html = '<div style="padding: 8px;">';
+            html += `<div style="margin-bottom: 6px; color: var(--text-secondary); font-size: 11px; font-weight: 500;">${state.sampleData.datasetPath}</div>`;
             if (state.sampleData.datasetSize > 0) {
-                html += `<div style="margin-bottom: 8px; color: var(--text-secondary); font-size: 11px;">Dataset size: ${state.sampleData.datasetSize} samples</div>`;
+                html += `<div style="margin-bottom: 8px; color: var(--text-secondary); font-size: 11px;">${state.sampleData.datasetSize} samples</div>`;
             }
-            html += '<div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">Click field to copy placeholder:</div>';
+            html += '<div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px;">Click to copy placeholder:</div>';
+
+            // Table
+            html += '<table style="width: 100%; border-collapse: collapse; font-size: 11px;">';
+            html += '<thead><tr style="background: var(--bg-secondary); position: sticky; top: 0;">';
+            html += '<th style="padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--border); font-weight: 600; color: var(--text-secondary);">Field</th>';
+            html += '<th style="padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--border); font-weight: 600; color: var(--text-secondary);">Sample Value</th>';
+            html += '</tr></thead>';
+            html += '<tbody>';
 
             state.sampleData.fields.forEach(field => {
                 const value = state.sampleData.sample[field];
-                const displayValue = typeof value === 'string' && value.length > 50
-                    ? value.substring(0, 50) + '...'
-                    : JSON.stringify(value);
+                let displayValue = '';
+                if (typeof value === 'string') {
+                    displayValue = value.length > 60 ? value.substring(0, 60) + '...' : value;
+                } else {
+                    const jsonStr = JSON.stringify(value);
+                    displayValue = jsonStr.length > 60 ? jsonStr.substring(0, 60) + '...' : jsonStr;
+                }
 
-                html += `
-                    <div onclick="copyFieldName('${field}')" style="cursor: pointer; padding: 6px 8px; background: var(--bg-secondary); border-radius: 4px; margin-bottom: 4px; font-family: monospace; font-size: 11px; display: flex; justify-content: space-between; align-items: center;">
-                        <span style="color: var(--text-link); font-weight: 500;">{${field}}</span>
-                        <span style="color: var(--text-secondary); margin-left: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 1;">${displayValue}</span>
-                    </div>
-                `;
+                html += `<tr onclick="copyFieldName('${field}')" style="cursor: pointer; border-bottom: 1px solid var(--border);" onmouseover="this.style.background='var(--bg-secondary)'" onmouseout="this.style.background='transparent'">`;
+                html += `<td style="padding: 6px 8px; font-family: monospace; color: var(--accent); font-weight: 500;">{${field}}</td>`;
+                html += `<td style="padding: 6px 8px; color: var(--text-secondary); font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px;">${displayValue}</td>`;
+                html += '</tr>';
             });
+
+            html += '</tbody></table>';
+            html += '</div>';
 
             container.innerHTML = html;
         }
