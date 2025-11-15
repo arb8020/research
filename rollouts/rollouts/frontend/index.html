@@ -1265,13 +1265,20 @@
             }
         }
 
-        async function saveConfig() {
+        async function saveConfig(options = {}) {
+            const { silent = false } = options;
+
             if (!validateConfig()) {
-                return;
+                return null;
             }
 
             const configName = document.getElementById('config-name').value.trim();
             const baseName = document.getElementById('base-config-select').value;
+
+            if (!configName) {
+                if (!silent) alert('Please select a base config first');
+                return null;
+            }
 
             const config = {
                 baseName: baseName,
@@ -1301,14 +1308,22 @@
                 }
 
                 const result = await response.json();
-                alert(`✓ Config saved to: ${result.file_path}`);
+
+                if (!silent) {
+                    alert(`✓ Config saved to: ${result.file_path}`);
+                }
 
                 // Reload available configs
                 await loadAvailableConfigs();
 
+                return { configName, filePath: result.file_path };
+
             } catch (error) {
                 console.error('Failed to save config:', error);
-                alert('Failed to save config: ' + error.message);
+                if (!silent) {
+                    alert('Failed to save config: ' + error.message);
+                }
+                return null;
             }
         }
 
@@ -1506,23 +1521,57 @@
 
         // Launch agent
         async function launchAgent() {
-            // Get the most recent config name
-            const prefix = document.getElementById('config-prefix')?.value || '03_';
-            const suffix = document.getElementById('config-name')?.value?.trim() || 'my_config';
-            const configName = prefix + suffix;
+            // Step 1: Save config first
+            const launchBtn = document.getElementById('launch-btn');
+            const originalText = launchBtn.textContent;
 
-            // For now, just show instructions to run manually
-            // TODO: Add background execution with SSE streaming
-            const command = `python entrypoint.py configs/${configName}.py`;
+            launchBtn.textContent = '⏳ Saving...';
+            launchBtn.disabled = true;
 
-            const message = `To launch this evaluation, run:\n\n${command}\n\nThe results will appear in the Results sidebar when complete.\n\n(Automatic launch with live streaming will be added soon!)`;
+            const saveResult = await saveConfig({ silent: true });
 
-            alert(message);
+            if (!saveResult) {
+                launchBtn.textContent = originalText;
+                launchBtn.disabled = false;
+                alert('Failed to save config. Please fix validation errors.');
+                return;
+            }
 
-            // Optionally reload results after a delay
-            setTimeout(() => {
-                loadResults();
-            }, 2000);
+            const { configName } = saveResult;
+
+            // Step 2: Launch the config
+            launchBtn.textContent = '🚀 Launching...';
+
+            try {
+                const response = await fetch('/api/launch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ configName }),
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+                }
+
+                const result = await response.json();
+
+                launchBtn.textContent = '✓ Launched';
+
+                alert(`✓ Config launched!\n\nCommand: ${result.command}\n\nCheck the Results sidebar for progress.`);
+
+                // Reload results after a brief delay
+                setTimeout(() => {
+                    loadResults();
+                    launchBtn.textContent = originalText;
+                    launchBtn.disabled = false;
+                }, 2000);
+
+            } catch (error) {
+                console.error('Failed to launch:', error);
+                alert('Failed to launch config: ' + error.message);
+                launchBtn.textContent = originalText;
+                launchBtn.disabled = false;
+            }
         }
 
         // ===== Config Name Management =====
