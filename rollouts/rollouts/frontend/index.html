@@ -830,7 +830,7 @@
 
                     <!-- Sampling Settings -->
                     <div class="form-section">
-                        <div class="form-section-title">SAMPLING SETTINGS</div>
+                        <div class="form-section-title">DATASET SETTINGS</div>
                         <div class="form-field">
                             <label class="form-label" for="seed">Seed</label>
                             <input type="number" class="form-input" id="seed" value="42" />
@@ -1227,9 +1227,18 @@
             document.getElementById('range-start').textContent = startIdx;
             document.getElementById('range-end').textContent = endIdx;
 
-            // Update slider
+            // Update slider - respect dataset size if available
             const slider = document.getElementById('range-slider');
-            slider.max = Math.max(100, parseInt(endIdx) + 10);
+            const datasetSize = state.sampleData.datasetSize;
+
+            if (datasetSize > 0) {
+                // Cap at dataset size
+                slider.max = datasetSize;
+            } else {
+                // No dataset loaded, allow some flexibility
+                slider.max = Math.max(100, parseInt(endIdx) + 10);
+            }
+
             slider.value = endIdx;
         }
 
