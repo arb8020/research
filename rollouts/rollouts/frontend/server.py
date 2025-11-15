@@ -100,10 +100,6 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             self._list_models()
         elif path == "/api/list-datasets":
             self._list_datasets()
-        elif path.startswith("/api/preview-dataset/"):
-            # Extract dataset path from URL like /api/preview-dataset/datasets/nvfp4_matmul.json
-            dataset_path = path.split("/api/preview-dataset/")[1]
-            self._preview_dataset_direct(dataset_path)
         elif path == "/api/runs":
             self._list_active_runs()
         elif path.startswith("/api/stream/"):
@@ -125,6 +121,8 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             self._launch_config()
         elif path == "/api/log":
             self._log_from_frontend()
+        elif path == "/api/preview-dataset":
+            self._preview_dataset_direct()
         elif path.startswith("/api/kill/"):
             # Extract run_id from path like /api/kill/run_1_1234567890
             run_id = path.split("/api/kill/")[1]
@@ -768,8 +766,22 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         except Exception as e:
             self._json_response({"datasets": [], "error": f"Error listing datasets: {str(e)}"})
 
-    def _preview_dataset_direct(self, dataset_path_str: str):
+    def _preview_dataset_direct(self):
         """Preview a dataset by path directly (not via config)."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+
+        try:
+            data = json.loads(body)
+            dataset_path_str = data.get("datasetPath", "")
+        except json.JSONDecodeError:
+            self._json_response({"error": "Invalid JSON in request body"})
+            return
+
+        if not dataset_path_str:
+            self._json_response({"error": "Missing datasetPath in request"})
+            return
+
         dataset_path = self.project_root / dataset_path_str
 
         if not dataset_path.exists():

@@ -1314,7 +1314,11 @@
             renderDatasetPreview();
 
             try {
-                const response = await fetch(`/api/preview-dataset/${encodeURIComponent(datasetPath)}`);
+                const response = await fetch('/api/preview-dataset', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ datasetPath })
+                });
                 const data = await response.json();
 
                 if (data.error) {
