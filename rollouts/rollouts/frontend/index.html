@@ -1020,24 +1020,6 @@
                     document.getElementById('temperature').value = config.temperature;
                 }
 
-                // Use prepareMessages if available, otherwise fall back to systemPrompt
-                if (config.prepareMessages) {
-                    document.getElementById('prepare-messages').value = config.prepareMessages;
-                } else if (config.systemPrompt) {
-                    // Convert old system prompt to prepare_messages format
-                    const prepareMsg = `def prepare_messages(self, sample_data: Dict[str, Any]) -> List[Message]:
-    """Prepare initial messages."""
-    system_prompt = """${config.systemPrompt}"""
-
-    user_prompt = sample_data["problem_description"]
-
-    return [
-        Message(role="system", content=system_prompt),
-        Message(role="user", content=user_prompt),
-    ]`;
-                    document.getElementById('prepare-messages').value = prepareMsg;
-                }
-
                 // Populate environment settings
                 if (config.sshTarget) {
                     document.getElementById('ssh-target').value = config.sshTarget;
