@@ -885,6 +885,16 @@
                                 Use -1 for unlimited turns
                             </div>
                         </div>
+
+                        <div class="form-field">
+                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                <input type="checkbox" id="stream-tokens" checked style="cursor: pointer;" />
+                                <span class="form-label" style="margin: 0;">Stream Tokens</span>
+                            </label>
+                            <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">
+                                Show live LLM token streaming in the output (recommended for dev loop)
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Tools -->
@@ -1424,6 +1434,7 @@
                 start_idx: parseInt(document.getElementById('start-idx').value),
                 end_idx: parseInt(document.getElementById('end-idx').value),
                 max_turns: parseInt(document.getElementById('max-turns').value),
+                stream_tokens: document.getElementById('stream-tokens').checked,
                 messages: state.messages,
                 tools: state.toolDefinitions,
             };
