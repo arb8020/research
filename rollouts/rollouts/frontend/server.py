@@ -100,6 +100,10 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             self._list_models()
         elif path == "/api/list-datasets":
             self._list_datasets()
+        elif path.startswith("/api/preview-dataset/"):
+            # Extract dataset path from URL like /api/preview-dataset/datasets/nvfp4_matmul.json
+            dataset_path = path.split("/api/preview-dataset/")[1]
+            self._preview_dataset_direct(dataset_path)
         elif path == "/api/runs":
             self._list_active_runs()
         elif path.startswith("/api/stream/"):
@@ -763,6 +767,58 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
         except Exception as e:
             self._json_response({"datasets": [], "error": f"Error listing datasets: {str(e)}"})
+
+    def _preview_dataset_direct(self, dataset_path_str: str):
+        """Preview a dataset by path directly (not via config)."""
+        dataset_path = self.project_root / dataset_path_str
+
+        if not dataset_path.exists():
+            self._json_response({"error": f"Dataset not found: {dataset_path_str}"})
+            return
+
+        # Read first sample from dataset and count total
+        try:
+            dataset_size = 0
+            if dataset_path.suffix == ".jsonl":
+                # JSONL format - read first line and count total
+                with dataset_path.open() as f:
+                    first_line = f.readline()
+                    if not first_line:
+                        self._json_response({"error": "Dataset is empty"})
+                        return
+                    sample = json.loads(first_line)
+                    # Count total lines
+                    dataset_size = 1 + sum(1 for _ in f)
+            else:
+                # JSON array format
+                data = json.loads(dataset_path.read_text())
+                if isinstance(data, list) and len(data) > 0:
+                    sample = data[0]
+                    dataset_size = len(data)
+                else:
+                    self._json_response({"error": "Dataset is empty or not a list"})
+                    return
+
+            # Extract fields and truncate long values for preview
+            fields = list(sample.keys())
+            preview_sample = {}
+            for key, value in sample.items():
+                if isinstance(value, str) and len(value) > 100:
+                    preview_sample[key] = value[:100] + "..."
+                else:
+                    preview_sample[key] = value
+
+            self._json_response({
+                "datasetPath": dataset_path_str,
+                "fields": fields,
+                "sample": preview_sample,
+                "datasetSize": dataset_size
+            })
+
+        except json.JSONDecodeError as e:
+            self._json_response({"error": f"Invalid JSON in dataset: {str(e)}"})
+        except Exception as e:
+            self._json_response({"error": f"Error reading dataset: {str(e)}"})
 
     def _generate_config(self):
         """Generate a new config file from JSON payload."""

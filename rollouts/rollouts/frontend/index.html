@@ -830,7 +830,7 @@
                         </div>
                         <div class="form-field">
                             <label class="form-label" for="dataset-path">Dataset Path</label>
-                            <select class="form-select" id="dataset-path">
+                            <select class="form-select" id="dataset-path" onchange="onDatasetPathChange()">
                                 <option value="">Loading datasets...</option>
                             </select>
                             <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">
@@ -1300,6 +1300,43 @@
             } catch (error) {
                 console.error('Failed to load config:', error);
                 alert('Failed to load config: ' + error.message);
+            }
+        }
+
+        async function onDatasetPathChange() {
+            const datasetPath = document.getElementById('dataset-path').value;
+            if (!datasetPath) return;
+
+            logToBackend('info', 'User changed dataset path', { datasetPath });
+
+            state.sampleData.loading = true;
+            state.sampleData.error = null;
+            renderDatasetPreview();
+
+            try {
+                const response = await fetch(`/api/preview-dataset/${encodeURIComponent(datasetPath)}`);
+                const data = await response.json();
+
+                if (data.error) {
+                    state.sampleData.error = data.error;
+                } else {
+                    state.sampleData.datasetPath = data.datasetPath;
+                    state.sampleData.fields = data.fields;
+                    state.sampleData.sample = data.sample;
+                    state.sampleData.datasetSize = data.datasetSize || 0;
+
+                    // Auto-populate sample range based on dataset size
+                    if (state.sampleData.datasetSize > 0) {
+                        updateRangeMaxFromDataset(state.sampleData.datasetSize);
+                    }
+                }
+            } catch (error) {
+                state.sampleData.error = 'Failed to load dataset preview';
+                console.error(error);
+                logToBackend('error', 'Dataset preview failed', { error: error.toString() });
+            } finally {
+                state.sampleData.loading = false;
+                renderDatasetPreview();
             }
         }
 
