@@ -5,6 +5,7 @@ Provides:
 - Static file serving (index.html)
 - Config generation API
 - Trace viewing API
+- Live streaming of agent runs
 
 Usage:
     python -m rollouts.frontend.server
@@ -13,12 +14,26 @@ Usage:
 """
 import argparse
 import json
+import os
+import signal
+import subprocess
+import threading
+import time
 import webbrowser
 from datetime import datetime
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
+
+# Global process registry for tracking running agent evaluations
+_active_runs = {}  # run_id -> {process, config_name, start_time, status, output_lines, exit_code}
+_run_counter = 0
+_run_lock = threading.Lock()
+
+# Semaphore for limiting concurrent runs (default: 2 concurrent runs)
+_max_concurrent_runs = 2
+_run_semaphore = threading.Semaphore(_max_concurrent_runs)
 
 
 class DevLoopServer(SimpleHTTPRequestHandler):
@@ -72,6 +87,12 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             self._list_models()
         elif path == "/api/list-datasets":
             self._list_datasets()
+        elif path == "/api/runs":
+            self._list_active_runs()
+        elif path.startswith("/api/stream/"):
+            # Extract run_id from path like /api/stream/run_1_1234567890
+            run_id = path.split("/api/stream/")[1]
+            self._stream_run_output(run_id)
         else:
             # Default behavior for other files
             super().do_GET()
@@ -85,6 +106,14 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             self._generate_config()
         elif path == "/api/launch":
             self._launch_config()
+        elif path.startswith("/api/kill/"):
+            # Extract run_id from path like /api/kill/run_1_1234567890
+            run_id = path.split("/api/kill/")[1]
+            self._kill_run(run_id)
+        elif path.startswith("/api/delete-run/"):
+            # Extract run_id from path like /api/delete-run/run_1_1234567890
+            run_id = path.split("/api/delete-run/")[1]
+            self._delete_run(run_id)
         else:
             self.send_error(404, "Not found")
 
@@ -1044,8 +1073,8 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
         return config
 
     def _launch_config(self):
-        """Launch a config in the background."""
-        import subprocess
+        """Launch a config in the background with live streaming support."""
+        global _run_counter, _active_runs
 
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length)
@@ -1064,28 +1093,286 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                 self.send_error(404, f"Config not found: {config_name}")
                 return
 
+            # GPU preflight check (if config has gpu_ids)
+            # Read config to check for GPU requirements
+            config_source = config_path.read_text()
+            import re
+
+            gpu_ids = []
+            # Try to match gpu_ids as a list first
+            gpu_list_match = re.search(r'["\']gpu_ids["\']\s*:\s*\[([^\]]+)\]', config_source)
+            if not gpu_list_match:
+                gpu_list_match = re.search(r'gpu_ids\s*[:=]\s*\[([^\]]+)\]', config_source)
+
+            if gpu_list_match:
+                # Parse list of GPU IDs
+                gpu_ids_str = gpu_list_match.group(1)
+                gpu_ids = [int(x.strip()) for x in gpu_ids_str.split(',') if x.strip().isdigit()]
+            else:
+                # Fallback to single gpu_id
+                gpu_match = re.search(r'["\']gpu_id["\']\s*:\s*(\d+)', config_source)
+                if not gpu_match:
+                    gpu_match = re.search(r'gpu_id\s*[:=]\s*(\d+)', config_source)
+                if gpu_match:
+                    gpu_ids = [int(gpu_match.group(1))]
+
+            # Check if GPUs are available (simple check using nvidia-smi)
+            if gpu_ids:
+                try:
+                    result = subprocess.run(
+                        ["nvidia-smi", "--query-gpu=index,memory.used,utilization.gpu", "--format=csv,noheader,nounits"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+
+                    if result.returncode == 0:
+                        # Parse nvidia-smi output
+                        gpu_stats = {}
+                        for line in result.stdout.strip().splitlines():
+                            parts = [p.strip() for p in line.split(',')]
+                            if len(parts) == 3:
+                                try:
+                                    gpu_id = int(parts[0])
+                                    memory_mb = int(parts[1])
+                                    util_pct = int(parts[2])
+                                    gpu_stats[gpu_id] = {'memory_mb': memory_mb, 'util_pct': util_pct}
+                                except ValueError:
+                                    continue
+
+                        # Check if requested GPUs are free (>1GB used or >5% util = busy)
+                        for gpu_id in gpu_ids:
+                            if gpu_id in gpu_stats:
+                                stats = gpu_stats[gpu_id]
+                                if stats['memory_mb'] > 1000 or stats['util_pct'] > 5:
+                                    self._json_response({
+                                        "success": False,
+                                        "error": f"GPU {gpu_id} is busy ({stats['memory_mb']}MB used, {stats['util_pct']}% util)",
+                                        "preflight_failed": True
+                                    })
+                                    return
+                except (subprocess.TimeoutExpired, FileNotFoundError):
+                    # nvidia-smi not available or timed out, proceed anyway
+                    pass
+
+            # Acquire semaphore (blocks if max concurrent runs reached)
+            if not _run_semaphore.acquire(blocking=False):
+                self._json_response({
+                    "success": False,
+                    "error": f"Maximum concurrent runs ({_max_concurrent_runs}) reached. Please wait for a run to complete.",
+                    "queue_full": True
+                })
+                return
+
+            # Generate unique run ID
+            with _run_lock:
+                _run_counter += 1
+                run_id = f"run_{_run_counter}_{int(time.time())}"
+
             # Build command to launch config
             command = ["python", "entrypoint.py", str(config_path)]
 
-            # Launch in background
-            subprocess.Popen(
-                command,
-                cwd=self.project_root,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                start_new_session=True  # Detach from parent
-            )
+            # Launch with tracked pipes
+            try:
+                process = subprocess.Popen(
+                    command,
+                    cwd=self.project_root,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,  # Merge stderr into stdout
+                    text=True,
+                    bufsize=1,  # Line buffered
+                    start_new_session=True  # Detach from parent
+                )
+            except Exception as e:
+                _run_semaphore.release()  # Release semaphore on failure
+                self._json_response({
+                    "success": False,
+                    "error": f"Failed to start process: {str(e)}"
+                })
+                return
+
+            # Store in registry
+            with _run_lock:
+                _active_runs[run_id] = {
+                    "process": process,
+                    "config_name": config_name,
+                    "start_time": time.time(),
+                    "status": "running",
+                    "output_lines": [],
+                    "exit_code": None,
+                    "gpu_ids": gpu_ids
+                }
 
             self._json_response({
                 "success": True,
+                "run_id": run_id,
                 "command": " ".join(command),
-                "message": f"Launched {config_name}"
+                "config_name": config_name
             })
 
         except json.JSONDecodeError as e:
             self.send_error(400, f"Invalid JSON: {e}")
         except Exception as e:
             self.send_error(500, f"Launch failed: {e}")
+
+    def _stream_run_output(self, run_id: str):
+        """Stream output from a running process via SSE."""
+        global _active_runs
+
+        if run_id not in _active_runs:
+            self.send_error(404, f"Run not found: {run_id}")
+            return
+
+        run_data = _active_runs[run_id]
+        process = run_data["process"]
+
+        # Set up SSE headers
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")  # Disable nginx buffering
+        self.end_headers()
+
+        try:
+            # Stream output line by line
+            for line in iter(process.stdout.readline, ''):
+                if not line:
+                    break
+
+                # Store output line
+                with _run_lock:
+                    run_data["output_lines"].append(line.rstrip())
+
+                # Send as SSE event
+                event_data = json.dumps({"line": line.rstrip(), "type": "stdout"})
+                self.wfile.write(f"data: {event_data}\n\n".encode())
+                self.wfile.flush()
+
+            # Wait for process to complete
+            exit_code = process.wait()
+
+            # Release semaphore
+            _run_semaphore.release()
+
+            # Send completion event
+            completion_data = json.dumps({
+                "type": "complete",
+                "exit_code": exit_code,
+                "status": "success" if exit_code == 0 else "failed"
+            })
+            self.wfile.write(f"data: {completion_data}\n\n".encode())
+            self.wfile.flush()
+
+            # Update registry
+            with _run_lock:
+                run_data["status"] = "completed" if exit_code == 0 else "failed"
+                run_data["exit_code"] = exit_code
+
+        except Exception as e:
+            # Release semaphore on error
+            _run_semaphore.release()
+
+            error_data = json.dumps({"type": "error", "message": str(e)})
+            self.wfile.write(f"data: {error_data}\n\n".encode())
+            self.wfile.flush()
+
+            # Update status
+            with _run_lock:
+                run_data["status"] = "failed"
+
+    def _list_active_runs(self):
+        """List all active and recent runs."""
+        global _active_runs
+
+        runs = []
+        with _run_lock:
+            for run_id, data in _active_runs.items():
+                runs.append({
+                    "run_id": run_id,
+                    "config_name": data["config_name"],
+                    "start_time": data["start_time"],
+                    "status": data["status"],
+                    "exit_code": data.get("exit_code"),
+                    "output_length": len(data.get("output_lines", []))
+                })
+
+        self._json_response({"runs": runs})
+
+    def _kill_run(self, run_id: str):
+        """Kill a running process."""
+        global _active_runs
+
+        if run_id not in _active_runs:
+            self.send_error(404, f"Run not found: {run_id}")
+            return
+
+        run_data = _active_runs[run_id]
+        process = run_data["process"]
+
+        if run_data["status"] != "running":
+            self._json_response({
+                "success": False,
+                "message": f"Run is not running (status: {run_data['status']})"
+            })
+            return
+
+        try:
+            # Kill entire process group (includes child processes)
+            if process.poll() is None:  # Process is still running
+                pgid = os.getpgid(process.pid)
+                os.killpg(pgid, signal.SIGTERM)
+
+                # Wait a bit, then force kill if still alive
+                time.sleep(0.5)
+                if process.poll() is None:
+                    os.killpg(pgid, signal.SIGKILL)
+
+            # Release semaphore
+            _run_semaphore.release()
+
+            # Update status
+            with _run_lock:
+                run_data["status"] = "killed"
+                run_data["exit_code"] = -1
+
+            self._json_response({
+                "success": True,
+                "message": f"Killed run {run_id}"
+            })
+
+        except Exception as e:
+            self._json_response({
+                "success": False,
+                "message": f"Failed to kill run: {str(e)}"
+            })
+
+    def _delete_run(self, run_id: str):
+        """Delete a completed/failed run from registry."""
+        global _active_runs
+
+        if run_id not in _active_runs:
+            self.send_error(404, f"Run not found: {run_id}")
+            return
+
+        run_data = _active_runs[run_id]
+
+        # Don't delete running processes
+        if run_data["status"] == "running":
+            self._json_response({
+                "success": False,
+                "message": "Cannot delete running process. Kill it first."
+            })
+            return
+
+        # Remove from registry
+        with _run_lock:
+            del _active_runs[run_id]
+
+        self._json_response({
+            "success": True,
+            "message": f"Deleted run {run_id}"
+        })
 
     def _json_response(self, data: Any):
         """Send JSON response."""
