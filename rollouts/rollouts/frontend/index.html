@@ -807,7 +807,16 @@
                         </div>
                         <div class="form-field">
                             <label class="form-label" for="max-turns">Max Turns</label>
-                            <input type="number" class="form-input" id="max-turns" min="1" value="5" />
+                            <div style="display: flex; gap: 8px; align-items: center;">
+                                <input type="number" class="form-input" id="max-turns" min="-1" value="5" style="flex: 1;" />
+                                <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-secondary); white-space: nowrap; cursor: pointer;">
+                                    <input type="checkbox" id="unlimited-turns" style="cursor: pointer;" onchange="toggleUnlimitedTurns()" />
+                                    Unlimited
+                                </label>
+                            </div>
+                            <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">
+                                Use -1 for unlimited turns
+                            </div>
                         </div>
                     </div>
 
@@ -1110,6 +1119,7 @@
 
                 if (config.maxTurns !== undefined) {
                     document.getElementById('max-turns').value = config.maxTurns;
+                    syncUnlimitedTurnsCheckbox();
                 }
 
                 // Handle config name with parent_idx_name_child_idx pattern
@@ -1221,8 +1231,8 @@
             }
 
             const maxTurns = parseInt(document.getElementById('max-turns').value);
-            if (maxTurns < 1) {
-                errors.push('Max turns must be at least 1');
+            if (maxTurns < -1 || maxTurns === 0) {
+                errors.push('Max turns must be at least 1 or -1 for unlimited');
             }
 
             // Display errors
@@ -1498,6 +1508,35 @@
             setTimeout(() => {
                 loadResults();
             }, 2000);
+        }
+
+        // ===== Max Turns Handling =====
+        function toggleUnlimitedTurns() {
+            const checkbox = document.getElementById('unlimited-turns');
+            const input = document.getElementById('max-turns');
+
+            if (checkbox.checked) {
+                input.value = -1;
+                input.disabled = true;
+            } else {
+                input.disabled = false;
+                if (input.value == -1) {
+                    input.value = 5;  // Reset to default
+                }
+            }
+        }
+
+        function syncUnlimitedTurnsCheckbox() {
+            const input = document.getElementById('max-turns');
+            const checkbox = document.getElementById('unlimited-turns');
+
+            if (parseInt(input.value) === -1) {
+                checkbox.checked = true;
+                input.disabled = true;
+            } else {
+                checkbox.checked = false;
+                input.disabled = false;
+            }
         }
 
         // ===== GPU Selection =====
