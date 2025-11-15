@@ -52,6 +52,18 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             # Extract config name from path like /api/load-config/02_agent_multiturn
             config_name = path.split("/api/load-config/")[1]
             self._load_config(config_name)
+        elif path.startswith("/api/dataset-preview/"):
+            # Extract config name from path like /api/dataset-preview/01_agent_eval
+            config_name = path.split("/api/dataset-preview/")[1]
+            self._get_dataset_preview(config_name)
+        elif path.startswith("/api/parse-messages/"):
+            # Extract config name from path like /api/parse-messages/01_agent_eval
+            config_name = path.split("/api/parse-messages/")[1]
+            self._parse_messages(config_name)
+        elif path.startswith("/api/parse-tools/"):
+            # Extract config name from path like /api/parse-tools/01_agent_eval
+            config_name = path.split("/api/parse-tools/")[1]
+            self._parse_tools(config_name)
         else:
             # Default behavior for other files
             super().do_GET()
@@ -198,20 +210,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         if temp_match:
             config_data["temperature"] = float(temp_match.group(1))
 
-        # Extract prepare_messages method (full function)
-        prepare_msg_match = re.search(
-            r'(def prepare_messages\(self.*?^    def \w+|def prepare_messages\(self.*?^class \w+|def prepare_messages\(self.*?$)',
-            config_source,
-            re.DOTALL | re.MULTILINE
-        )
-        if prepare_msg_match:
-            # Clean up and dedent the function
-            func_text = prepare_msg_match.group(1)
-            # Remove trailing class/def if captured
-            func_text = re.sub(r'\n    (def |class )\w+.*$', '', func_text, flags=re.DOTALL)
-            config_data["prepareMessages"] = func_text.strip()
-
-        # Also extract just system_prompt for backward compatibility
+        # Extract system prompt (multiline string)
         prompt_match = re.search(r'system_prompt\s*=\s*"""([^"]+)"""', config_source, re.DOTALL)
         if prompt_match:
             config_data["systemPrompt"] = prompt_match.group(1).strip()
@@ -226,36 +225,16 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         if samples_match:
             config_data["numSamples"] = int(samples_match.group(1))
 
-        # Extract seed
-        seed_match = re.search(r'seed\s*[:=]\s*(\d+)', config_source)
-        if seed_match:
-            config_data["seed"] = int(seed_match.group(1))
-
-        # Extract start_idx and end_idx
-        start_match = re.search(r'start_idx\s*[:=]\s*(\d+)', config_source)
-        if start_match:
-            config_data["startIdx"] = int(start_match.group(1))
-
-        end_match = re.search(r'end_idx\s*[:=]\s*(\d+)', config_source)
-        if end_match:
-            config_data["endIdx"] = int(end_match.group(1))
-
-        # Extract environment-specific fields from both direct assignment and environment_config dict
-        ssh_match = re.search(r'["\']ssh_target["\']\s*:\s*["\']([^"\']+)["\']', config_source)
-        if not ssh_match:
-            ssh_match = re.search(r'ssh_target\s*[:=]\s*["\']([^"\']+)["\']', config_source)
+        # Extract environment-specific fields (kernel env)
+        ssh_match = re.search(r'ssh_target\s*[:=]\s*["\']([^"\']+)["\']', config_source)
         if ssh_match:
             config_data["sshTarget"] = ssh_match.group(1)
 
-        gpu_match = re.search(r'["\']gpu_id["\']\s*:\s*(\d+)', config_source)
-        if not gpu_match:
-            gpu_match = re.search(r'gpu_id\s*[:=]\s*(\d+)', config_source)
+        gpu_match = re.search(r'gpu_id\s*[:=]\s*(\d+)', config_source)
         if gpu_match:
             config_data["gpuId"] = int(gpu_match.group(1))
 
-        dataset_match = re.search(r'["\']dataset_path["\']\s*:\s*Path\(["\']([^"\']+)["\']\)', config_source)
-        if not dataset_match:
-            dataset_match = re.search(r'dataset_path\s*[:=]\s*Path\(["\']([^"\']+)["\']\)', config_source)
+        dataset_match = re.search(r'dataset_path\s*[:=]\s*Path\(["\']([^"\']+)["\']\)', config_source)
         if dataset_match:
             config_data["datasetPath"] = dataset_match.group(1)
 
@@ -273,6 +252,389 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             config_data["hasTools"] = False
 
         self._json_response(config_data)
+
+    def _get_dataset_preview(self, config_name: str):
+        """Get preview of dataset for a config - shows first sample with all fields.
+
+        This helps users see what fields are available when building messages.
+        """
+        import re
+
+        # Load config to get dataset path
+        config_path = self.project_root / "configs" / f"{config_name}.py"
+
+        if not config_path.exists():
+            self._json_response({
+                "error": f"Config not found: {config_name}",
+                "datasetPath": None,
+                "fields": [],
+                "sample": {}
+            })
+            return
+
+        # Read config and extract dataset path
+        config_source = config_path.read_text()
+        dataset_match = re.search(r'dataset_path\s*[:=]\s*Path\(["\']([^"\']+)["\']\)', config_source)
+
+        if not dataset_match:
+            self._json_response({
+                "error": "No dataset_path found in config",
+                "datasetPath": None,
+                "fields": [],
+                "sample": {}
+            })
+            return
+
+        dataset_path_str = dataset_match.group(1)
+        dataset_path = self.project_root / dataset_path_str
+
+        if not dataset_path.exists():
+            self._json_response({
+                "error": f"Dataset file not found: {dataset_path_str}",
+                "datasetPath": dataset_path_str,
+                "fields": [],
+                "sample": {}
+            })
+            return
+
+        # Load first sample from dataset
+        try:
+            with open(dataset_path, 'r') as f:
+                content = f.read()
+
+            # Try JSON array format first
+            try:
+                data = json.loads(content)
+                if isinstance(data, list):
+                    if len(data) == 0:
+                        self._json_response({
+                            "error": "Dataset array is empty",
+                            "datasetPath": dataset_path_str,
+                            "fields": [],
+                            "sample": {}
+                        })
+                        return
+                    sample = data[0]
+                else:
+                    # Single JSON object
+                    sample = data
+            except json.JSONDecodeError:
+                # Try JSONL format (one JSON object per line)
+                first_line = content.split('\n')[0].strip()
+                if not first_line:
+                    self._json_response({
+                        "error": "Dataset is empty",
+                        "datasetPath": dataset_path_str,
+                        "fields": [],
+                        "sample": {}
+                    })
+                    return
+                sample = json.loads(first_line)
+
+            # Extract field names and truncate long values for preview
+            fields = list(sample.keys())
+            preview_sample = {}
+
+            for key, value in sample.items():
+                # Truncate long strings for preview
+                if isinstance(value, str) and len(value) > 100:
+                    preview_sample[key] = value[:100] + "..."
+                else:
+                    preview_sample[key] = value
+
+            self._json_response({
+                "error": None,
+                "datasetPath": dataset_path_str,
+                "fields": fields,
+                "sample": preview_sample
+            })
+
+        except json.JSONDecodeError as e:
+            self._json_response({
+                "error": f"Invalid JSON in dataset: {str(e)}",
+                "datasetPath": dataset_path_str,
+                "fields": [],
+                "sample": {}
+            })
+        except Exception as e:
+            self._json_response({
+                "error": f"Error loading dataset: {str(e)}",
+                "datasetPath": dataset_path_str,
+                "fields": [],
+                "sample": {}
+            })
+
+    def _parse_messages(self, config_name: str):
+        """Parse prepare_messages() method from config to extract message list.
+
+        Extracts role and content from each Message() call in the return statement.
+        """
+        import re
+
+        config_path = self.project_root / "configs" / f"{config_name}.py"
+
+        if not config_path.exists():
+            self._json_response({
+                "error": f"Config not found: {config_name}",
+                "messages": []
+            })
+            return
+
+        config_source = config_path.read_text()
+
+        # Find prepare_messages method
+        method_match = re.search(
+            r'def prepare_messages\(.*?\):.*?return \[(.*?)\]',
+            config_source,
+            re.DOTALL
+        )
+
+        if not method_match:
+            self._json_response({
+                "error": "No prepare_messages() method found or it has complex logic",
+                "messages": []
+            })
+            return
+
+        messages_block = method_match.group(1)
+
+        # Parse each Message() call
+        # Match: Message(role="system", content="""...""") or Message(role="user", content=f"""...""")
+        message_pattern = r'Message\(\s*role\s*=\s*["\'](\w+)["\']\s*,\s*content\s*=\s*(.+?)\s*\)'
+
+        messages = []
+        for match in re.finditer(message_pattern, messages_block, re.DOTALL):
+            role = match.group(1)
+            content_expr = match.group(2).strip()
+
+            # Extract content from triple-quoted strings or regular strings
+            # Handle: """content""", "content", f"""content""", f"content"
+            content = None
+
+            # Try triple-quoted string first (most common in our configs)
+            triple_quote_match = re.match(r'f?"""(.+?)"""', content_expr, re.DOTALL)
+            if triple_quote_match:
+                content = triple_quote_match.group(1).strip()
+            else:
+                # Try single/double quoted string
+                quote_match = re.match(r'f?["\'](.+?)["\']', content_expr, re.DOTALL)
+                if quote_match:
+                    content = quote_match.group(1).strip()
+                else:
+                    # Complex expression (f-string with sample_data, etc.) - preserve as-is
+                    content = content_expr
+
+            if content is not None:
+                messages.append({
+                    "role": role,
+                    "content": content
+                })
+
+        if not messages:
+            self._json_response({
+                "error": "Could not parse messages - prepare_messages() may have complex logic",
+                "messages": []
+            })
+            return
+
+        self._json_response({
+            "error": None,
+            "messages": messages
+        })
+
+    def _parse_tools(self, config_name: str):
+        """Parse get_tools() method from config to extract tool definitions.
+
+        Extracts name, description, and parameters for each tool.
+        """
+        import re
+
+        config_path = self.project_root / "configs" / f"{config_name}.py"
+
+        if not config_path.exists():
+            self._json_response({
+                "error": f"Config not found: {config_name}",
+                "tools": [],
+                "hasTools": False
+            })
+            return
+
+        config_source = config_path.read_text()
+
+        # Find get_tools method
+        method_match = re.search(
+            r'def get_tools\(self\).*?return \[(.*?)\]',
+            config_source,
+            re.DOTALL
+        )
+
+        if not method_match:
+            self._json_response({
+                "error": None,
+                "tools": [],
+                "hasTools": False
+            })
+            return
+
+        tools_block = method_match.group(1).strip()
+
+        # Check if empty list
+        if not tools_block or "Tool(" not in tools_block:
+            self._json_response({
+                "error": None,
+                "tools": [],
+                "hasTools": False
+            })
+            return
+
+        # Parse each Tool() definition
+        # This is simplified - we extract name and description only (editable fields)
+        # Parameter parsing is complex, so we'll keep it simple for now
+        tools = []
+
+        # Find all Tool() blocks
+        tool_pattern = r'Tool\((.*?)\)'
+        for tool_match in re.finditer(tool_pattern, tools_block, re.DOTALL):
+            tool_content = tool_match.group(1)
+
+            # Extract tool name
+            name_match = re.search(r'name\s*=\s*["\']([^"\']+)["\']', tool_content)
+            if not name_match:
+                continue
+            tool_name = name_match.group(1)
+
+            # Extract tool description
+            desc_match = re.search(r'description\s*=\s*["\']([^"\']+)["\']', tool_content)
+            tool_description = desc_match.group(1) if desc_match else ""
+
+            # Extract parameters (simplified - just names and descriptions)
+            params = []
+            properties_match = re.search(r'properties\s*=\s*\{(.*?)\}', tool_content, re.DOTALL)
+            if properties_match:
+                properties_block = properties_match.group(1)
+
+                # Find each parameter definition
+                param_pattern = r'["\'](\w+)["\']\s*:\s*\{([^}]+)\}'
+                for param_match in re.finditer(param_pattern, properties_block):
+                    param_name = param_match.group(1)
+                    param_def = param_match.group(2)
+
+                    # Extract param type
+                    type_match = re.search(r'["\']type["\']\s*:\s*["\']([^"\']+)["\']', param_def)
+                    param_type = type_match.group(1) if type_match else "string"
+
+                    # Extract param description
+                    desc_match = re.search(r'["\']description["\']\s*:\s*["\']([^"\']+)["\']', param_def)
+                    param_desc = desc_match.group(1) if desc_match else ""
+
+                    # Check if required
+                    required_match = re.search(r'required\s*=\s*\[(.*?)\]', tool_content, re.DOTALL)
+                    is_required = False
+                    if required_match:
+                        required_list = required_match.group(1)
+                        is_required = f'"{param_name}"' in required_list or f"'{param_name}'" in required_list
+
+                    params.append({
+                        "name": param_name,
+                        "type": param_type,
+                        "description": param_desc,
+                        "required": is_required
+                    })
+
+            tools.append({
+                "name": tool_name,
+                "description": tool_description,
+                "parameters": params
+            })
+
+        self._json_response({
+            "error": None,
+            "tools": tools,
+            "hasTools": len(tools) > 0
+        })
+
+    def _update_tool_descriptions(self, config_source: str, tools: list[dict]) -> str:
+        """Update tool and parameter descriptions in config source.
+
+        Args:
+            config_source: Python source code of config
+            tools: List of tool dicts with name, description, and parameters
+
+        Returns:
+            Updated config source with new descriptions
+        """
+        import re
+
+        for tool in tools:
+            tool_name = tool["name"]
+            new_description = tool["description"]
+
+            # Find and replace tool description
+            # Pattern: name="tool_name", ... description="old description"
+            pattern = f'(name\\s*=\\s*["\'{tool_name}"][\'"],.*?description\\s*=\\s*["\'])([^"\']+)(["\'])'
+            config_source = re.sub(
+                pattern,
+                f'\\g<1>{new_description}\\g<3>',
+                config_source,
+                flags=re.DOTALL
+            )
+
+            # Update parameter descriptions
+            for param in tool.get("parameters", []):
+                param_name = param["name"]
+                param_description = param.get("description", "")
+
+                # Find parameter definition within properties dict
+                # Pattern: "param_name": {..., "description": "old desc", ...}
+                param_pattern = f'(["\'{param_name}"][\'"]\\s*:\\s*{{.*?["\']description["\']\\s*:\\s*["\'])([^"\']+)(["\'])'
+                config_source = re.sub(
+                    param_pattern,
+                    f'\\g<1>{param_description}\\g<3>',
+                    config_source,
+                    flags=re.DOTALL
+                )
+
+        return config_source
+
+    def _generate_prepare_messages_method(self, messages: list[dict]) -> str:
+        """Generate prepare_messages() method code from message list.
+
+        Args:
+            messages: List of {role, content} dicts from UI
+
+        Returns:
+            Python code for prepare_messages() method
+        """
+        # Build message creation code
+        message_lines = []
+
+        for msg in messages:
+            role = msg["role"]
+            content = msg["content"]
+
+            # Check if content contains {placeholders} for f-string
+            if "{" in content and "}" in content:
+                # Use f-string for dynamic content
+                # Escape any existing triple quotes in content
+                escaped_content = content.replace('"""', r'\"\"\"')
+                message_lines.append(f'            Message(role="{role}", content=f"""{escaped_content}"""),')
+            else:
+                # Use plain string for static content
+                escaped_content = content.replace('"""', r'\"\"\"')
+                message_lines.append(f'            Message(role="{role}", content="""{escaped_content}"""),')
+
+        messages_code = "\n".join(message_lines)
+
+        method_code = f'''def prepare_messages(self, sample_data: Dict[str, Any]) -> List[Message]:
+        """Prepare initial messages for the agent.
+
+        Generated by rollouts frontend.
+        """
+        return [
+{messages_code}
+        ]'''
+
+        return method_code
 
     def _generate_config(self):
         """Generate a new config file from JSON payload."""
@@ -400,6 +762,21 @@ class DevLoopServer(SimpleHTTPRequestHandler):
                 f'\\1"{env_fields["envName"]}"',
                 config_source
             )
+
+        # Replace prepare_messages() if messages provided from UI
+        if "messages" in data and data["messages"]:
+            new_prepare_messages = self._generate_prepare_messages_method(data["messages"])
+            # Find and replace the entire prepare_messages method
+            config_source = re.sub(
+                r'def prepare_messages\(self, sample_data:.*?\n        \]',
+                new_prepare_messages.rstrip() + '\n        ]',
+                config_source,
+                flags=re.DOTALL
+            )
+
+        # Update tool descriptions if tools provided from UI
+        if "tools" in data and data["tools"]:
+            config_source = self._update_tool_descriptions(config_source, data["tools"])
 
         # Add generation comment at top
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
