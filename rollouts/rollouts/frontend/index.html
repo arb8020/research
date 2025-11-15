@@ -777,9 +777,16 @@
                         </div>
                         <div class="form-field">
                             <label class="form-label">Config Name</label>
-                            <input type="text" class="form-input" id="config-name" placeholder="01_custom_name_01" style="font-family: monospace;" />
+                            <div style="display: flex; align-items: center; gap: 4px; font-family: monospace; font-size: 14px;">
+                                <input type="text" id="config-prefix" readonly style="width: 50px; padding: 8px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 4px; text-align: center; color: var(--text-secondary);" value="01" />
+                                <span style="color: var(--text-secondary);">_</span>
+                                <input type="text" class="form-input" id="config-name-middle" placeholder="custom_name" style="flex: 1; font-family: monospace;" />
+                                <span style="color: var(--text-secondary);">_</span>
+                                <input type="text" id="config-suffix" readonly style="width: 50px; padding: 8px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 4px; text-align: center; color: var(--text-secondary);" value="01" />
+                            </div>
+                            <input type="hidden" id="config-name" />
                             <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">
-                                Pattern: prefix_name_suffix (e.g., 01_agent_eval_01)
+                                Edit the middle part. Prefix (parent config) and suffix (auto-increment) are fixed.
                             </div>
                         </div>
                     </div>
@@ -1982,7 +1989,33 @@
         // ===== Config Name Management =====
         function setConfigName(name) {
             document.getElementById('config-name').value = name;
+
+            // Parse and populate prefix_name_suffix
+            const match = name.match(/^(\d+)_(.+?)_(\d+)$/);
+            if (match) {
+                document.getElementById('config-prefix').value = match[1];
+                document.getElementById('config-name-middle').value = match[2];
+                document.getElementById('config-suffix').value = match[3];
+            }
         }
+
+        function updateConfigName() {
+            // Rebuild config name from parts
+            const prefix = document.getElementById('config-prefix').value;
+            const middle = document.getElementById('config-name-middle').value;
+            const suffix = document.getElementById('config-suffix').value;
+
+            const fullName = `${prefix}_${middle}_${suffix}`;
+            document.getElementById('config-name').value = fullName;
+        }
+
+        // Add event listener to middle input to update hidden config-name
+        window.addEventListener('DOMContentLoaded', () => {
+            const middleInput = document.getElementById('config-name-middle');
+            if (middleInput) {
+                middleInput.addEventListener('input', updateConfigName);
+            }
+        });
 
         // ===== Max Turns Handling =====
         function toggleUnlimitedTurns() {
