@@ -14,6 +14,7 @@ Usage:
 """
 import argparse
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -25,6 +26,14 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] %(levelname)s: %(message)s',
+    datefmt='%H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
 # Global process registry for tracking running agent evaluations
 _active_runs = {}  # run_id -> {process, config_name, start_time, status, output_lines, exit_code}
@@ -47,6 +56,10 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
     # Class variable to store project root (set by main())
     project_root: Path = Path.cwd()
+
+    def log_message(self, format, *args):
+        """Override to use our logger instead of stderr."""
+        logger.info("%s - %s" % (self.address_string(), format % args))
 
     def do_GET(self):
         """Handle GET requests."""
@@ -106,6 +119,8 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             self._generate_config()
         elif path == "/api/launch":
             self._launch_config()
+        elif path == "/api/log":
+            self._log_from_frontend()
         elif path.startswith("/api/kill/"):
             # Extract run_id from path like /api/kill/run_1_1234567890
             run_id = path.split("/api/kill/")[1]
@@ -1232,15 +1247,21 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
             data = json.loads(body)
             config_name = data.get("configName")
 
+            logger.info(f"🚀 Launch request received for config: {config_name}")
+
             if not config_name:
+                logger.error("Launch failed: Missing configName")
                 self.send_error(400, "Missing configName")
                 return
 
             config_path = self.project_root / "configs" / f"{config_name}.py"
 
             if not config_path.exists():
+                logger.error(f"Launch failed: Config not found: {config_name}")
                 self.send_error(404, f"Config not found: {config_name}")
                 return
+
+            logger.info(f"Config file found: {config_path}")
 
             # GPU preflight check (if config has gpu_ids)
             # Read config to check for GPU requirements
@@ -1318,8 +1339,11 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                 _run_counter += 1
                 run_id = f"run_{_run_counter}_{int(time.time())}"
 
+            logger.info(f"Generated run_id: {run_id}")
+
             # Build command to launch config
             command = ["python", "entrypoint.py", str(config_path)]
+            logger.info(f"Command: {' '.join(command)}")
 
             # Launch with tracked pipes
             try:
@@ -1332,7 +1356,9 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                     bufsize=1,  # Line buffered
                     start_new_session=True  # Detach from parent
                 )
+                logger.info(f"Process started with PID: {process.pid}")
             except Exception as e:
+                logger.error(f"Failed to start process: {str(e)}")
                 _run_semaphore.release()  # Release semaphore on failure
                 self._json_response({
                     "success": False,
@@ -1352,6 +1378,8 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                     "gpu_ids": gpu_ids
                 }
 
+            logger.info(f"Run registered in _active_runs. Total active: {len(_active_runs)}")
+
             self._json_response({
                 "success": True,
                 "run_id": run_id,
@@ -1368,12 +1396,17 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
         """Stream output from a running process via SSE."""
         global _active_runs
 
+        logger.info(f"📡 Stream connection opened for run_id: {run_id}")
+
         if run_id not in _active_runs:
+            logger.error(f"Stream failed: Run not found: {run_id}")
+            logger.info(f"Available run_ids: {list(_active_runs.keys())}")
             self.send_error(404, f"Run not found: {run_id}")
             return
 
         run_data = _active_runs[run_id]
         process = run_data["process"]
+        logger.info(f"Streaming from PID: {process.pid}, status: {run_data['status']}")
 
         # Set up SSE headers
         self.send_response(200)
@@ -1429,6 +1462,35 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
             # Update status
             with _run_lock:
                 run_data["status"] = "failed"
+
+    def _log_from_frontend(self):
+        """Receive log messages from frontend."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+
+        try:
+            data = json.loads(body)
+            level = data.get("level", "info").upper()
+            message = data.get("message", "")
+            context = data.get("context", {})
+
+            # Log with appropriate level
+            log_msg = f"[FRONTEND] {message}"
+            if context:
+                log_msg += f" | {json.dumps(context)}"
+
+            if level == "ERROR":
+                logger.error(log_msg)
+            elif level == "WARN":
+                logger.warning(log_msg)
+            else:
+                logger.info(log_msg)
+
+            self._json_response({"success": True})
+
+        except Exception as e:
+            logger.error(f"Failed to process frontend log: {e}")
+            self.send_error(400, str(e))
 
     def _list_active_runs(self):
         """List all active and recent runs."""
