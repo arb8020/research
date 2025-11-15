@@ -202,19 +202,51 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         # Load report
         report = json.loads(report_path.read_text())
 
-        # Load trajectories (if they exist)
+        # Load trajectories (if they exist) - these are JSONL files with one event per line
         trajectories_dir = trace_dir / "trajectories"
-        trajectories = []
+        samples = []
 
         if trajectories_dir.exists():
-            for traj_file in sorted(trajectories_dir.glob("*.json")):
-                traj_data = json.loads(traj_file.read_text())
-                trajectories.append(traj_data)
+            for traj_file in sorted(trajectories_dir.glob("*.jsonl")):
+                # Parse JSONL - each line is a JSON object representing one turn/event
+                messages = []
+                rewards = []
+                metadata = {}
+
+                for line in traj_file.read_text().splitlines():
+                    if not line.strip():
+                        continue
+
+                    event = json.loads(line)
+
+                    # Extract messages from completions
+                    if "messages" in event:
+                        messages = event["messages"]
+
+                    # Extract reward
+                    if "rewards" in event:
+                        rewards.append(event["rewards"])
+                    elif "reward" in event:
+                        rewards.append(event["reward"])
+
+                    # Extract metadata
+                    if "metadata" in event:
+                        metadata = event["metadata"]
+
+                samples.append({
+                    "name": traj_file.stem,
+                    "messages": messages,
+                    "rewards": rewards[-1] if rewards else 0,
+                    "metadata": metadata
+                })
 
         trace_data = {
             "id": trace_id,
+            "name": report.get("config_name", trace_id),
+            "total_samples": report.get("total_samples", len(samples)),
+            "mean_reward": report.get("summary_metrics", {}).get("mean_reward", 0),
+            "samples": samples,
             "report": report,
-            "trajectories": trajectories,
         }
 
         self._json_response(trace_data)
