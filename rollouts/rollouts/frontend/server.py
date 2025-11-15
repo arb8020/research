@@ -401,33 +401,36 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
         # Extract variable assignments for content
         variable_values = {}
-        var_pattern = r'(\w+)\s*=\s*(.+?)(?=\n\s*(?:\w+\s*=|return))'
-        for var_match in re.finditer(var_pattern, method_body, re.DOTALL):
-            var_name = var_match.group(1)
-            var_value = var_match.group(2).strip()
 
-            # Extract string value
-            if var_value.startswith('"""') or var_value.startswith("'''"):
-                # Triple-quoted string
-                string_content = re.search(r'["\']{{3}}(.*?)["\']{{3}}', var_value, re.DOTALL)
-                if string_content:
-                    variable_values[var_name] = string_content.group(1).strip()
-            elif var_value.startswith('f"""') or var_value.startswith("f'''"):
-                # f-string triple-quoted
-                string_content = re.search(r'f["\']{{3}}(.*?)["\']{{3}}', var_value, re.DOTALL)
-                if string_content:
-                    variable_values[var_name] = string_content.group(1).strip()
-            elif var_value.startswith('"') or var_value.startswith("'"):
-                # Regular quoted string
-                quote_char = var_value[0]
-                end_idx = var_value.rfind(quote_char)
-                if end_idx > 0:
-                    variable_values[var_name] = var_value[1:end_idx]
-            elif var_value.startswith('sample_data'):
-                # Field access like sample_data["field"]
-                field_match = re.search(r'sample_data\[["\'](\w+)["\']\]', var_value)
-                if field_match:
-                    variable_values[var_name] = f'{{{field_match.group(1)}}}'
+        # Match triple-quoted strings (including multi-line)
+        triple_quote_pattern = r'(\w+)\s*=\s*"""(.*?)"""'
+        for match in re.finditer(triple_quote_pattern, method_body, re.DOTALL):
+            var_name = match.group(1)
+            var_value = match.group(2).strip()
+            variable_values[var_name] = var_value
+
+        # Match f-strings with triple quotes
+        f_triple_quote_pattern = r'(\w+)\s*=\s*f"""(.*?)"""'
+        for match in re.finditer(f_triple_quote_pattern, method_body, re.DOTALL):
+            var_name = match.group(1)
+            var_value = match.group(2).strip()
+            variable_values[var_name] = var_value
+
+        # Match sample_data field access
+        sample_data_pattern = r'(\w+)\s*=\s*sample_data\[["\'](\w+)["\']\]'
+        for match in re.finditer(sample_data_pattern, method_body):
+            var_name = match.group(1)
+            field_name = match.group(2)
+            variable_values[var_name] = f'{{{field_name}}}'
+
+        # Match simple string assignments
+        simple_string_pattern = r'(\w+)\s*=\s*"([^"]+)"'
+        for match in re.finditer(simple_string_pattern, method_body):
+            var_name = match.group(1)
+            var_value = match.group(2)
+            # Don't override if already captured by triple-quote pattern
+            if var_name not in variable_values:
+                variable_values[var_name] = var_value
 
         # Find return statement with Message list
         return_match = re.search(r'return\s*\[(.*?)\]', method_body, re.DOTALL)
