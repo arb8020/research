@@ -83,6 +83,8 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
         if path == "/api/generate":
             self._generate_config()
+        elif path == "/api/launch":
+            self._launch_config()
         else:
             self.send_error(404, "Not found")
 
@@ -1040,6 +1042,50 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
 '''
 
         return config
+
+    def _launch_config(self):
+        """Launch a config in the background."""
+        import subprocess
+
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+
+        try:
+            data = json.loads(body)
+            config_name = data.get("configName")
+
+            if not config_name:
+                self.send_error(400, "Missing configName")
+                return
+
+            config_path = self.project_root / "configs" / f"{config_name}.py"
+
+            if not config_path.exists():
+                self.send_error(404, f"Config not found: {config_name}")
+                return
+
+            # Build command to launch config
+            command = ["python", "entrypoint.py", str(config_path)]
+
+            # Launch in background
+            subprocess.Popen(
+                command,
+                cwd=self.project_root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True  # Detach from parent
+            )
+
+            self._json_response({
+                "success": True,
+                "command": " ".join(command),
+                "message": f"Launched {config_name}"
+            })
+
+        except json.JSONDecodeError as e:
+            self.send_error(400, f"Invalid JSON: {e}")
+        except Exception as e:
+            self.send_error(500, f"Launch failed: {e}")
 
     def _json_response(self, data: Any):
         """Send JSON response."""
