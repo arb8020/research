@@ -265,11 +265,22 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         if ssh_match:
             config_data["sshTarget"] = ssh_match.group(1)
 
-        gpu_match = re.search(r'["\']gpu_id["\']\s*:\s*(\d+)', config_source)
-        if not gpu_match:
-            gpu_match = re.search(r'gpu_id\s*[:=]\s*(\d+)', config_source)
-        if gpu_match:
-            config_data["gpuId"] = int(gpu_match.group(1))
+        # Try to match gpu_ids as a list first
+        gpu_list_match = re.search(r'["\']gpu_ids["\']\s*:\s*\[([^\]]+)\]', config_source)
+        if not gpu_list_match:
+            gpu_list_match = re.search(r'gpu_ids\s*[:=]\s*\[([^\]]+)\]', config_source)
+
+        if gpu_list_match:
+            # Parse list of GPU IDs
+            gpu_ids_str = gpu_list_match.group(1)
+            config_data["gpuIds"] = [int(x.strip()) for x in gpu_ids_str.split(',') if x.strip().isdigit()]
+        else:
+            # Fallback to single gpu_id for backwards compatibility
+            gpu_match = re.search(r'["\']gpu_id["\']\s*:\s*(\d+)', config_source)
+            if not gpu_match:
+                gpu_match = re.search(r'gpu_id\s*[:=]\s*(\d+)', config_source)
+            if gpu_match:
+                config_data["gpuIds"] = [int(gpu_match.group(1))]
 
         dataset_match = re.search(r'["\']dataset_path["\']\s*:\s*Path\(["\']([^"\']+)["\']\)', config_source)
         if not dataset_match:
@@ -633,6 +644,12 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         Returns:
             Python source code for config file
         """
+        # Normalize gpu_ids: convert to list if needed
+        if "gpu_ids" in data:
+            gpu_ids = data["gpu_ids"]
+            if not isinstance(gpu_ids, list):
+                data["gpu_ids"] = [gpu_ids]
+
         # Check if we're building from a base config
         base_name = data.get("baseName")
 
@@ -709,12 +726,35 @@ class DevLoopServer(SimpleHTTPRequestHandler):
                 config_source
             )
 
-        if "gpuId" in env_fields:
+        # Handle both gpu_ids (list) and gpuId (single, backwards compat)
+        if "gpu_ids" in data:
+            gpu_ids = data["gpu_ids"]
+            gpu_ids_str = str(gpu_ids)  # Convert list to string like [0, 1, 2]
+
+            # Try to replace gpu_ids list first
             config_source = re.sub(
-                r'(gpu_id\s*[:=]\s*)(\d+)',
-                f'\\g<1>{env_fields["gpuId"]}',
+                r'(gpu_ids\s*[:=]\s*)\[[^\]]*\]',
+                f'\\g<1>{gpu_ids_str}',
                 config_source
             )
+            # Also try in dict format
+            config_source = re.sub(
+                r'(["\']gpu_ids["\']\s*:\s*)\[[^\]]*\]',
+                f'\\g<1>{gpu_ids_str}',
+                config_source
+            )
+            # Fallback: replace old gpu_id with first GPU from list
+            if gpu_ids:
+                config_source = re.sub(
+                    r'(gpu_id\s*[:=]\s*)(\d+)',
+                    f'\\g<1>{gpu_ids[0]}',
+                    config_source
+                )
+                config_source = re.sub(
+                    r'(["\']gpu_id["\']\s*:\s*)(\d+)',
+                    f'\\g<1>{gpu_ids[0]}',
+                    config_source
+                )
 
         if "datasetPath" in env_fields:
             config_source = re.sub(

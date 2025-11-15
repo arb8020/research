@@ -314,6 +314,41 @@
             margin-bottom: 6px;
         }
 
+        /* GPU checkbox styling */
+        .gpu-checkbox-item {
+            display: flex;
+            align-items: center;
+            padding: 8px;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            background: var(--input-bg);
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+
+        .gpu-checkbox-item:hover {
+            border-color: var(--border-hover);
+            background: var(--bg-secondary);
+        }
+
+        .gpu-checkbox-item input[type="checkbox"] {
+            margin-right: 8px;
+            cursor: pointer;
+        }
+
+        .gpu-checkbox-item label {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text);
+            cursor: pointer;
+            user-select: none;
+            flex: 1;
+        }
+
+        .gpu-checkbox-item input[type="checkbox"]:checked + label {
+            color: var(--accent);
+        }
+
         .form-input,
         .form-select,
         .form-textarea {
@@ -736,8 +771,10 @@
                             <input type="text" class="form-input" id="ssh-target" placeholder="user@host:port" />
                         </div>
                         <div class="form-field">
-                            <label class="form-label" for="gpu-id">GPU ID</label>
-                            <input type="number" class="form-input" id="gpu-id" min="0" value="0" />
+                            <label class="form-label">GPU Ranks</label>
+                            <div id="gpu-ranks" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 8px;">
+                                <!-- GPUs 0-7 with checkboxes -->
+                            </div>
                         </div>
                         <div class="form-field">
                             <label class="form-label" for="dataset-path">Dataset Path</label>
@@ -1037,8 +1074,11 @@
                 if (config.sshTarget) {
                     document.getElementById('ssh-target').value = config.sshTarget;
                 }
-                if (config.gpuId !== undefined) {
-                    document.getElementById('gpu-id').value = config.gpuId;
+                if (config.gpuIds !== undefined) {
+                    setSelectedGPUs(config.gpuIds);
+                } else if (config.gpuId !== undefined) {
+                    // Backwards compatibility for old configs
+                    setSelectedGPUs(config.gpuId);
                 }
                 if (config.datasetPath) {
                     document.getElementById('dataset-path').value = config.datasetPath;
@@ -1130,7 +1170,7 @@
             document.getElementById('model-select').value = 'gpt-4o-mini';
             document.getElementById('temperature').value = '0.2';
             document.getElementById('ssh-target').value = '';
-            document.getElementById('gpu-id').value = '0';
+            setSelectedGPUs([0]);  // Default to GPU 0
             document.getElementById('dataset-path').value = '';
             document.getElementById('seed').value = '42';
             document.getElementById('start-idx').value = '0';
@@ -1213,7 +1253,7 @@
                 model: document.getElementById('model-select').value,
                 temperature: parseFloat(document.getElementById('temperature').value),
                 ssh_target: document.getElementById('ssh-target').value.trim(),
-                gpu_id: parseInt(document.getElementById('gpu-id').value),
+                gpu_ids: getSelectedGPUs(),
                 dataset_path: document.getElementById('dataset-path').value.trim(),
                 seed: parseInt(document.getElementById('seed').value),
                 start_idx: parseInt(document.getElementById('start-idx').value),
@@ -1459,6 +1499,73 @@
             }, 2000);
         }
 
+        // ===== GPU Selection =====
+        function initGPUCheckboxes() {
+            const container = document.getElementById('gpu-ranks');
+            container.innerHTML = '';
+
+            // Create checkboxes for GPUs 0-7
+            for (let i = 0; i < 8; i++) {
+                const item = document.createElement('div');
+                item.className = 'gpu-checkbox-item';
+
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.id = `gpu-${i}`;
+                checkbox.value = i;
+                checkbox.className = 'gpu-checkbox';
+
+                // Default to GPU 0 selected
+                if (i === 0) {
+                    checkbox.checked = true;
+                }
+
+                const label = document.createElement('label');
+                label.htmlFor = `gpu-${i}`;
+                label.textContent = `GPU ${i}`;
+
+                item.appendChild(checkbox);
+                item.appendChild(label);
+
+                // Make the whole item clickable
+                item.addEventListener('click', (e) => {
+                    if (e.target !== checkbox) {
+                        checkbox.checked = !checkbox.checked;
+                    }
+                });
+
+                container.appendChild(item);
+            }
+        }
+
+        function getSelectedGPUs() {
+            const checkboxes = document.querySelectorAll('.gpu-checkbox:checked');
+            return Array.from(checkboxes).map(cb => parseInt(cb.value));
+        }
+
+        function setSelectedGPUs(gpuIds) {
+            // Clear all checkboxes first
+            document.querySelectorAll('.gpu-checkbox').forEach(cb => {
+                cb.checked = false;
+            });
+
+            // Set specified GPUs
+            if (Array.isArray(gpuIds)) {
+                gpuIds.forEach(id => {
+                    const checkbox = document.getElementById(`gpu-${id}`);
+                    if (checkbox) {
+                        checkbox.checked = true;
+                    }
+                });
+            } else if (typeof gpuIds === 'number') {
+                // Handle single GPU ID for backwards compatibility
+                const checkbox = document.getElementById(`gpu-${gpuIds}`);
+                if (checkbox) {
+                    checkbox.checked = true;
+                }
+            }
+        }
+
         // ===== Model Loading =====
         async function loadModels() {
             state.models.loading = true;
@@ -1537,6 +1644,8 @@
         // Initialize
         async function init() {
             updateUI();
+            initGPUCheckboxes();
+
             await Promise.all([
                 loadAvailableConfigs(),
                 loadResults(),
