@@ -1005,6 +1005,39 @@
         </div>
     </div>
 
+    <!-- Message Editor Modal -->
+    <div class="modal" id="message-editor-modal">
+        <div class="modal-content" style="max-width: 900px; max-height: 90vh;">
+            <div class="modal-header">
+                <div class="modal-title">Edit Message</div>
+                <button class="sidebar-close" onclick="closeMessageEditor()">✕</button>
+            </div>
+            <div class="modal-body" style="max-height: calc(90vh - 140px); overflow-y: auto;">
+                <div class="form-field">
+                    <label class="form-label" for="message-editor-role">Role</label>
+                    <select class="form-select" id="message-editor-role">
+                        <option value="system">system</option>
+                        <option value="user">user</option>
+                        <option value="assistant">assistant</option>
+                    </select>
+                </div>
+                <div class="form-field">
+                    <label class="form-label" for="message-editor-content">Content</label>
+                    <textarea
+                        id="message-editor-content"
+                        class="form-textarea"
+                        style="min-height: 400px; font-family: 'SF Mono', Monaco, monospace; font-size: 13px; resize: vertical;"
+                        placeholder="Message content (use {field_name} for placeholders)"
+                    ></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn" onclick="closeMessageEditor()">Cancel</button>
+                <button class="btn primary" onclick="saveMessageFromEditor()">Save</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         // State machine - explicit state
         const state = {
@@ -2417,11 +2450,15 @@
 
             let html = '';
             state.messages.forEach((msg, index) => {
+                const preview = msg.content.substring(0, 100) + (msg.content.length > 100 ? '...' : '');
                 html += `
                     <div style="background: var(--bg-secondary); padding: 12px; border-radius: 8px; margin-bottom: 12px;">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
                             <span style="font-weight: 500; font-size: 13px;">Message ${index + 1}</span>
-                            <button onclick="deleteMessage(${index})" class="btn" style="padding: 4px 8px; font-size: 12px;">×</button>
+                            <div style="display: flex; gap: 4px;">
+                                <button onclick="expandMessage(${index})" class="btn" style="padding: 4px 8px; font-size: 12px;">⤢ Expand</button>
+                                <button onclick="deleteMessage(${index})" class="btn" style="padding: 4px 8px; font-size: 12px;">×</button>
+                            </div>
                         </div>
                         <div class="form-field" style="margin-bottom: 8px;">
                             <label class="form-label" style="font-size: 12px;">Role</label>
@@ -2432,13 +2469,8 @@
                             </select>
                         </div>
                         <div class="form-field">
-                            <label class="form-label" style="font-size: 12px;">Content</label>
-                            <textarea
-                                class="form-textarea"
-                                oninput="updateMessageContent(${index}, this.value)"
-                                style="min-height: 80px; font-family: 'SF Mono', Monaco, monospace; font-size: 12px;"
-                                placeholder="Message content (use {field_name} for placeholders)"
-                            >${msg.content}</textarea>
+                            <label class="form-label" style="font-size: 12px;">Preview</label>
+                            <div style="font-family: 'SF Mono', Monaco, monospace; font-size: 12px; color: var(--text-secondary); padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; white-space: pre-wrap; max-height: 60px; overflow: hidden;">${escapeHtml(preview)}</div>
                         </div>
                     </div>
                 `;
@@ -2463,6 +2495,38 @@
 
         function updateMessageContent(index, content) {
             state.messages[index].content = content;
+        }
+
+        function expandMessage(index) {
+            const msg = state.messages[index];
+            const modal = document.getElementById('message-editor-modal');
+            const roleSelect = document.getElementById('message-editor-role');
+            const textarea = document.getElementById('message-editor-content');
+
+            roleSelect.value = msg.role;
+            textarea.value = msg.content;
+
+            // Store current index for saving
+            modal.dataset.messageIndex = index;
+
+            modal.classList.add('show');
+        }
+
+        function closeMessageEditor() {
+            document.getElementById('message-editor-modal').classList.remove('show');
+        }
+
+        function saveMessageFromEditor() {
+            const modal = document.getElementById('message-editor-modal');
+            const index = parseInt(modal.dataset.messageIndex);
+            const role = document.getElementById('message-editor-role').value;
+            const content = document.getElementById('message-editor-content').value;
+
+            state.messages[index].role = role;
+            state.messages[index].content = content;
+
+            renderMessages();
+            closeMessageEditor();
         }
 
         // ===== Tool Editor =====
