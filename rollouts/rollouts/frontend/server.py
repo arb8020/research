@@ -68,6 +68,8 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             # Extract config name from path like /api/view-hook/01_agent_eval
             config_name = path.split("/api/view-hook/")[1]
             self._view_hook(config_name)
+        elif path == "/api/models":
+            self._list_models()
         else:
             # Default behavior for other files
             super().do_GET()
@@ -541,6 +543,65 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         method_source = method_match.group(1).strip()
 
         self._json_response({"source": method_source, "error": None})
+
+    def _list_models(self):
+        """Fetch available models from OpenAI and Anthropic APIs."""
+        import os
+        import urllib.request
+        import urllib.error
+
+        models = []
+        errors = []
+
+        # Fetch OpenAI models
+        openai_key = os.environ.get("OPENAI_API_KEY")
+        if openai_key:
+            try:
+                req = urllib.request.Request(
+                    "https://api.openai.com/v1/models",
+                    headers={"Authorization": f"Bearer {openai_key}"}
+                )
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    data = json.loads(response.read().decode())
+                    # Filter to relevant models (gpt-4*, o1*, o3*)
+                    for model in data.get("data", []):
+                        model_id = model.get("id", "")
+                        if any(model_id.startswith(prefix) for prefix in ["gpt-4", "o1", "o3"]):
+                            models.append({
+                                "id": model_id,
+                                "provider": "openai",
+                                "name": model_id
+                            })
+            except Exception as e:
+                errors.append(f"OpenAI: {str(e)}")
+
+        # Fetch Anthropic models
+        anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+        if anthropic_key:
+            try:
+                req = urllib.request.Request(
+                    "https://api.anthropic.com/v1/models",
+                    headers={
+                        "x-api-key": anthropic_key,
+                        "anthropic-version": "2023-06-01"
+                    }
+                )
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    data = json.loads(response.read().decode())
+                    for model in data.get("data", []):
+                        model_id = model.get("id", "")
+                        models.append({
+                            "id": model_id,
+                            "provider": "anthropic",
+                            "name": model.get("display_name", model_id)
+                        })
+            except Exception as e:
+                errors.append(f"Anthropic: {str(e)}")
+
+        self._json_response({
+            "models": models,
+            "errors": errors if errors else None
+        })
 
     def _generate_config(self):
         """Generate a new config file from JSON payload."""
