@@ -106,6 +106,47 @@
             border-color: var(--accent);
         }
 
+        /* Tab styles */
+        .tab {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px 6px 0 0;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            font-size: 13px;
+            font-weight: 500;
+            white-space: nowrap;
+        }
+
+        .tab:hover {
+            background: var(--bg-secondary);
+        }
+
+        .tab.active {
+            background: var(--bg);
+            border-bottom-color: var(--bg);
+            font-weight: 600;
+        }
+
+        .tab-close {
+            background: none;
+            border: none;
+            font-size: 16px;
+            line-height: 1;
+            cursor: pointer;
+            color: var(--text-secondary);
+            padding: 0 4px;
+            margin-left: 4px;
+        }
+
+        .tab-close:hover {
+            color: var(--error);
+        }
+
         /* Content area */
         .content {
             flex: 1;
@@ -672,9 +713,6 @@
                 <button class="btn" id="config-toggle" onclick="toggleConfigSidebar()">
                     ≡ Config
                 </button>
-                <button class="btn primary" id="launch-btn" onclick="launchAgent()">
-                    ▶ Launch
-                </button>
             </div>
             <div class="top-bar-right">
                 <button class="btn" id="results-toggle" onclick="toggleResultsSidebar()">
@@ -856,7 +894,10 @@
                 <!-- Action buttons at bottom -->
                 <div class="action-buttons">
                     <button class="btn" onclick="validateConfig()">Validate</button>
-                    <button class="btn primary" onclick="saveConfig()">Save Config</button>
+                    <button class="btn" onclick="saveConfig()">Save Config</button>
+                    <button class="btn primary" id="launch-btn" onclick="launchAgent()">
+                        🚀 Launch Agent
+                    </button>
                 </div>
             </div>
 
@@ -950,12 +991,15 @@
                 configSidebarOpen: false,
                 resultsSidebarOpen: false,
                 mainPaneMode: 'idle', // 'idle' | 'live-stream' | 'trajectory-view'
+                activeTabId: null,  // Which tab is currently active (run_id or result_id)
             },
             configs: [],
             activeConfigId: null,
             results: [],
             selectedResultId: null,
-            liveRun: null,
+
+            // Multiple live runs tracked as tabs
+            liveRuns: {},  // run_id -> {runId, configName, status, output, startTime, eventSource}
 
             // Dataset preview
             sampleData: {
@@ -1519,7 +1563,7 @@
             block.classList.toggle('message-collapsed');
         }
 
-        // Launch agent
+        // Launch agent with live streaming
         async function launchAgent() {
             // Step 1: Save config first
             const launchBtn = document.getElementById('launch-btn');
@@ -1555,16 +1599,47 @@
 
                 const result = await response.json();
 
-                launchBtn.textContent = '✓ Launched';
-
-                alert(`✓ Config launched!\n\nCommand: ${result.command}\n\nCheck the Results sidebar for progress.`);
-
-                // Reload results after a brief delay
-                setTimeout(() => {
-                    loadResults();
+                // Check for preflight failures
+                if (!result.success) {
                     launchBtn.textContent = originalText;
                     launchBtn.disabled = false;
-                }, 2000);
+
+                    if (result.preflight_failed) {
+                        alert(`❌ Preflight check failed:\n\n${result.error}\n\nPlease wait for the GPU to be free and try again.`);
+                    } else if (result.queue_full) {
+                        alert(`⏸ ${result.error}\n\nYou can view active runs in the main pane.`);
+                    } else {
+                        alert(`❌ Launch failed:\n\n${result.error}`);
+                    }
+                    return;
+                }
+
+                const { run_id, config_name } = result;
+
+                // Create new live run tab
+                state.liveRuns[run_id] = {
+                    runId: run_id,
+                    configName: config_name,
+                    status: 'running',
+                    output: [],
+                    startTime: Date.now(),
+                    eventSource: null,
+                    exitCode: null
+                };
+
+                // Switch to this run's tab
+                state.ui.activeTabId = run_id;
+                state.ui.mainPaneMode = 'live-stream';
+
+                // Re-enable launch button immediately (can launch more configs)
+                launchBtn.textContent = originalText;
+                launchBtn.disabled = false;
+
+                // Start streaming
+                connectToStream(run_id);
+
+                // Update UI to show tabs
+                updateUI();
 
             } catch (error) {
                 console.error('Failed to launch:', error);
@@ -1572,6 +1647,277 @@
                 launchBtn.textContent = originalText;
                 launchBtn.disabled = false;
             }
+        }
+
+        // Connect to SSE stream for a run
+        function connectToStream(runId) {
+            const run = state.liveRuns[runId];
+            if (!run) return;
+
+            const eventSource = new EventSource(`/api/stream/${runId}`);
+            run.eventSource = eventSource;
+
+            eventSource.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+
+                if (data.type === 'stdout') {
+                    // Append output line
+                    run.output.push(data.line);
+
+                    // Update UI if this is the active tab
+                    if (state.ui.activeTabId === runId) {
+                        renderLiveOutput(runId);
+                    }
+                } else if (data.type === 'complete') {
+                    // Run finished
+                    run.status = data.status;
+                    run.exitCode = data.exit_code;
+                    eventSource.close();
+
+                    // Reload results
+                    loadResults();
+
+                    // Auto-switch to results view after 1 second
+                    setTimeout(() => {
+                        // Find the most recent result (should be this run)
+                        loadResults().then(() => {
+                            if (state.results.length > 0) {
+                                // Switch to most recent result
+                                const mostRecentResult = state.results[0];
+                                state.ui.activeTabId = mostRecentResult.id;
+                                state.ui.mainPaneMode = 'trajectory-view';
+                                state.selectedResultId = mostRecentResult.id;
+                                viewResult(mostRecentResult.id);
+                            }
+                        });
+                    }, 1000);
+
+                } else if (data.type === 'error') {
+                    console.error('Stream error:', data.message);
+                    run.status = 'failed';
+                    eventSource.close();
+
+                    // Update UI
+                    if (state.ui.activeTabId === runId) {
+                        renderLiveOutput(runId);
+                    }
+                }
+            };
+
+            eventSource.onerror = () => {
+                console.error('EventSource error for run:', runId);
+                run.status = 'failed';
+                eventSource.close();
+            };
+        }
+
+        // Render live output for a specific run
+        function renderLiveOutput(runId) {
+            const run = state.liveRuns[runId];
+            if (!run) return;
+
+            const mainPaneContent = document.querySelector('.main-pane-content');
+            if (!mainPaneContent) return;
+
+            const { configName, output, status, exitCode } = run;
+
+            // Build status indicator
+            let statusClass = status;
+            let statusText = status.toUpperCase();
+            if (status === 'running') {
+                statusText = '⚙️ RUNNING';
+            } else if (status === 'success') {
+                statusText = '✓ SUCCESS';
+            } else if (status === 'failed') {
+                statusText = `✗ FAILED (exit code: ${exitCode})`;
+            } else if (status === 'killed') {
+                statusText = '⏹ KILLED';
+            }
+
+            let html = `
+                <div style="padding: 0;">
+                    <!-- Tabs -->
+                    ${renderTabs()}
+
+                    <!-- Live output container -->
+                    <div style="padding: 24px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                            <h2 style="margin: 0; font-size: 18px;">${configName}</h2>
+                            <div style="display: flex; gap: 12px; align-items: center;">
+                                <div class="status-badge" style="
+                                    padding: 6px 12px;
+                                    border-radius: 4px;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    background: ${status === 'running' ? '#dbeafe' : status === 'success' ? '#d1fae5' : '#fee2e2'};
+                                    color: ${status === 'running' ? '#1e40af' : status === 'success' ? '#065f46' : '#991b1b'};
+                                ">${statusText}</div>
+                                ${status === 'running' ? `<button class="btn" onclick="killRun('${runId}')">Stop</button>` : ''}
+                                ${status !== 'running' ? `<button class="btn" onclick="closeTab('${runId}')">Close Tab</button>` : ''}
+                            </div>
+                        </div>
+
+                        <div class="live-output-container" id="live-output-${runId}" style="
+                            background: #1e1e1e;
+                            color: #d4d4d4;
+                            padding: 16px;
+                            border-radius: 8px;
+                            font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+                            font-size: 12px;
+                            line-height: 1.5;
+                            max-height: calc(100vh - 220px);
+                            overflow-y: auto;
+                            white-space: pre-wrap;
+                            word-wrap: break-word;
+                        ">`;
+
+            if (output.length === 0) {
+                html += '<div style="color: #888;">Waiting for output...</div>';
+            } else {
+                output.forEach(line => {
+                    // Color code different types of output
+                    let color = '#d4d4d4';
+                    if (line.includes('ERROR') || line.includes('FAILED') || line.includes('Failed')) {
+                        color = '#f48771';
+                    } else if (line.includes('SUCCESS') || line.includes('PASSED') || line.includes('✓')) {
+                        color = '#89d185';
+                    } else if (line.includes('WARNING') || line.includes('Warning')) {
+                        color = '#dcdcaa';
+                    } else if (line.startsWith('🚀') || line.startsWith('📝') || line.startsWith('📊')) {
+                        color = '#4ec9b0';
+                    }
+
+                    html += `<div style="color: ${color};">${escapeHtml(line)}</div>`;
+                });
+            }
+
+            html += `
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            mainPaneContent.innerHTML = html;
+
+            // Auto-scroll to bottom
+            setTimeout(() => {
+                const container = document.getElementById(`live-output-${runId}`);
+                if (container) {
+                    container.scrollTop = container.scrollHeight;
+                }
+            }, 0);
+        }
+
+        // Render tabs for all active runs and results
+        function renderTabs() {
+            const tabs = [];
+
+            // Add live run tabs
+            Object.values(state.liveRuns).forEach(run => {
+                const isActive = state.ui.activeTabId === run.runId;
+                const statusIcon = run.status === 'running' ? '⚙️' : run.status === 'success' ? '✓' : '✗';
+
+                tabs.push(`
+                    <div class="tab ${isActive ? 'active' : ''}" onclick="switchToTab('${run.runId}', 'live-stream')">
+                        <span>${statusIcon} ${run.configName}</span>
+                        ${run.status !== 'running' ? `<button class="tab-close" onclick="event.stopPropagation(); closeTab('${run.runId}')">&times;</button>` : ''}
+                    </div>
+                `);
+            });
+
+            if (tabs.length === 0) {
+                return '';
+            }
+
+            return `
+                <div class="tabs-container" style="
+                    display: flex;
+                    gap: 4px;
+                    padding: 12px 24px;
+                    background: var(--bg-secondary);
+                    border-bottom: 1px solid var(--border);
+                    overflow-x: auto;
+                ">
+                    ${tabs.join('')}
+                </div>
+            `;
+        }
+
+        // Switch to a specific tab
+        function switchToTab(tabId, mode) {
+            state.ui.activeTabId = tabId;
+            state.ui.mainPaneMode = mode;
+
+            if (mode === 'live-stream') {
+                renderLiveOutput(tabId);
+            } else if (mode === 'trajectory-view') {
+                viewResult(tabId);
+            }
+        }
+
+        // Close a tab
+        async function closeTab(runId) {
+            const run = state.liveRuns[runId];
+            if (!run) return;
+
+            // Close EventSource if still open
+            if (run.eventSource) {
+                run.eventSource.close();
+            }
+
+            // Delete from backend
+            if (run.status !== 'running') {
+                try {
+                    await fetch(`/api/delete-run/${runId}`, { method: 'POST' });
+                } catch (e) {
+                    console.error('Failed to delete run:', e);
+                }
+            }
+
+            // Remove from state
+            delete state.liveRuns[runId];
+
+            // Switch to another tab or idle
+            if (state.ui.activeTabId === runId) {
+                const remainingRuns = Object.keys(state.liveRuns);
+                if (remainingRuns.length > 0) {
+                    switchToTab(remainingRuns[0], 'live-stream');
+                } else {
+                    state.ui.activeTabId = null;
+                    state.ui.mainPaneMode = 'idle';
+                    updateUI();
+                }
+            } else {
+                updateUI();
+            }
+        }
+
+        // Kill a running process
+        async function killRun(runId) {
+            try {
+                const response = await fetch(`/api/kill/${runId}`, { method: 'POST' });
+                const result = await response.json();
+
+                if (result.success) {
+                    const run = state.liveRuns[runId];
+                    if (run) {
+                        run.status = 'killed';
+                        renderLiveOutput(runId);
+                    }
+                } else {
+                    alert(`Failed to kill run: ${result.message}`);
+                }
+            } catch (error) {
+                console.error('Failed to kill run:', error);
+                alert('Failed to kill run: ' + error.message);
+            }
+        }
+
+        // HTML escape utility
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
         }
 
         // ===== Config Name Management =====
