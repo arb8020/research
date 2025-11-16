@@ -1078,7 +1078,7 @@
             selectedResultId: null,
 
             // Multiple live runs tracked as tabs
-            liveRuns: {},  // run_id -> {runId, configName, status, output, startTime, eventSource}
+            liveRuns: {},  // run_id -> {runId, configName, status, output, startTime, eventSource, renderTimer}
 
             // Dataset preview
             sampleData: {
@@ -1891,15 +1891,31 @@
                     // Append output line
                     run.output.push(data.line);
 
-                    // Update UI if this is the active tab
+                    // Debounced rendering: only re-render every 100ms to avoid freezing on rapid output
                     if (state.ui.activeTabId === runId) {
-                        renderLiveOutput(runId);
+                        if (run.renderTimer) {
+                            clearTimeout(run.renderTimer);
+                        }
+                        run.renderTimer = setTimeout(() => {
+                            renderLiveOutput(runId);
+                            run.renderTimer = null;
+                        }, 100);
                     }
                 } else if (data.type === 'complete') {
-                    // Run finished
+                    // Run finished - clear any pending render timer and do final render
+                    if (run.renderTimer) {
+                        clearTimeout(run.renderTimer);
+                        run.renderTimer = null;
+                    }
+
                     run.status = data.status;
                     run.exitCode = data.exit_code;
                     eventSource.close();
+
+                    // Final render with complete status
+                    if (state.ui.activeTabId === runId) {
+                        renderLiveOutput(runId);
+                    }
 
                     // Reload results
                     loadResults();
@@ -1921,6 +1937,13 @@
 
                 } else if (data.type === 'error') {
                     console.error('Stream error:', data.message);
+
+                    // Clear any pending render timer
+                    if (run.renderTimer) {
+                        clearTimeout(run.renderTimer);
+                        run.renderTimer = null;
+                    }
+
                     run.status = 'failed';
                     eventSource.close();
 
@@ -1933,8 +1956,20 @@
 
             eventSource.onerror = () => {
                 console.error('EventSource error for run:', runId);
+
+                // Clear any pending render timer
+                if (run.renderTimer) {
+                    clearTimeout(run.renderTimer);
+                    run.renderTimer = null;
+                }
+
                 run.status = 'failed';
                 eventSource.close();
+
+                // Update UI
+                if (state.ui.activeTabId === runId) {
+                    renderLiveOutput(runId);
+                }
             };
         }
 
@@ -1961,6 +1996,60 @@
                 statusText = '⏹ KILLED';
             }
 
+            // Check if output container already exists for incremental updates
+            let outputContainer = document.getElementById(`live-output-${runId}`);
+            const isIncremental = outputContainer && run.lastRenderedLineCount !== undefined;
+
+            if (isIncremental) {
+                // Incremental update - only append new lines since last render
+                const newLines = output.slice(run.lastRenderedLineCount);
+                newLines.forEach(line => {
+                    const div = document.createElement('div');
+                    div.textContent = line;  // textContent auto-escapes
+
+                    // Color code different types of output
+                    if (line.includes('ERROR') || line.includes('FAILED') || line.includes('Failed')) {
+                        div.style.color = '#f48771';
+                    } else if (line.includes('SUCCESS') || line.includes('PASSED') || line.includes('✓')) {
+                        div.style.color = '#89d185';
+                    } else if (line.includes('WARNING') || line.includes('Warning')) {
+                        div.style.color = '#dcdcaa';
+                    } else if (line.startsWith('🚀') || line.startsWith('📝') || line.startsWith('📊')) {
+                        div.style.color = '#4ec9b0';
+                    } else {
+                        div.style.color = '#d4d4d4';
+                    }
+
+                    outputContainer.appendChild(div);
+                });
+
+                run.lastRenderedLineCount = output.length;
+
+                // Auto-scroll to bottom
+                outputContainer.scrollTop = outputContainer.scrollHeight;
+
+                // Update status badge if status changed
+                const statusBadge = document.querySelector('.status-badge');
+                if (statusBadge) {
+                    statusBadge.textContent = statusText;
+                    statusBadge.style.background = status === 'running' ? '#dbeafe' : status === 'success' ? '#d1fae5' : '#fee2e2';
+                    statusBadge.style.color = status === 'running' ? '#1e40af' : status === 'success' ? '#065f46' : '#991b1b';
+                }
+
+                // Update button (Stop vs Close Tab)
+                const buttonContainer = statusBadge?.parentElement;
+                if (buttonContainer && status !== 'running') {
+                    const stopBtn = buttonContainer.querySelector('button');
+                    if (stopBtn && stopBtn.textContent === 'Stop') {
+                        stopBtn.textContent = 'Close Tab';
+                        stopBtn.onclick = () => closeTab(runId);
+                    }
+                }
+
+                return;  // Skip full re-render
+            }
+
+            // Full render (initial or fallback)
             let html = `
                 <div style="padding: 0;">
                     <!-- Tabs -->
@@ -2017,6 +2106,8 @@
                     html += `<div style="color: ${color};">${escapeHtml(line)}</div>`;
                 });
             }
+
+            run.lastRenderedLineCount = output.length;
 
             html += `
                         </div>
@@ -2160,6 +2251,18 @@
                 if (result.success) {
                     const run = state.liveRuns[runId];
                     if (run) {
+                        // Clear any pending render timer
+                        if (run.renderTimer) {
+                            clearTimeout(run.renderTimer);
+                            run.renderTimer = null;
+                        }
+
+                        // Close the EventSource connection to stop receiving data
+                        if (run.eventSource) {
+                            run.eventSource.close();
+                            run.eventSource = null;
+                        }
+
                         run.status = 'killed';
                         renderLiveOutput(runId);
                     }
