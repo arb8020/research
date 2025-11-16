@@ -439,10 +439,11 @@ async def run_agent(
             disable=False
         )
 
-    # Save initial state
-    await handle_checkpoint_event(state, "turn_start", run_config, session_id)
-
     while not current_state.stop and current_state.turn_idx < current_state.max_turns:
+        # Tiger Style: Centralize control flow - emit start/end in same scope for clarity
+        # Casey: Semantic compression - consistent pattern (start→step→end) repeated each iteration
+        await handle_checkpoint_event(current_state, "turn_start", run_config, session_id)
+
         next_state = await run_agent_step(current_state, run_config)
         current_state = next_state
         states.append(current_state)
@@ -455,7 +456,7 @@ async def run_agent(
                 postfix['stop'] = str(current_state.stop).split('.')[-1]
             turn_pbar.set_postfix(postfix)
 
-        # Checkpoint after each state transition
+        # Checkpoint after each turn completes
         await handle_checkpoint_event(current_state, "turn_end", run_config, session_id)
 
     # Set stop reason if we hit max turns
