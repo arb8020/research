@@ -1782,9 +1782,11 @@
             return formatted;
         }
 
-        function toggleMessage(idx) {
-            const block = document.getElementById(`msg-${idx}`);
-            block.classList.toggle('message-collapsed');
+        function toggleMessage(messageId) {
+            const block = document.getElementById(`msg-${messageId}`);
+            if (block) {
+                block.classList.toggle('message-collapsed');
+            }
         }
 
         // Launch agent with live streaming
@@ -2050,6 +2052,12 @@
             const mainPaneContent = document.querySelector('.main-pane-content');
             if (!mainPaneContent) return;
 
+            // Save scroll position and check if user is at bottom
+            const scrollTop = mainPaneContent.scrollTop;
+            const scrollHeight = mainPaneContent.scrollHeight;
+            const clientHeight = mainPaneContent.clientHeight;
+            const isAtBottom = scrollHeight - scrollTop - clientHeight < 50;  // 50px threshold
+
             const { configName, samples, status, exitCode } = run;
 
             // Build status indicator
@@ -2155,6 +2163,13 @@
             document.querySelectorAll('pre code').forEach((block) => {
                 hljs.highlightElement(block);
             });
+
+            // Restore scroll position - only auto-scroll if user was at bottom
+            if (isAtBottom) {
+                mainPaneContent.scrollTop = mainPaneContent.scrollHeight;
+            } else {
+                mainPaneContent.scrollTop = scrollTop;
+            }
         }
 
         // Toggle sample expand/collapse
