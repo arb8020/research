@@ -249,6 +249,13 @@ async def evaluate_sample(
     if config.verbose:
         logger.info(f"Evaluating {sample_id}")
 
+    # Emit sample_start event for frontend live streaming
+    if run_config.emit_event is not None:
+        await run_config.emit_event("sample_start", {
+            "sample_id": sample_id,
+            "data": sample_data,
+        })
+
     error_message = None
     try:
         states = await run_agent(initial_state, run_config)
@@ -340,7 +347,7 @@ async def evaluate_sample(
         except Exception as e:
             logger.warning(f"Environment cleanup failed for {sample_id}: {e}")
 
-    return EvalSample(
+    eval_sample = EvalSample(
         sample_id=sample_id,
         input_data=sample_data,
         trajectory=scored_trajectory,
@@ -348,6 +355,16 @@ async def evaluate_sample(
         metrics=metrics,
         metadata=metadata
     )
+
+    # Emit sample_end event for frontend live streaming
+    if run_config.emit_event is not None:
+        await run_config.emit_event("sample_end", {
+            "sample_id": sample_id,
+            "reward": metrics.get("reward", 0.0),
+            "metadata": metadata,
+        })
+
+    return eval_sample
 
 
 async def evaluate(

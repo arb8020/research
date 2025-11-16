@@ -55,13 +55,19 @@ from .providers import (
 
 async def handle_checkpoint_event(state: 'AgentState', event: str, run_config: 'RunConfig',
                                  session_id: Optional[str] = None) -> None:
-    """Handle checkpoint event if configured - stub for now"""
+    """Handle checkpoint event - emits to events.jsonl if emit_event configured"""
     assert state is not None
     assert isinstance(state, AgentState)
     assert event is not None
     assert isinstance(event, str)
     assert run_config is not None
-    pass
+
+    if run_config.emit_event is not None:
+        await run_config.emit_event(event, {
+            "turn": state.turn_idx,
+            "max_turns": state.max_turns,
+            "session_id": session_id,
+        })
 
 async def stdout_handler(chunk: StreamChunk):
     """Simple stdout handler for chunks"""
