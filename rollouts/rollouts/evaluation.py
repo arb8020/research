@@ -256,6 +256,14 @@ async def evaluate_sample(
             "data": sample_data,
         })
 
+        # Emit initial messages (system + user prompts) so frontend can display them
+        for msg in initial_messages:
+            await run_config.emit_event("message", {
+                "sample_id": sample_id,
+                "role": msg.role,
+                "content": msg.content if isinstance(msg.content, str) else str(msg.content),
+            })
+
     error_message = None
     try:
         states = await run_agent(initial_state, run_config)
