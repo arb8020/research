@@ -96,6 +96,10 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             # Extract config name from path like /api/view-hook/01_agent_eval
             config_name = path.split("/api/view-hook/")[1]
             self._view_hook(config_name)
+        elif path.startswith("/api/view-environment/"):
+            # Extract config name from path like /api/view-environment/01_agent_eval
+            config_name = path.split("/api/view-environment/")[1]
+            self._view_environment(config_name)
         elif path == "/api/models":
             self._list_models()
         elif path == "/api/list-datasets":
@@ -466,15 +470,15 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
         config_source = config_path.read_text()
 
-        # Find prepare_messages method
+        # Find prepare_messages function (can be standalone or method)
         method_match = re.search(
-            r'def prepare_messages\(self.*?\).*?:\s*\n(.*?)(?=\n    def |\nclass |\Z)',
+            r'def prepare_messages\(.*?\).*?:\s*\n(.*?)(?=\ndef |\nclass |\Z)',
             config_source,
             re.DOTALL
         )
 
         if not method_match:
-            self._json_response({"error": "Could not find prepare_messages() method"})
+            self._json_response({"error": "Could not find prepare_messages() function"})
             return
 
         method_body = method_match.group(1)
@@ -677,6 +681,50 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         method_source = method_match.group(1).strip()
 
         self._json_response({"source": method_source, "error": None})
+
+    def _view_environment(self, config_name: str):
+        """View full environment source code."""
+        import re
+
+        config_path = self.project_root / "configs" / f"{config_name}.py"
+
+        if not config_path.exists():
+            self._json_response({"error": f"Config not found: {config_name}"})
+            return
+
+        config_source = config_path.read_text()
+
+        # Try to find environment class name or environment file
+        env_match = re.search(r'from\s+([\w.]+)\s+import\s+(\w+Environment)', config_source)
+
+        if not env_match:
+            self._json_response({"error": "Could not find environment import"})
+            return
+
+        env_module = env_match.group(1)
+        env_class = env_match.group(2)
+
+        # Convert module path to file path
+        module_parts = env_module.split('.')
+        env_file = self.project_root / Path(*module_parts[:-1]) / f"{module_parts[-1]}.py"
+
+        if not env_file.exists():
+            # Try without the last part
+            env_file = self.project_root / f"{module_parts[0]}.py"
+
+        if not env_file.exists():
+            self._json_response({"error": f"Could not find environment file: {env_module}"})
+            return
+
+        # Read entire environment file
+        env_source = env_file.read_text()
+
+        self._json_response({
+            "source": env_source,
+            "file_path": str(env_file.relative_to(self.project_root)),
+            "class_name": env_class,
+            "error": None
+        })
 
     def _list_models(self):
         """Fetch available models from OpenAI and Anthropic APIs."""
@@ -881,11 +929,15 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         # Check if we're building from a base config
         base_name = data.get("baseName")
 
+        logger.info(f"_build_config: baseName={base_name}, configName={data.get('configName')}")
+
         if base_name:
             # Load base config and modify it
+            logger.info(f"Building from base config: {base_name}")
             return self._build_from_base_config(data, base_name)
         else:
             # Build from scratch
+            logger.info("Building new config from template")
             return self._build_new_config(data)
 
     def _build_from_base_config(self, data: dict[str, Any], base_name: str) -> str:
@@ -894,10 +946,18 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
         if not base_path.exists():
             # Fallback to new config
+            logger.warning(f"Base config not found: {base_path}, falling back to template")
             return self._build_new_config(data)
 
         # Read base config
         config_source = base_path.read_text()
+
+        # Check what environment class is in the base config
+        import re
+        env_import = re.search(r'from\s+([\w.]+)\s+import\s+(\w+Environment)', config_source)
+        env_class = re.search(r'environment_class:\s*type\s*=\s*(\w+)', config_source)
+        logger.info(f"Base config has environment import: {env_import.group(0) if env_import else 'None'}")
+        logger.info(f"Base config has environment_class: {env_class.group(1) if env_class else 'None'}")
 
         # Replace specific values
         import re
@@ -1036,10 +1096,14 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
         # Update messages if provided
         if "messages" in data and data["messages"]:
-            messages_code = self._generate_prepare_messages_method(data["messages"])
+            # Detect if prepare_messages is standalone or a method
+            existing_match = re.search(r'def prepare_messages\((.*?)\)', config_source)
+            is_standalone = existing_match and 'self' not in existing_match.group(1)
+
+            messages_code = self._generate_prepare_messages_method(data["messages"], is_standalone=is_standalone)
             # Replace the existing prepare_messages method
             config_source = re.sub(
-                r'def prepare_messages\(self.*?\).*?:\s*\n.*?(?=\n    def |\nclass |\Z)',
+                r'def prepare_messages\(.*?\).*?:\s*\n.*?(?=\ndef |\nclass |\Z)',
                 messages_code,
                 config_source,
                 flags=re.DOTALL
@@ -1059,11 +1123,22 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
         return config_source
 
-    def _generate_prepare_messages_method(self, messages: list[dict]) -> str:
-        """Generate prepare_messages() method code from message list."""
+    def _generate_prepare_messages_method(self, messages: list[dict], is_standalone: bool = True) -> str:
+        """Generate prepare_messages() code from message list.
+
+        Args:
+            messages: List of message dicts
+            is_standalone: If True, generates standalone function. If False, generates class method.
+        """
         lines = []
-        lines.append("    def prepare_messages(self, sample_data: dict[str, Any]) -> list[Message]:")
-        lines.append('        """Prepare initial messages for the agent."""')
+        if is_standalone:
+            lines.append("def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:")
+            lines.append('    """Prepare initial messages from dataset sample."""')
+            indent = "    "
+        else:
+            lines.append("    def prepare_messages(self, sample_data: dict[str, Any]) -> list[Message]:")
+            lines.append('        """Prepare initial messages for the agent."""')
+            indent = "        "
 
         for i, msg in enumerate(messages):
             role = msg["role"]
@@ -1076,22 +1151,28 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             content_escaped = content.replace('"""', r'\"\"\"')
 
             if has_placeholders:
-                # Use f-string
-                lines.append(f"        msg{i}_content = f\"\"\"")
+                # Use f-string - convert {field} to {sample_data.get('field', '')}
+                import re
+                def replace_placeholder(match):
+                    field = match.group(1)
+                    return f"{{sample_data.get('{field}', '')}}"
+
+                content_escaped = re.sub(r'\{(\w+)\}', replace_placeholder, content_escaped)
+                lines.append(f"{indent}msg{i}_content = f\"\"\"")
                 lines.append(content_escaped)
-                lines.append('        """')
+                lines.append(f'{indent}"""')
             else:
                 # Use regular string
-                lines.append(f'        msg{i}_content = """')
+                lines.append(f'{indent}msg{i}_content = """')
                 lines.append(content_escaped)
-                lines.append('        """')
+                lines.append(f'{indent}"""')
 
         # Build return statement
-        lines.append("        return [")
+        lines.append(f"{indent}return [")
         for i, msg in enumerate(messages):
             role = msg["role"]
-            lines.append(f'            Message(role="{role}", content=msg{i}_content),')
-        lines.append("        ]")
+            lines.append(f'{indent}    Message(role="{role}", content=msg{i}_content),')
+        lines.append(f"{indent}]")
 
         return "\n".join(lines)
 
@@ -1306,9 +1387,20 @@ config = Config()
 
 # Export prepare_messages for backward compatibility
 def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
-    """Prepare initial messages from dataset sample."""
-    env = config.environment_class(**config.environment_config)
-    return env.prepare_messages(sample_data)
+    """Prepare initial messages from dataset sample.
+
+    Note: You can use f-string placeholders to reference dataset fields.
+    For example: "Solve this problem: {{problem_description}}"
+    """
+    system_prompt = """{system_prompt}"""
+
+    # Use f-string with dataset fields (customize based on your dataset)
+    user_prompt = f"""{{sample_data.get("problem_description") or sample_data.get("prompt") or sample_data.get("question") or sample_data.get("input") or str(sample_data)}}"""
+
+    return [
+        Message(role="system", content=system_prompt),
+        Message(role="user", content=user_prompt),
+    ]
 '''
 
         return config

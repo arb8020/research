@@ -809,6 +809,33 @@
                         </div>
                     </div>
 
+                    <!-- Dataset Selection -->
+                    <div class="form-section">
+                        <div class="form-section-title">DATASET</div>
+                        <div class="form-field">
+                            <label class="form-label" for="dataset-path">Dataset Path</label>
+                            <select class="form-select" id="dataset-path" onchange="onDatasetPathChange()">
+                                <option value="">Loading datasets...</option>
+                            </select>
+                            <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">
+                                Select from available datasets in datasets/ directory
+                            </div>
+                        </div>
+
+                        <!-- Dataset Preview -->
+                        <div class="form-field">
+                            <label class="form-label">Dataset Preview</label>
+                            <div id="dataset-preview" style="font-size: 12px; max-height: 300px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; background: var(--input-bg);">
+                                <p style="color: var(--text-secondary); font-size: 13px; padding: 12px;">
+                                    Select a base config to view dataset fields
+                                </p>
+                            </div>
+                            <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">
+                                💡 Use field names like <code style="background: var(--bg-secondary); padding: 2px 4px; border-radius: 3px;">{problem_description}</code> in messages below
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Initial Messages -->
                     <div class="form-section">
                         <div class="form-section-title">INITIAL MESSAGES</div>
@@ -829,25 +856,6 @@
                             <label class="form-label">GPU Ranks</label>
                             <div id="gpu-ranks" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 8px;">
                                 <!-- GPUs 0-7 with checkboxes -->
-                            </div>
-                        </div>
-                        <div class="form-field">
-                            <label class="form-label" for="dataset-path">Dataset Path</label>
-                            <select class="form-select" id="dataset-path" onchange="onDatasetPathChange()">
-                                <option value="">Loading datasets...</option>
-                            </select>
-                            <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">
-                                Select from available datasets in datasets/ directory
-                            </div>
-                        </div>
-
-                        <!-- Dataset Preview (moved here to be closer to dataset selector) -->
-                        <div class="form-field">
-                            <label class="form-label">Dataset Preview</label>
-                            <div id="dataset-preview" style="font-size: 12px; max-height: 300px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; background: var(--input-bg);">
-                                <p style="color: var(--text-secondary); font-size: 13px; padding: 12px;">
-                                    Select a base config to view dataset fields
-                                </p>
                             </div>
                         </div>
                     </div>
@@ -910,16 +918,16 @@
                         </div>
                     </div>
 
-                    <!-- Environment Hooks -->
+                    <!-- Environment Source -->
                     <div class="form-section">
-                        <div class="form-section-title">ENVIRONMENT HOOKS</div>
+                        <div class="form-section-title">ENVIRONMENT</div>
                         <div class="form-field">
-                            <label class="form-label">on_assistant_message()</label>
+                            <label class="form-label">Environment Source Code</label>
                             <p style="color: var(--text-secondary); font-size: 12px; margin-bottom: 8px;">
-                                This hook processes assistant messages (e.g., extracts code, runs tests).
+                                View the full environment implementation (prepare_messages, get_tools, on_assistant_message, etc.)
                             </p>
-                            <button class="btn" onclick="viewEnvironmentHook()" style="width: 100%;">
-                                View Source Code
+                            <button class="btn" onclick="viewEnvironmentSource()" style="width: 100%;">
+                                View Full Source
                             </button>
                         </div>
                     </div>
@@ -999,21 +1007,21 @@
         </div>
     </div>
 
-    <!-- Environment Hook Viewer Modal -->
-    <div class="modal" id="hook-viewer-modal">
-        <div class="modal-content" style="max-width: 800px;">
+    <!-- Environment Source Viewer Modal -->
+    <div class="modal" id="environment-viewer-modal">
+        <div class="modal-content" style="max-width: 1000px; max-height: 90vh;">
             <div class="modal-header">
-                <div class="modal-title">Environment Hook Source Code</div>
-                <button class="sidebar-close" onclick="closeEnvironmentHookViewer()">✕</button>
+                <div class="modal-title">Environment Source Code</div>
+                <button class="sidebar-close" onclick="closeEnvironmentViewer()">✕</button>
             </div>
-            <div class="modal-body">
+            <div class="modal-body" style="max-height: calc(90vh - 140px); overflow-y: auto;">
                 <div class="form-field">
-                    <label class="form-label">on_assistant_message() Implementation</label>
-                    <pre id="hook-source-code" style="background: var(--bg-secondary); padding: 16px; border-radius: 8px; overflow-x: auto; font-family: 'SF Mono', Monaco, monospace; font-size: 12px; line-height: 1.5; margin: 0;">Loading...</pre>
+                    <label class="form-label" id="environment-file-path">Loading...</label>
+                    <pre id="environment-source-code" style="background: var(--bg-secondary); padding: 16px; border-radius: 8px; overflow-x: auto; font-family: 'SF Mono', Monaco, monospace; font-size: 12px; line-height: 1.5; margin: 0;">Loading...</pre>
                 </div>
             </div>
             <div class="modal-footer">
-                <button class="btn" onclick="closeEnvironmentHookViewer()">Close</button>
+                <button class="btn" onclick="closeEnvironmentViewer()">Close</button>
             </div>
         </div>
     </div>
@@ -1041,7 +1049,11 @@
                         class="form-textarea"
                         style="min-height: 400px; font-family: 'SF Mono', Monaco, monospace; font-size: 13px; resize: vertical;"
                         placeholder="Message content (use {field_name} for placeholders)"
+                        oninput="updatePlaceholderPreview()"
                     ></textarea>
+                    <div id="placeholder-preview" style="font-size: 11px; color: var(--text-secondary); margin-top: 8px; min-height: 20px;">
+                        💡 Detected placeholders will appear here
+                    </div>
                 </div>
             </div>
             <div class="modal-footer">
@@ -1180,6 +1192,8 @@
                 const configs = await response.json();
 
                 const select = document.getElementById('base-config-select');
+                const currentValue = select.value; // Remember current selection
+
                 select.innerHTML = '<option value="">-- Select base config --</option>';
 
                 configs.forEach(config => {
@@ -1188,6 +1202,11 @@
                     option.textContent = config.name;
                     select.appendChild(option);
                 });
+
+                // Restore previous selection if it still exists
+                if (currentValue && configs.some(c => c.name === currentValue)) {
+                    select.value = currentValue;
+                }
             } catch (error) {
                 console.error('Failed to load configs:', error);
             }
@@ -1482,6 +1501,13 @@
                 messages: state.messages,
                 tools: state.toolDefinitions,
             };
+
+            logToBackend('info', 'saveConfig() called', {
+                baseName: baseName,
+                configName: configName,
+                hasMessages: state.messages.length,
+                hasTools: state.toolDefinitions.length
+            });
 
             try {
                 const response = await fetch('/api/generate', {
@@ -2671,11 +2697,33 @@
             // Store current index for saving
             modal.dataset.messageIndex = index;
 
+            // Update placeholder preview
+            updatePlaceholderPreview();
+
             modal.classList.add('show');
         }
 
         function closeMessageEditor() {
             document.getElementById('message-editor-modal').classList.remove('show');
+        }
+
+        function updatePlaceholderPreview() {
+            const content = document.getElementById('message-editor-content').value;
+            const preview = document.getElementById('placeholder-preview');
+
+            // Find all {field_name} placeholders
+            const placeholderRegex = /\{(\w+)\}/g;
+            const matches = [...content.matchAll(placeholderRegex)];
+
+            if (matches.length === 0) {
+                preview.innerHTML = '💡 Use <code style="background: var(--bg-secondary); padding: 2px 4px; border-radius: 3px;">{field_name}</code> to reference dataset fields';
+            } else {
+                const uniquePlaceholders = [...new Set(matches.map(m => m[1]))];
+                const highlighted = uniquePlaceholders.map(p =>
+                    `<code style="background: var(--accent); color: white; padding: 2px 6px; border-radius: 3px; font-weight: 500;">{${p}}</code>`
+                ).join(' ');
+                preview.innerHTML = `✓ Found placeholders: ${highlighted}`;
+            }
         }
 
         function saveMessageFromEditor() {
@@ -2773,36 +2821,42 @@
             state.toolDefinitions[toolIndex].parameters[paramIndex].description = description;
         }
 
-        // ===== Environment Hook Viewer =====
-        async function viewEnvironmentHook() {
-            const modal = document.getElementById('hook-viewer-modal');
-            const sourceCode = document.getElementById('hook-source-code');
+        // ===== Environment Source Viewer =====
+        async function viewEnvironmentSource() {
+            const modal = document.getElementById('environment-viewer-modal');
+            const sourceCode = document.getElementById('environment-source-code');
+            const filePath = document.getElementById('environment-file-path');
 
             modal.style.display = 'flex';
             sourceCode.textContent = 'Loading...';
+            filePath.textContent = 'Loading...';
 
             try {
                 const configName = document.getElementById('base-config-select').value;
                 if (!configName) {
                     sourceCode.textContent = 'Please select a config first';
+                    filePath.textContent = '';
                     return;
                 }
 
-                const response = await fetch(`/api/view-hook/${configName}`);
+                const response = await fetch(`/api/view-environment/${configName}`);
                 const data = await response.json();
 
                 if (data.error) {
                     sourceCode.textContent = `Error: ${data.error}`;
+                    filePath.textContent = '';
                 } else {
                     sourceCode.textContent = data.source;
+                    filePath.textContent = `${data.file_path} (class: ${data.class_name})`;
                 }
             } catch (error) {
-                sourceCode.textContent = `Failed to load hook source: ${error.message}`;
+                sourceCode.textContent = `Failed to load environment source: ${error.message}`;
+                filePath.textContent = '';
             }
         }
 
-        function closeEnvironmentHookViewer() {
-            document.getElementById('hook-viewer-modal').style.display = 'none';
+        function closeEnvironmentViewer() {
+            document.getElementById('environment-viewer-modal').style.display = 'none';
         }
 
         // Start the app
