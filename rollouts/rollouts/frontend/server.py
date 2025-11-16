@@ -1659,15 +1659,23 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                     # Read new lines from events.jsonl
                     event_line = events_file_handle.readline()
                     while event_line:
-                        try:
-                            # Parse JSONL event and forward as SSE
-                            event_obj = json.loads(event_line.strip())
-                            # Forward event as-is (already has type, timestamp, data)
-                            self.wfile.write(f"data: {json.dumps(event_obj)}\n\n".encode())
-                            self.wfile.flush()
-                            logger.debug(f"📤 Forwarded event: {event_obj['type']}")
-                        except json.JSONDecodeError as e:
-                            logger.warning(f"Failed to parse event line: {event_line[:100]} - {e}")
+                        # Tiger Style: events.jsonl is written by our own code - malformed JSON is a programmer error
+                        # Fail-fast instead of silently logging. Assertions catch bugs during development.
+                        line = event_line.strip()
+                        if not line:  # Skip empty lines
+                            event_line = events_file_handle.readline()
+                            continue
+
+                        # Parse JSONL event - crash loudly if malformed (programmer error, not operational error)
+                        event_obj = json.loads(line)
+                        assert isinstance(event_obj, dict), f"Event must be dict, got {type(event_obj)}: {event_obj}"
+                        assert "type" in event_obj, f"Event missing 'type' field: {event_obj}"
+                        assert "timestamp" in event_obj, f"Event missing 'timestamp' field: {event_obj}"
+
+                        # Forward event as-is (already has type, timestamp, data)
+                        self.wfile.write(f"data: {json.dumps(event_obj)}\n\n".encode())
+                        self.wfile.flush()
+                        logger.debug(f"📤 Forwarded event: {event_obj['type']}")
 
                         event_line = events_file_handle.readline()
 
