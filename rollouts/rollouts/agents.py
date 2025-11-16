@@ -54,8 +54,11 @@ from .providers import (
 # (Imported from providers.py)
 
 async def handle_checkpoint_event(state: 'AgentState', event: str, run_config: 'RunConfig',
-                                 session_id: Optional[str] = None) -> None:
-    """Handle checkpoint event - emits to events.jsonl if emit_event configured"""
+                                 session_id: Optional[str] = None, prev_message_count: int = 0) -> int:
+    """Handle checkpoint event - emits to events.jsonl if emit_event configured.
+
+    Returns: Current message count (for tracking new messages added during turn)
+    """
     assert state is not None
     assert isinstance(state, AgentState)
     assert event is not None
@@ -68,6 +71,22 @@ async def handle_checkpoint_event(state: 'AgentState', event: str, run_config: '
             "max_turns": state.max_turns,
             "session_id": session_id,
         })
+
+        # At turn_end, emit any new messages that were added during this turn
+        # (assistant response + environment feedback if any)
+        if event == "turn_end":
+            current_messages = state.actor.trajectory.messages
+            new_messages = current_messages[prev_message_count:]
+
+            for msg in new_messages:
+                await run_config.emit_event("message", {
+                    "role": msg.role,
+                    "content": msg.content if isinstance(msg.content, str) else str(msg.content),
+                })
+
+            return len(current_messages)
+
+    return prev_message_count
 
 async def stdout_handler(chunk: StreamChunk):
     """Simple stdout handler for chunks"""
@@ -439,10 +458,13 @@ async def run_agent(
             disable=False
         )
 
+    # Track message count to emit new messages at turn boundaries
+    message_count = len(state.actor.trajectory.messages)
+
     while not current_state.stop and current_state.turn_idx < current_state.max_turns:
         # Tiger Style: Centralize control flow - emit start/end in same scope for clarity
         # Casey: Semantic compression - consistent pattern (start→step→end) repeated each iteration
-        await handle_checkpoint_event(current_state, "turn_start", run_config, session_id)
+        await handle_checkpoint_event(current_state, "turn_start", run_config, session_id, message_count)
 
         next_state = await run_agent_step(current_state, run_config)
         current_state = next_state
@@ -456,8 +478,8 @@ async def run_agent(
                 postfix['stop'] = str(current_state.stop).split('.')[-1]
             turn_pbar.set_postfix(postfix)
 
-        # Checkpoint after each turn completes
-        await handle_checkpoint_event(current_state, "turn_end", run_config, session_id)
+        # Checkpoint after each turn completes - returns updated message count
+        message_count = await handle_checkpoint_event(current_state, "turn_end", run_config, session_id, message_count)
 
     # Set stop reason if we hit max turns
     if current_state.turn_idx >= current_state.max_turns:
@@ -465,7 +487,7 @@ async def run_agent(
         states[-1] = current_state
 
         # Save final state
-        await handle_checkpoint_event(current_state, "final", run_config, session_id)
+        await handle_checkpoint_event(current_state, "final", run_config, session_id, message_count)
 
     # Close progress bar on normal completion
     if turn_pbar:

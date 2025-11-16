@@ -1934,6 +1934,27 @@
                             renderLiveStreamStructured(runId);
                         }
                     }
+                } else if (data.type === 'message') {
+                    // Complete message (system/user/assistant) - add to sample
+                    const sample = run.samples.find(s => s.sampleId === run.currentSampleId);
+                    if (sample) {
+                        // Stop streaming on last message if it's assistant (tokens are done)
+                        const lastMsg = sample.messages[sample.messages.length - 1];
+                        if (lastMsg && lastMsg.isStreaming && lastMsg.role === 'assistant') {
+                            lastMsg.isStreaming = false;
+                        }
+
+                        // Add the complete message
+                        sample.messages.push({
+                            role: data.role,
+                            content: data.content,
+                            isStreaming: false
+                        });
+
+                        if (state.ui.activeTabId === runId) {
+                            renderLiveStreamStructured(runId);
+                        }
+                    }
                 } else if (data.type === 'token') {
                     // Streaming token - append to last message or create new assistant message
                     const sample = run.samples.find(s => s.sampleId === run.currentSampleId);
