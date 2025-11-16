@@ -720,6 +720,18 @@
         .message-collapsed .message-content {
             display: none;
         }
+
+        /* Streaming cursor animation */
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0; }
+        }
+
+        .streaming-cursor {
+            color: var(--primary);
+            font-weight: bold;
+            margin-left: 2px;
+        }
     </style>
 </head>
 <body>
@@ -1078,7 +1090,10 @@
             selectedResultId: null,
 
             // Multiple live runs tracked as tabs
-            liveRuns: {},  // run_id -> {runId, configName, status, output, startTime, eventSource, renderTimer}
+            // Structure: run_id -> {runId, configName, status, startTime, eventSource, samples: [], rawOutput: []}
+            // Each sample: {sampleId, status, currentTurn, maxTurns, messages: [], isExpanded}
+            // Each message: {role, content, isStreaming}
+            liveRuns: {},
 
             // Dataset preview
             sampleData: {
@@ -1830,15 +1845,17 @@
 
                 const { run_id, config_name } = result;
 
-                // Create new live run tab
+                // Create new live run tab with structured samples
                 state.liveRuns[run_id] = {
                     runId: run_id,
                     configName: config_name,
                     status: 'running',
-                    output: [],
                     startTime: Date.now(),
                     eventSource: null,
-                    exitCode: null
+                    exitCode: null,
+                    samples: [],  // Structured: {sampleId, status, currentTurn, maxTurns, messages: [], isExpanded}
+                    rawOutput: [],  // Raw stdout logs for debugging
+                    currentSampleId: null,  // Track which sample is currently being processed
                 };
 
                 // Switch to this run's tab
@@ -1887,20 +1904,72 @@
             eventSource.onmessage = (event) => {
                 const data = JSON.parse(event.data);
 
-                if (data.type === 'stdout') {
-                    // Append output line
-                    run.output.push(data.line);
+                // Handle structured events from events.jsonl
+                if (data.type === 'sample_start') {
+                    // New sample starting
+                    const sample = {
+                        sampleId: data.sample_id,
+                        status: 'running',
+                        currentTurn: 0,
+                        maxTurns: null,
+                        messages: [],
+                        isExpanded: true,  // Auto-expand active sample
+                        reward: null,
+                        metadata: null
+                    };
+                    run.samples.push(sample);
+                    run.currentSampleId = data.sample_id;
 
-                    // Debounced rendering: only re-render every 100ms to avoid freezing on rapid output
+                    // Trigger render
                     if (state.ui.activeTabId === runId) {
-                        if (run.renderTimer) {
-                            clearTimeout(run.renderTimer);
-                        }
-                        run.renderTimer = setTimeout(() => {
-                            renderLiveOutput(runId);
-                            run.renderTimer = null;
-                        }, 100);
+                        renderLiveStreamStructured(runId);
                     }
+                } else if (data.type === 'turn_start') {
+                    // Turn starting - update current sample
+                    const sample = run.samples.find(s => s.sampleId === run.currentSampleId);
+                    if (sample) {
+                        sample.currentTurn = data.turn;
+                        sample.maxTurns = data.max_turns;
+                        if (state.ui.activeTabId === runId) {
+                            renderLiveStreamStructured(runId);
+                        }
+                    }
+                } else if (data.type === 'token') {
+                    // Streaming token - append to last message or create new assistant message
+                    const sample = run.samples.find(s => s.sampleId === run.currentSampleId);
+                    if (sample) {
+                        let lastMsg = sample.messages[sample.messages.length - 1];
+                        if (!lastMsg || lastMsg.role !== 'assistant' || !lastMsg.isStreaming) {
+                            // Create new streaming assistant message
+                            lastMsg = { role: 'assistant', content: '', isStreaming: true };
+                            sample.messages.push(lastMsg);
+                        }
+                        lastMsg.content += data.content;
+
+                        // Debounced render for token streaming
+                        if (state.ui.activeTabId === runId) {
+                            if (run.renderTimer) clearTimeout(run.renderTimer);
+                            run.renderTimer = setTimeout(() => {
+                                renderLiveStreamStructured(runId);
+                                run.renderTimer = null;
+                            }, 100);
+                        }
+                    }
+                } else if (data.type === 'sample_end') {
+                    // Sample finished
+                    const sample = run.samples.find(s => s.sampleId === data.sample_id);
+                    if (sample) {
+                        sample.status = 'complete';
+                        sample.reward = data.reward;
+                        sample.metadata = data.metadata;
+                        sample.isExpanded = false;  // Collapse completed samples
+                        if (state.ui.activeTabId === runId) {
+                            renderLiveStreamStructured(runId);
+                        }
+                    }
+                } else if (data.type === 'stdout') {
+                    // Raw stdout logs for debugging
+                    run.rawOutput.push(data.line);
                 } else if (data.type === 'complete') {
                     // Run finished - clear any pending render timer and do final render
                     if (run.renderTimer) {
@@ -1914,7 +1983,7 @@
 
                     // Final render with complete status
                     if (state.ui.activeTabId === runId) {
-                        renderLiveOutput(runId);
+                        renderLiveStreamStructured(runId);
                     }
 
                     // Reload results
@@ -1949,7 +2018,7 @@
 
                     // Update UI
                     if (state.ui.activeTabId === runId) {
-                        renderLiveOutput(runId);
+                        renderLiveStreamStructured(runId);
                     }
                 }
             };
@@ -1968,9 +2037,133 @@
 
                 // Update UI
                 if (state.ui.activeTabId === runId) {
-                    renderLiveOutput(runId);
+                    renderLiveStreamStructured(runId);
                 }
             };
+        }
+
+        // Render live stream with structured samples (similar to trajectory view)
+        function renderLiveStreamStructured(runId) {
+            const run = state.liveRuns[runId];
+            if (!run) return;
+
+            const mainPaneContent = document.querySelector('.main-pane-content');
+            if (!mainPaneContent) return;
+
+            const { configName, samples, status, exitCode } = run;
+
+            // Build status indicator
+            let statusClass = status;
+            let statusText = status.toUpperCase();
+            if (status === 'running') {
+                statusText = '⚙️ RUNNING';
+            } else if (status === 'success') {
+                statusText = '✓ SUCCESS';
+            } else if (status === 'failed') {
+                statusText = `✗ FAILED (exit code: ${exitCode})`;
+            } else if (status === 'killed') {
+                statusText = '⏹ KILLED';
+            }
+
+            let html = `
+                <div style="padding: 0;">
+                    <!-- Tabs -->
+                    ${renderTabs()}
+
+                    <!-- Live stream container -->
+                    <div style="padding: 24px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
+                            <h2 style="margin: 0; font-size: 18px;">${configName}</h2>
+                            <div style="display: flex; gap: 12px; align-items: center;">
+                                <div class="status-badge" style="
+                                    padding: 6px 12px;
+                                    border-radius: 4px;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    background: ${status === 'running' ? '#dbeafe' : status === 'success' ? '#d1fae5' : '#fee2e2'};
+                                    color: ${status === 'running' ? '#1e40af' : status === 'success' ? '#065f46' : '#991b1b'};
+                                ">${statusText}</div>
+                                ${status === 'running' ? `<button class="btn" onclick="killRun('${runId}')">Stop</button>` : ''}
+                                ${status !== 'running' ? `<button class="btn" onclick="closeTab('${runId}')">Close Tab</button>` : ''}
+                            </div>
+                        </div>
+            `;
+
+            // Render samples (similar to trajectory view)
+            if (samples.length === 0) {
+                html += '<div style="color: var(--text-secondary); text-align: center; padding: 40px;">Waiting for samples...</div>';
+            } else {
+                samples.forEach((sample, idx) => {
+                    const isRunning = sample.status === 'running';
+                    const sampleHeader = `Sample ${idx} ${sample.currentTurn ? `- Turn ${sample.currentTurn}/${sample.maxTurns || '?'}` : ''}`;
+                    const rewardText = sample.reward !== null ? `Reward: ${sample.reward.toFixed(3)}` : '';
+
+                    html += `
+                        <div class="sample-container" style="margin-bottom: 24px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden;">
+                            <div class="sample-header" onclick="toggleSample('${runId}', ${idx})" style="
+                                padding: 12px 16px;
+                                background: var(--bg-secondary);
+                                display: flex;
+                                justify-content: space-between;
+                                align-items: center;
+                                cursor: pointer;
+                                user-select: none;
+                            ">
+                                <div style="font-weight: 600; font-size: 14px;">
+                                    ${isRunning ? '⚙️' : '✓'} ${sampleHeader}
+                                </div>
+                                <div style="display: flex; gap: 12px; align-items: center;">
+                                    ${rewardText ? `<span style="font-size: 12px; color: var(--text-secondary);">${rewardText}</span>` : ''}
+                                    <div>${sample.isExpanded ? '▼' : '▶'}</div>
+                                </div>
+                            </div>
+                            <div class="sample-content" style="display: ${sample.isExpanded ? 'block' : 'none'}; padding: 16px;">
+                    `;
+
+                    // Render messages (reuse trajectory message block styling)
+                    sample.messages.forEach((msg, msgIdx) => {
+                        const processedContent = formatMessageContent(msg.content);
+                        html += `
+                            <div class="message-block" id="msg-${runId}-${idx}-${msgIdx}">
+                                <div class="message-header" onclick="toggleMessage('${runId}-${idx}-${msgIdx}')">
+                                    <div class="message-role">${msg.role}</div>
+                                    <div>▼</div>
+                                </div>
+                                <div class="message-content">
+                                    ${processedContent}
+                                    ${msg.isStreaming ? '<span class="streaming-cursor" style="animation: blink 1s infinite;">▌</span>' : ''}
+                                </div>
+                            </div>
+                        `;
+                    });
+
+                    html += `
+                            </div>
+                        </div>
+                    `;
+                });
+            }
+
+            html += `
+                    </div>
+                </div>
+            `;
+
+            mainPaneContent.innerHTML = html;
+
+            // Apply syntax highlighting to code blocks
+            document.querySelectorAll('pre code').forEach((block) => {
+                hljs.highlightElement(block);
+            });
+        }
+
+        // Toggle sample expand/collapse
+        function toggleSample(runId, sampleIdx) {
+            const run = state.liveRuns[runId];
+            if (!run || !run.samples[sampleIdx]) return;
+
+            run.samples[sampleIdx].isExpanded = !run.samples[sampleIdx].isExpanded;
+            renderLiveStreamStructured(runId);
         }
 
         // Render live output for a specific run

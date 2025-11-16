@@ -1567,7 +1567,17 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
             self.send_error(500, f"Launch failed: {e}")
 
     def _stream_run_output(self, run_id: str):
-        """Stream output from a running process via SSE."""
+        """Stream output from events.jsonl and stdout via SSE.
+
+        Dual-stream approach:
+        1. Parse stdout to find result_dir path
+        2. Once found, tail events.jsonl for structured events (sample/turn/token)
+        3. Continue streaming stdout for logs (for debugging/CLI compatibility)
+
+        TODO: Consider semantic compression of event stream to reduce bandwidth.
+        See ~/research/docs/code_style/ryolu_design_frontend.md for compression strategies.
+        Current approach sends every token/turn event separately - could batch or delta-encode.
+        """
         global _active_runs
 
         logger.info(f"📡 Stream connection opened for run_id: {run_id}")
@@ -1591,41 +1601,85 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
         self.end_headers()
 
         try:
-            # Stream output character-by-character for real-time token streaming
-            # Use a small buffer to accumulate characters for efficient SSE sending
-            logger.info(f"🔍 Starting character-by-character streaming for {run_id}")
-            buffer = ""
-            chunk_size = 1  # Read 1 char at a time for maximum responsiveness
+            import re
+            from pathlib import Path
+
+            logger.info(f"🔍 Starting dual-stream (stdout + events.jsonl) for {run_id}")
+
+            # Track events.jsonl state
+            events_file = None
+            events_file_handle = None
+            result_dir_found = False
+
+            # Buffer for stdout line-by-line reading
+            stdout_buffer = ""
 
             while True:
-                char = process.stdout.read(chunk_size)
+                # Read from stdout (line-buffered for parsing)
+                char = process.stdout.read(1)
                 if not char:
                     # Process ended
                     logger.info(f"🔍 Stream ended (no more data) for {run_id}")
                     break
 
-                buffer += char
+                stdout_buffer += char
 
-                # Send accumulated buffer when we hit newline or buffer reaches reasonable size
-                # This balances between real-time streaming and SSE overhead
-                if '\n' in char or len(buffer) >= 50:
-                    # Store output line (for full output history)
-                    if '\n' in buffer:
-                        with _run_lock:
-                            run_data["output_lines"].append(buffer.rstrip())
+                # When we hit newline, parse the line and check for events
+                if char == '\n':
+                    line = stdout_buffer.rstrip()
 
-                    # Send as SSE event (send buffer even if incomplete line for token streaming)
-                    event_data = json.dumps({"line": buffer, "type": "stdout"})
+                    # Parse stdout to find result_dir
+                    if not result_dir_found:
+                        match = re.search(r'📂 Results directory: (.+)', line)
+                        if match:
+                            result_dir = Path(match.group(1))
+                            events_file = result_dir / "events.jsonl"
+                            result_dir_found = True
+                            logger.info(f"📂 Found result_dir: {result_dir}")
+                            logger.info(f"📄 Will tail events from: {events_file}")
+
+                    # Send stdout line as log event (for debugging)
+                    with _run_lock:
+                        run_data["output_lines"].append(line)
+
+                    event_data = json.dumps({"line": line, "type": "stdout"})
                     self.wfile.write(f"data: {event_data}\n\n".encode())
                     self.wfile.flush()
-                    logger.debug(f"🔍 Sent {len(buffer)} chars to frontend")
-                    buffer = ""  # Clear buffer after sending
 
-            # Send any remaining buffered data
-            if buffer:
-                event_data = json.dumps({"line": buffer, "type": "stdout"})
+                    stdout_buffer = ""  # Clear buffer
+
+                # If we found events file, tail it for structured events
+                if result_dir_found and events_file and events_file.exists():
+                    if events_file_handle is None:
+                        # Open events file for reading
+                        events_file_handle = open(events_file, 'r')
+                        events_file_handle.seek(0, 2)  # Seek to end
+                        logger.info(f"📄 Opened events.jsonl for tailing")
+
+                    # Read new lines from events.jsonl
+                    event_line = events_file_handle.readline()
+                    while event_line:
+                        try:
+                            # Parse JSONL event and forward as SSE
+                            event_obj = json.loads(event_line.strip())
+                            # Forward event as-is (already has type, timestamp, data)
+                            self.wfile.write(f"data: {json.dumps(event_obj)}\n\n".encode())
+                            self.wfile.flush()
+                            logger.debug(f"📤 Forwarded event: {event_obj['type']}")
+                        except json.JSONDecodeError as e:
+                            logger.warning(f"Failed to parse event line: {event_line[:100]} - {e}")
+
+                        event_line = events_file_handle.readline()
+
+            # Send any remaining buffered stdout
+            if stdout_buffer:
+                event_data = json.dumps({"line": stdout_buffer, "type": "stdout"})
                 self.wfile.write(f"data: {event_data}\n\n".encode())
                 self.wfile.flush()
+
+            # Close events file if opened
+            if events_file_handle:
+                events_file_handle.close()
 
             # Wait for process to complete
             exit_code = process.wait()

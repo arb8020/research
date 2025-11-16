@@ -485,6 +485,11 @@ class RunConfig:
     inline_thinking: Optional[str] = None
     checkpoint_store: Optional[Any] = None
     show_progress: bool = False  # Enable turn-level progress tracking
+    # Event emission for frontend live streaming. Generic emit_event(type, **data) more flexible than specific on_start/on_end hooks.
+    # TODO: Revisit this design choice - could use structured callbacks (on_turn_start/end) for type safety.
+    # TODO: Consider semantic compression of events - currently emits every token separately to events.jsonl.
+    # See ~/research/docs/code_style/ryolu_design_frontend.md for compression strategies (batching, delta encoding).
+    emit_event: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None
 
 # ── Evaluation Types ──────────────────────────────────────────────────────────
 
