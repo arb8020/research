@@ -7,6 +7,7 @@ Tiger Style: Pure functions, explicit configuration, no hidden state.
 import json
 import trio
 import logging
+import time
 from pathlib import Path
 from dataclasses import dataclass, field, asdict, replace
 from typing import Any, Dict, List, Optional, Iterator, Callable
@@ -249,6 +250,9 @@ async def evaluate_sample(
     if config.verbose:
         logger.info(f"Evaluating {sample_id}")
 
+    # Track timing for structured logging
+    start_time = time.time()
+
     # Emit sample_start event for frontend live streaming
     if run_config.emit_event is not None:
         await run_config.emit_event("sample_start", {
@@ -327,6 +331,26 @@ async def evaluate_sample(
         metadata["status"] = "failed"
     else:
         metadata["status"] = "success"
+
+    # Compute duration
+    duration_seconds = time.time() - start_time
+    metadata["duration_seconds"] = duration_seconds
+
+    # Structured logging for sample completion (always logged at INFO level)
+    # This provides clean, parseable logs for monitoring progress
+    logger.info(
+        f"Sample {sample_id} completed: reward={metrics.get('reward', 0.0):.3f}, "
+        f"turns={metadata['turns_used']}, duration={duration_seconds:.2f}s, "
+        f"status={metadata['status']}",
+        extra={
+            "sample_id": sample_id,
+            "reward": metrics.get("reward", 0.0),
+            "turns": metadata["turns_used"],
+            "duration_seconds": duration_seconds,
+            "status": metadata["status"],
+            "stop_reason": metadata.get("stop_reason"),
+        }
+    )
 
     if config.verbose and metrics:
         # Print key metrics inline
