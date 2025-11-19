@@ -212,9 +212,9 @@ class FSDPTrainingBackend:
             logger.info(f"[Rank {self.rank}] Restored step counter: {self.step}")
 
         # Sync all ranks after initialization (critical barrier - all ranks must reach here)
-        logger.info(f"[FSDP DEBUG] Rank {self.rank}: Entering initialization barrier...")
+        logger.debug(f"[FSDP DEBUG] Rank {self.rank}: Entering initialization barrier...")
         barrier()
-        logger.info(f"[FSDP DEBUG] Rank {self.rank}: Passed initialization barrier")
+        logger.debug(f"[FSDP DEBUG] Rank {self.rank}: Passed initialization barrier")
 
         # Tiger Style: Assert final invariants (all ranks must have these)
         assert self._fsdp_model is not None, "Invariant violated: _fsdp_model is None after init"
@@ -310,7 +310,7 @@ class FSDPTrainingBackend:
                 if not tie_embeddings:
                     modules_to_wrap.append((name, module))
 
-        logger.info(
+        logger.debug(
             f"[FSDP DEBUG] Rank {self.rank}: Wrapping {len(modules_to_wrap)} modules with FSDP v2"
         )
 
@@ -319,10 +319,10 @@ class FSDPTrainingBackend:
             logger.debug(f"[FSDP DEBUG] Rank {self.rank}: Wrapping module {idx+1}/{len(modules_to_wrap)}: {name}")
             fully_shard(module)
 
-        logger.info(f"[FSDP DEBUG] Rank {self.rank}: All sub-modules wrapped, wrapping root model...")
+        logger.debug(f"[FSDP DEBUG] Rank {self.rank}: All sub-modules wrapped, wrapping root model...")
         # Wrap the entire model (root wrapping)
         fully_shard(self.model)
-        logger.info(f"[FSDP DEBUG] Rank {self.rank}: Root model wrapped successfully")
+        logger.debug(f"[FSDP DEBUG] Rank {self.rank}: Root model wrapped successfully")
 
         return self.model
 
@@ -557,7 +557,7 @@ class FSDPTrainingBackend:
         """
         from rollouts.training.types import ImmediateTrainFuture
 
-        logger.info(f"[FSDP DEBUG] Rank {self.rank}: Loading model state dict...")
+        logger.debug(f"[FSDP DEBUG] Rank {self.rank}: Loading model state dict...")
 
         try:
             # Try new PyTorch checkpoint API first
@@ -572,7 +572,7 @@ class FSDPTrainingBackend:
                 model_state_dict=weights,
                 options=options
             )
-            logger.info(f"[FSDP DEBUG] Rank {self.rank}: Loaded weights successfully (PyTorch API)")
+            logger.debug(f"[FSDP DEBUG] Rank {self.rank}: Loaded weights successfully (PyTorch API)")
 
         except Exception as e:
             # Fall back to manual DTensor handling (THUDM pattern)
@@ -581,7 +581,7 @@ class FSDPTrainingBackend:
                 "falling back to manual DTensor loading"
             )
             self._load_weights_with_dtensor(weights)
-            logger.info(f"[FSDP DEBUG] Rank {self.rank}: Loaded weights successfully (manual DTensor)")
+            logger.debug(f"[FSDP DEBUG] Rank {self.rank}: Loaded weights successfully (manual DTensor)")
 
         return ImmediateTrainFuture(None)
 
@@ -681,7 +681,7 @@ class FSDPTrainingBackend:
             - Aggressive logging (every state transition)
             - Assert negative space (what non-main ranks should NOT do)
         """
-        logger.info(f"[STATE] Rank {self.rank}: ENTERING save_checkpoint (step={step})")
+        logger.debug(f"[STATE] Rank {self.rank}: ENTERING save_checkpoint (step={step})")
 
         # Tiger Style: Assert preconditions
         assert self.checkpoint_dir is not None, "checkpoint_dir must be set"
@@ -689,33 +689,33 @@ class FSDPTrainingBackend:
         assert self._fsdp_model is not None, "FSDP model must be wrapped"
 
         # Phase 1: ALL ranks synchronize GPU operations (SLIME pattern)
-        logger.info(f"[FSDP DEBUG] Rank {self.rank}: Synchronizing CUDA operations...")
+        logger.debug(f"[FSDP DEBUG] Rank {self.rank}: Synchronizing CUDA operations...")
         torch.cuda.synchronize()
 
         # Phase 2: Create checkpoint directory (rank 0 only, then barrier)
         # Following SLIME checkpoint.py:132-134
         ckpt_path = self.checkpoint_dir / f"step_{step}"
         if is_main_process():
-            logger.info(f"[RANK-PATH] Rank 0: Creating checkpoint directory: {ckpt_path}")
+            logger.debug(f"[RANK-PATH] Rank 0: Creating checkpoint directory: {ckpt_path}")
             self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
             ckpt_path.mkdir(exist_ok=True)
-            logger.info(f"[FSDP DEBUG] Rank 0: Directory created successfully")
+            logger.debug(f"[FSDP DEBUG] Rank 0: Directory created successfully")
         else:
-            logger.info(f"[RANK-PATH] Rank {self.rank}: Skipping directory creation (not main process)")
+            logger.debug(f"[RANK-PATH] Rank {self.rank}: Skipping directory creation (not main process)")
 
         # Barrier: ensure directory exists before proceeding
-        logger.info(f"[BARRIER-ENTER] Rank {self.rank}: Waiting for directory creation...")
+        logger.debug(f"[BARRIER-ENTER] Rank {self.rank}: Waiting for directory creation...")
         barrier()
-        logger.info(f"[BARRIER-EXIT] Rank {self.rank}: Directory barrier passed")
+        logger.debug(f"[BARRIER-EXIT] Rank {self.rank}: Directory barrier passed")
 
         # Phase 3: ALL ranks participate in weight gathering (CRITICAL collective operation)
         # Following SLIME checkpoint.py:136 (actor.update_cpu_params_dict)
-        logger.info(
+        logger.debug(
             f"[COLLECTIVE-ENTER] Rank {self.rank}: Starting get_weights() "
             f"(ALL ranks MUST participate)"
         )
         state_dict = await self.get_weights().result()
-        logger.info(
+        logger.debug(
             f"[COLLECTIVE-EXIT] Rank {self.rank}: get_weights() completed, "
             f"state_dict has {len(state_dict)} keys"
         )
@@ -731,8 +731,8 @@ class FSDPTrainingBackend:
         # Phase 4: Only rank 0 saves to disk (SLIME pattern)
         # Following SLIME checkpoint.py:143-169
         if is_main_process():
-            logger.info(f"[RANK-PATH] Rank 0: Saving checkpoint to disk...")
-            logger.info(f"[FSDP DEBUG] Rank 0: Getting optimizer state dict...")
+            logger.debug(f"[RANK-PATH] Rank 0: Saving checkpoint to disk...")
+            logger.debug(f"[FSDP DEBUG] Rank 0: Getting optimizer state dict...")
 
             checkpoint = {
                 "model": state_dict,
@@ -741,12 +741,12 @@ class FSDPTrainingBackend:
                 "metrics": metrics,
             }
 
-            logger.info(f"[FSDP DEBUG] Rank 0: Writing checkpoint.pt to {ckpt_path}...")
+            logger.debug(f"[FSDP DEBUG] Rank 0: Writing checkpoint.pt to {ckpt_path}...")
             torch.save(checkpoint, ckpt_path / "checkpoint.pt")
-            logger.info(f"[FSDP DEBUG] Rank 0: Checkpoint saved successfully to {ckpt_path}")
+            logger.debug(f"[FSDP DEBUG] Rank 0: Checkpoint saved successfully to {ckpt_path}")
         else:
             # Tiger Style: Assert negative space (what should NOT happen)
-            logger.info(f"[RANK-PATH] Rank {self.rank}: Skipping disk save (not main process)")
+            logger.debug(f"[RANK-PATH] Rank {self.rank}: Skipping disk save (not main process)")
             # Assert that non-main ranks don't accidentally create files
             assert not (ckpt_path / "checkpoint.pt").exists() or True, (
                 f"Non-main rank {self.rank} should not create checkpoint files"
@@ -754,10 +754,10 @@ class FSDPTrainingBackend:
 
         # Phase 5: Final barrier to synchronize all ranks (SLIME pattern)
         # Following SLIME checkpoint.py:171
-        logger.info(f"[BARRIER-ENTER] Rank {self.rank}: Entering final checkpoint barrier...")
+        logger.debug(f"[BARRIER-ENTER] Rank {self.rank}: Entering final checkpoint barrier...")
         barrier()
-        logger.info(f"[BARRIER-EXIT] Rank {self.rank}: Final checkpoint barrier passed")
+        logger.debug(f"[BARRIER-EXIT] Rank {self.rank}: Final checkpoint barrier passed")
 
-        logger.info(f"[STATE] Rank {self.rank}: EXITING save_checkpoint (step={step}) - SUCCESS")
+        logger.debug(f"[STATE] Rank {self.rank}: EXITING save_checkpoint (step={step}) - SUCCESS")
 
         return ckpt_path

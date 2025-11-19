@@ -242,23 +242,23 @@ async def run_agent_step(state: AgentState, rcfg: RunConfig) -> AgentState:
     updated_actor = replace(state.actor, tools=available_tools)
 
     # DEBUG: Log trajectory state before rollout
-    logger.info(f"🔍 BEFORE rollout() - Turn {state.turn_idx}")
-    logger.info(f"   Trajectory messages count: {len(updated_actor.trajectory.messages)}")
+    logger.debug(f"🔍 BEFORE rollout() - Turn {state.turn_idx}")
+    logger.debug(f"   Trajectory messages count: {len(updated_actor.trajectory.messages)}")
     for i, msg in enumerate(updated_actor.trajectory.messages):
         content_len = len(msg.content) if msg.content else 0
         content_preview = (msg.content[:50] if msg.content else 'None') + '...'
-        logger.info(f"      Message {i} ({msg.role}): {content_len} chars - {content_preview}")
+        logger.debug(f"      Message {i} ({msg.role}): {content_len} chars - {content_preview}")
 
     # Make LLM call
     next_actor = await rollout(updated_actor, rcfg.on_chunk, rcfg.user_message_for_thinking, state.turn_idx, rcfg.inline_thinking)
 
     # DEBUG: Log what rollout returned
-    logger.info(f"🔍 AFTER rollout() - Turn {state.turn_idx}")
-    logger.info(f"   Trajectory messages count: {len(next_actor.trajectory.messages)}")
+    logger.debug(f"🔍 AFTER rollout() - Turn {state.turn_idx}")
+    logger.debug(f"   Trajectory messages count: {len(next_actor.trajectory.messages)}")
     for i, msg in enumerate(next_actor.trajectory.messages):
         content_len = len(msg.content) if msg.content else 0
         content_preview = (msg.content[:50] if msg.content else 'None') + '...'
-        logger.info(f"      Message {i} ({msg.role}): {content_len} chars - {content_preview}")
+        logger.debug(f"      Message {i} ({msg.role}): {content_len} chars - {content_preview}")
 
     # Extract tool calls from last message (if it's an assistant message)
     last_message = next_actor.trajectory.messages[-1] if next_actor.trajectory.messages else None

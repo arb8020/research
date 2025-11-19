@@ -178,9 +178,9 @@ def prime_reward_fn(
         # Check if stateful environment stored updated state (e.g., backend-bench)
         backend_bench_state = trajectory.metadata.get("backend_bench_state")
         if backend_bench_state is not None:
-            logger.info(f"✅ Using stateful environment state with keys: {list(backend_bench_state.keys())}")
-            logger.info(f"   State has 'results': {'results' in backend_bench_state}")
-            logger.info(f"   State has 'best_result': {'best_result' in backend_bench_state}")
+            logger.debug(f"✅ Using stateful environment state with keys: {list(backend_bench_state.keys())}")
+            logger.debug(f"   State has 'results': {'results' in backend_bench_state}")
+            logger.debug(f"   State has 'best_result': {'best_result' in backend_bench_state}")
 
         # Extract model response (push for down to helper)
         model_response = _extract_model_response(trajectory)
