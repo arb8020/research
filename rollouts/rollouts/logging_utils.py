@@ -30,6 +30,7 @@ def init_rollout_logging(
         log_level: Default log level (default: "INFO")
         logger_levels: Optional dict of logger-specific levels
                       e.g. {"rollouts": "DEBUG", "httpx": "WARNING"}
+                      User-provided levels override defaults
 
     Returns:
         Path to the timestamped results directory
@@ -41,6 +42,20 @@ def init_rollout_logging(
         >>> # Save other outputs to result_dir
         >>> (result_dir / "results.json").write_text(json.dumps(results))
     """
+    # Default logger levels for third-party libraries (suppress verbose HTTP client logging)
+    # These are noisy at INFO level and should only appear at WARNING+
+    default_logger_levels = {
+        "httpx": "WARNING",
+        "httpcore": "WARNING",
+        "httpcore.http11": "WARNING",
+        "httpcore.http2": "WARNING",
+        "openai": "WARNING",
+        "anthropic": "WARNING",
+    }
+    
+    # Merge user-provided levels with defaults (user overrides take precedence)
+    merged_levels = {**default_logger_levels, **(logger_levels or {})}
+    
     # Create timestamped result directory
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     result_dir_name = f"{experiment_name}_{timestamp}"
@@ -53,7 +68,7 @@ def init_rollout_logging(
         level=log_level,
         use_json=False,  # Human-readable console output
         use_rich=False,  # Keep it simple for now
-        logger_levels=logger_levels or {},
+        logger_levels=merged_levels,
         log_file=str(log_file),
     )
 
