@@ -249,7 +249,7 @@ class UniversalSSHClient:
                     look_for_keys=True,
                     allow_agent=True
                 )
-                logger.info(f"✅ Connected via SSH agent to {conn_info.connection_string()}")
+                logger.debug(f"✅ Connected via SSH agent to {conn_info.connection_string()}")
                 return True
                 
             except Exception as agent_error:
@@ -267,7 +267,7 @@ class UniversalSSHClient:
                             look_for_keys=False,
                             allow_agent=False
                         )
-                        logger.info(f"✅ Connected via key file to {conn_info.connection_string()}")
+                        logger.debug(f"✅ Connected via key file to {conn_info.connection_string()}")
                         return True
                 else:
                     raise agent_error

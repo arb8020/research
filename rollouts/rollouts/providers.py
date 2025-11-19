@@ -1104,26 +1104,26 @@ async def rollout_anthropic(
     if actor.endpoint.thinking is not None:
         params["thinking"] = actor.endpoint.thinking
 
-    # Debug logging - show what we're sending
-    print(f"\n{'='*60}")
-    print(f"Anthropic API Request:")
-    print(f"{'='*60}")
-    print(f"Model: {actor.endpoint.model}")
-    print(f"Max tokens: {actor.endpoint.max_tokens}")
-    print(f"Temperature: {actor.endpoint.temperature}")
-    print(f"API base: {actor.endpoint.api_base}")
-    print(f"Messages count: {len(params['messages'])}")
+    # Debug logging - show what we're sending (only at DEBUG level)
+    logger.debug(f"\n{'='*60}")
+    logger.debug(f"Anthropic API Request:")
+    logger.debug(f"{'='*60}")
+    logger.debug(f"Model: {actor.endpoint.model}")
+    logger.debug(f"Max tokens: {actor.endpoint.max_tokens}")
+    logger.debug(f"Temperature: {actor.endpoint.temperature}")
+    logger.debug(f"API base: {actor.endpoint.api_base}")
+    logger.debug(f"Messages count: {len(params['messages'])}")
     if system_prompt:
-        print(f"System prompt length: {len(system_prompt)} chars")
-        print(f"System prompt preview: {system_prompt[:200]}...")
+        logger.debug(f"System prompt length: {len(system_prompt)} chars")
+        logger.debug(f"System prompt preview: {system_prompt[:200]}...")
     for i, msg in enumerate(params['messages']):
         role = msg.get('role', 'unknown')
         content = msg.get('content', '')
         if isinstance(content, str):
-            print(f"Message {i} ({role}): {len(content)} chars - {content[:100]}...")
+            logger.debug(f"Message {i} ({role}): {len(content)} chars - {content[:100]}...")
         elif isinstance(content, list):
-            print(f"Message {i} ({role}): {len(content)} content blocks")
-    print(f"{'='*60}\n")
+            logger.debug(f"Message {i} ({role}): {len(content)} content blocks")
+    logger.debug(f"{'='*60}\n")
 
     max_retries = 10
     base_delay = 2

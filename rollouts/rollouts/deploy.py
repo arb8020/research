@@ -644,45 +644,45 @@ async def _deploy_local(
     """
     import subprocess
 
-    logger.info("")
-    logger.info("🔍 Preflight Checks")
-    logger.info("-" * 60)
+    logger.debug("")
+    logger.debug("🔍 Preflight Checks")
+    logger.debug("-" * 60)
 
     # Check 1: HuggingFace token and model access
-    logger.info(f"Checking HuggingFace token and model access...")
+    logger.debug(f"Checking HuggingFace token and model access...")
     hf_ok, hf_error = check_hf_token_and_model(config.model)
     if not hf_ok:
         logger.error(f"❌ {hf_error}")
         return None, hf_error
-    logger.info(f"✅ HF token valid, model accessible: {config.model}")
+    logger.debug(f"✅ HF token valid, model accessible: {config.model}")
 
     # Check 2: Prerequisites
-    logger.info("Checking prerequisites...")
+    logger.debug("Checking prerequisites...")
     prereq_ok, prereq_error = check_local_prerequisites()
     if not prereq_ok:
         logger.error(f"❌ {prereq_error}")
         return None, prereq_error
-    logger.info("✅ Prerequisites OK")
+    logger.debug("✅ Prerequisites OK")
 
     # Check 3: GPU availability
-    logger.info(f"Checking GPU availability: {config.gpu_ranks}...")
+    logger.debug(f"Checking GPU availability: {config.gpu_ranks}...")
     gpu_ok, gpu_error = check_gpus_available_local(config.gpu_ranks)
     if not gpu_ok:
         logger.error(f"❌ {gpu_error}")
         return None, gpu_error
-    logger.info(f"✅ GPUs available: {config.gpu_ranks}")
+    logger.debug(f"✅ GPUs available: {config.gpu_ranks}")
 
     # Check 4: Port availability
-    logger.info(f"Checking port {config.port}...")
+    logger.debug(f"Checking port {config.port}...")
     port_ok, port_error = check_port_available_local(config.port)
     if not port_ok:
         logger.error(f"❌ {port_error}")
         return None, port_error
-    logger.info(f"✅ Port {config.port} available")
+    logger.debug(f"✅ Port {config.port} available")
 
-    logger.info("")
-    logger.info("✅ All preflight checks passed!")
-    logger.info("")
+    logger.debug("")
+    logger.debug("✅ All preflight checks passed!")
+    logger.debug("")
 
     # Build command
     sglang_cmd = build_sglang_command(config)
@@ -723,7 +723,7 @@ tmux new-session -d -s {config.tmux_session_name} "
 "
 """
 
-    logger.info("📦 Starting SGLang server in tmux...")
+    logger.debug("📦 Starting SGLang server in tmux...")
     try:
         result = await trio.run_process(
             tmux_cmd,
@@ -740,7 +740,7 @@ tmux new-session -d -s {config.tmux_session_name} "
         logger.error(f"❌ {error_msg}")
         return None, error_msg
 
-    logger.info(f"✅ Server started in tmux session: {config.tmux_session_name}")
+    logger.debug(f"✅ Server started in tmux session: {config.tmux_session_name}")
 
     # Create ServerInfo
     server_info = ServerInfo(
@@ -754,7 +754,7 @@ tmux new-session -d -s {config.tmux_session_name} "
 
     if wait_for_ready:
         # Wait for health check
-        logger.info("⏳ Waiting for server to be ready...")
+        logger.debug("⏳ Waiting for server to be ready...")
         ready, error = await _wait_for_health(server_info, timeout_seconds)
         if not ready:
             return None, error
@@ -783,50 +783,50 @@ async def _deploy_remote(
     assert config.ssh_connection is not None
 
     # Connect to remote
-    logger.info(f"🔗 Connecting to {config.ssh_connection}...")
+    logger.debug(f"🔗 Connecting to {config.ssh_connection}...")
     bifrost_client = BifrostClient(config.ssh_connection, config.ssh_key)
 
-    logger.info("")
-    logger.info("🔍 Preflight Checks (Remote)")
-    logger.info("-" * 60)
+    logger.debug("")
+    logger.debug("🔍 Preflight Checks (Remote)")
+    logger.debug("-" * 60)
 
     # Check 1: Prerequisites
-    logger.info("Checking remote prerequisites...")
+    logger.debug("Checking remote prerequisites...")
     prereq_ok, prereq_error = check_remote_prerequisites(config.ssh_connection, config.ssh_key)
     if not prereq_ok:
         logger.error(f"❌ {prereq_error}")
         return None, prereq_error
-    logger.info("✅ Prerequisites OK")
+    logger.debug("✅ Prerequisites OK")
 
     # Check 2: GPU availability
-    logger.info(f"Checking remote GPU availability: {config.gpu_ranks}...")
+    logger.debug(f"Checking remote GPU availability: {config.gpu_ranks}...")
     gpu_ok, gpu_error = check_gpus_available_remote(
         config.ssh_connection, config.ssh_key, config.gpu_ranks
     )
     if not gpu_ok:
         logger.error(f"❌ {gpu_error}")
         return None, gpu_error
-    logger.info(f"✅ GPUs available: {config.gpu_ranks}")
+    logger.debug(f"✅ GPUs available: {config.gpu_ranks}")
 
     # Check 3: Port availability
-    logger.info(f"Checking remote port {config.port}...")
+    logger.debug(f"Checking remote port {config.port}...")
     port_ok, port_error = check_port_available_remote(
         config.ssh_connection, config.ssh_key, config.port
     )
     if not port_ok:
         logger.error(f"❌ {port_error}")
         return None, port_error
-    logger.info(f"✅ Port {config.port} available")
+    logger.debug(f"✅ Port {config.port} available")
 
-    logger.info("")
-    logger.info("✅ All preflight checks passed!")
-    logger.info("")
+    logger.debug("")
+    logger.debug("✅ All preflight checks passed!")
+    logger.debug("")
 
     # Deploy code (without bootstrap first)
-    logger.info("📦 Deploying code...")
+    logger.debug("📦 Deploying code...")
     try:
         workspace_path = bifrost_client.push()
-        logger.info(f"✅ Code deployed to {workspace_path}")
+        logger.debug(f"✅ Code deployed to {workspace_path}")
     except Exception as e:
         logger.warning(f"Code deployment skipped: {e}")
         workspace_path = "~"
@@ -835,13 +835,13 @@ async def _deploy_remote(
     result = bifrost_client.exec(f"echo {workspace_path}")
     if result.exit_code == 0 and result.stdout:
         workspace_path = result.stdout.strip()
-        logger.info(f"📍 Expanded workspace path: {workspace_path}")
+        logger.debug(f"📍 Expanded workspace path: {workspace_path}")
 
     # Run bootstrap to install SGLang with streaming output
     bootstrap_cmd = generate_bootstrap_command(config)
-    logger.info("🔧 Running bootstrap to install SGLang...")
-    logger.info(f"   Bootstrap command: {bootstrap_cmd[:100]}...")
-    logger.info("=" * 60)
+    logger.debug("🔧 Running bootstrap to install SGLang...")
+    logger.debug(f"   Bootstrap command: {bootstrap_cmd[:100]}...")
+    logger.debug("=" * 60)
 
     # Execute bootstrap with streaming output so we can see progress
     # Tiger Style: Explicit control flow - capture actual exit code
@@ -857,7 +857,7 @@ async def _deploy_remote(
                 exit_code_str = line.replace("::EXIT_CODE::", "").strip()
                 if exit_code_str.isdigit():
                     exit_code = int(exit_code_str)
-                    logger.info(f"📊 Bootstrap exit code: {exit_code}")
+                    logger.debug(f"📊 Bootstrap exit code: {exit_code}")
             else:
                 # Print output in real-time
                 print(line, end='', flush=True)
@@ -866,7 +866,7 @@ async def _deploy_remote(
         logger.error(f"❌ Bootstrap streaming failed: {e}")
         return None, f"Bootstrap execution failed: {e}"
 
-    logger.info("=" * 60)
+    logger.debug("=" * 60)
 
     # Check bootstrap succeeded
     if exit_code is None:
@@ -912,10 +912,10 @@ async def _deploy_remote(
         logger.error(f"   ls -la {workspace_path}/{venv_name}/")
         return None, error_msg
 
-    logger.info(f"✅ Verified venv exists: {venv_name}")
+    logger.debug(f"✅ Verified venv exists: {venv_name}")
 
     # Verify SGLang is actually installed in the venv (critical postcondition!)
-    logger.info("🔍 Verifying SGLang installation...")
+    logger.debug("🔍 Verifying SGLang installation...")
     sglang_check_cmd = f"cd {workspace_path} && source {venv_name}/bin/activate && python -c 'import sglang; print(sglang.__version__)'"
     sglang_result = bifrost_client.exec(sglang_check_cmd)
 
@@ -932,8 +932,8 @@ async def _deploy_remote(
         return None, error_msg
 
     sglang_version = sglang_result.stdout.strip()
-    logger.info(f"✅ SGLang {sglang_version} verified installed")
-    logger.info(f"✅ Installation complete at {workspace_path}")
+    logger.debug(f"✅ SGLang {sglang_version} verified installed")
+    logger.debug(f"✅ Installation complete at {workspace_path}")
 
     # Build command
     sglang_cmd = build_sglang_command(config)
@@ -993,7 +993,7 @@ tmux new-session -d -s {config.tmux_session_name} "
 
     if wait_for_ready:
         # Wait for health check (via bifrost exec)
-        logger.info("⏳ Waiting for server to be ready...")
+        logger.debug("⏳ Waiting for server to be ready...")
         ready, error = await _wait_for_health_remote(server_info, bifrost_client, timeout_seconds)
         if not ready:
             return None, error
