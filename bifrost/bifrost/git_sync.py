@@ -250,7 +250,7 @@ def _create_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> No
     commit_hash = hash_result.stdout.strip() if hash_result.returncode == 0 else "unknown"
     short_hash = commit_hash[:7] if commit_hash != "unknown" else "unknown"
 
-    logger.info(f"📦 Creating git bundle from HEAD: {short_hash} ({commit_hash})")
+    logger.debug(f"📦 Creating git bundle from HEAD: {short_hash} ({commit_hash})")
 
     # Create git bundle locally
     with tempfile.NamedTemporaryFile(suffix='.bundle', delete=False) as bundle_file:
@@ -293,7 +293,7 @@ def _create_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> No
         deployed_hash = stdout.read().decode().strip()
         deployed_short = deployed_hash[:7] if deployed_hash else "unknown"
 
-        logger.info(f"✅ Workspace created at: {deployed_short} ({deployed_hash})")
+        logger.debug(f"✅ Workspace created at: {deployed_short} ({deployed_hash})")
         if deployed_hash != commit_hash:
             logger.warning(f"⚠️  Deployed hash doesn't match local HEAD!")
             logger.warning(f"   Local:  {short_hash} ({commit_hash})")
@@ -343,7 +343,7 @@ def _update_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> No
     commit_hash = hash_result.stdout.strip() if hash_result.returncode == 0 else "unknown"
     short_hash = commit_hash[:7] if commit_hash != "unknown" else "unknown"
 
-    logger.info(f"📦 Creating git bundle from HEAD: {short_hash} ({commit_hash})")
+    logger.debug(f"📦 Creating git bundle from HEAD: {short_hash} ({commit_hash})")
 
     # Create git bundle locally
     with tempfile.NamedTemporaryFile(suffix='.bundle', delete=False) as bundle_file:

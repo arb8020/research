@@ -172,7 +172,7 @@ class BifrostClient:
                     # Connect with retry logic (no key)
                     self._establish_connection(self._ssh_client, None)
 
-                self.logger.info(f"Connected to {self.ssh}")
+                self.logger.debug(f"Connected to {self.ssh}")
             except Exception as e:
                 raise ConnectionError(f"Failed to connect to {self.ssh}: {e}")
 

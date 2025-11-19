@@ -51,6 +51,8 @@ def init_rollout_logging(
         "httpcore.http2": "WARNING",
         "openai": "WARNING",
         "anthropic": "WARNING",
+        "paramiko": "WARNING",  # Suppress SSH connection details ("Connected (version 2.0...)")
+        "paramiko.transport": "WARNING",
     }
     
     # Merge user-provided levels with defaults (user overrides take precedence)
