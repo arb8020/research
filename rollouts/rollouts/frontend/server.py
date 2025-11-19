@@ -929,15 +929,15 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         # Check if we're building from a base config
         base_name = data.get("baseName")
 
-        logger.info(f"_build_config: baseName={base_name}, configName={data.get('configName')}")
+        logger.debug(f"_build_config: baseName={base_name}, configName={data.get('configName')}")
 
         if base_name:
             # Load base config and modify it
-            logger.info(f"Building from base config: {base_name}")
+            logger.debug(f"Building from base config: {base_name}")
             return self._build_from_base_config(data, base_name)
         else:
             # Build from scratch
-            logger.info("Building new config from template")
+            logger.debug("Building new config from template")
             return self._build_new_config(data)
 
     def _build_from_base_config(self, data: dict[str, Any], base_name: str) -> str:
@@ -956,8 +956,8 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         import re
         env_import = re.search(r'from\s+([\w.]+)\s+import\s+(\w+Environment)', config_source)
         env_class = re.search(r'environment_class:\s*type\s*=\s*(\w+)', config_source)
-        logger.info(f"Base config has environment import: {env_import.group(0) if env_import else 'None'}")
-        logger.info(f"Base config has environment_class: {env_class.group(1) if env_class else 'None'}")
+        logger.debug(f"Base config has environment import: {env_import.group(0) if env_import else 'None'}")
+        logger.debug(f"Base config has environment_class: {env_class.group(1) if env_class else 'None'}")
 
         # Replace specific values
         import re
@@ -1416,7 +1416,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
             data = json.loads(body)
             config_name = data.get("configName")
 
-            logger.info(f"🚀 Launch request received for config: {config_name}")
+            logger.debug(f"🚀 Launch request received for config: {config_name}")
 
             if not config_name:
                 logger.error("Launch failed: Missing configName")
@@ -1430,7 +1430,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                 self.send_error(404, f"Config not found: {config_name}")
                 return
 
-            logger.info(f"Config file found: {config_path}")
+            logger.debug(f"Config file found: {config_path}")
 
             # GPU preflight check (if config has gpu_ids)
             # Read config to check for GPU requirements
@@ -1508,11 +1508,11 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                 _run_counter += 1
                 run_id = f"run_{_run_counter}_{int(time.time())}"
 
-            logger.info(f"Generated run_id: {run_id}")
+            logger.debug(f"Generated run_id: {run_id}")
 
             # Build command to launch config
             command = ["python", "entrypoint.py", str(config_path)]
-            logger.info(f"Command: {' '.join(command)}")
+            logger.debug(f"Command: {' '.join(command)}")
 
             # Launch with tracked pipes
             try:
@@ -1530,7 +1530,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                     start_new_session=True,  # Detach from parent
                     env=env
                 )
-                logger.info(f"Process started with PID: {process.pid}")
+                logger.debug(f"Process started with PID: {process.pid}")
             except Exception as e:
                 logger.error(f"Failed to start process: {str(e)}")
                 _run_semaphore.release()  # Release semaphore on failure
@@ -1552,7 +1552,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                     "gpu_ids": gpu_ids
                 }
 
-            logger.info(f"Run registered in _active_runs. Total active: {len(_active_runs)}")
+            logger.debug(f"Run registered in _active_runs. Total active: {len(_active_runs)}")
 
             self._json_response({
                 "success": True,
@@ -1580,17 +1580,17 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
         """
         global _active_runs
 
-        logger.info(f"📡 Stream connection opened for run_id: {run_id}")
+        logger.debug(f"📡 Stream connection opened for run_id: {run_id}")
 
         if run_id not in _active_runs:
             logger.error(f"Stream failed: Run not found: {run_id}")
-            logger.info(f"Available run_ids: {list(_active_runs.keys())}")
+            logger.debug(f"Available run_ids: {list(_active_runs.keys())}")
             self.send_error(404, f"Run not found: {run_id}")
             return
 
         run_data = _active_runs[run_id]
         process = run_data["process"]
-        logger.info(f"Streaming from PID: {process.pid}, status: {run_data['status']}")
+        logger.debug(f"Streaming from PID: {process.pid}, status: {run_data['status']}")
 
         # Set up SSE headers
         self.send_response(200)
@@ -1604,7 +1604,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
             import re
             from pathlib import Path
 
-            logger.info(f"🔍 Starting dual-stream (stdout + events.jsonl) for {run_id}")
+            logger.debug(f"🔍 Starting dual-stream (stdout + events.jsonl) for {run_id}")
 
             # Track events.jsonl state
             events_file = None
@@ -1619,7 +1619,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                 char = process.stdout.read(1)
                 if not char:
                     # Process ended
-                    logger.info(f"🔍 Stream ended (no more data) for {run_id}")
+                    logger.debug(f"🔍 Stream ended (no more data) for {run_id}")
                     break
 
                 stdout_buffer += char
@@ -1635,8 +1635,8 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                             result_dir = Path(match.group(1))
                             events_file = result_dir / "events.jsonl"
                             result_dir_found = True
-                            logger.info(f"📂 Found result_dir: {result_dir}")
-                            logger.info(f"📄 Will tail events from: {events_file}")
+                            logger.debug(f"📂 Found result_dir: {result_dir}")
+                            logger.debug(f"📄 Will tail events from: {events_file}")
 
                     # Send stdout line as log event (for debugging)
                     with _run_lock:
@@ -1654,7 +1654,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                         # Open events file for reading
                         events_file_handle = open(events_file, 'r')
                         events_file_handle.seek(0, 2)  # Seek to end
-                        logger.info(f"📄 Opened events.jsonl for tailing")
+                        logger.debug(f"📄 Opened events.jsonl for tailing")
 
                     # Read new lines from events.jsonl
                     event_line = events_file_handle.readline()
@@ -1772,18 +1772,18 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
         """Kill a running process."""
         global _active_runs
 
-        logger.info(f"🛑 Kill request received for run_id: {run_id}")
+        logger.debug(f"🛑 Kill request received for run_id: {run_id}")
 
         if run_id not in _active_runs:
             logger.error(f"Kill failed: Run not found: {run_id}")
-            logger.info(f"Available run_ids: {list(_active_runs.keys())}")
+            logger.debug(f"Available run_ids: {list(_active_runs.keys())}")
             self.send_error(404, f"Run not found: {run_id}")
             return
 
         run_data = _active_runs[run_id]
         process = run_data["process"]
 
-        logger.info(f"Run status: {run_data['status']}, PID: {process.pid}")
+        logger.debug(f"Run status: {run_data['status']}, PID: {process.pid}")
 
         if run_data["status"] != "running":
             logger.warning(f"Cannot kill: Run is not running (status: {run_data['status']})")
@@ -1797,22 +1797,22 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
             # Kill entire process group (includes child processes)
             if process.poll() is None:  # Process is still running
                 pgid = os.getpgid(process.pid)
-                logger.info(f"Killing process group {pgid} (SIGTERM)")
+                logger.debug(f"Killing process group {pgid} (SIGTERM)")
                 os.killpg(pgid, signal.SIGTERM)
 
                 # Wait a bit, then force kill if still alive
                 time.sleep(0.5)
                 if process.poll() is None:
-                    logger.info(f"Process still alive, force killing (SIGKILL)")
+                    logger.debug(f"Process still alive, force killing (SIGKILL)")
                     os.killpg(pgid, signal.SIGKILL)
                 else:
-                    logger.info(f"Process terminated successfully")
+                    logger.debug(f"Process terminated successfully")
             else:
-                logger.info(f"Process already terminated (exit code: {process.poll()})")
+                logger.debug(f"Process already terminated (exit code: {process.poll()})")
 
             # Release semaphore
             _run_semaphore.release()
-            logger.info(f"Released semaphore")
+            logger.debug(f"Released semaphore")
 
             # Update status
             with _run_lock:
