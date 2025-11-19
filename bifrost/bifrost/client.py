@@ -456,6 +456,35 @@ class BifrostClient:
                 raise
             raise ConnectionError(f"Streaming execution failed: {e}")
 
+    def expand_path(self, path: str) -> str:
+        """Expand ~ and environment variables in path to absolute path.
+
+        This is a convenience helper to expand paths on the remote machine.
+        Eliminates the common pattern: client.exec(f"echo {path}").stdout.strip()
+
+        Args:
+            path: Path to expand (may contain ~ or env vars)
+
+        Returns:
+            Absolute expanded path on remote machine
+
+        Raises:
+            ConnectionError: SSH connection failed
+
+        Example:
+            workspace = client.push(workspace_path="~/.bifrost/workspaces/foo")
+            workspace = client.expand_path(workspace)  # /home/user/.bifrost/workspaces/foo
+        """
+        assert path, "path must be non-empty string"
+
+        result = self.exec(f"echo {path}")
+        assert result.exit_code == 0, f"Failed to expand path: {result.stderr}"
+
+        expanded = result.stdout.strip()
+        assert expanded, f"Path expansion returned empty string for: {path}"
+
+        return expanded
+
     def deploy(self, command: str, bootstrap_cmd: Optional[Union[str, List[str]]] = None,
                env: Optional[Union[EnvironmentVariables, Dict[str, str]]] = None) -> ExecResult:
         """Deploy code and execute command.

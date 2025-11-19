@@ -9,6 +9,13 @@ from .types import (
     SessionInfo,
     JobMetadata,
 )
+from .remote_fs import (
+    write_file_safe,
+    ensure_dir,
+    path_exists,
+    read_file,
+    remove_file,
+)
 
 __all__ = [
     'BifrostClient',
@@ -18,4 +25,10 @@ __all__ = [
     'EnvironmentVariables',
     'SessionInfo',
     'JobMetadata',
+    # Remote filesystem helpers
+    'write_file_safe',
+    'ensure_dir',
+    'path_exists',
+    'read_file',
+    'remove_file',
 ]
