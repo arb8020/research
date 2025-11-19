@@ -63,6 +63,14 @@ from kerbal.python_env import (
     run_script,
     create_venv,
     install_packages,
+    # New helpers
+    ensure_packages_installed,
+    verify_package,
+    run_python_script,
+)
+from kerbal.paths import (
+    DeploymentPaths,
+    create_deployment_paths,
 )
 from kerbal.tmux import start_tmux_session
 from kerbal.gpu import check_gpus_available, wait_for_gpus
@@ -79,6 +87,12 @@ __all__ = [
     "setup_python_env",
     "create_venv",
     "install_packages",
+    "ensure_packages_installed",
+    "verify_package",
+    "run_python_script",
+    # Path management
+    "DeploymentPaths",
+    "create_deployment_paths",
     # Old API (backward compatibility)
     "DependencyConfig",
     "CommandResult",
