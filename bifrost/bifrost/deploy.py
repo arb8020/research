@@ -92,8 +92,8 @@ def execute_with_env_injection(
 ) -> Tuple[int, str, str]:
     """Execute command with secure environment variable injection via stdin."""
     
-    # Always print the command being executed
-    console.print(f"🔄 Executing: {command}")
+    # Debug log the command being executed
+    logger.debug(f"🔄 Executing: {command}")
     
     if env_dict:
         # Create environment payload
@@ -102,7 +102,7 @@ def execute_with_env_injection(
         # Wrap command to load environment from stdin
         wrapped_command = wrap_with_env_loader(command)
         
-        console.print(f"🔐 Injecting {len(env_dict)} environment variables securely")
+        logger.debug(f"🔐 Injecting {len(env_dict)} environment variables securely")
         
         # Execute with environment injection
         stdin, stdout, stderr = client.exec_command(f"bash -lc {shlex.quote(wrapped_command)}")
@@ -115,8 +115,8 @@ def execute_with_env_injection(
         # No environment variables, execute normally
         stdin, stdout, stderr = client.exec_command(command)
     
-    # Stream output in real-time
-    console.print("\n--- Remote Output ---")
+    # Stream output in real-time (output goes to stdout, not logged)
+    # logger.debug("\n--- Remote Output ---")
     stdout_buffer = []
     stderr_buffer = []
     
@@ -181,7 +181,7 @@ class GitDeployment:
         skip_bootstrap = os.environ.get("BIFROST_SKIP_BOOTSTRAP") == "1"
         frozen = os.environ.get("BIFROST_BOOTSTRAP_FROZEN") == "1"
         if skip_bootstrap:
-            console.print("📦 Skipping dependency bootstrap due to BIFROST_SKIP_BOOTSTRAP=1")
+            logger.debug("📦 Skipping dependency bootstrap due to BIFROST_SKIP_BOOTSTRAP=1")
             return ""
 
         # Check for dependency files in order of preference
@@ -201,11 +201,11 @@ class GitDeployment:
             # Check if file exists in worktree
             stdin, stdout, stderr = client.exec_command(f"test -f {worktree_path}/{dep_file}")
             if stdout.channel.recv_exit_status() == 0:
-                console.print(f"📦 Detected {dep_file}, adding bootstrap: {bootstrap_cmd}")
+                logger.debug(f"📦 Detected {dep_file}, adding bootstrap: {bootstrap_cmd}")
                 return f"{bootstrap_cmd} && "
         
         # No dependency files found
-        console.print("📦 No Python dependency files detected, skipping bootstrap")
+        logger.debug("📦 No Python dependency files detected, skipping bootstrap")
         return ""
         
     def detect_git_repo(self) -> Tuple[str, str]:
@@ -227,7 +227,7 @@ class GitDeployment:
             )
             commit_hash = result.stdout.strip()
             
-            console.print(f"📦 Detected git repo: {repo_name} @ {commit_hash[:8]}")
+            logger.debug(f"📦 Detected git repo: {repo_name} @ {commit_hash[:8]}")
             return repo_name, commit_hash
             
         except subprocess.CalledProcessError:
@@ -243,14 +243,14 @@ class GitDeployment:
         """
 
         # Ensure tmux is installed for detached job functionality
-        console.print("🔧 Ensuring tmux is installed for detached jobs...")
+        logger.debug("🔧 Ensuring tmux is installed for detached jobs...")
         tmux_check_cmd = "which tmux || (apt-get update && apt-get install -y tmux)"
         stdin, stdout, stderr = client.exec_command(tmux_check_cmd)
         exit_code = stdout.channel.recv_exit_status()
         if exit_code != 0:
-            console.print("⚠️  Warning: tmux installation may have failed, but continuing...")
+            logger.debug("⚠️  Warning: tmux installation may have failed, but continuing...")
         else:
-            console.print("✅ tmux is available")
+            logger.debug("✅ tmux is available")
 
         # Create directory structure
         commands = ["mkdir -p ~/.bifrost/repos ~/.bifrost/worktrees ~/.bifrost/jobs"]
@@ -272,7 +272,7 @@ class GitDeployment:
         repo_exists = stdout.channel.recv_exit_status() == 0
         
         if not repo_exists:
-            console.print(f"🔧 Initializing bare repo: {bare_repo_path}")
+            logger.debug(f"🔧 Initializing bare repo: {bare_repo_path}")
             stdin, stdout, stderr = client.exec_command(f"git init --bare {bare_repo_path}")
             exit_code = stdout.channel.recv_exit_status()
             if exit_code != 0:
@@ -295,7 +295,7 @@ class GitDeployment:
         ssh_cmd = f"ssh -p {self.ssh_port} -o StrictHostKeyChecking=no"
         remote_url = f"{self.ssh_user}@{self.ssh_host}:{bare_repo_path}"
 
-        console.print("📤 Pushing code to remote...")
+        logger.debug("📤 Pushing code to remote...")
 
         # Push current HEAD to a job-specific branch
         job_branch = f"job/{job_id}"
@@ -310,7 +310,7 @@ class GitDeployment:
                 "git", "push", remote_url, f"HEAD:refs/heads/{job_branch}"
             ], env=env, capture_output=True, text=True, check=True)
             
-            console.print(f"✅ Code pushed to branch: {job_branch}")
+            logger.debug(f"✅ Code pushed to branch: {job_branch}")
             
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"Failed to push code: {e.stderr}")
@@ -322,7 +322,7 @@ class GitDeployment:
         ssh_cmd = f"ssh -p {self.ssh_port} -o StrictHostKeyChecking=no"
         remote_url = f"{self.ssh_user}@{self.ssh_host}:{bare_repo_path}"
         
-        console.print("📤 Pushing code to remote main branch...")
+        logger.debug("📤 Pushing code to remote main branch...")
         
         try:
             # Set git SSH command
@@ -334,7 +334,7 @@ class GitDeployment:
                 "git", "push", remote_url, "HEAD:refs/heads/main"
             ], env=env, capture_output=True, text=True, check=True)
             
-            console.print("✅ Code pushed to main branch")
+            logger.debug("✅ Code pushed to main branch")
             
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"Failed to push code to main: {e.stderr}")
@@ -342,7 +342,7 @@ class GitDeployment:
     def create_or_update_workspace(self, client: paramiko.SSHClient, bare_repo_path: str, workspace_path: str) -> None:
         """Create or update shared workspace directory."""
         
-        console.print(f"🌳 Setting up workspace: {workspace_path}")
+        logger.debug(f"🌳 Setting up workspace: {workspace_path}")
         
         # Check if workspace already exists
         stdin, stdout, stderr = client.exec_command(f"test -d {workspace_path}")
@@ -350,7 +350,7 @@ class GitDeployment:
         
         if workspace_exists:
             # Update existing workspace
-            console.print("📝 Updating existing workspace...")
+            logger.debug("📝 Updating existing workspace...")
             
             # Ensure origin remote is configured (worktrees don't have it by default)
             remote_url = f"{bare_repo_path}"
@@ -364,23 +364,23 @@ class GitDeployment:
             
             if fetch_exit != 0:
                 fetch_error = stderr.read().decode()
-                console.print(f"⚠️  Fetch failed: {fetch_error}")
+                logger.debug(f"⚠️  Fetch failed: {fetch_error}")
                 # Try alternative: reset to match bare repo
                 reset_cmd = f"cd {workspace_path} && git reset --hard main"
                 stdin, stdout, stderr = client.exec_command(reset_cmd)
                 if stdout.channel.recv_exit_status() != 0:
-                    console.print("⚠️  Reset failed, workspace may be out of sync")
+                    logger.debug("⚠️  Reset failed, workspace may be out of sync")
             else:
                 # Pull or reset to latest
                 pull_cmd = f"cd {workspace_path} && git reset --hard origin/main"
                 stdin, stdout, stderr = client.exec_command(pull_cmd)
                 if stdout.channel.recv_exit_status() != 0:
-                    console.print("⚠️  Reset to origin/main failed")
+                    logger.debug("⚠️  Reset to origin/main failed")
             
-            console.print("✅ Workspace updated successfully")
+            logger.debug("✅ Workspace updated successfully")
         else:
             # Create new workspace
-            console.print("🆕 Creating new workspace...")
+            logger.debug("🆕 Creating new workspace...")
             
             # Create workspace as git worktree from main branch
             cmd = f"cd {bare_repo_path} && git worktree add {workspace_path} main"
@@ -391,7 +391,7 @@ class GitDeployment:
                 error = stderr.read().decode()
                 raise RuntimeError(f"Failed to create workspace: {error}")
             
-            console.print(f"✅ Workspace created at: {workspace_path}")
+            logger.debug(f"✅ Workspace created at: {workspace_path}")
     
     def create_worktree(self, client: paramiko.SSHClient, repo_name: str, job_id: str) -> str:
         """Create git worktree for this job.
@@ -409,7 +409,7 @@ class GitDeployment:
         worktree_path = f"~/.bifrost/worktrees/{job_id}"
         job_branch = f"job/{job_id}"
         
-        console.print(f"🌳 Creating worktree: {worktree_path}")
+        logger.debug(f"🌳 Creating worktree: {worktree_path}")
         
         # Create worktree
         cmd = f"cd {bare_repo_path} && git worktree add {worktree_path} {job_branch}"
@@ -420,7 +420,7 @@ class GitDeployment:
             error = stderr.read().decode()
             raise RuntimeError(f"Failed to create worktree: {error}")
         
-        console.print(f"✅ Worktree ready at: {worktree_path}")
+        logger.debug(f"✅ Worktree ready at: {worktree_path}")
         return worktree_path
     
     def cleanup_job(self, client: paramiko.SSHClient, repo_name: str, worktree_path: str, job_id: str) -> None:
@@ -511,18 +511,18 @@ class GitDeployment:
         bootstrap_cmd = self.detect_bootstrap_command(client, workspace_path, uv_extra)
         if bootstrap_cmd:
             bootstrap_only = bootstrap_cmd.rstrip(" && ")
-            console.print(f"🔄 Installing dependencies: {bootstrap_only}")
+            logger.debug(f"🔄 Installing dependencies: {bootstrap_only}")
 
             stdin, stdout, stderr = client.exec_command(f"cd {workspace_path} && {bootstrap_only}")
             exit_code = stdout.channel.recv_exit_status()
 
             if exit_code != 0:
                 error = stderr.read().decode()
-                console.print(f"⚠️  Dependency installation warning: {error}")
+                logger.debug(f"⚠️  Dependency installation warning: {error}")
             else:
-                console.print("✅ Dependencies installed successfully")
+                logger.debug("✅ Dependencies installed successfully")
 
-        console.print(f"🎉 Code deployed successfully to workspace: {workspace_path}")
+        logger.info(f"🎉 Code deployed successfully to workspace: {workspace_path}")
         return workspace_path
     
     def deploy_code_only(self, client: paramiko.SSHClient, job_id: Optional[str] = None, target_dir: Optional[str] = None, uv_extra: Optional[str] = None) -> str:
@@ -567,7 +567,7 @@ class GitDeployment:
             worktree_path = f"~/.bifrost/worktrees/{target_dir}"
             job_branch = f"job/{job_id}"
 
-            console.print(f"🌳 Creating custom worktree: {worktree_path}")
+            logger.debug(f"🌳 Creating custom worktree: {worktree_path}")
 
             # Create worktree manually with custom path
             bare_repo_path = f"~/.bifrost/repos/{repo_name}.git"
@@ -579,7 +579,7 @@ class GitDeployment:
                 error = stderr.read().decode()
                 raise RuntimeError(f"Failed to create custom worktree: {error}")
 
-            console.print(f"✅ Custom worktree ready at: {worktree_path}")
+            logger.debug(f"✅ Custom worktree ready at: {worktree_path}")
         else:
             worktree_path = self.create_worktree(client, repo_name, job_id)
 
@@ -588,7 +588,7 @@ class GitDeployment:
         if bootstrap_cmd:
             # Remove the trailing " && " from bootstrap command for standalone execution
             bootstrap_only = bootstrap_cmd.rstrip(" && ")
-            console.print(f"🔄 Installing dependencies: {bootstrap_only}")
+            logger.debug(f"🔄 Installing dependencies: {bootstrap_only}")
 
             # Execute bootstrap command in worktree
             full_bootstrap = f"cd {worktree_path} && {bootstrap_only}"
@@ -597,12 +597,12 @@ class GitDeployment:
 
             if exit_code != 0:
                 error = stderr.read().decode()
-                console.print(f"⚠️  Dependency installation failed: {error}", style="yellow")
-                console.print("Continuing deployment without dependencies...")
+                logger.debug(f"⚠️  Dependency installation failed: {error}")
+                logger.debug("Continuing deployment without dependencies...")
             else:
-                console.print("✅ Dependencies installed successfully")
+                logger.debug("✅ Dependencies installed successfully")
 
-        console.print(f"✅ Code deployed to: {worktree_path}")
+        logger.info(f"✅ Code deployed to: {worktree_path}")
         return worktree_path
     
     def deploy_and_execute_detached(self, client: paramiko.SSHClient, command: str, env_vars: Optional[Dict[str, str]] = None) -> str:
@@ -618,7 +618,7 @@ class GitDeployment:
         """
         # Generate job ID
         job_id = generate_job_id()
-        console.print(f"🆔 Generated job ID: {job_id}")
+        logger.debug(f"🆔 Generated job ID: {job_id}")
 
         repo_name, commit_hash = self.detect_git_repo()
         job_manager = JobManager(self.ssh_user, self.ssh_host, self.ssh_port)
@@ -667,7 +667,7 @@ class GitDeployment:
         # Prepare command with bootstrap, but avoid duplicating if caller already does it
         bootstrap_cmd = self.detect_bootstrap_command(client, worktree_path, uv_extra)
         if any(token in command for token in ["uv sync", "pip install -r", "pip install uv"]):
-            console.print("📦 Caller handles dependency install; skipping bootstrap to avoid duplication")
+            logger.debug("📦 Caller handles dependency install; skipping bootstrap to avoid duplication")
             bootstrap_cmd = ""
         full_command = f"{bootstrap_cmd}{command}"
         
@@ -697,7 +697,7 @@ class GitDeployment:
 
         if not job_id:
             job_id = generate_job_id()
-        console.print(f"🆔 Using job ID: {job_id}")
+        logger.debug(f"🆔 Using job ID: {job_id}")
 
         # Detect git repo
         repo_name, commit_hash = self.detect_git_repo()
@@ -759,7 +759,7 @@ class GitDeployment:
             error = stderr.read().decode()
             raise RuntimeError(f"Failed to make wrapper script executable: {error}")
         
-        console.print("📋 Uploaded workspace job wrapper script")
+        logger.debug("📋 Uploaded workspace job wrapper script")
 
     def _deploy_to_existing_workspace(self, client: paramiko.SSHClient, workspace_path: str, repo_name: str, commit_hash: str, job_id: str) -> None:
         """Deploy to workspace using existing SSH client.
@@ -779,7 +779,7 @@ class GitDeployment:
         self.push_code(repo_name, commit_hash, bare_repo_path, job_id)
         
         # Create or update workspace
-        console.print(f"🏗️  Setting up workspace: {workspace_path}")
+        logger.debug(f"🏗️  Setting up workspace: {workspace_path}")
         
         # Check if workspace exists
         stdin, stdout, stderr = client.exec_command(f"test -d {workspace_path}")
@@ -787,22 +787,22 @@ class GitDeployment:
         
         if workspace_exists:
             # Update existing workspace
-            console.print("🔄 Updating existing workspace...")
+            logger.debug("🔄 Updating existing workspace...")
             stdin, stdout, stderr = client.exec_command(f"cd {workspace_path} && git pull origin main")
             exit_code = stdout.channel.recv_exit_status()
             if exit_code != 0:
                 error = stderr.read().decode()
-                console.print(f"⚠️ Git pull failed, will recreate workspace: {error}")
+                logger.debug(f"⚠️ Git pull failed, will recreate workspace: {error}")
                 stdin, stdout, stderr = client.exec_command(f"rm -rf {workspace_path}")
                 workspace_exists = False
         
         if not workspace_exists:
             # Create new workspace
-            console.print("🆕 Creating new workspace...")
+            logger.debug("🆕 Creating new workspace...")
             stdin, stdout, stderr = client.exec_command(f"git clone {bare_repo_path} {workspace_path}")
             exit_code = stdout.channel.recv_exit_status()
             if exit_code != 0:
                 error = stderr.read().decode()
                 raise RuntimeError(f"Failed to create workspace: {error}")
         
-        console.print(f"✅ Workspace ready at {workspace_path}")
+        logger.debug(f"✅ Workspace ready at {workspace_path}")
