@@ -13,12 +13,41 @@ Tiger Style:
 """
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from bifrost import BifrostClient
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class PythonEnvState:
+    """Immutable state of a configured Python environment.
+
+    Returned by setup_python_env() to provide all necessary paths and env vars.
+    Makes explicit what was previously implicit (no more manual path reconstruction).
+
+    Attributes:
+        venv_python: Absolute path to venv Python binary
+        venv_bin: Absolute path to venv bin directory (for PATH)
+        workspace: Absolute path to workspace root (for PYTHONPATH)
+        env_vars: Pre-computed environment variables (PATH, PYTHONPATH, etc.)
+
+    Example:
+        state = setup_python_env(client, workspace, requirements=["torch"])
+
+        # Use venv python
+        result = client.exec(f"{state.venv_python} -m my_module")
+
+        # Or use with env vars (includes PATH, PYTHONPATH automatically)
+        result = client.exec("python -m my_module", env=state.env_vars)
+    """
+    venv_python: str
+    venv_bin: str
+    workspace: str
+    env_vars: dict[str, str]
 
 
 def setup_script_deps(
@@ -63,7 +92,7 @@ def setup_python_env(
     python_version: str = ">=3.10",
     venv_path: str = ".venv",
     timeout_sec: int = 600,
-) -> None:
+) -> PythonEnvState:
     """Setup Python environment with dependencies.
 
     This is the main entry point. It replaces setup_script_deps() and DependencyConfig.
@@ -145,6 +174,26 @@ def setup_python_env(
         _verify_imports(client, venv_full_path, verify_imports)
 
     logger.info("✅ Python environment ready")
+
+    # Construct PythonEnvState with all necessary paths and env vars
+    venv_python = f"{venv_full_path}/bin/python"
+    venv_bin = f"{venv_full_path}/bin"
+
+    # Build environment variables dict
+    env_vars = {
+        "PATH": f"{venv_bin}:$PATH",  # Include venv bin for executables like ninja
+        "PYTHONUNBUFFERED": "1",       # Always flush Python output immediately
+    }
+
+    # Return immutable state
+    state = PythonEnvState(
+        venv_python=venv_python,
+        venv_bin=venv_bin,
+        workspace=workspace,  # Already expanded at line 114
+        env_vars=env_vars,
+    )
+
+    return state
 
 
 # === Layer 2: Lower-level functions (continuous granularity) ===
