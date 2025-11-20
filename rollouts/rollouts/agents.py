@@ -165,7 +165,7 @@ def inject_turn_warning(state: AgentState) -> AgentState:
     return state
 
 def handle_stop_max_turns(state: AgentState) -> AgentState:
-    """Stop when max turns reached"""
+    """Stop when max turns reached (default budget)"""
     assert state is not None
     assert isinstance(state, AgentState)
     assert state.turn_idx >= 0
@@ -176,6 +176,63 @@ def handle_stop_max_turns(state: AgentState) -> AgentState:
         assert result_state.stop is not None
         return result_state
     return state
+
+
+def handle_stop_token_budget(max_tokens: int) -> Callable[[AgentState], AgentState]:
+    """Stop when total tokens exceeds budget.
+
+    Example:
+        RunConfig(handle_stop=handle_stop_token_budget(100000))
+    """
+    def handler(state: AgentState) -> AgentState:
+        total_tokens = sum(
+            len(msg.content or "") for msg in state.actor.trajectory.messages
+        )
+        if total_tokens >= max_tokens:
+            return replace(state, stop=StopReason.MAX_TURNS)  # TODO: Add BUDGET_EXCEEDED
+        return state
+    return handler
+
+
+def handle_stop_cost_budget(max_cost_usd: float, cost_fn: Callable[[AgentState], float]) -> Callable[[AgentState], AgentState]:
+    """Stop when estimated cost exceeds budget.
+
+    Args:
+        max_cost_usd: Maximum cost in USD
+        cost_fn: Function that estimates cost from state
+
+    Example:
+        def estimate_cost(state):
+            # Count tokens, multiply by model pricing
+            return tokens * 0.00001
+
+        RunConfig(handle_stop=handle_stop_cost_budget(5.0, estimate_cost))
+    """
+    def handler(state: AgentState) -> AgentState:
+        current_cost = cost_fn(state)
+        if current_cost >= max_cost_usd:
+            return replace(state, stop=StopReason.MAX_TURNS)  # TODO: Add BUDGET_EXCEEDED
+        return state
+    return handler
+
+
+def handle_stop_combined(*handlers: Callable[[AgentState], AgentState]) -> Callable[[AgentState], AgentState]:
+    """Combine multiple stop handlers (OR logic - first to stop wins).
+
+    Example:
+        RunConfig(handle_stop=handle_stop_combined(
+            handle_stop_max_turns,
+            handle_stop_token_budget(100000),
+            handle_stop_cost_budget(10.0, my_cost_fn)
+        ))
+    """
+    def handler(state: AgentState) -> AgentState:
+        for h in handlers:
+            state = h(state)
+            if state.stop:
+                return state
+        return state
+    return handler
 
 async def inject_tool_reminder(state: AgentState, run_config: 'RunConfig') -> AgentState:
     """Remind the agent to use tools"""
@@ -439,7 +496,12 @@ async def run_agent(
             disable=False
         )
 
-    while not current_state.stop and current_state.turn_idx < current_state.max_turns:
+    while not current_state.stop:
+        # Check stop condition via handle_stop callback (allows custom budgets)
+        current_state = run_config.handle_stop(current_state)
+        if current_state.stop:
+            break
+
         # Tiger Style: Centralize control flow - emit start/end in same scope for clarity
         # Casey: Semantic compression - consistent pattern (start→step→end) repeated each iteration
         await handle_checkpoint_event(current_state, "turn_start", run_config, session_id)
@@ -459,13 +521,8 @@ async def run_agent(
         # Checkpoint after each turn completes
         await handle_checkpoint_event(current_state, "turn_end", run_config, session_id)
 
-    # Set stop reason if we hit max turns
-    if current_state.turn_idx >= current_state.max_turns:
-        current_state = replace(current_state, stop=StopReason.MAX_TURNS)
-        states[-1] = current_state
-
-        # Save final state
-        await handle_checkpoint_event(current_state, "final", run_config, session_id)
+    # Save final state
+    await handle_checkpoint_event(current_state, "final", run_config, session_id)
 
     # Close progress bar on normal completion
     if turn_pbar:
