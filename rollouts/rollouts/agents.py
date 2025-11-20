@@ -216,24 +216,6 @@ def handle_stop_cost_budget(max_cost_usd: float, cost_fn: Callable[[AgentState],
     return handler
 
 
-def handle_stop_combined(*handlers: Callable[[AgentState], AgentState]) -> Callable[[AgentState], AgentState]:
-    """Combine multiple stop handlers (OR logic - first to stop wins).
-
-    Example:
-        RunConfig(handle_stop=handle_stop_combined(
-            handle_stop_max_turns,
-            handle_stop_token_budget(100000),
-            handle_stop_cost_budget(10.0, my_cost_fn)
-        ))
-    """
-    def handler(state: AgentState) -> AgentState:
-        for h in handlers:
-            state = h(state)
-            if state.stop:
-                return state
-        return state
-    return handler
-
 async def inject_tool_reminder(state: AgentState, run_config: 'RunConfig') -> AgentState:
     """Remind the agent to use tools"""
     assert state is not None
