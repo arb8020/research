@@ -58,6 +58,7 @@ Example - Basic deployment:
 
 from kerbal.protocol import DependencyConfig, CommandResult
 from kerbal.python_env import (
+    PythonEnvState,
     setup_python_env,
     setup_script_deps,  # DEPRECATED: Use setup_python_env instead
     run_script,
@@ -84,6 +85,7 @@ from kerbal.job_monitor import (
 
 __all__ = [
     # New API (preferred)
+    "PythonEnvState",
     "setup_python_env",
     "create_venv",
     "install_packages",
