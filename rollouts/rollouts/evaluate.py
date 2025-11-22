@@ -250,9 +250,9 @@ async def evaluate_dataset(
     # Log summary
     if verbose:
         logger.info("")
-        logger.info("="*50)
+        logger.debug("="*50)
         logger.info("📊 Summary")
-        logger.info("="*50)
+        logger.debug("="*50)
         logger.info(f"Total samples: {total}")
         logger.info(f"Success: {summary['num_success']}, Errors: {summary['num_errors']}")
 

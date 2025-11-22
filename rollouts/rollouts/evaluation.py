@@ -264,7 +264,7 @@ async def evaluate_sample(
     # Tiger Style: Catch operational errors (rate limits, network issues) at boundary
     # These are expected errors that should be reported, not crash the eval
     if config.verbose:
-        logger.info(f"Evaluating {sample_id}")
+        logger.debug(f"Evaluating {sample_id}")
 
     # Track timing for structured logging
     start_time = time.time()
@@ -453,7 +453,7 @@ async def evaluate(
         logger.info(f"Starting evaluation: {config.eval_name}")
         logger.info(f"Samples to evaluate: {len(samples_to_eval)}")
         logger.info(f"Max concurrent: {config.max_concurrent}")
-        logger.info("="*50)
+        logger.debug("="*50)
 
     # Evaluate samples (with concurrency control)
     results = []
@@ -557,9 +557,9 @@ async def evaluate(
     # Print summary
     if config.verbose:
         logger.info("")
-        logger.info("="*50)
+        logger.debug("="*50)
         logger.info(f"Evaluation Summary: {config.eval_name}")
-        logger.info("="*50)
+        logger.debug("="*50)
         logger.info(f"Samples evaluated: {len(results)}")
         for key, value in summary_metrics.items():
             # Handle both numeric and non-numeric values

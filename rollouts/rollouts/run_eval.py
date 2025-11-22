@@ -109,7 +109,7 @@ async def run_evaluation(config, result_dir: Path) -> dict:
     Returns:
         Results dict with summary and per-sample results
     """
-    logger.info("=" * 60)
+    logger.debug("=" * 60)
 
     # Load dataset
     assert config.load_dataset is not None, "Config must have load_dataset function"
@@ -300,7 +300,7 @@ async def run_evaluation(config, result_dir: Path) -> dict:
 
     logger.info(f"\n{'=' * 60}")
     logger.info("📊 SUMMARY")
-    logger.info(f"{'=' * 60}")
+    logger.debug(f"{'=' * 60}")
     logger.info(f"Total samples: {len(dataset)}")
     logger.info(f"Completed: {num_completed}")
     logger.info(f"Errors: {num_errors}")
