@@ -196,6 +196,7 @@ class Trajectory(JsonSerializable):
             group=data.get("group", 0),
             replica=data.get("replica", 0),
             advantages=data.get("advantages", 0.0),
+            metadata=data.get("metadata", {}),
         )
         assert result is not None
         return result
@@ -448,7 +449,6 @@ class Actor(JsonSerializable):
 class AgentState:
     actor: Actor
     environment: Environment | None
-    max_turns: int
     stop: Optional[StopReason] = None
     turn_idx: int = 0
     pending_tool_calls: List[ToolCall] = field(default_factory=list)
@@ -510,7 +510,7 @@ class EvalConfig:
         >>>
         >>> config = EvalConfig(
         ...     reward_fn=my_reward,
-        ...     max_turns=10,
+        ...     run_config=RunConfig(handle_stop=handle_stop_max_turns(10)),
         ...     max_concurrent=4,
         ... )
     """
@@ -519,7 +519,6 @@ class EvalConfig:
 
     # Agent execution
     run_config: Optional[RunConfig] = None  # If None, use silent default
-    max_turns: int = 10
 
     # Dataset control
     max_samples: Optional[int] = None  # If None, evaluate all

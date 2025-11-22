@@ -234,7 +234,6 @@ class BaseEvaluationConfig:
         eval_cfg = BaseEvaluationConfig(
             environment=env,
             eval_name="my_eval",
-            max_turns=5,
             num_samples=100,
         )
 
@@ -252,7 +251,6 @@ class BaseEvaluationConfig:
     eval_name: str = "evaluation"
 
     # Execution parameters
-    max_turns: int = 3
     num_samples: int = 100
     max_concurrent: int = 4
 
@@ -278,7 +276,6 @@ class BaseEvaluationConfig:
         """
         return EvalConfig(
             reward_fn=reward_fn,
-            max_turns=self.max_turns,
             max_samples=self.num_samples,
             max_concurrent=self.max_concurrent,
             output_dir=self.output_dir,

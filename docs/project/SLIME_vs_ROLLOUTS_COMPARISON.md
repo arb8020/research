@@ -1,13 +1,13 @@
 # SLIME vs Rollouts: Gap Analysis & Implementation Roadmap
 
-**Date:** Nov 9, 2025
+**Date:** Nov 9, 2025 (Updated: 2025)
 **Purpose:** Identify what rollouts is missing compared to THUDM SLIME and what needs to be implemented
 
 ---
 
 ## Executive Summary
 
-Your **rollouts** implementation has the core architecture right and already includes SLIME's async rollout manager with over-sampling. The main gaps are:
+Your **rollouts** implementation has the core architecture right and already includes SLIME's async rollout manager with over-sampling. Many gaps have been filled since initial analysis.
 
 ### ✅ What You Already Have
 - **AsyncRolloutManager** with dynamic over-sampling (SLIME's D4)
@@ -16,23 +16,27 @@ Your **rollouts** implementation has the core architecture right and already inc
 - Protocol-based backend abstraction
 - Weight synchronization to inference servers
 - Basic training loop orchestration
+- **✅ Config system** - Full config module with protocols (`rollouts/rollouts/config/`)
+- **✅ Metadata support** - `Sample.metadata: dict[str, Any]` field
+- **✅ Loss mask** - `Sample.loss_mask: list[float]` per-token weights
+- **✅ Dynamic filters** - `RolloutConfig.filter_fn` for quality control
+- **✅ Custom reward functions** - `RolloutConfig.reward_fn` pluggable
+- **✅ Custom generate functions** - `RolloutConfig.generate_fn` support
+- **✅ Status enum** - `Sample.Status` (PENDING/COMPLETED/TRUNCATED/ABORTED)
 
 ### ❌ What You're Missing (High Priority)
-1. **Dynamic sampling filters** - Quality control for over-sampled rollouts
-2. **Buffer filters** - Custom strategies for partial rollout selection
-3. **Multimodal support** - Image handling in rollouts
-4. **Custom generation functions** - User-defined rollout logic for agents
-5. **Custom reward functions** - Pluggable reward computation
-6. **Ray-based distributed orchestration** - Multi-node coordination
-7. **Advanced sampling features** - Deterministic seeds, multi-turn continuation
-8. **Router middleware** - RadixTree caching for prefix sharing
+1. **Buffer filters** - Custom strategies for partial rollout selection (separate from dynamic filters)
+2. **Multimodal support** - Image handling in rollouts
+3. **Multi-turn continuation API** - Append to response, track response_length separately
+4. **Ray-based distributed orchestration** - Multi-node coordination
 
 ### ⚠️ What You're Missing (Medium Priority)
-9. Reward model hub (rule-based, remote, batched)
-10. Evaluation pipeline integration
-11. Checkpoint management for data state
-12. Memory management (offload/onload)
-13. Speculative decoding tracking
+5. Reward model hub (rule-based, remote, batched)
+6. Router middleware - RadixTree caching for prefix sharing
+7. Checkpoint management for data state (DataBuffer/AsyncRolloutManager state)
+8. Deterministic seeds - Per-sample seed control
+9. Memory management (offload/onload)
+10. Speculative decoding tracking
 
 ---
 
@@ -45,10 +49,10 @@ Your **rollouts** implementation has the core architecture right and already inc
 | **Async generation** | ✅ asyncio + Ray | ✅ trio | Minor: Different concurrency lib |
 | **Over-sampling** | ✅ configurable factor | ✅ configurable factor | ✅ SAME |
 | **Partial caching** | ✅ buffer-based | ✅ partial_samples list | ✅ SAME |
-| **Dynamic filters** | ✅ pluggable filter_fn | ❌ Missing | **HIGH PRIORITY** |
+| **Dynamic filters** | ✅ pluggable filter_fn | ✅ `RolloutConfig.filter_fn` | ✅ **COMPLETE** |
 | **Buffer filters** | ✅ pop_first, custom | ❌ No buffer filter strategy | **HIGH PRIORITY** |
 | **Multimodal prompts** | ✅ Image encoding | ❌ Text only | **MEDIUM** |
-| **Custom generate_fn** | ✅ Full async support | ⚠️ Basic support | **HIGH PRIORITY** |
+| **Custom generate_fn** | ✅ Full async support | ✅ `RolloutConfig.generate_fn` | ✅ **COMPLETE** |
 | **Multi-turn continuation** | ✅ Append to response | ❌ No continuation API | **MEDIUM** |
 | **Deterministic seeds** | ✅ Per-sample seeds | ❌ No seed control | **LOW** |
 
@@ -68,7 +72,7 @@ Your **rollouts** implementation has the core architecture right and already inc
 | **Partial rollout buffer** | ✅ RolloutDataSourceWithBuffer | ⚠️ In AsyncRolloutManager | **REFACTOR** |
 | **Buffer filter strategy** | ✅ Pluggable via buffer_filter_path | ❌ FIFO only | **HIGH PRIORITY** |
 | **Checkpoint save/load** | ✅ Full state dict | ⚠️ Basic support | **MEDIUM** |
-| **Metadata tracking** | ✅ Custom metadata_key | ❌ No metadata support | **HIGH PRIORITY** |
+| **Metadata tracking** | ✅ Custom metadata_key | ✅ `Sample.metadata: dict` | ✅ **COMPLETE** |
 
 **Key difference:** SLIME separates buffer logic into `RolloutDataSourceWithBuffer`, you have it inline in `AsyncRolloutManager`.
 
@@ -83,11 +87,11 @@ Your **rollouts** implementation has the core architecture right and already inc
 
 | Feature | SLIME | Rollouts | Gap |
 |---------|-------|----------|-----|
-| **Custom generate_fn** | ✅ Full async + metadata | ⚠️ Basic callable | **HIGH PRIORITY** |
-| **Custom reward_fn** | ✅ Pluggable via --custom-rm-path | ❌ Hardcoded in loop | **HIGH PRIORITY** |
-| **Dynamic filter_fn** | ✅ Per-group filtering | ❌ No filter support | **HIGH PRIORITY** |
+| **Custom generate_fn** | ✅ Full async + metadata | ✅ `RolloutConfig.generate_fn` | ✅ **COMPLETE** |
+| **Custom reward_fn** | ✅ Pluggable via --custom-rm-path | ✅ `RolloutConfig.reward_fn` | ✅ **COMPLETE** |
+| **Dynamic filter_fn** | ✅ Per-group filtering | ✅ `RolloutConfig.filter_fn` | ✅ **COMPLETE** |
 | **Buffer filter_fn** | ✅ Custom buffer selection | ❌ No buffer filter | **HIGH PRIORITY** |
-| **Metadata passing** | ✅ sample.metadata dict | ❌ No metadata field | **HIGH PRIORITY** |
+| **Metadata passing** | ✅ sample.metadata dict | ✅ `Sample.metadata: dict` | ✅ **COMPLETE** |
 
 **SLIME's killer feature:** Users can specify custom functions for:
 1. `--custom-generate-function-path your_module.generate` - Multi-turn agents
@@ -109,7 +113,7 @@ Your **rollouts** implementation has the core architecture right and already inc
 | **Rule-based rewards** | ✅ Hub of implementations | ❌ No built-in rewards | **MEDIUM** |
 | **Remote HTTP rewards** | ✅ async_rm() | ❌ No remote support | **MEDIUM** |
 | **Batched rewards** | ✅ batched_async_rm() | ❌ No batching | **MEDIUM** |
-| **Custom user rewards** | ✅ Pluggable | ❌ Inline in loop | **HIGH PRIORITY** |
+| **Custom user rewards** | ✅ Pluggable | ✅ `RolloutConfig.reward_fn` | ✅ **COMPLETE** |
 
 **SLIME reward types:**
 - `deepscaler` - DeepSeek-style scaling rewards
@@ -129,8 +133,8 @@ Your **rollouts** implementation has the core architecture right and already inc
 |---------|-------|----------|-----|
 | **Multi-turn conversation** | ✅ Append to response | ❌ No continuation API | **HIGH PRIORITY** |
 | **Tool calling** | ✅ via custom generate_fn | ❌ No tool support | **HIGH PRIORITY** |
-| **Loss masking** | ✅ sample.loss_mask per-token | ⚠️ Basic support | **MEDIUM** |
-| **Metadata passing** | ✅ session_id, tool_code, etc. | ❌ No metadata | **HIGH PRIORITY** |
+| **Loss masking** | ✅ sample.loss_mask per-token | ✅ `Sample.loss_mask: list[float]` | ✅ **COMPLETE** |
+| **Metadata passing** | ✅ session_id, tool_code, etc. | ✅ `Sample.metadata: dict` | ✅ **COMPLETE** |
 
 **SLIME's approach:**
 1. Dataset includes `metadata_key` column (JSON string)
@@ -193,10 +197,10 @@ Your **rollouts** implementation has the core architecture right and already inc
 | Feature | SLIME | Rollouts | Gap |
 |---------|-------|----------|-----|
 | **Basic fields** | ✅ prompt, response, tokens | ✅ Same | ✅ SAME |
-| **Metadata field** | ✅ dict for custom data | ❌ No metadata | **HIGH PRIORITY** |
-| **Loss mask** | ✅ per-token list[int] | ⚠️ Basic support | **MEDIUM** |
-| **Rollout log probs** | ✅ for off-policy | ⚠️ Not stored | **MEDIUM** |
-| **Status enum** | ✅ PENDING/COMPLETED/ABORTED | ❌ No status | **MEDIUM** |
+| **Metadata field** | ✅ dict for custom data | ✅ `Sample.metadata: dict` | ✅ **COMPLETE** |
+| **Loss mask** | ✅ per-token list[int] | ✅ `Sample.loss_mask: list[float]` | ✅ **COMPLETE** |
+| **Rollout log probs** | ✅ for off-policy | ✅ `Sample.rollout_log_probs: list[float]` | ✅ **COMPLETE** |
+| **Status enum** | ✅ PENDING/COMPLETED/ABORTED | ✅ `Sample.Status` enum | ✅ **COMPLETE** |
 | **Spec info** | ✅ Speculative decoding | ❌ No spec tracking | **LOW** |
 
 **SLIME Sample type:**
@@ -216,14 +220,20 @@ class Sample:
     spec_info: SpecInfo  # Spec decoding
 ```
 
-**Your Sample type:**
+**Your Sample type (Updated):**
 ```python
 @dataclass
 class Sample:
-    prompt_str: str
-    response_str: str
-    reward: float
-    # Missing: metadata, loss_mask, status, etc.
+    prompt: str | list[dict[str, str]]
+    response: str = ""
+    tokens: list[int] = field(default_factory=list)
+    loss_mask: list[float] = field(default_factory=list)  # ✅ Added
+    reward: float = 0.0
+    metadata: dict[str, Any] = field(default_factory=dict)  # ✅ Added
+    rollout_log_probs: Optional[list[float]] = None  # ✅ Added
+    status: Status = Status.PENDING  # ✅ Added
+    group_index: Optional[int] = None
+    index: Optional[int] = None
 ```
 
 **Files to reference:**
@@ -234,68 +244,29 @@ class Sample:
 
 ## Implementation Roadmap
 
-### Phase 1: Core Extensibility (HIGH PRIORITY)
+### Phase 1: Core Extensibility ✅ **COMPLETE**
 
 **Goal:** Enable custom functions and metadata passing
 
-1. **Add metadata field to Sample**
-   - Add `metadata: dict[str, Any]` to Sample dataclass
-   - Update DataBuffer to accept `metadata_key` parameter
-   - Pass metadata through rollout pipeline
+1. ✅ **Add metadata field to Sample** - `Sample.metadata: dict[str, Any]`
+2. ✅ **Implement dynamic sampling filters** - `RolloutConfig.filter_fn`
+3. ⚠️ **Implement buffer filters** - Still missing (separate from dynamic filters)
+4. ✅ **Support custom reward functions** - `RolloutConfig.reward_fn`
+5. ✅ **Enhance custom generate_fn support** - `RolloutConfig.generate_fn` with metadata
 
-2. **Implement dynamic sampling filters**
-   - Add `filter_fn` to RolloutConfig
-   - Apply filter in AsyncRolloutManager after generation
-   - Return `DynamicFilterOutput(keep: bool, reason: str)`
-   - Example: `check_reward_nonzero_std` filter
-
-3. **Implement buffer filters**
-   - Move buffer from AsyncRolloutManager to DataBuffer
-   - Add `buffer_filter_fn` to DataBuffer
-   - Implement `pop_first` default filter
-   - Support custom filter via callable
-
-4. **Support custom reward functions**
-   - Make reward_fn pluggable in training loop
-   - Support both sync and async reward functions
-   - Add reward model hub (remote, rule-based)
-
-5. **Enhance custom generate_fn support**
-   - Allow async generate_fn
-   - Pass metadata to generate_fn
-   - Support multi-turn continuation API
-
-**Files to modify:**
-- `rollouts/rollouts/training/types.py` (Sample, RolloutConfig)
-- `rollouts/rollouts/training/datasets/data_buffer.py` (buffer filter)
-- `rollouts/rollouts/training/rollout_gen/async_rollout_manager.py` (dynamic filter)
-- `rollouts/rollouts/training/loops/rl_loop.py` (reward_fn)
+**Status:** Most core extensibility features are complete. Buffer filters remain.
 
 ---
 
-### Phase 2: Multi-Turn & Agentic (HIGH PRIORITY)
+### Phase 2: Multi-Turn & Agentic (PARTIALLY COMPLETE)
 
 **Goal:** Support tool-calling agents and multi-turn interactions
 
-1. **Add loss_mask to Sample**
-   - Add `loss_mask: list[int]` field
-   - Update batch conversion to use loss_mask
-   - Default to all 1s for backward compat
+1. ✅ **Add loss_mask to Sample** - `Sample.loss_mask: list[float]` per-token weights
+2. ❌ **Add continuation API** - Still missing (append to response, track response_length)
+3. ⚠️ **Tool calling support** - Basic support exists, but multi-turn continuation API missing
 
-2. **Add continuation API**
-   - Support appending to sample.response
-   - Track response_length separately from total tokens
-   - Handle tool outputs in conversation
-
-3. **Add tool calling examples**
-   - Implement Search-R1 style agent
-   - Example custom generate_fn with tools
-   - Documentation for agent training
-
-**Files to create:**
-- `rollouts/rollouts/environments/tool_calling.py`
-- `examples/search_agent/custom_generate.py`
-- `docs/MULTI_TURN_GUIDE.md`
+**Status:** Loss masking complete. Multi-turn continuation API still needed.
 
 ---
 
@@ -350,30 +321,15 @@ class Sample:
 
 ## Immediate Next Steps
 
-**What to implement first (in order):**
+**What to implement next (in order):**
 
-### 1. Add metadata to Sample ⭐ (30 min)
-```python
-@dataclass
-class Sample:
-    prompt_str: str
-    response_str: str
-    reward: float
-    metadata: dict[str, Any] = field(default_factory=dict)  # NEW
-    loss_mask: list[int] | None = None  # NEW
-```
+### 1. ✅ Add metadata to Sample - **COMPLETE**
+- `Sample.metadata: dict[str, Any]` exists
 
-### 2. Add dynamic filter to AsyncRolloutManager ⭐ (1 hour)
-```python
-@dataclass
-class RolloutConfig:
-    batch_size: int
-    generate_fn: Callable
-    filter_fn: Callable[[list[Sample]], bool] | None = None  # NEW
-    over_sampling_factor: float = 1.5
-```
+### 2. ✅ Add dynamic filter to AsyncRolloutManager - **COMPLETE**
+- `RolloutConfig.filter_fn` exists and is used in `AsyncRolloutManager`
 
-### 3. Implement buffer filter in DataBuffer ⭐ (2 hours)
+### 3. ❌ Implement buffer filter in DataBuffer - **STILL NEEDED**
 ```python
 class DataBuffer:
     def __init__(self, ..., buffer_filter_fn=None):
@@ -387,22 +343,11 @@ class DataBuffer:
         ...
 ```
 
-### 4. Create filter hub ⭐ (2 hours)
-```python
-# rollouts/rollouts/filters/dynamic_filters.py
-def check_reward_nonzero_std(samples: list[Sample]) -> bool:
-    rewards = [s.reward for s in samples]
-    return torch.tensor(rewards).std() > 0.0
+### 4. ✅ Filter functions exist - **COMPLETE**
+- `rollouts/rollouts/training/filters.py` contains filter implementations
 
-# rollouts/rollouts/filters/buffer_filters.py
-def pop_first(buffer: list[Sample], n: int) -> list[Sample]:
-    result = buffer[:n]
-    del buffer[:n]
-    return result
-```
-
-### 5. Make reward_fn pluggable ⭐ (1 hour)
-Move reward computation out of training loop into configurable function.
+### 5. ✅ Make reward_fn pluggable - **COMPLETE**
+- `RolloutConfig.reward_fn` exists and is used in training loops
 
 ---
 
@@ -466,21 +411,28 @@ async def generate(args, sample: Sample, sampling_params) -> Sample:
 
 **You have the foundation right:** AsyncRolloutManager with over-sampling is SLIME's core innovation.
 
-**Missing pieces (prioritized):**
+**Progress Update (2025):**
 
-1. **Metadata & extensibility** (HIGH) - Add metadata field, filter functions
-2. **Multi-turn support** (HIGH) - loss_mask, continuation API
-3. **Reward hub** (MEDIUM) - Pluggable reward functions
-4. **Infrastructure** (MEDIUM) - Checkpointing, multimodal
-5. **Distributed** (OPTIONAL) - Ray integration for multi-node
+✅ **Completed:**
+1. **Metadata & extensibility** - `Sample.metadata`, `RolloutConfig.filter_fn`, `RolloutConfig.reward_fn`, `RolloutConfig.generate_fn`
+2. **Loss masking** - `Sample.loss_mask: list[float]` per-token weights
+3. **Status tracking** - `Sample.Status` enum
+4. **Config system** - Full config module with protocols
+5. **Logprobs** - `Sample.rollout_log_probs` for off-policy
 
-**Start here:**
-1. Add metadata to Sample (30 min)
-2. Add filter_fn to RolloutConfig (1 hour)
-3. Move buffer to DataBuffer with filter strategy (2 hours)
-4. Create filter hub (2 hours)
-5. Make reward_fn pluggable (1 hour)
+❌ **Still Missing (prioritized):**
+1. **Buffer filters** (HIGH) - Separate buffer filter strategy in DataBuffer
+2. **Multi-turn continuation API** (HIGH) - Append to response, track response_length
+3. **Reward model hub** (MEDIUM) - Rule-based, remote, batched rewards
+4. **Multimodal support** (MEDIUM) - Image handling
+5. **Infrastructure** (MEDIUM) - DataBuffer/AsyncRolloutManager checkpointing
+6. **Distributed** (OPTIONAL) - Ray integration for multi-node
 
-**Total for Phase 1:** ~6-8 hours of focused work
+**Next Steps:**
+1. Implement buffer filters in DataBuffer (2 hours)
+2. Add multi-turn continuation API (2-3 hours)
+3. Create reward model hub (3-4 hours)
 
-Good luck! Your architecture is already solid - just need to add SLIME's extensibility features.
+**Total remaining:** ~7-9 hours of focused work
+
+Great progress! Most core extensibility features are complete. Focus areas: buffer filters and multi-turn continuation.

@@ -194,3 +194,89 @@ Following @OnurBerkTore: `<#>_<active_change>_<#+1>.py`
 - `03_big_model_04.py` - from exp 3, trying bigger model, becomes exp 4
 
 This tracks experiment lineage in the filename itself.
+
+---
+
+## Our Implementation (2025-11-20)
+
+We implemented the above pattern for our GPU kernel evaluation configs with some refinements:
+
+### Naming Convention
+
+Pattern: `<name>_<id>_<parent>.py`
+
+Where:
+- **`name`**: Descriptive name (e.g., `agent_multiturn`, `cutedsl_gpumode`, `agent_with_tools`)
+- **`id`**: Sequence number scoped to benchmark directory (01, 02, 03...)
+- **`parent`**: ID of the parent config this was derived from
+
+Examples:
+- `agent_multiturn_01_01.py` - Base config (parent is self)
+- `agent_with_tools_02_01.py` - Derived from config 01
+- `cutedsl_gpumode_03_01.py` - Derived from config 01
+
+**Benefits:**
+- ✅ Clean Python imports: `from configs.benchmarks.gpumode.agent_multiturn_01_01 import config`
+- ✅ Name-first ordering for easy scanning
+- ✅ Traceable lineage through parent ID
+
+### Config Inheritance Pattern
+
+Base config (`agent_multiturn_01_01.py`):
+```python
+from dataclasses import dataclass, field
+from pathlib import Path
+
+@dataclass(frozen=True)
+class Config:
+    model: BaseModelConfig = field(default_factory=lambda: BaseModelConfig(...))
+    target: TargetConfig = field(default_factory=lambda: TargetConfig(...))
+    environment_class: type = GPUModeEnvironment
+    environment_config: dict = field(default_factory=lambda: {...})
+    evaluation: BaseEvaluationConfig = field(default_factory=lambda: BaseEvaluationConfig(...))
+    experiment_name: str = "custom_experiment"
+
+config = Config()
+
+def prepare_messages(sample_data):
+    # Prepare prompts
+    return [...]
+
+reward_fn = kernel_test_reward_fn
+```
+
+Derived config (`agent_with_tools_02_01.py`):
+```python
+from dataclasses import replace
+from configs.benchmarks.gpumode.agent_multiturn_01_01 import (
+    config as parent_config,
+    reward_fn,  # Reuse from parent
+)
+
+# Override only what changed
+config = replace(
+    parent_config,
+    environment_class=KernelTestEnvironmentWithTools,
+    target=replace(parent_config.target, gpu_ranks=[6]),
+    evaluation=replace(
+        parent_config.evaluation,
+        max_turns=10,
+        num_samples=1,
+    ),
+    model=replace(parent_config.model, model_name="claude-sonnet-4-5-20250929"),
+    experiment_name="tool_based_kernel_dev",
+)
+
+# Override prepare_messages if needed
+def prepare_messages(sample_data):
+    # Different prompt for tool-based workflow
+    return [...]
+```
+
+**Key advantages:**
+- Explicit inheritance via imports (not magic)
+- Only override what changes (DRY principle)
+- Easy to see diff from parent
+- Type-safe with dataclasses
+- Still serializable for reproducibility
+- IDs scoped per benchmark directory

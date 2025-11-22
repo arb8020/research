@@ -65,7 +65,6 @@ async def handle_checkpoint_event(state: 'AgentState', event: str, run_config: '
     if run_config.emit_event is not None:
         await run_config.emit_event(event, {
             "turn": state.turn_idx,
-            "max_turns": state.max_turns,
             "session_id": session_id,
         })
 
@@ -140,42 +139,76 @@ def handle_tool_error(result: ToolResult, state: AgentState) -> AgentState:
     assert isinstance(state, AgentState)
     return state
 
-def inject_turn_warning(state: AgentState) -> AgentState:
-    """Warn when 2 turns remaining"""
-    assert state is not None
-    assert isinstance(state, AgentState)
-    assert state.turn_idx >= 0
-    assert state.max_turns > 0
-    assert state.turn_idx <= state.max_turns
+def inject_turn_warning(max_turns: int, warning_at: int = 2) -> Callable[[AgentState], AgentState]:
+    """Inject warning when N turns remaining.
 
-    turns_left = state.max_turns - state.turn_idx
-    if turns_left == 2:
-        warning = Message(
-            role="user",
-            content="⚠️ You have 2 turns remaining. Please complete your task quickly.",
-            tool_calls=[]
+    Args:
+        max_turns: Total turns available
+        warning_at: Warn when this many turns remaining (default: 2)
+
+    Returns:
+        Handler function that injects warning message
+
+    Example:
+        run_config = RunConfig(
+            on_step_start=inject_turn_warning(max_turns=5, warning_at=2),
         )
-        new_trajectory = replace(
-            state.actor.trajectory,
-            messages=state.actor.trajectory.messages + [warning]
+    """
+    assert max_turns > 0
+    assert warning_at > 0
+    assert warning_at < max_turns
+
+    def handler(state: AgentState) -> AgentState:
+        assert state is not None
+        assert isinstance(state, AgentState)
+        assert state.turn_idx >= 0
+
+        turns_left = max_turns - state.turn_idx
+        if turns_left == warning_at:
+            warning = Message(
+                role="user",
+                content=f"⚠️ You have {warning_at} turns remaining. Please complete your task quickly.",
+                tool_calls=[]
+            )
+            new_trajectory = replace(
+                state.actor.trajectory,
+                messages=state.actor.trajectory.messages + [warning]
+            )
+            result_state = replace(state, actor=replace(state.actor, trajectory=new_trajectory))
+            assert result_state is not None
+            return result_state
+        return state
+
+    return handler
+
+def handle_stop_max_turns(max_turns: int) -> Callable[[AgentState], AgentState]:
+    """Stop when max turns reached.
+
+    Args:
+        max_turns: Maximum number of turns before stopping
+
+    Returns:
+        Handler function that stops when turn_idx >= max_turns
+
+    Example:
+        run_config = RunConfig(
+            handle_stop=handle_stop_max_turns(5),  # Stop after 5 turns
         )
-        result_state = replace(state, actor=replace(state.actor, trajectory=new_trajectory))
-        assert result_state is not None
-        return result_state
-    return state
+    """
+    assert max_turns > 0, "max_turns must be positive"
 
-def handle_stop_max_turns(state: AgentState) -> AgentState:
-    """Stop when max turns reached (default budget)"""
-    assert state is not None
-    assert isinstance(state, AgentState)
-    assert state.turn_idx >= 0
-    assert state.max_turns > 0
+    def handler(state: AgentState) -> AgentState:
+        assert state is not None
+        assert isinstance(state, AgentState)
+        assert state.turn_idx >= 0
 
-    if state.turn_idx >= state.max_turns:
-        result_state = replace(state, stop=StopReason.MAX_TURNS)
-        assert result_state.stop is not None
-        return result_state
-    return state
+        if state.turn_idx >= max_turns:
+            result_state = replace(state, stop=StopReason.MAX_TURNS)
+            assert result_state.stop is not None
+            return result_state
+        return state
+
+    return handler
 
 
 def handle_stop_token_budget(max_tokens: int) -> Callable[[AgentState], AgentState]:
@@ -240,8 +273,8 @@ FullAuto = RunConfig(
     on_chunk=stdout_handler,
     confirm_tool=confirm_tool_with_feedback, #type: ignore
     handle_tool_error=handle_tool_error,
-    on_step_start=inject_turn_warning,
-    handle_stop=handle_stop_max_turns,       # Add this
+    on_step_start=inject_turn_warning(max_turns=10),  # Warn at 2 turns remaining
+    handle_stop=handle_stop_max_turns(10),            # Stop after 10 turns
     handle_no_tool=inject_tool_reminder,
 )
 
@@ -472,7 +505,6 @@ async def run_agent(
     turn_pbar = None
     if run_config.show_progress:
         turn_pbar = tqdm(
-            total=state.max_turns,
             desc="Turns",
             unit="turn",
             disable=False

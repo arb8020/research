@@ -1,0 +1,213 @@
+# Code Style Rules
+
+> **These are guidelines, not dogma. Break them when it makes code clearer or when context demands it.**
+
+## Most Important (Quick Reference)
+
+1. **Explicit > Clever**: Make control flow obvious. If someone has to think hard to understand it, simplify it.
+2. **Write usage code first**: Before implementing, write how you WANT to call it. This reveals the right API.
+3. **Don't reuse until 2+ examples**: Write it specific first. Compress only after seeing the pattern twice.
+4. **Assertions everywhere**: Minimum 2 assertions per function. Split compound assertions for clearer failures.
+5. **Single assignment (SSA)**: Don't reassign variables. Create new names: `filtered_data = filter(raw_data)` not `data = filter(data)`.
+6. **70 line max**: Restrict function length to 70 lines. Forces proper decomposition.
+7. **Frozen dataclasses for config/data**: Immutable, serializable, type-safe. Regular classes only for legitimate persistent state.
+8. **Tuple returns for errors**: `(result | None, error | None)` for explicit control flow. Try/except only at boundaries.
+9. **Push ifs up, fors down**: Parent has control flow. Helpers are pure computation.
+10. **Abstraction = coupling**: Only abstract when benefit > coupling cost. A little duplication < over-coupling.
+
+---
+
+## Core Principles
+
+### Explicit Control Flow
+- **Explicit > Clever**: Make control flow obvious. If someone has to think hard to understand it, simplify it.
+- **State invariants positively**: Write `if index < length:` not `if index >= length:` - easier to reason about.
+- **Single assignment (SSA style)**: Don't reassign variables. Create new names for transformed values: `filtered_data = filter(raw_data)` not `data = filter(data)`.
+- **Push ifs up, fors down**: Keep control flow (ifs/switches) in parent functions. Move non-branching logic to helpers. Keep leaf functions pure.
+
+### Assertions
+- **Assertions everywhere**: Assert preconditions, postconditions, and invariants. Minimum 2 assertions per function.
+- **Split compound assertions**: Use `assert a; assert b` not `assert a and b` for clearer failure messages.
+- **Assertions are for programmer errors**: Use `assert` for bugs in code (preconditions, invariants). Use `if` + Result/Exception for operating errors (user input, I/O).
+- **Never use `assert` for production checks**: Python's `-O` flag strips them! Use `if` + raise/return Result for production invariants.
+
+**Example:**
+```python
+def process(data: list[int]) -> int:
+    assert data is not None  # If this fails, you know: data was None
+    assert len(data) > 0      # If this fails, you know: data was empty
+    # NOT: assert data is not None and len(data) > 0
+    # Because then you don't know which condition failed
+```
+
+### Function Structure
+- **70 line max**: Restrict function length to 70 lines. Forces proper decomposition.
+- **Parent has control flow, helpers are pure**: Parent manages state and branching. Helpers compute, don't mutate.
+
+---
+
+## Error Handling
+
+### Tuple Returns (Internal Code)
+- **Use tuple returns**: `(result | None, error | None)` for single errors. `list[str]` for multiple validation errors.
+- **Explicit over try/except**: Use `result, err = do_thing(); if err: return None, err` pattern. try/except obscures control flow.
+- **Try/except only at boundaries**: Use when calling external libs (file I/O, network, third-party code). Wrap exceptions into tuples.
+
+### Result Types (Composable Errors)
+- **Use Result types for composable pipelines**: Railway-oriented programming with `.and_then()` chains.
+- **Concurrent error collection**: Use `asyncio.gather()` with Result types to collect all errors, not just first.
+- **Use `returns` library**: Don't reinvent Result types. Use `dry-python/returns`.
+
+### Error Handling Pattern
+```python
+# Internal: Result-based pipeline
+def process(data: dict) -> Result[Output, str]:
+    return (
+        validate(data)
+        >> transform
+        >> save
+    )
+
+# Boundary: Convert to appropriate representation
+def main():
+    match process(data):
+        case Success(output): handle_success(output)
+        case Failure(error): handle_error(error)
+```
+
+---
+
+## Classes vs Functions
+
+### Frozen Dataclasses (Data & Configuration)
+- **Use `@dataclass(frozen=True)` for config/data**: Immutable, serializable, type-safe, hashable.
+- **Never mutate frozen dataclasses**: To "change" config, create new one: `new_config = replace(old_config, lr=0.001)`.
+
+### Regular Classes (Stateful Resources)
+- **Use classes only for legitimate persistent state**: Resource ownership (sockets, files, processes), lifecycle management, coordinated mutation, async coordination.
+- **Examples**: `Worker` (process + socket), `AsyncRolloutManager` (async coordination), `PyTorchTrainingBackend` (model/optimizer state).
+
+### Pure Functions (Everything Else)
+- **Use pure functions for computation**: Training loops, batch preparation, loss computation, transformations.
+- **Functions orchestrate objects**: Pure functions call methods on stateful objects. Explicit inputs/outputs, no hidden state.
+
+### Decision Matrix
+- **Configuration/Data** → `@dataclass(frozen=True)`
+- **Resource Ownership** → Regular class
+- **State + Lifecycle** → Regular class
+- **Computation** → Pure function
+- **Orchestration** → Pure function calling objects
+
+---
+
+## Design Patterns
+
+### Write Usage Code First
+- **Always write usage code first**: Before implementing, write how you WANT to call it. This reveals the right API.
+- **Example**: Write `config = Config(); config.training.learning_rate = 1e-3; train(config)` first, not the implementation.
+- **When evaluating APIs**: Write your ideal usage code, then see how close the API matches it.
+
+### Don't Abstract Prematurely
+- **Don't reuse until 2+ examples**: Write it specific first. Compress only after seeing the pattern twice.
+- **Make code usable before reusable**: Get one version working. Then make it general when you need it elsewhere.
+- **Keep all granularity levels**: When you create a high-level function, keep the low-level ones accessible too. Never delete lower-level functions.
+
+### Abstraction = Coupling
+- **Every abstraction couples things together**: Only abstract when benefit > coupling cost.
+- **A little duplication < over-coupling**: Better to repeat a few lines than force unrelated things together.
+
+### API Design: Five Characteristics (Casey Muratori)
+When designing reusable APIs, consider these five characteristics:
+1. **Granularity**: Can users split coarse operations into finer steps? Provide multiple levels (high-level convenience + low-level control).
+2. **Redundancy**: Multiple ways to do the same thing (e.g., pass Matrix OR Quaternion). Reduces coupling to specific types.
+3. **Coupling**: Avoid "to use A, you must also use B." Keep features independent.
+4. **Retention**: Prefer immediate mode over retained mode. Don't force users to mirror your internal state.
+5. **Flow Control**: Prefer caller controls flow. Avoid callbacks/inheritance unless absolutely necessary.
+
+**Key principle**: Any retained-mode operation should have an immediate-mode equivalent. Users should be able to transition from coarse-grained to fine-grained without hitting a wall.
+
+### API Evaluation Checklist
+When evaluating or designing APIs:
+- **Write usage code first**: Before implementing, write how you WANT to call it. This reveals the right API.
+- **Any retained-mode construct should have immediate-mode equivalent**: Users should be able to call functions directly with data, not just manage retained state.
+- **No callbacks/inheritance required**: There should be an equivalent way to just make an API call without callbacks or inheritance.
+- **No forced data types**: Don't require users to use your specific types (Vector, Matrix, etc.) when they have their own.
+- **Transparent data**: Any data without a reason for being opaque should be transparent. Users can choose not to touch it.
+- **No forced resource management**: Users shouldn't have to use your memory management, file I/O, or string management.
+
+---
+
+## Python/ML Specific
+
+### Shape Suffixes for Tensors
+- **Use shape suffixes**: `attention_scores_BNHTS` where B=batch, N=heads, H=hidden, T=time, S=sequence. Document dimensions once.
+
+### Dataclass Configs
+- **Nested dataclasses for configs**: Hierarchical, serializable to JSON for reproducibility.
+- **Save exact config with outputs**: Every experiment run should save its config alongside results.
+
+### Experiment Naming
+- **Name experiments with lineage**: `02_high_lr_03.py` (from exp 2, trying high LR, becomes exp 3).
+
+### Multiprocessing (Heinrich - Advanced)
+- **Fork + sockets over multiprocessing**: Use `os.fork()` and `socket.socketpair()` for simpler IPC semantics. Python's multiprocessing spends too much time serializing/deserializing.
+- **Use memfd for shared memory**: `os.memfd_create()` with `mmap()` for shared data between processes. Kernel refcounts the fd like a file.
+- **Avoid multiprocessing abstraction**: It tries to do too much and hides implementation details (can't even set env vars).
+- **Note**: Python's `multiprocessing` is fine for most cases. Use fork+sockets when performance is critical or you need more control.
+
+---
+
+## System Design
+
+### Minimize Stateful Components
+- **Stateless services are easier**: Stateless services can crash and restart cleanly. Stateful services get into bad states.
+- **One service owns each table**: Don't have 5 services all writing to the same database table.
+
+### Bounds & Limits
+- **Put limits on everything**: All loops, queues, buffers must have upper bounds. No unbounded growth.
+
+---
+
+## Comments & Documentation
+
+- **Always say why**: Every decision needs a comment explaining the rationale, not just what.
+- **Document invariants**: Use assertions as documentation for critical relationships: `assert embedding_dim % num_heads == 0  # Must be evenly divisible`.
+
+---
+
+## Red Flags to Avoid
+
+- **Too many ifs in one place**: Extract to separate functions or data-driven approach.
+- **Premature abstraction**: "I might need this someday" is not a reason.
+- **Opaque handles for simple data**: Let users see the struct when safe.
+- **Forced coupling**: "To use A, you must also use B."
+- **Granularity gaps**: Can do X or Z, but not Y in between.
+- **Clever tricks over clarity**: If you're proud of how clever it is, it's probably wrong.
+
+---
+
+## The Ultimate Test
+
+Before shipping, ask:
+1. Can I explain this to someone in 30 seconds?
+2. If I debug this at 3am, will I understand it?
+3. If requirements change, what breaks?
+4. Did I write the usage code first and like how it looked?
+5. Are there assertions checking my assumptions?
+6. Could someone delete half of this without the other half breaking?
+
+If you answer "no" to any of these, reconsider the design.
+
+---
+
+## When to Break Rules
+
+These rules are guidelines, not dogma. Break them when:
+
+1. **It makes code clearer**: If following a rule makes code harder to understand, break it.
+2. **Context demands it**: Performance-critical code, integration with existing codebases, or team conventions may require exceptions.
+3. **The rule doesn't fit the problem**: Some problems don't fit these patterns. Use judgment.
+4. **You're prototyping**: Quick prototypes can skip some rules, but refactor before production.
+5. **The abstraction is obvious**: If the abstraction is trivial and clearly beneficial, you don't need to wait for 2+ examples.
+
+**The meta-rule**: If breaking a rule makes code clearer or more maintainable, do it. But be explicit about why you're breaking it (add a comment).

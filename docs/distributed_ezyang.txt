@@ -1,0 +1,2 @@
+On PyTorch nightlies you can easily simulate distributed programs on a single process with LocalTensor. Here's a little prologue that's good for putting in Colab that sets up all the scaffolding you need, and a small example: https://gist.github.com/ezyang/9ef3300cd516150637592af1e8b76d7d
+
