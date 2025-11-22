@@ -130,12 +130,20 @@ class EvalReport:
                 # Serialize agent states using environment's serialize() method
                 states_data = []
                 for state in sample.agent_states:
-                    state_dict = asdict(state)
-                    # Use environment's own serialize method if available
+                    # First serialize environment separately to avoid thread handle issues
+                    # (Environment may contain SSH connections with unpicklable thread handles)
                     if state.environment and hasattr(state.environment, 'serialize'):
-                        state_dict['environment'] = await state.environment.serialize()
+                        env_data = await state.environment.serialize()
                     else:
-                        state_dict['environment'] = None
+                        env_data = None
+
+                    # Create a temporary state without environment to avoid asdict() issues
+                    # with unpicklable objects (e.g., thread handles in SSH connections)
+                    temp_state = replace(state, environment=None)
+                    state_dict = asdict(temp_state)
+
+                    # Add back the serialized environment
+                    state_dict['environment'] = env_data
                     states_data.append(state_dict)
 
                 # Sanitize all API keys recursively
