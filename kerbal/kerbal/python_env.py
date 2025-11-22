@@ -137,7 +137,7 @@ def setup_python_env(
         assert all(pkg.startswith("git+http"), "git packages must start with git+http")
 
     logger.info(f"📝 Setting up Python environment")
-    logger.info(f"📍 Remote workspace: {workspace}")
+    logger.debug(f"📍 Remote workspace: {workspace}")
 
     # Expand workspace path (handle ~)
     workspace = _expand_path(client, workspace)
@@ -399,16 +399,16 @@ def _ensure_uv(client: "BifrostClient") -> None:
     # Check if uv is already available
     result = client.exec("command -v uv")
     if result.exit_code == 0:
-        logger.info("✅ uv already installed")
+        logger.debug("✅ uv already installed")
         return
 
     # Install uv via official installer
-    logger.info("📦 Installing uv...")
+    logger.debug("📦 Installing uv...")
     install_cmd = "curl -LsSf https://astral.sh/uv/install.sh | sh"
     result = client.exec(install_cmd)
 
     assert result.exit_code == 0, f"uv installation failed: {result.stderr}"
-    logger.info("✅ uv installed successfully")
+    logger.debug("✅ uv installed successfully")
 
 
 def _create_venv(
@@ -422,7 +422,7 @@ def _create_venv(
 
     Tiger Style: Explicit command, assert success.
     """
-    logger.info("🔧 Creating virtual environment...")
+    logger.debug("🔧 Creating virtual environment...")
 
     # Generate minimal pyproject.toml for uv
     # uv needs this to create venv with correct Python version
@@ -450,7 +450,7 @@ build-backend = "setuptools.build_meta"
     result = client.exec(cmd)
     assert result.exit_code == 0, f"venv creation failed: {result.stderr}"
 
-    logger.info(f"✅ Virtual environment created at {venv_full_path}")
+    logger.debug(f"✅ Virtual environment created at {venv_full_path}")
 
 
 def _install_pip_packages(
@@ -463,8 +463,8 @@ def _install_pip_packages(
 
     Tiger Style: Explicit installation, stream output for visibility.
     """
-    logger.info(f"🔧 Installing {len(requirements)} package(s)...")
-    logger.info("=" * 60)
+    logger.debug(f"🔧 Installing {len(requirements)} package(s)...")
+    logger.debug("=" * 60)
 
     # Build pip install command
     # Use 'uv pip install' instead of venv's pip (uv venv doesn't include pip)
@@ -492,13 +492,13 @@ def _install_pip_packages(
     except Exception as e:
         raise RuntimeError(f"pip install execution failed: {e}")
 
-    logger.info("=" * 60)
+    logger.debug("=" * 60)
 
     if exit_code is None:
         raise RuntimeError("pip install failed - could not determine exit code")
 
     assert exit_code == 0, f"pip install failed with exit code {exit_code}"
-    logger.info("✅ Packages installed")
+    logger.debug("✅ Packages installed")
 
 
 def _install_git_packages(
@@ -610,7 +610,7 @@ def _verify_venv(client: "BifrostClient", venv_full_path: str) -> None:
     assert result.exit_code == 0, f"Python venv verification failed: {result.stderr}"
 
     version = result.stdout.strip() if result.stdout else "unknown"
-    logger.info(f"✅ Python venv verified: {version}")
+    logger.debug(f"✅ Python venv verified: {version}")
 
 
 def _verify_imports(
