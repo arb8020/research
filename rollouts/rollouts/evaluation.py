@@ -87,7 +87,7 @@ class EvalReport:
     config: Dict[str, Any]
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
-    def save(self, output_dir: Path) -> None:
+    async def save(self, output_dir: Path) -> None:
         """Save evaluation results to directory."""
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -128,7 +128,17 @@ class EvalReport:
         for sample in self.sample_results:
             states_file = states_dir / f"{sample.sample_id}.json"
             try:
-                states_data = [asdict(state) for state in sample.agent_states]
+                # Serialize agent states using environment's serialize() method
+                states_data = []
+                for state in sample.agent_states:
+                    state_dict = asdict(state)
+                    # Use environment's own serialize method if available
+                    if state.environment and hasattr(state.environment, 'serialize'):
+                        state_dict['environment'] = await state.environment.serialize()
+                    else:
+                        state_dict['environment'] = None
+                    states_data.append(state_dict)
+
                 # Sanitize all API keys recursively
                 states_data = sanitize_api_keys(states_data)
                 states_file.write_text(json.dumps(states_data, indent=2, default=str))
@@ -537,7 +547,7 @@ async def evaluate(
 
     # Save if output directory specified
     if config.output_dir:
-        report.save(config.output_dir)
+        await report.save(config.output_dir)
 
     # Print summary
     if config.verbose:
