@@ -340,14 +340,15 @@ async def run_agent_pipeline(
 
     Example:
         stages = [
-            # Stage 1: Draft with fast model
+            # Stage 1: Search for relevant info with fast models
             AgentStage(
                 endpoint=Endpoint(provider="openai", model="gpt-4o-mini"),
-                environment_factory=lambda: KernelEnvironment(),
+                environment_factory=lambda: KernelEnvironmentSearch(),
                 max_turns=5,
-                n=1
+                n=3,
+                reduce_fn=lambda trajs: reduce_consolidate(trajs) 
             ),
-            # Stage 2: Compact + optimize with strong model
+            # Stage 2: Compact prev trajectory + Plan improvements with strong model
             AgentStage(
                 transform=lambda t: compact_trajectory(t, keep_last_n=3),
                 endpoint=Endpoint(provider="anthropic", model="claude-sonnet-4-5"),

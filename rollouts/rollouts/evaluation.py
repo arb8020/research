@@ -52,7 +52,6 @@ class EvalSample:
             state_dict = {
                 'actor': asdict(state.actor) if hasattr(state.actor, '__dataclass_fields__') else str(state.actor),
                 'environment': None,  # Skip environment - contains unpicklable objects like RLocks
-                'max_turns': state.max_turns,
                 'stop': asdict(state.stop) if state.stop and hasattr(state.stop, '__dataclass_fields__') else str(state.stop) if state.stop else None,
                 'turn_idx': state.turn_idx,
                 'pending_tool_calls': [asdict(tc) if hasattr(tc, '__dataclass_fields__') else str(tc) for tc in state.pending_tool_calls],
@@ -220,8 +219,7 @@ async def evaluate_sample(
 
     initial_state = AgentState(
         actor=actor,
-        environment=environment,
-        max_turns=config.max_turns
+        environment=environment
     )
 
     # Use run_config from EvalConfig (or default silent)
@@ -538,7 +536,6 @@ async def evaluate(
         sample_results=results,
         config={
             "endpoint": endpoint_config,
-            "max_turns": config.max_turns,
             "max_samples": config.max_samples,
             "max_concurrent": config.max_concurrent,
             "evaluation_timestamp": datetime.now().isoformat(),
