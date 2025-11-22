@@ -43,7 +43,7 @@ def push_code(
     """
     assert bifrost is not None, "BifrostClient instance required"
 
-    logger.info(f"📦 Pushing code from {local_path}...")
+    logger.info(f"pushing code from {local_path}...")
 
     # Use bifrost's push with excludes if provided
     if exclude:
@@ -53,7 +53,7 @@ def push_code(
 
     workspace = client.push(local_path=local_path, remote_path=remote_path)
 
-    logger.info(f"✅ Code pushed to {workspace}")
+    logger.info(f"code pushed to {workspace}")
     return workspace
 
 
@@ -79,7 +79,7 @@ def sync_results(
     assert remote_path, "remote path required"
     assert local_path, "local path required"
 
-    logger.info(f"💾 Syncing results from {remote_path}...")
+    logger.info(f"syncing results from {remote_path}...")
 
     # Create local directory
     Path(local_path).mkdir(parents=True, exist_ok=True)
@@ -92,6 +92,6 @@ def sync_results(
     )
 
     if result and result.success:
-        logger.info(f"✅ Results synced to {local_path}")
+        logger.info(f"results synced to {local_path}")
     else:
         logger.warning("⚠️  Some files may not have synced")

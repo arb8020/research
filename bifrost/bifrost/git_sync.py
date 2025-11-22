@@ -188,13 +188,13 @@ def run_bootstrap(ssh_client: paramiko.SSHClient,
         assert all(isinstance(cmd, str) and len(cmd) > 0 for cmd in commands), \
             "All bootstrap commands must be non-empty strings"
 
-    logger.info(f"Running {len(commands)} bootstrap step(s)...")
+    logger.info(f"running {len(commands)} bootstrap step(s)...")
 
     # Execute each command in sequence
     for i, cmd in enumerate(commands, 1):
         # Log what we're doing (truncate long commands)
         cmd_preview = cmd[:60] + "..." if len(cmd) > 60 else cmd
-        logger.info(f"Step {i}/{len(commands)}: {cmd_preview}")
+        logger.info(f"step {i}/{len(commands)}: {cmd_preview}")
 
         # Run command in workspace
         full_cmd = f"cd {workspace_path} && {cmd}"
@@ -209,7 +209,7 @@ def run_bootstrap(ssh_client: paramiko.SSHClient,
 
         logger.debug(f"Step {i}/{len(commands)} completed successfully")
 
-    logger.info("All bootstrap steps completed successfully")
+    logger.info("all bootstrap steps completed successfully")
 
 
 def _create_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> None:
@@ -390,7 +390,7 @@ rm {remote_bundle}
         deployed_hash = stdout.read().decode().strip()
         deployed_short = deployed_hash[:7] if deployed_hash else "unknown"
 
-        logger.info(f"✅ Workspace updated to: {deployed_short} ({deployed_hash})")
+        logger.info(f"workspace updated to: {deployed_short} ({deployed_hash})")
         if deployed_hash != commit_hash:
             logger.warning(f"⚠️  Deployed hash doesn't match local HEAD!")
             logger.warning(f"   Local:  {short_hash} ({commit_hash})")

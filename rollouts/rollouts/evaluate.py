@@ -251,24 +251,24 @@ async def evaluate_dataset(
     if verbose:
         logger.info("")
         logger.debug("="*50)
-        logger.info("📊 Summary")
+        logger.info("summary")
         logger.debug("="*50)
-        logger.info(f"Total samples: {total}")
-        logger.info(f"Success: {summary['num_success']}, Errors: {summary['num_errors']}")
+        logger.info(f"total samples: {total}")
+        logger.info(f"success: {summary['num_success']}, errors: {summary['num_errors']}")
 
         # Log error breakdown if present
         if summary.get("error_breakdown"):
-            logger.info("Error types:")
+            logger.info("error types:")
             for error_type, count in summary["error_breakdown"].items():
                 logger.info(f"  {error_type}: {count}")
 
         for name, _ in reward_functions:
             mean_val = summary[f"mean_{name}"]
             total_val = summary[f"total_{name}"]
-            logger.info(f"Mean {name}: {mean_val:.1%} (total: {total_val:.0f})")
+            logger.info(f"mean {name}: {mean_val:.1%} (total: {total_val:.0f})")
 
         if group_by_key and f"by_{group_by_key}" in summary:
-            logger.info(f"\nBy {group_by_key}:")
+            logger.info(f"by {group_by_key}:")
             grouped_metrics = summary[f"by_{group_by_key}"]
             assert isinstance(grouped_metrics, dict), "Grouped metrics should be dict"
             for group_value, metrics in grouped_metrics.items():

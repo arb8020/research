@@ -76,8 +76,8 @@ def init_rollout_logging(
 
     # Log initialization
     logger = logging.getLogger(__name__)
-    logger.info(f"📂 Results directory: {result_dir}")
-    logger.info(f"📝 Error log: {log_file}")
+    logger.info(f"results directory: {result_dir}")
+    logger.info(f"error log: {log_file}")
 
     return result_dir
 

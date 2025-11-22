@@ -136,7 +136,7 @@ def setup_python_env(
     if git_packages:
         assert all(pkg.startswith("git+http"), "git packages must start with git+http")
 
-    logger.info(f"📝 Setting up Python environment")
+    logger.info(f"setting up python environment")
     logger.debug(f"📍 Remote workspace: {workspace}")
 
     # Expand workspace path (handle ~)
@@ -173,7 +173,7 @@ def setup_python_env(
     if verify_imports:
         _verify_imports(client, venv_full_path, verify_imports)
 
-    logger.info("✅ Python environment ready")
+    logger.info("python environment ready")
 
     # Construct PythonEnvState with all necessary paths and env vars
     venv_python = f"{venv_full_path}/bin/python"
@@ -273,9 +273,9 @@ def ensure_packages_installed(
         if err:
             logger.error(f"Installation failed: {err}")
         elif installed:
-            logger.info(f"Installed: {', '.join(installed)}")
+            logger.info(f"installed: {', '.join(installed)}")
         else:
-            logger.info("All packages already satisfied")
+            logger.info("all packages already satisfied")
 
         # Force reinstall
         installed, err = ensure_packages_installed(
@@ -309,11 +309,11 @@ def ensure_packages_installed(
                 missing.append(pkg)
 
         if not missing:
-            logger.info(f"✓ Already satisfied: {', '.join(packages)}")
+            logger.info(f"already satisfied: {', '.join(packages)}")
             return [], None  # All satisfied
 
         packages = missing
-        logger.info(f"Installing: {', '.join(missing)}")
+        logger.info(f"installing: {', '.join(missing)}")
 
     # Install packages using uv
     packages_str = " ".join(f'"{pkg}"' for pkg in packages)
@@ -326,7 +326,7 @@ def ensure_packages_installed(
     if result.exit_code != 0:
         return [], f"Installation failed: {result.stderr}"
 
-    logger.info(f"✅ Installed: {', '.join(packages)}")
+    logger.info(f"installed: {', '.join(packages)}")
     return packages, None
 
 
@@ -514,10 +514,10 @@ def _install_git_packages(
 
     Tiger Style: < 70 lines, explicit strategy.
     """
-    logger.info(f"🔧 Installing {len(git_packages)} git package(s)...")
+    logger.info(f"installing {len(git_packages)} git package(s)...")
 
     for pkg_url in git_packages:
-        logger.info(f"   Installing: {pkg_url}")
+        logger.info(f"installing: {pkg_url}")
 
         # Try standard install first
         # Use 'uv pip install' instead of venv's pip
@@ -529,7 +529,7 @@ def _install_git_packages(
         result = client.exec(cmd)
 
         if result.exit_code == 0:
-            logger.info(f"   ✅ Installed successfully")
+            logger.info(f"installed successfully")
             continue
 
         # If failed, try with --no-deps (works around URL dependency issues)
@@ -545,9 +545,9 @@ def _install_git_packages(
             f"Error: {result.stderr}"
         )
 
-        logger.info(f"   ✅ Installed with --no-deps")
+        logger.info(f"installed with --no-deps")
 
-    logger.info("✅ Git packages installed")
+    logger.info("git packages installed")
 
 
 def _verify_cli_tools(
@@ -573,7 +573,7 @@ def _verify_cli_tools(
 
         if result.exit_code == 0:
             tool_path = result.stdout.strip()
-            logger.info(f"✅ Found {tool} at {tool_path}")
+            logger.info(f"found {tool} at {tool_path}")
             continue
 
         # Not in PATH - search common locations
@@ -622,7 +622,7 @@ def _verify_imports(
 
     Tiger Style: Fail fast with diagnostic info.
     """
-    logger.info("🔍 Verifying imports...")
+    logger.info("verifying imports...")
 
     venv_python = f"{venv_full_path}/bin/python"
 
@@ -631,7 +631,7 @@ def _verify_imports(
         result = client.exec(import_cmd)
 
         if result.exit_code == 0:
-            logger.info(f"   ✅ {import_name}")
+            logger.info(f"{import_name}")
             continue
 
         # Import failed - provide diagnostic info

@@ -229,7 +229,7 @@ def _try_provision_with_fallback(
     total_offers = min(len(suitable_offers), n_offers)
 
     for i, offer in enumerate(suitable_offers[:n_offers], 1):
-        logger.info(f"Trying offer {i}/{total_offers}: {offer.gpu_type} at ${offer.price_per_hour:.3f}/hr")
+        logger.info(f"trying offer {i}/{total_offers}: {offer.gpu_type} at ${offer.price_per_hour:.3f}/hr")
 
         # Create provision request using this offer
         request = _build_provision_request(
@@ -256,10 +256,10 @@ def _try_provision_with_fallback(
             assert instance.provider == offer.provider, \
                 f"Instance provider mismatch: expected {offer.provider}, got {instance.provider}"
 
-            logger.info(f"✅ Successfully provisioned GPU instance: {instance.id}")
-            logger.info(f"   GPU: {instance.gpu_type} x{instance.gpu_count}")
-            logger.info(f"   Provider: {offer.provider}")
-            logger.info(f"   Expected price: ${offer.total_price(instance.gpu_count):.3f}/hr")
+            logger.info(f"successfully provisioned gpu instance: {instance.id}")
+            logger.info(f"   gpu: {instance.gpu_type} x{instance.gpu_count}")
+            logger.info(f"   provider: {offer.provider}")
+            logger.info(f"   expected price: ${offer.total_price(instance.gpu_count):.3f}/hr")
 
             return ProvisionResult(
                 success=True,

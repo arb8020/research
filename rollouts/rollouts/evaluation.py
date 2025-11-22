@@ -161,11 +161,11 @@ class EvalReport:
                     "sample_id": sample.sample_id
                 }, indent=2))
 
-        logger.info(f"Saved evaluation to {output_dir}")
-        logger.info(f"  Summary: {report_file}")
-        logger.info(f"  Samples: {samples_dir}")
-        logger.info(f"  Trajectories: {trajectories_dir}")
-        logger.info(f"  Agent States: {states_dir}")
+        logger.info(f"saved evaluation to {output_dir}")
+        logger.info(f"  summary: {report_file}")
+        logger.info(f"  samples: {samples_dir}")
+        logger.info(f"  trajectories: {trajectories_dir}")
+        logger.info(f"  agent states: {states_dir}")
         if failed_serializations:
             logger.warning(f"  Failed to serialize {len(failed_serializations)} agent states: {failed_serializations[:5]}")
 
@@ -450,9 +450,9 @@ async def evaluate(
         samples_to_eval.append((sample_id, sample_data))
 
     if config.verbose:
-        logger.info(f"Starting evaluation: {config.eval_name}")
-        logger.info(f"Samples to evaluate: {len(samples_to_eval)}")
-        logger.info(f"Max concurrent: {config.max_concurrent}")
+        logger.info(f"starting evaluation: {config.eval_name}")
+        logger.info(f"samples to evaluate: {len(samples_to_eval)}")
+        logger.info(f"max concurrent: {config.max_concurrent}")
         logger.debug("="*50)
 
     # Evaluate samples (with concurrency control)

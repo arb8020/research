@@ -138,14 +138,14 @@ def wait_for_gpus(
 
     start_time = time.time()
 
-    logger.info(f"⏳ Waiting for GPUs {gpu_ids} (timeout: {timeout_sec}s)...")
+    logger.info(f"waiting for gpus {gpu_ids} (timeout: {timeout_sec}s)...")
 
     while True:
         # Check if GPUs are available
         available, err = check_gpus_available(client, gpu_ids, memory_threshold_mb)
 
         if available:
-            logger.info(f"✅ GPUs {gpu_ids} are available")
+            logger.info(f"gpus {gpu_ids} are available")
             return True, ""
 
         # Check for permanent errors (not temporary unavailability)
@@ -159,5 +159,5 @@ def wait_for_gpus(
 
         # Log status and wait
         remaining = timeout_sec - elapsed
-        logger.info(f"⏳ GPUs not ready ({err}). Retrying in {poll_interval_sec}s (timeout in {remaining:.0f}s)...")
+        logger.info(f"gpus not ready ({err}). retrying in {poll_interval_sec}s (timeout in {remaining:.0f}s)...")
         time.sleep(poll_interval_sec)

@@ -161,7 +161,7 @@ def start_remote_pipeline(bifrost_client: BifrostClient, config_arg: str) -> Non
     env_exports = ""
     if openai_api_key:
         env_exports = f"export OPENAI_API_KEY='{openai_api_key}' && "
-        logging.info("✅ OPENAI_API_KEY will be set on remote instance")
+        logging.info("openai_api_key will be set on remote instance")
     else:
         logging.warning("⚠️  OPENAI_API_KEY not found in local .env - cluster naming will fail")
 
@@ -187,14 +187,14 @@ def start_remote_pipeline(bifrost_client: BifrostClient, config_arg: str) -> Non
 def wait_for_pipeline_completion(bifrost_client: BifrostClient, timeout: int = 3600*4) -> bool:
     poll_interval = 30
     max_iterations = max(1, timeout // poll_interval)
-    logging.info("⏳ Waiting for pipeline completion (timeout: %ss)", timeout)
+    logging.info("waiting for pipeline completion (timeout: %ss)", timeout)
 
     # Define pipeline steps for progress reporting
     steps = [
-        ("prepare_data.py", "📥 Downloading data"),
-        ("embed_chunks.py", "🧮 Generating embeddings"),
-        ("cluster_corpus.py", "🗂️  Clustering corpus"),
-        ("name_clusters.py", "🏷️  Naming clusters"),
+        ("prepare_data.py", "downloading data"),
+        ("embed_chunks.py", "generating embeddings"),
+        ("cluster_corpus.py", "clustering corpus"),
+        ("name_clusters.py", "naming clusters"),
     ]
 
     check_cmd = f"""
@@ -235,7 +235,7 @@ fi
         result = bifrost_client.exec(check_cmd)
         status = (result.stdout or "RUNNING").strip().splitlines()[-1]
         if status == "COMPLETE":
-            logging.info("✅ Remote pipeline complete")
+            logging.info("remote pipeline complete")
             return True
         if status == "FAILED":
             logging.error("❌ Remote pipeline reported failure")
@@ -243,15 +243,13 @@ fi
 
         # Get current step from logs
         progress_result = bifrost_client.exec(progress_cmd)
-        current_step = "Unknown"
-        step_emoji = "⏳"
+        current_step = "unknown"
 
         if progress_result.stdout:
             log_line = progress_result.stdout.strip()
             for step_name, step_desc in steps:
                 if step_name in log_line:
                     current_step = step_desc
-                    step_emoji = step_desc.split()[0]
                     break
 
         elapsed = (i + 1) * poll_interval
@@ -272,7 +270,7 @@ fi
                         break
 
         # Get detailed clustering info if we're in clustering phase
-        if "Clustering corpus" in current_step:
+        if "clustering corpus" in current_step:
             detail_result = bifrost_client.exec(detailed_cmd)
             if detail_result.stdout:
                 detail_lines = [l.strip() for l in detail_result.stdout.strip().splitlines() if l.strip()]
@@ -289,8 +287,8 @@ fi
                             if cluster_match:
                                 detailed_progress += f" {cluster_match.group(1)} clusters"
 
-        logging.info("%s Pipeline running: %s%s (%ss / %ss)",
-                    step_emoji, current_step, detailed_progress, elapsed, timeout)
+        logging.info("pipeline running: %s%s (%ss / %ss)",
+                    current_step, detailed_progress, elapsed, timeout)
         time.sleep(poll_interval)
     logging.error("❌ Pipeline timed out after %ss", timeout)
     return False
@@ -315,7 +313,7 @@ def sync_results(bifrost_client: BifrostClient, config: Config, output_dir: Path
             if not (result and result.success and result.files_copied > 0):
                 logging.warning("⚠️  Failed to sync %s", remote_path)
             else:
-                logging.info("✅ Synced %s", local_path.name)
+                logging.info("synced %s", local_path.name)
         except Exception as exc:
             logging.warning("⚠️  Error syncing %s: %s", remote_path, exc)
 
@@ -325,7 +323,7 @@ def sync_results(bifrost_client: BifrostClient, config: Config, output_dir: Path
             local_path=str(output_dir / "pipeline.log"),
         )
         if result and result.success and result.files_copied > 0:
-            logging.info("✅ Synced pipeline.log")
+            logging.info("synced pipeline.log")
     except Exception as exc:
         logging.warning("⚠️  Could not sync pipeline log: %s", exc)
 
@@ -333,16 +331,16 @@ def sync_results(bifrost_client: BifrostClient, config: Config, output_dir: Path
 def cleanup_instance(instance_id: str) -> None:
     import subprocess
 
-    logging.info("🧹 Terminating GPU instance %s", instance_id)
+    logging.info("terminating gpu instance %s", instance_id)
     try:
         result = subprocess.run(["broker", "terminate", instance_id, "--yes"], text=True, capture_output=True)
     except Exception as exc:
         logging.warning("⚠️  Cleanup error: %s", exc)
-        logging.info("Manual cleanup: broker terminate %s", instance_id)
+        logging.info("manual cleanup: broker terminate %s", instance_id)
         return
 
     if result.returncode == 0:
-        logging.info("✅ Cleanup complete")
+        logging.info("cleanup complete")
     else:
         logging.warning("⚠️  Cleanup may have failed: %s", result.stderr)
 
@@ -422,24 +420,24 @@ def main() -> int:
             bifrost_client, instance = provision_new_instance(args.provider, instance_name, config)
 
         workspace_path = deploy_code(bifrost_client, use_existing=bool(args.use_existing))
-        logging.info("✅ Code deployed to %s", workspace_path)
+        logging.info("code deployed to %s", workspace_path)
 
         start_remote_pipeline(bifrost_client, args.config)
         success = wait_for_pipeline_completion(bifrost_client)
 
-        logging.info("💾 Syncing results to %s", local_results)
+        logging.info("syncing results to %s", local_results)
         sync_results(bifrost_client, config, local_results)
 
         if success:
-            logging.info("🎉 Deployment complete")
+            logging.info("deployment complete")
         else:
             logging.warning("⚠️  Pipeline did not complete successfully; review logs")
 
         keep_running = config.deployment.keep_running
         if keep_running:
-            logging.info("GPU left running per configuration")
+            logging.info("gpu left running per configuration")
             if instance:
-                logging.info("Instance: %s", instance.ssh_connection_string())
+                logging.info("instance: %s", instance.ssh_connection_string())
         elif instance:
             cleanup_instance(instance.id)
 

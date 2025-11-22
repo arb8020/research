@@ -1819,7 +1819,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                 run_data["status"] = "killed"
                 run_data["exit_code"] = -1
 
-            logger.info(f"✅ Successfully killed run {run_id}")
+            logger.info(f"successfully killed run {run_id}")
             self._json_response({
                 "success": True,
                 "message": f"Killed run {run_id}"

@@ -774,18 +774,18 @@ def terminate_instance(instance_id: str, api_key: Optional[str] = None) -> bool:
     try:
         data = _make_graphql_request(mutation, variables, api_key=api_key)
         result = data.get("podTerminate")
-        logger.info(f"RunPod terminate response: {result} (type: {type(result)})")
-        logger.info(f"Expected instance_id: {instance_id}")
+        logger.info(f"runpod terminate response: {result} (type: {type(result)})")
+        logger.info(f"expected instance_id: {instance_id}")
         
         # RunPod's podTerminate API behavior:
         # - Returns null/None on SUCCESSFUL termination
         # - Would throw exception on failure (handled in except block)
         # This is the opposite of typical API patterns
         if result is None:
-            logger.info("Terminate succeeded (RunPod returns null on success)")
+            logger.info("terminate succeeded (runpod returns null on success)")
             return True
         else:
-            logger.info(f"Unexpected terminate response: {result}")
+            logger.info(f"unexpected terminate response: {result}")
             # Non-null response might still indicate success
             return True
         
@@ -818,7 +818,7 @@ def _wait_until_running(instance, timeout: int) -> bool:
     import time
     start_time = time.time()
 
-    logger.info(f"Waiting for instance {instance.id} to reach RUNNING...")
+    logger.info(f"waiting for instance {instance.id} to reach running...")
 
     while time.time() - start_time < timeout:
         fresh = get_instance_details(instance.id, api_key=instance.api_key)
@@ -828,7 +828,7 @@ def _wait_until_running(instance, timeout: int) -> bool:
 
         if fresh.status.value == "running":
             instance.__dict__.update(fresh.__dict__)
-            logger.info(f"Instance {instance.id} is RUNNING")
+            logger.info(f"instance {instance.id} is running")
             return True
         elif fresh.status.value in ["failed", "terminated"]:
             logger.error(f"Instance terminal state: {fresh.status}")
@@ -844,7 +844,7 @@ def _wait_for_direct_ssh_assignment(instance, start_time: float, timeout: int) -
     """Wait for direct SSH (not proxy) - RunPod specific (≤70 lines)"""
     import time
 
-    logger.info("Waiting for direct SSH (may take 5-15 min, proxy ignored)")
+    logger.info("waiting for direct ssh (may take 5-15 min, proxy ignored)")
     next_log_time = start_time + 30  # Log at 30s, 60s, 90s, ...
 
     while time.time() - start_time < timeout:
@@ -858,7 +858,7 @@ def _wait_for_direct_ssh_assignment(instance, start_time: float, timeout: int) -
             instance.status = fresh.status
 
             elapsed = int(time.time() - start_time)
-            logger.info(f"Direct SSH: {instance.public_ip}:{instance.ssh_port} (took {elapsed}s)")
+            logger.info(f"direct ssh: {instance.public_ip}:{instance.ssh_port} (took {elapsed}s)")
             return True
 
         # Log progress every 30s
@@ -899,13 +899,13 @@ def _test_ssh_connectivity(instance) -> bool:
     """Test SSH connectivity with echo command (≤70 lines)"""
     import time
 
-    logger.info("Direct SSH ready! Waiting 30s for SSH daemon...")
+    logger.info("direct ssh ready! waiting 30s for ssh daemon...")
     time.sleep(30)
 
     try:
         result = instance.exec("echo 'ssh_ready'", timeout=30)
         if result.success and "ssh_ready" in result.stdout:
-            logger.info("SSH connectivity confirmed!")
+            logger.info("ssh connectivity confirmed!")
             return True
         else:
             logger.warning(f"SSH test failed: {result.stderr}")

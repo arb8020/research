@@ -450,7 +450,7 @@ def terminate_instance(instance_id: str, api_key: Optional[str] = None) -> bool:
 
         # Check success field
         if data.get("success"):
-            logger.info(f"Vast.ai instance {instance_id} terminated: {data.get('msg')}")
+            logger.info(f"vast.ai instance {instance_id} terminated: {data.get('msg')}")
             return True
         else:
             logger.error(f"Failed to terminate Vast.ai instance {instance_id}: {data.get('msg')}")
@@ -482,7 +482,7 @@ def wait_for_ssh_ready(instance, timeout: int = 300) -> bool:
     start_time = time.time()
 
     # Step 1: Wait for RUNNING status
-    logger.info(f"Waiting for Vast.ai instance {instance.id} to reach RUNNING status...")
+    logger.info(f"waiting for vast.ai instance {instance.id} to reach running status...")
     while True:
         if time.time() - start_time > timeout:
             logger.error(f"Timeout waiting for instance {instance.id} to reach RUNNING status")
@@ -495,7 +495,7 @@ def wait_for_ssh_ready(instance, timeout: int = 300) -> bool:
             return False
 
         if fresh_instance.status == InstanceStatus.RUNNING:
-            logger.info(f"Instance {instance.id} is now RUNNING")
+            logger.info(f"instance {instance.id} is now running")
             instance.status = fresh_instance.status
             instance.public_ip = fresh_instance.public_ip
             instance.ssh_port = fresh_instance.ssh_port
@@ -509,7 +509,7 @@ def wait_for_ssh_ready(instance, timeout: int = 300) -> bool:
         time.sleep(5)
 
     # Step 2: Wait for SSH details to be populated
-    logger.info(f"Waiting for SSH details to be populated for instance {instance.id}...")
+    logger.info(f"waiting for ssh details to be populated for instance {instance.id}...")
     while True:
         if time.time() - start_time > timeout:
             logger.error(f"Timeout waiting for SSH details for instance {instance.id}")
@@ -522,7 +522,7 @@ def wait_for_ssh_ready(instance, timeout: int = 300) -> bool:
             return False
 
         if fresh_instance.public_ip and fresh_instance.ssh_port:
-            logger.info(f"SSH details ready: {fresh_instance.public_ip}:{fresh_instance.ssh_port}")
+            logger.info(f"ssh details ready: {fresh_instance.public_ip}:{fresh_instance.ssh_port}")
             instance.public_ip = fresh_instance.public_ip
             instance.ssh_port = fresh_instance.ssh_port
             instance.ssh_username = fresh_instance.ssh_username
@@ -533,13 +533,13 @@ def wait_for_ssh_ready(instance, timeout: int = 300) -> bool:
 
     # Step 3: Test SSH connectivity
     # Wait 30s for SSH daemon to be ready
-    logger.info("SSH details ready! Waiting 30s for SSH daemon...")
+    logger.info("ssh details ready! waiting 30s for ssh daemon...")
     time.sleep(30)
 
     try:
         result = instance.exec("echo 'ssh_ready'", timeout=30)
         if result.success and "ssh_ready" in result.stdout:
-            logger.info("SSH connectivity confirmed!")
+            logger.info("ssh connectivity confirmed!")
             return True
         else:
             logger.warning(f"SSH test failed: {result.stderr}")

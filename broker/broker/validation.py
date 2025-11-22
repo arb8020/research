@@ -73,7 +73,7 @@ def validate_gpu_count(gpu_count: int) -> int:
 
     # Warn about multi-GPU costs
     if gpu_count > 1:
-        logger.info(f"Requesting {gpu_count} GPUs - cost will scale linearly")
+        logger.info(f"requesting {gpu_count} gpus - cost will scale linearly")
 
     # Assert output invariant
     assert gpu_count > 0, "Validated gpu_count"

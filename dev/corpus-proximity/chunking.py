@@ -297,56 +297,51 @@ This is the second paragraph. Dr. Smith went to the store. Mrs. Jones did too.
 
 Third paragraph here. Mr. Johnson calculated that 3.14 is pi."""
 
-    logging.info("="*80)
-    logging.info("Testing chunking strategies")
-    logging.info("="*80)
-    logging.info(f"\nAvailable: spaCy={SPACY_AVAILABLE}, NLTK={NLTK_AVAILABLE}")
+    logging.info(f"available: spacy={SPACY_AVAILABLE}, nltk={NLTK_AVAILABLE}")
 
-    logging.info("\n1. Paragraph chunking:")
+    logging.info("paragraph chunking:")
     para_chunks = chunk_paragraph(test_text)
     for i, chunk in enumerate(para_chunks):
-        logging.info(f"  Chunk {i}: {chunk[:60]}...")
+        logging.info(f"chunk {i}: {chunk[:60]}...")
 
-    logging.info("\n2. Fixed chars chunking (size=100):")
+    logging.info("fixed chars chunking (size=100):")
     fixed_chunks = chunk_fixed_chars(test_text, size=100)
     for i, chunk in enumerate(fixed_chunks):
-        logging.info(f"  Chunk {i} (len={len(chunk)}): {chunk[:60]}...")
+        logging.info(f"chunk {i} (len={len(chunk)}): {chunk[:60]}...")
 
     # Test spaCy if available
     if SPACY_AVAILABLE:
-        logging.info("\n3. Sentence chunking (spaCy):")
+        logging.info("sentence chunking (spacy):")
         try:
             spacy_chunks = chunk_sentence_spacy(test_text)
             for i, chunk in enumerate(spacy_chunks):
-                logging.info(f"  Chunk {i}: {chunk}")
+                logging.info(f"chunk {i}: {chunk}")
         except Exception as e:
-            logging.error(f"  spaCy error: {e}")
+            logging.error(f"spacy error: {e}")
 
     # Test NLTK if available
     if NLTK_AVAILABLE:
-        logging.info("\n4. Sentence chunking (NLTK):")
+        logging.info("sentence chunking (nltk):")
         try:
             nltk_chunks = chunk_sentence_nltk(test_text)
             for i, chunk in enumerate(nltk_chunks):
-                logging.info(f"  Chunk {i}: {chunk}")
+                logging.info(f"chunk {i}: {chunk}")
         except Exception as e:
-            logging.error(f"  NLTK error: {e}")
+            logging.error(f"nltk error: {e}")
 
-    logging.info("\n" + "="*80)
-    logging.info("Summary:")
-    logging.info(f"  Paragraphs: {len(para_chunks)} chunks")
-    logging.info(f"  Fixed chars: {len(fixed_chunks)} chunks")
+    logging.info("summary:")
+    logging.info(f"paragraphs: {len(para_chunks)} chunks")
+    logging.info(f"fixed chars: {len(fixed_chunks)} chunks")
     if SPACY_AVAILABLE:
         try:
-            logging.info(f"  Sentences (spaCy): {len(chunk_sentence_spacy(test_text))} chunks")
+            logging.info(f"sentences (spacy): {len(chunk_sentence_spacy(test_text))} chunks")
         except:
-            logging.info(f"  Sentences (spaCy): Not available (model not installed)")
+            logging.info(f"sentences (spacy): not available (model not installed)")
     if NLTK_AVAILABLE:
         try:
-            logging.info(f"  Sentences (NLTK): {len(chunk_sentence_nltk(test_text))} chunks")
+            logging.info(f"sentences (nltk): {len(chunk_sentence_nltk(test_text))} chunks")
         except:
-            logging.info(f"  Sentences (NLTK): Error")
-    logging.info("="*80)
+            logging.info(f"sentences (nltk): error")
 
     return 0
 

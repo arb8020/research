@@ -522,7 +522,7 @@ class GitDeployment:
             else:
                 logger.debug("✅ Dependencies installed successfully")
 
-        logger.info(f"🎉 Code deployed successfully to workspace: {workspace_path}")
+        logger.info(f"code deployed successfully to workspace: {workspace_path}")
         return workspace_path
     
     def deploy_code_only(self, client: paramiko.SSHClient, job_id: Optional[str] = None, target_dir: Optional[str] = None, uv_extra: Optional[str] = None) -> str:
@@ -602,7 +602,7 @@ class GitDeployment:
             else:
                 logger.debug("✅ Dependencies installed successfully")
 
-        logger.info(f"✅ Code deployed to: {worktree_path}")
+        logger.info(f"code deployed to: {worktree_path}")
         return worktree_path
     
     def deploy_and_execute_detached(self, client: paramiko.SSHClient, command: str, env_vars: Optional[Dict[str, str]] = None) -> str:
