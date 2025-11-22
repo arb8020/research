@@ -620,10 +620,10 @@ async def deploy_sglang_server(
         (ServerInfo, None) on success
         (None, error_message) on failure
     """
-    logger.info("🚀 Deploying SGLang server...")
-    logger.info(f"   Model: {config.model}")
-    logger.info(f"   GPUs: {config.gpu_ranks} (TP={config.tensor_parallel_size})")
-    logger.info(f"   Port: {config.port}")
+    logger.info("deploying sglang server...")
+    logger.info(f"   model: {config.model}")
+    logger.info(f"   gpus: {config.gpu_ranks} (TP={config.tensor_parallel_size})")
+    logger.info(f"   port: {config.port}")
 
     if config.ssh_connection:
         # Remote deployment via bifrost
@@ -758,7 +758,7 @@ tmux new-session -d -s {config.tmux_session_name} "
         ready, error = await _wait_for_health(server_info, timeout_seconds)
         if not ready:
             return None, error
-        logger.info("✅ Server is ready!")
+        logger.info("server is ready!")
 
     return server_info, None
 
@@ -891,7 +891,7 @@ async def _deploy_remote(
         logger.error("=" * 60)
         return None, error_msg
 
-    logger.info(f"✅ Bootstrap completed successfully")
+    logger.info(f"bootstrap completed successfully")
 
     # Verify bootstrap postconditions (paired assertion - like qwen3_next)
     venv_name = get_venv_path()
@@ -964,14 +964,14 @@ tmux new-session -d -s {config.tmux_session_name} "
 "
 """
 
-    logger.info("🚀 Starting SGLang server on remote...")
+    logger.info("starting sglang server on remote...")
     result = bifrost_client.exec(tmux_cmd)
     if result.exit_code != 0:
         error_msg = f"Failed to start server: {result.stderr}"
         logger.error(f"❌ {error_msg}")
         return None, error_msg
 
-    logger.info(f"✅ Server started in tmux session: {config.tmux_session_name}")
+    logger.info(f"server started in tmux session: {config.tmux_session_name}")
 
     # Parse host from SSH connection (user@host:port or user@host)
     ssh_parts = config.ssh_connection.split("@")
@@ -997,7 +997,7 @@ tmux new-session -d -s {config.tmux_session_name} "
         ready, error = await _wait_for_health_remote(server_info, bifrost_client, timeout_seconds)
         if not ready:
             return None, error
-        logger.info("✅ Server is ready!")
+        logger.info("server is ready!")
 
     return server_info, None
 
@@ -1051,7 +1051,7 @@ async def _wait_for_health(
             try:
                 resp = await client.get(health_url, timeout=5.0)
                 if resp.status_code == 200:
-                    logger.info(f"✅ Server is ready (took ~{(i+1)*poll_interval}s)")
+                    logger.info(f"server is ready (took ~{(i+1)*poll_interval}s)")
                     return True, None
             except Exception:
                 pass
@@ -1102,7 +1102,7 @@ async def _wait_for_health_remote(
         )
 
         if result.exit_code == 0 and "NOT_READY" not in result.stdout:
-            logger.info(f"✅ Server is ready (took ~{(i+1)*poll_interval}s)")
+            logger.info(f"server is ready (took ~{(i+1)*poll_interval}s)")
             return True, None
 
         if i < max_iterations - 1:

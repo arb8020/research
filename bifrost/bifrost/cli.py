@@ -71,16 +71,16 @@ def resolve_ssh_key(ctx) -> str:
     logger.error("✗ No SSH key specified")
     logger.info("")
     if found_keys:
-        logger.info("Found keys at:")
+        logger.info("found keys at:")
         for key in found_keys:
             logger.info(f"  {key}")
         logger.info("")
-        logger.info(f"Or use: bifrost --ssh-key {found_keys[0]} <command>")
+        logger.info(f"or use: bifrost --ssh-key {found_keys[0]} <command>")
     else:
-        logger.info("No SSH keys found in ~/.ssh/")
-        logger.info("Generate one: ssh-keygen -t ed25519")
+        logger.info("no ssh keys found in ~/.ssh/")
+        logger.info("generate one: ssh-keygen -t ed25519")
         logger.info("")
-    logger.info("Set SSH_KEY_PATH in .env (run: bifrost init)")
+    logger.info("set SSH_KEY_PATH in .env (run: bifrost init)")
 
     raise typer.Exit(1)
 
@@ -95,8 +95,8 @@ def parse_env_vars(env_list: List[str]) -> Dict[str, str]:
     for item in env_list:
         if "=" not in item:
             logger.error(f"✗ Invalid env format: {item}")
-            logger.info("Expected format: KEY=VALUE")
-            logger.info("Example: --env API_KEY=abc123 --env DEBUG=true")
+            logger.info("expected format: KEY=VALUE")
+            logger.info("example: --env API_KEY=abc123 --env DEBUG=true")
             raise typer.Exit(1)
         key, value = item.split("=", 1)
         env_dict[key] = value
@@ -133,15 +133,15 @@ def init():
     """Create .env template for SSH configuration"""
     try:
         create_env_template("bifrost")
-        logger.info("✓ Created .env with SSH configuration template")
+        logger.info("created .env with ssh configuration template")
         logger.info("")
-        logger.info("Edit .env with your SSH key path:")
+        logger.info("edit .env with your ssh key path:")
         logger.info("  SSH_KEY_PATH=~/.ssh/id_ed25519")
         logger.info("")
-        logger.info("Then run: bifrost push <ssh-connection>")
+        logger.info("then run: bifrost push <ssh-connection>")
     except FileExistsError:
         logger.error("✗ .env already exists")
-        logger.info("Edit manually or delete to recreate")
+        logger.info("edit manually or delete to recreate")
         raise typer.Exit(1)
 
 
@@ -205,10 +205,10 @@ def push(
     # Create client and push
     client = BifrostClient(ssh_conn_str, ssh_key_path=ssh_key)
 
-    logger.info("Deploying code...")
+    logger.info("deploying code...")
     workspace_path = client.push(bootstrap_cmd=bootstrap_cmd)
 
-    logger.info(f"✓ Code deployed to {workspace_path}")
+    logger.info(f"code deployed to {workspace_path}")
 
 
 @app.command()
@@ -237,7 +237,7 @@ def exec(
     # Create client and execute
     client = BifrostClient(ssh_conn_str, ssh_key_path=ssh_key)
 
-    logger.info(f"Executing: {command}")
+    logger.info(f"executing: {command}")
     result = client.exec(command, env=env_dict)
 
     # Output
@@ -262,7 +262,7 @@ def exec(
             logger.error(f"✗ Command failed with exit code {result.exit_code}")
             raise typer.Exit(result.exit_code)
         else:
-            logger.info("✓ Command completed successfully")
+            logger.info("command completed successfully")
 
 
 @app.command()
@@ -305,7 +305,7 @@ def deploy(
     # Create client and deploy
     client = BifrostClient(ssh_conn_str, ssh_key_path=ssh_key)
 
-    logger.info("Deploying code and executing command...")
+    logger.info("deploying code and executing command...")
     result = client.deploy(command, bootstrap_cmd=bootstrap_cmd, env=env_dict)
 
     # Output
@@ -330,7 +330,7 @@ def deploy(
             logger.error("✗ Command failed")
             raise typer.Exit(result.exit_code)
         else:
-            logger.info("✓ Deploy and execution completed successfully")
+            logger.info("deploy and execution completed successfully")
 
 
 @app.command()
@@ -382,7 +382,7 @@ def run(
     # Create client and run detached
     client = BifrostClient(ssh_conn_str, ssh_key_path=ssh_key)
 
-    logger.info("Starting detached job...")
+    logger.info("starting detached job...")
     job_info = client.run_detached(
         command=command, bootstrap_cmd=bootstrap_cmd, env=env_dict, session_name=name
     )
@@ -399,9 +399,9 @@ def run(
             )
         )
     else:
-        logger.info(f"✓ Job {job_info.job_id} started")
+        logger.info(f"job {job_info.job_id} started")
         logger.info(
-            f"Monitor: bifrost logs {ssh_connection} {job_info.job_id} --follow"
+            f"monitor: bifrost logs {ssh_connection} {job_info.job_id} --follow"
         )
 
 
@@ -494,12 +494,12 @@ def logs(
     client = BifrostClient(ssh_conn_str, ssh_key_path=ssh_key)
 
     if follow:
-        logger.info(f"Following logs for {job_id} (Ctrl+C to exit)...")
+        logger.info(f"following logs for {job_id} (Ctrl+C to exit)...")
         try:
             for line in client.follow_job_logs(job_id):
                 print(line)
         except KeyboardInterrupt:
-            logger.info("\nStopped following logs")
+            logger.info("stopped following logs")
     else:
         logs_content = client.get_logs(job_id, lines=lines)
         print(logs_content)
@@ -525,12 +525,12 @@ def download(
 
     client = BifrostClient(ssh_conn_str, ssh_key_path=ssh_key)
 
-    logger.info(f"Downloading {remote_path}...")
+    logger.info(f"downloading {remote_path}...")
     result = client.download_files(remote_path, local_path, recursive=recursive)
 
     if result.success:
         logger.info(
-            f"✓ Downloaded {result.files_copied} files ({result.total_bytes} bytes)"
+            f"downloaded {result.files_copied} files ({result.total_bytes} bytes)"
         )
     else:
         logger.error(f"✗ Download failed: {result.error_message}")
@@ -557,12 +557,12 @@ def upload(
 
     client = BifrostClient(ssh_conn_str, ssh_key_path=ssh_key)
 
-    logger.info(f"Uploading {local_path}...")
+    logger.info(f"uploading {local_path}...")
     result = client.upload_files(local_path, remote_path, recursive=recursive)
 
     if result.success:
         logger.info(
-            f"✓ Uploaded {result.files_copied} files ({result.total_bytes} bytes)"
+            f"uploaded {result.files_copied} files ({result.total_bytes} bytes)"
         )
     else:
         logger.error(f"✗ Upload failed: {result.error_message}")

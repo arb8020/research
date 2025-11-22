@@ -83,7 +83,7 @@ def start_tmux_session(
         assert isinstance(env_vars, dict), "env_vars must be dict"
     assert isinstance(capture_exit_code, bool), "capture_exit_code must be bool"
 
-    logger.info(f"🚀 Starting tmux session: {session_name}")
+    logger.info(f"starting tmux session: {session_name}")
 
     # Kill existing session if it exists
     client.exec(f"tmux kill-session -t {session_name} 2>/dev/null || true")
@@ -131,5 +131,5 @@ def start_tmux_session(
     if result.exit_code != 0:
         return session_name, f"Failed to start tmux: {result.stderr}"
 
-    logger.info(f"✅ Tmux session started: {session_name}")
+    logger.info(f"tmux session started: {session_name}")
     return session_name, None

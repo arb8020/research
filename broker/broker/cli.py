@@ -71,27 +71,27 @@ def init():
     """
     try:
         create_env_template("broker")
-        logger.info("✓ Created .env with credential template")
+        logger.info("created .env with credential template")
         logger.info("")
-        logger.info("Edit .env with your API keys:")
+        logger.info("edit .env with your api keys:")
         logger.info("  RUNPOD_API_KEY=your_key_here")
         logger.info("  PRIME_API_KEY=your_key_here")
         logger.info("  LAMBDA_API_KEY=your_key_here")
         logger.info("  SSH_KEY_PATH=~/.ssh/id_ed25519")
         logger.info("")
-        logger.info("Then run: broker search")
+        logger.info("then run: broker search")
     except FileExistsError:
         logger.error("✗ .env already exists")
         logger.info("")
-        logger.info("To edit manually:")
-        logger.info(f"  Open: {Path('.env').absolute()}")
-        logger.info("  Ensure it contains:")
+        logger.info("to edit manually:")
+        logger.info(f"  open: {Path('.env').absolute()}")
+        logger.info("  ensure it contains:")
         logger.info("    RUNPOD_API_KEY=your_key_here")
         logger.info("    PRIME_API_KEY=your_key_here")
         logger.info("    LAMBDA_API_KEY=your_key_here")
         logger.info("    SSH_KEY_PATH=~/.ssh/id_ed25519")
         logger.info("")
-        logger.info("Or delete .env and run 'broker init' again")
+        logger.info("or delete .env and run 'broker init' again")
         raise typer.Exit(1)
 
 
@@ -120,7 +120,7 @@ def resolve_credentials(ctx) -> ProviderCredentials:
             for part in parts:
                 if ":" not in part:
                     logger.error(f"✗ Invalid credentials format: {part}")
-                    logger.info("Expected: runpod:key,primeintellect:key")
+                    logger.info("expected: runpod:key,primeintellect:key")
                     raise typer.Exit(1)
                 provider, key = part.split(":", 1)
                 creds_dict[provider.strip()] = key.strip()
@@ -141,9 +141,9 @@ def resolve_credentials(ctx) -> ProviderCredentials:
     # Priority 4: Error with helpful message
     logger.error("✗ No credentials found")
     logger.info("")
-    logger.info("Try: broker init")
-    logger.info("Or: export RUNPOD_API_KEY=... PRIME_API_KEY=... LAMBDA_API_KEY=...")
-    logger.info("Or: --credentials <file|runpod:key,primeintellect:key,lambdalabs:key>")
+    logger.info("try: broker init")
+    logger.info("or: export RUNPOD_API_KEY=... PRIME_API_KEY=... LAMBDA_API_KEY=...")
+    logger.info("or: --credentials <file|runpod:key,primeintellect:key,lambdalabs:key>")
     raise typer.Exit(1)
 
 
@@ -171,17 +171,17 @@ def resolve_ssh_key(ctx) -> str:
     logger.error("✗ No SSH key specified")
     logger.info("")
     if found_keys:
-        logger.info("Found keys at:")
+        logger.info("found keys at:")
         for key in found_keys:
             logger.info(f"  {key}")
         logger.info("")
-        logger.info("Set SSH_KEY_PATH in .env (run: broker init)")
-        logger.info(f"Or use: --ssh-key {found_keys[0]}")
+        logger.info("set SSH_KEY_PATH in .env (run: broker init)")
+        logger.info(f"or use: --ssh-key {found_keys[0]}")
     else:
-        logger.info("No SSH keys found in ~/.ssh/")
-        logger.info("Generate one: ssh-keygen -t ed25519")
+        logger.info("no ssh keys found in ~/.ssh/")
+        logger.info("generate one: ssh-keygen -t ed25519")
         logger.info("")
-        logger.info("Then set SSH_KEY_PATH in .env (run: broker init)")
+        logger.info("then set SSH_KEY_PATH in .env (run: broker init)")
 
     raise typer.Exit(1)
 
@@ -271,9 +271,9 @@ def search(
 
     # Search (queries all providers by default, merges results)
     if gpu_count > 1:
-        logger.info(f"Searching for GPU offers (gpu_count={gpu_count})...")
+        logger.info(f"searching for gpu offers (gpu_count={gpu_count})...")
     else:
-        logger.info("Searching for GPU offers...")
+        logger.info("searching for gpu offers...")
 
     # Import api to call search with gpu_count
     from broker import api
@@ -352,9 +352,9 @@ def search(
 
         console.print(table)
         if gpu_count > 1:
-            logger.info(f"Showing {len(offers)} cheapest offers for {gpu_count}x GPUs")
+            logger.info(f"showing {len(offers)} cheapest offers for {gpu_count}x gpus")
         else:
-            logger.info(f"Showing {len(offers)} cheapest offers")
+            logger.info(f"showing {len(offers)} cheapest offers")
 
 
 @app.command()
@@ -438,10 +438,10 @@ def create(
     # Create instance
     if gpu_count > 1:
         cloud_msg = f" ({cloud_type} cloud)" if cloud_type else ""
-        logger.info(f"Provisioning {gpu_count}x GPU instance{cloud_msg}...")
+        logger.info(f"provisioning {gpu_count}x gpu instance{cloud_msg}...")
     else:
         cloud_msg = f" ({cloud_type} cloud)" if cloud_type else ""
-        logger.info(f"Provisioning instance{cloud_msg}...")
+        logger.info(f"provisioning instance{cloud_msg}...")
     instance = client.create(query, image=image, name=name, gpu_count=gpu_count)
 
     if not instance:
@@ -450,7 +450,7 @@ def create(
 
     # Wait for SSH if requested
     if wait_ssh:
-        logger.info("Waiting for SSH to be ready...")
+        logger.info("waiting for ssh to be ready...")
         if not instance.wait_until_ssh_ready(timeout=300):
             logger.error("✗ SSH failed to become ready")
             raise typer.Exit(1)
@@ -481,21 +481,21 @@ def create(
     else:  # summary
         if wait_ssh:
             gpu_info = f"{instance.gpu_count}x {instance.gpu_type}" if instance.gpu_count > 1 else instance.gpu_type
-            logger.info(f"✓ Instance {instance.id} ready: {instance.ssh_connection_string()}")
-            logger.info(f"  GPU: {gpu_info}")
+            logger.info(f"instance {instance.id} ready: {instance.ssh_connection_string()}")
+            logger.info(f"  gpu: {gpu_info}")
             if instance.gpu_count > 1:
-                logger.info(f"  Price: ${instance.price_per_hour:.2f}/GPU/hr (${instance.price_per_hour * instance.gpu_count:.2f}/hr total)")
+                logger.info(f"  price: ${instance.price_per_hour:.2f}/gpu/hr (${instance.price_per_hour * instance.gpu_count:.2f}/hr total)")
             else:
-                logger.info(f"  Price: ${instance.price_per_hour:.2f}/hr")
+                logger.info(f"  price: ${instance.price_per_hour:.2f}/hr")
         else:
             gpu_info = f"{instance.gpu_count}x {instance.gpu_type}" if instance.gpu_count > 1 else instance.gpu_type
-            logger.info(f"✓ Instance {instance.id} provisioning started")
-            logger.info(f"  GPU: {gpu_info}")
+            logger.info(f"instance {instance.id} provisioning started")
+            logger.info(f"  gpu: {gpu_info}")
             if instance.gpu_count > 1:
-                logger.info(f"  Price: ${instance.price_per_hour:.2f}/GPU/hr (${instance.price_per_hour * instance.gpu_count:.2f}/hr total)")
+                logger.info(f"  price: ${instance.price_per_hour:.2f}/gpu/hr (${instance.price_per_hour * instance.gpu_count:.2f}/hr total)")
             else:
-                logger.info(f"  Price: ${instance.price_per_hour:.2f}/hr")
-            logger.info(f"Use 'broker status {instance.id}' to check progress")
+                logger.info(f"  price: ${instance.price_per_hour:.2f}/hr")
+            logger.info(f"use 'broker status {instance.id}' to check progress")
 
 
 @app.command()
@@ -588,7 +588,7 @@ def status(
             logger.error(f"✗ Instance {instance_id} found in multiple providers:")
             for m in matches:
                 logger.error(f"  - {m.provider}")
-            logger.info(f"Specify provider: broker status {instance_id} <provider>")
+            logger.info(f"specify provider: broker status {instance_id} <provider>")
             raise typer.Exit(1)
 
         instance = matches[0]
@@ -615,12 +615,12 @@ def status(
             )
         )
     else:
-        logger.info(f"Instance: {instance.id}")
-        logger.info(f"Provider: {instance.provider}")
-        logger.info(f"Status: {instance.status.value}")
-        logger.info(f"GPU: {instance.gpu_type}")
+        logger.info(f"instance: {instance.id}")
+        logger.info(f"provider: {instance.provider}")
+        logger.info(f"status: {instance.status.value}")
+        logger.info(f"gpu: {instance.gpu_type}")
         if instance.public_ip:
-            logger.info(f"SSH: {instance.ssh_connection_string()}")
+            logger.info(f"ssh: {instance.ssh_connection_string()}")
 
 
 @app.command()
@@ -653,7 +653,7 @@ def ssh(
             logger.error(f"✗ Instance {instance_id} found in multiple providers:")
             for m in matches:
                 logger.error(f"  - {m.provider}")
-            logger.info(f"Specify provider: broker ssh {instance_id} <provider>")
+            logger.info(f"specify provider: broker ssh {instance_id} <provider>")
             raise typer.Exit(1)
 
         instance = matches[0]
@@ -698,7 +698,7 @@ def info(
             logger.error(f"✗ Instance {instance_id} found in multiple providers:")
             for m in matches:
                 logger.error(f"  - {m.provider}")
-            logger.info(f"Specify provider: broker info {instance_id} <provider>")
+            logger.info(f"specify provider: broker info {instance_id} <provider>")
             raise typer.Exit(1)
 
         instance = matches[0]
@@ -716,7 +716,7 @@ def info(
 
     # Collect system info
     if not ctx.obj["json"]:
-        logger.info("Collecting system information...")
+        logger.info("collecting system information...")
 
     # Temporarily suppress SSH connection logs
     ssh_logger = logging.getLogger("shared.ssh_foundation")
@@ -950,7 +950,7 @@ def terminate(
             logger.error(f"✗ Instance {instance_id} found in multiple providers:")
             for m in matches:
                 logger.error(f"  - {m.provider}")
-            logger.info(f"Specify provider: broker terminate {instance_id} <provider>")
+            logger.info(f"specify provider: broker terminate {instance_id} <provider>")
             raise typer.Exit(1)
 
         instance = matches[0]
@@ -965,13 +965,13 @@ def terminate(
     if not yes:
         confirm = typer.confirm(f"Terminate instance {instance_id} on {provider}?")
         if not confirm:
-            logger.info("Cancelled")
+            logger.info("cancelled")
             raise typer.Exit(0)
 
     success = client.terminate_instance(instance_id, provider)
 
     if success:
-        logger.info(f"✓ Instance {instance_id} terminated")
+        logger.info(f"instance {instance_id} terminated")
     else:
         logger.error("✗ Failed to terminate instance")
         raise typer.Exit(1)
@@ -1003,7 +1003,7 @@ def cleanup(
     client = GPUClient(credentials=creds, ssh_key_path=ssh_key)
 
     # Get all instances
-    logger.info("Fetching all instances...")
+    logger.info("fetching all instances...")
     instances = client.list_instances()
 
     # Filter by provider if specified
@@ -1015,13 +1015,13 @@ def cleanup(
         exclude_set = set(exclude)
         instances = [i for i in instances if i.id not in exclude_set]
         if exclude_set:
-            logger.info(f"Excluding {len(exclude_set)} instance(s) from cleanup")
+            logger.info(f"excluding {len(exclude_set)} instance(s) from cleanup")
 
     if not instances:
         if provider:
-            logger.info(f"No instances found in {provider}")
+            logger.info(f"no instances found in {provider}")
         else:
-            logger.info("No instances found")
+            logger.info("no instances found")
         return
 
     # Display instances to be terminated
@@ -1064,7 +1064,7 @@ def cleanup(
                 f"Terminate all {len(instances)} instance(s) across all providers?"
             )
         if not confirm:
-            logger.info("Cancelled")
+            logger.info("cancelled")
             raise typer.Exit(0)
 
     # Terminate all instances
@@ -1072,7 +1072,7 @@ def cleanup(
     succeeded = []
 
     for instance in instances:
-        logger.info(f"Terminating {instance.id} ({instance.provider})...")
+        logger.info(f"terminating {instance.id} ({instance.provider})...")
         success = client.terminate_instance(instance.id, instance.provider)
 
         if success:
@@ -1082,7 +1082,7 @@ def cleanup(
 
     # Report results
     if succeeded:
-        logger.info(f"✓ Successfully terminated {len(succeeded)} instance(s)")
+        logger.info(f"successfully terminated {len(succeeded)} instance(s)")
 
     if failed:
         logger.error(f"✗ Failed to terminate {len(failed)} instance(s):")

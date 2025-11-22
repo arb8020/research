@@ -118,7 +118,7 @@ async def run_evaluation(config, result_dir: Path) -> dict:
     # Load from all annotation files and concatenate
     dataset = []
     for annotation_file in config.dataset.annotation_files:
-        logger.info(f"📂 Loading {annotation_file}...")
+        logger.info(f"loading {annotation_file}...")
         file_dataset = config.load_dataset(
             data_path=config.dataset.dataset_path,
             annotation_file=annotation_file,
@@ -128,13 +128,13 @@ async def run_evaluation(config, result_dir: Path) -> dict:
             ui_types=config.filters.ui_types if config.filters.ui_types else None,
         )
         dataset.extend(file_dataset)
-        logger.info(f"   Loaded {len(file_dataset)} samples from {annotation_file}")
+        logger.info(f"loaded {len(file_dataset)} samples from {annotation_file}")
 
     # Apply global limit if specified
     if config.filters.limit is not None:
         dataset = dataset[:config.filters.limit]
 
-    logger.info(f"📊 Total: {len(dataset)} samples from {len(config.dataset.annotation_files)} file(s)")
+    logger.info(f"total: {len(dataset)} samples from {len(config.dataset.annotation_files)} file(s)")
 
     # Create endpoint - read API key from environment
     api_key = ""
@@ -147,7 +147,7 @@ async def run_evaluation(config, result_dir: Path) -> dict:
 
     if api_key_env_var:
         api_key = os.getenv(api_key_env_var, "")
-        logger.info(f"🔑 API key from {api_key_env_var}: {'***' + api_key[-4:] if api_key else 'NOT FOUND'}")
+        logger.info(f"api key from {api_key_env_var}: {'***' + api_key[-4:] if api_key else 'NOT FOUND'}")
 
     endpoint = Endpoint(
         provider=config.provider,
@@ -157,13 +157,13 @@ async def run_evaluation(config, result_dir: Path) -> dict:
         temperature=config.temperature,
         max_tokens=config.max_output_tokens,
     )
-    logger.info(f"🔗 Endpoint: {config.provider} @ {config.api_base}")
-    logger.info(f"🤖 Model: {config.model_name}")
+    logger.info(f"endpoint: {config.provider} @ {config.api_base}")
+    logger.info(f"model: {config.model_name}")
 
     # Create environment instance
     assert config.environment is not None, "Config must have environment"
     environment = config.environment()
-    logger.info(f"🌍 Environment: {environment.__class__.__name__}")
+    logger.info(f"environment: {environment.__class__.__name__}")
     logger.info("")
 
     # Run on each sample concurrently
@@ -171,7 +171,7 @@ async def run_evaluation(config, result_dir: Path) -> dict:
     max_concurrent = config.max_concurrent if hasattr(config, "max_concurrent") else 10
     semaphore = trio.Semaphore(max_concurrent)
 
-    logger.info(f"🚀 Running {len(dataset)} samples with max concurrency: {max_concurrent}")
+    logger.info(f"running {len(dataset)} samples with max concurrency: {max_concurrent}")
     logger.info("")
 
     # Create progress bar
@@ -183,7 +183,7 @@ async def run_evaluation(config, result_dir: Path) -> dict:
     if config.save_jsonl:
         jsonl_path = result_dir / f"{config.experiment_name}_results.jsonl"
         jsonl_file = open(jsonl_path, 'w')
-        logger.info(f"📝 Writing incremental results to: {jsonl_path}")
+        logger.info(f"writing incremental results to: {jsonl_path}")
         logger.info("")
 
     async def run_sample(i: int, row: dict):
@@ -291,20 +291,18 @@ async def run_evaluation(config, result_dir: Path) -> dict:
     # Close JSONL file
     if jsonl_file:
         jsonl_file.close()
-        logger.info(f"✅ JSONL results written to: {jsonl_path}")
+        logger.info(f"jsonl results written to: {jsonl_path}")
 
     # Compute summary
     num_completed = sum(1 for r in results if r and r.get("success", False))
     total_reward = sum(r.get("reward", 0.0) for r in results if r and "reward" in r)
     num_errors = len(dataset) - num_completed
 
-    logger.info(f"\n{'=' * 60}")
-    logger.info("📊 SUMMARY")
-    logger.debug(f"{'=' * 60}")
-    logger.info(f"Total samples: {len(dataset)}")
-    logger.info(f"Completed: {num_completed}")
-    logger.info(f"Errors: {num_errors}")
-    logger.info(f"Mean reward: {total_reward / num_completed if num_completed > 0 else 0.0:.3f}")
+    logger.info(f"summary:")
+    logger.info(f"total samples: {len(dataset)}")
+    logger.info(f"completed: {num_completed}")
+    logger.info(f"errors: {num_errors}")
+    logger.info(f"mean reward: {total_reward / num_completed if num_completed > 0 else 0.0:.3f}")
 
     summary = {
         "experiment_name": config.experiment_name,
@@ -369,7 +367,7 @@ def main():
         log_level="INFO",
     )
 
-    logger.info(f"🚀 Running evaluation: {config.experiment_name}")
+    logger.info(f"running evaluation: {config.experiment_name}")
 
     # Run evaluation
     results_dict = trio.run(run_evaluation, config, result_dir)
@@ -381,7 +379,7 @@ def main():
         with open(output_path, 'w') as f:
             json.dump(results_dict, f, indent=2)
 
-        logger.info(f"💾 Saved results to: {output_path}")
+        logger.info(f"saved results to: {output_path}")
 
     return 0
 

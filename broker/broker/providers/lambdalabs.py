@@ -193,7 +193,7 @@ def provision_instance(request: ProvisionRequest, ssh_startup_script: Optional[s
         if ssh_keys:
             # Use the first available SSH key
             ssh_key_names = [ssh_keys[0]["name"]]
-            logger.info(f"Using SSH key: {ssh_key_names[0]}")
+            logger.info(f"using ssh key: {ssh_key_names[0]}")
         else:
             logger.warning("No SSH keys found in Lambda Labs account. Instance may not be accessible.")
     except Exception as e:
@@ -232,7 +232,7 @@ def provision_instance(request: ProvisionRequest, ssh_startup_script: Optional[s
             return None
 
         instance_id = instance_ids[0]
-        logger.info(f"Lambda Labs instance launched: {instance_id}")
+        logger.info(f"lambda labs instance launched: {instance_id}")
 
         # Immediately fetch instance details to get full info
         # Wait a moment for instance to be queryable
@@ -311,7 +311,7 @@ def terminate_instance(instance_id: str, api_key: Optional[str] = None) -> bool:
             "instance_ids": [instance_id]
         }
         _make_api_request("POST", "/instance-operations/terminate", data=terminate_data, api_key=api_key)
-        logger.info(f"Successfully terminated Lambda Labs instance {instance_id}")
+        logger.info(f"successfully terminated lambda labs instance {instance_id}")
         return True
 
     except Exception as e:
@@ -425,9 +425,9 @@ def wait_for_ssh_ready(instance, timeout: int = 900) -> bool:
     # We can't test SSH connectivity here because we don't have the SSH key path
     # (it's only available at the client level, not in the provider layer)
     # Give SSH daemon a moment to fully start
-    logger.info("Instance is active with SSH details assigned. Waiting 10s for SSH daemon...")
+    logger.info("instance is active with ssh details assigned. waiting 10s for ssh daemon...")
     time.sleep(10)
-    logger.info("SSH should be ready!")
+    logger.info("ssh should be ready!")
     return True
 
 
@@ -435,7 +435,7 @@ def _wait_until_active(instance, timeout: int) -> bool:
     """Wait for instance to reach active status"""
     start_time = time.time()
 
-    logger.info(f"Waiting for instance {instance.id} to reach active status...")
+    logger.info(f"waiting for instance {instance.id} to reach active status...")
 
     while time.time() - start_time < timeout:
         fresh = get_instance_details(instance.id, api_key=instance.api_key)
@@ -446,7 +446,7 @@ def _wait_until_active(instance, timeout: int) -> bool:
         if fresh.status.value == "running":
             instance.__dict__.update(fresh.__dict__)
             elapsed = int(time.time() - start_time)
-            logger.info(f"Instance {instance.id} is active (took {elapsed}s)")
+            logger.info(f"instance {instance.id} is active (took {elapsed}s)")
             return True
         elif fresh.status.value in ["failed", "terminated"]:
             logger.error(f"Instance terminal state: {fresh.status}")
@@ -460,7 +460,7 @@ def _wait_until_active(instance, timeout: int) -> bool:
 
 def _wait_for_ssh_assignment(instance, start_time: float, timeout: int) -> bool:
     """Wait for SSH details to be assigned"""
-    logger.info("Waiting for SSH details...")
+    logger.info("waiting for ssh details...")
     next_log_time = start_time + 30  # Log at 30s, 60s, 90s, ...
 
     while time.time() - start_time < timeout:
@@ -474,7 +474,7 @@ def _wait_for_ssh_assignment(instance, start_time: float, timeout: int) -> bool:
             instance.status = fresh.status
 
             elapsed = int(time.time() - start_time)
-            logger.info(f"SSH ready: {instance.public_ip}:{instance.ssh_port} (took {elapsed}s)")
+            logger.info(f"ssh ready: {instance.public_ip}:{instance.ssh_port} (took {elapsed}s)")
             return True
 
         # Log progress every 30s
@@ -493,13 +493,13 @@ def _wait_for_ssh_assignment(instance, start_time: float, timeout: int) -> bool:
 
 def _test_ssh_connectivity(instance) -> bool:
     """Test SSH connectivity with echo command"""
-    logger.info("SSH details ready! Waiting 15s for SSH daemon...")
+    logger.info("ssh details ready! waiting 15s for ssh daemon...")
     time.sleep(15)
 
     try:
         result = instance.exec("echo 'ssh_ready'", timeout=30)
         if result.success and "ssh_ready" in result.stdout:
-            logger.info("SSH connectivity confirmed!")
+            logger.info("ssh connectivity confirmed!")
             return True
         else:
             logger.warning(f"SSH test failed: {result.stderr}")

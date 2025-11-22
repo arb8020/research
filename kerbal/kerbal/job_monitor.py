@@ -104,20 +104,17 @@ def stream_log_until_complete(
     assert config.timeout_sec > 0, "timeout_sec must be positive"
     assert config.poll_interval_sec > 0, "poll_interval_sec must be positive"
 
-    logger.info(f"📊 Monitoring job: {config.session_name}")
-    logger.info(f"📝 Log: {config.log_file}")
-    logger.info(f"⏱️  Timeout: {config.timeout_sec}s")
-    logger.info("=" * 60)
+    logger.info(f"monitoring job: {config.session_name}")
+    logger.info(f"log: {config.log_file}")
+    logger.info(f"timeout: {config.timeout_sec}s")
 
     # Stream log and wait for completion
     success, exit_code, err = _stream_and_wait(client, config)
 
-    logger.info("=" * 60)
-
     if not success:
         logger.error(f"❌ Job failed: {err}")
     else:
-        logger.info(f"✅ Job completed (exit code: {exit_code})")
+        logger.info(f"job completed (exit code: {exit_code})")
 
     return success, exit_code, err
 
