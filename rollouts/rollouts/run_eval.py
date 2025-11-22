@@ -118,7 +118,7 @@ async def run_evaluation(config, result_dir: Path) -> dict:
     # Load from all annotation files and concatenate
     dataset = []
     for annotation_file in config.dataset.annotation_files:
-        logger.info(f"loading {annotation_file}...")
+        logger.debug(f"loading {annotation_file}...")
         file_dataset = config.load_dataset(
             data_path=config.dataset.dataset_path,
             annotation_file=annotation_file,
@@ -128,7 +128,7 @@ async def run_evaluation(config, result_dir: Path) -> dict:
             ui_types=config.filters.ui_types if config.filters.ui_types else None,
         )
         dataset.extend(file_dataset)
-        logger.info(f"loaded {len(file_dataset)} samples from {annotation_file}")
+        logger.debug(f"loaded {len(file_dataset)} samples from {annotation_file}")
 
     # Apply global limit if specified
     if config.filters.limit is not None:
@@ -183,7 +183,7 @@ async def run_evaluation(config, result_dir: Path) -> dict:
     if config.save_jsonl:
         jsonl_path = result_dir / f"{config.experiment_name}_results.jsonl"
         jsonl_file = open(jsonl_path, 'w')
-        logger.info(f"writing incremental results to: {jsonl_path}")
+        logger.debug(f"writing incremental results to: {jsonl_path}")
         logger.info("")
 
     async def run_sample(i: int, row: dict):

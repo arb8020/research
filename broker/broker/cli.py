@@ -450,7 +450,7 @@ def create(
 
     # Wait for SSH if requested
     if wait_ssh:
-        logger.info("waiting for ssh to be ready...")
+        logger.debug("waiting for ssh to be ready...")
         if not instance.wait_until_ssh_ready(timeout=300):
             logger.error("✗ SSH failed to become ready")
             raise typer.Exit(1)

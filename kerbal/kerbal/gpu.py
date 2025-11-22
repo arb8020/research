@@ -138,7 +138,7 @@ def wait_for_gpus(
 
     start_time = time.time()
 
-    logger.info(f"waiting for gpus {gpu_ids} (timeout: {timeout_sec}s)...")
+    logger.debug(f"waiting for gpus {gpu_ids} (timeout: {timeout_sec}s)...")
 
     while True:
         # Check if GPUs are available
@@ -159,5 +159,5 @@ def wait_for_gpus(
 
         # Log status and wait
         remaining = timeout_sec - elapsed
-        logger.info(f"gpus not ready ({err}). retrying in {poll_interval_sec}s (timeout in {remaining:.0f}s)...")
+        logger.debug(f"gpus not ready ({err}). retrying in {poll_interval_sec}s (timeout in {remaining:.0f}s)...")
         time.sleep(poll_interval_sec)
