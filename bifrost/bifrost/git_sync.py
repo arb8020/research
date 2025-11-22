@@ -134,7 +134,7 @@ def deploy_code(ssh_client: paramiko.SSHClient,
     assert isinstance(workspace_path, str) and len(workspace_path) > 0, \
         "workspace_path must be non-empty string"
 
-    logger.info(f"Deploying code to {workspace_path}")
+    logger.debug(f"Deploying code to {workspace_path}")
 
     # Check if workspace exists
     stdin, stdout, stderr = ssh_client.exec_command(f"test -d {workspace_path}")
@@ -151,7 +151,7 @@ def deploy_code(ssh_client: paramiko.SSHClient,
 
     # Assert output
     assert workspace_path, "Failed to deploy code"
-    logger.info(f"Code deployed to {workspace_path}")
+    logger.debug(f"Code deployed to {workspace_path}")
     return workspace_path
 
 

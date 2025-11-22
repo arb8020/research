@@ -280,7 +280,7 @@ class BifrostClient:
             bootstrap_cmd = validate_bootstrap_cmd(bootstrap_cmd)
 
         ssh_client = self._get_ssh_client()
-        self.logger.info(f"📁 Deploying to workspace: {workspace_path}")
+        self.logger.debug(f"📁 Deploying to workspace: {workspace_path}")
 
         # Deploy code (pure function)
         workspace_path = git_sync.deploy_code(ssh_client, self._remote_config, workspace_path)
