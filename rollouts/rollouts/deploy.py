@@ -1051,7 +1051,7 @@ async def _wait_for_health(
             try:
                 resp = await client.get(health_url, timeout=5.0)
                 if resp.status_code == 200:
-                    logger.info(f"server is ready (took ~{(i+1)*poll_interval}s)")
+                    logger.debug(f"server is ready (took ~{(i+1)*poll_interval}s)")
                     return True, None
             except Exception:
                 pass
@@ -1102,7 +1102,7 @@ async def _wait_for_health_remote(
         )
 
         if result.exit_code == 0 and "NOT_READY" not in result.stdout:
-            logger.info(f"server is ready (took ~{(i+1)*poll_interval}s)")
+            logger.debug(f"server is ready (took ~{(i+1)*poll_interval}s)")
             return True, None
 
         if i < max_iterations - 1:

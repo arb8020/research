@@ -425,9 +425,9 @@ def wait_for_ssh_ready(instance, timeout: int = 900) -> bool:
     # We can't test SSH connectivity here because we don't have the SSH key path
     # (it's only available at the client level, not in the provider layer)
     # Give SSH daemon a moment to fully start
-    logger.info("instance is active with ssh details assigned. waiting 10s for ssh daemon...")
+    logger.debug("instance is active with ssh details assigned. waiting 10s for ssh daemon...")
     time.sleep(10)
-    logger.info("ssh should be ready!")
+    logger.debug("ssh should be ready!")
     return True
 
 
@@ -435,7 +435,7 @@ def _wait_until_active(instance, timeout: int) -> bool:
     """Wait for instance to reach active status"""
     start_time = time.time()
 
-    logger.info(f"waiting for instance {instance.id} to reach active status...")
+    logger.debug(f"waiting for instance {instance.id} to reach active status...")
 
     while time.time() - start_time < timeout:
         fresh = get_instance_details(instance.id, api_key=instance.api_key)
@@ -446,7 +446,7 @@ def _wait_until_active(instance, timeout: int) -> bool:
         if fresh.status.value == "running":
             instance.__dict__.update(fresh.__dict__)
             elapsed = int(time.time() - start_time)
-            logger.info(f"instance {instance.id} is active (took {elapsed}s)")
+            logger.debug(f"instance {instance.id} is active (took {elapsed}s)")
             return True
         elif fresh.status.value in ["failed", "terminated"]:
             logger.error(f"Instance terminal state: {fresh.status}")
@@ -460,7 +460,7 @@ def _wait_until_active(instance, timeout: int) -> bool:
 
 def _wait_for_ssh_assignment(instance, start_time: float, timeout: int) -> bool:
     """Wait for SSH details to be assigned"""
-    logger.info("waiting for ssh details...")
+    logger.debug("waiting for ssh details...")
     next_log_time = start_time + 30  # Log at 30s, 60s, 90s, ...
 
     while time.time() - start_time < timeout:
@@ -474,7 +474,7 @@ def _wait_for_ssh_assignment(instance, start_time: float, timeout: int) -> bool:
             instance.status = fresh.status
 
             elapsed = int(time.time() - start_time)
-            logger.info(f"ssh ready: {instance.public_ip}:{instance.ssh_port} (took {elapsed}s)")
+            logger.debug(f"ssh ready: {instance.public_ip}:{instance.ssh_port} (took {elapsed}s)")
             return True
 
         # Log progress every 30s
@@ -493,13 +493,13 @@ def _wait_for_ssh_assignment(instance, start_time: float, timeout: int) -> bool:
 
 def _test_ssh_connectivity(instance) -> bool:
     """Test SSH connectivity with echo command"""
-    logger.info("ssh details ready! waiting 15s for ssh daemon...")
+    logger.debug("ssh details ready! waiting 15s for ssh daemon...")
     time.sleep(15)
 
     try:
         result = instance.exec("echo 'ssh_ready'", timeout=30)
         if result.success and "ssh_ready" in result.stdout:
-            logger.info("ssh connectivity confirmed!")
+            logger.debug("ssh connectivity confirmed!")
             return True
         else:
             logger.warning(f"SSH test failed: {result.stderr}")

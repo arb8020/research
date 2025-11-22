@@ -132,9 +132,9 @@ def path_exists(
 
     Example:
         if path_exists(client, "/path/to/file.txt"):
-            logger.info("file exists")
+            logger.debug("file exists")
         else:
-            logger.info("file does not exist")
+            logger.debug("file does not exist")
     """
     # Assert preconditions (Tiger Style)
     assert client is not None, "client cannot be None"
