@@ -13,6 +13,7 @@ def setup_logging(
     level: Optional[str] = None,
     use_json: Optional[bool] = None,
     use_rich: Optional[bool] = None,
+    use_color: Optional[bool] = None,
     logger_levels: Optional[Dict[str, str]] = None,
     log_file: Optional[str] = None,
     rich_tracebacks: bool = False,
@@ -30,7 +31,11 @@ def setup_logging(
         use_json: Whether to use JSON formatter for console (default: False for human-readable)
         use_rich: Whether to use RichHandler for console output (default: False).
                  If True, produces clean CLI output with colors and formatting.
-                 Overridden to False if use_json=True.
+                 Overridden to False if use_json=True or use_color=True.
+        use_color: Whether to use ANSI color formatter for console (default: False).
+                  If True, produces colorized output with minimal formatting.
+                  Format: [HH:MM:SS] message (color indicates level).
+                  Overrides use_rich if both are True.
         logger_levels: Dict mapping logger names to specific log levels
                       e.g. {"bifrost": "DEBUG", "broker": "WARNING", "paramiko": "ERROR"}
         log_file: Optional log file path. If provided, logs in JSONL format to file
@@ -58,10 +63,11 @@ def setup_logging(
     level = level or os.getenv("LOG_LEVEL", "INFO")
     use_json = use_json if use_json is not None else os.getenv("LOG_JSON", "").lower() == "true"
     use_rich = use_rich if use_rich is not None else False
+    use_color = use_color if use_color is not None else False
     logger_levels = logger_levels or {}
 
-    # JSON mode overrides rich mode
-    if use_json:
+    # JSON mode and color mode override rich mode
+    if use_json or use_color:
         use_rich = False
 
     formatters = {
@@ -71,6 +77,10 @@ def setup_logging(
         },
         "minimal": {
             "format": "%(message)s"
+        },
+        "color": {
+            "()": "shared.color_formatter.ColorFormatter",
+            "show_timestamp": True
         },
         "json": {
             "()": "shared.json_formatter.JSONFormatter",
@@ -97,11 +107,18 @@ def setup_logging(
             }
         }
     else:
+        # Determine console formatter
+        console_formatter = "standard"  # Default
+        if use_json:
+            console_formatter = "json"
+        elif use_color:
+            console_formatter = "color"
+
         handlers = {
             "console": {
                 "class": "logging.StreamHandler",
                 "level": "DEBUG",  # Let loggers control their own levels
-                "formatter": "json" if use_json else "standard",
+                "formatter": console_formatter,
                 "stream": "ext://sys.stdout"
             }
         }

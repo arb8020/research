@@ -21,7 +21,7 @@ def init_rollout_logging(
     """Initialize logging for a rollout experiment.
 
     Tiger Style: Creates timestamped results directory and sets up dual logging:
-    - Console: Clean human-readable output (stdout)
+    - Console: Clean colorized output with ANSI codes (stdout)
     - File: Detailed JSONL logs for debugging (error_log.jsonl)
 
     Args:
@@ -69,7 +69,7 @@ def init_rollout_logging(
     setup_logging(
         level=log_level,
         use_json=False,  # Human-readable console output
-        use_rich=False,  # Keep it simple for now
+        use_color=True,  # Colorized output with ANSI codes
         logger_levels=merged_levels,
         log_file=str(log_file),
     )
