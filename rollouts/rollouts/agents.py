@@ -249,6 +249,81 @@ def handle_stop_cost_budget(max_cost_usd: float, cost_fn: Callable[[AgentState],
     return handler
 
 
+def handle_stop_on_empty_message() -> Callable[[AgentState], AgentState]:
+    """Stop when assistant returns empty message (no content, no tool calls).
+
+    This handles cases where the model signals completion by returning an empty
+    response (e.g., Claude's end_turn with no content).
+
+    Returns:
+        Handler function that stops on empty assistant messages
+
+    Example:
+        run_config = RunConfig(
+            handle_stop=compose_handlers([
+                handle_stop_max_turns(10),
+                handle_stop_on_empty_message(),
+            ]),
+        )
+    """
+    def handler(state: AgentState) -> AgentState:
+        assert state is not None
+        assert isinstance(state, AgentState)
+
+        # Check if last message is an empty assistant message
+        if state.actor.trajectory.messages:
+            last_msg = state.actor.trajectory.messages[-1]
+            if (last_msg.role == "assistant" and
+                not last_msg.content and
+                not (hasattr(last_msg, 'tool_calls') and last_msg.tool_calls)):
+                result_state = replace(state, stop=StopReason.MAX_TURNS)
+                assert result_state.stop is not None
+                return result_state
+
+        return state
+
+    return handler
+
+
+def compose_handlers(handlers: list[Callable[[AgentState], AgentState]]) -> Callable[[AgentState], AgentState]:
+    """Compose multiple stop handlers into a single handler.
+
+    Handlers are applied in order. If any handler sets a stop reason, that state
+    is returned immediately without calling subsequent handlers.
+
+    Args:
+        handlers: List of stop handler functions
+
+    Returns:
+        Composed handler function
+
+    Example:
+        run_config = RunConfig(
+            handle_stop=compose_handlers([
+                handle_stop_max_turns(10),
+                handle_stop_on_empty_message(),
+            ]),
+        )
+    """
+    assert handlers, "handlers list cannot be empty"
+    assert all(callable(h) for h in handlers), "all handlers must be callable"
+
+    def composed_handler(state: AgentState) -> AgentState:
+        assert state is not None
+        assert isinstance(state, AgentState)
+
+        current_state = state
+        for handler in handlers:
+            current_state = handler(current_state)
+            # If any handler sets stop, return immediately
+            if current_state.stop:
+                return current_state
+
+        return current_state
+
+    return composed_handler
+
+
 async def inject_tool_reminder(state: AgentState, run_config: 'RunConfig') -> AgentState:
     """Remind the agent to use tools"""
     assert state is not None
