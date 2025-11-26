@@ -1,6 +1,7 @@
 """Bifrost SDK - Python client for remote GPU execution and job management."""
 
 from .client import BifrostClient
+from .async_client import AsyncBifrostClient
 from .types import (
     JobInfo,
     JobStatus,
@@ -19,6 +20,7 @@ from .remote_fs import (
 
 __all__ = [
     'BifrostClient',
+    'AsyncBifrostClient',
     'JobInfo',
     'JobStatus',
     'SSHConnection',
