@@ -1,14 +1,20 @@
 import json
-from pathlib import Path
-from enum import Enum
 import os
-import trio
-from abc import ABC
-from dataclasses import dataclass, field, asdict, fields, replace
-from typing import Any, Dict, List, Optional, Mapping, Union, TypeVar, Type, Iterator, Callable, Awaitable, Tuple, Protocol, runtime_checkable
-from pathlib import Path
+import time
+from collections.abc import Awaitable, Callable, Iterator, Mapping
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
+from pathlib import Path
+from typing import (
+    Any,
+    Optional,
+    Protocol,
+    runtime_checkable,
+)
+
 import dacite
+import trio
 
 # TODO: Better torch typing options explored:
 # 1. Create a Protocol for tensor-like objects (has .tolist(), .shape, .dtype) - cleanest approach
@@ -19,10 +25,12 @@ import dacite
 # Current: Simple fallback for type hints - actual tensor handling is done at runtime via hasattr checks
 TorchTensor = Any
 
+
 # Verbose function for debugging
 def verbose(level=1):
     """Check if verbose logging is enabled at given level"""
     return int(os.getenv("VERBOSE", 0)) >= level
+
 
 class JsonSerializable:
     """Base class for dataclasses with JSON serialization support.
@@ -34,7 +42,7 @@ class JsonSerializable:
     def to_json(self) -> str:
         """Serialize to JSON string"""
         assert self is not None
-        result = json.dumps(asdict(self), ensure_ascii=False) #type:ignore
+        result = json.dumps(asdict(self), ensure_ascii=False)  # type:ignore
         assert result is not None
         assert isinstance(result, str)
         assert len(result) > 0
@@ -53,27 +61,31 @@ class JsonSerializable:
         assert result is not None
         return result
 
+
 @dataclass(frozen=True)
 class ToolCall(JsonSerializable):
     id: str
     name: str
     args: Mapping[str, Any]
 
+
 @dataclass(frozen=True)
 class StreamChunk(JsonSerializable):
     """A chunk of data emitted during streaming"""
-    kind: str  # "token", "tool_call_complete", "tool_result", etc.
+    type: str  # "token", "tool_call_complete", "tool_result", etc.
     data: Mapping[str, Any]
+    timestamp: float = field(default_factory=time.time)
+
 
 @dataclass(frozen=True)
 class Message(JsonSerializable):
     role: str
-    content: Optional[str | List[Dict[str, Any]]]  # str for text, List[Dict] for vision (OpenAI format)
-    reasoning_content: Optional[Any] = None
-    thinking_content: Optional[str] = None
-    thinking_signature: Optional[str] = None
-    tool_calls: List[ToolCall] = field(default_factory=list)
-    tool_call_id: Optional[str] = None
+    content: str | list[dict[str, Any]] | None  # str for text, List[Dict] for vision (OpenAI format)
+    reasoning_content: Any | None = None
+    thinking_content: str | None = None
+    thinking_signature: str | None = None
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    tool_call_id: str | None = None
 
     def __repr__(self) -> str:
         """Tiger Style: Bounded repr, truncate large content.
@@ -92,31 +104,35 @@ class Message(JsonSerializable):
 
         return f"Message(role={self.role!r}, content={content_preview!r})"
 
+
 @dataclass(frozen=True)
 class Usage(JsonSerializable):
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
-    prompt_tokens_details: Optional[Any] = None
+    prompt_tokens_details: Any | None = None
+
 
 @dataclass(frozen=True)
 class Logprob(JsonSerializable):
     token: str
     logprob: float
-    bytes: List[int]
-    top_logprobs: List[float]
+    bytes: list[int]
+    top_logprobs: list[float]
+
 
 @dataclass(frozen=True)
 class Logprobs(JsonSerializable):
-    content: List[Logprob] = field(default_factory=list)
+    content: list[Logprob] = field(default_factory=list)
+
 
 @dataclass(frozen=True)
 class Choice(JsonSerializable):
     index: int
     message: Message
     finish_reason: str
-    logprobs: Optional[Logprobs] = None
-    stop_reason: Optional[Any] = None
+    logprobs: Logprobs | None = None
+    stop_reason: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -125,7 +141,8 @@ class TokenInfo(JsonSerializable):
     rank: int
     decoded_token: str
 
-PromptLogprob = Optional[Dict[str, TokenInfo]]
+
+PromptLogprob = Optional[dict[str, TokenInfo]]
 """
 {
 "8948": { # key is different every token
@@ -136,6 +153,7 @@ PromptLogprob = Optional[Dict[str, TokenInfo]]
 }
 """
 
+
 @dataclass(frozen=True)
 class ChatCompletion(JsonSerializable):
     id: str
@@ -143,27 +161,28 @@ class ChatCompletion(JsonSerializable):
     created: int
     model: str
     usage: Usage
-    kv_transfer_params: Optional[Any] = None
-    choices: List[Choice] = field(default_factory=list)
-    prompt_logprobs: Optional[List[PromptLogprob]] = None
+    kv_transfer_params: Any | None = None
+    choices: list[Choice] = field(default_factory=list)
+    prompt_logprobs: list[PromptLogprob] | None = None
+
 
 @dataclass
 class Trajectory(JsonSerializable):
-    completions: List[ChatCompletion] = field(default_factory=list)
-    messages: List[Message] = field(default_factory=list)   # debugging only
+    completions: list[ChatCompletion] = field(default_factory=list)
+    messages: list[Message] = field(default_factory=list)   # debugging only
     rewards: float = 0.0
     group: int = 0
     replica: int = 0
     advantages: float = 0.0     # scalar; broadcast later if needed
-    metadata: Dict[str, Any] = field(default_factory=dict)  # For dataset-specific info (e.g., ground truth)
+    metadata: dict[str, Any] = field(default_factory=dict)  # For dataset-specific info (e.g., ground truth)
 
     @staticmethod
-    def from_dict(data: Dict[str, Any]) -> "Trajectory":
+    def from_dict(data: dict[str, Any]) -> "Trajectory":
         """Rebuild nested dataclasses so type hints stay correct."""
         assert data is not None
         assert isinstance(data, dict)
 
-        comps: List[ChatCompletion] = []
+        comps: list[ChatCompletion] = []
         for comp in data.get("completions", []):
             assert comp is not None
             assert isinstance(comp, dict)
@@ -172,9 +191,9 @@ class Trajectory(JsonSerializable):
             assert "completion_tokens" in usage_dict
             assert "total_tokens" in usage_dict
             usage = Usage(
-                prompt_tokens       = usage_dict["prompt_tokens"],
-                completion_tokens   = usage_dict["completion_tokens"],
-                total_tokens        = usage_dict["total_tokens"],
+                prompt_tokens=usage_dict["prompt_tokens"],
+                completion_tokens=usage_dict["completion_tokens"],
+                total_tokens=usage_dict["total_tokens"],
             )
             assert usage is not None
             # Construct ChatCompletion with explicit parameters for type safety
@@ -210,7 +229,7 @@ class Trajectory(JsonSerializable):
         return result
 
     @staticmethod
-    def to_jsonl(trajectories: List["Trajectory"]) -> str:
+    def to_jsonl(trajectories: list["Trajectory"]) -> str:
         assert trajectories is not None
         assert isinstance(trajectories, list)
         result = "\n".join(t.to_json() for t in trajectories)
@@ -228,7 +247,7 @@ class Trajectory(JsonSerializable):
         return result
 
     @staticmethod
-    def from_jsonl(jsonl_str: str) -> List["Trajectory"]:
+    def from_jsonl(jsonl_str: str) -> list["Trajectory"]:
         assert jsonl_str is not None
         assert isinstance(jsonl_str, str)
         result = [Trajectory.from_json(line) for line in jsonl_str.strip().splitlines() if line]
@@ -237,7 +256,7 @@ class Trajectory(JsonSerializable):
 
     # ---------- disk I/O ---------------------------------------------------
     @staticmethod
-    def save_jsonl(trajectories: List["Trajectory"], filepath: str) -> None:
+    def save_jsonl(trajectories: list["Trajectory"], filepath: str) -> None:
         assert trajectories is not None
         assert isinstance(trajectories, list)
         assert filepath is not None
@@ -249,7 +268,7 @@ class Trajectory(JsonSerializable):
         assert path_obj.exists()
 
     @staticmethod
-    def load_jsonl(filepath: str) -> List["Trajectory"]:
+    def load_jsonl(filepath: str) -> list["Trajectory"]:
         assert filepath is not None
         assert len(filepath) > 0
         path_obj = Path(filepath)
@@ -269,7 +288,7 @@ class Trajectory(JsonSerializable):
         assert path_obj.exists(), f"File not found: {filepath}"
         assert path_obj.is_file()
 
-        with open(filepath, 'r', encoding='utf-8') as f:
+        with open(filepath, encoding='utf-8') as f:
             for line in f:
                 line_stripped = line.strip()
                 if line_stripped:  # Skip empty lines
@@ -277,7 +296,7 @@ class Trajectory(JsonSerializable):
 
     # ---------- helpers that work pre-/post-serialisation ------------------
     @staticmethod
-    def _usage_total(usage: Union[Usage, Dict[str, Any]], key: str) -> int:
+    def _usage_total(usage: Usage | dict[str, Any], key: str) -> int:
         assert usage is not None
         assert key is not None
         assert isinstance(key, str)
@@ -321,22 +340,26 @@ class Trajectory(JsonSerializable):
         assert len(result) == 16
         return result
 
+
 @dataclass(frozen=True)
 class ToolFunctionParameter(JsonSerializable):
-    properties: Dict[str, Any]
+    properties: dict[str, Any]
     type: str = "object"
+
 
 @dataclass(frozen=True)
 class ToolFunction(JsonSerializable):
     name: str
     description: str
     parameters: ToolFunctionParameter
-    required: List[str] = field(default_factory=list)
+    required: list[str] = field(default_factory=list)
+
 
 @dataclass(frozen=True)
 class Tool(JsonSerializable):
     function: ToolFunction
     type: str = "function"
+
 
 class StopReason(Enum):
     MAX_TURNS = "MAX_TURNS"
@@ -346,33 +369,36 @@ class StopReason(Enum):
     NO_TOOL_CALLED = "NO_TOOL_CALLED"
     TASK_COMPLETED = "TASK_COMPLETED"
 
+
 @dataclass(frozen=True)
 class ToolResult(JsonSerializable):
     call_id: str = ""
     ok: bool = False
     content: str = ""
-    error: Optional[str] = None
-    stop_reason: Optional[StopReason] = None
+    error: str | None = None
+    stop_reason: StopReason | None = None
+
 
 @dataclass(frozen=True)
 class ToolConfirmResult(JsonSerializable):
     """Result of tool confirmation"""
     proceed: bool
-    tool_result: Optional[ToolResult] = None
-    user_message: Optional[str] = None
+    tool_result: ToolResult | None = None
+    user_message: str | None = None
 
 # ── Core Agent Framework Types ────────────────────────────────────────────────
+
 
 @runtime_checkable
 class Environment(Protocol):
     """Protocol that all environments must satisfy for composition over inheritance."""
 
-    def get_tools(self) -> List[Tool]:
+    def get_tools(self) -> list[Tool]:
         """Return available tools for this environment."""
         ...
 
     async def exec_tool(self, tool_call: ToolCall, current_state: 'AgentState',
-                       run_config: 'RunConfig', checkpoint_store = None) -> ToolResult:
+                       run_config: 'RunConfig', checkpoint_store=None) -> ToolResult:
         """Execute a tool call in this environment."""
         ...
 
@@ -420,6 +446,7 @@ class Environment(Protocol):
         """Deserialize environment from dictionary."""
         ...
 
+
 @dataclass(frozen=True)
 class Endpoint(JsonSerializable):
     provider: str
@@ -428,45 +455,51 @@ class Endpoint(JsonSerializable):
     api_key: str = ""
     max_tokens: int = 8192
     temperature: float = 1.0
-    tool_choice: Optional[Union[str, Dict[str, Any]]] = None
-    parallel_tool_calls: Optional[bool] = None
-    reasoning_effort: Optional[str] = None  # for openai
-    max_completion_tokens: Optional[int] = None  # for openai
-    thinking: Optional[Dict[str, Any]] = None # for anthropic
+    tool_choice: str | dict[str, Any] | None = None
+    parallel_tool_calls: bool | None = None
+    reasoning_effort: str | None = None  # for openai
+    max_completion_tokens: int | None = None  # for openai
+    thinking: dict[str, Any] | None = None  # for anthropic
     # Retry configuration
     max_retries: int = 3  # Number of retries for rate limits/transient errors
     timeout: float = 120.0  # Timeout in seconds for API calls
     # Extra params merged into the raw chat request for custom servers
-    extra_params: Optional[Dict[str, Any]] = None
+    extra_params: dict[str, Any] | None = None
+
 
 @dataclass(frozen=True)
 class Actor(JsonSerializable):
     trajectory: Trajectory
     endpoint: Endpoint
-    tools: List[Tool] = field(default_factory=list)
+    tools: list[Tool] = field(default_factory=list)
+
 
 @dataclass(frozen=True)
 class AgentState:
     actor: Actor
     environment: Environment | None
-    stop: Optional[StopReason] = None
+    stop: StopReason | None = None
     turn_idx: int = 0
-    pending_tool_calls: List[ToolCall] = field(default_factory=list)
+    pending_tool_calls: list[ToolCall] = field(default_factory=list)
     next_tool_idx: int = 0  # Which tool we're about to process
     timestamp: str = datetime.now(timezone.utc).isoformat() + 'Z'
+
 
 # Forward declarations for RunConfig (needs to be after AgentState but before default handlers)
 async def default_stdin_handler(prompt: str) -> str:
     """Default input handler using trio.to_thread.run_sync for non-blocking input."""
     return await trio.to_thread.run_sync(input, prompt)
 
-async def default_confirm_tool(tc: ToolCall, state: 'AgentState', run_config: 'RunConfig') -> Tuple['AgentState', ToolConfirmResult]:
+
+async def default_confirm_tool(tc: ToolCall, state: 'AgentState', run_config: 'RunConfig') -> tuple['AgentState', ToolConfirmResult]:
     """Default tool confirmation handler - auto-confirm all tools."""
     return state, ToolConfirmResult(proceed=True)
+
 
 async def default_no_tool_handler(state: 'AgentState', run_config: 'RunConfig') -> 'AgentState':
     """Default no-tool handler - do nothing."""
     return state
+
 
 @dataclass(frozen=True)
 class RunConfig:
@@ -476,26 +509,23 @@ class RunConfig:
     # that on_chunk is properly async and has correct signature at construction time.
     on_chunk: Callable[[StreamChunk], Awaitable[None]]
     on_input: Callable[[str], Awaitable[str]] = field(default_factory=lambda: default_stdin_handler)
-    confirm_tool: Callable[[ToolCall, 'AgentState', 'RunConfig'], Awaitable[Tuple['AgentState', ToolConfirmResult]]] = field(default_factory=lambda: default_confirm_tool)
+    confirm_tool: Callable[[ToolCall, 'AgentState', 'RunConfig'], Awaitable[tuple['AgentState', ToolConfirmResult]]] = field(default_factory=lambda: default_confirm_tool)
     handle_tool_error: Callable[[ToolResult, 'AgentState'], 'AgentState'] = lambda tr, s: s
     on_step_start: Callable[['AgentState'], 'AgentState'] = lambda s: s
     handle_stop: Callable[['AgentState'], 'AgentState'] = lambda s: s
     handle_no_tool: Callable[['AgentState', 'RunConfig'], Awaitable['AgentState']] = field(default_factory=lambda: default_no_tool_handler)
-    user_message_for_thinking: Optional[str] = None
-    inline_thinking: Optional[str] = None
-    checkpoint_store: Optional[Any] = None
+    user_message_for_thinking: str | None = None
+    inline_thinking: str | None = None
+    checkpoint_store: Any | None = None
     show_progress: bool = False  # Enable turn-level progress tracking
-    # Event emission for frontend live streaming. Generic emit_event(type, **data) more flexible than specific on_start/on_end hooks.
-    # TODO: Revisit this design choice - could use structured callbacks (on_turn_start/end) for type safety.
-    # TODO: Consider semantic compression of events - currently emits every token separately to events.jsonl.
-    # See ~/research/docs/code_style/ryolu_design_frontend.md for compression strategies (batching, delta encoding).
-    emit_event: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None
+
 
 # ── Evaluation Types ──────────────────────────────────────────────────────────
 
 # Reward function: pure transform from Trajectory -> Trajectory with rewards populated
 # Supports both sync and async (for integrations like Prime that need async scoring)
 RewardFunction = Callable[[Trajectory], Trajectory] | Callable[[Trajectory], Awaitable[Trajectory]]
+
 
 @dataclass(frozen=True)
 class EvalConfig:
@@ -518,11 +548,11 @@ class EvalConfig:
     reward_fn: RewardFunction
 
     # Agent execution
-    run_config: Optional[RunConfig] = None  # If None, use silent default
+    run_config: RunConfig | None = None  # If None, use silent default
 
     # Dataset control
-    max_samples: Optional[int] = None  # If None, evaluate all
-    sample_id_fn: Callable[[int, Dict[str, Any]], str] = field(
+    max_samples: int | None = None  # If None, evaluate all
+    sample_id_fn: Callable[[int, dict[str, Any]], str] = field(
         default_factory=lambda: lambda i, _: f"sample_{i:04d}"
     )
 
@@ -530,7 +560,7 @@ class EvalConfig:
     max_concurrent: int = 1
 
     # Output
-    output_dir: Optional[Path] = None
+    output_dir: Path | None = None
     eval_name: str = "evaluation"
 
     # Logging

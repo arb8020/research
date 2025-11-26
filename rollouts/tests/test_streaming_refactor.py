@@ -5,10 +5,10 @@ Validates that the refactored streaming functions maintain behavior
 while following Tiger Style patterns.
 """
 
-import trio
-import json
-from typing import List
 from dataclasses import dataclass, field
+
+import trio
+
 
 # Mock minimal types needed for testing
 @dataclass
@@ -16,10 +16,11 @@ class MockStreamChunk:
     kind: str
     data: dict
 
+
 @dataclass
 class MockDelta:
     content: str = ""
-    tool_calls: List = field(default_factory=list)
+    tool_calls: list = field(default_factory=list)
     finish_reason: str = ""
     type: str = "text_delta"
     text: str = ""
@@ -27,22 +28,26 @@ class MockDelta:
     partial_json: str = ""
     signature: str = ""
 
+
 @dataclass
 class MockChoice:
     delta: MockDelta
     finish_reason: str = ""
 
+
 @dataclass
 class MockChunk:
     id: str = "test_123"
     created: int = 1234567890
-    choices: List[MockChoice] = field(default_factory=list)
+    choices: list[MockChoice] = field(default_factory=list)
+
 
 @dataclass
 class MockToolCall:
     id: str = ""
     name: str = ""
     args: dict = field(default_factory=dict)
+
 
 # Test OpenAI Stream Accumulator
 async def test_openai_accumulator():
@@ -74,6 +79,7 @@ async def test_openai_accumulator():
     assert acc.next_auto_index == 1
 
     print("✓ OpenAIStreamAccumulator works correctly")
+
 
 async def test_anthropic_accumulator():
     """Test Anthropic stream accumulator pattern."""
@@ -111,18 +117,20 @@ async def test_anthropic_accumulator():
 
     print("✓ AnthropicStreamAccumulator works correctly")
 
+
 async def test_openai_handlers():
     """Test OpenAI handler functions."""
     from rollouts.agents import (
         OpenAIStreamAccumulator,
-        _handle_openai_metadata,
         _handle_openai_content_delta,
+        _handle_openai_metadata,
     )
 
     acc = OpenAIStreamAccumulator()
 
     # Track chunks emitted
     emitted_chunks = []
+
     async def mock_on_chunk(chunk):
         emitted_chunks.append(chunk)
 
@@ -137,10 +145,11 @@ async def test_openai_handlers():
     await _handle_openai_content_delta(acc, delta, mock_on_chunk)
     assert acc.content == "Test content"
     assert len(emitted_chunks) == 1
-    assert emitted_chunks[0].kind == "token"
+    assert emitted_chunks[0].type == "token"
     assert emitted_chunks[0].data["text"] == "Test content"
 
     print("✓ OpenAI handlers work correctly")
+
 
 async def test_anthropic_handlers():
     """Test Anthropic handler functions."""
@@ -154,6 +163,7 @@ async def test_anthropic_handlers():
 
     # Track chunks emitted
     emitted_chunks = []
+
     async def mock_on_chunk(chunk):
         emitted_chunks.append(chunk)
 
@@ -168,9 +178,10 @@ async def test_anthropic_handlers():
     await _handle_anthropic_thinking_delta(acc, delta_thinking, mock_on_chunk)
     assert acc.thinking == "Thinking..."
     assert len(emitted_chunks) == 2
-    assert emitted_chunks[1].kind == "thinking"
+    assert emitted_chunks[1].type == "thinking"
 
     print("✓ Anthropic handlers work correctly")
+
 
 async def test_handler_assertions():
     """Test that handlers have proper assertions."""
@@ -200,9 +211,10 @@ async def test_handler_assertions():
 
     print("✓ Handlers have proper assertions")
 
+
 async def test_accumulator_independence():
     """Test that accumulator instances are independent."""
-    from rollouts.agents import OpenAIStreamAccumulator, AnthropicStreamAccumulator
+    from rollouts.agents import AnthropicStreamAccumulator, OpenAIStreamAccumulator
 
     # Create two OpenAI accumulators
     acc1 = OpenAIStreamAccumulator()
@@ -233,6 +245,7 @@ async def test_accumulator_independence():
 
     print("✓ Accumulator instances are independent")
 
+
 async def main():
     """Run all tests."""
     print("Testing streaming accumulator refactor...\n")
@@ -255,9 +268,9 @@ async def main():
             traceback.print_exc()
             return 1
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("✅ All tests passed!")
-    print("="*60)
+    print("=" * 60)
     print("\nRefactored streaming functions:")
     print("  • Follow Tiger Style (<70 lines per function)")
     print("  • Use documented mutation pattern")
@@ -266,6 +279,7 @@ async def main():
     print("\nReady to start D1: SGLang provider implementation!")
 
     return 0
+
 
 if __name__ == "__main__":
     exit_code = trio.run(main)
