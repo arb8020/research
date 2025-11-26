@@ -140,18 +140,44 @@ include = ["shared*"]
 py-modules = ["corpus_proximity_cli"]
 
 [tool.ruff]
-# Enable flake8-async (ASYNC) rules for trio patterns
-line-length = 120
+line-length = 100
 target-version = "py310"
+preview = true  # Required for PLR1702 (too-many-nested-blocks)
 
 [tool.ruff.lint]
 select = [
-    "E",      # pycodestyle errors
-    "F",      # pyflakes
-    "I",      # isort
-    "ASYNC",  # flake8-async (trio-specific checks)
+    "E",       # pycodestyle errors
+    "F",       # pyflakes
+    "I",       # isort (import sorting)
+    "ANN",     # flake8-annotations (enforce type annotations)
+    "ASYNC",   # flake8-async (trio/asyncio best practices)
+    "B",       # flake8-bugbear (common bugs)
+    "UP",      # pyupgrade (modern Python patterns)
+    "PLR0913", # too-many-arguments (Tiger Style: "hourglass shape: few parameters")
+    "PLR0915", # too-many-statements (Tiger Style: 70 line limit)
+    "PLR1702", # too-many-nested-blocks (Tiger Style: "centralize control flow")
+    "PLW2901", # redefined-loop-variable (Carmack SSA: single assignment)
+    "RET506",  # superfluous-else-raise (explicit control flow)
+    "RET507",  # superfluous-else-continue (explicit control flow)
+    "A",       # flake8-builtins (shadowing builtins like list, str)
+    "RUF018",  # assignment-in-assert (catches typos)
+    "TRY002",  # raise-vanilla-exception (use specific exceptions)
+    "TRY003",  # raise-vanilla-args (proper exception messages)
+    "TRY004",  # type-check-without-type-error (use TypeError for type checks)
+    "TRY201",  # verbose-raise (use bare raise)
+    "TRY300",  # try-consider-else (clear control flow)
+    "TRY400",  # error-instead-of-exception (use logging.exception)
 ]
-ignore = []
+ignore = [
+    "E501",    # Line too long (handled by formatter)
+    "ANN401",  # Dynamically typed expressions (Any) are disallowed
+]
+
+[tool.ruff.lint.pylint]
+max-args = 7             # Max function arguments (Tiger Style: few parameters)
+max-statements = 70      # Max statements per function (Tiger Style: 70 line limit)
+max-branches = 12        # Max if/elif branches
+max-nested-blocks = 5    # Max nesting depth (Linus rule: "if you need more than 3 levels, you're screwed")
 
 [tool.ty.src]
 exclude = [
