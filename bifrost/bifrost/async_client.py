@@ -101,6 +101,8 @@ class AsyncBifrostClient:
         Raises:
             ConnectionError: If connection fails after all retry attempts
         """
+        # Retry 3 times with exponential backoff (2s, 4s, 8s = 14s total)
+        # Enough to handle transient network issues but fail fast on real problems
         max_attempts = 3
         delay = 2
         backoff = 2
@@ -114,7 +116,9 @@ class AsyncBifrostClient:
                     username=self.ssh.user,
                     client_keys=[self.ssh_key_path] if self.ssh_key_path else None,
                     connect_timeout=self.timeout,
-                    keepalive_interval=30,  # Send keepalive every 30 seconds
+                    # Send keepalive every 30s to prevent idle timeout
+                    # Most SSH servers drop idle connections after 60s, so 30s = 2x safety margin
+                    keepalive_interval=30,
                     known_hosts=None,  # Accept any host key (like paramiko.AutoAddPolicy)
                 )
 
@@ -136,18 +140,20 @@ class AsyncBifrostClient:
 
         Checks if connection is active, reconnects if needed.
         """
-        needs_reconnect = False
-
+        # Check if we need to establish a new connection
         if self._ssh_conn is None:
-            needs_reconnect = True
-        elif self._ssh_conn._transport.is_closing():
-            self.logger.debug("SSH connection inactive, reconnecting...")
-            needs_reconnect = True
-
-        if needs_reconnect:
             self._ssh_conn = await self._establish_connection()
+            assert self._ssh_conn is not None, "SSH connection must be initialized"
+            return self._ssh_conn
 
-        # Assert post-condition
+        # Check if existing connection is still alive
+        if self._ssh_conn._transport.is_closing():
+            self.logger.debug("SSH connection inactive, reconnecting...")
+            self._ssh_conn = await self._establish_connection()
+            assert self._ssh_conn is not None, "SSH connection must be initialized"
+            return self._ssh_conn
+
+        # Connection is active, return it
         assert self._ssh_conn is not None, "SSH connection must be initialized"
         return self._ssh_conn
 
@@ -216,20 +222,24 @@ class AsyncBifrostClient:
             # Default to workspace if it exists
             if working_dir is None:
                 result = await _trio_wrap(conn.run)("test -d ~/.bifrost/workspace", check=False)
-                if result.exit_status == 0:
-                    working_dir = "~/.bifrost/workspace"
-                    self.logger.debug(f"Using default working directory: {working_dir}")
+                workspace_exists = (result.exit_status == 0)
+                if workspace_exists:
+                    default_working_dir = "~/.bifrost/workspace"
+                    self.logger.debug(f"Using default working directory: {default_working_dir}")
                 else:
-                    working_dir = "~"
+                    default_working_dir = "~"
                     self.logger.warning("No code deployed yet. Running from home directory.")
+                working_dir = default_working_dir
 
             # Convert dict to EnvironmentVariables if needed
-            env_vars = None
-            if env is not None:
-                if isinstance(env, EnvironmentVariables):
-                    env_vars = env
-                elif isinstance(env, dict):
-                    env_vars = EnvironmentVariables.from_dict(env)
+            if env is None:
+                env_vars = None
+            elif isinstance(env, EnvironmentVariables):
+                env_vars = env
+            elif isinstance(env, dict):
+                env_vars = EnvironmentVariables.from_dict(env)
+            else:
+                env_vars = None
 
             # Build command with environment and working directory
             full_command = self._build_command_with_env(command, working_dir, env_vars)
@@ -277,20 +287,24 @@ class AsyncBifrostClient:
             # Default to workspace if it exists (same logic as exec)
             if working_dir is None:
                 result = await _trio_wrap(conn.run)("test -d ~/.bifrost/workspace", check=False)
-                if result.exit_status == 0:
-                    working_dir = "~/.bifrost/workspace"
-                    self.logger.debug(f"Using default working directory: {working_dir}")
+                workspace_exists = (result.exit_status == 0)
+                if workspace_exists:
+                    default_working_dir = "~/.bifrost/workspace"
+                    self.logger.debug(f"Using default working directory: {default_working_dir}")
                 else:
-                    working_dir = "~"
+                    default_working_dir = "~"
                     self.logger.warning("No code deployed yet. Running from home directory.")
+                working_dir = default_working_dir
 
             # Convert dict to EnvironmentVariables if needed
-            env_vars = None
-            if env is not None:
-                if isinstance(env, EnvironmentVariables):
-                    env_vars = env
-                elif isinstance(env, dict):
-                    env_vars = EnvironmentVariables.from_dict(env)
+            if env is None:
+                env_vars = None
+            elif isinstance(env, EnvironmentVariables):
+                env_vars = env
+            elif isinstance(env, dict):
+                env_vars = EnvironmentVariables.from_dict(env)
+            else:
+                env_vars = None
 
             # Build command with environment and working directory
             full_command = self._build_command_with_env(command, working_dir, env_vars)
@@ -300,7 +314,8 @@ class AsyncBifrostClient:
             process = await _trio_wrap(conn.create_process)(full_command, term_type='ansi')
             try:
                 # Stream output line by line
-                # We need to manually read lines using wrapped readline calls
+                # Can't use 'async for' because asyncssh's async iterator doesn't work with
+                # trio-asyncio's event loop shim. Manual readline() calls work correctly.
                 while True:
                     try:
                         line = await _trio_wrap(process.stdout.readline)()
@@ -368,9 +383,9 @@ class AsyncBifrostClient:
         # Create workspace directory
         await _trio_wrap(conn.run)(f"mkdir -p {workspace_path}", check=True)
 
-        # Expand path to absolute
+        # Expand path to absolute (resolves ~ and env vars)
         expanded_result = await _trio_wrap(conn.run)(f"echo {workspace_path}", check=True)
-        workspace_path = expanded_result.stdout.strip()
+        expanded_workspace_path = expanded_result.stdout.strip()
 
         # Run bootstrap if specified
         if bootstrap_cmd:
@@ -378,13 +393,13 @@ class AsyncBifrostClient:
             commands = [bootstrap_cmd] if isinstance(bootstrap_cmd, str) else bootstrap_cmd
             for cmd in commands:
                 self.logger.debug(f"Running bootstrap: {cmd}")
-                result = await _trio_wrap(conn.run)(f"cd {workspace_path} && {cmd}", check=False)
+                result = await _trio_wrap(conn.run)(f"cd {expanded_workspace_path} && {cmd}", check=False)
                 if result.exit_status != 0:
                     raise RuntimeError(f"Bootstrap command failed: {cmd}\n{result.stderr}")
 
         # Assert output
-        assert workspace_path, "push() returned empty workspace_path"
-        return workspace_path
+        assert expanded_workspace_path, "push() returned empty workspace_path"
+        return expanded_workspace_path
 
     async def deploy(
         self,
