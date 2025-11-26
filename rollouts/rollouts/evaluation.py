@@ -5,19 +5,27 @@ Tiger Style: Pure functions, explicit configuration, no hidden state.
 """
 
 import json
-import trio
 import logging
 import time
-from pathlib import Path
-from dataclasses import dataclass, field, asdict, replace
-from typing import Any, Dict, List, Optional, Iterator, Callable
+from collections.abc import Callable, Iterator
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
+from pathlib import Path
+from typing import Any
 
-from .dtypes import (
-    Trajectory, Message, Endpoint, Actor, AgentState,
-    Environment, EvalConfig, RunConfig, RewardFunction
-)
+import trio
+
 from .agents import run_agent
+from .dtypes import (
+    Actor,
+    AgentState,
+    Endpoint,
+    Environment,
+    EvalConfig,
+    Message,
+    RunConfig,
+    Trajectory,
+)
 from .progress import tqdm
 
 logger = logging.getLogger(__name__)
@@ -27,11 +35,11 @@ logger = logging.getLogger(__name__)
 class EvalSample:
     """A single evaluation sample with its result."""
     sample_id: str
-    input_data: Dict[str, Any]
+    input_data: dict[str, Any]
     trajectory: Trajectory
-    agent_states: List[AgentState]  # Full list of agent states from run_agent
-    metrics: Dict[str, float]  # All metrics are floats for RL compatibility
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    agent_states: list[AgentState]  # Full list of agent states from run_agent
+    metrics: dict[str, float]  # All metrics are floats for RL compatibility
+    metadata: dict[str, Any] = field(default_factory=dict)
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
     def to_json(self) -> str:
@@ -81,9 +89,9 @@ class EvalReport:
     eval_name: str
     dataset_path: str
     total_samples: int
-    summary_metrics: Dict[str, float]
-    sample_results: List[EvalSample]
-    config: Dict[str, Any]
+    summary_metrics: dict[str, float]
+    sample_results: list[EvalSample]
+    config: dict[str, Any]
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
     async def save(self, output_dir: Path) -> None:
@@ -187,9 +195,9 @@ def sanitize_api_keys(data: Any) -> Any:
 
 
 async def evaluate_sample(
-    sample_data: Dict[str, Any],
+    sample_data: dict[str, Any],
     sample_id: str,
-    prepare_messages: Callable[[Dict[str, Any]], List[Message]],
+    prepare_messages: Callable[[dict[str, Any]], list[Message]],
     environment: Environment | None,
     endpoint: Endpoint,
     config: EvalConfig,
@@ -251,7 +259,7 @@ async def evaluate_sample(
             logger.debug("🔍 Using stdout_handler for token streaming")
         else:
             # Silent mode (default)
-            on_chunk_handler = lambda _: trio.sleep(0)
+            on_chunk_handler = lambda _: trio.lowlevel.checkpoint()
             logger.debug("🔍 Using silent mode (no token streaming)")
 
         run_config = RunConfig(
@@ -270,19 +278,10 @@ async def evaluate_sample(
     start_time = time.time()
 
     # Emit sample_start event for frontend live streaming
-    if run_config.emit_event is not None:
-        await run_config.emit_event("sample_start", {
-            "sample_id": sample_id,
-            "data": sample_data,
-        })
-
-        # Emit initial messages (system + user prompts) so frontend can display them
-        # These are the messages before any agent execution (prepare_messages output)
-        for msg in initial_messages:
-            await run_config.emit_event("message", {
-                "role": msg.role,
-                "content": msg.content if isinstance(msg.content, str) else str(msg.content),
-            })
+    await run_config.on_chunk(StreamChunk(
+        "sample_start",
+        {"sample_id": sample_id, "sample_data": sample_data},
+    ))
 
     error_message = None
     try:
@@ -405,23 +404,21 @@ async def evaluate_sample(
     )
 
     # Emit sample_end event for frontend live streaming
-    if run_config.emit_event is not None:
-        await run_config.emit_event("sample_end", {
-            "sample_id": sample_id,
-            "reward": metrics.get("reward", 0.0),
-            "metadata": metadata,
-        })
+    await run_config.on_chunk(StreamChunk(
+        "sample_end",
+        {"sample_id": sample_id, "reward": metrics.get("reward", 0.0), "metadata": metadata},
+    ))
 
     return eval_sample
 
 
 async def evaluate(
-    dataset: Iterator[Dict[str, Any]],
-    prepare_messages: Callable[[Dict[str, Any]], List[Message]],
+    dataset: Iterator[dict[str, Any]],
+    prepare_messages: Callable[[dict[str, Any]], list[Message]],
     endpoint: Endpoint,
     config: EvalConfig,
     dataset_path: str = "unknown",
-    environment_factory: Callable[[Dict[str, Any]], Environment] | None = None,
+    environment_factory: Callable[[dict[str, Any]], Environment] | None = None,
 ) -> EvalReport:
     """Run evaluation on a dataset - analogous to run_agent.
 
@@ -453,7 +450,7 @@ async def evaluate(
         logger.info(f"starting evaluation: {config.eval_name}")
         logger.info(f"samples to evaluate: {len(samples_to_eval)}")
         logger.info(f"max concurrent: {config.max_concurrent}")
-        logger.debug("="*50)
+        logger.debug("=" * 50)
 
     # Evaluate samples (with concurrency control)
     results = []
@@ -496,7 +493,7 @@ async def evaluate(
         # Parallel evaluation with trio nursery - create fresh environment for each sample
         results = []
 
-        async def eval_task(sample_id: str, sample_data: Dict[str, Any]) -> None:
+        async def eval_task(sample_id: str, sample_data: dict[str, Any]) -> None:
             env = await environment_factory(sample_data) if environment_factory else None
             result = await evaluate_sample(
                 sample_data=sample_data,
@@ -557,9 +554,9 @@ async def evaluate(
     # Print summary
     if config.verbose:
         logger.info("")
-        logger.debug("="*50)
+        logger.debug("=" * 50)
         logger.info(f"Evaluation Summary: {config.eval_name}")
-        logger.debug("="*50)
+        logger.debug("=" * 50)
         logger.info(f"Samples evaluated: {len(results)}")
         for key, value in summary_metrics.items():
             # Handle both numeric and non-numeric values
@@ -571,7 +568,7 @@ async def evaluate(
     return report
 
 
-def compute_summary_metrics(results: List[EvalSample]) -> Dict[str, float]:
+def compute_summary_metrics(results: list[EvalSample]) -> dict[str, float]:
     """Compute summary statistics from results."""
     if not results:
         return {}
@@ -620,7 +617,7 @@ def compute_summary_metrics(results: List[EvalSample]) -> Dict[str, float]:
 
 
 # Dataset loaders
-def load_jsonl(path: Path) -> Iterator[Dict[str, Any]]:
+def load_jsonl(path: Path) -> Iterator[dict[str, Any]]:
     """Load JSONL dataset."""
     with open(path) as f:
         for line in f:
@@ -628,7 +625,7 @@ def load_jsonl(path: Path) -> Iterator[Dict[str, Any]]:
                 yield json.loads(line)
 
 
-def load_csv(path: Path) -> Iterator[Dict[str, Any]]:
+def load_csv(path: Path) -> Iterator[dict[str, Any]]:
     """Load CSV dataset."""
     import csv
     with open(path) as f:
@@ -640,7 +637,7 @@ def load_csv(path: Path) -> Iterator[Dict[str, Any]]:
 # Convenience function for simple evaluation
 async def simple_evaluate(
     dataset_path: Path,
-    prepare_messages: Callable[[Dict[str, Any]], List[Message]],
+    prepare_messages: Callable[[dict[str, Any]], list[Message]],
     environment_factory: Callable[[], Environment],
     endpoint: Endpoint,
     config: EvalConfig,

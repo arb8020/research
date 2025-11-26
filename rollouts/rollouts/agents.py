@@ -1,22 +1,9 @@
 # Core agent execution framework
 
-import sys
-import json
 import logging
-import os
 import time
-from dataclasses import dataclass, field, replace
-from typing import (Any, Dict, List, Optional, Tuple, Callable,
-                   AsyncIterator, Awaitable)
-
-from anthropic import AsyncAnthropic
-from openai import AsyncOpenAI
-from openai.types.chat import ChatCompletionMessageParam
-from openai.types import CompletionUsage
-
-from dacite import from_dict
-
-import copy
+from collections.abc import Awaitable, Callable
+from dataclasses import replace
 
 from .progress import tqdm
 
@@ -25,17 +12,20 @@ logger = logging.getLogger(__name__)
 # Environment class and other core types are now imported from dtypes
 
 from .dtypes import (
-    Tool, ToolCall, ToolResult, ToolConfirmResult, StopReason, StreamChunk, Message, Usage, Choice, ChatCompletion, Actor, AgentState, RunConfig
+    Actor,
+    AgentState,
+    Message,
+    RunConfig,
+    StopReason,
+    StreamChunk,
+    ToolCall,
+    ToolConfirmResult,
+    ToolResult,
 )
 from .providers import (
-    add_cache_control_to_last_content,
-    aggregate_anthropic_stream,
-    aggregate_stream,
     rollout_anthropic,
     rollout_openai,
     rollout_sglang,
-    sanitize_request_for_logging,
-    verbose,
 )
 
 # ── Core Design Philosophy ────────────────────────────────────────────────────
@@ -53,37 +43,39 @@ from .providers import (
 # ── Utility functions ────────────────────────────────────────────────────────
 # (Imported from providers.py)
 
+
 async def handle_checkpoint_event(state: 'AgentState', event: str, run_config: 'RunConfig',
-                                 session_id: Optional[str] = None) -> None:
-    """Handle checkpoint event - emits to events.jsonl if emit_event configured"""
+                                 session_id: str | None = None) -> None:
+    """Handle checkpoint event - emits via on_chunk"""
     assert state is not None
     assert isinstance(state, AgentState)
     assert event is not None
     assert isinstance(event, str)
     assert run_config is not None
 
-    if run_config.emit_event is not None:
-        await run_config.emit_event(event, {
-            "turn": state.turn_idx,
-            "session_id": session_id,
-        })
+    await run_config.on_chunk(StreamChunk(
+        event,
+        {"turn": state.turn_idx, "session_id": session_id},
+    ))
+
 
 async def stdout_handler(chunk: StreamChunk):
     """Simple stdout handler for chunks"""
-    if chunk.kind == "token":
+    if chunk.type == "token":
         print(chunk.data["text"], end='', flush=True)
-    elif chunk.kind == "tool_call_complete":
+    elif chunk.type == "tool_call_complete":
         print(f"\n🔧 Calling {chunk.data['name']}({chunk.data['args']})")
-    elif chunk.kind == "tool_result":
+    elif chunk.type == "tool_result":
         status = "✓" if chunk.data["ok"] else "✗"
         print(f"\n  {status} {chunk.data['content'][:100]}...")
-    elif chunk.kind == "thinking":
+    elif chunk.type == "thinking":
         print(f"\033[95m{chunk.data['text']}\033[0m", end='', flush=True)
 
 # ── Core agent functions ──────────────────────────────────────────────────────
 # Provider-specific rollout functions and stream handling imported from providers.py
 
-async def confirm_tool_with_feedback(tc: ToolCall, state: AgentState, run_config: 'RunConfig') -> Tuple[AgentState, ToolConfirmResult]:
+
+async def confirm_tool_with_feedback(tc: ToolCall, state: AgentState, run_config: 'RunConfig') -> tuple[AgentState, ToolConfirmResult]:
     """Confirm tool execution, returning state and confirmation result"""
     assert tc is not None
     assert isinstance(tc, ToolCall)
@@ -131,6 +123,7 @@ async def confirm_tool_with_feedback(tc: ToolCall, state: AgentState, run_config
         assert result_skip.tool_result is not None
         return state, result_skip
 
+
 def handle_tool_error(result: ToolResult, state: AgentState) -> AgentState:
     """Handle tool execution errors - currently a no-op"""
     assert result is not None
@@ -138,6 +131,7 @@ def handle_tool_error(result: ToolResult, state: AgentState) -> AgentState:
     assert state is not None
     assert isinstance(state, AgentState)
     return state
+
 
 def inject_turn_warning(max_turns: int, warning_at: int = 2) -> Callable[[AgentState], AgentState]:
     """Inject warning when N turns remaining.
@@ -180,6 +174,7 @@ def inject_turn_warning(max_turns: int, warning_at: int = 2) -> Callable[[AgentS
         return state
 
     return handler
+
 
 def handle_stop_max_turns(max_turns: int) -> Callable[[AgentState], AgentState]:
     """Stop when max turns reached.
@@ -346,15 +341,16 @@ async def inject_tool_reminder(state: AgentState, run_config: 'RunConfig') -> Ag
 
 FullAuto = RunConfig(
     on_chunk=stdout_handler,
-    confirm_tool=confirm_tool_with_feedback, #type: ignore
+    confirm_tool=confirm_tool_with_feedback,  # type: ignore
     handle_tool_error=handle_tool_error,
     on_step_start=inject_turn_warning(max_turns=10),  # Warn at 2 turns remaining
     handle_stop=handle_stop_max_turns(10),            # Stop after 10 turns
     handle_no_tool=inject_tool_reminder,
 )
 
-async def rollout(actor: Actor, on_chunk: Callable[[StreamChunk], Awaitable[None]]=stdout_handler,
-                  user_message_for_thinking: Optional[str] = None, turn_idx: int = 0, inline_thinking: Optional[str] = None) -> Actor:
+
+async def rollout(actor: Actor, on_chunk: Callable[[StreamChunk], Awaitable[None]] = stdout_handler,
+                  user_message_for_thinking: str | None = None, turn_idx: int = 0, inline_thinking: str | None = None) -> Actor:
     provider = actor.endpoint.provider
     if provider == "openai":
         new_actor = await rollout_openai(actor, on_chunk)
@@ -365,6 +361,7 @@ async def rollout(actor: Actor, on_chunk: Callable[[StreamChunk], Awaitable[None
     else:
         assert False, f"Invalid provider {actor.endpoint.provider}. Must be one of: openai, sglang, vllm, anthropic"
     return new_actor
+
 
 async def run_agent_step(state: AgentState, rcfg: RunConfig) -> AgentState:
     """Execute one complete turn: LLM call → ALL tool executions → next turn.
@@ -381,7 +378,6 @@ async def run_agent_step(state: AgentState, rcfg: RunConfig) -> AgentState:
     if state.pending_tool_calls:
         return await process_pending_tools(state, rcfg)
 
-    
     state = rcfg.on_step_start(state)
 
     # Otherwise, do a new rollout
@@ -446,7 +442,6 @@ async def run_agent_step(state: AgentState, rcfg: RunConfig) -> AgentState:
                       turn_idx=current_state.turn_idx + 1,
                       pending_tool_calls=[])
 
-    
     # Process the pending tools
     return await process_pending_tools(current_state, rcfg)
 
@@ -466,6 +461,7 @@ async def run_agent_step(state: AgentState, rcfg: RunConfig) -> AgentState:
 # Implementation approach: Modify process_pending_tools to yield intermediate
 # states after each tool, then checkpoint each yielded state in run_agent.
 # See next_tool_idx which already tracks progress within a tool batch.
+
 
 async def process_pending_tools(state: AgentState, rcfg: RunConfig) -> AgentState:
     """Resume processing tools from next_tool_idx"""
@@ -554,8 +550,8 @@ async def process_pending_tools(state: AgentState, rcfg: RunConfig) -> AgentStat
             break
     
     # All tools processed
-    #print(f"[DEBUG] process_pending_tools done - incrementing turn from {current_state.turn_idx} to {current_state.turn_idx + 1}")
-    #print(f"[DEBUG] Stop reason: {current_state.stop}")
+    # print(f"[DEBUG] process_pending_tools done - incrementing turn from {current_state.turn_idx} to {current_state.turn_idx + 1}")
+    # print(f"[DEBUG] Stop reason: {current_state.stop}")
     return replace(
         current_state, 
         turn_idx=current_state.turn_idx + 1,
@@ -567,8 +563,8 @@ async def process_pending_tools(state: AgentState, rcfg: RunConfig) -> AgentStat
 async def run_agent(
     state: AgentState,
     run_config: RunConfig,
-    session_id: Optional[str] = None
-) -> List[AgentState]:
+    session_id: str | None = None
+) -> list[AgentState]:
     """Run agent until stop condition, checkpointing each state"""
     if run_config.checkpoint_store and not session_id:
         session_id = f"session_{int(time.time() * 1000)}"  # ms timestamp
