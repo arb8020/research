@@ -1,27 +1,39 @@
 """Bifrost SDK - Python client for remote GPU execution and job management."""
 
-import paramiko
 import json
+import logging
 import os
 import time
+from collections.abc import Callable, Iterator
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Callable, Iterator, List, Dict, Union
-import logging
 
-from shared.validation import validate_ssh_key_path, validate_timeout
+import paramiko
 from shared.retry import retry
-from .types import (
-    SSHConnection, JobInfo, JobStatus, CopyResult, ConnectionError, JobError, TransferError,
-    RemoteConfig, ExecResult, EnvironmentVariables, SessionInfo, JobMetadata
-)
-from .deploy import GitDeployment
-from . import git_sync
-from .validation import (
-    generate_job_id, validate_bootstrap_cmd, validate_command,
-    validate_environment_variables, validate_poll_interval
-)
+from shared.validation import validate_ssh_key_path, validate_timeout
 
+from . import git_sync
+from .deploy import GitDeployment
+from .types import (
+    ConnectionError,
+    CopyResult,
+    EnvironmentVariables,
+    ExecResult,
+    JobError,
+    JobInfo,
+    JobMetadata,
+    JobStatus,
+    RemoteConfig,
+    SessionInfo,
+    SSHConnection,
+    TransferError,
+)
+from .validation import (
+    generate_job_id,
+    validate_bootstrap_cmd,
+    validate_command,
+    validate_poll_interval,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +60,7 @@ class BifrostClient:
         ssh_connection: str,
         ssh_key_path: str,
         timeout: int = 30,
-        progress_callback: Optional[Callable[[str, int, int], None]] = None
+        progress_callback: Callable[[str, int, int], None] | None = None
     ):
         """
         Initialize Bifrost client.
@@ -80,7 +92,10 @@ class BifrostClient:
         self.logger = logging.getLogger(__name__)
 
         # Connection will be established on-demand
-        self._ssh_client: Optional[paramiko.SSHClient] = None
+        self._ssh_client: paramiko.SSHClient | None = None
+
+        # Track last deployed workspace for smart working_dir defaults
+        self._last_workspace: str | None = None
     
     @retry(max_attempts=3, delay=2, backoff=2, exceptions=(Exception,))
     def _establish_connection(self, ssh_client: paramiko.SSHClient, private_key=None) -> None:
@@ -150,7 +165,8 @@ class BifrostClient:
                 if key_content:
                     # Use provided key
                     import io
-                    from paramiko import RSAKey, Ed25519Key, ECDSAKey
+
+                    from paramiko import ECDSAKey, Ed25519Key, RSAKey
 
                     key_file = io.StringIO(key_content)
                     # Try different key types
@@ -184,7 +200,7 @@ class BifrostClient:
 
         return self._ssh_client
     
-    def _load_ssh_key(self) -> Optional[str]:
+    def _load_ssh_key(self) -> str | None:
         """Load SSH private key content from file path."""
         if not self.ssh_key_path:
             return None
@@ -192,13 +208,13 @@ class BifrostClient:
         import os
         key_path = os.path.expanduser(self.ssh_key_path)
         try:
-            with open(key_path, 'r') as f:
+            with open(key_path) as f:
                 return f.read()
         except Exception as e:
             raise ConnectionError(f"Failed to load SSH key from {key_path}: {e}")
 
     def _build_command_with_env(self, command: str, working_dir: str,
-                                env: Optional[EnvironmentVariables]) -> str:
+                                env: EnvironmentVariables | None) -> str:
         """Build command with environment variables and working directory.
 
         Args:
@@ -228,7 +244,7 @@ class BifrostClient:
 
         return " && ".join(parts)
 
-    def _generate_job_id(self, session_name: Optional[str]) -> str:
+    def _generate_job_id(self, session_name: str | None) -> str:
         """Generate job ID with optional human-readable component.
 
         Uses validation helper which handles all assertions.
@@ -244,7 +260,7 @@ class BifrostClient:
     def push(
         self,
         workspace_path: str,
-        bootstrap_cmd: Optional[Union[str, List[str]]] = None
+        bootstrap_cmd: str | list[str] | None = None
     ) -> str:
         """Deploy code to remote workspace.
 
@@ -291,9 +307,13 @@ class BifrostClient:
 
         # Assert output
         assert workspace_path, "push() returned empty workspace_path"
+
+        # Track last deployed workspace for smart working_dir defaults
+        self._last_workspace = workspace_path
+
         return workspace_path
     
-    def exec(self, command: str, env: Optional[Union[EnvironmentVariables, Dict[str, str]]] = None, working_dir: Optional[str] = None) -> ExecResult:
+    def exec(self, command: str, env: EnvironmentVariables | dict[str, str] | None = None, working_dir: str | None = None) -> ExecResult:
         """
         Execute command in remote environment.
 
@@ -319,16 +339,13 @@ class BifrostClient:
         try:
             ssh_client = self._get_ssh_client()
 
-            # Default to workspace if it exists
+            # Default to last deployed workspace, or home directory if nothing deployed
             if working_dir is None:
-                default_dir = "~/.bifrost/workspace"
-                stdin, stdout, stderr = ssh_client.exec_command(f"test -d {default_dir}")
-                if stdout.channel.recv_exit_status() == 0:
-                    working_dir = default_dir
-                    self.logger.debug(f"Using default working directory: {default_dir}")
+                working_dir = self._last_workspace or "~"
+                if self._last_workspace:
+                    self.logger.debug(f"Using workspace from last push(): {working_dir}")
                 else:
-                    working_dir = "~"
-                    self.logger.warning("No code deployed yet. Running from home directory.")
+                    self.logger.debug(f"No workspace deployed yet, using home directory: {working_dir}")
 
             # Convert dict to EnvironmentVariables if needed
             env_vars = None
@@ -356,7 +373,7 @@ class BifrostClient:
                 raise
             raise ConnectionError(f"Execution failed: {e}")
 
-    def exec_stream(self, command: str, env: Optional[Union[EnvironmentVariables, Dict[str, str]]] = None, working_dir: Optional[str] = None) -> Iterator[str]:
+    def exec_stream(self, command: str, env: EnvironmentVariables | dict[str, str] | None = None, working_dir: str | None = None) -> Iterator[str]:
         """
         Execute command and stream output line-by-line in real-time.
 
@@ -377,16 +394,13 @@ class BifrostClient:
         try:
             ssh_client = self._get_ssh_client()
 
-            # Default to workspace if it exists (same logic as exec)
+            # Default to last deployed workspace, or home directory if nothing deployed (same logic as exec)
             if working_dir is None:
-                default_dir = "~/.bifrost/workspace"
-                stdin, stdout, stderr = ssh_client.exec_command(f"test -d {default_dir}")
-                if stdout.channel.recv_exit_status() == 0:
-                    working_dir = default_dir
-                    self.logger.debug(f"Using default working directory: {default_dir}")
+                working_dir = self._last_workspace or "~"
+                if self._last_workspace:
+                    self.logger.debug(f"Using workspace from last push(): {working_dir}")
                 else:
-                    working_dir = "~"
-                    self.logger.warning("No code deployed yet. Running from home directory.")
+                    self.logger.debug(f"No workspace deployed yet, using home directory: {working_dir}")
 
             # Convert dict to EnvironmentVariables if needed
             env_vars = None
@@ -485,8 +499,8 @@ class BifrostClient:
 
         return expanded
 
-    def deploy(self, command: str, bootstrap_cmd: Optional[Union[str, List[str]]] = None,
-               env: Optional[Union[EnvironmentVariables, Dict[str, str]]] = None) -> ExecResult:
+    def deploy(self, command: str, bootstrap_cmd: str | list[str] | None = None,
+               env: EnvironmentVariables | dict[str, str] | None = None) -> ExecResult:
         """Deploy code and execute command.
 
         Equivalent to: push(bootstrap_cmd) + exec(command, env)
@@ -509,10 +523,10 @@ class BifrostClient:
     def run_detached(
         self,
         command: str,
-        bootstrap_cmd: Optional[Union[str, List[str]]] = None,
+        bootstrap_cmd: str | list[str] | None = None,
         bootstrap_timeout: int = 600,
-        env: Optional[Union[EnvironmentVariables, Dict[str, str]]] = None,
-        session_name: Optional[str] = None,
+        env: EnvironmentVariables | dict[str, str] | None = None,
+        session_name: str | None = None,
         no_deploy: bool = False
     ) -> JobInfo:
         """Execute command as detached background job.
@@ -651,7 +665,7 @@ class BifrostClient:
                 raise
             raise JobError(f"Failed to get job status: {e}")
     
-    def get_all_jobs(self) -> List[JobInfo]:
+    def get_all_jobs(self) -> list[JobInfo]:
         """
         Get status of all jobs on the remote instance.
         
@@ -727,7 +741,6 @@ class BifrostClient:
                 raise
             raise JobError(f"Failed to get job logs: {e}")
 
-    
     def follow_job_logs(self, job_id: str) -> Iterator[str]:
         """
         Stream job logs in real-time (like tail -f).
@@ -760,7 +773,7 @@ class BifrostClient:
                 raise
             raise JobError(f"Failed to follow job logs: {e}")
     
-    def list_sessions(self) -> List[str]:
+    def list_sessions(self) -> list[str]:
         """List all bifrost tmux sessions on remote.
 
         Returns:
@@ -804,7 +817,7 @@ class BifrostClient:
                 attach_main=attach_main
             )
 
-    def wait_for_completion(self, job_id: str, poll_interval: float = 5.0, timeout: Optional[float] = None) -> JobInfo:
+    def wait_for_completion(self, job_id: str, poll_interval: float = 5.0, timeout: float | None = None) -> JobInfo:
         """
         Wait for a job to complete.
 

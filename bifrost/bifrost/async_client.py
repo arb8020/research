@@ -1,26 +1,35 @@
 """Bifrost Async SDK - Trio-based async client for remote GPU execution."""
 
+import json
+import logging
+import os
+from collections.abc import AsyncIterator, Callable
+from datetime import datetime
+from pathlib import Path
+
 import asyncssh
 import trio
 import trio_asyncio
-import json
-import os
-from datetime import datetime
-from pathlib import Path
-from typing import Optional, Callable, AsyncIterator, List, Dict, Union
-from contextlib import asynccontextmanager
-import logging
-
 from shared.validation import validate_ssh_key_path, validate_timeout
+
 from .types import (
-    SSHConnection, JobInfo, JobStatus, CopyResult, ConnectionError, JobError, TransferError,
-    RemoteConfig, ExecResult, EnvironmentVariables, SessionInfo, JobMetadata
+    ConnectionError,
+    CopyResult,
+    EnvironmentVariables,
+    ExecResult,
+    JobError,
+    JobInfo,
+    JobMetadata,
+    JobStatus,
+    RemoteConfig,
+    SessionInfo,
+    SSHConnection,
+    TransferError,
 )
 from .validation import (
-    generate_job_id, validate_bootstrap_cmd, validate_command,
-    validate_environment_variables, validate_poll_interval
+    validate_bootstrap_cmd,
+    validate_poll_interval,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +64,7 @@ class AsyncBifrostClient:
         ssh_connection: str,
         ssh_key_path: str,
         timeout: int = 30,
-        progress_callback: Optional[Callable[[str, int, int], None]] = None
+        progress_callback: Callable[[str, int, int], None] | None = None
     ):
         """
         Initialize Async Bifrost client.
@@ -87,7 +96,10 @@ class AsyncBifrostClient:
         self.logger = logging.getLogger(__name__)
 
         # Connection will be established on-demand
-        self._ssh_conn: Optional[asyncssh.SSHClientConnection] = None
+        self._ssh_conn: asyncssh.SSHClientConnection | None = None
+
+        # Track last deployed workspace for smart working_dir defaults
+        self._last_workspace: str | None = None
 
     async def _establish_connection(self) -> asyncssh.SSHClientConnection:
         """Establish SSH connection with retry logic using Trio.
@@ -158,7 +170,7 @@ class AsyncBifrostClient:
         return self._ssh_conn
 
     def _build_command_with_env(self, command: str, working_dir: str,
-                                env: Optional[EnvironmentVariables]) -> str:
+                                env: EnvironmentVariables | None) -> str:
         """Build command with environment variables and working directory.
 
         Args:
@@ -191,8 +203,8 @@ class AsyncBifrostClient:
     async def exec(
         self,
         command: str,
-        env: Optional[Union[EnvironmentVariables, Dict[str, str]]] = None,
-        working_dir: Optional[str] = None
+        env: EnvironmentVariables | dict[str, str] | None = None,
+        working_dir: str | None = None
     ) -> ExecResult:
         """
         Execute command in remote environment.
@@ -219,17 +231,13 @@ class AsyncBifrostClient:
         try:
             conn = await self._get_connection()
 
-            # Default to workspace if it exists
+            # Default to last deployed workspace, or home directory if nothing deployed
             if working_dir is None:
-                result = await _trio_wrap(conn.run)("test -d ~/.bifrost/workspace", check=False)
-                workspace_exists = (result.exit_status == 0)
-                if workspace_exists:
-                    default_working_dir = "~/.bifrost/workspace"
-                    self.logger.debug(f"Using default working directory: {default_working_dir}")
+                working_dir = self._last_workspace or "~"
+                if self._last_workspace:
+                    self.logger.debug(f"Using workspace from last push(): {working_dir}")
                 else:
-                    default_working_dir = "~"
-                    self.logger.warning("No code deployed yet. Running from home directory.")
-                working_dir = default_working_dir
+                    self.logger.debug(f"No workspace deployed yet, using home directory: {working_dir}")
 
             # Convert dict to EnvironmentVariables if needed
             if env is None:
@@ -261,8 +269,8 @@ class AsyncBifrostClient:
     async def exec_stream(
         self,
         command: str,
-        env: Optional[Union[EnvironmentVariables, Dict[str, str]]] = None,
-        working_dir: Optional[str] = None
+        env: EnvironmentVariables | dict[str, str] | None = None,
+        working_dir: str | None = None
     ) -> AsyncIterator[str]:
         """
         Execute command and stream output line-by-line in real-time.
@@ -284,17 +292,13 @@ class AsyncBifrostClient:
         try:
             conn = await self._get_connection()
 
-            # Default to workspace if it exists (same logic as exec)
+            # Default to last deployed workspace, or home directory if nothing deployed (same logic as exec)
             if working_dir is None:
-                result = await _trio_wrap(conn.run)("test -d ~/.bifrost/workspace", check=False)
-                workspace_exists = (result.exit_status == 0)
-                if workspace_exists:
-                    default_working_dir = "~/.bifrost/workspace"
-                    self.logger.debug(f"Using default working directory: {default_working_dir}")
+                working_dir = self._last_workspace or "~"
+                if self._last_workspace:
+                    self.logger.debug(f"Using workspace from last push(): {working_dir}")
                 else:
-                    default_working_dir = "~"
-                    self.logger.warning("No code deployed yet. Running from home directory.")
-                working_dir = default_working_dir
+                    self.logger.debug(f"No workspace deployed yet, using home directory: {working_dir}")
 
             # Convert dict to EnvironmentVariables if needed
             if env is None:
@@ -335,7 +339,7 @@ class AsyncBifrostClient:
     async def push(
         self,
         workspace_path: str,
-        bootstrap_cmd: Optional[Union[str, List[str]]] = None
+        bootstrap_cmd: str | list[str] | None = None
     ) -> str:
         """Deploy code to remote workspace.
 
@@ -399,13 +403,17 @@ class AsyncBifrostClient:
 
         # Assert output
         assert expanded_workspace_path, "push() returned empty workspace_path"
+
+        # Track last deployed workspace for smart working_dir defaults
+        self._last_workspace = expanded_workspace_path
+
         return expanded_workspace_path
 
     async def deploy(
         self,
         command: str,
-        bootstrap_cmd: Optional[Union[str, List[str]]] = None,
-        env: Optional[Union[EnvironmentVariables, Dict[str, str]]] = None
+        bootstrap_cmd: str | list[str] | None = None,
+        env: EnvironmentVariables | dict[str, str] | None = None
     ) -> ExecResult:
         """Deploy code and execute command.
 
@@ -454,7 +462,7 @@ class AsyncBifrostClient:
 
         return expanded
 
-    async def get_all_jobs(self) -> List[JobInfo]:
+    async def get_all_jobs(self) -> list[JobInfo]:
         """
         Get status of all jobs on the remote instance.
 
@@ -633,7 +641,7 @@ class AsyncBifrostClient:
                 raise
             raise JobError(f"Failed to follow job logs: {e}")
 
-    async def list_sessions(self) -> List[str]:
+    async def list_sessions(self) -> list[str]:
         """List all bifrost tmux sessions on remote.
 
         Returns:
@@ -681,7 +689,7 @@ class AsyncBifrostClient:
         self,
         job_id: str,
         poll_interval: float = 5.0,
-        timeout: Optional[float] = None
+        timeout: float | None = None
     ) -> JobInfo:
         """
         Wait for a job to complete.
