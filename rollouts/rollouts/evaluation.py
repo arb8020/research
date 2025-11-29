@@ -7,7 +7,7 @@ Tiger Style: Pure functions, explicit configuration, no hidden state.
 import json
 import logging
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +24,7 @@ from .dtypes import (
     EvalConfig,
     Message,
     RunConfig,
+    StreamChunk,
     Trajectory,
 )
 from .progress import tqdm
@@ -418,7 +419,7 @@ async def evaluate(
     endpoint: Endpoint,
     config: EvalConfig,
     dataset_path: str = "unknown",
-    environment_factory: Callable[[dict[str, Any]], Environment] | None = None,
+    environment_factory: Callable[[dict[str, Any]], Awaitable[Environment]] | None = None,
 ) -> EvalReport:
     """Run evaluation on a dataset - analogous to run_agent.
 
@@ -431,8 +432,8 @@ async def evaluate(
         endpoint: LLM endpoint configuration
         config: Evaluation configuration
         dataset_path: Path/name of dataset for logging
-        environment_factory: Optional factory function that takes sample_data and returns
-                           a fresh Environment instance. Example: `lambda sample: MyEnv(sample)`
+        environment_factory: Optional async factory function that takes sample_data and returns
+                           a fresh Environment instance. Example: `async def factory(sample): return MyEnv(sample)`
                            If None, samples run without environment (tool-free evaluation).
 
     Returns:
