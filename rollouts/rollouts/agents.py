@@ -484,16 +484,16 @@ async def process_pending_tools(state: AgentState, rcfg: RunConfig) -> AgentStat
             
             # Execute tool on fresh environment
             tool_result = await fresh_env.exec_tool(tool_call, current_state, rcfg, None)
-            
-            if tool_result.ok:
-                # SERIALIZE the updated environment state
-                env_data = await fresh_env.serialize()
-                
-                # DESERIALIZE again to update current_state
-                current_state = replace(
-                    current_state,
-                    environment=await current_state.environment.__class__.deserialize(env_data)
-                )
+
+            # ALWAYS serialize the environment state after tool execution
+            # (even if tool failed, environment state like _initialized may have changed)
+            env_data = await fresh_env.serialize()
+
+            # DESERIALIZE again to update current_state
+            current_state = replace(
+                current_state,
+                environment=await current_state.environment.__class__.deserialize(env_data)
+            )
         else:
             # Use the provided tool result
             tool_result = confirm_result.tool_result
