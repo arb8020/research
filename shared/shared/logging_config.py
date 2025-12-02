@@ -6,6 +6,8 @@ Sean Goedecke: Boring, well-tested patterns (Python's logging module).
 import logging.config
 import logging.handlers
 import os
+import sys
+from queue import Queue
 from typing import Any, Dict, Optional
 
 
@@ -140,13 +142,24 @@ def setup_logging(
 
     # mCoding pattern: Use QueueHandler for async-safe logging
     # Python 3.12+ QueueHandler in dictConfig automatically creates QueueListener!
+    # Python 3.11 requires manual Queue and QueueListener setup
     # The listener runs in a background thread, prevents blocking in async code
     if use_queue_handler:
-        handlers["queue_handler"] = {
-            "class": "logging.handlers.QueueHandler",
-            "handlers": handler_list.copy(),  # Wrap our actual handlers
-            "respect_handler_level": True,  # Each handler keeps its own level
-        }
+        # Python 3.12+ supports 'handlers' parameter in dictConfig
+        # Python 3.11 requires manual setup
+        if sys.version_info >= (3, 12):
+            handlers["queue_handler"] = {
+                "class": "logging.handlers.QueueHandler",
+                "handlers": handler_list.copy(),  # Wrap our actual handlers
+                "respect_handler_level": True,  # Each handler keeps its own level
+            }
+        else:
+            # Python 3.11: Create queue manually
+            # We'll configure QueueHandler with just the queue, then create listener later
+            handlers["queue_handler"] = {
+                "class": "logging.handlers.QueueHandler",
+                "queue": Queue(-1),  # Unbounded queue (will be created by dictConfig)
+            }
         handler_list = ["queue_handler"]  # Route all logs through queue
 
     config: Dict[str, Any] = {
@@ -175,11 +188,94 @@ def setup_logging(
     logging.config.dictConfig(config)
 
     # mCoding pattern: Start QueueListener and register cleanup
-    # Python 3.12+ creates the listener automatically, we just need to start it
     if use_queue_handler:
         queue_handler = logging.getHandlerByName("queue_handler")
-        if queue_handler is not None and hasattr(queue_handler, 'listener'):
-            queue_handler.listener.start()
-            # Register cleanup on exit (mCoding pattern)
-            import atexit
-            atexit.register(queue_handler.listener.stop)
+        if queue_handler is not None:
+            if sys.version_info >= (3, 12):
+                # Python 3.12+: QueueListener is created automatically, just start it
+                if hasattr(queue_handler, 'listener'):
+                    queue_handler.listener.start()
+                    # Register cleanup on exit (mCoding pattern)
+                    import atexit
+                    atexit.register(queue_handler.listener.stop)
+            else:
+                # Python 3.11: Manually create and start QueueListener
+                # Recreate the actual handlers that logs should be routed to
+                actual_handlers = []
+                handlers_dict = config.get("handlers", {})
+
+                # Get the original handler list (before queue_handler was added)
+                # We need to recreate these handlers from the config
+                for handler_name in ["console", "file"]:
+                    if handler_name in handlers_dict and handler_name != "queue_handler":
+                        handler_config = handlers_dict[handler_name]
+                        handler_class_path = handler_config.get("class", "")
+
+                        # Create handler instance based on config
+                        if "RichHandler" in handler_class_path:
+                            from rich.logging import RichHandler
+                            handler = RichHandler(
+                                level=handler_config.get("level", "DEBUG"),
+                                rich_tracebacks=handler_config.get("rich_tracebacks", False),
+                                show_time=handler_config.get("show_time", False),
+                                show_path=handler_config.get("show_path", False),
+                            )
+                            # Set formatter
+                            formatter_name = handler_config.get("formatter", "minimal")
+                            if formatter_name == "minimal":
+                                handler.setFormatter(logging.Formatter("%(message)s"))
+                        elif "StreamHandler" in handler_class_path:
+                            handler = logging.StreamHandler(sys.stdout)
+                            handler.setLevel(handler_config.get("level", "DEBUG"))
+                            # Set formatter
+                            formatter_name = handler_config.get("formatter", "standard")
+                            formatter_config = config["formatters"].get(formatter_name, {})
+                            if "color" in formatter_name:
+                                from shared.color_formatter import ColorFormatter
+                                handler.setFormatter(ColorFormatter(
+                                    show_timestamp=formatter_config.get("show_timestamp", True)
+                                ))
+                            elif "json" in formatter_name:
+                                from shared.json_formatter import JSONFormatter
+                                handler.setFormatter(JSONFormatter(
+                                    fmt_keys=formatter_config.get("fmt_keys", {})
+                                ))
+                            else:
+                                handler.setFormatter(logging.Formatter(
+                                    fmt=formatter_config.get("format", "[%(asctime)s] %(levelname)s: %(message)s"),
+                                    datefmt=formatter_config.get("datefmt", "%H:%M:%S")
+                                ))
+                        elif "RotatingFileHandler" in handler_class_path:
+                            handler = logging.handlers.RotatingFileHandler(
+                                filename=handler_config.get("filename"),
+                                mode=handler_config.get("mode", "a"),
+                                maxBytes=handler_config.get("maxBytes", max_log_bytes),
+                                backupCount=handler_config.get("backupCount", backup_count),
+                            )
+                            handler.setLevel(handler_config.get("level", "DEBUG"))
+                            # File handler always uses JSON formatter
+                            from shared.json_formatter import JSONFormatter
+                            formatter_config = config["formatters"].get("json", {})
+                            handler.setFormatter(JSONFormatter(
+                                fmt_keys=formatter_config.get("fmt_keys", {})
+                            ))
+                        else:
+                            continue
+
+                        actual_handlers.append(handler)
+
+                # Create and start QueueListener with the actual handlers
+                if actual_handlers and hasattr(queue_handler, 'queue'):
+                    listener = logging.handlers.QueueListener(
+                        queue_handler.queue,
+                        *actual_handlers,
+                        respect_handler_level=True
+                    )
+                    listener.start()
+
+                    # Store listener reference for cleanup
+                    queue_handler.listener = listener
+
+                    # Register cleanup on exit
+                    import atexit
+                    atexit.register(listener.stop)
