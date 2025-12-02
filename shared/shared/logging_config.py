@@ -189,7 +189,17 @@ def setup_logging(
 
     # mCoding pattern: Start QueueListener and register cleanup
     if use_queue_handler:
-        queue_handler = logging.getHandlerByName("queue_handler")
+        # Get the queue_handler - getHandlerByName is Python 3.12+
+        if sys.version_info >= (3, 12):
+            queue_handler = logging.getHandlerByName("queue_handler")
+        else:
+            # Python 3.11: Get handler from root logger
+            queue_handler = None
+            for handler in logging.root.handlers:
+                if isinstance(handler, logging.handlers.QueueHandler):
+                    queue_handler = handler
+                    break
+
         if queue_handler is not None:
             if sys.version_info >= (3, 12):
                 # Python 3.12+: QueueListener is created automatically, just start it
