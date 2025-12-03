@@ -73,6 +73,10 @@ async def deserialize_agent_state(
     state_data["actor"] = from_dict(Actor, data["actor"], Config(check_types=False))
     state_data["stop"] = StopReason(data["stop"]) if data["stop"] else None
 
+    # Remove max_turns if present (backwards compatibility with old checkpoints)
+    # max_turns was removed from AgentState in commit 3607b7b (Nov 21, 2025)
+    state_data.pop("max_turns", None)
+
     result = from_dict(AgentState, state_data, Config(check_types=False))
     assert result is not None
     assert isinstance(result, AgentState)
