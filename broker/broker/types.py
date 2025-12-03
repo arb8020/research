@@ -4,9 +4,9 @@ Core data types for GPU cloud operations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Optional, Protocol
 
-from .ssh_clients_compat import execute_command_sync, execute_command_async
+from .ssh_clients_compat import execute_command_async, execute_command_sync
 
 
 class InstanceStatus(str, Enum):
@@ -42,29 +42,29 @@ class GPUOffer:
     memory_gb: int
     storage_gb: int
     price_per_hour: float
-    availability_zone: Optional[str] = None
-    raw_data: Optional[Dict[str, Any]] = None
+    availability_zone: str | None = None
+    raw_data: dict[str, Any] | None = None
 
     # Additional fields for pandas-style queries
-    vram_gb: Optional[int] = None
-    region: Optional[str] = None
-    availability: Optional[GPUAvailability] = None
+    vram_gb: int | None = None
+    region: str | None = None
+    availability: GPUAvailability | None = None
     spot: bool = False
-    cuda_version: Optional[str] = None
-    driver_version: Optional[str] = None
-    cloud_type: Optional[CloudType] = None
-    manufacturer: Optional[str] = None
-    underlying_provider: Optional[str] = None  # For aggregators like PrimeIntellect
+    cuda_version: str | None = None
+    driver_version: str | None = None
+    cloud_type: CloudType | None = None
+    manufacturer: str | None = None
+    underlying_provider: str | None = None  # For aggregators like PrimeIntellect
 
     # Stock availability information (from provider APIs)
-    max_gpu_count: Optional[int] = None  # Maximum unreserved GPU count available
-    available_gpu_counts: Optional[list] = None  # List of available GPU counts (e.g., [1,2,3,4,5,6,7])
-    stock_status: Optional[str] = None  # Stock status (e.g., "Low", "High")
+    max_gpu_count: int | None = None  # Maximum unreserved GPU count available
+    available_gpu_counts: list | None = None  # List of available GPU counts (e.g., [1,2,3,4,5,6,7])
+    stock_status: str | None = None  # Stock status (e.g., "Low", "High")
 
     def total_price(self, gpu_count: int = 1) -> float:
         """Calculate total price for N GPUs."""
         assert gpu_count > 0, f"gpu_count must be positive, got {gpu_count}"
-        assert self.price_per_hour > 0, f"price_per_hour must be positive"
+        assert self.price_per_hour > 0, "price_per_hour must be positive"
 
         total = self.price_per_hour * gpu_count
 
@@ -83,14 +83,14 @@ class GPUInstance:
     gpu_type: str
     gpu_count: int
     price_per_hour: float
-    name: Optional[str] = None
-    public_ip: Optional[str] = None
-    ssh_port: Optional[int] = None
-    ssh_username: Optional[str] = None
-    raw_data: Optional[Dict[str, Any]] = None
-    api_key: Optional[str] = None  # Store API key for internal API calls
+    name: str | None = None
+    public_ip: str | None = None
+    ssh_port: int | None = None
+    ssh_username: str | None = None
+    raw_data: dict[str, Any] | None = None
+    api_key: str | None = None  # Store API key for internal API calls
     
-    def exec(self, command: str, ssh_key_path: Optional[str] = None, timeout: int = 30) -> 'SSHResult':
+    def exec(self, command: str, ssh_key_path: str | None = None, timeout: int = 30) -> 'SSHResult':
         """Execute command via SSH using configured key (synchronous)"""
         self._validate_ssh_ready()
         key_content = self._load_ssh_key(ssh_key_path)
@@ -106,7 +106,7 @@ class GPUInstance:
             exit_code=exit_code
         )
     
-    async def aexec(self, command: str, ssh_key_path: Optional[str] = None, timeout: int = 30) -> 'SSHResult':
+    async def aexec(self, command: str, ssh_key_path: str | None = None, timeout: int = 30) -> 'SSHResult':
         """Execute command via SSH using configured key (asynchronous)
         
         Args:
@@ -147,7 +147,7 @@ class GPUInstance:
         if not self.public_ip or not self.ssh_username:
             raise ValueError("Instance SSH details not available - may not be running yet")
     
-    def _load_ssh_key(self, ssh_key_path: Optional[str]) -> Optional[str]:
+    def _load_ssh_key(self, ssh_key_path: str | None) -> str | None:
         """Load SSH private key content from file path"""
         import os
         
@@ -161,8 +161,7 @@ class GPUInstance:
         except Exception as e:
             raise ValueError(f"Failed to load SSH key from {key_path}: {e}") from e
     
-    
-    def ssh_connection_string(self, ssh_key_path: Optional[str] = None, full_command: bool = False) -> str:
+    def ssh_connection_string(self, ssh_key_path: str | None = None, full_command: bool = False) -> str:
         """Get SSH connection string for use with bifrost or other tools.
 
         Args:
@@ -233,6 +232,7 @@ class GPUInstance:
             True if SSH ready, False if timeout/failure
         """
         import logging
+
         from .providers import get_provider_impl
 
         logger = logging.getLogger(__name__)
@@ -274,32 +274,31 @@ class GPUInstance:
             raise ValueError(f"Could not refresh instance {self.id}")
     
 
-
 @dataclass
 class ProvisionRequest:
     """Request to provision a GPU instance"""
-    gpu_type: Optional[str] = None
+    gpu_type: str | None = None
     gpu_count: int = 1
     image: str = "runpod/pytorch:1.0.0-cu1281-torch280-ubuntu2204"
-    name: Optional[str] = None
-    max_price_per_hour: Optional[float] = None
-    provider: Optional[str] = None  # If None, search all providers
+    name: str | None = None
+    max_price_per_hour: float | None = None
+    provider: str | None = None  # If None, search all providers
     spot_instance: bool = False
-    ssh_startup_script: Optional[str] = None  # SSH key injection script
-    container_disk_gb: Optional[int] = None  # Container disk size in GB (default: 50)
-    volume_disk_gb: Optional[int] = None  # Volume disk size in GB (default: 0)
-    memory_gb: Optional[int] = None  # System memory allocation in GB (default: provider minimum)
+    ssh_startup_script: str | None = None  # SSH key injection script
+    container_disk_gb: int | None = None  # Container disk size in GB (default: 50)
+    volume_disk_gb: int | None = None  # Volume disk size in GB (default: 0)
+    memory_gb: int | None = None  # System memory allocation in GB (default: provider minimum)
     # Port exposure configuration
-    exposed_ports: Optional[List[int]] = None  # Ports to expose via HTTP proxy
+    exposed_ports: list[int] | None = None  # Ports to expose via HTTP proxy
     enable_http_proxy: bool = True  # Enable RunPod's HTTP proxy
-    manufacturer: Optional[str] = None  # GPU manufacturer filter (e.g., "nvidia", "amd")
+    manufacturer: str | None = None  # GPU manufacturer filter (e.g., "nvidia", "amd")
     # Jupyter configuration
     start_jupyter: bool = False  # Auto-start Jupyter Lab
-    jupyter_password: Optional[str] = None  # Jupyter authentication token
+    jupyter_password: str | None = None  # Jupyter authentication token
     # RunPod-specific: Template support
-    template_id: Optional[str] = None  # RunPod template ID (e.g., "runpod-torch-v280")
+    template_id: str | None = None  # RunPod template ID (e.g., "runpod-torch-v280")
     # Provider-specific data (e.g., Vast.ai needs price from raw offer data)
-    raw_data: Optional[Dict[str, Any]] = None
+    raw_data: dict[str, Any] | None = None
 
 
 @dataclass
@@ -309,7 +308,7 @@ class SSHResult:
     stdout: str
     stderr: str
     exit_code: int
-    command: Optional[str] = None
+    command: str | None = None
 
 
 @dataclass
@@ -318,8 +317,8 @@ class SSHConfig:
     hostname: str
     port: int
     username: str
-    key_path: Optional[str] = None
-    method: Optional[str] = None  # "direct" or "proxy"
+    key_path: str | None = None
+    method: str | None = None  # "direct" or "proxy"
 
 
 @dataclass
@@ -336,8 +335,8 @@ class ProvisionAttempt:
     gpu_type: str
     provider: str
     price_per_hour: float
-    error: Optional[str] = None  # None if successful
-    error_category: Optional[str] = None  # "credentials", "unavailable", "network", "unknown"
+    error: str | None = None  # None if successful
+    error_category: str | None = None  # "credentials", "unavailable", "network", "unknown"
     instance: Optional['GPUInstance'] = None  # Set when error is None (successful provisioning)
 
 
@@ -358,9 +357,9 @@ class ProvisionResult:
     - network_error: Network timeout/failure (transient, retry later)
     """
     success: bool
-    instance: Optional[GPUInstance] = None
-    attempts: List[ProvisionAttempt] = field(default_factory=list)
-    error_summary: Optional[str] = None
+    instance: GPUInstance | None = None
+    attempts: list[ProvisionAttempt] = field(default_factory=list)
+    error_summary: str | None = None
 
     # Error categories for programmatic handling
     no_offers_found: bool = False      # Search returned empty
@@ -412,7 +411,7 @@ class ProviderCredentials:
         # Assert output invariant
         assert self.runpod or self.primeintellect or self.lambdalabs or self.vast, "credentials validated"
 
-    def get(self, provider: str) -> Optional[str]:
+    def get(self, provider: str) -> str | None:
         """Get credential for specific provider."""
         if provider == "runpod":
             return self.runpod
@@ -424,7 +423,7 @@ class ProviderCredentials:
             return self.vast
         return None
 
-    def to_dict(self) -> Dict[str, str]:
+    def to_dict(self) -> dict[str, str]:
         """Convert to dict for backward compatibility."""
         result = {}
         if self.runpod:
@@ -438,7 +437,7 @@ class ProviderCredentials:
         return result
 
     @classmethod
-    def from_dict(cls, credentials: Dict[str, str]) -> 'ProviderCredentials':
+    def from_dict(cls, credentials: dict[str, str]) -> 'ProviderCredentials':
         """Create from dict (for backward compatibility)."""
         return cls(
             runpod=credentials.get("runpod", ""),
@@ -446,7 +445,6 @@ class ProviderCredentials:
             lambdalabs=credentials.get("lambdalabs", ""),
             vast=credentials.get("vast", "")
         )
-
 
 
 # ============================================================================
@@ -465,38 +463,38 @@ class ProviderModule(Protocol):
     def provision_instance(
         self,
         request: ProvisionRequest,
-        ssh_startup_script: Optional[str] = None,
-        api_key: Optional[str] = None
-    ) -> Optional[GPUInstance]:
+        ssh_startup_script: str | None = None,
+        api_key: str | None = None
+    ) -> GPUInstance | None:
         ...
 
     def get_instance_details(
         self,
         instance_id: str,
-        api_key: Optional[str] = None
-    ) -> Optional[GPUInstance]:
+        api_key: str | None = None
+    ) -> GPUInstance | None:
         ...
 
     def list_instances(
         self,
-        api_key: Optional[str] = None
-    ) -> List[GPUInstance]:
+        api_key: str | None = None
+    ) -> list[GPUInstance]:
         ...
 
     def terminate_instance(
         self,
         instance_id: str,
-        api_key: Optional[str] = None
+        api_key: str | None = None
     ) -> bool:
         ...
 
     def search_gpu_offers(
         self,
-        cuda_version: Optional[str] = None,
-        manufacturer: Optional[str] = None,
-        memory_gb: Optional[int] = None,
-        container_disk_gb: Optional[int] = None,
+        cuda_version: str | None = None,
+        manufacturer: str | None = None,
+        memory_gb: int | None = None,
+        container_disk_gb: int | None = None,
         gpu_count: int = 1,
-        api_key: Optional[str] = None
-    ) -> List[GPUOffer]:
+        api_key: str | None = None
+    ) -> list[GPUOffer]:
         ...

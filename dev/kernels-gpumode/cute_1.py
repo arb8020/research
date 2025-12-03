@@ -1,10 +1,8 @@
-import torch
-from task import input_t, output_t
-
 import cutlass
 import cutlass.cute as cute
-from cutlass.cute.runtime import make_ptr
 import cutlass.utils.blockscaled_layout as blockscaled_utils
+from cutlass.cute.runtime import make_ptr
+from task import input_t, output_t
 
 # Kernel configuration parameters
 mma_tiler_mnk = (128, 1, 64)  # Tile sizes for M, N, K dimensions

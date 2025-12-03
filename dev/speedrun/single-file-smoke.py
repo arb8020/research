@@ -10,7 +10,6 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from itertools import accumulate
 from pathlib import Path
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -54,6 +53,7 @@ def mm_op(x: Tensor, w: Tensor, x_s: float, w_s: float, grad_s: float) -> tuple[
 
     return impl(x, w)
 
+
 @mm_op.register_fake
 def _(x: Tensor, w: Tensor, *_):
     assert x.ndim == w.ndim == 2
@@ -61,6 +61,7 @@ def _(x: Tensor, w: Tensor, *_):
     assert x.device == w.device
     assert x.is_contiguous() and w.is_contiguous()
     return x @ w.T, x.to(torch.float8_e4m3fn), w.to(torch.float8_e4m3fn)
+
 
 @torch.library.custom_op("nanogpt::mm_backward", mutates_args=())
 def mm_backward_op(g: Tensor, x_f8: Tensor, w_f8: Tensor, x_s: float, w_s: float, grad_s: float) -> tuple[Tensor, Tensor]:
@@ -92,9 +93,11 @@ def mm_backward_op(g: Tensor, x_f8: Tensor, w_f8: Tensor, x_s: float, w_s: float
 
     return impl(g, x_f8, w_f8)
 
+
 @mm_backward_op.register_fake
 def _(g: Tensor, x_f8: Tensor, w_f8: Tensor, *_):
     return x_f8.to(torch.bfloat16), w_f8.T.contiguous().T.to(torch.float32)
+
 
 def backward(ctx, grad_out: Tensor, *_):
     x_f8, w_f8 = ctx.saved_tensors
@@ -104,6 +107,7 @@ def backward(ctx, grad_out: Tensor, *_):
     )
     return grad_x, grad_w, None, None, None
 
+
 def setup_context(ctx: torch.autograd.function.FunctionCtx, inputs, output):
     *_, x_s, w_s, grad_s = inputs
     _, x_f8, w_f8 = output
@@ -111,10 +115,12 @@ def setup_context(ctx: torch.autograd.function.FunctionCtx, inputs, output):
     ctx.scales = x_s, w_s, grad_s
     ctx.set_materialize_grads(False)
 
+
 mm_op.register_autograd(backward, setup_context=setup_context)
 
 # -----------------------------------------------------------------------------
 # Triton kernel for symmetric matrix multiplication by @byronxu99
+
 
 def _get_autotune_configs():
     return [
@@ -135,6 +141,7 @@ def _get_autotune_configs():
         for stages, warps in [(3, 4), (3, 8), (4, 4)]
         if bm // bn <= 2 and bn // bm <= 2
     ]
+
 
 @triton.jit
 def _pid_to_block(
@@ -160,6 +167,7 @@ def _pid_to_block(
     m_idx = pid_m * BLOCK_SIZE_M
     n_idx = pid_n * BLOCK_SIZE_N
     return batch_idx, m_idx, n_idx
+
 
 @triton.autotune(
     configs=_get_autotune_configs(),
@@ -224,6 +232,7 @@ def XXT_kernel(
     c_mask_t = (offs_cn[:, None] < M) & (offs_cm[None, :] < M)
     tl.store(c_ptrs_t, output.T, mask=c_mask_t)
 
+
 def XXT(A: torch.Tensor, out: torch.Tensor):
     """
     Launch Triton kernel to compute C = A @ A.T
@@ -253,6 +262,7 @@ def XXT(A: torch.Tensor, out: torch.Tensor):
         c_stride_c=out.stride(-1),
     )
     return out
+
 
 @triton.autotune(
     configs=_get_autotune_configs(),
@@ -331,6 +341,7 @@ def ba_plus_cAA_kernel(
     c_mask_t = (offs_cn[:, None] < M) & (offs_cm[None, :] < M)
     tl.store(c_ptrs_t, output.T, mask=c_mask_t)
 
+
 def ba_plus_cAA(A: torch.Tensor, alpha: float, beta: float, out: torch.Tensor):
     """
     Launch Triton kernel to compute C = alpha * A @ A.T + beta * A
@@ -363,6 +374,7 @@ def ba_plus_cAA(A: torch.Tensor, alpha: float, beta: float, out: torch.Tensor):
     )
     return out
 
+
 # Computed for num_iters=5, safety_factor=2e-2, cushion=2
 polar_express_coeffs = [
     (8.156554524902461, -22.48329292557795, 15.878769915207462),
@@ -372,7 +384,8 @@ polar_express_coeffs = [
     (2.3465413258596377, -1.7097828382687081, 0.42323551169305323)
 ]
 
-@torch.compile(dynamic=False, fullgraph=True) # Must use dynamic=False or else it's much slower
+
+@torch.compile(dynamic=False, fullgraph=True)  # Must use dynamic=False or else it's much slower
 def polar_express(G: torch.Tensor):
     """
     Polar Express Sign Method: https://arxiv.org/pdf/2505.16932
@@ -407,6 +420,7 @@ def polar_express(G: torch.Tensor):
 
 # -----------------------------------------------------------------------------
 # Muon optimizer
+
 
 class Muon(torch.optim.Optimizer):
     """
@@ -448,7 +462,7 @@ class Muon(torch.optim.Optimizer):
     def __init__(self, params, lr=0.02, weight_decay=0.01, momentum=0.95, custom_sizing=True):
         defaults = dict(lr=lr, weight_decay=weight_decay, momentum=momentum)
         # custom sizing requires 8 GPUs
-        if custom_sizing and dist.get_world_size()==8:
+        if custom_sizing and dist.get_world_size() == 8:
             param_groups = self.generate_custom_param_groups(params)
         else:
             param_groups = self.generate_standard_param_groups(params)
@@ -477,19 +491,19 @@ class Muon(torch.optim.Optimizer):
         and mlp params when a param group is split across GPUs.
         """
         label_ranks = {
-            'smear_gate': 1, # 1 param
-            'attn_gate': 2, # 10 params
-            'attn': 3, # 10 params
-            'mlp': 4, # 22 params
+            'smear_gate': 1,  # 1 param
+            'attn_gate': 2,  # 10 params
+            'attn': 3,  # 10 params
+            'mlp': 4,  # 22 params
         }
         params = list(params)
         params.sort(key=lambda x: label_ranks.get(x.label))
         idx = 0
-        group_sizes = [1,10,16,16]
-        assert len(params)==sum(group_sizes)
+        group_sizes = [1, 10, 16, 16]
+        assert len(params) == sum(group_sizes)
         param_groups = []
         for size in group_sizes:
-            group_params = params[idx:idx+size]
+            group_params = params[idx:idx + size]
             param_groups.append(dict(params=group_params))
             idx += size
         return param_groups
@@ -625,8 +639,8 @@ class Muon(torch.optim.Optimizer):
             # Reshape attn params from [hdim, dim*4] to [4,hdim,dim] to apply polar_express independently to Q,K,V,O
             param_idx = start_idx if start_idx < len(params) else 0
             if getattr(params[param_idx], 'label', None) == 'attn':
-                for p in params[param_idx:param_idx+chunk_size]:
-                    assert getattr(params[param_idx], 'label', None)=='attn', "GPU cannot mix attn and mlp params"
+                for p in params[param_idx:param_idx + chunk_size]:
+                    assert getattr(params[param_idx], 'label', None) == 'attn', "GPU cannot mix attn and mlp params"
                 batch = 4 * original_shape[0]
                 d1 = original_shape[1] 
                 d2 = original_shape[2] // 4
@@ -758,8 +772,10 @@ class DistAdam(torch.optim.Optimizer):
 # -----------------------------------------------------------------------------
 # PyTorch nn.Module definitions for the model
 
+
 def norm(x: Tensor):
     return F.rms_norm(x, (x.size(-1),))
+
 
 class CastedLinear(nn.Linear):
     def __init__(self, in_features: int, out_features: int, use_fp8=False, x_s=1.0, w_s=1.0, grad_s=1.0):
@@ -770,7 +786,7 @@ class CastedLinear(nn.Linear):
         self.grad_s = grad_s
 
     def reset_parameters(self) -> None:
-        std = 0.5 * (self.in_features ** -0.5) # 0.5 is a bit better than the default 1/sqrt(3)
+        std = 0.5 * (self.in_features ** -0.5)  # 0.5 is a bit better than the default 1/sqrt(3)
         bound = (3 ** 0.5) * std
         with torch.no_grad():
             self.weight.uniform_(-bound, bound)
@@ -783,6 +799,7 @@ class CastedLinear(nn.Linear):
         else:
             return F.linear(x, self.weight.type_as(x))
 
+
 # yarn implementation @classiclarryd
 class Yarn(nn.Module):
     def __init__(self, head_dim, max_seq_len):
@@ -792,9 +809,9 @@ class Yarn(nn.Module):
         self.reset()
         
     def reset(self):
-        angular_freq = (1 / 1024) ** torch.linspace(0, 1, steps=self.head_dim//4, dtype=torch.float32, device=device)
+        angular_freq = (1 / 1024) ** torch.linspace(0, 1, steps=self.head_dim // 4, dtype=torch.float32, device=device)
         # half-truncate RoPE by @YouJiacheng (w/ base freq tuning)
-        angular_freq = torch.cat([angular_freq, angular_freq.new_zeros(self.head_dim//4)])
+        angular_freq = torch.cat([angular_freq, angular_freq.new_zeros(self.head_dim // 4)])
         t = torch.arange(self.max_seq_len, dtype=torch.float32, device=device)
         theta = torch.outer(t, angular_freq)
         self.cos = nn.Buffer(
@@ -807,7 +824,7 @@ class Yarn(nn.Module):
         # start with 0.1, inspired by 0.12 from @leloykun and learnable scalars used by @brendanh0gan https://x.com/hi_tysam/status/1879693583898591283
         self.attn_scale = 0.1
 
-    def apply(self, old_window: int, new_window: int, alpha: int=1, beta: int=32):
+    def apply(self, old_window: int, new_window: int, alpha: int = 1, beta: int = 32):
         rotations = args.block_size * old_window * self.angular_freq / (2 * torch.pi)
         scaling_factor = old_window / new_window
         interpolation_weight = torch.clamp((rotations - alpha) / (beta - alpha), 0, 1)
@@ -817,6 +834,7 @@ class Yarn(nn.Module):
         self.cos.copy_(theta.cos())
         self.sin.copy_(theta.sin())
         self.attn_scale *= 0.2 * math.log(new_window / old_window) + 1
+
 
 def rotary(x_BTHD: Tensor, cos: Tensor, sin: Tensor):
     assert cos.size(0) >= x_BTHD.size(-3)
@@ -829,6 +847,7 @@ def rotary(x_BTHD: Tensor, cos: Tensor, sin: Tensor):
     y2 = x1 * (-sin) + x2 * cos
     return torch.cat((y1, y2), 3)
 
+
 @dataclass
 class AttnArgs:
     ve: torch.Tensor
@@ -839,7 +858,9 @@ class AttnArgs:
     sin: torch.Tensor
     attn_scale: float
 
+
 flash_attn_interface = get_kernel('varunneal/flash-attention-3').flash_attn_interface
+
 
 class CausalSelfAttention(nn.Module):
     def __init__(self, dim: int, head_dim: int, num_heads: int):
@@ -851,16 +872,16 @@ class CausalSelfAttention(nn.Module):
 
         assert self.hdim == self.dim, "num_heads * head_dim must equal model_dim"
         std = 0.5 * (self.dim ** -0.5)
-        bound = (3 ** 0.5) * std # improved init scale by @YouJiacheng
+        bound = (3 ** 0.5) * std  # improved init scale by @YouJiacheng
         # merged QKV weights: suggested by many, implemented by @fernbear.bsky.social, and further improved by @YouJiacheng
         # https://x.com/hi_tysam/status/1879699187107033311
         # make matrices the same shape as MLP to enable batched call in optimizer
-        self.qkvo_w = nn.Parameter(torch.empty(self.hdim, self.dim*4))
+        self.qkvo_w = nn.Parameter(torch.empty(self.hdim, self.dim * 4))
         # label module to enable custom optimizer sizing
-        self.qkvo_w.label='attn'
+        self.qkvo_w.label = 'attn'
         with torch.no_grad():
-            self.qkvo_w.view(4,self.hdim, self.dim)[:3].uniform_(-bound, bound) # init QKV weights
-            self.qkvo_w.view(4,self.hdim, self.dim)[3].zero_() # init output weights to zero
+            self.qkvo_w.view(4, self.hdim, self.dim)[:3].uniform_(-bound, bound)  # init QKV weights
+            self.qkvo_w.view(4, self.hdim, self.dim)[3].zero_()  # init output weights to zero
 
         # sparse gated attention to enable context based no-op by @classiclarryd
         self.attn_gate = CastedLinear(12, num_heads)
@@ -869,7 +890,7 @@ class CausalSelfAttention(nn.Module):
         self.attn_gate.weight.detach().zero_()
 
     def forward(self, x: Tensor, attn_args: AttnArgs):
-        B, T = x.size(0), x.size(1) # batch size, sequence length
+        B, T = x.size(0), x.size(1)  # batch size, sequence length
         assert B == 1, "varlen sequences requires B == 1"
         assert T % 16 == 0
         # unpack attention args
@@ -878,11 +899,11 @@ class CausalSelfAttention(nn.Module):
         seqlens, attn_scale, bm_size = attn_args.seqlens, attn_args.attn_scale, attn_args.bm_size
 
         q, k, v = F.linear(x, self.qkvo_w.view(4, self.hdim, self.dim)[:3].flatten(end_dim=1).type_as(x)).view(B, T, 3 * self.num_heads, self.head_dim).chunk(3, dim=-2)
-        q, k = norm(q), norm(k) # QK norm @Grad62304977
+        q, k = norm(q), norm(k)  # QK norm @Grad62304977
         q, k = rotary(q, cos, sin), rotary(k, cos, sin)
         if ve is not None:
-            v = sa_lambdas[0] * v + sa_lambdas[1] * ve.view_as(v) # @ KoszarskyB & @Grad62304977
-        else: # skip mid-layers token value embeddings by @YouJiacheng
+            v = sa_lambdas[0] * v + sa_lambdas[1] * ve.view_as(v)  # @ KoszarskyB & @Grad62304977
+        else:  # skip mid-layers token value embeddings by @YouJiacheng
             v = sa_lambdas[0] * v
 
         max_len = args.train_max_seq_len if self.training else (args.val_batch_size // (grad_accum_steps * world_size))
@@ -892,9 +913,10 @@ class CausalSelfAttention(nn.Module):
                                    causal=True, softmax_scale=attn_scale, window_size=(bm_size, 0))
         y = y.view(B, T, self.num_heads, self.head_dim)
         y = y * torch.sigmoid(self.attn_gate(x[..., :self.attn_gate.weight.size(-1)])).view(B, T, self.num_heads, 1)
-        y = y.contiguous().view(B, T, self.num_heads * self.head_dim) # re-assemble all head outputs side by side
+        y = y.contiguous().view(B, T, self.num_heads * self.head_dim)  # re-assemble all head outputs side by side
         y = F.linear(y, self.qkvo_w.view(4, self.hdim, self.dim)[3].type_as(y))
         return y
+
 
 class MLP(nn.Module):
     def __init__(self, dim: int):
@@ -904,19 +926,20 @@ class MLP(nn.Module):
         self.c_fc = nn.Parameter(torch.empty(dim, hdim))
         self.c_proj = nn.Parameter(torch.empty(dim, hdim))
         # label modules to enable custom optimizer sizing
-        self.c_fc.label='mlp'
-        self.c_proj.label='mlp'
+        self.c_fc.label = 'mlp'
+        self.c_proj.label = 'mlp'
         std = 0.5 * (dim ** -0.5)
-        bound = (3 ** 0.5) * std # improved init scale by @YouJiacheng
+        bound = (3 ** 0.5) * std  # improved init scale by @YouJiacheng
         with torch.no_grad():
             self.c_fc.uniform_(-bound, bound)
-            self.c_proj.zero_() # zero init suggested by @Grad62304977
+            self.c_proj.zero_()  # zero init suggested by @Grad62304977
 
     def forward(self, x: Tensor):
         x = F.linear(x, self.c_fc.T.type_as(x))
-        x = F.relu(x).square() # https://arxiv.org/abs/2109.08668v2; ~1-2% better than GELU; suggested by @SKYLINEZ007 and @Grad62304977
+        x = F.relu(x).square()  # https://arxiv.org/abs/2109.08668v2; ~1-2% better than GELU; suggested by @SKYLINEZ007 and @Grad62304977
         x = F.linear(x, self.c_proj.type_as(x))
         return x
+
 
 class Block(nn.Module):
     def __init__(self, dim: int, head_dim: int, num_heads: int, layer_idx: int):
@@ -937,8 +960,10 @@ class Block(nn.Module):
 # -----------------------------------------------------------------------------
 # The main model
 
+
 def next_multiple_of_n(v: float | int, *, n: int):
     return next(x for x in range(n, int(v) + 1 + n, n) if x >= v)
+
 
 class GPT(nn.Module):
     def __init__(self, vocab_size: int, num_layers: int, num_heads: int, head_dim: int, model_dim: int, max_seq_len: int):
@@ -957,8 +982,8 @@ class GPT(nn.Module):
         # there are only 50257 unique GPT-2 tokens; we extend to nearest multiple of 128 for efficiency.
         # suggested to me by @Grad62304977. this originates from Karpathy's experiments.
         use_fp8 = not os.environ.get("DISABLE_FP8", False)
-        self.lm_head = CastedLinear(model_dim, vocab_size, use_fp8=use_fp8, x_s=(model_dim**0.5)/448, w_s=2**-9, grad_s=1/448)
-        self.lm_head.weight.detach().zero_() # @Grad62304977
+        self.lm_head = CastedLinear(model_dim, vocab_size, use_fp8=use_fp8, x_s=(model_dim**0.5) / 448, w_s=2**-9, grad_s=1 / 448)
+        self.lm_head.weight.detach().zero_()  # @Grad62304977
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
         pad = (-num_layers * 5 - 2) % dist.get_world_size()
@@ -973,8 +998,8 @@ class GPT(nn.Module):
                     *[
                         torch.tensor([0.5, 0.5]) for _ in range(num_layers)
                     ],  # SA lambdas
-                    torch.zeros(1), # smear_lambda
-                    0.5*torch.ones(1), # backout_lambda
+                    torch.zeros(1),  # smear_lambda
+                    0.5 * torch.ones(1),  # backout_lambda
                     torch.ones(pad),
                 ]
             )
@@ -1014,14 +1039,14 @@ class GPT(nn.Module):
         skip_weights = self.scalars[:(len(self.blocks) // 2)]
         lambdas = self.scalars[1 * len(self.blocks): 3 * len(self.blocks)].view(-1, 2)
         sa_lambdas = self.scalars[3 * len(self.blocks): 5 * len(self.blocks)].view(-1, 2)
-        backout_lambda = self.scalars[5 * len(self.blocks)+1]
+        backout_lambda = self.scalars[5 * len(self.blocks) + 1]
 
         n = len(self.blocks) // 2
 
         x_backout = None
         backout_layer = 8
         # skip layer zero
-        for i in range(1,len(self.blocks)):
+        for i in range(1, len(self.blocks)):
             attn_args = AttnArgs(
                 ve=ve[i],
                 sa_lambdas=sa_lambdas[i],
@@ -1032,7 +1057,7 @@ class GPT(nn.Module):
                 attn_scale=self.yarn.attn_scale
             )
             # since layer 0 is skipped, layer 11 does not have skip_connection
-            if i >= n and i<11:
+            if i >= n and i < 11:
                 gate = torch.sigmoid(skip_weights[i - n])  # in (0, 1)
                 x = x + gate * skip_connections.pop()
             x = self.blocks[i](x, x0, lambdas[i], attn_args)
@@ -1058,25 +1083,28 @@ class GPT(nn.Module):
 # -----------------------------------------------------------------------------
 # Distributed data loader
 
+
 def _load_data_shard(file: Path):
-    header = torch.from_file(str(file), False, 256, dtype=torch.int32) # header is 256 int32
+    header = torch.from_file(str(file), False, 256, dtype=torch.int32)  # header is 256 int32
     assert header[0] == 20240520, "magic number mismatch in the data .bin file"
     assert header[1] == 1, "unsupported version"
-    num_tokens = int(header[2]) # number of tokens (claimed)
+    num_tokens = int(header[2])  # number of tokens (claimed)
     with file.open("rb", buffering=0) as f:
-        tokens = torch.empty(num_tokens, dtype=torch.uint16, pin_memory=True) # avoid pin_memory copy by @YouJiacheng
+        tokens = torch.empty(num_tokens, dtype=torch.uint16, pin_memory=True)  # avoid pin_memory copy by @YouJiacheng
         f.seek(256 * 4)
-        nbytes = f.readinto(tokens.numpy()) # avoid bytes->array copy by @YouJiacheng
+        nbytes = f.readinto(tokens.numpy())  # avoid bytes->array copy by @YouJiacheng
         assert nbytes == 2 * num_tokens, "number of tokens read does not match header"
     return tokens
 
+
 BOS_ID = 50256
+
 
 class BOSFinder:
     # Helper for getting sequences that start at the beginning of documents by @varunneal based on work by @classiclarryd
     def __init__(self, tokens: Tensor, world_size: int = 1, quickload: bool = False):
         # Precompute BOS positions once per shard
-        self.tokens=tokens
+        self.tokens = tokens
         self.size = tokens.numel()
         self.quickload = quickload
         if quickload:
@@ -1108,7 +1136,7 @@ class BOSFinder:
 
     def next_batch(self, num_tokens_local: int, max_seq_len: int):
         # if quickload was used, repoint to the full dataset after 5 batches
-        if self.quickload and self.batch_iter==5:
+        if self.quickload and self.batch_iter == 5:
             self.get()
         n = len(self.bos_idx)
         starts = [[] for _ in range(self.world_size)]
@@ -1131,8 +1159,9 @@ class BOSFinder:
 
             assert cur_len == num_tokens_local + 1
         self.i = idx
-        self.batch_iter+=1
+        self.batch_iter += 1
         return starts, ends
+
 
 class DataPreloader:
     # Helper for asynchronously loading next shard and indexing bos tokens
@@ -1158,6 +1187,7 @@ class DataPreloader:
             self.ready.wait()
             self.thread.join()
         return self.data
+
 
 def distributed_data_generator(filename_pattern: str, num_tokens: int, max_seq_len: int, grad_accum_steps: int = 1, align_to_bos: bool = True):
     # align_to_bos: each sequence begins with Beginning of Sequence token, sequences truncated to max_seq_len
@@ -1211,7 +1241,6 @@ def distributed_data_generator(filename_pattern: str, num_tokens: int, max_seq_l
             cum_lengths = torch.nonzero(_inputs == BOS_ID)[:, 0]
             pos += num_tokens
 
-
         _cum_lengths = torch.full((max_num_docs,), num_tokens_local)
         _cum_lengths[0] = 0
         _cum_lengths[1:len(cum_lengths) + 1] = cum_lengths
@@ -1237,9 +1266,9 @@ def distributed_data_generator(filename_pattern: str, num_tokens: int, max_seq_l
 @dataclass
 class Hyperparameters:
     # data
-    train_files: str = "data/fineweb10B/fineweb_train_*.bin" # input .bin to train on
-    val_files: str = "data/fineweb10B/fineweb_val_*.bin" # input .bin to eval validation loss on
-    val_tokens: int = 10485760 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
+    train_files: str = "data/fineweb10B/fineweb_train_*.bin"  # input .bin to train on
+    val_files: str = "data/fineweb10B/fineweb_val_*.bin"  # input .bin to eval validation loss on
+    val_tokens: int = 10485760  # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
     train_batch_size: int = 2048 * 16 * 8
     train_max_seq_len: int = 128 * 16
     val_batch_size: int = 4 * 64 * 1024 * 8
@@ -1255,8 +1284,9 @@ class Hyperparameters:
     # attention masking
     block_size: int = 128
     ws_schedule: tuple = (3, 7, 11)
-    ws_validate: int = 13 # increase final validation ws, used for YaRN extension and short window size @classiclarryd
-    ws_validate_post_yarn_ext: int = 20 # extend long windows out even further after applying YaRN
+    ws_validate: int = 13  # increase final validation ws, used for YaRN extension and short window size @classiclarryd
+    ws_validate_post_yarn_ext: int = 20  # extend long windows out even further after applying YaRN
+
 
 args = Hyperparameters()
 
@@ -1274,7 +1304,7 @@ device = torch.device("cuda", int(os.environ["LOCAL_RANK"]))
 torch.cuda.set_device(device)
 dist.init_process_group(backend="nccl", device_id=device)
 dist.barrier()
-master_process = (rank == 0) # this process will do logging, checkpointing etc.
+master_process = (rank == 0)  # this process will do logging, checkpointing etc.
 
 # begin logging
 logfile = None
@@ -1283,6 +1313,8 @@ if master_process:
     os.makedirs("logs", exist_ok=True)
     logfile = f"logs/{run_id}.txt"
     print(logfile)
+
+
 def print0(s, console=False):
     if master_process:
         with open(logfile, "a") as f:
@@ -1290,19 +1322,23 @@ def print0(s, console=False):
                 print(s)
             print(s, file=f)
 
+
 # begin by printing this file (the Python code)
 print0(code)
-print0("="*100)
+print0("=" * 100)
 # log information about the hardware/software environment this is running on
 print0(f"Running Python {sys.version}")
 print0(f"Running PyTorch {torch.version.__version__} compiled for CUDA {torch.version.cuda}")
 print0(f"Running Triton version {triton.__version__}")
 
+
 def nvidia_smi():
     import subprocess  # avoid top level import
     return subprocess.run(["nvidia-smi"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True).stdout
+
+
 print0(nvidia_smi())
-print0("="*100)
+print0("=" * 100)
 
 model: nn.Module = GPT(
     vocab_size=50257,
@@ -1341,6 +1377,7 @@ for opt in optimizers:
     for group in opt.param_groups:
         group["initial_lr"] = group["lr"]
 
+
 # learning rate schedule: stable then linear decay
 def get_lr(step: int):
     x = min(0.9999, step / args.num_iterations)
@@ -1351,6 +1388,7 @@ def get_lr(step: int):
         lr = w * 1.0 + (1 - w) * 0.1
     return lr
 
+
 def get_ws(step: int):
     # set short window size to half of long window size
     # on final step return specific ws for validation
@@ -1360,6 +1398,7 @@ def get_ws(step: int):
     assert 0 <= x < 1
     ws_idx = int(len(args.ws_schedule) * x)
     return args.ws_schedule[ws_idx] // 2, args.ws_schedule[ws_idx]
+
 
 def get_muon_momentum(step: int, muon_warmup_steps=300, muon_cooldown_steps=50, momentum_min=0.85, momentum_max=0.95):
     # warmup phase: linearly increase momentum from min to max
@@ -1375,6 +1414,7 @@ def get_muon_momentum(step: int, muon_warmup_steps=300, muon_cooldown_steps=50, 
         momentum = momentum_max
     return momentum
 
+
 def step_optimizers(step: int, optimizers, model):
     # update lr
     for optimizer in optimizers:
@@ -1388,13 +1428,14 @@ def step_optimizers(step: int, optimizers, model):
 
     # on even steps, only step Muon params
     # on odd steps, step all params
-    if step%2==0:
+    if step % 2 == 0:
         optimizers[1].step()
         optimizers[1].zero_grad(set_to_none=True)
     else:
         for optimizer in optimizers:
             optimizer.step()
         model.zero_grad(set_to_none=True)
+
 
 model: nn.Module = torch.compile(model, dynamic=False, fullgraph=True)
 
@@ -1405,13 +1446,13 @@ model: nn.Module = torch.compile(model, dynamic=False, fullgraph=True)
 # Warmup the training kernels, then re-initialize the state so we aren't cheating
 warmup_steps = 30
 initial_state = dict(model=copy.deepcopy(model.state_dict()),
-                     optimizers=[copy.deepcopy(opt.state_dict()) for opt in optimizers]) # save the initial state
+                     optimizers=[copy.deepcopy(opt.state_dict()) for opt in optimizers])  # save the initial state
 train_loader = distributed_data_generator(args.train_files, args.train_batch_size, args.train_max_seq_len, grad_accum_steps=grad_accum_steps)
 for step in range(warmup_steps):
     inputs, targets, cum_seqlens = next(train_loader)
     # each window size is a new graph, need to warm up each with Yarn.attn_scale
     ws_idx = step % len(args.ws_schedule)
-    if ws_idx==0:
+    if ws_idx == 0:
         model.yarn.reset()
         ws_long = args.ws_schedule[0]
     else:
@@ -1419,11 +1460,11 @@ for step in range(warmup_steps):
         if new_ws_long > ws_long:
             model.yarn.apply(ws_long, new_ws_long)
             ws_long = new_ws_long
-    model(inputs, targets, cum_seqlens, ws_long//2, ws_long).backward()
+    model(inputs, targets, cum_seqlens, ws_long // 2, ws_long).backward()
     for opt in optimizers:
         opt.step()
     model.zero_grad(set_to_none=True)
-model.yarn.reset() # rotary buffer is not stored in state_dict
+model.yarn.reset()  # rotary buffer is not stored in state_dict
 model.load_state_dict(initial_state["model"])
 for opt, opt_state in zip(optimizers, initial_state["optimizers"]):
     opt.load_state_dict(opt_state)
@@ -1446,7 +1487,7 @@ for step in range(train_steps + 1):
     ws_short, new_ws_long = get_ws(step)
     if new_ws_long != ws_long:
         model.yarn.apply(ws_long, new_ws_long)
-        ws_long=new_ws_long
+        ws_long = new_ws_long
 
     # --------------- VALIDATION SECTION -----------------
     if last_step or (args.val_loss_every > 0 and step % args.val_loss_every == 0):
@@ -1467,7 +1508,7 @@ for step in range(train_steps + 1):
         val_loss /= val_steps
         del val_loader
         dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
-        print0(f"step:{step}/{train_steps} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/max(step, 1):.2f}ms", console=True)
+        print0(f"step:{step}/{train_steps} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms / max(step, 1):.2f}ms", console=True)
         model.train()
         # start the clock again
         torch.cuda.synchronize()
@@ -1489,7 +1530,7 @@ for step in range(train_steps + 1):
      
     # logging
     approx_training_time_ms = training_time_ms + 1000 * (time.perf_counter() - t0)
-    print0(f"step:{step+1}/{train_steps} train_time:{approx_training_time_ms:.0f}ms step_avg:{approx_training_time_ms/(step + 1):.2f}ms", console=True)
+    print0(f"step:{step + 1}/{train_steps} train_time:{approx_training_time_ms:.0f}ms step_avg:{approx_training_time_ms / (step + 1):.2f}ms", console=True)
 
 print0(f"peak memory allocated: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB "
        f"reserved: {torch.cuda.max_memory_reserved() // 1024 // 1024} MiB", console=True)

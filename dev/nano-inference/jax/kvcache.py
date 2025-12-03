@@ -12,6 +12,7 @@ Shape suffixes (Shazeer convention):
 """
 
 import dataclasses
+
 import jax
 import jax.numpy as jnp
 

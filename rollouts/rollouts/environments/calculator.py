@@ -1,11 +1,19 @@
-from typing import List
 from dataclasses import dataclass
+
 import trio
 
 from ..dtypes import (
-    Tool, ToolFunction, ToolFunctionParameter,
-    ToolCall, ToolResult, StopReason, AgentState, RunConfig, Environment, Message
+    AgentState,
+    Message,
+    RunConfig,
+    StopReason,
+    Tool,
+    ToolCall,
+    ToolFunction,
+    ToolFunctionParameter,
+    ToolResult,
 )
+
 
 @dataclass
 class CalculatorEnvironment:
@@ -23,7 +31,7 @@ class CalculatorEnvironment:
         """Calculator tools don't require confirmation by default."""
         return False
     
-    def get_tools(self) -> List[Tool]:
+    def get_tools(self) -> list[Tool]:
         return [
             Tool(
                 type="function",
@@ -111,7 +119,7 @@ class CalculatorEnvironment:
         return state
 
     async def exec_tool(self, tool_call: ToolCall, current_state: 'AgentState',
-                       run_config: 'RunConfig', checkpoint_store = None) -> ToolResult:
+                       run_config: 'RunConfig', checkpoint_store=None) -> ToolResult:
         """Execute tool call, mutating environment state"""
         try:
             if tool_call.name == "add":
@@ -194,9 +202,11 @@ class CalculatorEnvironment:
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+
 async def main():
     """Simple demo main function"""
     print("Use the simple_calculator.py example in examples/ instead!")
+
 
 if __name__ == "__main__":
     trio.run(main)

@@ -7,8 +7,9 @@ These protocols define what configs SHOULD provide, but don't enforce how.
 Projects can implement their own configs that satisfy these protocols.
 """
 
-from typing import Protocol, runtime_checkable, Dict, Any, List, Callable
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any, Protocol, runtime_checkable
 
 # Import types from rollouts.dtypes
 # These are already defined and used across projects
@@ -65,7 +66,7 @@ class HasEnvironmentConfig(Protocol):
 
     env_name: str
 
-    def prepare_messages(self, sample_data: Dict[str, Any]) -> List[Message]:
+    def prepare_messages(self, sample_data: dict[str, Any]) -> list[Message]:
         """Prepare initial messages from a dataset sample.
 
         Args:

@@ -354,15 +354,40 @@ FullAuto = RunConfig(
 
 async def rollout(actor: Actor, on_chunk: Callable[[StreamEvent], Awaitable[None]] = stdout_handler,
                   user_message_for_thinking: str | None = None, turn_idx: int = 0, inline_thinking: str | None = None) -> Actor:
+    """Route to appropriate provider function using unified API type abstraction.
+
+    This function uses the provider registry to automatically select the correct
+    streaming implementation based on the provider and model. Multiple providers
+    (e.g., OpenAI, Groq, xAI) may share the same implementation if they use
+    compatible APIs.
+
+    Args:
+        actor: Current actor state with endpoint and trajectory
+        on_chunk: Callback for streaming events
+        user_message_for_thinking: Anthropic-specific parameter for thinking context
+        turn_idx: Anthropic-specific parameter for turn tracking
+        inline_thinking: Anthropic-specific parameter for thinking template
+
+    Returns:
+        Updated actor with new message in trajectory
+    """
+    from rollouts.providers import get_provider_function
+
     provider = actor.endpoint.provider
-    if provider == "openai":
-        new_actor = await rollout_openai(actor, on_chunk)
-    elif provider in ("sglang", "vllm"):  # Accept both for backwards compat
-        new_actor = await rollout_sglang(actor, on_chunk)
-    elif provider == "anthropic":
-        new_actor = await rollout_anthropic(actor, on_chunk, user_message_for_thinking, turn_idx, inline_thinking)
-    else:
-        assert False, f"Invalid provider {actor.endpoint.provider}. Must be one of: openai, sglang, vllm, anthropic"
+    model_id = actor.endpoint.model
+
+    # Get the appropriate provider function via API type mapping
+    provider_func = get_provider_function(provider, model_id)
+
+    # Call with provider-specific kwargs if needed
+    # Anthropic needs extra params, others don't - but **kwargs makes this flexible
+    new_actor = await provider_func(
+        actor,
+        on_chunk,
+        user_message_for_thinking=user_message_for_thinking,
+        turn_idx=turn_idx,
+        inline_thinking=inline_thinking,
+    )
     return new_actor
 
 

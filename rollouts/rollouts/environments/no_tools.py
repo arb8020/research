@@ -10,9 +10,10 @@ Example usage:
     environment = BasicEnvironment()
 """
 
-from typing import List
 from dataclasses import dataclass
-from ..dtypes import Tool, Environment, ToolCall, ToolResult, AgentState, RunConfig, Message
+
+from ..dtypes import AgentState, Message, RunConfig, Tool, ToolCall, ToolResult
+
 
 @dataclass
 class BasicEnvironment:
@@ -29,7 +30,7 @@ class BasicEnvironment:
     external tools or functions.
     """
     
-    def get_tools(self) -> List[Tool]:
+    def get_tools(self) -> list[Tool]:
         """Return empty tool list - no tools available."""
         return []
     
@@ -54,6 +55,7 @@ class BasicEnvironment:
     async def on_assistant_message(self, message: Message, state: AgentState) -> AgentState:
         """No feedback needed for basic environment."""
         return state
+
 
 # Backward compatibility alias
 NoToolsEnvironment = BasicEnvironment

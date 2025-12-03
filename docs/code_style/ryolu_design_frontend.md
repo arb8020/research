@@ -10,4 +10,7 @@ most software gets this wrong — they either dump everything on you at once, or
 
 alan kay once said users should be able to “open up the hood” of their word processor and tinker with it. when you design in layers, you’re building that kind of learning environment where users can discover their own potential. the goal isn’t to hide complexity — it’s to sequence its reveal. give people exactly what they need when they need it, and trust them to grow into the full power, pushing the boundaries your concepts in ways you’ve never imagined before.
 
-
+i think in these layers:
+- layer 1: defaults, high-traffic UI — you want to optimize for the 80% and simplify. show one primary path to do most things, but give others a way out
+- layer 2: you offer alternative paths and presets for the other 20%, things can be customized, but still not that hard to  understand
+- layer 3: you give full power and flexibility to your users who “gets it,” they can see and access every low level concept and tools

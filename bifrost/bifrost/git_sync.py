@@ -4,12 +4,12 @@ No classes, just stateless functions that take inputs and return outputs.
 All state managed by caller (BifrostClient).
 """
 
-import paramiko
 import logging
-from typing import Optional, Union, List
+
+import paramiko
+from shared.retry import retry
 
 from .types import RemoteConfig
-from shared.retry import retry
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ def _upload_bundle_with_retry(sftp, local_bundle_path: str, remote_bundle_path: 
     logger.debug(f"Bundle uploaded successfully to {remote_bundle_path}")
 
 
-def _check_untracked_files() -> Optional[List[str]]:
+def _check_untracked_files() -> list[str] | None:
     """Check for untracked files in the git repo.
 
     Returns:
@@ -77,7 +77,7 @@ def _check_untracked_files() -> Optional[List[str]]:
         return None  # Git command failed
 
 
-def _check_uncommitted_changes() -> Optional[List[str]]:
+def _check_uncommitted_changes() -> list[str] | None:
     """Check for uncommitted changes (modified, staged, or deleted files).
 
     Returns:
@@ -141,11 +141,11 @@ def deploy_code(ssh_client: paramiko.SSHClient,
     workspace_exists = stdout.channel.recv_exit_status() == 0
 
     if workspace_exists:
-        logger.debug(f"Workspace exists, updating...")
+        logger.debug("Workspace exists, updating...")
         # Update existing workspace via git pull
         _update_workspace(ssh_client, workspace_path)
     else:
-        logger.debug(f"Workspace doesn't exist, creating...")
+        logger.debug("Workspace doesn't exist, creating...")
         # Create new workspace via git clone
         _create_workspace(ssh_client, workspace_path)
 
@@ -158,7 +158,7 @@ def deploy_code(ssh_client: paramiko.SSHClient,
 def run_bootstrap(ssh_client: paramiko.SSHClient,
                   config: RemoteConfig,
                   workspace_path: str,
-                  bootstrap_cmd: Union[str, List[str]]) -> None:
+                  bootstrap_cmd: str | list[str]) -> None:
     """Run bootstrap command(s) to prepare environment.
 
     Args:
@@ -217,9 +217,9 @@ def _create_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> No
 
     Uses git bundle to transfer code without remote repo setup.
     """
+    import os
     import subprocess
     import tempfile
-    import os
 
     # Check for untracked files and warn user
     untracked = _check_untracked_files()
@@ -295,7 +295,7 @@ def _create_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> No
 
         logger.debug(f"✅ Workspace created at: {deployed_short} ({deployed_hash})")
         if deployed_hash != commit_hash:
-            logger.warning(f"⚠️  Deployed hash doesn't match local HEAD!")
+            logger.warning("⚠️  Deployed hash doesn't match local HEAD!")
             logger.warning(f"   Local:  {short_hash} ({commit_hash})")
             logger.warning(f"   Remote: {deployed_short} ({deployed_hash})")
 
@@ -310,9 +310,9 @@ def _update_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> No
 
     Uses git bundle to transfer changes.
     """
+    import os
     import subprocess
     import tempfile
-    import os
 
     # Check for untracked files and warn user
     untracked = _check_untracked_files()
@@ -392,7 +392,7 @@ rm {remote_bundle}
 
         logger.debug(f"workspace updated to: {deployed_short} ({deployed_hash})")
         if deployed_hash != commit_hash:
-            logger.warning(f"⚠️  Deployed hash doesn't match local HEAD!")
+            logger.warning("⚠️  Deployed hash doesn't match local HEAD!")
             logger.warning(f"   Local:  {short_hash} ({commit_hash})")
             logger.warning(f"   Remote: {deployed_short} ({deployed_hash})")
 

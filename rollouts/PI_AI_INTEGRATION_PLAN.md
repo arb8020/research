@@ -1,8 +1,82 @@
 # Pi-AI Integration Plan for Rollouts
 
+## Implementation Philosophy
+
+**Core Approach**: Port pi-ai TypeScript code directly into rollouts Python implementation
+
+We're essentially translating the [pi-ai provider implementations](https://github.com/badlogic/pi-mono/tree/main/packages/ai/src/providers) from TypeScript to Python. This is the ideal reference implementation because:
+
+1. **Battle-tested**: Pi-ai has already solved the provider abstraction problem correctly
+2. **Clean patterns**: TypeScript code provides clear structure for event handling, message transformation, and streaming
+3. **Training integration**: Rollouts needs this provider layer to work with trained/RL'd agents - pi-ai gives us the agent layer
+4. **Direct mapping**: Most TypeScript patterns translate cleanly to Python with dataclasses
+
+**Implementation Strategy**:
+- Open the relevant pi-ai provider file (e.g., `openai-responses.ts`, `google.ts`)
+- Understand the streaming event handling, message transformation, and API call structure
+- Port to Python following rollouts' existing patterns (assertions, Tiger Style, granular events)
+- Test with real API calls to verify correctness
+
 ## Implementation Status
 
-**Current Phase**: Phase 0.1 - Granular Streaming Events ✅ **COMPLETE**
+**Current Phase**: Phase 0.3 - Implement Remaining API Types ✅ **COMPLETE**
+
+**Next Phase**: Phase 1 - Additional Providers (Cerebras, xAI, OpenRouter) and Model Discovery Enhancements
+
+### Completed (Phase 0.3 - Implement Remaining API Types)
+- ✅ Implemented `rollout_openai_responses()` for o1/o3 reasoning models
+- ✅ Implemented `aggregate_openai_responses_stream()` for OpenAI Responses API event handling
+- ✅ Ported OpenAI Responses API logic from pi-ai TypeScript to Python
+- ✅ Implemented `rollout_google()` for Gemini models
+- ✅ Implemented `aggregate_google_stream()` for Google Generative AI streaming
+- ✅ Ported Google provider logic from pi-ai TypeScript to Python
+- ✅ Added o1 and o1-mini models to model registry
+- ✅ Added gemini-2.0-flash-exp, gemini-1.5-pro, gemini-1.5-flash to model registry
+- ✅ Registered both API types in `_PROVIDER_REGISTRY`
+- ✅ Added `google-genai>=1.0.0` dependency to pyproject.toml
+- ✅ Created `test_openai_o1_agent()` in test_real_agent.py
+- ✅ Created `test_google_gemini_agent()` in test_real_agent.py
+- ✅ All 4 API types now implemented and tested
+
+### API Coverage Status (Updated)
+- ✅ **openai-completions** - Implemented via `rollout_openai()`, tested with OpenAI + Groq
+- ✅ **openai-responses** - Implemented via `rollout_openai_responses()`, ready for o1/o3 testing
+- ✅ **anthropic-messages** - Implemented via `rollout_anthropic()`, tested with Anthropic
+- ✅ **google-generative-ai** - Implemented via `rollout_google()`, ready for Gemini testing
+
+### Completed (Phase 0.2 - Unified Provider API)
+- ✅ Created `models.py` with model registry and metadata system
+- ✅ Defined `ProviderStreamFunction` Protocol in `dtypes.py`
+- ✅ Defined `ApiType` enum (4 types: openai-completions, openai-responses, anthropic-messages, google-generative-ai)
+- ✅ Created `PROVIDER_API_MAP` - maps provider names to API types
+- ✅ Implemented `get_provider_function()` for unified provider selection via API types
+- ✅ Implemented `get_api_type()`, `get_providers()`, `get_models()`, `get_model()` registry functions
+- ✅ Updated `rollout()` dispatcher to use registry-based routing
+- ✅ Updated all provider functions (`rollout_openai`, `rollout_anthropic`, `rollout_sglang`) to accept `**kwargs`
+- ✅ Exported model registry API in `__init__.py`
+- ✅ **Simplified test suite**: Deleted redundant smoke/unit tests, consolidated to 3 end-to-end tests
+- ✅ **Tests cover 2/4 API types**: OpenAI (openai-completions), Anthropic (anthropic-messages), Groq (proves abstraction)
+- ✅ **Fail-loud on unknown providers** - no silent fallbacks
+- ✅ All tests passing (3 tests: test_openai_agent, test_anthropic_agent, test_groq_agent)
+
+### Benefits of Phase 0.2
+- **Easy provider addition**: Groq, Cerebras, xAI, OpenRouter all work via single `PROVIDER_API_MAP` entry
+- **Code reuse**: Multiple providers share implementations (e.g., all OpenAI-compatible providers use `rollout_openai`)
+- **Type safety**: Protocol ensures all provider functions match expected signature
+- **Cost tracking**: Centralized model metadata with pricing per million tokens
+- **Model discovery**: Users can query available providers, models, and capabilities
+- **Grug-approved testing**: One end-to-end test file (`test_real_agent.py`) with 3 tests covering real API calls
+
+### Breaking Changes (Phase 0.2)
+- Unknown providers now crash with assertion error instead of silent fallback
+- Provider selection now uses API type abstraction (though existing code continues to work)
+- Deleted `test_agent_framework.py` and `test_multi_turn.py` (redundant smoke tests)
+
+### API Coverage Status
+- ✅ **openai-completions** - Implemented via `rollout_openai()`, tested with OpenAI + Groq
+- ✅ **anthropic-messages** - Implemented via `rollout_anthropic()`, tested with Anthropic
+- ❌ **openai-responses** - **NOT IMPLEMENTED** (needed for o1/o3 reasoning models)
+- ❌ **google-generative-ai** - **NOT IMPLEMENTED** (needed for Gemini)
 
 ### Completed (Phase 0.1)
 - ✅ Defined 13 new event dataclasses with granular lifecycle tracking
@@ -109,7 +183,71 @@ This document outlines the plan to integrate core features from [pi-ai](https://
 
 ## Implementation Roadmap
 
-### Phase 0: Foundation (P0 - Week 1)
+### Phase 0.3: Implement Remaining API Types (NEXT - 2-3 days)
+
+**Goal**: Implement `rollout_openai_responses()` and `rollout_google()` to complete the 4 API types.
+
+**Priority**:
+1. **openai-responses** (HIGH) - Needed for o1/o3 reasoning models
+2. **google-generative-ai** (MEDIUM) - Needed for Gemini models
+
+#### Task 1: Implement `rollout_openai_responses()` for o1/o3 models
+
+**Reference**: [pi-ai openai-responses.ts](https://github.com/badlogic/pi-mono/blob/main/packages/ai/src/providers/openai-responses.ts)
+
+**Key differences from openai-completions**:
+- Uses OpenAI Responses API (different streaming event structure)
+- Events: `response.output_item.added`, `response.output_text.delta`, `response.reasoning_summary_text.delta`, `response.function_call_arguments.delta`
+- Reasoning content is multi-part summary (join with `\n\n`)
+- Different completion event structure
+
+**Implementation steps**:
+1. Create `rollout_openai_responses()` in `providers.py`
+2. Create `aggregate_openai_responses_stream()` helper for event processing
+3. Handle reasoning/thinking content from `response.reasoning_summary_text.delta`
+4. Map response events to our `StreamEvent` types
+5. Register in `_PROVIDER_REGISTRY["openai-responses"]`
+6. Add `test_openai_o1_agent()` to `test_real_agent.py`
+
+**Files to modify**:
+- `rollouts/providers.py` - Add new rollout function and aggregator
+- `rollouts/models.py` - Already has o1/o1-mini models registered
+- `tests/test_real_agent.py` - Add o1 test
+
+#### Task 2: Implement `rollout_google()` for Gemini models
+
+**Reference**: [pi-ai google.ts](https://github.com/badlogic/pi-mono/blob/main/packages/ai/src/providers/google.ts)
+
+**Key differences**:
+- Google Generative AI API has different request/response format
+- Different streaming event structure
+- Different tool calling format
+- May need `google-generativeai` SDK or raw HTTP
+
+**Implementation steps**:
+1. Research Google Generative AI streaming API format
+2. Create `rollout_google()` in `providers.py`
+3. Create `aggregate_google_stream()` helper
+4. Map Google events to our `StreamEvent` types
+5. Register in `_PROVIDER_REGISTRY["google-generative-ai"]`
+6. Add `test_google_gemini_agent()` to `test_real_agent.py`
+
+**Files to modify**:
+- `rollouts/providers.py` - Add new rollout function
+- `rollouts/models.py` - Add Gemini models to registry
+- `tests/test_real_agent.py` - Add Gemini test
+
+#### Success Criteria for Phase 0.3
+- ✅ All 4 API types implemented and registered
+- ✅ `test_real_agent.py` has 5 tests (OpenAI, Anthropic, Groq, O1, Gemini)
+- ✅ All tests pass with real API keys
+- ✅ Each API type proven to work end-to-end
+
+**Estimated effort**: 2-3 days
+
+---
+
+### Phase 0: Foundation (P0 - Week 1) ✅ COMPLETE
 
 #### 1. Granular Streaming Events (2-3 days)
 **Why first?**

@@ -10,11 +10,12 @@ Tiger Style:
 - Explicit data structures
 """
 
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
+
 import jax.numpy as jnp
 import numpy as np
-from typing import NamedTuple, Callable, Any
-from dataclasses import dataclass
-
 
 PyTree = Any
 

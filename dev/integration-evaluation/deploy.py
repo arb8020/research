@@ -21,13 +21,6 @@ from pathlib import Path
 # Import bifrost for deployment
 from bifrost.client import BifrostClient
 from dotenv import load_dotenv
-
-# Import kerbal for dependency management and deployment patterns
-from kerbal import (
-    setup_python_env,
-    check_gpus_available,
-    start_tmux_session,
-)
 from kerbal.job_monitor import (
     LogStreamConfig,
     stream_log_until_complete,
@@ -35,6 +28,13 @@ from kerbal.job_monitor import (
 
 # Import shared logging
 from shared.logging_config import setup_logging
+
+# Import kerbal for dependency management and deployment patterns
+from kerbal import (
+    check_gpus_available,
+    setup_python_env,
+    start_tmux_session,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +68,7 @@ def load_config_from_file(config_path: str):
     spec.loader.exec_module(module)
 
     assert hasattr(module, 'config'), "Config file must define 'config' variable"
-    config = getattr(module, 'config')
+    config = module.config
 
     return config
 
@@ -286,9 +286,8 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
         logger.error(f"stderr: {result.stderr}")
         logger.error("These packages are required for backend-bench evaluation")
         raise RuntimeError("Failed to install Prime packages (verifiers + backend-bench)")
-    else:
-        logger.info("✅ Prime packages installed (verifiers + backend-bench)")
-        logger.info(f"Output: {result.stdout}")
+    logger.info("✅ Prime packages installed (verifiers + backend-bench)")
+    logger.info(f"Output: {result.stdout}")
 
     # Verify all required packages are importable
     # Note: backendbench module is actually named BackendBench (capital B)
@@ -305,10 +304,9 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
         logger.error("❌ Package verification failed!")
         logger.error(f"Output: {result.stdout}")
         raise RuntimeError("Required packages not importable after installation")
-    else:
-        logger.info("✅ All packages verified:")
-        for line in result.stdout.strip().split('\n'):
-            logger.info(f"   {line}")
+    logger.info("✅ All packages verified:")
+    for line in result.stdout.strip().split('\n'):
+        logger.info(f"   {line}")
 
     return workspace_path
 

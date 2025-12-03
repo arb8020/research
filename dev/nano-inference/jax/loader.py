@@ -7,18 +7,14 @@ from pathlib import Path
 # Add nano-inference root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+
+from utils.weights import download_gpt2_weights, load_gpt2_weights
+
 import jax.numpy as jnp
-from typing import Dict, Optional
 from jax import Array
 
-from utils.weights import (
-    load_gpt2_weights,
-    download_gpt2_weights,
-    GPT2Weights
-)
 
-
-def load_weights(model_name: str = "gpt2", cache_dir: Optional[str] = None) -> Dict[str, Array]:
+def load_weights(model_name: str = "gpt2", cache_dir: str | None = None) -> dict[str, Array]:
     """Load GPT-2 weights and convert to JAX arrays.
 
     Args:
@@ -43,7 +39,7 @@ def load_weights(model_name: str = "gpt2", cache_dir: Optional[str] = None) -> D
     return weights
 
 
-def convert_hf_weights_to_jax_format(hf_weights: Dict[str, Array]) -> Dict[str, Array]:
+def convert_hf_weights_to_jax_format(hf_weights: dict[str, Array]) -> dict[str, Array]:
     """Convert HuggingFace weight names to our expected format.
 
     Removes 'transformer.' prefix and adds convenience aliases.

@@ -18,16 +18,15 @@ Core primitive:
     )
 """
 
-import trio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, replace
-from typing import List, Callable, Optional, Any, Tuple
+from typing import Any
 
-from .dtypes import (
-    Message, Trajectory, Endpoint, Actor, AgentState,
-    Environment, RunConfig
-)
+import trio
+
 from .agents import run_agent
+from .dtypes import Actor, AgentState, Endpoint, Environment, Message, RunConfig, Trajectory
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +69,7 @@ def compact_trajectory(
 
 def summarize_trajectory(
     trajectory: Trajectory,
-    summarizer: Callable[[List[Message]], str]
+    summarizer: Callable[[list[Message]], str]
 ) -> Trajectory:
     """Summarize trajectory using custom summarizer function.
 
@@ -139,8 +138,8 @@ async def run_parallel_agents(
     initial_state: AgentState,
     n: int,
     environment_factory: Callable[[], Environment] | None = None,
-    run_config: Optional[RunConfig] = None,
-) -> Tuple[List[Trajectory], List[List[AgentState]]]:
+    run_config: RunConfig | None = None,
+) -> tuple[list[Trajectory], list[list[AgentState]]]:
     """Run N agents in parallel from same starting state.
 
     Args:
@@ -154,7 +153,7 @@ async def run_parallel_agents(
     """
     if run_config is None:
         run_config = RunConfig(
-            on_chunk=lambda _: trio.sleep(0),
+            on_chunk=lambda _: trio.lowlevel.checkpoint(),
             show_progress=False
         )
 
@@ -204,7 +203,7 @@ async def run_parallel_agents(
 # ══════════════════════════════════════════════════════════════════════════════
 
 def reduce_select_best(
-    trajectories: List[Trajectory],
+    trajectories: list[Trajectory],
     metric: Callable[[Trajectory], float],
     maximize: bool = True
 ) -> Trajectory:
@@ -224,7 +223,7 @@ def reduce_select_best(
 
 
 def reduce_majority_vote(
-    trajectories: List[Trajectory],
+    trajectories: list[Trajectory],
     extract_answer: Callable[[Trajectory], Any]
 ) -> Trajectory:
     """Select trajectory with most common answer.
@@ -246,10 +245,10 @@ def reduce_majority_vote(
 
 
 async def reduce_llm_judge(
-    trajectories: List[Trajectory],
+    trajectories: list[Trajectory],
     judge_endpoint: Endpoint,
-    judge_prompt_fn: Callable[[List[Trajectory]], List[Message]],
-    run_config: Optional[RunConfig] = None
+    judge_prompt_fn: Callable[[list[Trajectory]], list[Message]],
+    run_config: RunConfig | None = None
 ) -> Trajectory:
     """Use an LLM to judge and synthesize multiple trajectories.
 
@@ -278,7 +277,7 @@ async def reduce_llm_judge(
 
     if run_config is None:
         run_config = RunConfig(
-            on_chunk=lambda _: trio.sleep(0),
+            on_chunk=lambda _: trio.lowlevel.checkpoint(),
             show_progress=False
         )
 
@@ -309,18 +308,18 @@ class AgentStage:
 
     # Parallelism (test-time scaling)
     n: int = 1  # Number of parallel agents
-    reduce_fn: Callable[[List[Trajectory]], Trajectory] | None = None  # Required if n > 1
+    reduce_fn: Callable[[list[Trajectory]], Trajectory] | None = None  # Required if n > 1
 
     # Execution config
-    run_config: Optional[RunConfig] = None
+    run_config: RunConfig | None = None
 
 
 async def run_agent_pipeline(
     initial_trajectory: Trajectory,
     initial_endpoint: Endpoint,
-    stages: List[AgentStage],
-    run_config: Optional[RunConfig] = None
-) -> List[Trajectory]:
+    stages: list[AgentStage],
+    run_config: RunConfig | None = None
+) -> list[Trajectory]:
     """Run agents through pipeline stages.
 
     Each stage can:
@@ -404,7 +403,7 @@ async def run_agent_pipeline(
             # Single agent
             logger.info(f"  Running 1 agent (max_turns={stage.max_turns})")
             states = await run_agent(initial_state, stage_run_config or RunConfig(
-                on_chunk=lambda _: trio.sleep(0),
+                on_chunk=lambda _: trio.lowlevel.checkpoint(),
                 show_progress=False
             ))
             current_traj = states[-1].actor.trajectory

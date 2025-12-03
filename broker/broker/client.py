@@ -3,13 +3,14 @@ GPU Broker Client - Main interface for GPU operations
 """
 
 import logging
-from typing import Any, Callable, Dict, List, Optional, Union, cast
+from collections.abc import Callable
+from typing import Any, Optional, cast
 
 from shared.validation import validate_ssh_key_path
+
 from .query import GPUQuery, QueryType
 from .types import CloudType, GPUInstance, GPUOffer, InstanceStatus, ProviderCredentials
 from .validation import validate_credentials
-
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +35,9 @@ class GPUClient:
 
     def __init__(
         self,
-        credentials: Union[ProviderCredentials, Dict[str, str]],
-        ssh_key_path: Optional[str] = None,
-        ssh_key_paths: Optional[Dict[str, str]] = None
+        credentials: ProviderCredentials | dict[str, str],
+        ssh_key_path: str | None = None,
+        ssh_key_paths: dict[str, str] | None = None
     ):
         """Initialize GPU broker client
 
@@ -54,7 +55,7 @@ class GPUClient:
         """
         # Convert dict to ProviderCredentials if needed (backward compatibility)
         if isinstance(credentials, dict):
-            credentials_dict = cast(Dict[str, str], credentials)
+            credentials_dict = cast(dict[str, str], credentials)
             validate_credentials(credentials_dict)  # Validate before conversion
             credentials = ProviderCredentials.from_dict(credentials_dict)
 
@@ -69,7 +70,7 @@ class GPUClient:
         self._ssh_key_path = validate_ssh_key_path(ssh_key_path) if ssh_key_path else None
 
         # Validate and store per-provider SSH key paths
-        self._ssh_key_paths: Dict[str, str] = {}
+        self._ssh_key_paths: dict[str, str] = {}
         if ssh_key_paths:
             assert isinstance(ssh_key_paths, dict), "ssh_key_paths must be dict"
             # Valid providers list (must match validation.py)
@@ -88,7 +89,7 @@ class GPUClient:
         assert self._query is not None, "Failed to initialize query"
         assert isinstance(self._ssh_key_paths, dict), "Failed to set ssh_key_paths"
 
-    def get_ssh_key_path(self, provider: Optional[str] = None) -> Optional[str]:
+    def get_ssh_key_path(self, provider: str | None = None) -> str | None:
         """Get SSH key path for a specific provider with precedence.
 
         Args:
@@ -153,10 +154,10 @@ class GPUClient:
     # Main API methods
     def search(
         self,
-        query: Optional[QueryType] = None,
-        sort: Optional[Callable[[Any], Any]] = None,
+        query: QueryType | None = None,
+        sort: Callable[[Any], Any] | None = None,
         reverse: bool = False
-    ) -> List[GPUOffer]:
+    ) -> list[GPUOffer]:
         """Search for GPU offers
 
         Args:
@@ -179,15 +180,15 @@ class GPUClient:
 
     def create(
         self,
-        query: Union[QueryType, List[GPUOffer], GPUOffer],
+        query: QueryType | list[GPUOffer] | GPUOffer,
         image: str = "runpod/pytorch:1.0.0-cu1281-torch280-ubuntu2204",
-        name: Optional[str] = None,
+        name: str | None = None,
         gpu_count: int = 1,
-        exposed_ports: Optional[List[int]] = None,
+        exposed_ports: list[int] | None = None,
         enable_http_proxy: bool = True,
         n_offers: int = 3,
-        cloud_type: Optional[Union[str, CloudType]] = None,
-        sort: Optional[Callable[[Any], Any]] = None,
+        cloud_type: str | CloudType | None = None,
+        sort: Callable[[Any], Any] | None = None,
         reverse: bool = False,
         **kwargs
     ) -> Optional['ClientGPUInstance']:
@@ -282,7 +283,7 @@ class GPUClient:
 
         return api.terminate_instance(instance_id, provider, credentials=self._credentials)
 
-    def list_instances(self, provider: Optional[str] = None) -> List['ClientGPUInstance']:
+    def list_instances(self, provider: str | None = None) -> list['ClientGPUInstance']:
         """List all user's instances
 
         Args:
@@ -336,27 +337,27 @@ class ClientGPUInstance:
         return self._instance.price_per_hour
 
     @property
-    def name(self) -> Optional[str]:
+    def name(self) -> str | None:
         """Instance name"""
         return self._instance.name
 
     @property
-    def public_ip(self) -> Optional[str]:
+    def public_ip(self) -> str | None:
         """Public IP address"""
         return self._instance.public_ip
 
     @property
-    def ssh_port(self) -> Optional[int]:
+    def ssh_port(self) -> int | None:
         """SSH port"""
         return self._instance.ssh_port
 
     @property
-    def ssh_username(self) -> Optional[str]:
+    def ssh_username(self) -> str | None:
         """SSH username"""
         return self._instance.ssh_username
 
     @property
-    def raw_data(self) -> Optional[Dict[str, Any]]:
+    def raw_data(self) -> dict[str, Any] | None:
         """Raw provider API data"""
         return self._instance.raw_data
 
@@ -364,7 +365,7 @@ class ClientGPUInstance:
         """Get SSH connection string (user@host:port)"""
         return self._instance.ssh_connection_string()
 
-    def exec(self, command: str, ssh_key_path: Optional[str] = None, timeout: int = 30):
+    def exec(self, command: str, ssh_key_path: str | None = None, timeout: int = 30):
         """Execute command using client's SSH configuration (synchronous)"""
         if ssh_key_path is None:
             # Get provider-specific SSH key with fallback to default
@@ -372,7 +373,7 @@ class ClientGPUInstance:
 
         return self._instance.exec(command, ssh_key_path, timeout)
 
-    async def aexec(self, command: str, ssh_key_path: Optional[str] = None, timeout: int = 30):
+    async def aexec(self, command: str, ssh_key_path: str | None = None, timeout: int = 30):
         """Execute command using client's SSH configuration (asynchronous)"""
         if ssh_key_path is None:
             # Get provider-specific SSH key with fallback to default

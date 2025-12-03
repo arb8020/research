@@ -1,8 +1,8 @@
 """Configuration for corpus-proximity experiments."""
 
-from dataclasses import dataclass, field, asdict
-from pathlib import Path
 import json
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
 # Base directory for all data (relative to this config file)
 _BASE_DIR = Path(__file__).parent / "data"

@@ -3,22 +3,22 @@
 GUI grounding dataset for testing vision models with bounding box prediction.
 """
 
-import json
 import base64
+import json
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Any
 
-from rollouts.dtypes import Trajectory, Message
+from rollouts.dtypes import Message, Trajectory
 
 
 def load_screenspot(
     data_path: Path,
     annotation_file: str,
     limit: int | None = None,
-    platforms: List[str] | None = None,
-    applications: List[str] | None = None,
-    ui_types: List[str] | None = None,
-) -> List[Dict[str, Any]]:
+    platforms: list[str] | None = None,
+    applications: list[str] | None = None,
+    ui_types: list[str] | None = None,
+) -> list[dict[str, Any]]:
     """Load ScreenSpot-Pro dataset from JSON annotation file.
 
     Why JSON: ScreenSpot-Pro uses JSON format with metadata.
@@ -70,7 +70,7 @@ def load_screenspot(
     return samples
 
 
-def screenspot_to_trajectory(row: Dict[str, Any]) -> Trajectory:
+def screenspot_to_trajectory(row: dict[str, Any]) -> Trajectory:
     """Transform ScreenSpot row to initial trajectory with vision.
 
     Why Message format: Agent expects chat-style messages with images.

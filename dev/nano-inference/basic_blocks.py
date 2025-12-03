@@ -1,23 +1,23 @@
 from dataclasses import dataclass
-from typing import List
 
 # @dataclass
 # class Block:
+
 
 @dataclass
 class BlockManagerState:
     block_size: int
     n_blocks: int
-    free_blocks: List[int] # stack
+    free_blocks: list[int]  # stack
 
 
 @dataclass
 class Sequence:
-    tokens: List[int]
+    tokens: list[int]
 
 
 def can_allocate(n_tokens: int, bms: BlockManagerState) -> bool:
-    need_blocks = (n_tokens + bms.block_size-1) // bms.block_size # ceil div
+    need_blocks = (n_tokens + bms.block_size - 1) // bms.block_size  # ceil div
     n_free_blocks = len(bms.free_blocks)
     
     if need_blocks > n_free_blocks:
@@ -25,11 +25,12 @@ def can_allocate(n_tokens: int, bms: BlockManagerState) -> bool:
 
     return True
 
+
 def allocate(n_tokens: int, bms: BlockManagerState) -> int:
 
     assert n_tokens > 0, "n tokens should be > 0"
     
-    need_blocks = (n_tokens + bms.block_size-1) // bms.block_size # ceil div
+    need_blocks = (n_tokens + bms.block_size - 1) // bms.block_size  # ceil div
 
     assert len(bms.free_blocks) >= need_blocks, "not enough free blocks"
     allocated_ids = []
@@ -43,7 +44,7 @@ def allocate(n_tokens: int, bms: BlockManagerState) -> int:
     return allocated_ids
    
 
-def deallocate(block_ids: List[int], bms: BlockManagerState) -> None:
+def deallocate(block_ids: list[int], bms: BlockManagerState) -> None:
 
     assert len(block_ids) > 0
 
@@ -53,7 +54,7 @@ def deallocate(block_ids: List[int], bms: BlockManagerState) -> None:
     return None 
         
 
-def char_tokenize(prompt_str: str) -> List[int]:
+def char_tokenize(prompt_str: str) -> list[int]:
     tokens = [ord(char) for char in prompt_str]
     return tokens
 
@@ -61,7 +62,7 @@ def char_tokenize(prompt_str: str) -> List[int]:
 def main():
     
     n_blocks = 64
-    bms = BlockManagerState(block_size = 8, n_blocks = n_blocks, free_blocks = list(range(n_blocks)))
+    bms = BlockManagerState(block_size=8, n_blocks=n_blocks, free_blocks=list(range(n_blocks)))
     
     initial_prompt = "hello world"
     max_tokens = 8

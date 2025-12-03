@@ -7,11 +7,12 @@ Experiment:
 - Visualize: do most singular values → 0 while a few stay large?
 """
 
+from pathlib import Path
+
 import jax
 import jax.numpy as jnp
-import numpy as np
 import matplotlib.pyplot as plt
-from pathlib import Path
+import numpy as np
 
 
 def linear_regression_loss(W: jnp.ndarray, X: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
@@ -183,7 +184,7 @@ def main():
     # Plot 3: Top 5 vs bottom 5 singular values
     top_k = 5
     for i in range(top_k):
-        ax3.plot(singular_values_history[:, i], label=f'SV {i+1}', linewidth=2)
+        ax3.plot(singular_values_history[:, i], label=f'SV {i + 1}', linewidth=2)
     ax3.set_xlabel('Step')
     ax3.set_ylabel('Singular Value')
     ax3.set_title(f'Top {top_k} Singular Values')
@@ -219,9 +220,9 @@ def main():
     threshold = 0.01 * final_sv[0]
     effective_rank = np.sum(final_sv > threshold)
 
-    print(f"Final singular values (sorted):")
+    print("Final singular values (sorted):")
     for i, sv in enumerate(final_sv[:10]):
-        print(f"  SV {i+1:2d}: {sv:.6f} ({100*sv/final_sv[0]:.1f}% of max)")
+        print(f"  SV {i + 1:2d}: {sv:.6f} ({100 * sv / final_sv[0]:.1f}% of max)")
 
     print(f"\nMatrix shape: {output_dim}x{input_dim}")
     print(f"Maximum possible rank: {min(output_dim, input_dim)}")

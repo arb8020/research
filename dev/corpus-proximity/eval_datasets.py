@@ -4,15 +4,15 @@
 import json
 import logging
 from pathlib import Path
-from typing import List, Optional, cast
-from datasets import load_dataset, Dataset
+from typing import cast
 
+from datasets import Dataset, load_dataset
 from trajectory import Trajectory, batch_create_trajectories
 
 logger = logging.getLogger(__name__)
 
 
-def load_gsm8k(split: str = "test", num_samples: Optional[int] = None) -> List[Trajectory]:
+def load_gsm8k(split: str = "test", num_samples: int | None = None) -> list[Trajectory]:
     """Load GSM8K dataset as trajectories.
 
     Args:
@@ -52,7 +52,7 @@ def load_gsm8k(split: str = "test", num_samples: Optional[int] = None) -> List[T
     )
 
 
-def load_arc(subset: str = "easy", split: str = "test", num_samples: Optional[int] = None) -> List[Trajectory]:
+def load_arc(subset: str = "easy", split: str = "test", num_samples: int | None = None) -> list[Trajectory]:
     """Load ARC dataset as trajectories.
 
     Args:
@@ -105,10 +105,10 @@ def load_arc(subset: str = "easy", split: str = "test", num_samples: Optional[in
 
 
 def load_mmlu(
-    subject: Optional[str] = None,
+    subject: str | None = None,
     split: str = "test",
-    num_samples: Optional[int] = None
-) -> List[Trajectory]:
+    num_samples: int | None = None
+) -> list[Trajectory]:
     """Load MMLU dataset as trajectories.
 
     Args:
@@ -163,7 +163,7 @@ def load_mmlu(
     return trajectories
 
 
-def save_trajectories(trajectories: List[Trajectory], output_path: Path):
+def save_trajectories(trajectories: list[Trajectory], output_path: Path):
     """Save trajectories to JSONL file."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -174,11 +174,11 @@ def save_trajectories(trajectories: List[Trajectory], output_path: Path):
     logger.info(f"Saved {len(trajectories)} trajectories to {output_path}")
 
 
-def load_trajectories(input_path: Path) -> List[Trajectory]:
+def load_trajectories(input_path: Path) -> list[Trajectory]:
     """Load trajectories from JSONL file."""
     trajectories = []
 
-    with open(input_path, 'r') as f:
+    with open(input_path) as f:
         for line in f:
             data = json.loads(line)
             trajectories.append(Trajectory.from_dict(data))
@@ -189,7 +189,6 @@ def load_trajectories(input_path: Path) -> List[Trajectory]:
 
 def main():
     """Demo: Load and save eval datasets."""
-    import sys
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 

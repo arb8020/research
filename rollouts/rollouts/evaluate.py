@@ -8,24 +8,26 @@ Style: Tiger Style + tuple returns + single assignment.
 """
 
 import logging
+from collections.abc import Callable, Iterator
 from dataclasses import asdict
-from typing import Dict, Any, List, Callable, Iterator, Tuple
-from tqdm.asyncio import tqdm
-import trio
+from typing import Any
 
-from .dtypes import Endpoint, Trajectory, Message
-from .providers import rollout_openai, rollout_anthropic, rollout_sglang
+import trio
+from tqdm.asyncio import tqdm
+
+from .dtypes import Endpoint, Message, Trajectory
+from .providers import rollout_anthropic, rollout_openai, rollout_sglang
 
 logger = logging.getLogger(__name__)
 
 
 async def evaluate_sample(
-    sample: Dict[str, Any],
+    sample: dict[str, Any],
     sample_id: str,
     endpoint: Endpoint,
-    message_preparer: Callable[[Dict[str, Any]], List[Dict[str, Any]]],
-    reward_functions: List[Tuple[str, Callable[[Trajectory, Dict[str, Any]], float]]],
-) -> Dict[str, Any]:
+    message_preparer: Callable[[dict[str, Any]], list[dict[str, Any]]],
+    reward_functions: list[tuple[str, Callable[[Trajectory, dict[str, Any]], float]]],
+) -> dict[str, Any]:
     """Evaluate a single sample (generic).
 
     Args:
@@ -116,16 +118,16 @@ async def evaluate_sample(
 
 
 async def evaluate_dataset(
-    dataset: Iterator[Dict[str, Any]],
+    dataset: Iterator[dict[str, Any]],
     endpoint: Endpoint,
-    message_preparer: Callable[[Dict[str, Any]], List[Dict[str, Any]]],
-    reward_functions: List[Tuple[str, Callable[[Trajectory, Dict[str, Any]], float]]],
-    sample_id_fn: Callable[[int, Dict[str, Any]], str],
+    message_preparer: Callable[[dict[str, Any]], list[dict[str, Any]]],
+    reward_functions: list[tuple[str, Callable[[Trajectory, dict[str, Any]], float]]],
+    sample_id_fn: Callable[[int, dict[str, Any]], str],
     max_concurrent: int = 10,
     group_by_key: str | None = None,
     verbose: bool = True,
     eval_name: str = "Evaluation"
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Run generic dataset evaluation.
 
     Args:
@@ -166,7 +168,7 @@ async def evaluate_dataset(
     completed_count = 0
     total_accuracy = 0.0
 
-    async def eval_with_semaphore(idx: int, sample: Dict[str, Any]) -> Dict[str, Any]:
+    async def eval_with_semaphore(idx: int, sample: dict[str, Any]) -> dict[str, Any]:
         nonlocal completed_count, total_accuracy
         async with semaphore:
             sample_id = sample_id_fn(idx, sample)
@@ -184,7 +186,7 @@ async def evaluate_dataset(
     # Run all evaluations with progress bar
     results = []
     async with trio.open_nursery() as nursery:
-        async def run_and_collect(idx: int, sample: Dict[str, Any]):
+        async def run_and_collect(idx: int, sample: dict[str, Any]):
             result = await eval_with_semaphore(idx, sample)
             results.append(result)
 
@@ -250,9 +252,9 @@ async def evaluate_dataset(
     # Log summary
     if verbose:
         logger.info("")
-        logger.debug("="*50)
+        logger.debug("=" * 50)
         logger.info("summary")
-        logger.debug("="*50)
+        logger.debug("=" * 50)
         logger.info(f"total samples: {total}")
         logger.info(f"success: {summary['num_success']}, errors: {summary['num_errors']}")
 

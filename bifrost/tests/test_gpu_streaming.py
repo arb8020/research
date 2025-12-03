@@ -1,8 +1,9 @@
 """Test GPU commands and real streaming with AsyncBifrostClient."""
 
-import trio
-import trio_asyncio
 import os
+
+import trio_asyncio
+
 from bifrost import AsyncBifrostClient
 
 # Configuration

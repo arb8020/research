@@ -20,16 +20,15 @@ Example:
     >>> config = EvalConfig(reward_fn=reward_fn, ...)
 """
 
-import asyncio
 import logging
-import trio_asyncio
 from dataclasses import replace
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
+import trio_asyncio
 from verifiers import Environment as VerifiersEnv
 from verifiers import Parser, Rubric
 
-from ..dtypes import Trajectory, RewardFunction, Message
+from ..dtypes import RewardFunction, Trajectory
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +52,7 @@ def _extract_model_response(trajectory: Trajectory) -> str:
     return ""
 
 
-def _convert_to_prime_format(trajectory: Trajectory) -> Tuple[List[Dict], List[Dict]]:
+def _convert_to_prime_format(trajectory: Trajectory) -> tuple[list[dict], list[dict]]:
     """Convert rollouts messages to Prime's OpenAI format.
 
     Tiger Style: Pure function, push fors down.
@@ -79,11 +78,11 @@ def _convert_to_prime_format(trajectory: Trajectory) -> Tuple[List[Dict], List[D
 async def _call_prime_scoring(
     env: VerifiersEnv,
     rubric: Rubric,
-    prompt: List[Dict],
-    completion: List[Dict],
+    prompt: list[dict],
+    completion: list[dict],
     ground_truth: str | None,
-    sample_data: Dict[str, Any],
-    backend_bench_state: Dict[str, Any] | None = None
+    sample_data: dict[str, Any],
+    backend_bench_state: dict[str, Any] | None = None
 ) -> Any:
     """Call Prime's asyncio scoring from trio context.
 
@@ -251,7 +250,7 @@ def prime_reward_fn(
                 # No 'metrics' key, use all fields except known internal ones
                 serialized_metrics = {k: v for k, v in dumped.items()
                                      if k not in ('reward',) and isinstance(v, (int, float, str, bool, type(None)))}
-        except (AttributeError, KeyError, TypeError) as e:
+        except (AttributeError, KeyError, TypeError):
             # Fallback: try direct dict conversion
             try:
                 if hasattr(score_result, 'metrics') and score_result.metrics:
@@ -280,7 +279,7 @@ def prime_reward_fn(
 
 def create_composite_prime_reward(
     verifiers_env: VerifiersEnv,
-    additional_signals: Dict[str, tuple[RewardFunction, float]] | None = None,
+    additional_signals: dict[str, tuple[RewardFunction, float]] | None = None,
     ground_truth_key: str = "answer",
 ) -> RewardFunction:
     """Create a composite reward combining Prime rubric with additional signals.

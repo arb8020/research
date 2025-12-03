@@ -2,6 +2,7 @@ import torch
 import triton
 import triton.language as tl
 
+
 @triton.jit
 def _log_softmax_backward_data__default_triton_kernel(
     grad_output_ptr, output_ptr, grad_input_ptr,
@@ -34,6 +35,7 @@ def _log_softmax_backward_data__default_triton_kernel(
     grad_input = grad_output - exp_output * sum_grad_output
 
     tl.store(gi_ptrs, grad_input, mask=mask)
+
 
 def _log_softmax_backward_data__default_kernel_impl(*args, **kwargs):
     # Expecting grad_output, output tensors as inputs, output grad_input tensor returned

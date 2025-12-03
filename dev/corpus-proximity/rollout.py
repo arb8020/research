@@ -2,12 +2,19 @@
 """Rollout dataclass for corpus-proximity inference and evaluation."""
 
 import json
-from dataclasses import dataclass, field, asdict
+from collections.abc import Awaitable, Callable, Iterator
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Mapping, Iterator, Protocol, runtime_checkable, Callable, Awaitable
+from typing import (
+    Any,
+    Protocol,
+    runtime_checkable,
+)
+
 import dacite
 
 # ────────────────────────────── Core Message Types ──────────────────────────────
+
 
 @dataclass(frozen=True)
 class Message:
@@ -24,7 +31,7 @@ class Usage:
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
-    prompt_tokens_details: Optional[Any] = None
+    prompt_tokens_details: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -32,14 +39,14 @@ class Logprob:
     """Single token logprob information."""
     token: str
     logprob: float
-    bytes: List[int]
-    top_logprobs: List[float]
+    bytes: list[int]
+    top_logprobs: list[float]
 
 
 @dataclass(frozen=True)
 class Logprobs:
     """Collection of logprobs for a completion."""
-    content: List[Logprob] = field(default_factory=list)
+    content: list[Logprob] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -48,8 +55,8 @@ class Choice:
     index: int
     message: Message
     finish_reason: str
-    logprobs: Optional[Logprobs] = None
-    stop_reason: Optional[Any] = None
+    logprobs: Logprobs | None = None
+    stop_reason: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -60,9 +67,9 @@ class ChatCompletion:
     created: int
     model: str
     usage: Usage
-    kv_transfer_params: Optional[Any] = None
-    choices: List[Choice] = field(default_factory=list)
-    prompt_logprobs: Optional[List[Any]] = None
+    kv_transfer_params: Any | None = None
+    choices: list[Choice] = field(default_factory=list)
+    prompt_logprobs: list[Any] | None = None
 
 
 # ────────────────────────────── Main Rollout Type ──────────────────────────────
@@ -70,9 +77,9 @@ class ChatCompletion:
 @dataclass
 class Rollout:
     """Batch of inference interactions: messages (input), completions (output), metadata."""
-    messages: List[Message] = field(default_factory=list)
-    completions: List[ChatCompletion] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    messages: list[Message] = field(default_factory=list)
+    completions: list[ChatCompletion] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     # ────────────────────── Serialization ──────────────────────
 
@@ -89,29 +96,29 @@ class Rollout:
     # ────────────────────── JSONL Batch Operations ──────────────────────
 
     @staticmethod
-    def to_jsonl(rollouts: List["Rollout"]) -> str:
+    def to_jsonl(rollouts: list["Rollout"]) -> str:
         """Convert list of rollouts to JSONL string."""
         return "\n".join(r.to_json() for r in rollouts)
 
     @staticmethod
-    def from_jsonl(jsonl_str: str) -> List["Rollout"]:
+    def from_jsonl(jsonl_str: str) -> list["Rollout"]:
         """Parse JSONL string into list of rollouts."""
         return [Rollout.from_json(line) for line in jsonl_str.strip().splitlines() if line]
 
     @staticmethod
-    def save_jsonl(rollouts: List["Rollout"], filepath: str | Path) -> None:
+    def save_jsonl(rollouts: list["Rollout"], filepath: str | Path) -> None:
         """Save rollouts to JSONL file."""
         Path(filepath).write_text(Rollout.to_jsonl(rollouts), encoding="utf-8")
 
     @staticmethod
-    def load_jsonl(filepath: str | Path) -> List["Rollout"]:
+    def load_jsonl(filepath: str | Path) -> list["Rollout"]:
         """Load rollouts from JSONL file."""
         return Rollout.from_jsonl(Path(filepath).read_text(encoding="utf-8"))
 
     @staticmethod
     def load_jsonl_streaming(filepath: str | Path) -> Iterator["Rollout"]:
         """Stream rollouts from JSONL file (memory-efficient for large files)."""
-        with open(filepath, 'r', encoding='utf-8') as f:
+        with open(filepath, encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
                 if line:
@@ -129,7 +136,7 @@ class Rollout:
             return 0
         return self.completions[-1].usage.total_tokens
 
-    def get_last_message_content(self) -> Optional[str]:
+    def get_last_message_content(self) -> str | None:
         """Get content from the last completion message."""
         if not self.completions or not self.completions[-1].choices:
             return None
@@ -204,7 +211,7 @@ class Endpoint:
 async def generate(
     endpoint: Endpoint,
     rollout: Rollout,
-    on_chunk: Optional[Callable[[str], Awaitable[None]]] = None
+    on_chunk: Callable[[str], Awaitable[None]] | None = None
 ) -> Rollout:
     """Generate completion and return updated rollout.
 
@@ -309,10 +316,8 @@ async def generate(
 async def main():
     """CLI for querying OpenAI/vLLM endpoints."""
     import argparse
-    import asyncio
     import logging
     import os
-    import sys
 
     parser = argparse.ArgumentParser(description="Query OpenAI/vLLM endpoints")
     parser.add_argument("query", help="User query/prompt")
@@ -396,6 +401,6 @@ async def main():
 
 
 if __name__ == "__main__":
-    import sys
     import asyncio
+    import sys
     sys.exit(asyncio.run(main()))

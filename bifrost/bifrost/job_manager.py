@@ -1,12 +1,13 @@
 """Job management for Bifrost detached execution."""
 
 import json
-import time
-import uuid
 import logging
 import shlex
+import time
+import uuid
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any
+from typing import Any
+
 import paramiko
 from rich.console import Console
 
@@ -83,7 +84,7 @@ class JobManager:
         
     def create_job_metadata(self, client: paramiko.SSHClient, job_id: str, 
                            command: str, worktree_path: str, git_commit: str, 
-                           repo_name: str) -> Dict[str, Any]:
+                           repo_name: str) -> dict[str, Any]:
         """Create job metadata on remote instance."""
         
         metadata = {
@@ -148,7 +149,7 @@ class JobManager:
         console.print("📋 Uploaded job wrapper script")
     
     def start_tmux_session(self, client: paramiko.SSHClient, job_id: str, 
-                          command: str, env_vars: Optional[Dict[str, str]] = None, 
+                          command: str, env_vars: dict[str, str] | None = None, 
                           wrapper_script: str = "job_wrapper.sh") -> str:
         """Start tmux session for detached job execution."""
         
@@ -220,7 +221,7 @@ class JobManager:
         
         return exit_code == 0
     
-    def get_job_status(self, client: paramiko.SSHClient, job_id: str) -> Optional[str]:
+    def get_job_status(self, client: paramiko.SSHClient, job_id: str) -> str | None:
         """Get current job status from remote metadata."""
         
         status_cmd = f"cat ~/.bifrost/jobs/{job_id}/status 2>/dev/null || echo 'not_found'"

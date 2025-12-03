@@ -3,15 +3,13 @@ RunPod provider implementation
 """
 
 import logging
-import os
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import requests
-from dotenv import load_dotenv
+from shared.retry import retry
 
 from ..types import CloudType, GPUInstance, GPUOffer, InstanceStatus, ProvisionRequest
-from shared.retry import retry
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +64,7 @@ query pod($input: PodFilter!) {
 """
 
 
-def _is_direct_ssh_port(port: Dict[str, Any]) -> bool:
+def _is_direct_ssh_port(port: dict[str, Any]) -> bool:
     """Check if port configuration represents direct SSH access.
 
     Why three conditions: RunPod exposes multiple ports, but only one
@@ -90,7 +88,7 @@ def _is_direct_ssh_port(port: Dict[str, Any]) -> bool:
     return True
 
 
-def _extract_direct_ssh(pod: Dict[str, Any]) -> Optional[Tuple[str, int]]:
+def _extract_direct_ssh(pod: dict[str, Any]) -> tuple[str, int] | None:
     """Extract direct SSH connection info from pod runtime.
 
     Returns (ip, port) or None if direct SSH not available.
@@ -127,7 +125,7 @@ def _extract_direct_ssh(pod: Dict[str, Any]) -> Optional[Tuple[str, int]]:
     return None
 
 
-def _extract_proxy_ssh(pod: Dict[str, Any]) -> Optional[str]:
+def _extract_proxy_ssh(pod: dict[str, Any]) -> str | None:
     """Extract proxy SSH podHostId from pod machine.
 
     Returns podHostId (username for ssh.runpod.io) or None.
@@ -150,7 +148,7 @@ def _extract_proxy_ssh(pod: Dict[str, Any]) -> Optional[str]:
     return pod_host_id
 
 
-def _extract_ssh_info(pod: Dict[str, Any]) -> Optional[Tuple[str, int, str]]:
+def _extract_ssh_info(pod: dict[str, Any]) -> tuple[str, int, str] | None:
     """Extract SSH connection info with fallback strategy.
 
     Returns (public_ip, ssh_port, ssh_username) or None if no SSH method available.
@@ -178,7 +176,7 @@ def _extract_ssh_info(pod: Dict[str, Any]) -> Optional[Tuple[str, int, str]]:
     return None
 
 
-def _extract_gpu_type(pod: Dict[str, Any]) -> str:
+def _extract_gpu_type(pod: dict[str, Any]) -> str:
     """Extract GPU type name from pod machine details.
 
     Returns GPU display name or "unknown" if not available.
@@ -216,7 +214,7 @@ def _map_status(desired_status: str) -> InstanceStatus:
     return status_map.get(desired_status, InstanceStatus.PENDING)
 
 
-def _build_ports_string(exposed_ports: Optional[List[int]], enable_http_proxy: bool) -> str:
+def _build_ports_string(exposed_ports: list[int] | None, enable_http_proxy: bool) -> str:
     """Build ports string for RunPod instance configuration.
     
     Args:
@@ -240,7 +238,7 @@ def _build_ports_string(exposed_ports: Optional[List[int]], enable_http_proxy: b
 
 
 @retry(max_attempts=3, delay=1, backoff=2, exceptions=(requests.RequestException, requests.Timeout))
-def _make_graphql_request(query: str, variables: Optional[Dict] = None, api_key: Optional[str] = None) -> Dict[str, Any]:
+def _make_graphql_request(query: str, variables: dict | None = None, api_key: str | None = None) -> dict[str, Any]:
     """Make a GraphQL request to RunPod API with automatic retries.
 
     Retries up to 3 times with exponential backoff (1s, 2s, 4s) on network errors.
@@ -271,7 +269,7 @@ def _make_graphql_request(query: str, variables: Optional[Dict] = None, api_key:
             timeout=(10, 30),
         )
         response.raise_for_status()
-    except requests.Timeout as exc:
+    except requests.Timeout:
         logger.error("RunPod GraphQL request timed out")
         raise
     except requests.RequestException as exc:
@@ -285,9 +283,9 @@ def _make_graphql_request(query: str, variables: Optional[Dict] = None, api_key:
     return data["data"]
 
 
-def search_gpu_offers(cuda_version: Optional[str] = None, manufacturer: Optional[str] = None,
-                      memory_gb: Optional[int] = None, container_disk_gb: Optional[int] = None,
-                      gpu_count: int = 1, api_key: Optional[str] = None) -> List[GPUOffer]:
+def search_gpu_offers(cuda_version: str | None = None, manufacturer: str | None = None,
+                      memory_gb: int | None = None, container_disk_gb: int | None = None,
+                      gpu_count: int = 1, api_key: str | None = None) -> list[GPUOffer]:
     """Search for available GPU offers on RunPod with optional CUDA version and manufacturer filtering
 
     Note: Queries secure and community clouds separately to get accurate stock availability
@@ -393,7 +391,7 @@ def search_gpu_offers(cuda_version: Optional[str] = None, manufacturer: Optional
     return offers
 
 
-def provision_instance(request: ProvisionRequest, ssh_startup_script: Optional[str] = None, api_key: Optional[str] = None) -> Optional[GPUInstance]:
+def provision_instance(request: ProvisionRequest, ssh_startup_script: str | None = None, api_key: str | None = None) -> GPUInstance | None:
     """Provision a GPU instance on RunPod"""
     # First, we need to find a suitable GPU type
     # For now, let's implement a simple approach using podFindAndDeployOnDemand
@@ -488,7 +486,7 @@ def provision_instance(request: ProvisionRequest, ssh_startup_script: Optional[s
         return None
 
 
-def get_instance_details_enhanced(instance_id: str, api_key: Optional[str] = None) -> Optional[dict]:
+def get_instance_details_enhanced(instance_id: str, api_key: str | None = None) -> dict | None:
     """Get comprehensive details of a specific instance with all available fields"""
     query = """
     query pod($input: PodFilter!) {
@@ -550,7 +548,7 @@ def get_instance_details_enhanced(instance_id: str, api_key: Optional[str] = Non
         return None
 
 
-def get_instance_details(instance_id: str, api_key: Optional[str] = None) -> Optional[GPUInstance]:
+def get_instance_details(instance_id: str, api_key: str | None = None) -> GPUInstance | None:
     """Get details of a specific instance.
 
     Returns None if instance not found, raises on malformed data.
@@ -609,7 +607,7 @@ def get_instance_details(instance_id: str, api_key: Optional[str] = None) -> Opt
         return None
 
 
-def _parse_pod_to_instance(pod: Dict[str, Any], api_key: Optional[str] = None) -> GPUInstance:
+def _parse_pod_to_instance(pod: dict[str, Any], api_key: str | None = None) -> GPUInstance:
     """Parse a pod dictionary into a GPUInstance.
 
     Tiger Style: Refactored to use shared helpers, eliminating 40+ lines of duplication.
@@ -649,7 +647,7 @@ def _parse_pod_to_instance(pod: Dict[str, Any], api_key: Optional[str] = None) -
     )
 
 
-def list_instances(api_key: Optional[str] = None) -> List[GPUInstance]:
+def list_instances(api_key: str | None = None) -> list[GPUInstance]:
     """List all user's instances"""
     query = """
     query {
@@ -719,7 +717,7 @@ def list_instances(api_key: Optional[str] = None) -> List[GPUInstance]:
         return []
 
 
-def get_user_balance(api_key: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def get_user_balance(api_key: str | None = None) -> dict[str, Any] | None:
     """Get user balance and spending information from RunPod"""
     query = """
     query {
@@ -760,7 +758,7 @@ def get_user_balance(api_key: Optional[str] = None) -> Optional[Dict[str, Any]]:
         return None
 
 
-def terminate_instance(instance_id: str, api_key: Optional[str] = None) -> bool:
+def terminate_instance(instance_id: str, api_key: str | None = None) -> bool:
     """Terminate a RunPod instance"""
     # Use simple schema - RunPod API might return different types
     mutation = """
@@ -920,7 +918,7 @@ def get_fresh_instance(instance_id: str, api_key: str):
     return get_instance_details(instance_id, api_key=api_key)
 
 
-def get_pod_logs(instance_id: str, api_key: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def get_pod_logs(instance_id: str, api_key: str | None = None) -> dict[str, Any] | None:
     """Get pod logs and runtime information for debugging
 
     Args:

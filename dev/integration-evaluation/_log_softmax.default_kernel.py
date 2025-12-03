@@ -2,6 +2,7 @@ import torch
 import triton
 import triton.language as tl
 
+
 @triton.jit
 def _log_softmax__default_triton_kernel(
     X_ptr, Y_ptr,
@@ -60,6 +61,7 @@ def _log_softmax__default_triton_kernel(
     tl.store(Y_ptr + offs_m_2d * stride_m_y + offs_n_2d * stride_n_y,
              log_softmax,
              mask=(mask_m[:, None] & mask_n[None, :]))
+
 
 def _log_softmax__default_kernel_impl(*args, **kwargs):
     # Expect input tensor as first positional argument or in kwargs with key 'input'

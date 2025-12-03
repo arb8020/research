@@ -13,14 +13,13 @@ Usage:
     python generate_perplexity_plots.py --terminal --format json   # Output as JSON
 """
 
+import argparse
 import json
 import re
 import sys
-import argparse
 from pathlib import Path
-from typing import Dict, List, Optional
-import numpy as np
 
+import numpy as np
 
 # Dense (non-MoE) models
 DENSE_MODELS = {
@@ -109,7 +108,7 @@ MODEL_METADATA = {
 }
 
 
-def load_perplexity_result(perplexity_dir: Path) -> Optional[Dict]:
+def load_perplexity_result(perplexity_dir: Path) -> dict | None:
     """Load perplexity result from a directory.
 
     Args:
@@ -125,7 +124,7 @@ def load_perplexity_result(perplexity_dir: Path) -> Optional[Dict]:
     if not json_file.exists():
         return None
 
-    with open(json_file, 'r') as f:
+    with open(json_file) as f:
         data = json.load(f)
 
     model_name = data.get('model')
@@ -141,7 +140,7 @@ def load_perplexity_result(perplexity_dir: Path) -> Optional[Dict]:
     }
 
 
-def extract_outliers_from_json(file_path: Path) -> Optional[List[Dict]]:
+def extract_outliers_from_json(file_path: Path) -> list[dict] | None:
     """Extract all_systematic_outliers from JSON file.
 
     Args:
@@ -154,7 +153,7 @@ def extract_outliers_from_json(file_path: Path) -> Optional[List[Dict]]:
     assert file_path.exists(), f"File does not exist: {file_path}"
 
     # Read first 50MB to avoid memory issues
-    with open(file_path, 'r') as f:
+    with open(file_path) as f:
         content = f.read(50_000_000)
 
     # Extract all_systematic_outliers array using regex
@@ -174,7 +173,7 @@ def extract_outliers_from_json(file_path: Path) -> Optional[List[Dict]]:
     return outliers
 
 
-def calculate_outlier_metrics(outliers: List[Dict]) -> Dict:
+def calculate_outlier_metrics(outliers: list[dict]) -> dict:
     """Calculate aggregate metrics from outliers list.
 
     Args:
@@ -206,7 +205,7 @@ def calculate_outlier_metrics(outliers: List[Dict]) -> Dict:
     }
 
 
-def extract_model_name_from_result(result_dir: Path) -> Optional[str]:
+def extract_model_name_from_result(result_dir: Path) -> str | None:
     """Extract model name from result directory.
 
     Args:
@@ -221,7 +220,7 @@ def extract_model_name_from_result(result_dir: Path) -> Optional[str]:
     # Try config.json first
     config_file = result_dir / "config.json"
     if config_file.exists():
-        with open(config_file, 'r') as f:
+        with open(config_file) as f:
             config = json.load(f)
             model_name = config.get('model', {}).get('name')
             if model_name:
@@ -230,7 +229,7 @@ def extract_model_name_from_result(result_dir: Path) -> Optional[str]:
     # Try final_analysis_results.json
     outlier_file = result_dir / "final_analysis_results.json"
     if outlier_file.exists():
-        with open(outlier_file, 'r') as f:
+        with open(outlier_file) as f:
             content = f.read(10000)
         match = re.search(r'"model":\s*"([^"]+)"', content)
         if match:
@@ -239,7 +238,7 @@ def extract_model_name_from_result(result_dir: Path) -> Optional[str]:
     return None
 
 
-def load_all_perplexity_results(perplexity_dir: Path) -> Dict[str, Dict]:
+def load_all_perplexity_results(perplexity_dir: Path) -> dict[str, dict]:
     """Load all perplexity results from directory.
 
     Args:
@@ -269,8 +268,8 @@ def load_all_perplexity_results(perplexity_dir: Path) -> Dict[str, Dict]:
 
 def match_single_outlier_result(
     result_dir: Path,
-    perplexity_results: Dict[str, Dict]
-) -> Optional[Dict]:
+    perplexity_results: dict[str, dict]
+) -> dict | None:
     """Match a single outlier result with perplexity data.
 
     Args:
@@ -327,7 +326,7 @@ def match_single_outlier_result(
 def match_perplexity_to_outliers(
     perplexity_dir: Path,
     outlier_dir: Path
-) -> List[Dict]:
+) -> list[dict]:
     """Match perplexity results with outlier analysis results.
 
     Args:
@@ -358,7 +357,7 @@ def match_perplexity_to_outliers(
 
 
 def create_plot_matplotlib(
-    results: List[Dict],
+    results: list[dict],
     y_key: str,
     output_path: Path,
     title: str,
@@ -378,8 +377,8 @@ def create_plot_matplotlib(
     assert y_key, "y_key must not be empty"
     assert output_path is not None, "output_path must not be None"
 
-    import matplotlib.pyplot as plt
     import matplotlib
+    import matplotlib.pyplot as plt
     matplotlib.use('Agg')
 
     # Extract data
@@ -423,7 +422,7 @@ def create_plot_matplotlib(
 
 
 def create_plot_terminal(
-    results: List[Dict],
+    results: list[dict],
     y_key: str,
     title: str,
     ylabel: str
@@ -481,9 +480,9 @@ def create_plot_terminal(
 
 
 def generate_single_plot(
-    results: List[Dict],
-    plot_spec: Dict,
-    output_dir: Optional[Path],
+    results: list[dict],
+    plot_spec: dict,
+    output_dir: Path | None,
     terminal: bool
 ):
     """Generate a single plot.
@@ -515,7 +514,7 @@ def generate_single_plot(
         )
 
 
-def get_plot_specs() -> List[Dict]:
+def get_plot_specs() -> list[dict]:
     """Get all plot specifications.
 
     Returns:
@@ -556,8 +555,8 @@ def get_plot_specs() -> List[Dict]:
 
 
 def generate_perplexity_plots(
-    results: List[Dict],
-    output_dir: Optional[Path] = None,
+    results: list[dict],
+    output_dir: Path | None = None,
     terminal: bool = False
 ):
     """Generate perplexity analysis plots (Figure 3b replication).
@@ -588,7 +587,7 @@ def generate_perplexity_plots(
             input("Press Enter for next plot...")
 
 
-def print_summary_table(results: List[Dict], use_rich: bool = False):
+def print_summary_table(results: list[dict], use_rich: bool = False):
     """Print formatted summary table of all results.
 
     Args:
@@ -649,7 +648,7 @@ def print_summary_table(results: List[Dict], use_rich: bool = False):
     print("=" * 90)
 
 
-def output_csv(results: List[Dict]):
+def output_csv(results: list[dict]):
     """Output results as CSV format."""
     assert results is not None, "results must not be None"
 
@@ -666,7 +665,7 @@ def output_csv(results: List[Dict]):
         writer.writerow(r)
 
 
-def output_json(results: List[Dict]):
+def output_json(results: list[dict]):
     """Output results as JSON format."""
     assert results is not None, "results must not be None"
     print(json.dumps(results, indent=2))
@@ -728,7 +727,7 @@ def run_analysis(args) -> int:
         print_summary_table(results, use_rich=True)
         generate_perplexity_plots(results, output_dir=output_dir, terminal=False)
         print(f"\n✅ Analysis complete! Plots saved to: {output_dir}")
-        print(f"   Total plots generated: 5")
+        print("   Total plots generated: 5")
 
     return 0
 

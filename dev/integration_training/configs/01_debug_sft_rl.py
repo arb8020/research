@@ -19,8 +19,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from base_config import (
-    Config, DatasetSpec,
-    TargetConfig, ModelConfig, DataConfig, SFTConfig, RLConfig, OutputConfig,
+    Config,
+    DataConfig,
+    DatasetSpec,
+    ModelConfig,
+    OutputConfig,
+    RLConfig,
+    SFTConfig,
+    TargetConfig,
 )
 
 # Tiger Style: Construct config with ALL parameters explicit (no overrides, no defaults)

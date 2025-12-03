@@ -8,17 +8,13 @@ actual SSH connections.
 
 import asyncio
 import os
-import stat
-import tempfile
-from pathlib import Path
-from unittest.mock import Mock, patch
 
 from shared.ssh_foundation import (
-    SSHConnectionInfo, 
-    UniversalSSHClient, 
-    secure_temp_ssh_key,
+    SSHConnectionInfo,
+    UniversalSSHClient,
+    execute_command_async,
     execute_command_sync,
-    execute_command_async
+    secure_temp_ssh_key,
 )
 
 
@@ -160,7 +156,7 @@ async def test_async_patterns():
     """Test async pattern compatibility"""
     print("🔄 Testing async patterns...")
     
-    from shared.ssh_foundation import UniversalSSHClient, SSHConnectionInfo
+    from shared.ssh_foundation import SSHConnectionInfo, UniversalSSHClient
     
     # Test that async methods can be called (they'll fail without real SSH but shouldn't crash)
     client = UniversalSSHClient()

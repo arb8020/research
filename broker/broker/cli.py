@@ -1,17 +1,13 @@
 """Broker CLI - GPU provisioning and management"""
 
+import builtins
 import json
 import logging
-import sys
 from pathlib import Path
-from typing import List, Optional
 
 import typer
 from rich.console import Console
 from rich.table import Table
-
-from broker.client import GPUClient
-from broker.types import ProviderCredentials
 from shared.config import (
     create_env_template,
     discover_ssh_keys,
@@ -21,6 +17,9 @@ from shared.config import (
     get_ssh_key_path,
 )
 from shared.logging_config import setup_logging
+
+from broker.client import GPUClient
+from broker.types import ProviderCredentials
 
 console = Console()
 app = typer.Typer(help="GPU broker - provision cloud GPUs")
@@ -32,12 +31,12 @@ logger = logging.getLogger("broker")
 @app.callback()
 def main(
     ctx: typer.Context,
-    credentials: Optional[str] = typer.Option(
+    credentials: str | None = typer.Option(
         None,
         "--credentials",
         help="Credentials file or inline 'runpod:key,primeintellect:key'",
     ),
-    ssh_key: Optional[str] = typer.Option(
+    ssh_key: str | None = typer.Option(
         None, "--ssh-key", help="Path to SSH private key"
     ),
     quiet: bool = typer.Option(False, "-q", "--quiet", help="Show only warnings and errors"),
@@ -189,29 +188,29 @@ def resolve_ssh_key(ctx) -> str:
 @app.command()
 def search(
     ctx: typer.Context,
-    gpu_type: Optional[str] = typer.Option(
+    gpu_type: str | None = typer.Option(
         None, "--gpu-type", help="Filter by GPU type (e.g., 'A100')"
     ),
     gpu_count: int = typer.Option(
         1, "--gpu-count", help="Number of GPUs (affects pricing, default: 1)"
     ),
-    max_price_per_gpu: Optional[float] = typer.Option(
+    max_price_per_gpu: float | None = typer.Option(
         None, "--max-price-per-gpu", help="Maximum price per GPU per hour"
     ),
-    max_total_price: Optional[float] = typer.Option(
+    max_total_price: float | None = typer.Option(
         None, "--max-total-price", help="Maximum total price per hour"
     ),
-    max_price: Optional[float] = typer.Option(
+    max_price: float | None = typer.Option(
         None, "--max-price", help="(Deprecated) Use --max-price-per-gpu instead"
     ),
-    min_vram: Optional[int] = typer.Option(None, "--min-vram", help="Minimum VRAM in GB"),
-    provider: Optional[str] = typer.Option(
+    min_vram: int | None = typer.Option(None, "--min-vram", help="Minimum VRAM in GB"),
+    provider: str | None = typer.Option(
         None, "--provider", help="Filter by provider (runpod|primeintellect)"
     ),
-    cloud_type: Optional[str] = typer.Option(
+    cloud_type: str | None = typer.Option(
         "secure", "--cloud-type", help="Cloud type: secure (default, guaranteed) or community (spot, cheaper but can be interrupted)"
     ),
-    underlying_provider: Optional[str] = typer.Option(
+    underlying_provider: str | None = typer.Option(
         None, "--underlying-provider", help="Filter by underlying provider (e.g., massedcompute, hyperstack) for aggregators like PrimeIntellect"
     ),
     limit: int = typer.Option(10, "--limit", help="Maximum number of results"),
@@ -360,24 +359,24 @@ def search(
 @app.command()
 def create(
     ctx: typer.Context,
-    gpu_type: Optional[str] = typer.Option(None, "--gpu-type", help="GPU type filter"),
+    gpu_type: str | None = typer.Option(None, "--gpu-type", help="GPU type filter"),
     gpu_count: int = typer.Option(1, "--gpu-count", help="Number of GPUs (default: 1)"),
-    max_price_per_gpu: Optional[float] = typer.Option(
+    max_price_per_gpu: float | None = typer.Option(
         None, "--max-price-per-gpu", help="Maximum price per GPU per hour"
     ),
-    max_total_price: Optional[float] = typer.Option(
+    max_total_price: float | None = typer.Option(
         None, "--max-total-price", help="Maximum total price per hour"
     ),
-    max_price: Optional[float] = typer.Option(
+    max_price: float | None = typer.Option(
         None, "--max-price", help="(Deprecated) Use --max-price-per-gpu instead"
     ),
-    cloud_type: Optional[str] = typer.Option(
+    cloud_type: str | None = typer.Option(
         "secure", "--cloud-type", help="Cloud type: secure (default, guaranteed) or community (spot, cheaper but can be interrupted)"
     ),
     image: str = typer.Option(
         "runpod/pytorch:1.0.0-cu1281-torch280-ubuntu2204", "--image", help="Docker image to use"
     ),
-    name: Optional[str] = typer.Option(None, "--name", help="Instance name"),
+    name: str | None = typer.Option(None, "--name", help="Instance name"),
     wait_ssh: bool = typer.Option(
         False, "--wait-ssh", help="Wait for SSH to be ready before returning"
     ),
@@ -562,7 +561,7 @@ def list(ctx: typer.Context):
 def status(
     ctx: typer.Context,
     instance_id: str = typer.Argument(..., help="Instance ID"),
-    provider: Optional[str] = typer.Argument(
+    provider: str | None = typer.Argument(
         None, help="Provider (runpod|primeintellect). Auto-detect if omitted."
     ),
 ):
@@ -584,7 +583,7 @@ def status(
         if len(matches) == 0:
             logger.error(f"✗ Instance {instance_id} not found in any provider")
             raise typer.Exit(1)
-        elif len(matches) > 1:
+        if len(matches) > 1:
             logger.error(f"✗ Instance {instance_id} found in multiple providers:")
             for m in matches:
                 logger.error(f"  - {m.provider}")
@@ -627,7 +626,7 @@ def status(
 def ssh(
     ctx: typer.Context,
     instance_id: str = typer.Argument(...),
-    provider: Optional[str] = typer.Argument(
+    provider: str | None = typer.Argument(
         None, help="Provider (runpod|primeintellect). Auto-detect if omitted."
     ),
 ):
@@ -649,7 +648,7 @@ def ssh(
         if len(matches) == 0:
             logger.error(f"✗ Instance {instance_id} not found in any provider")
             raise typer.Exit(1)
-        elif len(matches) > 1:
+        if len(matches) > 1:
             logger.error(f"✗ Instance {instance_id} found in multiple providers:")
             for m in matches:
                 logger.error(f"  - {m.provider}")
@@ -672,7 +671,7 @@ def ssh(
 def info(
     ctx: typer.Context,
     instance_id: str = typer.Argument(..., help="Instance ID"),
-    provider: Optional[str] = typer.Argument(
+    provider: str | None = typer.Argument(
         None, help="Provider (runpod|primeintellect). Auto-detect if omitted."
     ),
 ):
@@ -694,7 +693,7 @@ def info(
         if len(matches) == 0:
             logger.error(f"✗ Instance {instance_id} not found in any provider")
             raise typer.Exit(1)
-        elif len(matches) > 1:
+        if len(matches) > 1:
             logger.error(f"✗ Instance {instance_id} found in multiple providers:")
             for m in matches:
                 logger.error(f"  - {m.provider}")
@@ -923,7 +922,7 @@ def info(
 def terminate(
     ctx: typer.Context,
     instance_id: str = typer.Argument(...),
-    provider: Optional[str] = typer.Argument(
+    provider: str | None = typer.Argument(
         None, help="Provider (runpod|primeintellect). Auto-detect if omitted."
     ),
     yes: bool = typer.Option(False, "-y", "--yes", help="Skip confirmation"),
@@ -946,7 +945,7 @@ def terminate(
         if len(matches) == 0:
             logger.error(f"✗ Instance {instance_id} not found in any provider")
             raise typer.Exit(1)
-        elif len(matches) > 1:
+        if len(matches) > 1:
             logger.error(f"✗ Instance {instance_id} found in multiple providers:")
             for m in matches:
                 logger.error(f"  - {m.provider}")
@@ -981,10 +980,10 @@ def terminate(
 def cleanup(
     ctx: typer.Context,
     yes: bool = typer.Option(False, "-y", "--yes", help="Skip confirmation"),
-    provider: Optional[str] = typer.Option(
+    provider: str | None = typer.Option(
         None, "--provider", help="Only terminate instances from this provider"
     ),
-    exclude: Optional[List[str]] = typer.Option(
+    exclude: builtins.list[str] | None = typer.Option(
         None, "--exclude", help="Instance IDs to exclude from cleanup (can be specified multiple times)"
     ),
 ):

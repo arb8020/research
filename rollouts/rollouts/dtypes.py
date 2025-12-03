@@ -321,6 +321,43 @@ StreamEvent = (
 )
 
 
+# Provider abstraction protocol (inspired by pi-ai)
+# All provider streaming functions must implement this interface
+@runtime_checkable
+class ProviderStreamFunction(Protocol):
+    """Protocol for provider-specific streaming functions.
+
+    All providers (OpenAI, Anthropic, Google, etc.) must implement a function
+    matching this signature. The function accepts an Actor (with endpoint, trajectory, tools)
+    and an event callback, then streams granular events back via the callback.
+
+    Providers may accept additional provider-specific parameters via **kwargs.
+
+    Example implementations:
+    - rollout_openai(actor, on_chunk) -> Actor
+    - rollout_anthropic(actor, on_chunk, user_message_for_thinking=..., **kwargs) -> Actor
+    - rollout_google(actor, on_chunk) -> Actor
+    """
+
+    async def __call__(
+        self,
+        actor: 'Actor',
+        on_chunk: Callable[[StreamEvent], Awaitable[None]],
+        **kwargs: Any,
+    ) -> 'Actor':
+        """Stream LLM response and return updated Actor with new trajectory message.
+
+        Args:
+            actor: Current actor state (endpoint, trajectory, tools)
+            on_chunk: Async callback for streaming events
+            **kwargs: Provider-specific optional parameters
+
+        Returns:
+            Updated actor with new assistant message appended to trajectory
+        """
+        ...
+
+
 @dataclass(frozen=True)
 class Message(JsonSerializable):
     role: str

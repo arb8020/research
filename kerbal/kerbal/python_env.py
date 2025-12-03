@@ -136,7 +136,7 @@ def setup_python_env(
     if git_packages:
         assert all(pkg.startswith("git+http"), "git packages must start with git+http")
 
-    logger.debug(f"setting up python environment")
+    logger.debug("setting up python environment")
     logger.debug(f"📍 Remote workspace: {workspace}")
 
     # Expand workspace path (handle ~)
@@ -529,11 +529,11 @@ def _install_git_packages(
         result = client.exec(cmd)
 
         if result.exit_code == 0:
-            logger.debug(f"installed successfully")
+            logger.debug("installed successfully")
             continue
 
         # If failed, try with --no-deps (works around URL dependency issues)
-        logger.warning(f"   Standard install failed, trying --no-deps...")
+        logger.warning("   Standard install failed, trying --no-deps...")
         cmd = f"""
         export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
         uv pip install --python {venv_full_path}/bin/python --no-deps {packages}
@@ -545,7 +545,7 @@ def _install_git_packages(
             f"Error: {result.stderr}"
         )
 
-        logger.debug(f"installed with --no-deps")
+        logger.debug("installed with --no-deps")
 
     logger.debug("git packages installed")
 
@@ -647,14 +647,14 @@ def _verify_imports(
         list_result = client.exec(list_cmd)
 
         if list_result.exit_code == 0 and list_result.stdout:
-            logger.error(f"      Found installed packages:")
+            logger.error("      Found installed packages:")
             for line in list_result.stdout.strip().split('\n'):
                 logger.error(f"        {line}")
-            logger.error(f"      The package may be installed with a different name.")
-            logger.error(f"      Check the actual import name and update verify_imports.")
+            logger.error("      The package may be installed with a different name.")
+            logger.error("      Check the actual import name and update verify_imports.")
         else:
-            logger.error(f"      Package not found in pip list.")
-            logger.error(f"      Make sure it's in requirements or git_packages.")
+            logger.error("      Package not found in pip list.")
+            logger.error("      Make sure it's in requirements or git_packages.")
 
         assert False, f"Import verification failed: {import_name}"
 

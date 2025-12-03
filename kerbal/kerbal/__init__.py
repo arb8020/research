@@ -56,32 +56,32 @@ Example - Basic deployment:
         print(f"Job failed: {err}")
 """
 
-from kerbal.protocol import DependencyConfig, CommandResult
-from kerbal.python_env import (
-    PythonEnvState,
-    setup_python_env,
-    setup_script_deps,  # DEPRECATED: Use setup_python_env instead
-    run_script,
-    create_venv,
-    install_packages,
-    # New helpers
-    ensure_packages_installed,
-    verify_package,
-    run_python_script,
-)
-from kerbal.paths import (
-    DeploymentPaths,
-    create_deployment_paths,
-)
-from kerbal.tmux import start_tmux_session
-from kerbal.gpu import check_gpus_available, wait_for_gpus
 from kerbal.env import build_env_prefix
-from kerbal.transfer import push_code, sync_results
+from kerbal.gpu import check_gpus_available, wait_for_gpus
 from kerbal.job_monitor import (
     LogStreamConfig,
     stream_log_until_complete,
     stream_log_with_condition,
 )
+from kerbal.paths import (
+    DeploymentPaths,
+    create_deployment_paths,
+)
+from kerbal.protocol import CommandResult, DependencyConfig
+from kerbal.python_env import (
+    PythonEnvState,
+    create_venv,
+    # New helpers
+    ensure_packages_installed,
+    install_packages,
+    run_python_script,
+    run_script,
+    setup_python_env,
+    setup_script_deps,  # DEPRECATED: Use setup_python_env instead
+    verify_package,
+)
+from kerbal.tmux import start_tmux_session
+from kerbal.transfer import push_code, sync_results
 
 __all__ = [
     # New API (preferred)

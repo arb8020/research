@@ -4,16 +4,15 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Dict, List, Optional
 
 import typer
 from rich.console import Console
 from rich.table import Table
+from shared.config import create_env_template, discover_ssh_keys, get_ssh_key_path
+from shared.logging_config import setup_logging
 
 from bifrost.client import BifrostClient
 from bifrost.types import JobStatus
-from shared.config import create_env_template, discover_ssh_keys, get_ssh_key_path
-from shared.logging_config import setup_logging
 
 console = Console()
 app = typer.Typer(help="Bifrost - remote GPU execution")
@@ -85,7 +84,7 @@ def resolve_ssh_key(ctx) -> str:
     raise typer.Exit(1)
 
 
-def parse_env_vars(env_list: List[str]) -> Dict[str, str]:
+def parse_env_vars(env_list: list[str]) -> dict[str, str]:
     """Parse environment variables from KEY=VALUE format
 
     Raises:
@@ -106,7 +105,7 @@ def parse_env_vars(env_list: List[str]) -> Dict[str, str]:
 @app.callback()
 def main(
     ctx: typer.Context,
-    ssh_key: Optional[str] = typer.Option(
+    ssh_key: str | None = typer.Option(
         None, "--ssh-key", help="Path to SSH private key"
     ),
     quiet: bool = typer.Option(False, "-q", "--quiet"),
@@ -149,12 +148,12 @@ def init():
 def push(
     ctx: typer.Context,
     ssh_connection: str = typer.Argument(..., help="SSH connection (user@host:port)"),
-    bootstrap: Optional[List[str]] = typer.Option(
+    bootstrap: list[str] | None = typer.Option(
         None,
         "--bootstrap",
         help="Bootstrap command (can specify multiple, joined with &&)",
     ),
-    bootstrap_script: Optional[str] = typer.Option(
+    bootstrap_script: str | None = typer.Option(
         None, "--bootstrap-script", help="Path to bootstrap script to upload and execute"
     ),
 ):
@@ -216,7 +215,7 @@ def exec(
     ctx: typer.Context,
     ssh_connection: str = typer.Argument(...),
     command: str = typer.Argument(..., help="Command to execute"),
-    env: Optional[List[str]] = typer.Option(None, "--env", help="KEY=VALUE"),
+    env: list[str] | None = typer.Option(None, "--env", help="KEY=VALUE"),
 ):
     """Execute command on remote instance
 
@@ -261,8 +260,7 @@ def exec(
         if result.exit_code != 0:
             logger.error(f"✗ Command failed with exit code {result.exit_code}")
             raise typer.Exit(result.exit_code)
-        else:
-            logger.info("command completed successfully")
+        logger.info("command completed successfully")
 
 
 @app.command()
@@ -270,9 +268,9 @@ def deploy(
     ctx: typer.Context,
     ssh_connection: str = typer.Argument(...),
     command: str = typer.Argument(...),
-    bootstrap: Optional[List[str]] = typer.Option(None, "--bootstrap"),
-    bootstrap_script: Optional[str] = typer.Option(None, "--bootstrap-script"),
-    env: Optional[List[str]] = typer.Option(None, "--env"),
+    bootstrap: list[str] | None = typer.Option(None, "--bootstrap"),
+    bootstrap_script: str | None = typer.Option(None, "--bootstrap-script"),
+    env: list[str] | None = typer.Option(None, "--env"),
 ):
     """Deploy code and execute command (convenience: push + exec)"""
     ssh_key = resolve_ssh_key(ctx)
@@ -329,8 +327,7 @@ def deploy(
         if result.exit_code != 0:
             logger.error("✗ Command failed")
             raise typer.Exit(result.exit_code)
-        else:
-            logger.info("deploy and execution completed successfully")
+        logger.info("deploy and execution completed successfully")
 
 
 @app.command()
@@ -338,10 +335,10 @@ def run(
     ctx: typer.Context,
     ssh_connection: str = typer.Argument(...),
     command: str = typer.Argument(...),
-    bootstrap: Optional[List[str]] = typer.Option(None, "--bootstrap"),
-    bootstrap_script: Optional[str] = typer.Option(None, "--bootstrap-script"),
-    env: Optional[List[str]] = typer.Option(None, "--env"),
-    name: Optional[str] = typer.Option(None, "--name", help="Human-readable job name"),
+    bootstrap: list[str] | None = typer.Option(None, "--bootstrap"),
+    bootstrap_script: str | None = typer.Option(None, "--bootstrap-script"),
+    env: list[str] | None = typer.Option(None, "--env"),
+    name: str | None = typer.Option(None, "--name", help="Human-readable job name"),
 ):
     """Run command in background (detached mode)
 

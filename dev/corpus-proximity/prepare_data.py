@@ -5,11 +5,9 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import List, Dict
 
-import requests
 import pyarrow.parquet as pq
-
+import requests
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -54,7 +52,7 @@ def download_shard(shard_id: int, data_dir: Path, max_retries: int = 5) -> bool:
             logger.info(f"Successfully downloaded shard {shard_id}")
             return True
 
-        except (requests.RequestException, IOError) as e:
+        except (OSError, requests.RequestException) as e:
             logger.warning(f"Download failed for shard {shard_id}: {e}")
             if attempt < max_retries - 1:
                 wait_time = 2 ** attempt  # Exponential backoff
@@ -75,7 +73,7 @@ def download_shard(shard_id: int, data_dir: Path, max_retries: int = 5) -> bool:
     return False
 
 
-def process_shard(shard_id: int, data_dir: Path) -> List[Dict[str, str]]:
+def process_shard(shard_id: int, data_dir: Path) -> list[dict[str, str]]:
     """Read parquet file and chunk into paragraphs."""
     filename = f"shard_{shard_id:05d}.parquet"
     filepath = data_dir / filename
@@ -115,7 +113,7 @@ def process_shard(shard_id: int, data_dir: Path) -> List[Dict[str, str]]:
         return []
 
 
-def save_chunks(chunks: List[Dict[str, str]], output_path: Path):
+def save_chunks(chunks: list[dict[str, str]], output_path: Path):
     """Save chunks to JSONL file."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -132,11 +130,11 @@ def verify_data(output_path: Path, num_samples: int = 5):
         logger.error(f"Output file not found: {output_path}")
         return
 
-    logger.info(f"\n{'='*80}")
+    logger.info(f"\n{'=' * 80}")
     logger.info("Sample chunks:")
-    logger.info(f"{'='*80}")
+    logger.info(f"{'=' * 80}")
 
-    with open(output_path, 'r') as f:
+    with open(output_path) as f:
         for i, line in enumerate(f):
             if i >= num_samples:
                 break
@@ -147,17 +145,17 @@ def verify_data(output_path: Path, num_samples: int = 5):
             logger.info(f"  Text: {chunk['text'][:200]}...")
 
     # Count total chunks
-    with open(output_path, 'r') as f:
+    with open(output_path) as f:
         total_chunks = sum(1 for _ in f)
 
-    logger.info(f"\n{'='*80}")
+    logger.info(f"\n{'=' * 80}")
     logger.info(f"Total chunks: {total_chunks}")
-    logger.info(f"{'='*80}\n")
+    logger.info(f"{'=' * 80}\n")
 
 
 def main():
-    import sys
     import importlib.util
+    import sys
 
     # Setup logging
     logging.basicConfig(
@@ -175,7 +173,7 @@ def main():
             raise ImportError(f"Spec has no loader: {sys.argv[1]}")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        config: Config = getattr(module, "config")
+        config: Config = module.config
     else:
         # Use default config
         config = Config()

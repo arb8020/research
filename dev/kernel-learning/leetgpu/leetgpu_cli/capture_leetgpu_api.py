@@ -4,7 +4,9 @@ This script intercepts network requests to understand the API format.
 """
 import asyncio
 import json
+
 from playwright.async_api import async_playwright
+
 
 async def capture_api_requests():
     """Launch browser and capture API requests to LeetGPU."""
@@ -87,6 +89,7 @@ async def capture_api_requests():
         print(f"\n💾 Saved captured requests to {output_file}")
 
     return captured_requests
+
 
 if __name__ == "__main__":
     asyncio.run(capture_api_requests())

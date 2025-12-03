@@ -14,9 +14,10 @@ Casey Muratori: Minimal coupling, futures for pipelining.
 
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any
 
 import torch
 import torch.distributed as dist
@@ -26,8 +27,8 @@ from rollouts.training.types import TrainFuture
 
 # FSDP checkpoint support (SLIME pattern)
 try:
-    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
     from torch.distributed.checkpoint.state_dict import StateDictOptions, get_model_state_dict
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
     FSDP_AVAILABLE = True
 except ImportError:
     FSDP_AVAILABLE = False
@@ -66,18 +67,18 @@ class PyTorchTrainingBackend:
     optimizer: torch.optim.Optimizer
     loss_fn: Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]
     checkpoint_dir: Path  # TODO(ray): Replace with CheckpointStorage protocol for S3/distributed storage
-    device: Optional[torch.device] = None  # Tiger Style: Explicit device (optional for CPU-only)
+    device: torch.device | None = None  # Tiger Style: Explicit device (optional for CPU-only)
 
     # State (SLIME-inspired)
     weight_version: int = 0
     current_step: int = 0
 
     # Execution state
-    _nursery: Optional[trio.Nursery] = field(default=None, init=False, repr=False)
+    _nursery: trio.Nursery | None = field(default=None, init=False, repr=False)
     _poisoned: bool = field(default=False, init=False, repr=False)
 
     # FSDP checkpoint options (SLIME pattern - set in __post_init__)
-    _fsdp_state_dict_opts: Optional[Any] = field(default=None, init=False, repr=False)
+    _fsdp_state_dict_opts: Any | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self):
         """Validate initialization (Tiger Style)."""
@@ -93,7 +94,7 @@ class PyTorchTrainingBackend:
                 num_gpus = torch.cuda.device_count()
                 assert device_index < num_gpus, \
                     f"Device {self.device} is invalid: only {num_gpus} GPU(s) available " \
-                    f"(indices 0-{num_gpus-1}). Check your gpu_ranks config."
+                    f"(indices 0-{num_gpus - 1}). Check your gpu_ranks config."
 
                 # Verify device is actually accessible (not just in range)
                 try:
@@ -119,7 +120,7 @@ class PyTorchTrainingBackend:
         else:
             self._fsdp_state_dict_opts = None
 
-    def forward_backward(self, batch: Dict[str, Any]) -> TrainFuture[Dict[str, float]]:
+    def forward_backward(self, batch: dict[str, Any]) -> TrainFuture[dict[str, float]]:
         """Compute loss and gradients (returns future immediately).
 
         Args:
@@ -179,7 +180,7 @@ class PyTorchTrainingBackend:
             ) ** 0.5
 
             # Create future with immediate result
-            future: TrainFuture[Dict[str, float]] = TrainFuture(operation="forward_backward")
+            future: TrainFuture[dict[str, float]] = TrainFuture(operation="forward_backward")
             future.set_result({"loss": loss.item(), "grad_norm": grad_norm})
             return future
 
@@ -188,7 +189,7 @@ class PyTorchTrainingBackend:
             self._poisoned = True
             raise RuntimeError(f"Training step failed: {e}") from e
 
-    def optim_step(self) -> TrainFuture[Dict[str, float]]:
+    def optim_step(self) -> TrainFuture[dict[str, float]]:
         """Apply gradients and update weights (returns future).
 
         Returns:
@@ -209,7 +210,7 @@ class PyTorchTrainingBackend:
             lr = self.optimizer.param_groups[0]["lr"]
 
             # Create future with immediate result
-            future: TrainFuture[Dict[str, float]] = TrainFuture(operation="optim_step")
+            future: TrainFuture[dict[str, float]] = TrainFuture(operation="optim_step")
             future.set_result({"lr": lr, "step": self.current_step})
             return future
 
@@ -221,7 +222,7 @@ class PyTorchTrainingBackend:
     async def save_checkpoint(
         self,
         step: int,
-        metrics: Dict[str, float] = {},
+        metrics: dict[str, float] = {},
     ) -> Path:
         """Save checkpoint with version (increments weight_version).
 
@@ -286,7 +287,7 @@ class PyTorchTrainingBackend:
         if rank == 0:
             logger.debug(f"[CHECKPOINT DEBUG] Rank 0: Creating checkpoint directory: {ckpt_dir}")
             ckpt_dir.mkdir(parents=True, exist_ok=True)
-            logger.debug(f"[CHECKPOINT DEBUG] Rank 0: Directory created successfully")
+            logger.debug("[CHECKPOINT DEBUG] Rank 0: Directory created successfully")
 
         # Barrier to ensure directory exists before all ranks proceed
         if is_distributed:
@@ -310,21 +311,21 @@ class PyTorchTrainingBackend:
 
         # Only rank 0 saves to disk (SLIME pattern: checkpoint.py:143)
         if rank == 0:
-            logger.debug(f"[CHECKPOINT DEBUG] Rank 0: Starting disk I/O...")
+            logger.debug("[CHECKPOINT DEBUG] Rank 0: Starting disk I/O...")
 
             # Save model state
             model_path = ckpt_dir / "pytorch_model.bin"
             logger.debug(f"[CHECKPOINT DEBUG] Rank 0: Saving model to {model_path}...")
             await trio.to_thread.run_sync(torch.save, state_dict, model_path)
-            logger.debug(f"[CHECKPOINT DEBUG] Rank 0: Model saved successfully")
+            logger.debug("[CHECKPOINT DEBUG] Rank 0: Model saved successfully")
 
             # Save optimizer state
             optimizer_path = ckpt_dir / "optimizer.bin"
-            logger.debug(f"[CHECKPOINT DEBUG] Rank 0: Getting optimizer state dict...")
+            logger.debug("[CHECKPOINT DEBUG] Rank 0: Getting optimizer state dict...")
             optimizer_state = self.optimizer.state_dict()
             logger.debug(f"[CHECKPOINT DEBUG] Rank 0: Saving optimizer to {optimizer_path}...")
             await trio.to_thread.run_sync(torch.save, optimizer_state, optimizer_path)
-            logger.debug(f"[CHECKPOINT DEBUG] Rank 0: Optimizer saved successfully")
+            logger.debug("[CHECKPOINT DEBUG] Rank 0: Optimizer saved successfully")
 
             # Save metadata (nanochat + SLIME pattern)
             metadata = {
@@ -336,7 +337,7 @@ class PyTorchTrainingBackend:
             metadata_path = ckpt_dir / "metadata.json"
             logger.debug(f"[CHECKPOINT DEBUG] Rank 0: Saving metadata to {metadata_path}...")
             await trio.to_thread.run_sync(self._write_json_metadata, metadata_path, metadata)
-            logger.debug(f"[CHECKPOINT DEBUG] Rank 0: Metadata saved successfully")
+            logger.debug("[CHECKPOINT DEBUG] Rank 0: Metadata saved successfully")
         else:
             logger.debug(f"[CHECKPOINT DEBUG] Rank {rank}: Skipping disk I/O (not rank 0)")
 
@@ -350,7 +351,7 @@ class PyTorchTrainingBackend:
         logger.debug(f"[CHECKPOINT DEBUG] Rank {rank}: Checkpoint save completed successfully!")
         return ckpt_dir
 
-    async def load_checkpoint(self, checkpoint_path: Path) -> Dict[str, Any]:
+    async def load_checkpoint(self, checkpoint_path: Path) -> dict[str, Any]:
         """Load checkpoint and restore weight_version.
 
         Args:
@@ -404,7 +405,7 @@ class PyTorchTrainingBackend:
 
         return metadata
 
-    def get_weights(self) -> TrainFuture[Dict[str, Any]]:
+    def get_weights(self) -> TrainFuture[dict[str, Any]]:
         """Get model weights for syncing to inference.
 
         Returns:
@@ -426,11 +427,11 @@ class PyTorchTrainingBackend:
             state_dict = self.model.state_dict()
 
         # Create future with immediate result
-        future: TrainFuture[Dict[str, Any]] = TrainFuture(operation="get_weights")
+        future: TrainFuture[dict[str, Any]] = TrainFuture(operation="get_weights")
         future.set_result(state_dict)
         return future
 
-    def load_weights(self, weights: Dict[str, Any]) -> TrainFuture[None]:
+    def load_weights(self, weights: dict[str, Any]) -> TrainFuture[None]:
         """Load model weights from inference or checkpoint.
 
         Args:
@@ -457,7 +458,7 @@ class PyTorchTrainingBackend:
             self._poisoned = True
             raise RuntimeError(f"Failed to load weights: {e}") from e
 
-    def get_state_snapshot(self) -> Dict[str, Any]:
+    def get_state_snapshot(self) -> dict[str, Any]:
         """Get complete state for debugging/introspection.
 
         Returns all state that affects training behavior.
@@ -503,13 +504,13 @@ class PyTorchTrainingBackend:
 
     # Helper methods for async file I/O (Tiger Style: explicit sync methods)
     @staticmethod
-    def _write_json_metadata(path: Path, data: Dict[str, Any]) -> None:
+    def _write_json_metadata(path: Path, data: dict[str, Any]) -> None:
         """Blocking helper to write JSON metadata (called via trio.to_thread)."""
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
 
     @staticmethod
-    def _read_json_metadata(path: Path) -> Dict[str, Any]:
+    def _read_json_metadata(path: Path) -> dict[str, Any]:
         """Blocking helper to read JSON metadata (called via trio.to_thread)."""
-        with open(path, "r") as f:
+        with open(path) as f:
             return json.load(f)

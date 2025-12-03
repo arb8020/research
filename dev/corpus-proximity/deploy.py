@@ -11,18 +11,17 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Literal, Optional, TypeAlias, Union
+from typing import Literal, TypeAlias
 
-from dotenv import load_dotenv
-
-from broker import CloudType, GPUClient, GPUInstance
 from broker.client import ClientGPUInstance
-from bifrost import BifrostClient
-from config import Config
 from cluster_corpus import get_cache_key
+from config import Config
+from dotenv import load_dotenv
 from shared.config import get_prime_key, get_runpod_key
 from shared.logging_config import setup_logging
 
+from bifrost import BifrostClient
+from broker import CloudType, GPUClient, GPUInstance
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REMOTE_WORKSPACE_PATH = "~/.bifrost/workspace/dev/corpus-proximity"
@@ -67,7 +66,7 @@ def load_config_from_file(config_path: str) -> Config:
     return config
 
 
-def get_credentials(provider_filter: Optional[str] = None) -> dict[str, str]:
+def get_credentials(provider_filter: str | None = None) -> dict[str, str]:
     credentials: dict[str, str] = {}
     if runpod_key := get_runpod_key():
         credentials["runpod"] = runpod_key
@@ -126,7 +125,7 @@ def provision_instance(gpu_client: GPUClient, offers, instance_name: str, *, min
     return (True, instance, None)
 
 
-def find_instance_by_name_or_id(gpu_client: GPUClient, identifier: str) -> Optional[ClientGPUInstance]:
+def find_instance_by_name_or_id(gpu_client: GPUClient, identifier: str) -> ClientGPUInstance | None:
     instances = gpu_client.list_instances()
     for instance in instances:
         if instance.name == identifier or instance.id == identifier:
@@ -184,7 +183,7 @@ def start_remote_pipeline(bifrost_client: BifrostClient, config_arg: str) -> Non
         raise RuntimeError(f"Failed to start remote pipeline: {result.stderr}")
 
 
-def wait_for_pipeline_completion(bifrost_client: BifrostClient, timeout: int = 3600*4) -> bool:
+def wait_for_pipeline_completion(bifrost_client: BifrostClient, timeout: int = 3600 * 4) -> bool:
     poll_interval = 30
     max_iterations = max(1, timeout // poll_interval)
     logging.info("waiting for pipeline completion (timeout: %ss)", timeout)
@@ -345,7 +344,7 @@ def cleanup_instance(instance_id: str) -> None:
         logging.warning("⚠️  Cleanup may have failed: %s", result.stderr)
 
 
-def connect_existing_instance(identifier: str, provider: Optional[str], ssh_key_path: str) -> tuple[BifrostClient, Optional[ClientGPUInstance]]:
+def connect_existing_instance(identifier: str, provider: str | None, ssh_key_path: str) -> tuple[BifrostClient, ClientGPUInstance | None]:
     credentials = get_credentials(provider_filter=provider) if provider else get_credentials()
     gpu_client = GPUClient(credentials=credentials, ssh_key_path=ssh_key_path)
     instance = find_instance_by_name_or_id(gpu_client, identifier)
@@ -356,7 +355,7 @@ def connect_existing_instance(identifier: str, provider: Optional[str], ssh_key_
     return bifrost_client, instance
 
 
-def provision_new_instance(provider: Optional[str], instance_name: str, config: Config) -> tuple[BifrostClient, GPUInstance]:
+def provision_new_instance(provider: str | None, instance_name: str, config: Config) -> tuple[BifrostClient, GPUInstance]:
     credentials = get_credentials(provider_filter=provider)
     ssh_key_path = os.getenv("SSH_KEY_PATH", "~/.ssh/id_ed25519")
     gpu_client = GPUClient(credentials=credentials, ssh_key_path=ssh_key_path)
@@ -396,7 +395,7 @@ def main() -> int:
     try:
         config = load_config_from_file(args.config)
     except Exception as exc:
-        logging.error("Failed to load config: %s", exc)
+        logging.exception("Failed to load config: %s", exc)
         return 1
 
     if args.keep_running:
@@ -405,8 +404,8 @@ def main() -> int:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     local_results = SCRIPT_DIR / "remote_results" / f"clustering_{timestamp}"
 
-    bifrost_client: Optional[BifrostClient] = None
-    instance: Union[GPUInstance, ClientGPUInstance, None] = None
+    bifrost_client: BifrostClient | None = None
+    instance: GPUInstance | ClientGPUInstance | None = None
     ssh_key_path = os.getenv("SSH_KEY_PATH", "~/.ssh/id_ed25519")
 
     try:
@@ -444,12 +443,12 @@ def main() -> int:
         return 0 if success else 1
 
     except KeyboardInterrupt:
-        logging.error("Interrupted")
+        logging.exception("Interrupted")
         if instance and not config.deployment.keep_running:
             cleanup_instance(instance.id)
         return 1
     except Exception as exc:
-        logging.error("Deployment failed: %s", exc)
+        logging.exception("Deployment failed: %s", exc)
         if instance and not config.deployment.keep_running:
             cleanup_instance(instance.id)
         return 1

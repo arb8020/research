@@ -3,14 +3,14 @@
 
 import json
 import logging
-import numpy as np
-from pathlib import Path
-from typing import List, Dict, Optional, Literal, Callable
+from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
 
-from sentence_transformers import SentenceTransformer
-
+import numpy as np
 from config import Config
+from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +38,8 @@ class TrainingCorpus:
     """
     stage: Stage  # Type-safe: "pretrain", "midtrain", or "sft"
     embeddings: np.ndarray  # MUST be normalized, L2 norm = 1 (N, D)
-    chunks: List[str]  # the actual text (N,)
-    metadata: List[Dict]  # shard_id, chunk_id, etc. (N,)
+    chunks: list[str]  # the actual text (N,)
+    metadata: list[dict]  # shard_id, chunk_id, etc. (N,)
 
     def __post_init__(self):
         # Tiger Style: Assert all invariants
@@ -114,7 +114,7 @@ def load_embeddings(path: Path) -> np.ndarray:
     return embeddings / norms
 
 
-def load_chunks(path: Path) -> List[str]:
+def load_chunks(path: Path) -> list[str]:
     """Load text chunks from .jsonl file.
 
     Args:
@@ -124,7 +124,7 @@ def load_chunks(path: Path) -> List[str]:
         List of text chunks
     """
     chunks = []
-    with open(path, 'r') as f:
+    with open(path) as f:
         for line in f:
             chunk = json.loads(line)
             chunks.append(chunk['text'])
@@ -132,7 +132,7 @@ def load_chunks(path: Path) -> List[str]:
     return chunks
 
 
-def load_metadata(path: Path) -> List[Dict]:
+def load_metadata(path: Path) -> list[dict]:
     """Load metadata from .jsonl file.
 
     Args:
@@ -142,7 +142,7 @@ def load_metadata(path: Path) -> List[Dict]:
         List of metadata dicts (must contain shard_id, chunk_id)
     """
     metadata = []
-    with open(path, 'r') as f:
+    with open(path) as f:
         for line in f:
             metadata.append(json.loads(line))
 
@@ -195,12 +195,12 @@ def load_training_corpus(
 
 def search(
     query: str,
-    corpora: List[TrainingCorpus],
+    corpora: list[TrainingCorpus],
     model: SentenceTransformer,
     top_k: int = 5,
     per_corpus: bool = False,
     distance_fn: DistanceFn = cosine_distance
-) -> List[SearchResult]:
+) -> list[SearchResult]:
     """Search one or more training corpora.
 
     Following Casey Muratori:
@@ -288,9 +288,9 @@ def search(
 
 def compare_distances(
     query: str,
-    corpora: Dict[str, TrainingCorpus],
+    corpora: dict[str, TrainingCorpus],
     model: SentenceTransformer
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Get minimum distance to each corpus (convenience function).
 
     Following Casey Muratori: Redundancy for convenience.
@@ -324,8 +324,8 @@ def compare_distances(
 
 
 def main():
-    import sys
     import importlib.util
+    import sys
 
     # Setup logging
     logging.basicConfig(
@@ -343,7 +343,7 @@ def main():
             raise ImportError(f"Spec has no loader: {sys.argv[1]}")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        config: Config = getattr(module, "config")
+        config: Config = module.config
     else:
         # Use default config
         config = Config()
@@ -359,9 +359,9 @@ def main():
     model = SentenceTransformer(config.embedding.model, device=config.embedding.device)
 
     # Interactive search loop
-    logger.info("\n" + "="*80)
+    logger.info("\n" + "=" * 80)
     logger.info("Corpus Search - Enter queries to search (Ctrl+C to exit)")
-    logger.info("="*80 + "\n")
+    logger.info("=" * 80 + "\n")
 
     try:
         while True:
@@ -371,16 +371,16 @@ def main():
 
             results = search(query, [corpus], model, top_k=5)
 
-            print("\n" + "="*80)
+            print("\n" + "=" * 80)
             print(f"Top {len(results)} results:")
-            print("="*80)
+            print("=" * 80)
 
             for i, result in enumerate(results, 1):
                 print(f"\n{i}. Distance: {result.distance:.4f} (stage: {result.stage})")
                 print(f"   Shard: {result.shard_id}, Chunk: {result.chunk_id}")
                 print(f"   Text: {result.text[:200]}...")
 
-            print("\n" + "="*80 + "\n")
+            print("\n" + "=" * 80 + "\n")
 
     except KeyboardInterrupt:
         logger.info("\nExiting...")

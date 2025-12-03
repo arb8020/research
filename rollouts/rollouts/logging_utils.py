@@ -7,7 +7,6 @@ Requires 'shared' package from /Users/chiraagbalu/research/shared/
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 from shared.logging_config import setup_logging
 
@@ -16,7 +15,7 @@ def init_rollout_logging(
     experiment_name: str,
     results_base_dir: Path = Path("results"),
     log_level: str = "INFO",
-    logger_levels: Optional[dict] = None,
+    logger_levels: dict | None = None,
 ) -> Path:
     """Initialize logging for a rollout experiment.
 

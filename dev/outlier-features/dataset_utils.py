@@ -4,10 +4,11 @@ Adapted from dataset_utils.py
 """
 
 import logging
-from typing import Iterator, Optional, cast
-from datasets import load_dataset, IterableDataset
-from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
+from collections.abc import Iterator
+from typing import cast
 
+from datasets import IterableDataset, load_dataset
+from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +17,7 @@ _TOKENIZER_MAX_LEN_SENTINEL = 1_000_000_000  # treat extremely large values as "
 
 def _effective_sequence_length(
     requested_length: int,
-    tokenizer: Optional[PreTrainedTokenizer | PreTrainedTokenizerFast]
+    tokenizer: PreTrainedTokenizer | PreTrainedTokenizerFast | None
 ) -> int:
     """Return the sequence length we should actually use for this tokenizer."""
 
@@ -43,7 +44,7 @@ def load_streaming_dataset(
     split: str = "train",
     *,
     shuffle: bool = False,
-    seed: Optional[int] = None,
+    seed: int | None = None,
     buffer_size: int = 10_000,
 ) -> Iterator[str]:
     """Load streaming dataset and yield text content.
@@ -140,12 +141,12 @@ def get_text_sequences(
     dataset_name: str,
     num_sequences: int,
     sequence_length: int,
-    tokenizer: Optional[PreTrainedTokenizer | PreTrainedTokenizerFast] = None,
+    tokenizer: PreTrainedTokenizer | PreTrainedTokenizerFast | None = None,
     split: str = "train",
     *,
     skip_sequences: int = 0,
     shuffle: bool = False,
-    seed: Optional[int] = None,
+    seed: int | None = None,
     buffer_size: int = 10_000,
 ) -> list[str]:
     """Get N sequences of specified length from streaming dataset.

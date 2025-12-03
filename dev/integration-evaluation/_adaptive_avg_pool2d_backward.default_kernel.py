@@ -2,6 +2,7 @@ import torch
 import triton
 import triton.language as tl
 
+
 # Triton kernel for _adaptive_avg_pool2d_backward.default
 @triton.jit
 def _adaptive_avg_pool2d_backward__default_triton_kernel(

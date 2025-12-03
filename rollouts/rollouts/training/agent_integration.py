@@ -12,14 +12,13 @@ Tiger Style: Pure functions, explicit transformations, all parameters visible.
 Casey Muratori: Both high-level (coarse) and low-level (fine) APIs.
 """
 
-from typing import Any, Optional
+from typing import Any
 
 import trio
 
-from rollouts.agents import run_agent, AgentState, RunConfig, Actor
-from rollouts.dtypes import Trajectory, Message, Endpoint
+from rollouts.agents import Actor, AgentState, RunConfig, run_agent
+from rollouts.dtypes import Endpoint, Message, Trajectory
 from rollouts.training.types import Sample
-
 
 # ──────────────────────── High-Level API (Coarse-Grained) ────────────────────
 
@@ -30,7 +29,7 @@ async def agent_rollout_to_sample(
     endpoint: Endpoint,
     tokenizer: Any,  # HuggingFace tokenizer
     max_turns: int = 10,
-    metadata: Optional[dict[str, Any]] = None,
+    metadata: dict[str, Any] | None = None,
 ) -> Sample:
     """Single agent rollout: prompt → multi-turn execution → training sample.
 
@@ -110,7 +109,7 @@ async def generate_rollout_batch(
     endpoint: Endpoint,
     tokenizer: Any,
     max_turns: int = 10,
-    metadata_list: Optional[list[dict[str, Any]]] = None,
+    metadata_list: list[dict[str, Any]] | None = None,
 ) -> list[Sample]:
     """Batch agent rollout generation (for SLIME-style training).
 
@@ -184,7 +183,7 @@ async def generate_rollout_batch(
 def trajectory_to_sample(
     trajectory: Trajectory,
     tokenizer: Any,
-    metadata: Optional[dict[str, Any]] = None,
+    metadata: dict[str, Any] | None = None,
 ) -> Sample:
     """Convert agent trajectory → training sample with loss_mask.
 
