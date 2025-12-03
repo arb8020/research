@@ -192,62 +192,62 @@ class StreamStart(JsonSerializable):
 @dataclass(frozen=True)
 class TextStart(JsonSerializable):
     """Emitted when a text content block begins"""
-    type: Literal["text_start"] = "text_start"
     content_index: int
+    type: Literal["text_start"] = "text_start"
     timestamp: float = field(default_factory=time.time)
 
 
 @dataclass(frozen=True)
 class TextDelta(JsonSerializable):
     """Emitted for each text token/chunk during streaming"""
-    type: Literal["text_delta"] = "text_delta"
     content_index: int
     delta: str
+    type: Literal["text_delta"] = "text_delta"
     timestamp: float = field(default_factory=time.time)
 
 
 @dataclass(frozen=True)
 class TextEnd(JsonSerializable):
     """Emitted when a text content block completes"""
-    type: Literal["text_end"] = "text_end"
     content_index: int
     content: str  # Complete accumulated text
+    type: Literal["text_end"] = "text_end"
     timestamp: float = field(default_factory=time.time)
 
 
 @dataclass(frozen=True)
 class ThinkingStart(JsonSerializable):
     """Emitted when a thinking/reasoning content block begins"""
-    type: Literal["thinking_start"] = "thinking_start"
     content_index: int
+    type: Literal["thinking_start"] = "thinking_start"
     timestamp: float = field(default_factory=time.time)
 
 
 @dataclass(frozen=True)
 class ThinkingDelta(JsonSerializable):
     """Emitted for each thinking token/chunk during streaming"""
-    type: Literal["thinking_delta"] = "thinking_delta"
     content_index: int
     delta: str
+    type: Literal["thinking_delta"] = "thinking_delta"
     timestamp: float = field(default_factory=time.time)
 
 
 @dataclass(frozen=True)
 class ThinkingEnd(JsonSerializable):
     """Emitted when a thinking/reasoning content block completes"""
-    type: Literal["thinking_end"] = "thinking_end"
     content_index: int
     content: str  # Complete accumulated thinking
+    type: Literal["thinking_end"] = "thinking_end"
     timestamp: float = field(default_factory=time.time)
 
 
 @dataclass(frozen=True)
 class ToolCallStart(JsonSerializable):
     """Emitted when a tool call content block begins"""
-    type: Literal["toolcall_start"] = "toolcall_start"
     content_index: int
     tool_call_id: str
     tool_name: str
+    type: Literal["toolcall_start"] = "toolcall_start"
     timestamp: float = field(default_factory=time.time)
 
 
@@ -258,48 +258,48 @@ class ToolCallDelta(JsonSerializable):
     The partial_args field contains the best-effort parsed JSON from the
     accumulated argument string so far. May be incomplete objects/arrays.
     """
-    type: Literal["toolcall_delta"] = "toolcall_delta"
     content_index: int
     tool_call_id: str
     delta: str  # Raw JSON chunk
     partial_args: dict[str, Any]  # Best-effort parsed partial JSON
+    type: Literal["toolcall_delta"] = "toolcall_delta"
     timestamp: float = field(default_factory=time.time)
 
 
 @dataclass(frozen=True)
 class ToolCallEnd(JsonSerializable):
     """Emitted when a tool call content block completes"""
-    type: Literal["toolcall_end"] = "toolcall_end"
     content_index: int
     tool_call: ToolCall  # Complete parsed tool call
+    type: Literal["toolcall_end"] = "toolcall_end"
     timestamp: float = field(default_factory=time.time)
 
 
 @dataclass(frozen=True)
 class ToolCallError(JsonSerializable):
     """Emitted when tool call argument parsing fails"""
-    type: Literal["toolcall_error"] = "toolcall_error"
     content_index: int
     tool_call_id: str
     tool_name: str
     error: str
     raw_arguments: str
+    type: Literal["toolcall_error"] = "toolcall_error"
     timestamp: float = field(default_factory=time.time)
 
 
 @dataclass(frozen=True)
 class StreamDone(JsonSerializable):
     """Emitted when streaming completes successfully"""
-    type: Literal["done"] = "done"
     finish_reason: str  # "stop", "length", "tool_calls", etc.
+    type: Literal["done"] = "done"
     timestamp: float = field(default_factory=time.time)
 
 
 @dataclass(frozen=True)
 class StreamError(JsonSerializable):
     """Emitted when streaming encounters an error"""
-    type: Literal["error"] = "error"
     error: str
+    type: Literal["error"] = "error"
     timestamp: float = field(default_factory=time.time)
 
 
