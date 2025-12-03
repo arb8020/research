@@ -18,6 +18,10 @@ from .dtypes import (
     RunConfig,
     StopReason,
     StreamChunk,
+    StreamEvent,
+    TextDelta,
+    ThinkingDelta,
+    ToolCallEnd,
     ToolCall,
     ToolConfirmResult,
     ToolResult,
@@ -59,17 +63,16 @@ async def handle_checkpoint_event(state: 'AgentState', event: str, run_config: '
     ))
 
 
-async def stdout_handler(chunk: StreamChunk):
-    """Simple stdout handler for chunks"""
-    if chunk.type == "token":
-        print(chunk.data["text"], end='', flush=True)
-    elif chunk.type == "tool_call_complete":
-        print(f"\n🔧 Calling {chunk.data['name']}({chunk.data['args']})")
-    elif chunk.type == "tool_result":
-        status = "✓" if chunk.data["ok"] else "✗"
-        print(f"\n  {status} {chunk.data['content'][:100]}...")
-    elif chunk.type == "thinking":
-        print(f"\033[95m{chunk.data['text']}\033[0m", end='', flush=True)
+async def stdout_handler(event: StreamEvent):
+    """Simple stdout handler for granular streaming events"""
+    if isinstance(event, TextDelta):
+        print(event.delta, end='', flush=True)
+    elif isinstance(event, ThinkingDelta):
+        # Magenta color for thinking
+        print(f"\033[95m{event.delta}\033[0m", end='', flush=True)
+    elif isinstance(event, ToolCallEnd):
+        print(f"\n🔧 Calling {event.tool_call.name}({event.tool_call.args})")
+    # Note: tool_result events are emitted separately by the agent loop, not by stream aggregators
 
 # ── Core agent functions ──────────────────────────────────────────────────────
 # Provider-specific rollout functions and stream handling imported from providers.py
@@ -349,7 +352,7 @@ FullAuto = RunConfig(
 )
 
 
-async def rollout(actor: Actor, on_chunk: Callable[[StreamChunk], Awaitable[None]] = stdout_handler,
+async def rollout(actor: Actor, on_chunk: Callable[[StreamEvent], Awaitable[None]] = stdout_handler,
                   user_message_for_thinking: str | None = None, turn_idx: int = 0, inline_thinking: str | None = None) -> Actor:
     provider = actor.endpoint.provider
     if provider == "openai":

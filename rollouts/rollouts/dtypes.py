@@ -8,6 +8,7 @@ from enum import Enum
 from pathlib import Path
 from typing import (
     Any,
+    Literal,
     Optional,
     Protocol,
     runtime_checkable,
@@ -30,6 +31,102 @@ TorchTensor = Any
 def verbose(level=1):
     """Check if verbose logging is enabled at given level"""
     return int(os.getenv("VERBOSE", 0)) >= level
+
+
+def parse_streaming_json(partial_json: str) -> dict[str, Any]:
+    """Parse partial JSON string, returning best-effort partial object.
+
+    During streaming, tool call arguments arrive incrementally as incomplete JSON.
+    This function attempts to extract valid key-value pairs from incomplete JSON.
+
+    Examples:
+        '{"foo": "bar"'          -> {"foo": "bar"}
+        '{"foo": "bar", "baz":'  -> {"foo": "bar"}
+        '{"nested": {"a": 1'     -> {"nested": {"a": 1}}
+        '{"arr": [1, 2'          -> {"arr": [1, 2]}
+        ''                       -> {}
+        '{'                      -> {}
+
+    Tiger Style: Best-effort parsing, crash-loud on programmer error.
+    - Invalid UTF-8 -> crash (caller must ensure valid encoding)
+    - Incomplete JSON -> return partial parsed dict (expected during streaming)
+    - Malformed JSON -> return empty dict (streaming hasn't started yet)
+    """
+    assert isinstance(partial_json, str), f"Expected str, got {type(partial_json)}"
+
+    if not partial_json or partial_json.strip() == "":
+        return {}
+
+    # Try parsing as complete JSON first
+    try:
+        result = json.loads(partial_json)
+        assert isinstance(result, dict), f"Tool args must be object, got {type(result)}"
+        return result
+    except json.JSONDecodeError:
+        pass
+
+    # Incomplete JSON - try to extract what we can
+    # Strategy: Progressively trim incomplete parts from the end
+    # 1. Close incomplete string values
+    # 2. Remove incomplete keys
+    # 3. Close incomplete arrays
+    # 4. Close incomplete objects
+
+    cleaned = partial_json.strip()
+
+    # Handle edge cases
+    if cleaned in ("{", "[", ""):
+        return {}
+
+    # Try adding closing braces/brackets progressively
+    attempts = [
+        cleaned + '"}',      # Close incomplete string value
+        cleaned + ']',       # Close incomplete array
+        cleaned + '}',       # Close incomplete object
+        cleaned + '"}]',     # Close string in array
+        cleaned + '"}}'      # Close string in nested object
+    ]
+
+    # Also try removing trailing incomplete key/value
+    if "," in cleaned:
+        # Remove everything after the last comma (incomplete key-value pair)
+        last_comma = cleaned.rfind(",")
+        truncated = cleaned[:last_comma]
+        attempts.extend([
+            truncated + "}",
+            truncated + "]}",
+            truncated + "}}"
+        ])
+
+    # If there's a colon without a value, remove the incomplete pair
+    if ":" in cleaned:
+        # Find the last complete comma before incomplete value
+        parts = cleaned.split(",")
+        for i in range(len(parts) - 1, -1, -1):
+            # Check if this part has both key and value
+            truncated = ",".join(parts[:i])
+            if truncated:
+                attempts.extend([
+                    truncated + "}",
+                    truncated + "]}",
+                    truncated + "}}"
+                ])
+
+    # Try each repair strategy
+    for attempt in attempts:
+        try:
+            result = json.loads(attempt)
+            if isinstance(result, dict):
+                return result
+            elif isinstance(result, list):
+                # Array of objects - return last object if available
+                if result and isinstance(result[-1], dict):
+                    return result[-1]
+        except json.JSONDecodeError:
+            continue
+
+    # All strategies failed - return empty dict
+    return {}
 
 
 class JsonSerializable:
@@ -71,10 +168,157 @@ class ToolCall(JsonSerializable):
 
 @dataclass(frozen=True)
 class StreamChunk(JsonSerializable):
-    """A chunk of data emitted during streaming"""
+    """DEPRECATED: Legacy streaming event format. Use StreamEvent types instead.
+
+    This class is kept temporarily for backward compatibility during migration.
+    Will be removed once all consumers switch to the new granular event types.
+    """
     type: str  # "token", "tool_call_complete", "tool_result", etc.
     data: Mapping[str, Any]
     timestamp: float = field(default_factory=time.time)
+
+
+# New granular streaming events (inspired by pi-ai)
+# Each event includes content_index for tracking which content block and timestamp for logging
+
+
+@dataclass(frozen=True)
+class StreamStart(JsonSerializable):
+    """Emitted at the start of a streaming response"""
+    type: Literal["start"] = "start"
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class TextStart(JsonSerializable):
+    """Emitted when a text content block begins"""
+    type: Literal["text_start"] = "text_start"
+    content_index: int
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class TextDelta(JsonSerializable):
+    """Emitted for each text token/chunk during streaming"""
+    type: Literal["text_delta"] = "text_delta"
+    content_index: int
+    delta: str
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class TextEnd(JsonSerializable):
+    """Emitted when a text content block completes"""
+    type: Literal["text_end"] = "text_end"
+    content_index: int
+    content: str  # Complete accumulated text
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class ThinkingStart(JsonSerializable):
+    """Emitted when a thinking/reasoning content block begins"""
+    type: Literal["thinking_start"] = "thinking_start"
+    content_index: int
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class ThinkingDelta(JsonSerializable):
+    """Emitted for each thinking token/chunk during streaming"""
+    type: Literal["thinking_delta"] = "thinking_delta"
+    content_index: int
+    delta: str
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class ThinkingEnd(JsonSerializable):
+    """Emitted when a thinking/reasoning content block completes"""
+    type: Literal["thinking_end"] = "thinking_end"
+    content_index: int
+    content: str  # Complete accumulated thinking
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class ToolCallStart(JsonSerializable):
+    """Emitted when a tool call content block begins"""
+    type: Literal["toolcall_start"] = "toolcall_start"
+    content_index: int
+    tool_call_id: str
+    tool_name: str
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class ToolCallDelta(JsonSerializable):
+    """Emitted for each chunk of tool call arguments during streaming
+
+    The partial_args field contains the best-effort parsed JSON from the
+    accumulated argument string so far. May be incomplete objects/arrays.
+    """
+    type: Literal["toolcall_delta"] = "toolcall_delta"
+    content_index: int
+    tool_call_id: str
+    delta: str  # Raw JSON chunk
+    partial_args: dict[str, Any]  # Best-effort parsed partial JSON
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class ToolCallEnd(JsonSerializable):
+    """Emitted when a tool call content block completes"""
+    type: Literal["toolcall_end"] = "toolcall_end"
+    content_index: int
+    tool_call: ToolCall  # Complete parsed tool call
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class ToolCallError(JsonSerializable):
+    """Emitted when tool call argument parsing fails"""
+    type: Literal["toolcall_error"] = "toolcall_error"
+    content_index: int
+    tool_call_id: str
+    tool_name: str
+    error: str
+    raw_arguments: str
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class StreamDone(JsonSerializable):
+    """Emitted when streaming completes successfully"""
+    type: Literal["done"] = "done"
+    finish_reason: str  # "stop", "length", "tool_calls", etc.
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class StreamError(JsonSerializable):
+    """Emitted when streaming encounters an error"""
+    type: Literal["error"] = "error"
+    error: str
+    timestamp: float = field(default_factory=time.time)
+
+
+# Union type for all streaming events
+StreamEvent = (
+    StreamStart
+    | TextStart
+    | TextDelta
+    | TextEnd
+    | ThinkingStart
+    | ThinkingDelta
+    | ThinkingEnd
+    | ToolCallStart
+    | ToolCallDelta
+    | ToolCallEnd
+    | ToolCallError
+    | StreamDone
+    | StreamError
+)
 
 
 @dataclass(frozen=True)
@@ -507,7 +751,7 @@ class RunConfig:
     # Currently if a sync function is passed, it gets set to None silently, causing
     # "object NoneType can't be used in 'await' expression" errors later. Should validate
     # that on_chunk is properly async and has correct signature at construction time.
-    on_chunk: Callable[[StreamChunk], Awaitable[None]]
+    on_chunk: Callable[[StreamEvent], Awaitable[None]]
     on_input: Callable[[str], Awaitable[str]] = field(default_factory=lambda: default_stdin_handler)
     confirm_tool: Callable[[ToolCall, 'AgentState', 'RunConfig'], Awaitable[tuple['AgentState', ToolConfirmResult]]] = field(default_factory=lambda: default_confirm_tool)
     handle_tool_error: Callable[[ToolResult, 'AgentState'], 'AgentState'] = lambda tr, s: s

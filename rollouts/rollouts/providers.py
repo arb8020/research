@@ -5,11 +5,10 @@ from __future__ import annotations
 import copy
 import json
 import logging
-import os
-import sys
 import time
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import replace
-from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional
+from typing import Any
 
 import httpx
 import trio
@@ -202,15 +201,31 @@ async def _execute_vllm_request(
     assert isinstance(result, dict), f"result must be dict, got {type(result)}"
     return result
 
+
 from .dtypes import (
     Actor,
     ChatCompletion,
     Choice,
     Message,
     StreamChunk,
+    StreamEvent,
+    StreamStart,
+    TextStart,
+    TextDelta,
+    TextEnd,
+    ThinkingStart,
+    ThinkingDelta,
+    ThinkingEnd,
+    ToolCallStart,
+    ToolCallDelta,
+    ToolCallEnd,
+    ToolCallError,
+    StreamDone,
+    StreamError,
     Tool,
     ToolCall,
     Usage,
+    parse_streaming_json,
 )
 
 
@@ -317,7 +332,7 @@ def _message_to_openai(m: Message) -> ChatCompletionMessageParam:
         import logging
         logger = logging.getLogger(__name__)
         logger.error(f"❌ Empty message content detected! Role: {m.role}")
-        logger.error(f"   This usually means prepare_messages() is using the wrong dataset field.")
+        logger.error("   This usually means prepare_messages() is using the wrong dataset field.")
         logger.error(f"   Message object: {m}")
         assert False, (
             f"Message has empty content (role={m.role}). "
@@ -325,7 +340,7 @@ def _message_to_openai(m: Message) -> ChatCompletionMessageParam:
             f"Common issue: using 'prompt' when dataset has 'problem_description'."
         )
 
-    msg: Dict[str, Any] = {"role": m.role}
+    msg: dict[str, Any] = {"role": m.role}
 
     if m.content is not None:
         msg["content"] = m.content
@@ -353,7 +368,7 @@ def _message_to_openai(m: Message) -> ChatCompletionMessageParam:
     return msg
 
 
-def _tool_to_openai(tool: Tool) -> Dict[str, Any]:
+def _tool_to_openai(tool: Tool) -> dict[str, Any]:
     """Convert a framework `Tool` definition into OpenAI's schema."""
     assert tool is not None
     assert isinstance(tool, Tool)
@@ -445,19 +460,35 @@ def _parse_completion(resp: Any) -> ChatCompletion:
 
 async def aggregate_stream(
     stream: AsyncIterator,
-    on_chunk: Callable[[StreamChunk], Awaitable[None]],
+    on_chunk: Callable[[StreamEvent], Awaitable[None]],
 ) -> ChatCompletion:
-    """Aggregate streaming chunks into a complete `ChatCompletion`."""
+    """Aggregate streaming chunks into a complete `ChatCompletion` with granular events.
+
+    Emits granular streaming events following pi-ai pattern:
+    - start: Stream begins
+    - text_start/delta/end: Text content lifecycle
+    - toolcall_start/delta/end: Tool call lifecycle with partial JSON parsing
+    - done: Stream completes successfully
+    - error: Stream encounters error
+    """
     assert stream is not None
     assert on_chunk is not None
     assert callable(on_chunk)
+
+    # Emit start event
+    await on_chunk(StreamStart())
 
     accumulated_content = ""
     finish_reason = None
     response_id = None
     created = None
 
-    call_buf: Dict[int, Dict[str, Any]] = {}
+    # Track content blocks by index (text is content_index 0, tool calls start at 1)
+    content_index = 0
+    text_started = False
+
+    # Track tool calls: idx -> {id, name, arguments, content_index, started}
+    call_buf: dict[int, dict[str, Any]] = {}
     next_auto_index = 0
 
     async for chunk in stream:
@@ -468,10 +499,16 @@ async def aggregate_stream(
             response_id = chunk.id
             created = chunk.created
 
+        # Handle text content
         if delta.content:
-            accumulated_content += delta.content
-            await on_chunk(StreamChunk("token", {"text": delta.content}))
+            if not text_started:
+                await on_chunk(TextStart(content_index=content_index))
+                text_started = True
 
+            accumulated_content += delta.content
+            await on_chunk(TextDelta(content_index=content_index, delta=delta.content))
+
+        # Handle tool calls
         if delta.tool_calls:
             for tool_call in delta.tool_calls:
                 idx = tool_call.index
@@ -479,83 +516,96 @@ async def aggregate_stream(
                     idx = next_auto_index
                     next_auto_index += 1
 
+                # Initialize tool call buffer if new
                 if idx not in call_buf:
+                    # Assign next content_index (text is 0, first tool is 1, etc.)
+                    tool_content_index = content_index + idx + 1
+
                     call_buf[idx] = {
                         "id": "",
-                        "type": "function",
-                        "function": {"name": "", "arguments": ""},
+                        "name": "",
+                        "arguments": "",
+                        "content_index": tool_content_index,
+                        "started": False,
                     }
 
+                # Update tool call metadata
                 if tool_call.id:
                     call_buf[idx]["id"] = tool_call.id
                 if tool_call.function:
                     if tool_call.function.name:
-                        call_buf[idx]["function"]["name"] = tool_call.function.name
+                        call_buf[idx]["name"] = tool_call.function.name
                     if tool_call.function.arguments:
-                        call_buf[idx]["function"]["arguments"] += (
-                            tool_call.function.arguments
-                        )
+                        call_buf[idx]["arguments"] += tool_call.function.arguments
 
-            await on_chunk(
-                StreamChunk("tool_call_partial", {"calls": list(call_buf.values())})
-            )
+                # Emit start event if this is the first chunk for this tool call
+                tc_buf = call_buf[idx]
+                if not tc_buf["started"] and tc_buf["name"]:
+                    await on_chunk(
+                        ToolCallStart(
+                            content_index=tc_buf["content_index"],
+                            tool_call_id=tc_buf["id"],
+                            tool_name=tc_buf["name"],
+                        )
+                    )
+                    tc_buf["started"] = True
+
+                # Emit delta event with partial JSON parsing
+                if tool_call.function and tool_call.function.arguments:
+                    partial_args = parse_streaming_json(tc_buf["arguments"])
+                    await on_chunk(
+                        ToolCallDelta(
+                            content_index=tc_buf["content_index"],
+                            tool_call_id=tc_buf["id"],
+                            delta=tool_call.function.arguments,
+                            partial_args=partial_args,
+                        )
+                    )
 
         if choice.finish_reason:
             finish_reason = choice.finish_reason
 
-    tool_calls: List[ToolCall] = []
-    for idx, tc in sorted(call_buf.items()):
-        if tc["function"]["name"]:
+    # Emit text_end if we started text
+    if text_started:
+        await on_chunk(TextEnd(content_index=content_index, content=accumulated_content))
+
+    # Emit tool_end events and build final tool_calls list
+    tool_calls: list[ToolCall] = []
+    for idx, tc_buf in sorted(call_buf.items()):
+        if tc_buf["name"]:
             try:
                 args = (
-                    json.loads(tc["function"]["arguments"])
-                    if tc["function"]["arguments"]
+                    json.loads(tc_buf["arguments"])
+                    if tc_buf["arguments"]
                     else {}
                 )
-            except json.JSONDecodeError:
+                tool_call = ToolCall(id=tc_buf["id"], name=tc_buf["name"], args=args)
+
                 await on_chunk(
-                    StreamChunk(
-                        "tool_call_error",
-                        {
-                            "id": tc["id"],
-                            "name": tc["function"]["name"],
-                            "error": (
-                                "Invalid JSON arguments: "
-                                f"{tc['function']['arguments']}"
-                            ),
-                            "index": idx,
-                        },
+                    ToolCallEnd(
+                        content_index=tc_buf["content_index"],
+                        tool_call=tool_call,
                     )
                 )
-                continue
 
-            await on_chunk(
-                StreamChunk(
-                    "tool_call_complete",
-                    {
-                        "id": tc["id"],
-                        "name": tc["function"]["name"],
-                        "args": args,
-                        "raw_arguments": tc["function"]["arguments"],
-                        "index": idx,
-                    },
+                tool_calls.append(tool_call)
+
+            except json.JSONDecodeError as e:
+                await on_chunk(
+                    ToolCallError(
+                        content_index=tc_buf["content_index"],
+                        tool_call_id=tc_buf["id"],
+                        tool_name=tc_buf["name"],
+                        error=f"Invalid JSON arguments: {str(e)}",
+                        raw_arguments=tc_buf["arguments"],
+                    )
                 )
-            )
 
-            tool_calls.append(ToolCall(id=tc["id"], name=tc["function"]["name"], args=args))
+    # Emit done event
+    await on_chunk(StreamDone(finish_reason=finish_reason or "stop"))
 
+    # Build final message and completion
     final_message = Message(role="assistant", content=accumulated_content or "", tool_calls=tool_calls)
-
-    await on_chunk(
-        StreamChunk(
-            "assistant_complete",
-            {
-                "content": accumulated_content,
-                "tool_call_count": len(tool_calls),
-                "finish_reason": finish_reason,
-            },
-        )
-    )
 
     assert final_message is not None
     assert isinstance(final_message, Message)
@@ -583,7 +633,7 @@ def verbose(level: int) -> bool:
 
 async def rollout_sglang(
     actor: Actor,
-    on_chunk: Callable[[StreamChunk], Awaitable[None]],
+    on_chunk: Callable[[StreamEvent], Awaitable[None]],
 ) -> Actor:
     """Invoke a vLLM server and return the updated actor."""
     # Tiger Style: Assert all inputs
@@ -641,9 +691,8 @@ async def rollout_sglang(
     return result_actor
 
 
-
 async def rollout_openai(
-    actor: Actor, on_chunk: Callable[[StreamChunk], Awaitable[None]]
+    actor: Actor, on_chunk: Callable[[StreamEvent], Awaitable[None]]
 ) -> Actor:
     """Make an OpenAI API call with streaming and update the actor."""
     assert actor is not None
@@ -718,6 +767,7 @@ async def rollout_openai(
     except Exception as e:
         # Log error with sanitized request details
         import json
+
         from openai import BadRequestError, RateLimitError
 
         sanitized = sanitize_request_for_logging(params)
@@ -796,8 +846,8 @@ def _apply_inline_thinking_template(
 
 
 def _message_to_anthropic(
-    m: Message, inline_thinking: Optional[str] = None
-) -> Dict[str, Any]:
+    m: Message, inline_thinking: str | None = None
+) -> dict[str, Any]:
     """Convert a `Message` into Anthropic's streaming-compatible schema."""
     assert m is not None
     assert isinstance(m, Message)
@@ -810,7 +860,7 @@ def _message_to_anthropic(
         import logging
         logger = logging.getLogger(__name__)
         logger.error(f"❌ Empty message content detected! Role: {m.role}")
-        logger.error(f"   This usually means prepare_messages() is using the wrong dataset field.")
+        logger.error("   This usually means prepare_messages() is using the wrong dataset field.")
         logger.error(f"   Message object: {m}")
         assert False, (
             f"Message has empty content (role={m.role}). "
@@ -818,7 +868,7 @@ def _message_to_anthropic(
             f"Common issue: using 'prompt' when dataset has 'problem_description'."
         )
 
-    msg: Dict[str, Any] = {"role": m.role}
+    msg: dict[str, Any] = {"role": m.role}
 
     if m.role == "assistant" and m.tool_calls:
         content_blocks = []
@@ -876,7 +926,7 @@ def _message_to_anthropic(
     return msg
 
 
-def _tool_to_anthropic(tool: Tool) -> Dict[str, Any]:
+def _tool_to_anthropic(tool: Tool) -> dict[str, Any]:
     """Convert framework `Tool` definitions into Anthropic's schema."""
     return {
         "name": tool.function.name,
@@ -890,20 +940,37 @@ def _tool_to_anthropic(tool: Tool) -> Dict[str, Any]:
 
 
 async def aggregate_anthropic_stream(
-    stream, on_chunk: Callable[[StreamChunk], Awaitable[None]]
+    stream, on_chunk: Callable[[StreamEvent], Awaitable[None]]
 ) -> ChatCompletion:
-    """Aggregate Anthropic SDK stream events into a `ChatCompletion`."""
+    """Aggregate Anthropic SDK stream events into a `ChatCompletion` with granular events.
+
+    Emits granular streaming events following pi-ai pattern:
+    - start: Stream begins
+    - text_start/delta/end: Text content lifecycle
+    - thinking_start/delta/end: Extended thinking lifecycle
+    - toolcall_start/delta/end: Tool call lifecycle with partial JSON parsing
+    - done: Stream completes successfully
+    - error: Stream encounters error
+    """
+
+    # Emit start event
+    await on_chunk(StreamStart())
 
     accumulated_content = ""
     thinking_content = ""
     thinking_signature = None
-    tool_calls: List[ToolCall] = []
+    tool_calls: list[ToolCall] = []
     message_id = None
     created_at = int(time.time())
     finish_reason = "stop"
 
-    tool_json_accumulator: Dict[int, str] = {}
-    tool_metadata: Dict[int, Dict[str, Any]] = {}
+    # Track content blocks by index and their types
+    # content_index -> {type: "text" | "thinking" | "tool_use", started: bool, accumulated: str}
+    content_blocks: dict[int, dict[str, Any]] = {}
+
+    # Tool-specific tracking
+    tool_json_accumulator: dict[int, str] = {}
+    tool_metadata: dict[int, dict[str, str]] = {}
 
     async for event in stream:
         event_type = event.type
@@ -916,9 +983,32 @@ async def aggregate_anthropic_stream(
             block = event.content_block
             index = event.index
 
-            if block.type == "tool_use":
+            # Initialize content block tracking
+            content_blocks[index] = {
+                "type": block.type,
+                "started": False,
+                "accumulated": "",
+            }
+
+            if block.type == "text":
+                await on_chunk(TextStart(content_index=index))
+                content_blocks[index]["started"] = True
+
+            elif block.type == "thinking":
+                await on_chunk(ThinkingStart(content_index=index))
+                content_blocks[index]["started"] = True
+
+            elif block.type == "tool_use":
                 tool_metadata[index] = {"id": block.id, "name": block.name}
                 tool_json_accumulator[index] = ""
+                await on_chunk(
+                    ToolCallStart(
+                        content_index=index,
+                        tool_call_id=block.id,
+                        tool_name=block.name,
+                    )
+                )
+                content_blocks[index]["started"] = True
 
         elif event_type == "content_block_delta":
             block = event.delta
@@ -927,22 +1017,50 @@ async def aggregate_anthropic_stream(
             if block.type == "text_delta":
                 text = block.text
                 accumulated_content += text
-                await on_chunk(StreamChunk("token", {"text": text}))
+                content_blocks[index]["accumulated"] += text
+                await on_chunk(TextDelta(content_index=index, delta=text))
+
+            elif block.type == "thinking_delta":
+                thinking_text = block.thinking
+                thinking_content += thinking_text
+                content_blocks[index]["accumulated"] += thinking_text
+                if hasattr(block, "signature") and block.signature:
+                    thinking_signature = block.signature
+                await on_chunk(ThinkingDelta(content_index=index, delta=thinking_text))
 
             elif block.type == "input_json_delta":
                 tool_json_accumulator[index] += block.partial_json
-
-            elif block.type == "thinking_delta":
-                thinking_content += block.thinking
-                if hasattr(block, "signature") and block.signature:
-                    thinking_signature = block.signature
-                await on_chunk(StreamChunk("thinking", {"text": block.thinking}))
+                partial_args = parse_streaming_json(tool_json_accumulator[index])
+                await on_chunk(
+                    ToolCallDelta(
+                        content_index=index,
+                        tool_call_id=tool_metadata[index]["id"],
+                        delta=block.partial_json,
+                        partial_args=partial_args,
+                    )
+                )
 
         elif event_type == "content_block_stop":
             index = event.index
             block = event.content_block
 
-            if block.type == "tool_use":
+            if block.type == "text":
+                await on_chunk(
+                    TextEnd(
+                        content_index=index,
+                        content=content_blocks[index]["accumulated"],
+                    )
+                )
+
+            elif block.type == "thinking":
+                await on_chunk(
+                    ThinkingEnd(
+                        content_index=index,
+                        content=content_blocks[index]["accumulated"],
+                    )
+                )
+
+            elif block.type == "tool_use":
                 raw_json = tool_json_accumulator.get(index, "")
                 try:
                     tool_input = json.loads(raw_json) if raw_json else {}
@@ -954,28 +1072,20 @@ async def aggregate_anthropic_stream(
                     tool_calls.append(tool_call)
 
                     await on_chunk(
-                        StreamChunk(
-                            "tool_call_complete",
-                            {
-                                "id": tool_call.id,
-                                "name": tool_call.name,
-                                "args": tool_input,
-                                "index": index,
-                            },
+                        ToolCallEnd(
+                            content_index=index,
+                            tool_call=tool_call,
                         )
                     )
 
                 except json.JSONDecodeError as e:
                     await on_chunk(
-                        StreamChunk(
-                            "tool_call_error",
-                            {
-                                "index": index,
-                                "id": tool_metadata[index]["id"],
-                                "name": tool_metadata[index]["name"],
-                                "error": f"Invalid JSON: {str(e)}",
-                                "partial_json": tool_json_accumulator[index],
-                            },
+                        ToolCallError(
+                            content_index=index,
+                            tool_call_id=tool_metadata[index]["id"],
+                            tool_name=tool_metadata[index]["name"],
+                            error=f"Invalid JSON: {str(e)}",
+                            raw_arguments=tool_json_accumulator[index],
                         )
                     )
 
@@ -984,15 +1094,16 @@ async def aggregate_anthropic_stream(
                 finish_reason = event.delta.stop_reason or "stop"
 
         elif event_type == "ping":
-            await on_chunk(StreamChunk("ping", {}))
+            # Ping events are informational, not emitting as StreamEvent
+            pass
 
         elif event_type == "error":
-            error_data = {
-                "type": event.error.type,
-                "message": event.error.message,
-            }
-            await on_chunk(StreamChunk("error", error_data))
-            raise Exception(f"Anthropic stream error: {error_data}")
+            error_msg = f"{event.error.type}: {event.error.message}"
+            await on_chunk(StreamError(error=error_msg))
+            raise Exception(f"Anthropic stream error: {error_msg}")
+
+    # Emit done event
+    await on_chunk(StreamDone(finish_reason=finish_reason))
 
     final_message = Message(
         role="assistant",
@@ -1002,24 +1113,12 @@ async def aggregate_anthropic_stream(
         tool_calls=tool_calls,
     )
 
-    await on_chunk(
-        StreamChunk(
-            "assistant_complete",
-            {
-                "content": accumulated_content,
-                "tool_call_count": len(tool_calls),
-                "finish_reason": finish_reason,
-            },
-        )
-    )
-
     final_anthropic_message = await stream.get_final_message()
 
     usage = Usage(
         prompt_tokens=final_anthropic_message.usage.input_tokens,
         completion_tokens=final_anthropic_message.usage.output_tokens,
-        total_tokens=
-        final_anthropic_message.usage.input_tokens
+        total_tokens=final_anthropic_message.usage.input_tokens
         + final_anthropic_message.usage.output_tokens,
     )
 
@@ -1037,13 +1136,12 @@ async def aggregate_anthropic_stream(
 
 async def rollout_anthropic(
     actor: Actor,
-    on_chunk: Callable[[StreamChunk], Awaitable[None]],
-    user_message_for_thinking: Optional[str] = None,
+    on_chunk: Callable[[StreamEvent], Awaitable[None]],
+    user_message_for_thinking: str | None = None,
     turn_idx: int = 0,
-    inline_thinking: Optional[str] = None,
+    inline_thinking: str | None = None,
 ) -> Actor:
     """Call Anthropic's API using streaming and update the actor."""
-    from typing import Any
 
     client_kwargs: dict[str, Any] = {
         "api_key": actor.endpoint.api_key,
@@ -1088,7 +1186,7 @@ async def rollout_anthropic(
 
     messages_with_cache = add_cache_control_to_last_content(messages)
 
-    params: Dict[str, Any] = {
+    params: dict[str, Any] = {
         "max_tokens": actor.endpoint.max_tokens,
         "messages": messages_with_cache,
         "model": actor.endpoint.model,
@@ -1105,9 +1203,9 @@ async def rollout_anthropic(
         params["thinking"] = actor.endpoint.thinking
 
     # Debug logging - show what we're sending (only at DEBUG level)
-    logger.debug(f"\n{'='*60}")
-    logger.debug(f"Anthropic API Request:")
-    logger.debug(f"{'='*60}")
+    logger.debug(f"\n{'=' * 60}")
+    logger.debug("Anthropic API Request:")
+    logger.debug(f"{'=' * 60}")
     logger.debug(f"Model: {actor.endpoint.model}")
     logger.debug(f"Max tokens: {actor.endpoint.max_tokens}")
     logger.debug(f"Temperature: {actor.endpoint.temperature}")
@@ -1123,7 +1221,7 @@ async def rollout_anthropic(
             logger.debug(f"Message {i} ({role}): {len(content)} chars - {content[:100]}...")
         elif isinstance(content, list):
             logger.debug(f"Message {i} ({role}): {len(content)} content blocks")
-    logger.debug(f"{'='*60}\n")
+    logger.debug(f"{'=' * 60}\n")
 
     max_retries = 10
     base_delay = 2
@@ -1151,19 +1249,18 @@ async def rollout_anthropic(
                 print(f"   Retrying in {delay}s...")
                 await trio.sleep(delay)
                 continue
-            else:
-                # Log error with sanitized request details
-                sanitized = sanitize_request_for_logging(params)
-                logger.error(
-                    "Anthropic API call failed after all retries",
-                    extra={
-                        "exception": str(e),
-                        "request_params": sanitized,
-                        "model": actor.endpoint.model,
-                        "max_retries": max_retries,
-                    }
-                )
-                raise
+            # Log error with sanitized request details
+            sanitized = sanitize_request_for_logging(params)
+            logger.error(
+                "Anthropic API call failed after all retries",
+                extra={
+                    "exception": str(e),
+                    "request_params": sanitized,
+                    "model": actor.endpoint.model,
+                    "max_retries": max_retries,
+                }
+            )
+            raise
 
     if completion is None:
         raise Exception("Failed to get completion after all retries")
