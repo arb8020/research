@@ -4,37 +4,35 @@ import json
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Any, Protocol
+from typing import Any, Protocol
 
-from dacite import from_dict, Config
-from .dtypes import StopReason, AgentState, Actor, Environment
+from dacite import Config, from_dict
+
+from .dtypes import Actor, AgentState, Environment, StopReason
 
 
 class CheckpointStore(Protocol):
     async def save(self, checkpoint_id: str, state: AgentState) -> None: ...
     async def load(self, checkpoint_id: str) -> AgentState: ...
-    async def list(self) -> List[str]: ...
+    async def list(self) -> list[str]: ...
 
 
-async def serialize_agent_state(state: AgentState) -> Dict[str, Any]:
+async def serialize_agent_state(state: AgentState) -> dict[str, Any]:
     """Convert AgentState to JSON-serializable dict"""
     assert state is not None
     assert isinstance(state, AgentState)
     assert state.actor is not None
     assert state.environment is not None
     assert state.turn_idx >= 0
-    assert state.max_turns > 0
-    assert state.turn_idx <= state.max_turns
 
     from dataclasses import asdict
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         "actor": asdict(state.actor),  # asdict handles nested dataclasses!
         "environment": {
             "class_name": state.environment.__class__.__name__,
             "data": await state.environment.serialize()
         },
         "turn_idx": state.turn_idx,
-        "max_turns": state.max_turns,
         "stop": state.stop.value if state.stop else None,
         "pending_tool_calls": [asdict(tc) for tc in state.pending_tool_calls],
         "next_tool_idx": state.next_tool_idx,
@@ -49,8 +47,8 @@ async def serialize_agent_state(state: AgentState) -> Dict[str, Any]:
 
 
 async def deserialize_agent_state(
-        data: Dict[str, Any],
-        environment_registry: Dict[str, type[Environment]],
+        data: dict[str, Any],
+        environment_registry: dict[str, type[Environment]],
     ) -> AgentState:
     """Reconstruct AgentState from JSON-serializable dict"""
     assert data is not None
@@ -59,7 +57,6 @@ async def deserialize_agent_state(
     assert "class_name" in data["environment"]
     assert "actor" in data
     assert "turn_idx" in data
-    assert "max_turns" in data
     assert environment_registry is not None
     assert isinstance(environment_registry, dict)
 
@@ -80,7 +77,6 @@ async def deserialize_agent_state(
     assert result is not None
     assert isinstance(result, AgentState)
     assert result.turn_idx >= 0
-    assert result.max_turns > 0
     return result
 
 
@@ -89,7 +85,7 @@ class FileCheckpointStore:
 
     def __init__(
         self,
-        environment_registry: Dict[str, type[Environment]],
+        environment_registry: dict[str, type[Environment]],
         directory: str = "/tmp/rollouts-agent-checkpoints",
     ):
         assert environment_registry is not None
@@ -163,7 +159,7 @@ class FileCheckpointStore:
         assert result is not None
         return result
     
-    async def list(self) -> List[str]:
+    async def list(self) -> list[str]:
         """List all checkpoint IDs"""
         assert self.directory.exists()
         assert self.directory.is_dir()
