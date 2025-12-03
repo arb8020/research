@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Simple test of refactored streaming code."""
 
-import trio
 import os
-from rollouts.dtypes import Endpoint, Actor, AgentState, Message, Trajectory
+
+import trio
+
+from rollouts.agents import RunConfig, run_agent, stdout_handler
+from rollouts.dtypes import Actor, AgentState, Endpoint, Message, Trajectory
 from rollouts.environments.calculator import CalculatorEnvironment
-from rollouts.agents import run_agent, RunConfig, stdout_handler
+
 
 async def main():
     # Check for API keys (try Anthropic first, fallback to OpenAI)
@@ -80,6 +83,7 @@ async def main():
         import traceback
         traceback.print_exc()
         return 1
+
 
 if __name__ == "__main__":
     exit_code = trio.run(main)
