@@ -12,20 +12,27 @@
 - ✅ Updated all provider `rollout_*` functions to use `StreamEvent` type
 - ✅ Updated `RunConfig.on_chunk` signature
 - ✅ Updated `stdout_handler` to consume new events
+- ✅ Fixed dataclass field ordering (required fields before optional fields)
+- ✅ Fixed `max_turns` migration (moved to `RunConfig.handle_stop`)
+- ✅ Removed redundant test files (`test_refactor_simple.py`)
+- ✅ Updated test files with proper pytest markers
+- ✅ All tests passing (7 tests: smoke, integration, end-to-end)
 
-### In Progress
-- 🔄 Documentation updates
-- 🔄 Removing old StreamChunk references for LLM events
-
-### Remaining Work
-- ⏸️ Frontend/server.py updates (deferred - frontend not priority)
-- ⏸️ Evaluation.py event consumers
-- ⏸️ Test file updates
+### Deferred (Not Priority)
+- ⏸️ Frontend/server.py updates (frontend work deferred)
+- ⏸️ Evaluation.py event consumers (will update when needed)
 
 ### Breaking Changes Made
 - **Two-tier event system**: `StreamEvent` for LLM streaming, `StreamChunk` kept for lifecycle events (checkpoints, tool_result)
 - All LLM event consumers must update to handle new granular event types
 - No backward compatibility layer - clean break for better long-term maintenance
+- `max_turns` removed from `AgentState`, now configured via `RunConfig.handle_stop=handle_stop_max_turns(n)`
+
+### Test Strategy (Following Grugbrain Philosophy)
+- **Smoke tests** (`test_agent_framework.py`) - Quick type/import sanity checks
+- **Integration test** (`test_multi_turn.py`) - Real tool execution without API dependency
+- **End-to-end test** (`test_real_agent.py`) - Full agent with real LLM API
+- Removed mock tests in favor of integration tests for better maintainability
 
 ---
 

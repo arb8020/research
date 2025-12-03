@@ -12,6 +12,7 @@ Requires: OPENAI_API_KEY environment variable
 
 import os
 
+import pytest
 import trio
 
 from rollouts import (
@@ -22,11 +23,13 @@ from rollouts import (
     Message,
     RunConfig,
     Trajectory,
+    handle_stop_max_turns,
     run_agent,
     stdout_handler,
 )
 
 
+@pytest.mark.trio
 async def test_calculator_agent():
     """Test agent solving a simple math problem using calculator.
 
@@ -39,21 +42,22 @@ async def test_calculator_agent():
     4. Calculator returns 42
     5. LLM calls complete_task()
     """
+    # Check API key first
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        pytest.skip("OPENAI_API_KEY not set")
+
     print("🤖 Testing real agent with OpenAI...")
     print("Task: What is 25 + 17?")
     print()
-
-    # Check API key
-    if not os.getenv("OPENAI_API_KEY"):
-        print("❌ OPENAI_API_KEY not set, skipping test")
-        return
 
     # Setup
     env = CalculatorEnvironment()
     endpoint = Endpoint(
         provider="openai",
         model="gpt-4o-mini",  # Cheap and fast
-        api_key=os.getenv("OPENAI_API_KEY", ""),
+        api_key=api_key,
+        api_base="https://api.openai.com/v1",
         temperature=0.0,  # Deterministic
     )
 
@@ -70,12 +74,12 @@ async def test_calculator_agent():
 
     state = AgentState(
         actor=actor,
-        environment=env,
-        max_turns=10
+        environment=env
     )
 
     run_config = RunConfig(
-        on_chunk=stdout_handler  # Print tokens as they stream
+        on_chunk=stdout_handler,  # Print tokens as they stream
+        handle_stop=handle_stop_max_turns(10)  # Stop after 10 turns
     )
 
     # Run agent!
@@ -83,7 +87,8 @@ async def test_calculator_agent():
     print("=" * 60)
 
     try:
-        final_state = await run_agent(state, run_config)
+        states = await run_agent(state, run_config)
+        final_state = states[-1]
 
         print("=" * 60)
         print()
@@ -120,8 +125,14 @@ async def test_calculator_agent():
 
 async def main():
     print("\n=== Testing Real Agent with LLM ===\n")
-    await test_calculator_agent()
-    print("\n=== Test complete ===\n")
+    try:
+        await test_calculator_agent()
+        print("\n=== Test complete ===\n")
+    except Exception as e:
+        if e.__class__.__name__ == "Skipped":
+            print(f"\n⏭️  Test skipped: {e}\n")
+        else:
+            raise
 
 
 if __name__ == "__main__":

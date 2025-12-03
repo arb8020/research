@@ -9,6 +9,7 @@ This tests whether the agent can:
 Without a real LLM, we'll manually simulate the agent loop.
 """
 
+import pytest
 import trio
 
 from rollouts import (
@@ -23,6 +24,7 @@ from rollouts import (
 )
 
 
+@pytest.mark.trio
 async def test_manual_multi_turn():
     """Manually test multi-turn tool execution.
 
@@ -43,7 +45,7 @@ async def test_manual_multi_turn():
     env = CalculatorEnvironment()
     endpoint = Endpoint(provider="test", model="test")
     actor = Actor(trajectory=Trajectory(), endpoint=endpoint, tools=env.get_tools())
-    state = AgentState(actor=actor, environment=env, max_turns=10)
+    state = AgentState(actor=actor, environment=env)
 
     async def _dummy_chunk(x):
         await trio.lowlevel.checkpoint()
@@ -120,7 +122,6 @@ async def execute_tool_turn(state: AgentState, env, run_config, tool_call: ToolC
     new_state = AgentState(
         actor=new_actor,
         environment=state.environment,
-        max_turns=state.max_turns,
         stop=state.stop,
         turn_idx=state.turn_idx + 1,
         pending_tool_calls=state.pending_tool_calls,

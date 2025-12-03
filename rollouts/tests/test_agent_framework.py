@@ -67,7 +67,7 @@ async def test_tool_execution():
     # Create minimal state for exec_tool
     endpoint = Endpoint(provider="test", model="test")
     actor = Actor(trajectory=Trajectory(), endpoint=endpoint, tools=env.get_tools())
-    state = AgentState(actor=actor, environment=env, max_turns=1)
+    state = AgentState(actor=actor, environment=env)
 
     async def _dummy_chunk(x):
         await trio.lowlevel.checkpoint()
