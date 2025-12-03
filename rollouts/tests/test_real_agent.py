@@ -10,11 +10,20 @@ This tests the full agent loop:
 Requires: OPENAI_API_KEY environment variable
 """
 
-import trio
 import os
+
+import trio
+
 from rollouts import (
-    Message, Trajectory, Endpoint, Actor, AgentState, RunConfig,
-    CalculatorEnvironment, run_agent, stdout_handler
+    Actor,
+    AgentState,
+    CalculatorEnvironment,
+    Endpoint,
+    Message,
+    RunConfig,
+    Trajectory,
+    run_agent,
+    stdout_handler,
 )
 
 

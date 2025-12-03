@@ -6,10 +6,17 @@ Tests basic functionality without needing API keys.
 
 import pytest
 import trio
+
 from rollouts import (
-    Message, Trajectory, Tool, ToolFunction, ToolFunctionParameter,
-    ToolCall, ToolResult, Endpoint, Actor, Environment, AgentState,
-    RunConfig, StopReason, CalculatorEnvironment
+    Actor,
+    AgentState,
+    CalculatorEnvironment,
+    Endpoint,
+    Message,
+    RunConfig,
+    Tool,
+    ToolCall,
+    Trajectory,
 )
 
 
@@ -61,6 +68,7 @@ async def test_tool_execution():
     endpoint = Endpoint(provider="test", model="test")
     actor = Actor(trajectory=Trajectory(), endpoint=endpoint, tools=env.get_tools())
     state = AgentState(actor=actor, environment=env, max_turns=1)
+
     async def _dummy_chunk(x):
         await trio.lowlevel.checkpoint()
     run_config = RunConfig(on_chunk=_dummy_chunk)  # Dummy
@@ -101,19 +109,6 @@ def test_serialization():
 def test_imports():
     """Test that all expected symbols are exported."""
     print("✓ Testing imports...")
-
-    from rollouts import (
-        # Core types
-        Trajectory, Message, ToolCall, ToolResult, Tool,
-        # Agent types
-        Actor, Environment, AgentState, RunConfig,
-        # Environments
-        CalculatorEnvironment,
-        # Providers
-        rollout_openai, rollout_sglang, rollout_anthropic,
-        # Functions
-        run_agent,
-    )
 
     print("  ✓ All expected symbols can be imported")
 

@@ -1,5 +1,34 @@
 # Pi-AI Integration Plan for Rollouts
 
+## Implementation Status
+
+**Current Phase**: Phase 0.1 - Granular Streaming Events ✅ **COMPLETE**
+
+### Completed (Phase 0.1)
+- ✅ Defined 13 new event dataclasses with granular lifecycle tracking
+- ✅ Implemented `parse_streaming_json()` for progressive tool argument parsing
+- ✅ Refactored `aggregate_stream()` (OpenAI) to emit granular events
+- ✅ Refactored `aggregate_anthropic_stream()` (Anthropic) to emit granular events
+- ✅ Updated all provider `rollout_*` functions to use `StreamEvent` type
+- ✅ Updated `RunConfig.on_chunk` signature
+- ✅ Updated `stdout_handler` to consume new events
+
+### In Progress
+- 🔄 Documentation updates
+- 🔄 Removing old StreamChunk references for LLM events
+
+### Remaining Work
+- ⏸️ Frontend/server.py updates (deferred - frontend not priority)
+- ⏸️ Evaluation.py event consumers
+- ⏸️ Test file updates
+
+### Breaking Changes Made
+- **Two-tier event system**: `StreamEvent` for LLM streaming, `StreamChunk` kept for lifecycle events (checkpoints, tool_result)
+- All LLM event consumers must update to handle new granular event types
+- No backward compatibility layer - clean break for better long-term maintenance
+
+---
+
 ## Overview
 
 This document outlines the plan to integrate core features from [pi-ai](https://github.com/badlogic/pi-mono/tree/main/packages/ai) into rollouts, making it a comprehensive one-stop-shop for running and training LLM agents.
