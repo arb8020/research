@@ -21,26 +21,34 @@ We're essentially translating the [pi-ai provider implementations](https://githu
 
 **Current Phase**: Phase 0.3 - Implement Remaining API Types ✅ **COMPLETE**
 
+**Latest Update (2025-12-03)**: Fixed critical bug in OpenAI Responses API reasoning item persistence
+
 **Next Phase**: Phase 1 - Additional Providers (Cerebras, xAI, OpenRouter) and Model Discovery Enhancements
 
 ### Completed (Phase 0.3 - Implement Remaining API Types)
-- ✅ Implemented `rollout_openai_responses()` for o1/o3 reasoning models
+- ✅ Implemented `rollout_openai_responses()` for o1/o3/GPT-5 reasoning models
 - ✅ Implemented `aggregate_openai_responses_stream()` for OpenAI Responses API event handling
 - ✅ Ported OpenAI Responses API logic from pi-ai TypeScript to Python
 - ✅ Implemented `rollout_google()` for Gemini models
 - ✅ Implemented `aggregate_google_stream()` for Google Generative AI streaming
 - ✅ Ported Google provider logic from pi-ai TypeScript to Python
-- ✅ Added o1 and o1-mini models to model registry
+- ✅ Added o1, o1-mini, gpt-5.1-codex, gpt-5.1-codex-mini to model registry
 - ✅ Added gemini-2.0-flash-exp, gemini-1.5-pro, gemini-1.5-flash to model registry
 - ✅ Registered both API types in `_PROVIDER_REGISTRY`
 - ✅ Added `google-genai>=1.0.0` dependency to pyproject.toml
 - ✅ Created `test_openai_o1_agent()` in test_real_agent.py
 - ✅ Created `test_google_gemini_agent()` in test_real_agent.py
+- ✅ Created `test_openai_responses_api()` in test_real_agent.py
 - ✅ All 4 API types now implemented and tested
+- ✅ **Fixed critical bug**: Reasoning item persistence for GPT-5 Codex models
+  - Set `reasoning=True` for GPT-5 Codex models in model registry
+  - Store reasoning items as JSON in `thinking_signature` field
+  - Re-submit reasoning items when converting messages back to API format
+  - Only include non-null fields in reasoning items (except required `summary` field)
 
 ### API Coverage Status (Updated)
 - ✅ **openai-completions** - Implemented via `rollout_openai()`, tested with OpenAI + Groq
-- ✅ **openai-responses** - Implemented via `rollout_openai_responses()`, ready for o1/o3 testing
+- ✅ **openai-responses** - Implemented via `rollout_openai_responses()`, **TESTED with GPT-5.1-Codex-Mini** ✅
 - ✅ **anthropic-messages** - Implemented via `rollout_anthropic()`, tested with Anthropic
 - ✅ **google-generative-ai** - Implemented via `rollout_google()`, ready for Gemini testing
 
@@ -244,6 +252,76 @@ This document outlines the plan to integrate core features from [pi-ai](https://
 - ✅ Each API type proven to work end-to-end
 
 **Estimated effort**: 2-3 days
+
+---
+
+### Phase 1: Additional Providers and Model Discovery (NEXT - 3-5 days)
+
+**Goal**: Add more OpenAI-compatible providers (Cerebras, xAI, OpenRouter) and enhance model discovery.
+
+**Priority**:
+1. **Cerebras** (HIGH) - Extremely fast inference, OpenAI-compatible
+2. **xAI** (MEDIUM) - Grok models, OpenAI-compatible
+3. **OpenRouter** (MEDIUM) - Access to many models through one API
+4. **Model Discovery Enhancements** (LOW) - Better introspection and documentation
+
+#### Task 1: Add Cerebras Provider (1 day)
+
+**Reference**: [pi-ai providers](https://github.com/badlogic/pi-mono/tree/main/packages/ai/src/providers)
+
+**Implementation**:
+1. Add Cerebras models to `models.py` registry:
+   - `llama-3.3-70b` (extremely fast)
+   - Map to `openai-completions` API type
+2. Add `cerebras` to `PROVIDER_API_MAP` in `models.py`
+3. Test with real API - should work via `rollout_openai()` automatically
+4. Add `test_cerebras_agent()` to `test_real_agent.py`
+
+**No code changes needed** - just registry updates!
+
+#### Task 2: Add xAI Provider (1 day)
+
+**Implementation**:
+1. Add xAI models to `models.py` registry:
+   - `grok-beta` or latest Grok model
+   - Map to `openai-completions` API type
+2. Add `xai` to `PROVIDER_API_MAP`
+3. Test with real API
+4. Add `test_xai_agent()` to `test_real_agent.py`
+
+#### Task 3: Add OpenRouter Provider (1 day)
+
+**Implementation**:
+1. Add popular OpenRouter models to `models.py`:
+   - Can proxy many models (OpenAI, Anthropic, Google, etc.)
+   - Map to `openai-completions` API type
+2. Add `openrouter` to `PROVIDER_API_MAP`
+3. Test with real API
+4. Add `test_openrouter_agent()` to `test_real_agent.py`
+
+#### Task 4: Model Discovery Enhancements (1-2 days)
+
+**Goal**: Make it easy to discover available models and their capabilities
+
+**Implementation**:
+1. Add `list_models()` CLI command to print available providers and models
+2. Add filtering functions:
+   - `get_models_by_capability(reasoning=True)` - Find all reasoning models
+   - `get_models_by_provider(provider)` - Find all models from a provider
+   - `get_cheapest_models()` - Sort by cost
+3. Add model metadata to model registry:
+   - Release dates
+   - Deprecation warnings
+   - Recommended use cases
+4. Update documentation with model comparison table
+
+#### Success Criteria for Phase 1
+- ✅ Cerebras, xAI, OpenRouter providers working
+- ✅ Tests for all new providers in `test_real_agent.py`
+- ✅ Model discovery functions implemented
+- ✅ Documentation updated with provider comparison
+
+**Estimated effort**: 3-5 days
 
 ---
 
