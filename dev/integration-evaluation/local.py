@@ -10,13 +10,13 @@ Pattern matches wafer_stuff/clicker/run_eval.py but adapted for Prime integratio
 """
 
 import argparse
-import trio
 import importlib.util
-import sys
 import logging
-from pathlib import Path
+import sys
 from dataclasses import replace
+from pathlib import Path
 
+import trio
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -28,7 +28,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "rollouts"))
 
 from rollouts.evaluation import evaluate
 from rollouts.integrations.prime import prime_reward_fn
-from rollouts.dtypes import Message
 from rollouts.logging_utils import init_rollout_logging
 
 # Import verifiers for loading Prime Hub environments
@@ -68,7 +67,7 @@ async def run_evaluation(config_path: Path, result_dir: Path):
     prepare_messages = config_module.prepare_messages
     create_environment = config_module.create_environment
 
-    logger.info(f"🎯 Configuration loaded")
+    logger.info("🎯 Configuration loaded")
     logger.info(f"   Model: {config.model_name}")
     logger.info(f"   Environment: {config.env_name}")
     logger.info(f"   Samples: {config.num_samples}")
@@ -111,12 +110,12 @@ async def run_evaluation(config_path: Path, result_dir: Path):
     logger.info(f"   Max turns: {prime_env.max_turns}")
 
     # Create reward function from Prime environment
-    logger.info(f"\n🏆 Creating reward function from Prime rubric")
+    logger.info("\n🏆 Creating reward function from Prime rubric")
     reward_fn = prime_reward_fn(prime_env)
 
     # Use Prime dataset directly (no conversion needed - prepare_messages handles format)
     # Some environments use 'dataset', others use 'eval_dataset'
-    logger.info(f"\n📊 Using Prime dataset")
+    logger.info("\n📊 Using Prime dataset")
     if hasattr(prime_env, 'dataset') and prime_env.dataset is not None:
         rollouts_dataset = list(prime_env.dataset)
     elif hasattr(prime_env, 'eval_dataset') and prime_env.eval_dataset is not None:
@@ -136,9 +135,9 @@ async def run_evaluation(config_path: Path, result_dir: Path):
     async def environment_factory(sample_data):
         return await create_environment(prime_env, sample_data)
 
-    logger.info(f"\n🚀 Starting evaluation")
+    logger.info("\n🚀 Starting evaluation")
     logger.info(f"   Output dir: {result_dir}")
-    logger.info("="*50)
+    logger.info("=" * 50)
 
     # Run evaluation within trio_asyncio loop context
     # This allows all Prime API calls to share the same event loop
@@ -160,11 +159,11 @@ async def run_evaluation(config_path: Path, result_dir: Path):
                 prime_env.cleanup_sandboxes()
 
     # Print detailed results
-    logger.info("\n" + "="*50)
+    logger.info("\n" + "=" * 50)
     logger.info("📊 EVALUATION RESULTS")
-    logger.info("="*50)
+    logger.info("=" * 50)
     logger.info(f"Total samples: {report.total_samples}")
-    logger.info(f"\nOverall Reward Statistics:")
+    logger.info("\nOverall Reward Statistics:")
     logger.info(f"  Mean reward: {report.summary_metrics['mean_reward']:.3f}")
     logger.info(f"  Min reward: {report.summary_metrics['min_reward']:.3f}")
     logger.info(f"  Max reward: {report.summary_metrics['max_reward']:.3f}")
@@ -182,13 +181,13 @@ async def run_evaluation(config_path: Path, result_dir: Path):
                     all_prime_metrics[metric_name].append(metric_value)
 
         if all_prime_metrics:
-            logger.info(f"\nAggregate Prime Metrics:")
+            logger.info("\nAggregate Prime Metrics:")
             for metric_name, values in all_prime_metrics.items():
                 mean_val = sum(values) / len(values)
                 logger.info(f"  Mean {metric_name}: {mean_val:.3f}")
 
     # Show sample-level details
-    logger.info(f"\n📝 Sample-level results:")
+    logger.info("\n📝 Sample-level results:")
     for i, sample in enumerate(report.sample_results[:5]):  # Show first 5
         logger.info(f"\n{sample.sample_id}:")
         logger.info(f"  Reward: {sample.metrics['reward']:.3f}")
@@ -209,12 +208,12 @@ async def run_evaluation(config_path: Path, result_dir: Path):
             answer_preview = str(parsed_answer)[:100]
             logger.info(f"  Parsed answer: {answer_preview}...")
         else:
-            logger.info(f"  Parsed answer: None")
+            logger.info("  Parsed answer: None")
 
         # Show Prime metrics (useful for backend-bench: correctness, performance, etc.)
         prime_metrics = sample.trajectory.metadata.get('prime_metrics', {})
         if prime_metrics:
-            logger.info(f"  Prime metrics:")
+            logger.info("  Prime metrics:")
             for metric_name, metric_value in prime_metrics.items():
                 if isinstance(metric_value, float):
                     logger.info(f"    {metric_name}: {metric_value:.3f}")

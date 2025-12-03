@@ -23,10 +23,10 @@ Usage:
     summary = ncu.summarize_kernels(ncu.analyze_kernel_performance(df))
 """
 
-import pandas as pd
-from pathlib import Path
-from typing import Optional
 import sys
+from pathlib import Path
+
+import pandas as pd
 
 
 def load_ncu_csv(path: Path | str) -> tuple[pd.DataFrame, None] | tuple[None, str]:
@@ -54,7 +54,7 @@ def load_ncu_csv(path: Path | str) -> tuple[pd.DataFrame, None] | tuple[None, st
     try:
         # NCU CSV has ==PROF== header lines we need to skip
         # Find the first line that starts with "ID" (header line)
-        with open(path, 'r') as f:
+        with open(path) as f:
             lines = f.readlines()
 
         header_idx = None
@@ -296,9 +296,9 @@ def main():
         print(f"❌ Error: {err}", file=sys.stderr)
         return 1
 
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print(f"NCU ANALYSIS: {args.ncu_csv.name}")
-    print(f"{'='*80}\n")
+    print(f"{'=' * 80}\n")
 
     # Analyze performance
     perf_df = analyze_kernel_performance(df)
@@ -306,14 +306,14 @@ def main():
 
     if 'duration_ns' in perf_df.columns:
         total_us = perf_df['duration_ns'].sum() / 1000.0
-        print(f"Total GPU time: {total_us:.3f} μs ({total_us/1000:.3f} ms)")
+        print(f"Total GPU time: {total_us:.3f} μs ({total_us / 1000:.3f} ms)")
 
     # Summarize by kernel
     summary = summarize_kernels(perf_df)
     if not summary.empty:
-        print(f"\n{'='*80}")
+        print(f"\n{'=' * 80}")
         print("KERNEL SUMMARY (by total time)")
-        print(f"{'='*80}\n")
+        print(f"{'=' * 80}\n")
 
         # Prepare display columns
         display_summary = summary.head(15).copy()
@@ -344,9 +344,9 @@ def main():
     # Find bottlenecks
     bottlenecks = find_bottlenecks(perf_df, top_n=10)
     if not bottlenecks.empty:
-        print(f"\n{'='*80}")
+        print(f"\n{'=' * 80}")
         print("PERFORMANCE BOTTLENECKS")
-        print(f"{'='*80}\n")
+        print(f"{'=' * 80}\n")
 
         for _, row in bottlenecks.iterrows():
             kernel_name = row['Kernel Name'][:70]
@@ -363,9 +363,9 @@ def main():
     # Compare if requested
     if args.compare:
         if args.compare.exists():
-            print(f"\n{'='*80}")
+            print(f"\n{'=' * 80}")
             print("COMPARISON")
-            print(f"{'='*80}\n")
+            print(f"{'=' * 80}\n")
 
             comparison, err = compare_backends(args.ncu_csv, args.compare)
             if err:
@@ -379,9 +379,9 @@ def main():
 
                 speedup = comparison['speedup']
                 if speedup > 1:
-                    print(f"Speedup: {speedup:.3f}x ({(speedup-1)*100:.1f}% faster)")
+                    print(f"Speedup: {speedup:.3f}x ({(speedup - 1) * 100:.1f}% faster)")
                 elif speedup < 1 and speedup > 0:
-                    print(f"Slowdown: {1/speedup:.3f}x ({(1-speedup)*100:.1f}% slower)")
+                    print(f"Slowdown: {1 / speedup:.3f}x ({(1 - speedup) * 100:.1f}% slower)")
 
                 if 'baseline_avg_sm_util' in comparison:
                     print(f"\nBaseline avg SM utilization: {comparison['baseline_avg_sm_util']:.1f}%")

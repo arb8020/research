@@ -4,29 +4,29 @@
 Tests if eval questions are OOD (out-of-distribution).
 """
 
-import csv
-import json
-import logging
-import numpy as np
-from pathlib import Path
-from typing import List, Dict, Optional
-from dataclasses import dataclass
-
-from sentence_transformers import SentenceTransformer
-from datasets import load_dataset
 import asyncio
+import csv
+import logging
 import os
+from dataclasses import dataclass
+from pathlib import Path
 
-from config import Config
-from rollout import GSM8KSample, Endpoint, generate
-from corpus import (
-    NANOCHAT_PRETRAIN, SMOLTALK, MMLU_AUX_TRAIN, GSM8K_TRAIN,
-    ARC_EASY_TRAIN, ARC_CHALLENGE_TRAIN, sample_corpus
-)
+import numpy as np
 from chunking import chunk_text
-from search import (
-    TrainingCorpus, search, cosine_distance, euclidean_distance, manhattan_distance
+from config import Config
+from corpus import (
+    ARC_CHALLENGE_TRAIN,
+    ARC_EASY_TRAIN,
+    GSM8K_TRAIN,
+    MMLU_AUX_TRAIN,
+    NANOCHAT_PRETRAIN,
+    SMOLTALK,
+    sample_corpus,
 )
+from datasets import load_dataset
+from rollout import Endpoint, GSM8KSample, generate
+from search import TrainingCorpus, cosine_distance, euclidean_distance, manhattan_distance
+from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ class SimilarityResult:
     rank: int  # 1 to k (1=closest)
 
 
-def load_corpus_chunks(config: Config) -> Dict[str, List[str]]:
+def load_corpus_chunks(config: Config) -> dict[str, list[str]]:
     """Load and chunk corpus from each training stage.
 
     Following Casey Muratori: Explicit about what corpora go in each stage.
@@ -54,9 +54,9 @@ def load_corpus_chunks(config: Config) -> Dict[str, List[str]]:
         Dict mapping stage -> list of text chunks
         {"pretrain": [...], "midtrain": [...], "sft": [...]}
     """
-    logger.info("="*80)
+    logger.info("=" * 80)
     logger.info("Loading corpus chunks")
-    logger.info("="*80)
+    logger.info("=" * 80)
 
     chunks = {}
     sim_config = config.similarity
@@ -127,15 +127,15 @@ def load_corpus_chunks(config: Config) -> Dict[str, List[str]]:
     chunks["sft"] = sft_chunks
     logger.info(f"  SFT: {len(sft_chunks)} chunks")
 
-    logger.info("="*80 + "\n")
+    logger.info("=" * 80 + "\n")
     return chunks
 
 
 def embed_corpus(
-    chunks: Dict[str, List[str]],
+    chunks: dict[str, list[str]],
     model: SentenceTransformer,
     cache_dir: Path
-) -> Dict[str, TrainingCorpus]:
+) -> dict[str, TrainingCorpus]:
     """Embed corpus chunks and cache to disk.
 
     Following Casey Muratori: Cache expensive operations.
@@ -148,9 +148,9 @@ def embed_corpus(
     Returns:
         Dict mapping stage -> TrainingCorpus (with embeddings)
     """
-    logger.info("="*80)
+    logger.info("=" * 80)
     logger.info("Embedding corpus chunks")
-    logger.info("="*80)
+    logger.info("=" * 80)
 
     cache_dir.mkdir(parents=True, exist_ok=True)
     corpora = {}
@@ -193,11 +193,11 @@ def embed_corpus(
 
         logger.info(f"  {stage}: {embeddings.shape}")
 
-    logger.info("="*80 + "\n")
+    logger.info("=" * 80 + "\n")
     return corpora
 
 
-def load_gsm8k_samples(num_samples: int, split: str = "test") -> List[Dict]:
+def load_gsm8k_samples(num_samples: int, split: str = "test") -> list[dict]:
     """Load GSM8K test samples.
 
     Args:
@@ -207,9 +207,9 @@ def load_gsm8k_samples(num_samples: int, split: str = "test") -> List[Dict]:
     Returns:
         List of dicts with 'question' and 'answer' keys
     """
-    logger.info("="*80)
+    logger.info("=" * 80)
     logger.info(f"Loading GSM8K {split} samples")
-    logger.info("="*80)
+    logger.info("=" * 80)
 
     dataset = load_dataset("openai/gsm8k", "main", split=split)
     dataset = dataset.select(range(min(num_samples, len(dataset))))  # type: ignore
@@ -226,15 +226,15 @@ def load_gsm8k_samples(num_samples: int, split: str = "test") -> List[Dict]:
         })
 
     logger.info(f"Loaded {len(samples)} GSM8K samples")
-    logger.info("="*80 + "\n")
+    logger.info("=" * 80 + "\n")
     return samples
 
 
 def embed_gsm8k_samples(
-    samples: List[Dict],
+    samples: list[dict],
     model: SentenceTransformer,
-    model_answers: Optional[List[str]] = None
-) -> Dict[str, np.ndarray]:
+    model_answers: list[str] | None = None
+) -> dict[str, np.ndarray]:
     """Embed GSM8K samples in 3-4 variants.
 
     Args:
@@ -252,9 +252,9 @@ def embed_gsm8k_samples(
         }
     """
     num_variants = 3 + (1 if model_answers else 0)
-    logger.info("="*80)
+    logger.info("=" * 80)
     logger.info(f"Embedding GSM8K samples ({num_variants} variants)")
-    logger.info("="*80)
+    logger.info("=" * 80)
 
     variants = {}
 
@@ -298,14 +298,14 @@ def embed_gsm8k_samples(
             convert_to_numpy=True
         )
 
-    logger.info("="*80 + "\n")
+    logger.info("=" * 80 + "\n")
     return variants
 
 
 def generate_model_answers(
-    samples: List[Dict],
+    samples: list[dict],
     config: Config
-) -> List[str]:
+) -> list[str]:
     """Generate model answers for GSM8K samples using inference API.
 
     Uses asyncio.to_thread to avoid async spreading through the codebase.
@@ -317,9 +317,9 @@ def generate_model_answers(
     Returns:
         List of model-generated answer strings
     """
-    logger.info("="*80)
+    logger.info("=" * 80)
     logger.info("Generating model answers (requires API calls)")
-    logger.info("="*80)
+    logger.info("=" * 80)
     logger.info(f"Model: {config.similarity.model_name}")
     logger.info(f"API: {config.similarity.model_api_base}")
     logger.info(f"Temperature: {config.similarity.model_temperature}")
@@ -347,7 +347,7 @@ def generate_model_answers(
         model_answers = []
 
         for i, sample in enumerate(samples):
-            logger.info(f"Generating answer {i+1}/{len(samples)}...")
+            logger.info(f"Generating answer {i + 1}/{len(samples)}...")
 
             # Convert to GSM8KSample and then to Rollout
             gsm8k_sample = GSM8KSample(
@@ -372,22 +372,21 @@ def generate_model_answers(
 
     # Run async code without spreading async through the codebase
     # asyncio.to_thread runs the coroutine in a thread pool
-    import asyncio
     model_answers = asyncio.run(generate_all())
 
     logger.info(f"\nGenerated {len(model_answers)} model answers")
-    logger.info("="*80 + "\n")
+    logger.info("=" * 80 + "\n")
     return model_answers
 
 
 def search_all(
-    samples: List[Dict],
-    gsm8k_embeddings: Dict[str, np.ndarray],
-    corpora: Dict[str, TrainingCorpus],
+    samples: list[dict],
+    gsm8k_embeddings: dict[str, np.ndarray],
+    corpora: dict[str, TrainingCorpus],
     model: SentenceTransformer,
     k: int,
     distance_metric: str
-) -> List[SimilarityResult]:
+) -> list[SimilarityResult]:
     """Search all variants against all corpus stages.
 
     Args:
@@ -401,9 +400,9 @@ def search_all(
     Returns:
         List of SimilarityResult objects
     """
-    logger.info("="*80)
+    logger.info("=" * 80)
     logger.info("Searching all variants against all corpus stages")
-    logger.info("="*80)
+    logger.info("=" * 80)
 
     # Select distance function
     distance_fns = {
@@ -453,20 +452,20 @@ def search_all(
         logger.info(f"  Processed {len(samples)} samples\n")
 
     logger.info(f"Total results: {len(all_results)}")
-    logger.info("="*80 + "\n")
+    logger.info("=" * 80 + "\n")
     return all_results
 
 
-def save_results(results: List[SimilarityResult], output_path: Path):
+def save_results(results: list[SimilarityResult], output_path: Path):
     """Save results to CSV.
 
     Args:
         results: List of SimilarityResult objects
         output_path: Path to output CSV file
     """
-    logger.info("="*80)
+    logger.info("=" * 80)
     logger.info(f"Saving results to {output_path}")
-    logger.info("="*80)
+    logger.info("=" * 80)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -495,12 +494,12 @@ def save_results(results: List[SimilarityResult], output_path: Path):
             ])
 
     logger.info(f"Saved {len(results)} results")
-    logger.info("="*80 + "\n")
+    logger.info("=" * 80 + "\n")
 
 
 def main():
-    import sys
     import importlib.util
+    import sys
 
     # Setup logging
     logging.basicConfig(
@@ -518,20 +517,20 @@ def main():
             raise ImportError(f"Spec has no loader: {sys.argv[1]}")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        config: Config = getattr(module, "config")
+        config: Config = module.config
     else:
         # Use default config
         config = Config()
 
-    logger.info("\n" + "="*80)
+    logger.info("\n" + "=" * 80)
     logger.info("GSM8K Corpus Similarity Measurement")
-    logger.info("="*80)
+    logger.info("=" * 80)
     logger.info(f"Samples: {config.similarity.num_gsm8k_samples}")
     logger.info(f"Corpus sizes: {config.similarity.corpus_sizes}")
     logger.info(f"Chunking: {config.similarity.chunking_strategy}")
     logger.info(f"Distance: {config.similarity.distance_metric}")
     logger.info(f"k neighbors: {config.similarity.k_neighbors}")
-    logger.info("="*80 + "\n")
+    logger.info("=" * 80 + "\n")
 
     try:
         # Load model
@@ -579,19 +578,19 @@ def main():
 
         # Summary
         num_variants = len(gsm8k_embeddings)
-        logger.info("="*80)
+        logger.info("=" * 80)
         logger.info("SUMMARY")
-        logger.info("="*80)
+        logger.info("=" * 80)
         logger.info(f"GSM8K samples: {len(gsm8k_samples)}")
         variant_list = list(gsm8k_embeddings.keys())
         logger.info(f"Variants per sample: {num_variants} ({', '.join(variant_list)})")
         if model_answers:
-            logger.info(f"  (includes model-generated answers)")
+            logger.info("  (includes model-generated answers)")
         logger.info(f"Corpus stages: {list(corpora.keys())}")
         logger.info(f"Results per sample: {config.similarity.k_neighbors * num_variants * len(corpora)}")
         logger.info(f"Total results: {len(results)}")
         logger.info(f"Output: {output_path}")
-        logger.info("="*80)
+        logger.info("=" * 80)
 
         logger.info("\nDone!")
         return 0

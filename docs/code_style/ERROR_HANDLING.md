@@ -4,6 +4,124 @@
 
 ---
 
+## Quick Decision Guide
+
+When you're unsure which error handling pattern to use, follow this flowchart:
+
+```
+Is this a programmer error (bug in my code)?
+  YES → assert
+  NO ↓
+
+Is this input validation at a system boundary?
+  YES → raise exception (parse, validate, fail fast)
+  NO ↓
+
+Can the caller meaningfully recover or retry?
+  YES → tuple return (result, error) or Result type
+  NO → raise exception
+```
+
+### The Three Patterns
+
+| Pattern | When to Use | Example |
+|---------|-------------|---------|
+| **`assert`** | Invariants that should never fail if code is correct | `assert len(items) > 0` |
+| **`raise Exception`** | Precondition violations, invalid input at boundaries, infrastructure failures | `raise ConfigNotFoundError(path)` |
+| **`(result, error)` tuple** | Operational failures where caller decides how to handle | `return None, "SSH connection failed"` |
+
+### Assertions - Internal Invariants
+
+```python
+# "This should never be false if my code is correct"
+def process_batch(items: list[Item]) -> list[Result]:
+    assert items is not None, "items cannot be None"
+    assert len(items) > 0, "items cannot be empty"
+    # ... proceed knowing invariants hold
+```
+
+**Use when:** Inside your trusted code boundary, after parsing. If these fire, it's a bug in YOUR code.
+
+### Exceptions - Boundary Violations
+
+```python
+# "You gave me garbage, I refuse to continue"
+def load_config(config_path: Path) -> Config:
+    if not config_path.exists():
+        raise ConfigNotFoundError(str(config_path))
+    # ...
+```
+
+**Use when:**
+- Invalid input at system boundaries (user input, config files, CLI args)
+- Infrastructure failures (missing files, import errors, CUDA unavailable)
+- Contract violations that prevent ANY meaningful work
+
+### Tuple Returns - Operational Failures
+
+```python
+# "This might fail and that's okay, caller decides what to do"
+async def connect_to_gpu(config: Config) -> tuple[Connection | None, str | None]:
+    # Network issues, GPU busy, timeout - all expected possibilities
+    if connection_failed:
+        return None, "GPU unreachable"
+    return connection, None
+```
+
+**Use when:**
+- Network/IO operations (SSH, HTTP, file sync)
+- Operations where retry/fallback makes sense
+- When you want to collect multiple errors before failing
+- When the caller has a meaningful recovery strategy
+
+### Same Error, Different Contexts
+
+The same "file not found" can warrant different handling:
+
+```python
+# Config file missing at startup → Exception
+# "You misconfigured the system, fix it and retry"
+def load_config(config_path: Path) -> Config:
+    if not config_path.exists():
+        raise ConfigNotFoundError(config_path)
+
+# SSH key missing during deployment → Tuple return
+# "Connection failed, maybe try a different server or key?"
+async def setup_ssh(key_path: Path) -> tuple[SSHClient | None, str | None]:
+    if not key_path.exists():
+        return None, f"SSH key not found: {key_path}"
+```
+
+The difference: config is a **precondition** (should be fixed before running), SSH key is an **operational issue** (might want to try alternatives, report to user, retry with different credentials).
+
+### Tuple Returns vs Result Types
+
+This codebase uses simple tuple returns `(result, error)` rather than full `Result` monads:
+
+```python
+# Simple tuple pattern (what we use)
+state, err = await setup_deployment(config)
+if err:
+    return None, err
+
+# Full Result monad (more ceremony, more power)
+result = setup_deployment(config).and_then(run_tests).and_then(save_results)
+```
+
+**Use simple tuples when:**
+- Linear control flow (not chaining many operations)
+- Team familiarity with Python idioms
+- Explicit `if err` checks are clear enough
+
+**Use full Result types when:**
+- Chaining many failable operations (railway-oriented)
+- Need `.map()`, `.and_then()`, `.unwrap_or()` combinators
+- Concurrent error collection with `asyncio.gather()`
+
+Both are valid. Simple tuples are more Pythonic; Result types are more composable.
+
+---
+
 ## The Problem with Defensive Exception Handling
 
 ### Defensive Code is Noise

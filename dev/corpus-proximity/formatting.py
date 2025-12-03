@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 from itertools import groupby
-from typing import List
 
 import numpy as np
-
-from annotation import AnnotatedOutput, ClusterAnnotation
+from annotation import AnnotatedOutput
 
 
 def format_annotations(annotated_output: AnnotatedOutput, show_chunks: bool = False) -> str:
     """Render annotations in a verbose "chess-engine" style."""
-    lines: List[str] = []
+    lines: list[str] = []
     lines.append("")
     lines.append("Model Output:")
     lines.append(f'"{annotated_output.text}"')

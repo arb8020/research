@@ -5,10 +5,11 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional
-import numpy as np
-import matplotlib.pyplot as plt
+
 import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
+
 matplotlib.use('Agg')
 
 
@@ -21,9 +22,9 @@ DENSE_MODELS = {
 }
 
 
-def extract_outliers_from_json(file_path: Path) -> Optional[List[Dict]]:
+def extract_outliers_from_json(file_path: Path) -> list[dict] | None:
     """Extract all_systematic_outliers from JSON file."""
-    with open(file_path, 'r') as f:
+    with open(file_path) as f:
         content = f.read(50_000_000)
 
     match = re.search(
@@ -40,7 +41,7 @@ def extract_outliers_from_json(file_path: Path) -> Optional[List[Dict]]:
     return outliers
 
 
-def calculate_outlier_metrics(outliers: List[Dict]) -> Dict:
+def calculate_outlier_metrics(outliers: list[dict]) -> dict:
     """Calculate aggregate metrics from outliers list."""
     if not outliers:
         return {'mean_layer_pct': 0.0, 'mean_seq_pct': 0.0}
@@ -54,11 +55,11 @@ def calculate_outlier_metrics(outliers: List[Dict]) -> Dict:
     }
 
 
-def extract_model_name_from_result(result_dir: Path) -> Optional[str]:
+def extract_model_name_from_result(result_dir: Path) -> str | None:
     """Extract model name from result directory."""
     outlier_file = result_dir / "final_analysis_results.json"
     if outlier_file.exists():
-        with open(outlier_file, 'r') as f:
+        with open(outlier_file) as f:
             content = f.read(10000)
         match = re.search(r'"model":\s*"([^"]+)"', content)
         if match:

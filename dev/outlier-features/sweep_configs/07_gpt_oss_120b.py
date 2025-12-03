@@ -5,8 +5,9 @@ Expected: SYSTEMATIC outliers (100% layer agreement, dimension 773).
 Runtime: ~50-70 minutes on 2-3xA100.
 """
 
-from pathlib import Path
 import sys
+from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import Config

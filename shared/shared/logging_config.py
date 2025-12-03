@@ -4,18 +4,17 @@ Tiger Style: Explicit configuration, bounded resources, fail-fast.
 Sean Goedecke: Boring, well-tested patterns (Python's logging module).
 """
 import logging.config
-import logging.handlers
 import os
-from typing import Any, Dict, Optional
+from typing import Any
 
 
 def setup_logging(
-    level: Optional[str] = None,
-    use_json: Optional[bool] = None,
-    use_rich: Optional[bool] = None,
-    use_color: Optional[bool] = None,
-    logger_levels: Optional[Dict[str, str]] = None,
-    log_file: Optional[str] = None,
+    level: str | None = None,
+    use_json: bool | None = None,
+    use_rich: bool | None = None,
+    use_color: bool | None = None,
+    logger_levels: dict[str, str] | None = None,
+    log_file: str | None = None,
     rich_tracebacks: bool = False,
     use_queue_handler: bool = True,
     max_log_bytes: int = 100_000_000,
@@ -149,7 +148,7 @@ def setup_logging(
         }
         handler_list = ["queue_handler"]  # Route all logs through queue
 
-    config: Dict[str, Any] = {
+    config: dict[str, Any] = {
         "version": 1,
         "disable_existing_loggers": False,
         "formatters": formatters,

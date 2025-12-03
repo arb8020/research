@@ -5,12 +5,11 @@ Following Casey Muratori: Presentation layer that consumes raw data.
 No business logic here - just rendering.
 """
 
-import matplotlib.pyplot as plt
-import numpy as np
 from pathlib import Path
 from typing import Any
 
-from viz_data import OptimizationVizData, TrajectoryData, ContourData
+import matplotlib.pyplot as plt
+from viz_data import ContourData, OptimizationVizData, TrajectoryData
 
 
 def plot_loss_curve(

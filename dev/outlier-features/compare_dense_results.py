@@ -14,14 +14,13 @@ Usage:
     python compare_dense_results.py --terminal --format table  # Output as table only
 """
 
+import argparse
 import json
 import re
 import sys
-import argparse
 from pathlib import Path
-from typing import Dict, List, Optional
-import numpy as np
 
+import numpy as np
 
 # Dense model metadata with parameter counts
 MODEL_METADATA = {
@@ -68,7 +67,7 @@ MODEL_METADATA = {
 }
 
 
-def extract_outliers_from_json(file_path: Path) -> Optional[List[Dict]]:
+def extract_outliers_from_json(file_path: Path) -> list[dict] | None:
     """Extract all_systematic_outliers from JSON file.
 
     Handles truncated/incomplete JSON files by reading only the beginning
@@ -83,7 +82,7 @@ def extract_outliers_from_json(file_path: Path) -> Optional[List[Dict]]:
     """
     try:
         # Read first 100MB to handle larger dense model results
-        with open(file_path, 'r') as f:
+        with open(file_path) as f:
             content = f.read(100_000_000)
 
         # Try to extract all_systematic_outliers array using regex
@@ -117,10 +116,10 @@ def extract_outliers_from_json(file_path: Path) -> Optional[List[Dict]]:
         return None
 
 
-def extract_model_name_from_json(file_path: Path) -> Optional[str]:
+def extract_model_name_from_json(file_path: Path) -> str | None:
     """Extract model name from JSON file's run_config."""
     try:
-        with open(file_path, 'r') as f:
+        with open(file_path) as f:
             # Read just the first few KB which contains run_config
             content = f.read(10000)
 
@@ -135,7 +134,7 @@ def extract_model_name_from_json(file_path: Path) -> Optional[str]:
     return None
 
 
-def calculate_metrics(outliers: List[Dict]) -> Dict[str, float]:
+def calculate_metrics(outliers: list[dict]) -> dict[str, float]:
     """Calculate aggregate metrics from outliers list.
 
     Args:
@@ -163,7 +162,7 @@ def calculate_metrics(outliers: List[Dict]) -> Dict[str, float]:
     }
 
 
-def collect_all_results(results_dir: Path) -> List[Dict]:
+def collect_all_results(results_dir: Path) -> list[dict]:
     """Collect metrics from all result directories.
 
     Args:
@@ -213,7 +212,7 @@ def collect_all_results(results_dir: Path) -> List[Dict]:
 
 
 def create_plot_matplotlib(
-    results: List[Dict],
+    results: list[dict],
     x_key: str,
     y_key: str,
     output_path: Path,
@@ -232,8 +231,8 @@ def create_plot_matplotlib(
         xlabel: X-axis label
         ylabel: Y-axis label
     """
-    import matplotlib.pyplot as plt
     import matplotlib
+    import matplotlib.pyplot as plt
     matplotlib.use('Agg')  # Non-interactive backend
 
     # Extract data
@@ -272,7 +271,7 @@ def create_plot_matplotlib(
 
 
 def create_plot_terminal(
-    results: List[Dict],
+    results: list[dict],
     x_key: str,
     y_key: str,
     title: str,
@@ -343,7 +342,7 @@ def create_plot_terminal(
     print()
 
 
-def generate_all_plots(results: List[Dict], output_dir: Optional[Path] = None, terminal: bool = False):
+def generate_all_plots(results: list[dict], output_dir: Path | None = None, terminal: bool = False):
     """Generate all 4 comparison plots for dense models.
 
     Args:
@@ -423,7 +422,7 @@ def generate_all_plots(results: List[Dict], output_dir: Optional[Path] = None, t
             )
 
 
-def print_summary_table(results: List[Dict], use_rich: bool = False):
+def print_summary_table(results: list[dict], use_rich: bool = False):
     """Print formatted summary table of all results.
 
     Args:
@@ -488,7 +487,7 @@ def print_summary_table(results: List[Dict], use_rich: bool = False):
     print("=" * 90)
 
 
-def output_csv(results: List[Dict]):
+def output_csv(results: list[dict]):
     """Output results as CSV format."""
     import csv
     import sys
@@ -505,7 +504,7 @@ def output_csv(results: List[Dict]):
         writer.writerow(r)
 
 
-def output_json(results: List[Dict]):
+def output_json(results: list[dict]):
     """Output results as JSON format."""
     import json
     print(json.dumps(results, indent=2))
@@ -563,7 +562,7 @@ def main():
         print_summary_table(results, use_rich=True)
         generate_all_plots(results, output_dir=output_dir, terminal=False)
         print(f"\n✅ Analysis complete! Plots saved to: {output_dir}")
-        print(f"   Total plots generated: 4")
+        print("   Total plots generated: 4")
 
     return 0
 

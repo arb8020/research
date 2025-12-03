@@ -4,16 +4,15 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from types import ModuleType
-from typing import Iterable, List, Optional
 
 import numpy as np
-
 from corpus_index import CorpusIndex
 
-syntok_segmenter: Optional[ModuleType] = None
+syntok_segmenter: ModuleType | None = None
 try:
     from syntok import segmenter as syntok_segmenter  # type: ignore
 except ModuleNotFoundError:
@@ -33,19 +32,19 @@ class ClusterAnnotation:
     cluster_depth: int
     distance: float
     rank: int
-    corpus_stage: Optional[str]
+    corpus_stage: str | None
     nearest_chunk_idx: int
     nearest_chunk_text: str
-    avg_logprob: Optional[float] = None
+    avg_logprob: float | None = None
 
 
 @dataclass
 class AnnotatedOutput:
     """Full annotation bundle for a single model output."""
 
-    prompt: Optional[str]
+    prompt: str | None
     text: str
-    annotations: List[ClusterAnnotation]
+    annotations: list[ClusterAnnotation]
     timestamp: str
     corpus_index_path: str
     k: int
@@ -65,7 +64,7 @@ class AnnotatedOutput:
         }
 
     @classmethod
-    def from_dict(cls, payload: dict) -> "AnnotatedOutput":
+    def from_dict(cls, payload: dict) -> AnnotatedOutput:
         metadata = payload.get("annotation_metadata", {})
         annotations = [ClusterAnnotation(**item) for item in payload.get("annotations", [])]
         return cls(
@@ -82,19 +81,19 @@ class AnnotatedOutput:
 _warned_no_segmenter = False
 
 
-def _split_sentences_fallback(text: str) -> List[str]:
+def _split_sentences_fallback(text: str) -> list[str]:
     """Simple regex-based sentence splitter used when syntok is unavailable."""
     parts = re.split(r"(?<=[.!?])\s+", text.strip())
     return [part.strip() for part in parts if part.strip()]
 
 
-def split_into_sentences(text: str) -> List[str]:
+def split_into_sentences(text: str) -> list[str]:
     """Split text into sentence-like spans using syntok when available."""
     if not text.strip():
         return []
 
     if syntok_segmenter is not None:
-        sentences: List[str] = []
+        sentences: list[str] = []
         for paragraph in syntok_segmenter.analyze(text):  # type: ignore[attr-defined]
             for sentence in paragraph:
                 sentence_text = "".join(token.spacing + token.value for token in sentence).strip()
@@ -125,15 +124,15 @@ def annotate_text(
     *,
     k: int = 3,
     phrase_level: bool = True,
-    prompt: Optional[str] = None,
-    logprobs: Optional[Iterable[float]] = None,
+    prompt: str | None = None,
+    logprobs: Iterable[float] | None = None,
     nearest_chunk_preview_chars: int = 200,
 ) -> AnnotatedOutput:
     """Annotate text with nearest training corpus clusters."""
     assert k > 0, "k must be positive"
     assert nearest_chunk_preview_chars > 0, "Preview length must be positive"
 
-    phrases: List[str]
+    phrases: list[str]
     if phrase_level:
         phrases = split_into_sentences(text)
         if not phrases and text:
@@ -141,7 +140,7 @@ def annotate_text(
     else:
         phrases = [text] if text else []
 
-    annotations: List[ClusterAnnotation] = []
+    annotations: list[ClusterAnnotation] = []
 
     if not phrases:
         timestamp = datetime.now(timezone.utc).isoformat()

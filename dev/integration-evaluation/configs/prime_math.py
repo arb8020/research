@@ -9,15 +9,15 @@ The environment provides a Python sandbox where the model can execute code
 to solve math problems.
 """
 
-from pathlib import Path
 from dataclasses import dataclass
-from typing import Dict, Any, List
-import trio_asyncio
+from pathlib import Path
+from typing import Any
 
+import trio_asyncio
 from rollouts.dtypes import Endpoint, EvalConfig, Message, Tool, ToolFunction, ToolFunctionParameter
 
 
-def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
+def prepare_messages(sample_data: dict[str, Any]) -> list[Message]:
     """Prepare messages for math-python environment.
 
     math-python uses 'prompt' field as a list of message dicts.
@@ -123,7 +123,7 @@ class MathPythonEnvironment:
         self.state = initial_state
         self.messages = []
 
-    def get_tools(self) -> List[Tool]:
+    def get_tools(self) -> list[Tool]:
         """Return OpenAI-style tools from Prime environment.
 
         math-python provides oai_tools which we can convert to rollouts Tools.
@@ -165,6 +165,7 @@ class MathPythonEnvironment:
             ToolResult with execution result
         """
         import json
+
         from rollouts.dtypes import ToolResult
 
         try:
@@ -220,7 +221,7 @@ class MathPythonEnvironment:
                 error=str(e)
             )
 
-    async def add_message_and_get_response(self, message: Message) -> List[Message]:
+    async def add_message_and_get_response(self, message: Message) -> list[Message]:
         """Add assistant message and get environment response.
 
         For math-python, this is used when the agent sends a regular message

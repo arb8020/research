@@ -14,14 +14,14 @@ Shape suffixes (Shazeer convention):
   V: vocab_size
 """
 
+import sys
+from collections.abc import Callable
+from pathlib import Path
+
 import jax
 import jax.numpy as jnp
-import einops
-from typing import Dict, Callable
 from jax import Array
 
-import sys
-from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent.parent))
 from config import GPT2Config
 
@@ -54,8 +54,6 @@ def _validate_layer_norm_shapes(x_BTD: jnp.ndarray, gamma_D: jnp.ndarray, beta_D
     assert beta_D.shape[-1] == x_BTD.shape[-1]
 
 
-
-
 def gelu(x):
     """Hendrycks & Gimpel (2016) https://arxiv.org/abs/1606.08415"""
     cdf = 0.5 * (1.0 + jnp.tanh(
@@ -69,7 +67,7 @@ def gelu_new(x_BTD: Array) -> Array:
     return 0.5 * x_BTD * (1.0 + jnp.tanh(jnp.sqrt(2.0 / jnp.pi) * (x_BTD + 0.044715 * jnp.power(x_BTD, 3.0))))
 
 
-def project_and_embed(input_ids: jnp.ndarray, weights: Dict[str, Array], config: GPT2Config) -> jnp.ndarray:
+def project_and_embed(input_ids: jnp.ndarray, weights: dict[str, Array], config: GPT2Config) -> jnp.ndarray:
     """Radford et al. (2019) https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf"""
 
     projected_BLD = weights['wte.weight'][input_ids]
@@ -80,14 +78,14 @@ def project_and_embed(input_ids: jnp.ndarray, weights: Dict[str, Array], config:
     return projected_embedded_BLD
 
 
-def embedding_lookup(weights: Dict[str, Array], tokens: Array, weight_name: str) -> Array:
+def embedding_lookup(weights: dict[str, Array], tokens: Array, weight_name: str) -> Array:
     """Look up embeddings for tokens."""
     assert weight_name in weights
     assert len(tokens.shape) >= 1
     return weights[weight_name][tokens]
 
 
-def layer_norm(x_BTD: jnp.ndarray, weights: Dict[str, Array], weight_prefix: str, epsilon: float = 1e-5) -> jnp.ndarray:
+def layer_norm(x_BTD: jnp.ndarray, weights: dict[str, Array], weight_prefix: str, epsilon: float = 1e-5) -> jnp.ndarray:
     """Ba et al. (2016) https://arxiv.org/abs/1607.06450"""
     # Extract gamma and beta from weights
     gamma_D = weights[f"{weight_prefix}.weight"] if f"{weight_prefix}.weight" in weights else weights[weight_prefix]
@@ -110,7 +108,7 @@ def linear(x: jnp.ndarray, weight: jnp.ndarray, bias: jnp.ndarray) -> jnp.ndarra
     return x @ weight + bias
 
 
-def linear_transform(x: Array, weights: Dict[str, Array], weight_prefix: str) -> Array:
+def linear_transform(x: Array, weights: dict[str, Array], weight_prefix: str) -> Array:
     """Apply linear transformation: x @ W + b"""
     assert len(x.shape) >= 2
 
@@ -141,7 +139,7 @@ def ffn(x_BTD: jnp.ndarray,
     return output_BTD
 
 
-def mlp_block(x_BTD: Array, weights: Dict[str, Array], layer_idx: int) -> Array:
+def mlp_block(x_BTD: Array, weights: dict[str, Array], layer_idx: int) -> Array:
     """MLP block with GELU activation."""
     hidden_BTF = linear_transform(x_BTD, weights, f"h.{layer_idx}.mlp.c_fc")
     hidden_BTF = gelu_new(hidden_BTF)
@@ -149,7 +147,7 @@ def mlp_block(x_BTD: Array, weights: Dict[str, Array], layer_idx: int) -> Array:
     return output_BTD
 
 
-def multi_head_attention(x_BTD: Array, weights: Dict[str, Array], layer_idx: int, config: GPT2Config) -> Array:
+def multi_head_attention(x_BTD: Array, weights: dict[str, Array], layer_idx: int, config: GPT2Config) -> Array:
     """Multi-head self-attention.
 
     For GPT-2: N (num_query_heads) = K (num_kv_heads) since it's standard MHA, not GQA.

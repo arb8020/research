@@ -4,6 +4,7 @@ Simple JAX GPU test script.
 This script runs ON the remote GPU instance.
 """
 
+
 def main():
     print("=" * 60)
     print("JAX GPU Integration Test")
@@ -51,7 +52,7 @@ def main():
         # Force computation and transfer back
         result_value = result.block_until_ready()
 
-        print(f"   ✅ Matrix multiplication successful")
+        print("   ✅ Matrix multiplication successful")
         print(f"   Result shape: {result_value.shape}")
         print(f"   Result mean: {jnp.mean(result_value):.4f}")
 

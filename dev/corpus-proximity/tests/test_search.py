@@ -6,10 +6,9 @@ import logging
 import random
 from pathlib import Path
 
-from sentence_transformers import SentenceTransformer
-
-from search import load_training_corpus, search
 from config import Config
+from search import load_training_corpus, search
+from sentence_transformers import SentenceTransformer
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -17,11 +16,11 @@ logger = logging.getLogger(__name__)
 
 def test_known_sentence(corpus, model, chunks_path: Path):
     """Test that a sentence from the corpus returns itself as top result."""
-    logger.info("\n" + "="*80)
+    logger.info("\n" + "=" * 80)
     logger.info("Test 1: Known sentence (should return itself)")
-    logger.info("="*80)
+    logger.info("=" * 80)
 
-    with open(chunks_path, 'r') as f:
+    with open(chunks_path) as f:
         chunks = [json.loads(line) for line in f]
 
     valid_chunks = [c for c in chunks if len(c['text']) > 50]
@@ -46,9 +45,9 @@ def test_known_sentence(corpus, model, chunks_path: Path):
 
 def test_unknown_sentence(corpus, model):
     """Test with a sentence not in the corpus."""
-    logger.info("\n" + "="*80)
+    logger.info("\n" + "=" * 80)
     logger.info("Test 2: Unknown sentence (should have high distance)")
-    logger.info("="*80)
+    logger.info("=" * 80)
 
     query = "The purple elephant danced gracefully with a robotic unicorn under the moonlight."
     logger.info(f"Query: {query}\n")
@@ -67,8 +66,8 @@ def test_unknown_sentence(corpus, model):
 
 
 def main():
-    import sys
     import importlib.util
+    import sys
 
     if len(sys.argv) > 1 and sys.argv[1].endswith('.py'):
         spec = importlib.util.spec_from_file_location("exp_config", sys.argv[1])
@@ -78,7 +77,7 @@ def main():
             raise ImportError(f"Spec has no loader: {sys.argv[1]}")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        config: Config = getattr(module, "config")
+        config: Config = module.config
     else:
         config = Config()
 
@@ -95,10 +94,10 @@ def main():
     test1 = test_known_sentence(corpus, model, config.data.processed_dir / config.data.output_file)
     test2 = test_unknown_sentence(corpus, model)
 
-    logger.info("\n" + "="*80)
+    logger.info("\n" + "=" * 80)
     logger.info(f"Test 1: {'✅ PASS' if test1 else '❌ FAIL'}")
     logger.info(f"Test 2: {'✅ PASS' if test2 else '❌ FAIL'}")
-    logger.info("="*80)
+    logger.info("=" * 80)
 
     return 0 if (test1 and test2) else 1
 

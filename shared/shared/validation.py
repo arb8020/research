@@ -7,8 +7,6 @@ Each validator returns the validated/normalized value on success.
 
 import logging
 import os
-import stat
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 

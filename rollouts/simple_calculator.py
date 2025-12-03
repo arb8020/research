@@ -2,13 +2,22 @@
 """
 Simple calculator demo using the extracted agent framework
 """
-import trio
 import os
+
+import trio
+
 from rollouts import (
-    Endpoint, Actor, AgentState, RunConfig, stdout_handler,
-    Message, Trajectory, CalculatorEnvironment,
-    run_agent
+    Actor,
+    AgentState,
+    CalculatorEnvironment,
+    Endpoint,
+    Message,
+    RunConfig,
+    Trajectory,
+    run_agent,
+    stdout_handler,
 )
+
 
 async def main():
     # Set up API key
@@ -69,9 +78,9 @@ async def main():
     
     # Print summary
     final_state = states[-1]
-    print("\n" + "="*40)
+    print("\n" + "=" * 40)
     print("📊 Demo Summary")
-    print("="*40)
+    print("=" * 40)
     print(f"✅ Turns completed: {final_state.turn_idx}")
     # User handles type narrowing for their specific environment
     final_env = final_state.environment
@@ -81,6 +90,7 @@ async def main():
         print("✅ Task completed")
     if final_state.stop:
         print(f"🛑 Stopped because: {final_state.stop.value}")
+
 
 if __name__ == "__main__":
     trio.run(main)

@@ -4,8 +4,9 @@ Well-known MoE model for comparison.
 Runtime: ~20-25 minutes on 2xA100.
 """
 
-from pathlib import Path
 import sys
+from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import Config

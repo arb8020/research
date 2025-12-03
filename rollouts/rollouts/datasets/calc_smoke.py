@@ -5,12 +5,12 @@ Simple math problems for testing SGLang provider with calculator environment.
 
 import json
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Any
 
-from rollouts.dtypes import Trajectory, Message
+from rollouts.dtypes import Message, Trajectory
 
 
-def load_calc_smoke(data_path: Path) -> List[Dict[str, Any]]:
+def load_calc_smoke(data_path: Path) -> list[dict[str, Any]]:
     """Load calc_smoke dataset from JSONL file.
 
     Why JSONL: One problem per line, easy to append/inspect.
@@ -35,7 +35,7 @@ def load_calc_smoke(data_path: Path) -> List[Dict[str, Any]]:
     return problems
 
 
-def calc_smoke_to_trajectory(row: Dict[str, Any]) -> Trajectory:
+def calc_smoke_to_trajectory(row: dict[str, Any]) -> Trajectory:
     """Transform calc_smoke row to initial trajectory.
 
     Why Message format: Agent expects chat-style messages.

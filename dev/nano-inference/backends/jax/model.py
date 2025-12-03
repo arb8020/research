@@ -8,27 +8,24 @@ Shape suffixes (Shazeer convention):
   V: vocab_size
 """
 
-import jax.numpy as jnp
-from typing import Dict
-from jax import Array
-
 import sys
 from pathlib import Path
-sys.path.append(str(Path(__file__).parent.parent.parent))
-from config import GPT2Config
 
+import jax.numpy as jnp
+from jax import Array
+
+sys.path.append(str(Path(__file__).parent.parent.parent))
 from backends.jax.layers import (
-    project_and_embed,
     embedding_lookup,
     layer_norm,
-    multi_head_attention,
-    mlp_block,
     linear_transform,
-    gelu_new,
+    mlp_block,
+    multi_head_attention,
 )
+from config import GPT2Config
 
 
-def gpt2_extract_block_weights(layer_idx: int, weights: Dict[str, Array]) -> Dict[str, Array]:
+def gpt2_extract_block_weights(layer_idx: int, weights: dict[str, Array]) -> dict[str, Array]:
     """helper function to extract weights for a GPT2 block at given layer index"""
     return {
         'ln_1': {
@@ -62,7 +59,7 @@ def gpt2_extract_block_weights(layer_idx: int, weights: Dict[str, Array]) -> Dic
     }
 
 
-def transformer_block(x_BTD: Array, weights: Dict[str, Array], layer_idx: int, config: GPT2Config) -> Array:
+def transformer_block(x_BTD: Array, weights: dict[str, Array], layer_idx: int, config: GPT2Config) -> Array:
     """Single transformer block with attention and MLP."""
     assert layer_idx >= 0
     assert layer_idx < config.n_layers
@@ -78,7 +75,7 @@ def transformer_block(x_BTD: Array, weights: Dict[str, Array], layer_idx: int, c
     return x_BTD
 
 
-def gpt2_forward(input_ids_BT: Array, weights: Dict[str, Array], config: GPT2Config) -> Array:
+def gpt2_forward(input_ids_BT: Array, weights: dict[str, Array], config: GPT2Config) -> Array:
     """Forward pass through GPT-2.
 
     Returns: logits_BTV of shape (batch_size, seq_len, vocab_size)

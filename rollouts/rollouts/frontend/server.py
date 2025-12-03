@@ -24,8 +24,8 @@ import webbrowser
 from datetime import datetime
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
-from typing import Any, Optional
-from urllib.parse import parse_qs, urlparse
+from typing import Any
+from urllib.parse import urlparse
 
 # Configure logging
 logging.basicConfig(
@@ -730,7 +730,6 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         """Fetch available models from OpenAI and Anthropic APIs."""
         import os
         import urllib.request
-        import urllib.error
 
         models = []
         errors = []
@@ -1153,6 +1152,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             if has_placeholders:
                 # Use f-string - convert {field} to {sample_data.get('field', '')}
                 import re
+
                 def replace_placeholder(match):
                     field = match.group(1)
                     return f"{{sample_data.get('{field}', '')}}"
@@ -1652,9 +1652,9 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                 if result_dir_found and events_file and events_file.exists():
                     if events_file_handle is None:
                         # Open events file for reading
-                        events_file_handle = open(events_file, 'r')
+                        events_file_handle = open(events_file)
                         events_file_handle.seek(0, 2)  # Seek to end
-                        logger.debug(f"📄 Opened events.jsonl for tailing")
+                        logger.debug("📄 Opened events.jsonl for tailing")
 
                     # Read new lines from events.jsonl
                     event_line = events_file_handle.readline()
@@ -1803,16 +1803,16 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                 # Wait a bit, then force kill if still alive
                 time.sleep(0.5)
                 if process.poll() is None:
-                    logger.debug(f"Process still alive, force killing (SIGKILL)")
+                    logger.debug("Process still alive, force killing (SIGKILL)")
                     os.killpg(pgid, signal.SIGKILL)
                 else:
-                    logger.debug(f"Process terminated successfully")
+                    logger.debug("Process terminated successfully")
             else:
                 logger.debug(f"Process already terminated (exit code: {process.poll()})")
 
             # Release semaphore
             _run_semaphore.release()
-            logger.debug(f"Released semaphore")
+            logger.debug("Released semaphore")
 
             # Update status
             with _run_lock:
@@ -1906,12 +1906,12 @@ def main():
     server = HTTPServer(("localhost", args.port), DevLoopServer)
 
     url = f"http://localhost:{args.port}"
-    print(f"\n{'='*60}")
-    print(f"🚀 Agent Dev Loop Tool")
-    print(f"{'='*60}")
+    print(f"\n{'=' * 60}")
+    print("🚀 Agent Dev Loop Tool")
+    print(f"{'=' * 60}")
     print(f"URL: {url}")
     print(f"Project: {DevLoopServer.project_root}")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
     # Open browser
     if not args.no_browser:

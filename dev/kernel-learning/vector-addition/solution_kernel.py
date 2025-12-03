@@ -36,8 +36,8 @@
 #   1 &le; N &le; 100,000,000
 #
 
-import cutlass
 import cutlass.cute as cute
+
 
 # A, B, C are tensors on the GPU
 @cute.jit

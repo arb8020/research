@@ -14,28 +14,23 @@ All advanced features from the deprecated ssh_clients.py are now available:
 # Direct re-exports from shared foundation (simplified)
 
 # Import generic functions from shared foundation
-from shared.ssh_foundation import (
-    execute_command_sync as _execute_command_sync,
-    execute_command_async as _execute_command_async, 
-    execute_command_streaming as _execute_command_streaming,
-    start_interactive_ssh_session as _start_interactive_ssh_session,
-    test_ssh_connection as _test_ssh_connection
-)
+# Re-export enums for backward compatibility (create simple ones)
+from collections.abc import Callable
+from enum import Enum
 
 # Re-export core utilities (shared module already imported above)
-from shared.ssh_foundation import (
-    SSHConnectionInfo,
-    UniversalSSHClient,
-    secure_temp_ssh_key
-)
+from shared.ssh_foundation import SSHConnectionInfo, UniversalSSHClient, secure_temp_ssh_key
+from shared.ssh_foundation import execute_command_async as _execute_command_async
+from shared.ssh_foundation import execute_command_streaming as _execute_command_streaming
+from shared.ssh_foundation import execute_command_sync as _execute_command_sync
+from shared.ssh_foundation import start_interactive_ssh_session as _start_interactive_ssh_session
+from shared.ssh_foundation import test_ssh_connection as _test_ssh_connection
 
-# Re-export enums for backward compatibility (create simple ones)
-from enum import Enum
-from typing import Optional, Callable, Tuple
 
 class SSHMethod(Enum):
     """SSH connection methods - only direct SSH supported"""
     DIRECT = "direct"
+
 
 class SSHClient(Enum):
     """SSH client types"""
@@ -44,7 +39,7 @@ class SSHClient(Enum):
 
 
 # Broker-specific conversion utilities
-def _create_connection_info_from_gpu_instance(instance, private_key: Optional[str] = None, timeout: int = 30) -> SSHConnectionInfo:
+def _create_connection_info_from_gpu_instance(instance, private_key: str | None = None, timeout: int = 30) -> SSHConnectionInfo:
     """Create SSHConnectionInfo from broker GPUInstance
     
     Args:
@@ -75,7 +70,7 @@ def _create_connection_info_from_gpu_instance(instance, private_key: Optional[st
 
 
 # Broker-compatible wrapper functions
-def execute_command_sync(instance, private_key: Optional[str], command: str, timeout: int = 30) -> Tuple[int, str, str]:
+def execute_command_sync(instance, private_key: str | None, command: str, timeout: int = 30) -> tuple[int, str, str]:
     """Execute command synchronously using broker GPUInstance"""
     try:
         conn_info = _create_connection_info_from_gpu_instance(instance, private_key, timeout)
@@ -84,7 +79,7 @@ def execute_command_sync(instance, private_key: Optional[str], command: str, tim
         return -1, "", f"Broker sync execution failed: {e}"
 
 
-async def execute_command_async(instance, private_key: Optional[str], command: str, timeout: int = 30) -> Tuple[int, str, str]:
+async def execute_command_async(instance, private_key: str | None, command: str, timeout: int = 30) -> tuple[int, str, str]:
     """Execute command asynchronously using broker GPUInstance"""
     try:
         conn_info = _create_connection_info_from_gpu_instance(instance, private_key, timeout)
@@ -93,8 +88,8 @@ async def execute_command_async(instance, private_key: Optional[str], command: s
         return -1, "", f"Broker async execution failed: {e}"
 
 
-def execute_command_streaming(instance, command: str, private_key: Optional[str] = None, timeout: int = 30,
-                             output_callback: Optional[Callable[[str, bool], None]] = None) -> Tuple[int, str, str]:
+def execute_command_streaming(instance, command: str, private_key: str | None = None, timeout: int = 30,
+                             output_callback: Callable[[str, bool], None] | None = None) -> tuple[int, str, str]:
     """Execute command with streaming output using broker GPUInstance"""
     try:
         conn_info = _create_connection_info_from_gpu_instance(instance, private_key, timeout)
@@ -103,7 +98,7 @@ def execute_command_streaming(instance, command: str, private_key: Optional[str]
         return -1, "", f"Broker streaming execution failed: {e}"
 
 
-def start_interactive_ssh_session(instance, private_key_path: Optional[str] = None):
+def start_interactive_ssh_session(instance, private_key_path: str | None = None):
     """Start an interactive SSH session using broker GPUInstance
     
     Args:
@@ -120,7 +115,7 @@ def start_interactive_ssh_session(instance, private_key_path: Optional[str] = No
         raise
 
 
-def test_ssh_connection(instance, private_key: Optional[str] = None, test_both_clients: bool = True) -> Tuple[bool, str]:
+def test_ssh_connection(instance, private_key: str | None = None, test_both_clients: bool = True) -> tuple[bool, str]:
     """Test SSH connection using broker GPUInstance
     
     Args:
@@ -136,6 +131,7 @@ def test_ssh_connection(instance, private_key: Optional[str] = None, test_both_c
         return _test_ssh_connection(conn_info, test_both_clients)
     except Exception as e:
         return False, f"❌ Test setup failed: {e}"
+
 
 __all__ = [
     # Core execution functions

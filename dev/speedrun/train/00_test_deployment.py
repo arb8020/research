@@ -7,10 +7,10 @@ Should complete in <1 minute.
 
 # Check dependencies are installed
 try:
-    import torch
-    import torch.distributed as dist
     import huggingface_hub
     import numpy as np
+    import torch
+    import torch.distributed as dist
 except ImportError as e:
     print(f"✗ Missing dependency: {e}")
     print("\nInstalled packages:")

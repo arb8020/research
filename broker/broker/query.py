@@ -2,7 +2,7 @@
 Pandas-style query engine for GPU search and filtering
 """
 
-from typing import Any, List, Union
+from typing import Any, Union
 
 from .types import GPUOffer
 
@@ -25,7 +25,7 @@ class QueryField:
         """Field ends with string"""
         return QueryCondition(self.field_name, 'endswith', value)
     
-    def isin(self, values: List[Any]) -> 'QueryCondition':
+    def isin(self, values: list[Any]) -> 'QueryCondition':
         """Field value is in list"""
         return QueryCondition(self.field_name, 'isin', values)
     
@@ -107,7 +107,7 @@ class QueryCondition:
 class QueryExpression:
     """Boolean combination of conditions"""
     
-    def __init__(self, operator: str, conditions: List[Union[QueryCondition, 'QueryExpression']]):
+    def __init__(self, operator: str, conditions: list[Union[QueryCondition, 'QueryExpression']]):
         self.operator = operator
         self.conditions = conditions
     

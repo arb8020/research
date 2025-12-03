@@ -3,6 +3,7 @@ Example showing Phase 1 API changes - explicit credentials and SSH keys
 """
 
 import os
+
 from broker import GPUClient
 
 # Phase 1: Explicit credentials and SSH key (no auto-discovery)

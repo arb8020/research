@@ -14,8 +14,9 @@ References:
 import json
 import os
 import socket
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any
 
 
 @dataclass
@@ -104,7 +105,7 @@ class Worker:
         self.r = sock.makefile("r")
         self.w = sock.makefile("w")
 
-    def recv(self, max_size: int, timeout: Optional[float] = None) -> Any:
+    def recv(self, max_size: int, timeout: float | None = None) -> Any:
         """Receive message from worker (blocking).
 
         Args:

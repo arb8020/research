@@ -26,10 +26,10 @@ Tiger Style:
     - Can capture or pass-through stderr
     - Bounded: No infinite buffering
 """
-import sys
 import logging
-from typing import Optional, TextIO
+import sys
 from contextlib import contextmanager
+from typing import TextIO
 
 
 class PrintToLogger:
@@ -42,7 +42,7 @@ class PrintToLogger:
         self,
         logger: logging.Logger,
         level: int = logging.INFO,
-        original_stream: Optional[TextIO] = None,
+        original_stream: TextIO | None = None,
         also_print: bool = False,
     ):
         """Initialize print-to-logger adapter.
@@ -122,7 +122,7 @@ class PrintToLogger:
 
 @contextmanager
 def intercept_prints(
-    logger: Optional[logging.Logger] = None,
+    logger: logging.Logger | None = None,
     level: int = logging.INFO,
     intercept_stdout: bool = True,
     intercept_stderr: bool = False,

@@ -12,9 +12,10 @@ Status: STUB - Not yet implemented
 Estimated effort: ~1-2 days
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict
+from typing import Any
 
 import torch
 
@@ -83,33 +84,33 @@ class TorchFuncTrainingBackend:
             "See docs/D6_TRAINING_BACKEND.md for implementation plan."
         )
 
-    def forward_backward(self, batch: Dict[str, Any]) -> TrainFuture[Dict[str, float]]:
+    def forward_backward(self, batch: dict[str, Any]) -> TrainFuture[dict[str, float]]:
         """Compute loss and gradients (functional style).
 
         Uses torch.func.grad_and_value for JAX-style autodiff.
         """
         raise NotImplementedError("D6v2: Not yet implemented")
 
-    def optim_step(self) -> TrainFuture[Dict[str, float]]:
+    def optim_step(self) -> TrainFuture[dict[str, float]]:
         """Apply gradients (functional optimizer update)."""
         raise NotImplementedError("D6v2: Not yet implemented")
 
     async def save_checkpoint(
         self,
         step: int,
-        metrics: Dict[str, float] = {},
+        metrics: dict[str, float] = {},
     ) -> Path:
         """Save checkpoint (functional params as PyTorch state_dict)."""
         raise NotImplementedError("D6v2: Not yet implemented")
 
-    async def load_checkpoint(self, checkpoint_path: Path) -> Dict[str, Any]:
+    async def load_checkpoint(self, checkpoint_path: Path) -> dict[str, Any]:
         """Load checkpoint and restore functional params."""
         raise NotImplementedError("D6v2: Not yet implemented")
 
-    def get_weights(self) -> TrainFuture[Dict[str, Any]]:
+    def get_weights(self) -> TrainFuture[dict[str, Any]]:
         """Get model weights (convert tuple to state_dict)."""
         raise NotImplementedError("D6v2: Not yet implemented")
 
-    def load_weights(self, weights: Dict[str, Any]) -> TrainFuture[None]:
+    def load_weights(self, weights: dict[str, Any]) -> TrainFuture[None]:
         """Load weights (convert state_dict to tuple)."""
         raise NotImplementedError("D6v2: Not yet implemented")

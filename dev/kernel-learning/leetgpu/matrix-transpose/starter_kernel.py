@@ -1,5 +1,5 @@
-import cutlass
 import cutlass.cute as cute
+
 
 # input, output are tensors on the GPU
 @cute.jit

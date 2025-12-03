@@ -22,10 +22,12 @@ Environment variables:
 import argparse
 import logging
 import os
+
 from dotenv import load_dotenv
-from broker import GPUClient
 from shared.config import get_lambda_key
 from shared.logging_config import setup_logging
+
+from broker import GPUClient
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -89,7 +91,7 @@ def wait_for_ssh(instance, timeout=900):
     if not ssh_ready:
         raise RuntimeError("SSH did not become ready within timeout")
 
-    logger.info(f"✅ SSH ready!")
+    logger.info("✅ SSH ready!")
     logger.info(f"   IP: {instance.public_ip}")
     logger.info(f"   Port: {instance.ssh_port}")
     logger.info(f"   Username: {instance.ssh_username}")

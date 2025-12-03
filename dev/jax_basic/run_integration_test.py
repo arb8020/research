@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 
 import argparse
-import os
 import logging
+import os
 from typing import Literal, TypeAlias
-from dotenv import load_dotenv
-from broker import GPUClient, CloudType
+
 from broker.client import ClientGPUInstance
-from bifrost import BifrostClient
-from shared.config import get_runpod_key, get_prime_key, get_lambda_key, get_vast_key
+from dotenv import load_dotenv
+from shared.config import get_lambda_key, get_prime_key, get_runpod_key, get_vast_key
 from shared.logging_config import setup_logging
+
+from bifrost import BifrostClient
+from broker import CloudType, GPUClient
 
 load_dotenv()
 logger = logging.getLogger(__name__)

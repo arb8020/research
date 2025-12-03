@@ -53,7 +53,7 @@ def test_basic_gpu_computation():
         y = jax.random.normal(key, (1000, 1000))
         result = jnp.matmul(x, y).block_until_ready()
 
-        print(f"   ✅ Matrix multiplication successful")
+        print("   ✅ Matrix multiplication successful")
         print(f"   Result shape: {result.shape}")
         print(f"   Result mean: {jnp.mean(result):.4f}")
         return True
@@ -71,9 +71,9 @@ def test_gpt2_gpu():
         import jax.numpy as jnp
         sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-        from config import GPT2Config
-        from backends.jax.model import gpt2_forward
         from backends.jax.loader import load_weights
+        from backends.jax.model import gpt2_forward
+        from config import GPT2Config
 
         print("   Loading GPT-2 weights...")
         weights = load_weights("gpt2")
@@ -86,7 +86,7 @@ def test_gpt2_gpu():
         # Force computation
         logits_BTV = logits_BTV.block_until_ready()
 
-        print(f"   ✅ GPT-2 forward pass successful")
+        print("   ✅ GPT-2 forward pass successful")
         print(f"   Logits shape: {logits_BTV.shape}")
         print(f"   Logits range: [{logits_BTV.min():.3f}, {logits_BTV.max():.3f}]")
         return True

@@ -11,7 +11,8 @@ Design Philosophy:
 See docs/ROLLOUTMANAGER_DEPRECATION.md for migration guide.
 """
 
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 from rollouts.training.datasets.data_buffer import DataBuffer
 from rollouts.training.types import RolloutBatch, RolloutConfig, Sample

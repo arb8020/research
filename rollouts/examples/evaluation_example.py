@@ -8,17 +8,17 @@ This shows how to:
 """
 
 import asyncio
-from pathlib import Path
 from dataclasses import replace
+from pathlib import Path
 
-from rollouts.evaluation import evaluate, load_jsonl, EvalConfig
 from rollouts.dtypes import Endpoint, Message, Trajectory
 from rollouts.environments.calculator import CalculatorEnvironment
-
+from rollouts.evaluation import EvalConfig, evaluate, load_jsonl
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Define Reward Functions (Trajectory -> Trajectory)
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def correctness_reward(trajectory: Trajectory) -> Trajectory:
     """Binary correctness: 1.0 if correct, 0.0 otherwise."""
@@ -145,9 +145,9 @@ async def main():
     )
 
     # Print results
-    print("\n" + "="*50)
+    print("\n" + "=" * 50)
     print("EVALUATION COMPLETE")
-    print("="*50)
+    print("=" * 50)
     print(f"Total samples: {report.total_samples}")
     print(f"Mean reward: {report.summary_metrics['mean_reward']:.3f}")
     print(f"Mean correctness: {report.summary_metrics.get('mean_correctness', 0):.3f}")

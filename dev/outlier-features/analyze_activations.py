@@ -10,9 +10,10 @@ Adapted from analyze_activations.py
 
 import json
 import logging
-import torch
 from collections import defaultdict
 from pathlib import Path
+
+import torch
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,7 @@ def load_activations(run_dir: str) -> tuple[dict[str, torch.Tensor], dict]:
     metadata_file = run_path / "metadata.json"
     assert metadata_file.exists(), f"Metadata file not found: {metadata_file}"
 
-    with open(metadata_file, 'r') as f:
+    with open(metadata_file) as f:
         metadata = json.load(f)
 
     # Load activation tensors
@@ -168,9 +169,9 @@ def analyze_systematic_outliers(
 
     systematic_features = []
 
-    logger.info(f"Analyzing systematic outliers:")
-    logger.info(f"Criteria: ≥{min_layer_percentage*100}% of {total_layers} layers, "
-                f"≥{min_seq_percentage*100}% of {seq_len} seq positions")
+    logger.info("Analyzing systematic outliers:")
+    logger.info(f"Criteria: ≥{min_layer_percentage * 100}% of {total_layers} layers, "
+                f"≥{min_seq_percentage * 100}% of {seq_len} seq positions")
 
     for feature_dim, outlier_list in feature_outliers.items():
         # Paper criterion 1: "affects at least 25% of layers"

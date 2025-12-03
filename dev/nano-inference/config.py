@@ -2,7 +2,7 @@
 """Model configuration for GPT-2."""
 
 from dataclasses import dataclass
-from typing import Optional
+
 from jax import Array
 
 
@@ -17,7 +17,7 @@ class GPT2Config:
     layer_norm_epsilon: float = 1e-5
     use_cache: bool = True
     training: bool = False
-    freqs_cis: Optional[Array] = None
+    freqs_cis: Array | None = None
 
     def __post_init__(self):
         """Validate configuration parameters."""

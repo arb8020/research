@@ -12,15 +12,13 @@ Casey Muratori: Protocol over inheritance, minimal coupling.
 """
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any
 
 import torch
 import torch.distributed as dist
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from torch.distributed.fsdp import MixedPrecision, ShardingStrategy
-from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
 
 from rollouts.training.distributed_utils import (
     barrier,
@@ -108,14 +106,14 @@ class FSDPTrainingBackend:
 
     # Optional fields (with defaults) - must come after required fields
     config: FSDPConfig = field(default_factory=FSDPConfig)
-    checkpoint_path: Optional[Path] = None
-    device: Optional[torch.device] = None
-    rank: Optional[int] = None
-    world_size: Optional[int] = None
+    checkpoint_path: Path | None = None
+    device: torch.device | None = None
+    rank: int | None = None
+    world_size: int | None = None
     step: int = 0
-    _fsdp_model: Optional[torch.nn.Module] = None
-    optimizer: Optional[torch.optim.Optimizer] = None
-    scheduler: Optional[Any] = None  # Optional LR scheduler
+    _fsdp_model: torch.nn.Module | None = None
+    optimizer: torch.optim.Optimizer | None = None
+    scheduler: Any | None = None  # Optional LR scheduler
 
     def __post_init__(self):
         """Initialize FSDP backend with two-phase checkpoint loading.
@@ -228,7 +226,7 @@ class FSDPTrainingBackend:
             f"mixed_precision={self.config.mixed_precision})"
         )
 
-    def _load_checkpoint_cpu(self, checkpoint_path: Path) -> Optional[Dict[str, Any]]:
+    def _load_checkpoint_cpu(self, checkpoint_path: Path) -> dict[str, Any] | None:
         """Load checkpoint to CPU (all ranks).
 
         Args:
@@ -316,7 +314,7 @@ class FSDPTrainingBackend:
 
         # Wrap each module individually (THUDM pattern)
         for idx, (name, module) in enumerate(modules_to_wrap):
-            logger.debug(f"[FSDP DEBUG] Rank {self.rank}: Wrapping module {idx+1}/{len(modules_to_wrap)}: {name}")
+            logger.debug(f"[FSDP DEBUG] Rank {self.rank}: Wrapping module {idx + 1}/{len(modules_to_wrap)}: {name}")
             fully_shard(module)
 
         logger.debug(f"[FSDP DEBUG] Rank {self.rank}: All sub-modules wrapped, wrapping root model...")
@@ -326,7 +324,7 @@ class FSDPTrainingBackend:
 
         return self.model
 
-    def forward_backward(self, batch: Dict[str, Any]) -> TrainFuture[Dict[str, float]]:
+    def forward_backward(self, batch: dict[str, Any]) -> TrainFuture[dict[str, float]]:
         """Compute loss and gradients (distributed across GPUs).
 
         Args:
@@ -418,7 +416,7 @@ class FSDPTrainingBackend:
         global_norm = (total_norm_sq_tensor.item() ** 0.5)
         return global_norm
 
-    def optim_step(self) -> TrainFuture[Dict[str, float]]:
+    def optim_step(self) -> TrainFuture[dict[str, float]]:
         """Apply gradients and update weights.
 
         Returns:
@@ -475,7 +473,7 @@ class FSDPTrainingBackend:
 
         return ImmediateTrainFuture(metrics)
 
-    def get_weights(self) -> TrainFuture[Dict[str, Any]]:
+    def get_weights(self) -> TrainFuture[dict[str, Any]]:
         """Get model weights for syncing to inference.
 
         CRITICAL: This is a collective operation - ALL ranks must call this.
@@ -495,13 +493,13 @@ class FSDPTrainingBackend:
             - Logs before/after collective operation (paired observation)
             - Asserts negative space (non-main ranks get empty dict)
         """
-        from rollouts.training.types import ImmediateTrainFuture
-
         # Use new PyTorch checkpoint API (not deprecated state_dict_type)
         from torch.distributed.checkpoint.state_dict import (
             StateDictOptions,
             get_model_state_dict,
         )
+
+        from rollouts.training.types import ImmediateTrainFuture
 
         # Tiger Style: Assert preconditions
         assert dist.is_initialized(), "torch.distributed must be initialized for collective ops"
@@ -538,7 +536,7 @@ class FSDPTrainingBackend:
 
         return ImmediateTrainFuture(state_dict)
 
-    def load_weights(self, weights: Dict[str, Any]) -> TrainFuture[None]:
+    def load_weights(self, weights: dict[str, Any]) -> TrainFuture[None]:
         """Load model weights with explicit DTensor handling.
 
         Following THUDM SLIME pattern:
@@ -586,7 +584,7 @@ class FSDPTrainingBackend:
         return ImmediateTrainFuture(None)
 
     @torch.no_grad()
-    def _load_weights_with_dtensor(self, weights: Dict[str, torch.Tensor]) -> None:
+    def _load_weights_with_dtensor(self, weights: dict[str, torch.Tensor]) -> None:
         """Load weights with explicit DTensor distribution (THUDM SLIME pattern).
 
         Args:
@@ -652,7 +650,7 @@ class FSDPTrainingBackend:
         torch.cuda.synchronize()
 
     async def save_checkpoint(
-        self, step: int, metrics: Dict[str, float]
+        self, step: int, metrics: dict[str, float]
     ) -> Path:
         """Save checkpoint following THUDM SLIME pattern with explicit control flow.
 
@@ -699,7 +697,7 @@ class FSDPTrainingBackend:
             logger.debug(f"[RANK-PATH] Rank 0: Creating checkpoint directory: {ckpt_path}")
             self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
             ckpt_path.mkdir(exist_ok=True)
-            logger.debug(f"[FSDP DEBUG] Rank 0: Directory created successfully")
+            logger.debug("[FSDP DEBUG] Rank 0: Directory created successfully")
         else:
             logger.debug(f"[RANK-PATH] Rank {self.rank}: Skipping directory creation (not main process)")
 
@@ -731,8 +729,8 @@ class FSDPTrainingBackend:
         # Phase 4: Only rank 0 saves to disk (SLIME pattern)
         # Following SLIME checkpoint.py:143-169
         if is_main_process():
-            logger.debug(f"[RANK-PATH] Rank 0: Saving checkpoint to disk...")
-            logger.debug(f"[FSDP DEBUG] Rank 0: Getting optimizer state dict...")
+            logger.debug("[RANK-PATH] Rank 0: Saving checkpoint to disk...")
+            logger.debug("[FSDP DEBUG] Rank 0: Getting optimizer state dict...")
 
             checkpoint = {
                 "model": state_dict,

@@ -5,7 +5,7 @@ No classes, no hidden state - just explicit orchestration.
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from rollouts.training.backends import PyTorchTrainingBackend
 from rollouts.training.datasets.data_buffer import DataBuffer
@@ -21,10 +21,10 @@ async def run_rl_training(
     backend: PyTorchTrainingBackend,
     data_buffer: DataBuffer,
     rollout_manager: AsyncRolloutManager,
-    inference_engines: List[InferenceEngine],
+    inference_engines: list[InferenceEngine],
     config: RLTrainingConfig,
-    metrics_logger: Optional[MetricsLogger] = None,
-) -> List[Dict[str, float]]:
+    metrics_logger: MetricsLogger | None = None,
+) -> list[dict[str, float]]:
     """Run RL training (pure function, no hidden state).
 
     Args:
@@ -148,9 +148,9 @@ def compute_reward(sample: Sample) -> float:
 
 def prepare_grpo_batch(
     batch: RolloutBatch,
-    rewards: List[float],
+    rewards: list[float],
     config: RLTrainingConfig,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Pure function: Prepare GRPO training batch.
 
     Args:
@@ -196,9 +196,9 @@ def prepare_grpo_batch(
 
 
 def compute_advantages(
-    rewards: List[float],
+    rewards: list[float],
     baseline: float = 0.0,
-) -> List[float]:
+) -> list[float]:
     """Pure function: Compute advantages from rewards.
 
     Args:

@@ -6,12 +6,11 @@ Each validator returns the validated/normalized value on success.
 """
 
 import logging
-from typing import Dict
 
 logger = logging.getLogger(__name__)
 
 
-def validate_credentials(credentials: Dict[str, str]) -> Dict[str, str]:
+def validate_credentials(credentials: dict[str, str]) -> dict[str, str]:
     """Validate provider credentials dictionary (Tiger Style: assert everything).
 
     Args:

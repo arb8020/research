@@ -11,10 +11,10 @@ import logging
 import os
 import stat
 import tempfile
-import time
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Callable, Generator, Optional, Protocol, Tuple
+from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -71,12 +71,12 @@ class SSHConnectionInfo:
     hostname: str
     port: int
     username: str
-    key_content: Optional[str] = None
-    key_path: Optional[str] = None
+    key_content: str | None = None
+    key_path: str | None = None
     timeout: int = 30
     
     @classmethod
-    def from_string(cls, conn_str: str, key_path: Optional[str] = None, 
+    def from_string(cls, conn_str: str, key_path: str | None = None, 
                    timeout: int = 30) -> 'SSHConnectionInfo':
         """Parse SSH connection string in multiple formats
         
@@ -120,7 +120,7 @@ class SSHConnectionInfo:
         )
     
     @classmethod
-    def _parse_ssh_command(cls, ssh_cmd: str, key_path: Optional[str] = None, 
+    def _parse_ssh_command(cls, ssh_cmd: str, key_path: str | None = None, 
                           timeout: int = 30) -> 'SSHConnectionInfo':
         """Parse SSH command format: 'ssh -p port user@host'"""
         import shlex
@@ -164,8 +164,7 @@ class SSHConnectionInfo:
             timeout=timeout
         )
     
-    
-    def load_key_content(self) -> Optional[str]:
+    def load_key_content(self) -> str | None:
         """Load SSH private key content from file path if specified"""
         if not self.key_path:
             return self.key_content
@@ -189,7 +188,7 @@ class SSHClientProtocol(Protocol):
         """Establish SSH connection"""
         ...
     
-    def exec_command(self, command: str, timeout: int = 30) -> Tuple[bool, str, str]:
+    def exec_command(self, command: str, timeout: int = 30) -> tuple[bool, str, str]:
         """Execute command and return (success, stdout, stderr)"""
         ...
     
@@ -205,7 +204,7 @@ class AsyncSSHClientProtocol(Protocol):
         """Establish SSH connection"""
         ...
     
-    async def exec_command(self, command: str, timeout: int = 30) -> Tuple[bool, str, str]:
+    async def exec_command(self, command: str, timeout: int = 30) -> tuple[bool, str, str]:
         """Execute command and return (success, stdout, stderr)"""
         ...
     
@@ -223,8 +222,8 @@ class UniversalSSHClient:
     """
     
     def __init__(self):
-        self._paramiko_client: Optional[Any] = None
-        self._asyncssh_client: Optional[Any] = None
+        self._paramiko_client: Any | None = None
+        self._asyncssh_client: Any | None = None
     
     def connect(self, conn_info: SSHConnectionInfo) -> bool:
         """Establish synchronous SSH connection using Paramiko"""
@@ -325,7 +324,7 @@ class UniversalSSHClient:
             logger.error(f"❌ AsyncSSH connection failed: {e}")
             return False
     
-    def exec_command(self, command: str, timeout: int = 30) -> Tuple[int, str, str]:
+    def exec_command(self, command: str, timeout: int = 30) -> tuple[int, str, str]:
         """Execute command synchronously using Paramiko"""
         if not self._paramiko_client:
             return -1, "", "No SSH connection established"
@@ -343,7 +342,7 @@ class UniversalSSHClient:
             return -1, "", str(e)
     
     def exec_command_streaming(self, command: str, timeout: int = 30, 
-                              output_callback: Optional[Callable[[str, bool], None]] = None) -> Tuple[int, str, str]:
+                              output_callback: Callable[[str, bool], None] | None = None) -> tuple[int, str, str]:
         """Execute command with real-time output streaming using Paramiko"""
         if not self._paramiko_client:
             return -1, "", "No SSH connection established"
@@ -381,7 +380,7 @@ class UniversalSSHClient:
         except Exception as e:
             return -1, "", str(e)
     
-    async def aexec_command(self, command: str, timeout: int = 30) -> Tuple[int, str, str]:
+    async def aexec_command(self, command: str, timeout: int = 30) -> tuple[int, str, str]:
         """Execute command asynchronously using AsyncSSH"""
         if not self._asyncssh_client:
             return -1, "", "No async SSH connection established"
@@ -412,7 +411,7 @@ class UniversalSSHClient:
 
 
 # Convenience functions for backward compatibility
-def execute_command_sync(conn_info: SSHConnectionInfo, command: str, timeout: int = 30) -> Tuple[int, str, str]:
+def execute_command_sync(conn_info: SSHConnectionInfo, command: str, timeout: int = 30) -> tuple[int, str, str]:
     """Execute SSH command synchronously (convenience function)"""
     client = UniversalSSHClient()
     try:
@@ -424,7 +423,7 @@ def execute_command_sync(conn_info: SSHConnectionInfo, command: str, timeout: in
         client.close()
 
 
-async def execute_command_async(conn_info: SSHConnectionInfo, command: str, timeout: int = 30) -> Tuple[int, str, str]:
+async def execute_command_async(conn_info: SSHConnectionInfo, command: str, timeout: int = 30) -> tuple[int, str, str]:
     """Execute SSH command asynchronously (convenience function)"""
     client = UniversalSSHClient()
     try:
@@ -436,10 +435,8 @@ async def execute_command_async(conn_info: SSHConnectionInfo, command: str, time
         await client.aclose()
 
 
-
-
 def execute_command_streaming(conn_info: SSHConnectionInfo, command: str, timeout: int = 30,
-                             output_callback: Optional[Callable[[str, bool], None]] = None) -> Tuple[int, str, str]:
+                             output_callback: Callable[[str, bool], None] | None = None) -> tuple[int, str, str]:
     """Execute SSH command with real-time streaming output (convenience function)"""
     client = UniversalSSHClient()
     try:
@@ -451,9 +448,7 @@ def execute_command_streaming(conn_info: SSHConnectionInfo, command: str, timeou
         client.close()
 
 
-
-
-def start_interactive_ssh_session(conn_info: SSHConnectionInfo, private_key_path: Optional[str] = None):
+def start_interactive_ssh_session(conn_info: SSHConnectionInfo, private_key_path: str | None = None):
     """
     Start an interactive SSH session using the system's SSH client
     
@@ -506,9 +501,7 @@ def start_interactive_ssh_session(conn_info: SSHConnectionInfo, private_key_path
         raise
 
 
-
-
-def test_ssh_connection(conn_info: SSHConnectionInfo, test_both_clients: bool = True) -> Tuple[bool, str]:
+def test_ssh_connection(conn_info: SSHConnectionInfo, test_both_clients: bool = True) -> tuple[bool, str]:
     """
     Test SSH connection with both paramiko and asyncssh (if available)
     

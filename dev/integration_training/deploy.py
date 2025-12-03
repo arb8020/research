@@ -24,14 +24,6 @@ from base_config import Config
 # Import bifrost for deployment
 from bifrost.client import BifrostClient
 from dotenv import load_dotenv
-
-# Import kerbal for dependency management and deployment patterns
-from kerbal import (
-    DependencyConfig,
-    setup_script_deps,
-    check_gpus_available,
-    start_tmux_session,
-)
 from kerbal.job_monitor import (
     LogStreamConfig,
     stream_log_until_complete,
@@ -39,6 +31,14 @@ from kerbal.job_monitor import (
 
 # Import shared logging
 from shared.logging_config import setup_logging
+
+# Import kerbal for dependency management and deployment patterns
+from kerbal import (
+    DependencyConfig,
+    check_gpus_available,
+    setup_script_deps,
+    start_tmux_session,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ def load_config_from_file(config_path: str) -> Config:
     spec.loader.exec_module(module)
 
     assert hasattr(module, 'config'), "Config file must define 'config' variable"
-    config: Config = getattr(module, 'config')
+    config: Config = module.config
     assert isinstance(config, Config), f"Expected Config object, got {type(config)}"
 
     return config
@@ -281,8 +281,6 @@ def start_training(
 
     logger.info(f"✅ Training started in tmux session: {session}")
     return session, None
-
-
 
 
 def sync_results(

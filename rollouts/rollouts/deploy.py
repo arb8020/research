@@ -18,14 +18,13 @@ Usage:
     server_info, error = await deploy_sglang_server(config)
 """
 
-import trio
 import logging
 import os
 import subprocess
-import time
-from dataclasses import dataclass, field, asdict
-from pathlib import Path
-from typing import Optional, Dict, Any, Tuple
+from dataclasses import dataclass, field
+from typing import Any
+
+import trio
 
 logger = logging.getLogger(__name__)
 
@@ -44,12 +43,12 @@ class ServerConfig:
     # Model configuration
     model: str = "Qwen/Qwen2.5-VL-7B-Instruct"
     dtype: str = "auto"  # "auto", "float16", "bfloat16"
-    max_model_len: Optional[int] = None  # Context length (None = model default)
-    quantization: Optional[str] = None  # None, "awq", "gptq", "fp8"
+    max_model_len: int | None = None  # Context length (None = model default)
+    quantization: str | None = None  # None, "awq", "gptq", "fp8"
     trust_remote_code: bool = True
 
     # Engine configuration
-    attention_backend: Optional[str] = None  # "triton" for Blackwell, "flashinfer" for others
+    attention_backend: str | None = None  # "triton" for Blackwell, "flashinfer" for others
 
     # GPU configuration
     gpu_type: str = "H100"  # For memory estimation
@@ -65,7 +64,7 @@ class ServerConfig:
     enable_prefix_caching: bool = False  # RadixAttention
 
     # Deployment configuration
-    ssh_connection: Optional[str] = None  # "user@host:port" for remote, None for local
+    ssh_connection: str | None = None  # "user@host:port" for remote, None for local
     ssh_key: str = "~/.ssh/id_ed25519"
     tmux_session_name: str = "sglang-server"
 
@@ -73,7 +72,7 @@ class ServerConfig:
     hf_cache_dir: str = "/home/ubuntu/.cache/huggingface"
     use_hf_transfer: bool = True
     allow_long_max_model_len: bool = True
-    flash_attn_version: Optional[str] = None
+    flash_attn_version: str | None = None
 
     def __post_init__(self):
         """Validate configuration."""
@@ -98,7 +97,7 @@ class ServerInfo:
     url: str  # Server URL (e.g., "http://localhost:30000")
     model: str  # Model name
     port: int  # Server port
-    ssh_connection: Optional[str]  # SSH connection string if remote
+    ssh_connection: str | None  # SSH connection string if remote
     tmux_session: str  # Tmux session name
     gpu_ranks: list[int]  # GPU indices used
 
@@ -160,7 +159,7 @@ def generate_bootstrap_command(config: ServerConfig) -> str:
     return result
 
 
-def check_hf_token_and_model(model_name: str) -> Tuple[bool, Optional[str]]:
+def check_hf_token_and_model(model_name: str) -> tuple[bool, str | None]:
     """Check if HF_TOKEN is set and validate model accessibility.
 
     Tiger Style: Fail-fast validation before expensive deployment.
@@ -230,7 +229,7 @@ def check_hf_token_and_model(model_name: str) -> Tuple[bool, Optional[str]]:
         return True, None
 
 
-def check_local_prerequisites() -> Tuple[bool, Optional[str]]:
+def check_local_prerequisites() -> tuple[bool, str | None]:
     """Check if required tools are installed locally.
 
     Tiger Style: Preflight validation, fail-fast.
@@ -294,7 +293,7 @@ def check_gpus_available_local(
     gpu_ids: list[int],
     memory_threshold_mb: int = DEFAULT_MEMORY_THRESHOLD_MB,
     util_threshold_pct: int = DEFAULT_UTIL_THRESHOLD_PCT,
-) -> Tuple[bool, Optional[str]]:
+) -> tuple[bool, str | None]:
     """Check if specified GPUs are free on local machine.
 
     Tiger Style: Assert preconditions, explicit thresholds.
@@ -363,7 +362,7 @@ def check_gpus_available_local(
         return False, f"GPU availability check failed: {e}"
 
 
-def check_port_available_local(port: int) -> Tuple[bool, Optional[str]]:
+def check_port_available_local(port: int) -> tuple[bool, str | None]:
     """Check if port is available on local machine.
 
     Args:
@@ -396,7 +395,7 @@ def check_port_available_local(port: int) -> Tuple[bool, Optional[str]]:
         return True, None
 
 
-def check_remote_prerequisites(ssh_connection: str, ssh_key: str) -> Tuple[bool, Optional[str]]:
+def check_remote_prerequisites(ssh_connection: str, ssh_key: str) -> tuple[bool, str | None]:
     """Check if required tools are installed on remote.
 
     Tiger Style: Assert preconditions before proceeding.
@@ -448,7 +447,7 @@ def check_gpus_available_remote(
     gpu_ids: list[int],
     memory_threshold_mb: int = DEFAULT_MEMORY_THRESHOLD_MB,
     util_threshold_pct: int = DEFAULT_UTIL_THRESHOLD_PCT,
-) -> Tuple[bool, Optional[str]]:
+) -> tuple[bool, str | None]:
     """Check if specified GPUs are free on remote machine.
 
     Args:
@@ -514,7 +513,7 @@ def check_port_available_remote(
     ssh_connection: str,
     ssh_key: str,
     port: int
-) -> Tuple[bool, Optional[str]]:
+) -> tuple[bool, str | None]:
     """Check if port is available on remote machine.
 
     Args:
@@ -606,7 +605,7 @@ async def deploy_sglang_server(
     config: ServerConfig,
     wait_for_ready: bool = True,
     timeout_seconds: int = 600,  # 10 minutes for large model loading
-) -> Tuple[Optional[ServerInfo], Optional[str]]:
+) -> tuple[ServerInfo | None, str | None]:
     """Deploy SGLang server to local or remote GPU.
 
     Tiger Style: Tuple return for explicit error handling.
@@ -637,19 +636,18 @@ async def _deploy_local(
     config: ServerConfig,
     wait_for_ready: bool,
     timeout_seconds: int,
-) -> Tuple[Optional[ServerInfo], Optional[str]]:
+) -> tuple[ServerInfo | None, str | None]:
     """Deploy server locally using subprocess + tmux.
 
     Tiger Style: Helper function with tuple return.
     """
-    import subprocess
 
     logger.debug("")
     logger.debug("🔍 Preflight Checks")
     logger.debug("-" * 60)
 
     # Check 1: HuggingFace token and model access
-    logger.debug(f"Checking HuggingFace token and model access...")
+    logger.debug("Checking HuggingFace token and model access...")
     hf_ok, hf_error = check_hf_token_and_model(config.model)
     if not hf_ok:
         logger.error(f"❌ {hf_error}")
@@ -767,7 +765,7 @@ async def _deploy_remote(
     config: ServerConfig,
     wait_for_ready: bool,
     timeout_seconds: int,
-) -> Tuple[Optional[ServerInfo], Optional[str]]:
+) -> tuple[ServerInfo | None, str | None]:
     """Deploy server to remote GPU via bifrost.
 
     Tiger Style: Helper function with tuple return.
@@ -891,7 +889,7 @@ async def _deploy_remote(
         logger.error("=" * 60)
         return None, error_msg
 
-    logger.info(f"bootstrap completed successfully")
+    logger.info("bootstrap completed successfully")
 
     # Verify bootstrap postconditions (paired assertion - like qwen3_next)
     venv_name = get_venv_path()
@@ -1005,7 +1003,7 @@ tmux new-session -d -s {config.tmux_session_name} "
 async def _wait_for_health(
     server_info: ServerInfo,
     timeout_seconds: int,
-) -> Tuple[bool, Optional[str]]:
+) -> tuple[bool, str | None]:
     """Wait for local server health check.
 
     Tiger Style: Tuple return for success/failure.
@@ -1051,7 +1049,7 @@ async def _wait_for_health(
             try:
                 resp = await client.get(health_url, timeout=5.0)
                 if resp.status_code == 200:
-                    logger.debug(f"server is ready (took ~{(i+1)*poll_interval}s)")
+                    logger.debug(f"server is ready (took ~{(i + 1) * poll_interval}s)")
                     return True, None
             except Exception:
                 pass
@@ -1068,7 +1066,7 @@ async def _wait_for_health_remote(
     server_info: ServerInfo,
     bifrost_client: Any,
     timeout_seconds: int,
-) -> Tuple[bool, Optional[str]]:
+) -> tuple[bool, str | None]:
     """Wait for remote server health check via bifrost.
 
     Tiger Style: Tuple return for success/failure.
@@ -1102,7 +1100,7 @@ async def _wait_for_health_remote(
         )
 
         if result.exit_code == 0 and "NOT_READY" not in result.stdout:
-            logger.debug(f"server is ready (took ~{(i+1)*poll_interval}s)")
+            logger.debug(f"server is ready (took ~{(i + 1) * poll_interval}s)")
             return True, None
 
         if i < max_iterations - 1:

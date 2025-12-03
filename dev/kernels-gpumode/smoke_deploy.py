@@ -35,10 +35,11 @@ import sys
 from pathlib import Path
 
 from bifrost.client import BifrostClient
-from kerbal import DependencyConfig, setup_script_deps
 
 # Import shared logging
 from shared.logging_config import setup_logging
+
+from kerbal import DependencyConfig, setup_script_deps
 
 logger = logging.getLogger(__name__)
 
@@ -204,7 +205,7 @@ def deploy_and_test(
                         else:
                             logger.warning(f"   Failed to download: {filename}")
 
-                    logger.info(f"\n   📊 View torch profiles:")
+                    logger.info("\n   📊 View torch profiles:")
                     logger.info(f"      Chrome trace: Open chrome://tracing and load files from {profiles_local}/")
                     logger.info(f"      TensorBoard: tensorboard --logdir={profiles_local}/")
                 else:
@@ -241,7 +242,7 @@ def deploy_and_test(
                         size_kb = local_file.stat().st_size / 1024
                         logger.info(f"   Downloaded: {local_file.name} ({size_kb:.1f} KB)")
 
-                    logger.info(f"\n   📊 View NCU reports:")
+                    logger.info("\n   📊 View NCU reports:")
                     logger.info(f"      CSV files in {ncu_local}/")
                 else:
                     logger.warning("   No NCU CSV files found")

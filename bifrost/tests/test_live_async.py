@@ -1,8 +1,10 @@
 """Live test of AsyncBifrostClient against real SSH server."""
 
+import os
+
 import trio
 import trio_asyncio
-import os
+
 from bifrost import AsyncBifrostClient
 
 # Configuration
@@ -59,7 +61,7 @@ async def test_exec_stream():
 
 async def test_parallel_commands():
     """Test running multiple commands in parallel using trio nursery."""
-    print(f"\nTesting parallel command execution...")
+    print("\nTesting parallel command execution...")
 
     async with AsyncBifrostClient(
         ssh_connection=SSH_TARGET,
@@ -86,7 +88,7 @@ async def test_parallel_commands():
 
 async def test_file_operations():
     """Test file upload/download operations."""
-    print(f"\nTesting file operations...")
+    print("\nTesting file operations...")
 
     async with AsyncBifrostClient(
         ssh_connection=SSH_TARGET,
@@ -117,10 +119,10 @@ async def test_file_operations():
         print(f"✓ Downloaded file: {result.files_copied} files, {result.total_bytes} bytes")
 
         # Verify downloaded content
-        with open(local_download_file, "r") as f:
+        with open(local_download_file) as f:
             downloaded_content = f.read()
         assert downloaded_content == test_content
-        print(f"✓ Verified downloaded content matches")
+        print("✓ Verified downloaded content matches")
 
         # Cleanup
         await client.exec(f"rm -f {remote_test_file}")
@@ -131,7 +133,7 @@ async def test_file_operations():
 
 async def test_timeout():
     """Test trio timeout functionality."""
-    print(f"\nTesting timeout mechanism...")
+    print("\nTesting timeout mechanism...")
 
     async with AsyncBifrostClient(
         ssh_connection=SSH_TARGET,
@@ -152,7 +154,7 @@ async def test_timeout():
 
 async def test_expand_path():
     """Test path expansion."""
-    print(f"\nTesting path expansion...")
+    print("\nTesting path expansion...")
 
     async with AsyncBifrostClient(
         ssh_connection=SSH_TARGET,

@@ -2,13 +2,13 @@
 """Compare SGD vs Adam on narrow valley problem."""
 
 import sys
+from pathlib import Path
+
 import jax
 import jax.numpy as jnp
 import numpy as np
-from pathlib import Path
-
-from optimizers import sgd_init, sgd_update, adam_init, adam_update, optimize
 from loss_landscapes import narrow_valley_loss, narrow_valley_loss_numpy
+from optimizers import adam_init, adam_update, optimize, sgd_init, sgd_update
 from viz_data import create_viz_data
 from viz_matplotlib import compare_optimizers
 from viz_raw import print_optimization_summary_raw

@@ -6,15 +6,14 @@ Estimates required VRAM for outlier analysis by fetching actual model informatio
 from HuggingFace, rather than guessing from model names.
 """
 
-import requests
 import json
 import os
-from typing import Dict, Optional, Tuple
-import re
+
+import requests
 from dotenv import load_dotenv
 
 
-def get_hf_headers() -> Dict[str, str]:
+def get_hf_headers() -> dict[str, str]:
     """Get HuggingFace API headers with authentication token."""
     load_dotenv()
     hf_token = os.getenv("HF_TOKEN")
@@ -24,7 +23,7 @@ def get_hf_headers() -> Dict[str, str]:
     return headers
 
 
-def fetch_model_config(model_name: str) -> Optional[Dict]:
+def fetch_model_config(model_name: str) -> dict | None:
     """Fetch model configuration from HuggingFace."""
     try:
         config_url = f"https://huggingface.co/{model_name}/resolve/main/config.json"
@@ -37,7 +36,7 @@ def fetch_model_config(model_name: str) -> Optional[Dict]:
         return None
 
 
-def fetch_safetensors_index(model_name: str) -> Optional[Dict]:
+def fetch_safetensors_index(model_name: str) -> dict | None:
     """Fetch safetensors index to get actual weight information."""
     try:
         headers = get_hf_headers()
@@ -61,7 +60,7 @@ def fetch_safetensors_index(model_name: str) -> Optional[Dict]:
         return None
 
 
-def calculate_model_size_from_config(config: Dict) -> Tuple[int, str]:
+def calculate_model_size_from_config(config: dict) -> tuple[int, str]:
     """Calculate approximate model parameters from config."""
     
     # Common parameter names across different architectures
@@ -78,7 +77,7 @@ def calculate_model_size_from_config(config: Dict) -> Tuple[int, str]:
         'experts_per_token': ['num_experts_per_tok', 'moe_top_k'],
     }
     
-    def get_config_value(config: Dict, possible_keys: list) -> Optional[int]:
+    def get_config_value(config: dict, possible_keys: list) -> int | None:
         for key in possible_keys:
             if key in config:
                 return config[key]
@@ -110,7 +109,7 @@ def calculate_model_size_from_config(config: Dict) -> Tuple[int, str]:
     # Embedding layer: vocab_size * hidden_size
     embedding_params = vocab_size * hidden_size
     params += embedding_params
-    breakdown.append(f"Embeddings: {embedding_params/1e9:.1f}B")
+    breakdown.append(f"Embeddings: {embedding_params / 1e9:.1f}B")
 
     # Per-layer parameters
     for layer in range(num_layers):
@@ -142,7 +141,7 @@ def calculate_model_size_from_config(config: Dict) -> Tuple[int, str]:
             
             if layer == 0:  # Only show breakdown for first layer
                 active_experts = config.get('num_experts_per_tok', config.get('moe_top_k', 8))
-                breakdown.append(f"Layer (MoE): {layer_params/1e9:.1f}B ({num_experts} experts, {active_experts} active)")
+                breakdown.append(f"Layer (MoE): {layer_params / 1e9:.1f}B ({num_experts} experts, {active_experts} active)")
         else:
             # Standard FFN: 2 linear layers
             if not intermediate_size:
@@ -153,7 +152,7 @@ def calculate_model_size_from_config(config: Dict) -> Tuple[int, str]:
             layer_params += ffn_params
             
             if layer == 0:  # Only show breakdown for first layer
-                breakdown.append(f"Layer (standard): {layer_params/1e9:.1f}B")
+                breakdown.append(f"Layer (standard): {layer_params / 1e9:.1f}B")
         
         params += layer_params
     
@@ -168,13 +167,13 @@ def calculate_model_size_from_config(config: Dict) -> Tuple[int, str]:
         assert vocab_size is not None and hidden_size is not None
         output_params = vocab_size * hidden_size
         params += output_params
-        breakdown.append(f"Output head: {output_params/1e9:.1f}B")
+        breakdown.append(f"Output head: {output_params / 1e9:.1f}B")
     
     breakdown_str = " | ".join(breakdown)
     return params, breakdown_str
 
 
-def fetch_tensor_shapes_from_safetensors(model_name: str, index_data: Dict) -> Dict[str, list]:
+def fetch_tensor_shapes_from_safetensors(model_name: str, index_data: dict) -> dict[str, list]:
     """Fetch tensor shapes from safetensors files."""
     tensor_shapes = {}
     
@@ -204,7 +203,7 @@ def fetch_tensor_shapes_from_safetensors(model_name: str, index_data: Dict) -> D
                     
                     if len(data) > 8 + metadata_len:
                         # Extract metadata JSON
-                        metadata_json = data[8:8+metadata_len].decode('utf-8')
+                        metadata_json = data[8:8 + metadata_len].decode('utf-8')
                         metadata = json.loads(metadata_json)
                         
                         # Extract tensor shapes
@@ -219,7 +218,7 @@ def fetch_tensor_shapes_from_safetensors(model_name: str, index_data: Dict) -> D
     return tensor_shapes
 
 
-def calculate_model_size_from_safetensors(index_data: Dict, model_name: str = "") -> Tuple[int, str]:
+def calculate_model_size_from_safetensors(index_data: dict, model_name: str = "") -> tuple[int, str]:
     """Calculate model size from safetensors weight map and shapes."""
     if 'weight_map' not in index_data and 'single_file' not in index_data:
         return 0, "No weight_map in safetensors index"
@@ -253,7 +252,7 @@ def calculate_model_size_from_safetensors(index_data: Dict, model_name: str = ""
     return 0, "Could not calculate parameters from tensor shapes"
 
 
-def estimate_vram_requirements(model_name: str, safety_factor: float = 2.5, sequence_length: int = 2048, batch_size: int = 2) -> Dict:
+def estimate_vram_requirements(model_name: str, safety_factor: float = 2.5, sequence_length: int = 2048, batch_size: int = 2) -> dict:
     """
     Estimate VRAM requirements for outlier analysis.
     
@@ -404,16 +403,16 @@ def estimate_vram_requirements(model_name: str, safety_factor: float = 2.5, sequ
     }
 
 
-def print_vram_estimate(estimate: Dict):
+def print_vram_estimate(estimate: dict):
     """Print formatted VRAM estimate."""
     if 'error' in estimate:
         print(f"❌ Error: {estimate['error']}")
         print(f"🔧 Fallback recommendation: {estimate['recommended_vram']}GB VRAM")
         return
     
-    print(f"\n{'='*60}")
-    print(f"VRAM ESTIMATION REPORT")
-    print(f"{'='*60}")
+    print(f"\n{'=' * 60}")
+    print("VRAM ESTIMATION REPORT")
+    print(f"{'=' * 60}")
     print(f"Model: {estimate['model_name']}")
     print(f"Architecture: {estimate['architecture']}")
     print(f"Total Parameters: {estimate['params_billions']:.1f}B ({estimate['estimated_params']:,})")
@@ -425,17 +424,17 @@ def print_vram_estimate(estimate: Dict):
     print(f"Estimation Method: {estimate['estimation_method']}")
     print(f"Parameter Breakdown: {estimate['breakdown']}")
     
-    print(f"\n📊 Config Summary:")
+    print("\n📊 Config Summary:")
     for key, value in estimate['config_summary'].items():
         if value is not None:
             print(f"  {key}: {value}")
     
-    print(f"\n🔥 VRAM Requirements:")
+    print("\n🔥 VRAM Requirements:")
     print(f"  Recommended: {estimate['recommended_vram']}GB")
     print(f"  Context: {estimate['sequence_length']} tokens × {estimate['batch_size']} batch")
     print(f"  Safety Factor: {estimate['safety_factor']}x")
     
-    print(f"\n💾 Memory Breakdown:")
+    print("\n💾 Memory Breakdown:")
     print(f"  Model Weights: {estimate['effective_size_gb']:.1f}GB")
     if 'kv_cache_gb' in estimate:
         print(f"  KV Cache: {estimate['kv_cache_gb']:.1f}GB")
@@ -445,24 +444,24 @@ def print_vram_estimate(estimate: Dict):
     
     # Add note for MoE models
     if 'MoE:' in estimate['architecture']:
-        print(f"  ⚡ MoE Note: Only active experts loaded, significant memory savings vs full parameter count")
+        print("  ⚡ MoE Note: Only active experts loaded, significant memory savings vs full parameter count")
     
     # GPU recommendations
-    print(f"\n🖥️  GPU Recommendations:")
+    print("\n🖥️  GPU Recommendations:")
     if estimate['recommended_vram'] <= 24:
-        print(f"  ✅ RTX 4090 (24GB) - sufficient")
+        print("  ✅ RTX 4090 (24GB) - sufficient")
     else:
-        print(f"  ❌ RTX 4090 (24GB) - insufficient")
+        print("  ❌ RTX 4090 (24GB) - insufficient")
         
     if estimate['recommended_vram'] <= 80:
-        print(f"  ✅ A100 (80GB) - sufficient")
+        print("  ✅ A100 (80GB) - sufficient")
     else:
-        print(f"  ❌ A100 (80GB) - insufficient")
+        print("  ❌ A100 (80GB) - insufficient")
         
     if estimate['recommended_vram'] <= 192:
-        print(f"  ✅ MI300X (192GB) - sufficient")
+        print("  ✅ MI300X (192GB) - sufficient")
     else:
-        print(f"  ⚠️  MI300X (192GB) - might be tight")
+        print("  ⚠️  MI300X (192GB) - might be tight")
 
 
 def main():

@@ -4,8 +4,9 @@ Largest model - validates GPT-OSS systematicity at scale.
 Runtime: ~35-50 minutes on 2xA100.
 """
 
-from pathlib import Path
 import sys
+from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import Config

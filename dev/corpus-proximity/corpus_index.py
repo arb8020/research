@@ -4,18 +4,18 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, Optional, Protocol, TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
-
 
 logger = logging.getLogger(__name__)
 
 
 if TYPE_CHECKING:
-    from sentence_transformers import SentenceTransformer
+    pass
 
 
 class EmbeddingModel(Protocol):
@@ -39,18 +39,18 @@ class CorpusIndex:
     chunks: list[str]
     metadata: list[dict]
     tree: dict
-    chunk_to_cluster: Dict[int, str]
+    chunk_to_cluster: dict[int, str]
     model: EmbeddingModel
     index_path: Path
-    _cluster_lookup: Dict[str, dict] = field(default_factory=dict, repr=False)
+    _cluster_lookup: dict[str, dict] = field(default_factory=dict, repr=False)
 
     @classmethod
     def load(
         cls,
         index_path: str | Path,
         *,
-        embedding_model: Optional[str] = None
-    ) -> "CorpusIndex":
+        embedding_model: str | None = None
+    ) -> CorpusIndex:
         """Load a serialized corpus index from disk.
 
         Args:
@@ -80,7 +80,7 @@ class CorpusIndex:
         embeddings = np.load(embeddings_path)
 
         chunks: list[str] = []
-        with open(chunks_path, "r") as fh:
+        with open(chunks_path) as fh:
             for line in fh:
                 if not line.strip():
                     continue
@@ -88,16 +88,16 @@ class CorpusIndex:
                 chunks.append(record["text"])
 
         metadata: list[dict] = []
-        with open(metadata_path, "r") as fh:
+        with open(metadata_path) as fh:
             for line in fh:
                 if not line.strip():
                     continue
                 metadata.append(json.loads(line))
 
-        with open(tree_path, "r") as fh:
+        with open(tree_path) as fh:
             tree = json.load(fh)
 
-        with open(mapping_path, "r") as fh:
+        with open(mapping_path) as fh:
             raw_mapping = json.load(fh)
             chunk_to_cluster = {int(k): v for k, v in raw_mapping.items()}
 
@@ -107,7 +107,7 @@ class CorpusIndex:
 
         if embedding_model is None:
             assert config_path.exists(), f"Missing config: {config_path}"
-            with open(config_path, "r") as fh:
+            with open(config_path) as fh:
                 config_dict = json.load(fh)
             embedding_model = (
                 config_dict.get("clustering", {})
@@ -115,7 +115,9 @@ class CorpusIndex:
             )
 
         logger.info(f"Loading embedding model: {embedding_model}")
-        from sentence_transformers import SentenceTransformer  # local import to avoid hard dependency at import time
+        from sentence_transformers import (
+            SentenceTransformer,  # local import to avoid hard dependency at import time
+        )
 
         model = SentenceTransformer(embedding_model)
 
@@ -131,9 +133,9 @@ class CorpusIndex:
         index._cluster_lookup = index._build_cluster_lookup(tree)
         return index
 
-    def _build_cluster_lookup(self, tree: dict) -> Dict[str, dict]:
+    def _build_cluster_lookup(self, tree: dict) -> dict[str, dict]:
         """Flatten tree into a lookup table for fast cluster metadata access."""
-        lookup: Dict[str, dict] = {}
+        lookup: dict[str, dict] = {}
 
         def traverse(node: dict):
             cluster_id = node.get("cluster_id")

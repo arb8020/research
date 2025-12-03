@@ -21,15 +21,14 @@ Usage:
     python deploy_sweep.py --status
 """
 
+import argparse
 import subprocess
+import sys
 import time
 from pathlib import Path
-from typing import List, Optional
-import argparse
-import sys
 
 
-def discover_configs(config_dir: str = "sweep_configs") -> List[str]:
+def discover_configs(config_dir: str = "sweep_configs") -> list[str]:
     """Discover all .py config files in the specified directory."""
     config_path = Path(config_dir)
     if not config_path.exists():
@@ -40,7 +39,7 @@ def discover_configs(config_dir: str = "sweep_configs") -> List[str]:
     return [str(c) for c in configs]
 
 
-def build_model_names(configs: List[str]) -> dict:
+def build_model_names(configs: list[str]) -> dict:
     """Build model name mapping from config filenames."""
     names = {}
     for config in configs:
@@ -117,14 +116,13 @@ def launch_deployment(config_path: Path, model_names: dict, sweep_log_dir: Path,
     return proc
 
 
-def check_sweep_status(num_lines: int = 5, sweep_dir: Optional[str] = None):
+def check_sweep_status(num_lines: int = 5, sweep_dir: str | None = None):
     """Check status of most recent sweep by tailing logs.
 
     Args:
         num_lines: Number of lines to show from each log (default: 5)
         sweep_dir: Optional specific sweep directory to check (e.g., "sweep_20251025_141227_sweep_dense")
     """
-    from datetime import datetime
     import glob
 
     if sweep_dir:
@@ -161,7 +159,7 @@ def check_sweep_status(num_lines: int = 5, sweep_dir: Optional[str] = None):
 
         # Read last N lines of log
         try:
-            with open(log_file, 'r') as f:
+            with open(log_file) as f:
                 lines = f.readlines()
                 tail_lines = lines[-num_lines:] if len(lines) >= num_lines else lines
                 for line in tail_lines:
@@ -264,8 +262,8 @@ def main():
 
     print()
     print(f"Delay between launches: {args.delay}s")
-    print(f"Estimated total runtime: 45-70 minutes per model")
-    print(f"Total cost estimate: ~$15-25 for all 7 models")
+    print("Estimated total runtime: 45-70 minutes per model")
+    print("Total cost estimate: ~$15-25 for all 7 models")
     print("=" * 80)
     print()
 

@@ -4,9 +4,10 @@ Pure dataclasses - transparent, no hidden state (Casey Muratori's principle).
 Inspired by SLIME's Sample dataclass + Tinker's loss weights.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Optional
+from typing import Any
 
 import trio
 
@@ -53,14 +54,14 @@ class Sample:
     reward: float = 0.0
 
     # Grouping (for GRPO)
-    group_index: Optional[int] = None
-    index: Optional[int] = None
+    group_index: int | None = None
+    index: int | None = None
 
     # Metadata
     metadata: dict[str, Any] = field(default_factory=dict)
 
     # Optional: logprobs for off-policy correction
-    rollout_log_probs: Optional[list[float]] = None
+    rollout_log_probs: list[float] | None = None
 
     class Status(Enum):
         """Sample status (SLIME-compatible)."""
@@ -163,9 +164,9 @@ class RolloutConfig:
     over_sampling_factor: float = 1.0
 
     # User-provided functions (SLIME-style!)
-    generate_fn: Optional[Callable] = None
-    reward_fn: Optional[Callable] = None
-    filter_fn: Optional[Callable] = None
+    generate_fn: Callable | None = None
+    reward_fn: Callable | None = None
+    filter_fn: Callable | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict for serialization.
@@ -192,9 +193,9 @@ class RolloutConfig:
     @staticmethod
     def from_dict(
         data: dict[str, Any],
-        generate_fn: Optional[Callable] = None,
-        reward_fn: Optional[Callable] = None,
-        filter_fn: Optional[Callable] = None,
+        generate_fn: Callable | None = None,
+        reward_fn: Callable | None = None,
+        filter_fn: Callable | None = None,
     ) -> "RolloutConfig":
         """Create RolloutConfig from dict.
 
@@ -358,7 +359,7 @@ class TrainFuture[T]:
     """
 
     _event: trio.Event = field(default_factory=trio.Event)
-    _result: Optional[T] = None
+    _result: T | None = None
     operation: str = ""  # "forward_backward", "optim_step", etc.
 
     async def result(self) -> T:
