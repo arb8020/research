@@ -915,7 +915,7 @@ class RunConfig:
     inline_thinking: str | None = None
     checkpoint_store: Any | None = None
     show_progress: bool = False  # Enable turn-level progress tracking
-    cancel_scope: trio.CancelScope | None = None  # Optional Trio cancel scope for graceful cancellation
+    cancel_scope: trio.CancelScope | None = None  # Optional Trio cancel scope for graceful cancellation. When cancel_scope.cancel() is called, any in-flight HTTP request is immediately cancelled and trio.Cancelled is raised. The agent loop catches this and sets stop=StopReason.ABORTED.
 
 
 # ── Evaluation Types ──────────────────────────────────────────────────────────
