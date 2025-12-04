@@ -6,12 +6,24 @@ Provides a clean interface for terminal I/O, cursor control, and raw mode handli
 
 from __future__ import annotations
 
+import atexit
 import sys
 import tty
 import termios
 import signal
 import os
 from typing import Callable, Protocol, Optional, List
+
+
+# Global reference for atexit cleanup
+_active_terminal: Optional["ProcessTerminal"] = None
+
+
+def _cleanup_terminal():
+    """Atexit handler to restore terminal state."""
+    global _active_terminal
+    if _active_terminal is not None:
+        _active_terminal.stop()
 
 
 class Terminal(Protocol):
@@ -72,8 +84,14 @@ class ProcessTerminal:
 
     def start(self, on_input: Callable[[str], None], on_resize: Callable[[], None]) -> None:
         """Start terminal in raw mode with input/resize handlers."""
+        global _active_terminal
+
         self._input_handler = on_input
         self._resize_handler = on_resize
+
+        # Register atexit handler for cleanup on unexpected exit
+        _active_terminal = self
+        atexit.register(_cleanup_terminal)
 
         # Save current terminal settings
         if sys.stdin.isatty():
@@ -92,10 +110,24 @@ class ProcessTerminal:
 
     def stop(self) -> None:
         """Stop terminal and restore previous settings."""
+        global _active_terminal
+
+        if not self._running and self._old_settings is None:
+            return  # Already stopped
+
         self._running = False
 
+        # Restore terminal to clean state
+        # Show cursor (in case we hid it)
+        sys.stdout.write("\x1b[?25h")
         # Disable bracketed paste mode
         sys.stdout.write("\x1b[?2004l")
+        # End synchronized output (in case we're in the middle of it)
+        sys.stdout.write("\x1b[?2026l")
+        # Reset all attributes (colors, bold, etc.)
+        sys.stdout.write("\x1b[0m")
+        # Ensure cursor is at start of a new line
+        sys.stdout.write("\n")
         sys.stdout.flush()
 
         # Restore terminal settings
@@ -110,6 +142,13 @@ class ProcessTerminal:
 
         self._input_handler = None
         self._resize_handler = None
+
+        # Clear global reference and unregister atexit
+        _active_terminal = None
+        try:
+            atexit.unregister(_cleanup_terminal)
+        except Exception:
+            pass  # May fail if already unregistered
 
     def write(self, data: str) -> None:
         """Write data to stdout."""
