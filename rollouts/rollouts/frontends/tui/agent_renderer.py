@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from rollouts.rollouts.dtypes import (
+from rollouts.dtypes import (
     StreamEvent,
     StreamStart,
     TextStart,
