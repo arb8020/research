@@ -3,7 +3,6 @@
 from .text import Text
 from .spacer import Spacer
 from .markdown import Markdown, DefaultMarkdownTheme
-from .loader import Loader
 from .user_message import UserMessage
 from .assistant_message import AssistantMessage
 from .tool_execution import ToolExecution
@@ -14,7 +13,6 @@ __all__ = [
     "Spacer",
     "Markdown",
     "DefaultMarkdownTheme",
-    "Loader",
     "UserMessage",
     "AssistantMessage",
     "ToolExecution",

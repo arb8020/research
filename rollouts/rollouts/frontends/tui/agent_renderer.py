@@ -28,7 +28,6 @@ from .tui import TUI, Container
 from .components.assistant_message import AssistantMessage
 from .components.tool_execution import ToolExecution
 from .components.user_message import UserMessage
-from .components.loader import Loader
 from .components.spacer import Spacer
 
 
@@ -77,11 +76,6 @@ class AgentRenderer:
 
         # Tool tracking: tool_call_id -> ToolExecution component
         self.pending_tools: dict[str, ToolExecution] = {}
-
-        # Loader animation
-        self.loader: Optional[Loader] = None
-        self.status_container = Container()
-        self.tui.add_child(self.status_container)
 
         # Track content blocks by index
         self.content_blocks: dict[int, dict[str, Any]] = {}
@@ -139,31 +133,12 @@ class AgentRenderer:
 
     def _handle_llm_call_start(self) -> None:
         """Handle LLM call start - show 'Calling LLM...' loader."""
-        if self.loader:
-            self.loader.stop()
-        self.status_container.clear()
-        self.loader = Loader(
-            "Calling LLM...",
-            spinner_color_fn=_cyan,
-            text_color_fn=_dim,
-        )
-        self.status_container.add_child(self.loader)
+        self.tui.show_loader("Calling LLM...", spinner_color_fn=_cyan, text_color_fn=_dim)
 
     def _handle_stream_start(self) -> None:
-        """Handle stream start - hide loader since content is about to stream."""
-        # Content is about to stream, hide the loader
-        if self.loader:
-            self.loader.stop()
-            self.loader = None
-        self.status_container.clear()
-        # Note: We could show a different loader here like "Streaming..."
-        # but it's cleaner to just hide it since the streaming text is visible
-        self.loader = Loader(
-            "Streaming... (Ctrl+C to interrupt)",
-            spinner_color_fn=_cyan,
-            text_color_fn=_dim,
-        )
-        self.status_container.add_child(self.loader)
+        """Handle stream start - switch to streaming loader."""
+        # Switch to streaming message - content is about to stream
+        self.tui.show_loader("Streaming... (Ctrl+C to interrupt)", spinner_color_fn=_cyan, text_color_fn=_dim)
 
     def _handle_text_start(self, content_index: int) -> None:
         """Handle text block start."""
@@ -229,6 +204,9 @@ class AgentRenderer:
 
     def _handle_tool_call_start(self, content_index: int, tool_call_id: str, tool_name: str) -> None:
         """Handle tool call start - create tool component."""
+        # Hide loader - we're now showing tool UI instead
+        self.tui.hide_loader()
+
         # Finalize current message if we have one
         if self.current_message:
             # Message is complete, clear reference
@@ -289,10 +267,7 @@ class AgentRenderer:
 
     def _handle_stream_done(self) -> None:
         """Handle stream done - hide loader."""
-        if self.loader:
-            self.loader.stop()
-            self.loader = None
-            self.status_container.clear()
+        self.tui.hide_loader()
 
         # Finalize current message
         self.current_message = None
@@ -301,10 +276,7 @@ class AgentRenderer:
 
     def _handle_stream_error(self, error: str) -> None:
         """Handle stream error - show error message."""
-        if self.loader:
-            self.loader.stop()
-            self.loader = None
-            self.status_container.clear()
+        self.tui.hide_loader()
 
         # Show error in chat
         from .components.text import Text
