@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import List, Optional
 
 from ..tui import Component, Container
-from ..theme import Theme, DARK_THEME, hex_to_fg, RESET
+from ..theme import Theme, DARK_THEME, hex_to_fg, hex_to_bg, RESET
 from .markdown import Markdown, DefaultMarkdownTheme
 from .spacer import Spacer
 from .text import Text
@@ -69,18 +69,16 @@ class AssistantMessage(Component):
 
         # Render thinking blocks first (if any)
         if self._thinking_content and self._thinking_content.strip():
-            # Thinking with gray color
-            thinking_theme = _ThinkingMarkdownTheme(self._theme)
-            # Wrap content with gray color prefix
-            gray_prefix = hex_to_fg(self._theme.muted)
-            thinking_md = Markdown(
-                f"{gray_prefix}{self._thinking_content.strip()}{RESET}",
+            # Format thinking like a tool call with background
+            thinking_text = f"thinking()\n\n{self._thinking_content.strip()}"
+            thinking_component = Text(
+                thinking_text,
                 padding_x=2,
-                padding_y=0,
-                theme=thinking_theme,
+                padding_y=1,
+                custom_bg_fn=lambda x: f"{hex_to_bg(self._theme.tool_pending_bg)}{x}{RESET}",
             )
-            self._content_container.add_child(thinking_md)
             self._content_container.add_child(Spacer(1))
+            self._content_container.add_child(thinking_component)
 
         # Render text content (if any)
         if self._text_content and self._text_content.strip():
@@ -95,56 +93,4 @@ class AssistantMessage(Component):
     def render(self, width: int) -> List[str]:
         """Render assistant message."""
         return self._content_container.render(width)
-
-
-class _ThinkingMarkdownTheme(DefaultMarkdownTheme):
-    """Markdown theme for thinking blocks with gray text."""
-
-    def __init__(self, theme: Theme) -> None:
-        super().__init__(theme)
-        # Use gray color for thinking text elements
-        self._thinking_color = theme.muted  # Gray (#666666)
-        self._color_prefix = hex_to_fg(self._thinking_color)
-
-    def heading(self, text: str) -> str:
-        return f"\x1b[3m{self._color_prefix}{text}{RESET}"  # Italic + thinking color
-
-    def link(self, text: str) -> str:
-        return f"\x1b[4m{self._color_prefix}{text}{RESET}"
-
-    def link_url(self, text: str) -> str:
-        return f"{self._color_prefix}{text}{RESET}"
-
-    def code(self, text: str) -> str:
-        return f"{self._color_prefix}{text}{RESET}"
-
-    def code_block(self, text: str) -> str:
-        return f"{self._color_prefix}{text}{RESET}"
-
-    def code_block_border(self, text: str) -> str:
-        return f"{self._color_prefix}{text}{RESET}"
-
-    def quote(self, text: str) -> str:
-        return f"\x1b[3m{self._color_prefix}{text}{RESET}"
-
-    def quote_border(self, text: str) -> str:
-        return f"{self._color_prefix}{text}{RESET}"
-
-    def hr(self, text: str) -> str:
-        return f"{self._color_prefix}{text}{RESET}"
-
-    def list_bullet(self, text: str) -> str:
-        return f"{self._color_prefix}{text}{RESET}"
-
-    def bold(self, text: str) -> str:
-        return f"\x1b[1m{self._color_prefix}{text}{RESET}"
-
-    def italic(self, text: str) -> str:
-        return f"\x1b[3m{self._color_prefix}{text}{RESET}"
-
-    def strikethrough(self, text: str) -> str:
-        return f"\x1b[9m{self._color_prefix}{text}{RESET}"
-
-    def underline(self, text: str) -> str:
-        return f"\x1b[4m{self._color_prefix}{text}{RESET}"
 
