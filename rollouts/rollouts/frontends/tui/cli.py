@@ -19,8 +19,10 @@ from rollouts.dtypes import Endpoint, Message, Trajectory
 from rollouts.frontends.tui.interactive_agent import run_interactive_agent
 
 
-def create_endpoint(provider: str, model: str, api_base: str | None = None) -> Endpoint:
+def create_endpoint(provider: str, model: str, api_base: str | None = None, api_key: str | None = None) -> Endpoint:
     """Create endpoint from CLI arguments."""
+    import os
+
     if api_base is None:
         if provider == "openai":
             api_base = "https://api.openai.com/v1"
@@ -29,10 +31,20 @@ def create_endpoint(provider: str, model: str, api_base: str | None = None) -> E
         else:
             api_base = "https://api.openai.com/v1"  # Default
 
+    # Get API key from environment if not provided
+    if api_key is None:
+        if provider == "openai":
+            api_key = os.environ.get("OPENAI_API_KEY", "")
+        elif provider == "anthropic":
+            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        else:
+            api_key = ""
+
     return Endpoint(
         provider=provider,
         model=model,
         api_base=api_base,
+        api_key=api_key,
     )
 
 
@@ -61,6 +73,12 @@ def main() -> int:
         help="API base URL (default: provider-specific)",
     )
     parser.add_argument(
+        "--api-key",
+        type=str,
+        default=None,
+        help="API key (default: from environment OPENAI_API_KEY or ANTHROPIC_API_KEY)",
+    )
+    parser.add_argument(
         "--system-prompt",
         type=str,
         default="You are a helpful assistant.",
@@ -76,7 +94,13 @@ def main() -> int:
     args = parser.parse_args()
 
     # Create endpoint
-    endpoint = create_endpoint(args.provider, args.model, args.api_base)
+    endpoint = create_endpoint(args.provider, args.model, args.api_base, args.api_key)
+
+    # Validate API key is set
+    if not endpoint.api_key:
+        env_var = "OPENAI_API_KEY" if args.provider == "openai" else "ANTHROPIC_API_KEY"
+        print(f"\n❌ Error: No API key found. Please set {env_var} environment variable or use --api-key flag.", file=sys.stderr)
+        return 1
 
     # Create initial trajectory
     system_msg = Message(role="system", content=args.system_prompt)
@@ -86,10 +110,10 @@ def main() -> int:
     try:
         states = trio.run(
             run_interactive_agent,
-            initial_trajectory=trajectory,
-            endpoint=endpoint,
-            environment=None,  # No tools by default
-            max_turns=args.max_turns,
+            trajectory,
+            endpoint,
+            None,  # No tools by default
+            args.max_turns,
         )
         return 0
     except KeyboardInterrupt:

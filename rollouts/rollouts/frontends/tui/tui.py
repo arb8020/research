@@ -121,6 +121,10 @@ class TUI(Container):
 
     def _handle_input(self, data: str) -> None:
         """Handle keyboard input, passing to focused component."""
+        # Ctrl+C (ASCII 3) should be handled by the application layer
+        # We don't consume it here, just ignore it if we see it
+        if len(data) > 0 and ord(data[0]) == 3:
+            return
         if self._focused_component is not None:
             self._focused_component.handle_input(data)
             self.request_render()
