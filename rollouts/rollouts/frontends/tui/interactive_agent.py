@@ -24,6 +24,9 @@ from rollouts.dtypes import (
     TextContent,
     TextDelta,
     TextEnd,
+    ThinkingContent,
+    ThinkingDelta,
+    ThinkingEnd,
     ToolCallContent,
     ToolCallEnd,
     ToolResultReceived,
@@ -87,6 +90,8 @@ class InteractiveAgentRunner:
 
         # Message accumulation for session persistence
         self._current_text: str = ""
+        self._current_thinking: str = ""
+        self._current_thinking_signature: str | None = None
         self._current_tool_calls: list[dict] = []
 
     def _handle_input_submit(self, text: str) -> None:
@@ -146,7 +151,13 @@ class InteractiveAgentRunner:
             await self.renderer.handle_event(event)
 
         # Accumulate for session persistence
-        if isinstance(event, TextDelta):
+        if isinstance(event, ThinkingDelta):
+            self._current_thinking += event.delta
+        elif isinstance(event, ThinkingEnd):
+            # Capture thinking signature if available
+            # Note: signature comes from the aggregate_anthropic_stream function
+            pass  # Signature is accumulated in the stream aggregator
+        elif isinstance(event, TextDelta):
             self._current_text += event.delta
         elif isinstance(event, ToolCallEnd):
             self._current_tool_calls.append({
@@ -156,9 +167,14 @@ class InteractiveAgentRunner:
             })
         elif isinstance(event, StreamDone):
             # Persist accumulated assistant message
-            if self.session and (self._current_text or self._current_tool_calls):
+            if self.session and (self._current_thinking or self._current_text or self._current_tool_calls):
                 # Build content blocks using proper dataclass types
                 content: list[ContentBlock] = []
+                if self._current_thinking:
+                    content.append(ThinkingContent(
+                        thinking=self._current_thinking,
+                        thinking_signature=self._current_thinking_signature
+                    ))
                 if self._current_text:
                     content.append(TextContent(text=self._current_text))
                 for tc in self._current_tool_calls:
@@ -172,6 +188,8 @@ class InteractiveAgentRunner:
                 append_message(self.session, assistant_msg)
 
             # Reset accumulators
+            self._current_thinking = ""
+            self._current_thinking_signature = None
             self._current_text = ""
             self._current_tool_calls = []
         elif isinstance(event, ToolResultReceived):
