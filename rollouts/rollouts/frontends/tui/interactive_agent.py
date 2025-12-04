@@ -177,6 +177,12 @@ class InteractiveAgentRunner:
                 # Start input reading loop in background
                 nursery.start_soon(input_reading_loop)
 
+                # Start animation loop in background
+                # Why: Loader spinner needs periodic re-renders during blocking operations
+                # (e.g. API call before streaming starts). The loop calls request_render()
+                # every 80ms when loader is active.
+                nursery.start_soon(self.tui.run_animation_loop)
+
                 # Wait for first user message before starting agent
                 # This ensures we don't send empty messages to the LLM
                 if self.input_component and self.tui:

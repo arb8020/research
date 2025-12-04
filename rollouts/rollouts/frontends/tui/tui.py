@@ -9,9 +9,41 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Callable, Protocol, Optional, List
 import os
+import time
 
 from .terminal import Terminal
 from .utils import visible_width
+
+
+# Spinner frames for loader animation
+_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+
+def render_loader_line(
+    text: str,
+    elapsed_time: float,
+    width: int,
+    spinner_color_fn: Callable[[str], str] = lambda x: x,
+    text_color_fn: Callable[[str], str] = lambda x: x,
+) -> str:
+    """Render a single loader line. Pure function.
+
+    Args:
+        text: Text to display after spinner
+        elapsed_time: Seconds since loader started (for frame calculation)
+        width: Terminal width for padding
+        spinner_color_fn: Function to colorize spinner
+        text_color_fn: Function to colorize text
+
+    Returns:
+        Rendered line string
+    """
+    frame_index = int(elapsed_time * 10) % len(_SPINNER_FRAMES)
+    spinner = _SPINNER_FRAMES[frame_index]
+
+    line = spinner_color_fn(spinner) + " " + text_color_fn(text)
+    padding = max(0, width - visible_width(line))
+    return line + " " * padding
 
 
 class Component(ABC):
@@ -86,6 +118,15 @@ class TUI(Container):
         self._cursor_row: int = 0  # Track where cursor is (0-indexed, relative to our first line)
         self._running: bool = False
 
+        # Loader state - centralized here instead of separate Loader class
+        # Why: Loader needs periodic re-renders during blocking operations (e.g. API calls).
+        # TUI owns the render loop, so it's natural for TUI to own animation timing.
+        self._loader_text: Optional[str] = None  # None = no loader showing
+        self._loader_start_time: float = 0.0
+        self._loader_spinner_color_fn: Callable[[str], str] = lambda x: x
+        self._loader_text_color_fn: Callable[[str], str] = lambda x: x
+        self._animation_task_running: bool = False
+
     def set_focus(self, component: Optional[Component]) -> None:
         """Set the focused component for input handling."""
         self._focused_component = component
@@ -103,8 +144,83 @@ class TUI(Container):
     def stop(self) -> None:
         """Stop the TUI and restore terminal state."""
         self._running = False
+        self._loader_text = None  # Clear loader on stop
         self._terminal.show_cursor()
         self._terminal.stop()
+
+    def show_loader(
+        self,
+        text: str,
+        spinner_color_fn: Callable[[str], str] = lambda x: x,
+        text_color_fn: Callable[[str], str] = lambda x: x,
+    ) -> None:
+        """Show a loader with spinning animation.
+
+        Args:
+            text: Text to display after spinner (e.g. "Calling LLM...")
+            spinner_color_fn: Function to colorize spinner
+            text_color_fn: Function to colorize text
+        """
+        self._loader_text = text
+        self._loader_start_time = time.time()
+        self._loader_spinner_color_fn = spinner_color_fn
+        self._loader_text_color_fn = text_color_fn
+        self.request_render()
+
+    def hide_loader(self) -> None:
+        """Hide the loader."""
+        self._loader_text = None
+        self.request_render()
+
+    def is_loader_active(self) -> bool:
+        """Check if loader is currently showing."""
+        return self._loader_text is not None
+
+    async def run_animation_loop(self) -> None:
+        """Run the animation timer loop.
+
+        Call this as a background task. The loop runs continuously and triggers
+        re-renders every 80ms when the loader is active.
+        Why 80ms: matches pi-mono's animation interval, gives smooth 12.5fps animation.
+
+        Usage with Trio:
+            async with trio.open_nursery() as nursery:
+                nursery.start_soon(tui.run_animation_loop)
+                # ... do other work ...
+        """
+        import trio
+
+        self._animation_task_running = True
+        try:
+            while self._animation_task_running and self._running:
+                await trio.sleep(0.08)  # 80ms
+                # Only trigger re-render if loader is active
+                if self._loader_text is not None:
+                    self.request_render()
+        finally:
+            self._animation_task_running = False
+
+    def stop_animation_loop(self) -> None:
+        """Signal the animation loop to stop."""
+        self._animation_task_running = False
+
+    def render(self, width: int) -> List[str]:
+        """Render all children plus loader if active."""
+        lines = super().render(width)
+
+        # Append loader line if active
+        if self._loader_text is not None:
+            elapsed = time.time() - self._loader_start_time
+            loader_line = render_loader_line(
+                self._loader_text,
+                elapsed,
+                width,
+                self._loader_spinner_color_fn,
+                self._loader_text_color_fn,
+            )
+            lines.append(loader_line)
+
+        return lines
 
     def request_render(self) -> None:
         """Request a render on the next tick.
@@ -232,13 +348,24 @@ class TUI(Container):
                 )
             buffer += line
 
-        # If we had more lines before, clear them and move cursor back
+        # If we had more lines before, clear them
         if len(self._previous_lines) > len(new_lines):
             extra_lines = len(self._previous_lines) - len(new_lines)
-            for _ in range(extra_lines):
-                buffer += "\r\n\x1b[2K"
-            # Move cursor back to end of new content
-            buffer += f"\x1b[{extra_lines}A"
+            # Clear each extra line. We're currently at first_changed.
+            # The lines to clear start at len(new_lines).
+            for i in range(extra_lines):
+                if i == 0 and first_changed == len(new_lines):
+                    # Already at first stale line, just clear it
+                    buffer += "\x1b[2K"
+                else:
+                    buffer += "\r\n\x1b[2K"
+            # Move cursor back up to end of actual content
+            # We need to end at len(new_lines) - 1
+            lines_to_move_up = first_changed + extra_lines - (len(new_lines) - 1)
+            if first_changed == len(new_lines):
+                lines_to_move_up = extra_lines
+            if lines_to_move_up > 0:
+                buffer += f"\x1b[{lines_to_move_up}A"
 
         buffer += "\x1b[?2026l"  # End synchronized output
 
