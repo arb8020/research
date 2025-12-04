@@ -41,6 +41,7 @@ from .tui import TUI
 from .agent_renderer import AgentRenderer
 from .components.input import Input
 from .components.spacer import Spacer
+from .components.loader_container import LoaderContainer
 from .sessions import Session, append_message
 
 
@@ -84,6 +85,7 @@ class InteractiveAgentRunner:
         self.tui: Optional[TUI] = None
         self.renderer: Optional[AgentRenderer] = None
         self.input_component: Optional[Input] = None
+        self.loader_container: Optional[LoaderContainer] = None
 
         # Input coordination - use Trio memory channels instead of asyncio.Queue
         self.input_send: Optional[trio.MemorySendChannel[str]] = None
@@ -234,9 +236,9 @@ class InteractiveAgentRunner:
         self.renderer = AgentRenderer(self.tui, debug_layout=self.debug_layout)
 
         # Render history from initial trajectory (for resumed sessions)
-        # Skip system messages, render user/assistant/tool messages
+        # Render all messages including system messages
         if self.initial_trajectory.messages:
-            self.renderer.render_history(self.initial_trajectory.messages)
+            self.renderer.render_history(self.initial_trajectory.messages, skip_system=False)
             # Mark that we've already shown messages, so next user message isn't "first"
             self.is_first_user_message = False
 
@@ -244,14 +246,23 @@ class InteractiveAgentRunner:
             if self.debug:
                 self.renderer.debug_dump_chat()
 
+        # Create loader container (for spinner during LLM calls)
+        self.loader_container = LoaderContainer(
+            spinner_color_fn=self.tui.theme.accent_fg,
+            text_color_fn=self.tui.theme.muted_fg,
+        )
+        self.tui.set_loader_container(self.loader_container)
+        self.tui.add_child(Spacer(1, debug_label="before-loader"))
+        self.tui.add_child(self.loader_container)
+        self.tui.add_child(Spacer(1, debug_label="after-loader"))
+
         # Create input component with theme
-        # Add spacer above input box for visual separation
-        self.tui.add_child(Spacer(1))
         self.input_component = Input(theme=self.tui.theme)
         self.input_component.set_on_submit(self._handle_input_submit)
         self.tui.add_child(self.input_component)
-        # Add spacers below input box to push it up from the bottom
-        self.tui.add_child(Spacer(3))
+
+        # Add spacer after input box to keep it 6 lines from bottom
+        self.tui.add_child(Spacer(6, debug_label="after-input"))
 
         # Set up signal handler for Ctrl+C
         signal.signal(signal.SIGINT, self._handle_sigint)

@@ -18,37 +18,6 @@ from .theme import Theme, DARK_THEME
 from .utils import visible_width
 
 
-# Spinner frames for loader animation
-_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-
-
-def render_loader_line(
-    text: str,
-    elapsed_time: float,
-    width: int,
-    spinner_color_fn: Callable[[str], str] = lambda x: x,
-    text_color_fn: Callable[[str], str] = lambda x: x,
-) -> str:
-    """Render a single loader line. Pure function.
-
-    Args:
-        text: Text to display after spinner
-        elapsed_time: Seconds since loader started (for frame calculation)
-        width: Terminal width for padding
-        spinner_color_fn: Function to colorize spinner
-        text_color_fn: Function to colorize text
-
-    Returns:
-        Rendered line string
-    """
-    frame_index = int(elapsed_time * 10) % len(_SPINNER_FRAMES)
-    spinner = _SPINNER_FRAMES[frame_index]
-
-    line = spinner_color_fn(spinner) + " " + text_color_fn(text)
-    padding = max(0, width - visible_width(line))
-    return line + " " * padding
-
-
 class Component(ABC):
     """Base class for all TUI components."""
 
@@ -125,13 +94,8 @@ class TUI(Container):
         self._debug = debug
         self._debug_layout = debug_layout
 
-        # Loader state - centralized here instead of separate Loader class
-        # Why: Loader needs periodic re-renders during blocking operations (e.g. API calls).
-        # TUI owns the render loop, so it's natural for TUI to own animation timing.
-        self._loader_text: Optional[str] = None  # None = no loader showing
-        self._loader_start_time: float = 0.0
-        self._loader_spinner_color_fn: Callable[[str], str] = lambda x: x
-        self._loader_text_color_fn: Callable[[str], str] = lambda x: x
+        # Loader container - set by InteractiveAgentRunner to render loader in fixed location
+        self._loader_container: Optional[Component] = None
         self._animation_task_running: bool = False
 
     def set_focus(self, component: Optional[Component]) -> None:
@@ -151,9 +115,16 @@ class TUI(Container):
     def stop(self) -> None:
         """Stop the TUI and restore terminal state."""
         self._running = False
-        self._loader_text = None  # Clear loader on stop
         self._terminal.show_cursor()
         self._terminal.stop()
+
+    def set_loader_container(self, container: Component) -> None:
+        """Set the loader container component.
+
+        Args:
+            container: Component that manages loader rendering (e.g., LoaderContainer)
+        """
+        self._loader_container = container
 
     def show_loader(
         self,
@@ -165,23 +136,24 @@ class TUI(Container):
 
         Args:
             text: Text to display after spinner (e.g. "Calling LLM...")
-            spinner_color_fn: Function to colorize spinner
-            text_color_fn: Function to colorize text
+            spinner_color_fn: Function to colorize spinner (unused, kept for API compatibility)
+            text_color_fn: Function to colorize text (unused, kept for API compatibility)
         """
-        self._loader_text = text
-        self._loader_start_time = time.time()
-        self._loader_spinner_color_fn = spinner_color_fn
-        self._loader_text_color_fn = text_color_fn
+        if self._loader_container and hasattr(self._loader_container, 'set_loader'):
+            self._loader_container.set_loader(text)
         self.request_render()
 
     def hide_loader(self) -> None:
         """Hide the loader."""
-        self._loader_text = None
+        if self._loader_container and hasattr(self._loader_container, 'clear_loader'):
+            self._loader_container.clear_loader()
         self.request_render()
 
     def is_loader_active(self) -> bool:
         """Check if loader is currently showing."""
-        return self._loader_text is not None
+        if self._loader_container and hasattr(self._loader_container, 'is_active'):
+            return self._loader_container.is_active()
+        return False
 
     async def run_animation_loop(self) -> None:
         """Run the animation timer loop.
@@ -202,7 +174,7 @@ class TUI(Container):
             while self._animation_task_running and self._running:
                 await trio.sleep(0.08)  # 80ms
                 # Only trigger re-render if loader is active
-                if self._loader_text is not None:
+                if self._loader_container and hasattr(self._loader_container, 'is_active') and self._loader_container.is_active():
                     self.request_render()
         finally:
             self._animation_task_running = False
@@ -212,7 +184,7 @@ class TUI(Container):
         self._animation_task_running = False
 
     def render(self, width: int) -> List[str]:
-        """Render all children plus loader if active, with optional debug gutter."""
+        """Render all children with optional debug gutter."""
         # Debug mode: add single-character gutter showing component types
         if self._debug_layout:
             gutter_width = 2  # Just 1 char + space
@@ -239,6 +211,8 @@ class TUI(Container):
                     return 'T'
                 elif name == "Input":
                     return 'I'
+                elif name == "LoaderContainer":
+                    return 'L'
                 elif name == "Markdown":
                     return 'M'
                 elif name == "Text":
@@ -271,20 +245,6 @@ class TUI(Container):
             lines = all_lines
         else:
             lines = super().render(width)
-
-        # Append loader line if active
-        if self._loader_text is not None:
-            elapsed = time.time() - self._loader_start_time
-            loader_line = render_loader_line(
-                self._loader_text,
-                elapsed,
-                width if not self._debug_layout else width - 2,  # Account for gutter
-                self._loader_spinner_color_fn,
-                self._loader_text_color_fn,
-            )
-            if self._debug_layout:
-                loader_line = 'L ' + loader_line
-            lines.append(loader_line)
 
         return lines
 
@@ -329,10 +289,11 @@ class TUI(Container):
         all_lines = self.render(width)
 
         # Viewport logic: if total lines exceed terminal height, show only the bottom portion
-        # This ensures the input box (at the end) stays visible
-        if len(all_lines) > height:
-            new_lines = all_lines[-height:]
-            self._debug_log(f"VIEWPORT total_lines={len(all_lines)} showing_bottom={height}")
+        # This ensures the input box (at the end) stays visible with 4 lines of padding above it
+        viewport_height = height - 4  # Add 4 lines of padding
+        if len(all_lines) > viewport_height:
+            new_lines = all_lines[-viewport_height:]
+            self._debug_log(f"VIEWPORT total_lines={len(all_lines)} showing_bottom={viewport_height} (height={height}, padding=4)")
         else:
             new_lines = all_lines
 
