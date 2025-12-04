@@ -69,11 +69,13 @@ class AssistantMessage(Component):
 
         # Render thinking blocks first (if any)
         if self._thinking_content and self._thinking_content.strip():
-            # Thinking with intensity-based color
-            thinking_theme = _ThinkingMarkdownTheme(self._theme, self._thinking_intensity)
+            # Thinking with gray color
+            thinking_theme = _ThinkingMarkdownTheme(self._theme)
+            # Wrap content with gray color prefix
+            gray_prefix = hex_to_fg(self._theme.muted)
             thinking_md = Markdown(
-                self._thinking_content.strip(),
-                padding_x=1,
+                f"{gray_prefix}{self._thinking_content.strip()}{RESET}",
+                padding_x=2,
                 padding_y=0,
                 theme=thinking_theme,
             )
@@ -84,7 +86,7 @@ class AssistantMessage(Component):
         if self._text_content and self._text_content.strip():
             text_md = Markdown(
                 self._text_content.strip(),
-                padding_x=1,
+                padding_x=2,
                 padding_y=0,
                 theme=DefaultMarkdownTheme(self._theme),
             )
@@ -96,18 +98,12 @@ class AssistantMessage(Component):
 
 
 class _ThinkingMarkdownTheme(DefaultMarkdownTheme):
-    """Markdown theme for thinking blocks with intensity-based colors."""
+    """Markdown theme for thinking blocks with gray text."""
 
-    def __init__(self, theme: Theme, intensity: str = "medium") -> None:
+    def __init__(self, theme: Theme) -> None:
         super().__init__(theme)
-        # Get thinking color based on intensity
-        colors = {
-            "minimal": theme.thinking_minimal,
-            "low": theme.thinking_low,
-            "medium": theme.thinking_medium,
-            "high": theme.thinking_high,
-        }
-        self._thinking_color = colors.get(intensity, theme.thinking_medium)
+        # Use gray color for thinking text elements
+        self._thinking_color = theme.muted  # Gray (#666666)
         self._color_prefix = hex_to_fg(self._thinking_color)
 
     def heading(self, text: str) -> str:
