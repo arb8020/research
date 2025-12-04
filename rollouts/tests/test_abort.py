@@ -71,8 +71,10 @@ async def test_abort_cancels_http_request():
     async with trio.open_nursery() as nursery:
         async def agent_task():
             nonlocal aborted
+            async def silent_handler(e):
+                pass
             run_config = RunConfig(
-                on_chunk=lambda e: None,  # Silent handler
+                on_chunk=silent_handler,
                 cancel_scope=cancel_scope,
                 handle_stop=handle_stop_max_turns(10),
             )
@@ -155,8 +157,10 @@ async def test_abort_with_anthropic():
     async with trio.open_nursery() as nursery:
         async def agent_task():
             nonlocal aborted
+            async def silent_handler(e):
+                pass
             run_config = RunConfig(
-                on_chunk=lambda e: None,
+                on_chunk=silent_handler,
                 cancel_scope=cancel_scope,
                 handle_stop=handle_stop_max_turns(10),
             )
