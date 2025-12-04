@@ -358,15 +358,90 @@ class ProviderStreamFunction(Protocol):
         ...
 
 
+# ContentBlock types for structured message content (inspired by pi-ai)
+# These allow messages to contain mixed content: text, thinking, tool calls, images
+
+
+@dataclass(frozen=True)
+class TextContent(JsonSerializable):
+    """Text content block in a message."""
+    type: Literal["text"] = "text"
+    text: str = ""
+    text_signature: str | None = None  # Provider-specific identifier
+
+
+@dataclass(frozen=True)
+class ThinkingContent(JsonSerializable):
+    """Thinking/reasoning content block in a message.
+
+    Used by Anthropic (thinking blocks) and OpenAI o1/o3 (reasoning_content).
+    """
+    type: Literal["thinking"] = "thinking"
+    thinking: str = ""
+    thinking_signature: str | None = None  # Provider-specific identifier (e.g., GPT-5 Codex reasoning item ID)
+
+
+@dataclass(frozen=True)
+class ToolCallContent(JsonSerializable):
+    """Tool call content block in a message."""
+    type: Literal["toolCall"] = "toolCall"
+    id: str = ""
+    name: str = ""
+    arguments: dict[str, Any] = field(default_factory=dict)
+    thought_signature: str | None = None  # Google-specific opaque context
+
+
+@dataclass(frozen=True)
+class ImageContent(JsonSerializable):
+    """Image content block in a message (for vision models)."""
+    type: Literal["image"] = "image"
+    image_url: str = ""  # base64 data URL or HTTP URL
+    detail: str | None = None  # OpenAI detail parameter: "low", "high", "auto"
+
+
+# Union type for all content blocks
+ContentBlock = TextContent | ThinkingContent | ToolCallContent | ImageContent
+
+
 @dataclass(frozen=True)
 class Message(JsonSerializable):
+    """Unified message type supporting all providers.
+
+    Content can be:
+    - str: Simple text message (most common)
+    - list[ContentBlock]: Structured message with text/thinking/tools/images
+
+    Role can be:
+    - "user": User input
+    - "assistant": Model response
+    - "tool": Tool execution result
+    """
     role: str
-    content: str | list[dict[str, Any]] | None  # str for text, List[Dict] for vision (OpenAI format)
-    reasoning_content: Any | None = None
-    thinking_content: str | None = None
-    thinking_signature: str | None = None
-    tool_calls: list[ToolCall] = field(default_factory=list)
+    content: str | list[ContentBlock] | None
+    # Provider metadata for message transformation
+    provider: str | None = None  # e.g., "anthropic", "openai", "google"
+    api: str | None = None  # e.g., "anthropic-messages", "openai-completions", "openai-responses"
+    model: str | None = None  # e.g., "claude-3-5-sonnet-20241022", "gpt-4o"
+    # For tool role messages: which tool call this is responding to
     tool_call_id: str | None = None
+
+    def get_tool_calls(self) -> list[ToolCall]:
+        """Extract tool calls from ContentBlocks.
+
+        Tiger Style: Helper for common operation, makes migration easier.
+        """
+        if not isinstance(self.content, list):
+            return []
+
+        tool_calls = []
+        for block in self.content:
+            if isinstance(block, ToolCallContent):
+                tool_calls.append(ToolCall(
+                    id=block.id,
+                    name=block.name,
+                    args=block.arguments
+                ))
+        return tool_calls
 
     def __repr__(self) -> str:
         """Tiger Style: Bounded repr, truncate large content.
@@ -378,8 +453,9 @@ class Message(JsonSerializable):
         if isinstance(self.content, str):
             content_preview = self.content[:100] + "..." if len(self.content) > 100 else self.content
         elif isinstance(self.content, list):
-            # Vision message - show structure but not base64 data
-            content_preview = f"[vision message with {len(self.content)} parts]"
+            # Show ContentBlock types
+            block_types = [b.type for b in self.content if hasattr(b, 'type')]
+            content_preview = f"[{len(self.content)} blocks: {', '.join(block_types)}]"
         else:
             content_preview = str(self.content)
 
@@ -746,6 +822,27 @@ class Endpoint(JsonSerializable):
     timeout: float = 120.0  # Timeout in seconds for API calls
     # Extra params merged into the raw chat request for custom servers
     extra_params: dict[str, Any] | None = None
+
+    def __post_init__(self):
+        """Validate endpoint configuration.
+
+        Tiger Style: Crash loud on invalid config, explicit error messages.
+        """
+        # Validate Claude thinking budget (Anthropic requires >= 1024 tokens)
+        if self.thinking is not None and self.provider == "anthropic":
+            assert isinstance(self.thinking, dict), f"thinking must be dict, got {type(self.thinking)}"
+            if self.thinking.get("type") == "enabled":
+                budget = self.thinking.get("budget_tokens", 0)
+                assert isinstance(budget, int), f"budget_tokens must be int, got {type(budget)}"
+                assert budget >= 1024, (
+                    f"Claude thinking budget_tokens must be >= 1024, got {budget}. "
+                    "Anthropic API requirement for extended thinking mode."
+                )
+                # Anthropic requires temperature=1.0 when thinking is enabled
+                assert self.temperature == 1.0, (
+                    f"Anthropic requires temperature=1.0 when thinking is enabled, got {self.temperature}. "
+                    "See https://docs.claude.com/en/docs/build-with-claude/extended-thinking"
+                )
 
 
 @dataclass(frozen=True)
