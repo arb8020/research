@@ -141,7 +141,12 @@ class Markdown(Component):
 
         # Normalize and render markdown
         normalized_text = self._text.replace("\t", "   ")
-        content_width = max(1, width - self._padding_x * 2)
+        # Account for gutter prefix width if present
+        gutter_width = 0
+        if self._gutter_prefix:
+            from ..utils import visible_width
+            gutter_width = visible_width(self._gutter_prefix) + 1  # +1 for space after prefix
+        content_width = max(1, width - self._padding_x * 2 - gutter_width)
         rendered_lines = self._render_markdown(normalized_text, content_width)
 
         # Wrap lines
