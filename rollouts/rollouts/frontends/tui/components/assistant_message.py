@@ -71,14 +71,15 @@ class AssistantMessage(Component):
         if self._thinking_content and self._thinking_content.strip():
             # Format thinking like a tool call with background
             thinking_text = f"thinking()\n\n{self._thinking_content.strip()}"
-            thinking_component = Text(
+            thinking_md = Markdown(
                 thinking_text,
                 padding_x=2,
                 padding_y=1,
-                custom_bg_fn=lambda x: f"{hex_to_bg(self._theme.tool_pending_bg)}{x}{RESET}",
+                theme=DefaultMarkdownTheme(self._theme),
+                bg_fn=lambda x: f"{hex_to_bg(self._theme.tool_pending_bg)}{x}{RESET}",
             )
             self._content_container.add_child(Spacer(1))
-            self._content_container.add_child(thinking_component)
+            self._content_container.add_child(thinking_md)
 
         # Render text content (if any)
         if self._text_content and self._text_content.strip():
