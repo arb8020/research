@@ -28,7 +28,7 @@ dev = [
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["rollouts"]
+packages = ["."]
 
 [build-system]
 requires = ["hatchling"]
