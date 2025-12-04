@@ -165,7 +165,6 @@ def inject_turn_warning(max_turns: int, warning_at: int = 2) -> Callable[[AgentS
             warning = Message(
                 role="user",
                 content=f"⚠️ You have {warning_at} turns remaining. Please complete your task quickly.",
-                tool_calls=[]
             )
             new_trajectory = replace(
                 state.actor.trajectory,
@@ -273,7 +272,7 @@ def handle_stop_on_empty_message() -> Callable[[AgentState], AgentState]:
             last_msg = state.actor.trajectory.messages[-1]
             if (last_msg.role == "assistant" and
                 not last_msg.content and
-                not (hasattr(last_msg, 'tool_calls') and last_msg.tool_calls)):
+                not last_msg.get_tool_calls()):
                 result_state = replace(state, stop=StopReason.MAX_TURNS)
                 assert result_state.stop is not None
                 return result_state
@@ -331,7 +330,6 @@ async def inject_tool_reminder(state: AgentState, run_config: 'RunConfig') -> Ag
     reminder = Message(
         role="user",
         content="Please use the available tools to complete the task. What calculation would you like to perform?",
-        tool_calls=[]
     )
     new_trajectory = replace(
         state.actor.trajectory,
@@ -416,8 +414,15 @@ async def run_agent_step(state: AgentState, rcfg: RunConfig) -> AgentState:
     logger.debug(f"🔍 BEFORE rollout() - Turn {state.turn_idx}")
     logger.debug(f"   Trajectory messages count: {len(updated_actor.trajectory.messages)}")
     for i, msg in enumerate(updated_actor.trajectory.messages):
-        content_len = len(msg.content) if msg.content else 0
-        content_preview = (msg.content[:50] if msg.content else 'None') + '...'
+        if isinstance(msg.content, str):
+            content_len = len(msg.content) if msg.content else 0
+            content_preview = (msg.content[:50] if msg.content else 'None') + '...'
+        elif isinstance(msg.content, list):
+            content_len = len(msg.content)
+            content_preview = f"[{len(msg.content)} blocks]..."
+        else:
+            content_len = 0
+            content_preview = 'None...'
         logger.debug(f"      Message {i} ({msg.role}): {content_len} chars - {content_preview}")
 
     # Make LLM call
@@ -427,15 +432,22 @@ async def run_agent_step(state: AgentState, rcfg: RunConfig) -> AgentState:
     logger.debug(f"🔍 AFTER rollout() - Turn {state.turn_idx}")
     logger.debug(f"   Trajectory messages count: {len(next_actor.trajectory.messages)}")
     for i, msg in enumerate(next_actor.trajectory.messages):
-        content_len = len(msg.content) if msg.content else 0
-        content_preview = (msg.content[:50] if msg.content else 'None') + '...'
+        if isinstance(msg.content, str):
+            content_len = len(msg.content) if msg.content else 0
+            content_preview = (msg.content[:50] if msg.content else 'None') + '...'
+        elif isinstance(msg.content, list):
+            content_len = len(msg.content)
+            content_preview = f"[{len(msg.content)} blocks]..."
+        else:
+            content_len = 0
+            content_preview = 'None...'
         logger.debug(f"      Message {i} ({msg.role}): {content_len} chars - {content_preview}")
 
     # Extract tool calls from last message (if it's an assistant message)
     last_message = next_actor.trajectory.messages[-1] if next_actor.trajectory.messages else None
     tool_calls = []
     if last_message and last_message.role == "assistant":
-        tool_calls = last_message.tool_calls if last_message.tool_calls else []
+        tool_calls = last_message.get_tool_calls()
 
     # Update state with new actor AND pending tools
     current_state = replace(
@@ -550,7 +562,6 @@ async def process_pending_tools(state: AgentState, rcfg: RunConfig) -> AgentStat
             user_msg = Message(
                 role="user",
                 content=confirm_result.user_message,
-                tool_calls=[]
             )
             messages_to_add.append(user_msg)
         
