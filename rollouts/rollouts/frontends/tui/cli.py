@@ -33,8 +33,10 @@ from rollouts.environments import CalculatorEnvironment, CodingEnvironment
 from rollouts.frontends.tui.interactive_agent import run_interactive_agent
 from rollouts.frontends.tui.sessions import (
     Session,
+    SessionInfo,
     create_session,
     find_latest_session,
+    list_sessions_with_info,
     load_session,
     load_messages,
     load_header,
@@ -69,6 +71,61 @@ When working on code:
 3. Use bash to run tests, linting, etc.
 4. Prefer small, focused changes over large rewrites""",
 }
+
+
+def format_time_ago(dt: 'datetime') -> str:
+    """Format a datetime as relative time (e.g., '2h ago', '3d ago')."""
+    from datetime import datetime, timezone
+    now = datetime.now()
+    diff = now - dt
+
+    seconds = diff.total_seconds()
+    if seconds < 60:
+        return "just now"
+    elif seconds < 3600:
+        mins = int(seconds / 60)
+        return f"{mins}m ago"
+    elif seconds < 86400:
+        hours = int(seconds / 3600)
+        return f"{hours}h ago"
+    else:
+        days = int(seconds / 86400)
+        return f"{days}d ago"
+
+
+def pick_session(working_dir: Path) -> Session | None:
+    """Interactive session picker. Returns None if no sessions or user cancels."""
+    sessions = list_sessions_with_info(working_dir)
+
+    if not sessions:
+        print("No sessions found for this directory.")
+        return None
+
+    print(f"\nSessions for {working_dir}:\n")
+    for i, info in enumerate(sessions):
+        time_ago = format_time_ago(info.modified)
+        preview = info.first_user_message or "(no messages)"
+        print(f"  [{i + 1}] {time_ago:>10}  {info.message_count:>3} msgs  {preview}")
+
+    print(f"\n  [0] Cancel")
+    print()
+
+    while True:
+        try:
+            choice = input("Select session: ").strip()
+            if not choice:
+                continue
+            num = int(choice)
+            if num == 0:
+                return None
+            if 1 <= num <= len(sessions):
+                return sessions[num - 1].session
+            print(f"Please enter 0-{len(sessions)}")
+        except ValueError:
+            print("Please enter a number")
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return None
 
 
 def create_endpoint(provider: str, model: str, api_base: str | None = None, api_key: str | None = None) -> Endpoint:
@@ -164,10 +221,12 @@ def main() -> int:
         help="Continue most recent session",
     )
     parser.add_argument(
-        "--session",
+        "--session", "-s",
         type=str,
+        nargs="?",
+        const="",  # Empty string when flag used without value
         default=None,
-        help="Resume specific session by file path",
+        help="Resume session: -s to list/pick, -s PATH to resume specific file",
     )
     parser.add_argument(
         "--no-session",
@@ -210,13 +269,23 @@ def main() -> int:
     session: Session | None = None
     messages: list[Message] = []
 
-    if args.session:
-        # Resume specific session
-        session = load_session(Path(args.session))
-        messages = load_messages(session)
-        header = load_header(session)
-        print(f"Resuming session: {session.session_id}")
-        print(f"  {len(messages)} messages from {header.timestamp}")
+    if args.session is not None:
+        if args.session == "":
+            # --session without path: show picker
+            session = pick_session(working_dir)
+            if session is None:
+                return 0  # User cancelled or no sessions
+            messages = load_messages(session)
+            header = load_header(session)
+            print(f"Resuming session: {session.session_id}")
+            print(f"  {len(messages)} messages from {header.timestamp}")
+        else:
+            # Resume specific session by path
+            session = load_session(Path(args.session))
+            messages = load_messages(session)
+            header = load_header(session)
+            print(f"Resuming session: {session.session_id}")
+            print(f"  {len(messages)} messages from {header.timestamp}")
     elif args.continue_session:
         # Continue most recent session
         session = find_latest_session(working_dir)
