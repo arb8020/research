@@ -50,10 +50,10 @@ class LoaderContainer(Component):
         pass
 
     def render(self, width: int) -> List[str]:
-        """Render loader if active, otherwise render empty line."""
+        """Render loader with its preceding spacer when active, otherwise render nothing."""
         if not self._loader_text:
-            # When no loader, still render one empty line to maintain spacing
-            return [""]
+            # When no loader, render nothing (no spacer, no loader line)
+            return []
 
         # Calculate frame index based on elapsed time
         elapsed = time.time() - self._loader_start_time
@@ -68,4 +68,5 @@ class LoaderContainer(Component):
         padding_needed = max(0, width - visible_len)
         padded_line = line + " " * padding_needed
 
-        return [padded_line]
+        # Return spacer before loader + loader line (loader brings its "before" with it)
+        return ["", padded_line]
