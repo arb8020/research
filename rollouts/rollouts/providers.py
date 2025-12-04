@@ -106,7 +106,9 @@ def _build_vllm_params(actor: Actor) -> dict:
     assert actor.trajectory is not None
     assert actor.trajectory.messages is not None
 
-    messages = [_message_to_openai(m) for m in actor.trajectory.messages]
+    # Strip details before sending to LLM
+    llm_messages = _prepare_messages_for_llm(actor.trajectory.messages)
+    messages = [_message_to_openai(m) for m in llm_messages]
     assert isinstance(messages, list)
     assert len(messages) > 0, "messages list cannot be empty"
 
@@ -316,6 +318,37 @@ def add_cache_control_to_last_content(
 
     assert isinstance(new_messages, list)
     return new_messages
+
+
+def _prepare_messages_for_llm(messages: list[Message]) -> list[Message]:
+    """Strip tool result details before sending to LLM.
+    
+    Tiger Style: Explicit filtering, no magic.
+    Tools return both `content` (for LLM) and `details` (for UI).
+    This function removes `details` to reduce token usage.
+    
+    Args:
+        messages: List of messages, some may have details field
+        
+    Returns:
+        New list with details stripped from tool messages
+    """
+    assert messages is not None
+    assert isinstance(messages, list)
+    
+    filtered = []
+    for msg in messages:
+        if msg.role == "tool":
+            # Strip details field - UI-only data
+            # Keep only content for LLM context
+            from dataclasses import replace
+            filtered_msg = replace(msg, details=None)  # Remove details
+            filtered.append(filtered_msg)
+        else:
+            filtered.append(msg)
+    
+    assert len(filtered) == len(messages)  # No messages dropped
+    return filtered
 
 
 def _message_to_openai(m: Message) -> ChatCompletionMessageParam:
@@ -817,7 +850,9 @@ async def rollout_openai(
         client_kwargs["base_url"] = actor.endpoint.api_base
     client = AsyncOpenAI(**client_kwargs)
 
-    messages = [_message_to_openai(m) for m in actor.trajectory.messages]
+    # Strip details before sending to LLM
+    llm_messages = _prepare_messages_for_llm(actor.trajectory.messages)
+    messages = [_message_to_openai(m) for m in llm_messages]
 
     params = {
         "model": actor.endpoint.model,
@@ -1397,9 +1432,12 @@ async def rollout_openai_responses(
         target_api="openai-responses"
     )
 
+    # Strip details before sending to LLM
+    llm_messages = _prepare_messages_for_llm(transformed_messages)
+
     # Convert messages to OpenAI Responses format
     # Note: The Responses API uses a completely different message format than chat completions
-    messages = _messages_to_openai_responses(transformed_messages)
+    messages = _messages_to_openai_responses(llm_messages)
 
     params = {
         "model": actor.endpoint.model,
@@ -2347,12 +2385,15 @@ async def rollout_anthropic(
         target_api="anthropic-messages"
     )
 
+    # Strip details before sending to LLM
+    llm_messages = _prepare_messages_for_llm(transformed_messages)
+
     system_prompt = None
     messages = []
 
     from .dtypes import TextContent
 
-    for m in transformed_messages:
+    for m in llm_messages:
         if m.role == "system":
             # Extract text from ContentBlocks
             text_blocks = [b for b in m.content if isinstance(b, TextContent)]

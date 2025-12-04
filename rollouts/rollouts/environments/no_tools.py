@@ -47,10 +47,20 @@ class BasicEnvironment:
         """No tools, so no confirmation needed."""
         return False
 
-    async def exec_tool(self, tool_call: ToolCall, current_state: AgentState,
-                       run_config: RunConfig, checkpoint_store=None) -> ToolResult:
+    async def exec_tool(
+        self,
+        tool_call: ToolCall,
+        current_state: AgentState,
+        run_config: RunConfig,
+        checkpoint_store=None,
+        cancel_scope=None,
+    ) -> ToolResult:
         """No tools available in basic environment."""
-        return ToolResult(content="No tools available in basic environment")
+        return ToolResult(
+            tool_call_id=tool_call.id,
+            is_error=True,
+            content="No tools available in basic environment"
+        )
 
     async def on_assistant_message(self, message: Message, state: AgentState) -> AgentState:
         """No feedback needed for basic environment."""

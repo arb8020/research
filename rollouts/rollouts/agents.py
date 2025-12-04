@@ -5,6 +5,8 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 
+import trio
+
 from .progress import tqdm
 
 logger = logging.getLogger(__name__)
@@ -105,8 +107,8 @@ async def confirm_tool_with_feedback(tc: ToolCall, state: AgentState, run_config
         result_with_feedback = ToolConfirmResult(
             proceed=False,
             tool_result=ToolResult(
-                call_id=tc.id,
-                ok=False,
+                tool_call_id=tc.id,
+                is_error=True,
                 error="Rejected by user"
             ),
             user_message=feedback
@@ -118,8 +120,8 @@ async def confirm_tool_with_feedback(tc: ToolCall, state: AgentState, run_config
         result_skip = ToolConfirmResult(
             proceed=False,
             tool_result=ToolResult(
-                call_id=tc.id,
-                ok=False,
+                tool_call_id=tc.id,
+                is_error=True,
                 error="Skipped by user"
             )
         )
@@ -350,8 +352,14 @@ FullAuto = RunConfig(
 )
 
 
-async def rollout(actor: Actor, on_chunk: Callable[[StreamEvent], Awaitable[None]] = stdout_handler,
-                  user_message_for_thinking: str | None = None, turn_idx: int = 0, inline_thinking: str | None = None) -> Actor:
+async def rollout(
+    actor: Actor,
+    on_chunk: Callable[[StreamEvent], Awaitable[None]] = stdout_handler,
+    user_message_for_thinking: str | None = None,
+    turn_idx: int = 0,
+    inline_thinking: str | None = None,
+    cancel_scope: trio.CancelScope | None = None,
+) -> Actor:
     """Route to appropriate provider function using unified API type abstraction.
 
     This function uses the provider registry to automatically select the correct
@@ -365,10 +373,19 @@ async def rollout(actor: Actor, on_chunk: Callable[[StreamEvent], Awaitable[None
         user_message_for_thinking: Anthropic-specific parameter for thinking context
         turn_idx: Anthropic-specific parameter for turn tracking
         inline_thinking: Anthropic-specific parameter for thinking template
+        cancel_scope: Optional Trio cancel scope for graceful cancellation
 
     Returns:
         Updated actor with new message in trajectory
     """
+    assert actor is not None
+    assert on_chunk is not None
+    assert callable(on_chunk)
+
+    # Early abort check
+    if cancel_scope and cancel_scope.cancelled_caught:
+        raise trio.Cancelled("Rollout aborted before start")
+
     from rollouts.providers import get_provider_function
 
     provider = actor.endpoint.provider
@@ -379,6 +396,7 @@ async def rollout(actor: Actor, on_chunk: Callable[[StreamEvent], Awaitable[None
 
     # Call with provider-specific kwargs if needed
     # Anthropic needs extra params, others don't - but **kwargs makes this flexible
+    # Note: Provider functions don't yet support cancel_scope, but we pass it for future support
     new_actor = await provider_func(
         actor,
         on_chunk,
@@ -389,12 +407,25 @@ async def rollout(actor: Actor, on_chunk: Callable[[StreamEvent], Awaitable[None
     return new_actor
 
 
-async def run_agent_step(state: AgentState, rcfg: RunConfig) -> AgentState:
+async def run_agent_step(
+    state: AgentState,
+    rcfg: RunConfig,
+) -> AgentState:
     """Execute one complete turn: LLM call → ALL tool executions → next turn.
     
     Turn atomicity: Execute ALL tools before giving control back to LLM.
     This simplifies reasoning but prevents early stopping or parallel execution.
+    
+    Args:
+        state: Current agent state
+        rcfg: Run configuration (contains cancel_scope for cancellation)
     """
+    assert state is not None
+    assert rcfg is not None
+
+    # Early abort check
+    if rcfg.cancel_scope and rcfg.cancel_scope.cancelled_caught:
+        return replace(state, stop=StopReason.ABORTED)
 
     state = rcfg.handle_stop(state)
     if state.stop:
@@ -425,8 +456,15 @@ async def run_agent_step(state: AgentState, rcfg: RunConfig) -> AgentState:
             content_preview = 'None...'
         logger.debug(f"      Message {i} ({msg.role}): {content_len} chars - {content_preview}")
 
-    # Make LLM call
-    next_actor = await rollout(updated_actor, rcfg.on_chunk, rcfg.user_message_for_thinking, state.turn_idx, rcfg.inline_thinking)
+    # Make LLM call (with cancellation support)
+    next_actor = await rollout(
+        updated_actor,
+        rcfg.on_chunk,
+        rcfg.user_message_for_thinking,
+        state.turn_idx,
+        rcfg.inline_thinking,
+        cancel_scope=rcfg.cancel_scope,
+    )
 
     # DEBUG: Log what rollout returned
     logger.debug(f"🔍 AFTER rollout() - Turn {state.turn_idx}")
@@ -503,15 +541,35 @@ async def run_agent_step(state: AgentState, rcfg: RunConfig) -> AgentState:
 # See next_tool_idx which already tracks progress within a tool batch.
 
 
-async def process_pending_tools(state: AgentState, rcfg: RunConfig) -> AgentState:
-    """Resume processing tools from next_tool_idx"""
+async def process_pending_tools(
+    state: AgentState,
+    rcfg: RunConfig,
+) -> AgentState:
+    """Resume processing tools from next_tool_idx.
+    
+    Args:
+        state: Current agent state with pending tool calls
+        rcfg: Run configuration (contains cancel_scope for cancellation)
+    """
     assert state.environment is not None, "process_pending_tools requires environment"
+    assert state is not None
+    assert rcfg is not None
+    
     current_state = state
+
+    # Early abort check
+    if rcfg.cancel_scope and rcfg.cancel_scope.cancelled_caught:
+        return replace(current_state, stop=StopReason.ABORTED)
 
     # SERIALIZE environment state before tool processing
     env_data = await current_state.environment.serialize()
     
     for i in range(state.next_tool_idx, len(state.pending_tool_calls)):
+        # Early abort check before each tool
+        if rcfg.cancel_scope and rcfg.cancel_scope.cancelled_caught:
+            current_state = replace(current_state, stop=StopReason.ABORTED)
+            break
+            
         tool_call = state.pending_tool_calls[i]
         current_state = replace(current_state, next_tool_idx=i)
         
@@ -522,8 +580,14 @@ async def process_pending_tools(state: AgentState, rcfg: RunConfig) -> AgentStat
             # DESERIALIZE fresh environment for each tool call
             fresh_env = await current_state.environment.__class__.deserialize(env_data)
             
-            # Execute tool on fresh environment
-            tool_result = await fresh_env.exec_tool(tool_call, current_state, rcfg, None)
+            # Execute tool on fresh environment with cancellation support
+            tool_result = await fresh_env.exec_tool(
+                tool_call,
+                current_state,
+                rcfg,
+                None,
+                cancel_scope=rcfg.cancel_scope,
+            )
 
             # ALWAYS serialize the environment state after tool execution
             # (even if tool failed, environment state like _initialized may have changed)
@@ -543,7 +607,7 @@ async def process_pending_tools(state: AgentState, rcfg: RunConfig) -> AgentStat
         assert tool_result
         await rcfg.on_chunk(StreamChunk("tool_result", {
             "call_id": tool_call.id,
-            "ok": tool_result.ok,
+            "ok": not tool_result.is_error,  # Legacy format: ok = not is_error
             "content": tool_result.content,
             "error": tool_result.error
         }))
@@ -551,8 +615,9 @@ async def process_pending_tools(state: AgentState, rcfg: RunConfig) -> AgentStat
         # Add tool result message
         result_message = Message(
             role="tool",
-            content=tool_result.content if tool_result.ok else f"Error: {tool_result.error}",
-            tool_call_id=tool_call.id
+            content=tool_result.content if not tool_result.is_error else f"Error: {tool_result.error}",
+            tool_call_id=tool_call.id,
+            details=tool_result.details  # Include UI-only structured data
         )
         
         messages_to_add = [result_message]
@@ -602,9 +667,15 @@ async def process_pending_tools(state: AgentState, rcfg: RunConfig) -> AgentStat
 async def run_agent(
     state: AgentState,
     run_config: RunConfig,
-    session_id: str | None = None
+    session_id: str | None = None,
 ) -> list[AgentState]:
-    """Run agent until stop condition, checkpointing each state"""
+    """Run agent until stop condition, checkpointing each state.
+    
+    Args:
+        state: Initial agent state
+        run_config: Run configuration (contains cancel_scope for cancellation)
+        session_id: Optional session ID for checkpointing
+    """
     if run_config.checkpoint_store and not session_id:
         session_id = f"session_{int(time.time() * 1000)}"  # ms timestamp
 
@@ -624,6 +695,11 @@ async def run_agent(
         # Check stop condition via handle_stop callback (allows custom budgets)
         current_state = run_config.handle_stop(current_state)
         if current_state.stop:
+            break
+
+        # Early abort check
+        if run_config.cancel_scope and run_config.cancel_scope.cancelled_caught:
+            current_state = replace(current_state, stop=StopReason.ABORTED)
             break
 
         # Tiger Style: Centralize control flow - emit start/end in same scope for clarity
