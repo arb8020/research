@@ -314,3 +314,170 @@ class AgentRenderer:
             del self.pending_tools[tool_call_id]
             self.tui.request_render()
 
+    def render_history(self, messages: list, skip_system: bool = True) -> None:
+        """Render historical messages from a resumed session.
+
+        Args:
+            messages: List of Message objects to render
+            skip_system: Whether to skip system messages (default True)
+        """
+        from rollouts.dtypes import Message
+
+        for msg in messages:
+            if not isinstance(msg, Message):
+                continue
+
+            # Skip system messages
+            if skip_system and msg.role == "system":
+                continue
+
+            if msg.role == "user":
+                self._render_user_message(msg)
+            elif msg.role == "assistant":
+                self._render_assistant_message(msg)
+            elif msg.role == "tool":
+                self._render_tool_result(msg)
+
+        self.tui.request_render()
+
+    def _render_user_message(self, msg) -> None:
+        """Render a user message from history."""
+        content = msg.content
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            # Extract text from content blocks
+            text_parts = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text_parts.append(block.get("text", ""))
+            text = "\n".join(text_parts)
+        else:
+            text = str(content) if content else ""
+
+        if text:
+            is_first = len(self.chat_container.children) == 0
+            user_component = UserMessage(text, is_first=is_first, theme=self.theme)
+            self.chat_container.add_child(user_component)
+
+    def _render_assistant_message(self, msg) -> None:
+        """Render an assistant message from history."""
+        from rollouts.dtypes import TextContent, ThinkingContent, ToolCallContent
+
+        content = msg.content
+        if content is None:
+            return
+
+        # Handle string content
+        if isinstance(content, str):
+            if content:
+                assistant_msg = AssistantMessage()
+                assistant_msg.set_text(content)
+                self.chat_container.add_child(assistant_msg)
+            return
+
+        # Handle list of content blocks
+        if not isinstance(content, list):
+            return
+
+        text_content = ""
+        thinking_content = ""
+
+        for block in content:
+            # Handle dataclass types
+            if isinstance(block, TextContent):
+                text_content += block.text
+            elif isinstance(block, ThinkingContent):
+                thinking_content += block.thinking
+            elif isinstance(block, ToolCallContent):
+                # Render any accumulated text first
+                if text_content or thinking_content:
+                    assistant_msg = AssistantMessage()
+                    if thinking_content:
+                        assistant_msg.set_thinking(thinking_content)
+                    if text_content:
+                        assistant_msg.set_text(text_content)
+                    self.chat_container.add_child(assistant_msg)
+                    text_content = ""
+                    thinking_content = ""
+
+                # Render tool call
+                self.chat_container.add_child(Spacer(1))
+                tool_component = ToolExecution(
+                    block.name,
+                    args=dict(block.arguments),
+                    bg_fn_pending=self.theme.tool_pending_bg_fn,
+                    bg_fn_success=self.theme.tool_success_bg_fn,
+                    bg_fn_error=self.theme.tool_error_bg_fn,
+                )
+                self.chat_container.add_child(tool_component)
+                self.pending_tools[block.id] = tool_component
+            # Handle legacy dict format
+            elif isinstance(block, dict):
+                block_type = block.get("type")
+                if block_type == "text":
+                    text_content += block.get("text", "")
+                elif block_type == "thinking":
+                    thinking_content += block.get("thinking", "")
+                elif block_type in ("tool_use", "toolCall"):
+                    if text_content or thinking_content:
+                        assistant_msg = AssistantMessage()
+                        if thinking_content:
+                            assistant_msg.set_thinking(thinking_content)
+                        if text_content:
+                            assistant_msg.set_text(text_content)
+                        self.chat_container.add_child(assistant_msg)
+                        text_content = ""
+                        thinking_content = ""
+
+                    tool_name = block.get("name", "unknown")
+                    tool_id = block.get("id", "")
+                    tool_args = block.get("input", block.get("arguments", {}))
+
+                    self.chat_container.add_child(Spacer(1))
+                    tool_component = ToolExecution(
+                        tool_name,
+                        args=tool_args,
+                        bg_fn_pending=self.theme.tool_pending_bg_fn,
+                        bg_fn_success=self.theme.tool_success_bg_fn,
+                        bg_fn_error=self.theme.tool_error_bg_fn,
+                    )
+                    self.chat_container.add_child(tool_component)
+                    self.pending_tools[tool_id] = tool_component
+
+        # Render any remaining text/thinking content
+        if text_content or thinking_content:
+            assistant_msg = AssistantMessage()
+            if thinking_content:
+                assistant_msg.set_thinking(thinking_content)
+            if text_content:
+                assistant_msg.set_text(text_content)
+            self.chat_container.add_child(assistant_msg)
+
+    def _render_tool_result(self, msg) -> None:
+        """Render a tool result from history."""
+        tool_call_id = msg.tool_call_id
+        if not tool_call_id:
+            return
+
+        content = msg.content
+        if isinstance(content, str):
+            result_text = content
+        elif isinstance(content, list):
+            # Extract text from content blocks
+            text_parts = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text_parts.append(block.get("text", ""))
+            result_text = "\n".join(text_parts)
+        else:
+            result_text = str(content) if content else ""
+
+        # Update the pending tool component if it exists
+        if tool_call_id in self.pending_tools:
+            self.pending_tools[tool_call_id].update_result(
+                {"content": [{"type": "text", "text": result_text}]},
+                is_error=False,
+            )
+            del self.pending_tools[tool_call_id]
+
