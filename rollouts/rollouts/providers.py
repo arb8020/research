@@ -319,7 +319,16 @@ def add_cache_control_to_last_content(
 
 
 def _message_to_openai(m: Message) -> ChatCompletionMessageParam:
-    """Convert framework `Message` objects to the OpenAI SDK schema."""
+    """Convert framework `Message` objects to the OpenAI SDK schema.
+    
+    Handles new ContentBlock-based message structure:
+    - Extracts text from TextContent blocks
+    - Converts ThinkingContent to text (OpenAI chat completions don't support thinking)
+    - Converts ToolCallContent to tool_calls format
+    - Converts ImageContent to image_url format
+    """
+    from .dtypes import TextContent, ThinkingContent, ToolCallContent, ImageContent
+    
     assert m is not None
     assert isinstance(m, Message)
     assert m.role is not None
@@ -343,8 +352,67 @@ def _message_to_openai(m: Message) -> ChatCompletionMessageParam:
 
     msg: dict[str, Any] = {"role": m.role}
 
-    if m.content is not None:
+    # Tiger Style: Explicit control flow - handle each content type
+    # Handle string content (simple text messages)
+    if isinstance(m.content, str):
         msg["content"] = m.content
+    elif isinstance(m.content, list):
+        # Handle ContentBlock list (structured messages with text/thinking/tools/images)
+        if m.role == "user":
+            # User messages: convert ContentBlocks to OpenAI format
+            content_parts = []
+            for block in m.content:
+                if isinstance(block, TextContent):
+                    content_parts.append({"type": "text", "text": block.text})
+                elif isinstance(block, ImageContent):
+                    # Convert ImageContent to OpenAI image_url format
+                    if block.data.startswith("http"):
+                        url = block.data
+                    else:
+                        # Base64-encoded image
+                        url = f"data:{block.mime_type};base64,{block.data}"
+                    content_parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": url}
+                    })
+                elif isinstance(block, ThinkingContent):
+                    # Convert thinking to text for OpenAI (they don't support thinking)
+                    content_parts.append({"type": "text", "text": f"<thinking>\n{block.thinking}\n</thinking>"})
+            
+            # If only one text block, use string format; otherwise use array
+            if len(content_parts) == 1 and content_parts[0].get("type") == "text":
+                msg["content"] = content_parts[0]["text"]
+            else:
+                msg["content"] = content_parts
+        elif m.role == "assistant":
+            # Assistant messages: extract text blocks, handle thinking, tool calls handled separately
+            text_blocks = [b for b in m.content if isinstance(b, TextContent)]
+            thinking_blocks = [b for b in m.content if isinstance(b, ThinkingContent)]
+            
+            # Combine text and thinking into content
+            content_parts = []
+            for block in text_blocks:
+                content_parts.append({"type": "text", "text": block.text})
+            for block in thinking_blocks:
+                # Convert thinking to text (OpenAI chat completions don't support thinking)
+                content_parts.append({"type": "text", "text": f"<thinking>\n{block.thinking}\n</thinking>"})
+            
+            if len(content_parts) == 1:
+                msg["content"] = content_parts[0]["text"]
+            elif len(content_parts) > 1:
+                msg["content"] = content_parts
+            else:
+                msg["content"] = None
+        elif m.role == "tool":
+            # Tool messages: extract text from ContentBlocks
+            if isinstance(m.content, list):
+                text_blocks = [b for b in m.content if isinstance(b, TextContent)]
+                msg["content"] = "\n".join(b.text for b in text_blocks) if text_blocks else ""
+            else:
+                msg["content"] = m.content
+        else:
+            # Unknown role - pass through
+            msg["content"] = m.content
 
     if tool_calls and m.role == "assistant":
         assert isinstance(tool_calls, list)
@@ -363,7 +431,6 @@ def _message_to_openai(m: Message) -> ChatCompletionMessageParam:
     if m.role == "tool":
         assert m.tool_call_id is not None
         msg["tool_call_id"] = m.tool_call_id
-        msg["content"] = m.content
 
     assert "role" in msg
     return msg
@@ -740,12 +807,15 @@ async def rollout_openai(
     assert on_chunk is not None
     assert callable(on_chunk)
 
-    client = AsyncOpenAI(
-        api_key=actor.endpoint.api_key,
-        base_url=actor.endpoint.api_base,
-        max_retries=actor.endpoint.max_retries,
-        timeout=actor.endpoint.timeout,
-    )
+    client_kwargs = {
+        "api_key": actor.endpoint.api_key,
+        "max_retries": actor.endpoint.max_retries,
+        "timeout": actor.endpoint.timeout,
+    }
+    # Only set base_url if it's provided (non-empty)
+    if actor.endpoint.api_base:
+        client_kwargs["base_url"] = actor.endpoint.api_base
+    client = AsyncOpenAI(**client_kwargs)
 
     messages = [_message_to_openai(m) for m in actor.trajectory.messages]
 
@@ -1309,12 +1379,15 @@ async def rollout_openai_responses(
     assert on_chunk is not None
     assert callable(on_chunk)
 
-    client = AsyncOpenAI(
-        api_key=actor.endpoint.api_key,
-        base_url=actor.endpoint.api_base,
-        max_retries=actor.endpoint.max_retries,
-        timeout=actor.endpoint.timeout,
-    )
+    client_kwargs = {
+        "api_key": actor.endpoint.api_key,
+        "max_retries": actor.endpoint.max_retries,
+        "timeout": actor.endpoint.timeout,
+    }
+    # Only set base_url if it's provided (non-empty)
+    if actor.endpoint.api_base:
+        client_kwargs["base_url"] = actor.endpoint.api_base
+    client = AsyncOpenAI(**client_kwargs)
 
     # Transform messages for cross-provider compatibility (like pi-ai does)
     from .transform_messages import transform_messages
@@ -1433,8 +1506,6 @@ async def rollout_openai_responses(
         provider=actor.endpoint.provider,
         api="openai-responses",
         model=actor.endpoint.model,
-        usage=usage,
-        stop_reason="stop",  # Responses API doesn't provide finish_reason in stream
     )
 
     completion = ChatCompletion(
@@ -1888,8 +1959,6 @@ async def rollout_google(
         provider=actor.endpoint.provider,
         api="google-generative-ai",
         model=actor.endpoint.model,
-        usage=usage,
-        stop_reason="stop",
     )
 
     completion = ChatCompletion(
@@ -2417,8 +2486,6 @@ async def rollout_anthropic(
         provider=actor.endpoint.provider,
         api="anthropic-messages",
         model=actor.endpoint.model,
-        usage=completion.usage if completion.usage else None,
-        stop_reason=completion.choices[0].finish_reason,
     )
 
     new_trajectory = replace(
