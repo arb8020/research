@@ -2428,9 +2428,14 @@ async def rollout_anthropic(
             text_blocks = [b for b in m.content if isinstance(b, TextContent)]
             system_prompt = "\n".join(b.text for b in text_blocks) if text_blocks else ""
         elif m.role == "tool":
-            # Extract text from ContentBlocks for tool result
-            text_blocks = [b for b in m.content if isinstance(b, TextContent)]
-            tool_result_text = "\n".join(b.text for b in text_blocks) if text_blocks else ""
+            # Extract text from tool result content (handle both string and ContentBlock list)
+            if isinstance(m.content, str):
+                tool_result_text = m.content
+            elif isinstance(m.content, list):
+                text_blocks = [b for b in m.content if isinstance(b, TextContent)]
+                tool_result_text = "\n".join(b.text for b in text_blocks) if text_blocks else ""
+            else:
+                tool_result_text = ""
             messages.append(
                 {
                     "role": "user",
