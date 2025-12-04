@@ -247,14 +247,16 @@ class InteractiveAgentRunner:
                 self.renderer.debug_dump_chat()
 
         # Create loader container (for spinner during LLM calls)
+        # Loader brings its own "before" spacer when active
         self.loader_container = LoaderContainer(
             spinner_color_fn=self.tui.theme.accent_fg,
             text_color_fn=self.tui.theme.muted_fg,
         )
         self.tui.set_loader_container(self.loader_container)
-        self.tui.add_child(Spacer(1, debug_label="before-loader"))
         self.tui.add_child(self.loader_container)
-        self.tui.add_child(Spacer(1, debug_label="after-loader"))
+
+        # Spacer before input box (always present)
+        self.tui.add_child(Spacer(1, debug_label="before-input"))
 
         # Create input component with theme
         self.input_component = Input(theme=self.tui.theme)
