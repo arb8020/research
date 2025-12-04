@@ -1,16 +1,173 @@
 # Pi-AI Integration Plan for Rollouts
 
-## Current Status (2025-12-03)
+## Quick Start for New Developer
 
-**Phase 2 In Progress** 🚧 - Cross-Provider Context Handoff:
-- ✅ ContentBlock-based Message structure implemented
-- ✅ `transform_messages()` function created
-- ✅ All 3 providers updated to use ContentBlocks:
-  - ✅ `anthropic-messages` - Updated message conversion & metadata enrichment
-  - ✅ `openai-responses` - Updated message conversion & metadata enrichment
-  - ✅ `google-generative-ai` - Updated message conversion & metadata enrichment
-- ✅ Provider metadata enrichment (provider/api/model fields)
-- ⏳ Integration tests pending
+**Read these first**:
+1. `~/research/docs/code_style/FAVORITES.md` - Core coding principles (Tiger Style, Push Ifs Up, etc.)
+2. `~/research/docs/code_style/grugbrain_testing.md` - Testing philosophy (integration tests are sweet spot)
+3. This document's "Code Style & Design Principles" section below
+
+**Current task**: Complete ContentBlock migration by fixing legacy field usage.
+
+**Context**: We removed `tool_calls`, `thinking_content`, `reasoning_content` from Message class to force proper ContentBlock usage. Several files need updates (see "Immediate Next Steps" below).
+
+---
+
+## Current Status (2025-12-03 Evening)
+
+**Phase 2 In Progress** 🚧 - Cross-Provider Context Handoff & Legacy Cleanup:
+
+### ✅ Completed
+- ✅ ContentBlock types defined (TextContent, ThinkingContent, ToolCallContent, ImageContent)
+- ✅ `transform_messages()` function created with two-pass algorithm (supports both calling conventions)
+- ✅ Provider metadata fields added to Message (provider/api/model)
+- ✅ Endpoint validation for Claude thinking budget (>= 1024 tokens)
+- ✅ Integration test suite created (`tests/test_provider_switching.py`)
+- ✅ **DECISION**: Keep unified Message type (not split like pi-ai)
+- ✅ **DECISION**: Remove legacy fields immediately (force proper migration)
+- ✅ Message.get_tool_calls() helper method added
+
+### 🚧 In Progress - Legacy Field Removal
+**Current blocker**: Removed `tool_calls`, `thinking_content`, `reasoning_content` from Message class.
+
+**Breaking changes** - These files need updates to use ContentBlocks:
+
+**High Priority** (blocks all tests):
+1. `rollouts/providers.py`:
+   - Line 331: `if not m.content and not (hasattr(m, 'tool_calls') and m.tool_calls)`
+   - Line 348-360: `_message_to_openai()` - reads `m.tool_calls`, needs to read ContentBlocks
+   - Line 425-426: Streaming aggregation - reads `c.message.tool_calls`
+   - Line 512-513: Delta processing - reads `delta.tool_calls`
+
+2. `rollouts/agents.py`:
+   - ✅ Line 276: Fixed to use `get_tool_calls()`
+   - ✅ Line 438: Fixed to use `get_tool_calls()`
+
+3. `rollouts/environments/binary_search.py`:
+   - Line 179: Counts tool calls - needs `get_tool_calls()`
+
+**Medium Priority** (tests will run but may fail):
+4. OpenAI provider needs to **create** ContentBlocks (not just read):
+   - Currently creates Messages with `tool_calls=[]` field
+   - Needs to create ToolCallContent blocks in `content`
+
+5. `_messages_to_openai_responses()` - partially fixed, needs completion:
+   - ✅ User messages: handles string content
+   - ✅ Assistant messages: handles string content
+   - ❌ Tool messages: Line 1241 assumes `msg.content` is list - needs string handling
+
+### ⏳ Not Started
+- OpenAI Completions API migration to ContentBlocks (output)
+- Google Gemini provider ContentBlock support check
+- Integration tests (blocked by breaking changes)
+
+---
+
+## Immediate Next Steps (For Next Developer)
+
+### Step 1: Fix `_message_to_openai()` to Read ContentBlocks
+**File**: `rollouts/providers.py` lines 321-368
+
+**Current code**:
+```python
+def _message_to_openai(m: Message) -> ChatCompletionMessageParam:
+    # Line 348: Reads m.tool_calls (doesn't exist anymore)
+    if m.tool_calls and m.role == "assistant":
+        msg["tool_calls"] = [...]
+```
+
+**Fix needed**:
+```python
+def _message_to_openai(m: Message) -> ChatCompletionMessageParam:
+    # Use helper method
+    tool_calls = m.get_tool_calls()
+    if tool_calls and m.role == "assistant":
+        msg["tool_calls"] = [
+            {
+                "id": tc.id,
+                "type": "function",
+                "function": {"name": tc.name, "arguments": json.dumps(tc.args)},
+            }
+            for tc in tool_calls
+        ]
+```
+
+**Also fix line 331**:
+```python
+# OLD: if not m.content and not (hasattr(m, 'tool_calls') and m.tool_calls)
+# NEW:
+if not m.content and not m.get_tool_calls() and m.role != "tool":
+```
+
+### Step 2: Fix OpenAI Streaming to Create ContentBlocks
+**File**: `rollouts/providers.py` lines 425-426, 512-513
+
+**Problem**: When building Messages from OpenAI streaming responses, code creates `tool_calls=[]` field.
+
+**Fix**: Create ToolCallContent blocks instead:
+```python
+# In streaming aggregation (around line 512-540):
+from .dtypes import ToolCallContent
+
+# OLD: Build tool_calls list
+# NEW: Build content blocks list
+final_content_blocks = []
+if text_content:
+    final_content_blocks.append(TextContent(text=text_content))
+
+for tc in tool_calls_list:  # from delta.tool_calls aggregation
+    final_content_blocks.append(ToolCallContent(
+        id=tc.id,
+        name=tc.function.name,
+        arguments=json.loads(tc.function.arguments)
+    ))
+
+final_message = Message(role="assistant", content=final_content_blocks)
+```
+
+### Step 3: Fix `_messages_to_openai_responses()` Tool Handling
+**File**: `rollouts/providers.py` line 1239-1250
+
+**Current code** (line 1241):
+```python
+elif msg.role == "tool":
+    text_blocks = [b for b in msg.content if isinstance(b, TextContent)]  # Crashes if string!
+```
+
+**Fix needed**:
+```python
+elif msg.role == "tool":
+    # Handle string content (simple tool result)
+    if isinstance(msg.content, str):
+        tool_result_text = msg.content
+    # Handle ContentBlock list
+    elif isinstance(msg.content, list):
+        text_blocks = [b for b in msg.content if isinstance(b, TextContent)]
+        tool_result_text = "\n".join(b.text for b in text_blocks) if text_blocks else ""
+    else:
+        tool_result_text = ""
+```
+
+### Step 4: Fix Environment Tool Call Counter
+**File**: `rollouts/environments/binary_search.py` line 179
+
+**Change**:
+```python
+# OLD: tool_calls = sum(len(msg.tool_calls) for msg in final_state.actor.trajectory.messages)
+# NEW:
+tool_calls = sum(len(msg.get_tool_calls()) for msg in final_state.actor.trajectory.messages)
+```
+
+### Step 5: Run Tests
+```bash
+cd /Users/chiraagbalu/research/rollouts
+source .venv/bin/activate
+PYTHONPATH=/Users/chiraagbalu/research/rollouts python tests/test_provider_switching.py
+```
+
+**Expected**: Tests should pass once all fixes complete.
+
+---
 
 **Phase 0.3 Complete** ✅ - All 4 API types implemented and tested:
 - ✅ `openai-completions` - OpenAI, Groq (tested)
@@ -24,6 +181,90 @@
 - All providers now build messages using ContentBlocks (TextContent, ThinkingContent, ToolCallContent, ImageContent)
 
 **Implementation Philosophy**: Port [pi-ai TypeScript](https://github.com/badlogic/pi-mono/tree/main/packages/ai/src/providers) to Python. Pi-ai is battle-tested and provides clean patterns for streaming, event handling, and provider abstraction.
+
+---
+
+## Code Style & Design Principles
+
+Following **Tiger Style** and patterns from `~/research/docs/code_style/FAVORITES.md`:
+
+### 1. Explicit Control Flow (Push Ifs Up, Fors Down)
+All provider conversion functions (`_message_to_anthropic`, `_messages_to_openai_responses`, etc.) **must** handle both content types explicitly:
+
+```python
+# GOOD - Explicit branching at top of function
+if isinstance(msg.content, str):
+    # Handle string content
+    text = msg.content
+elif isinstance(msg.content, list):
+    # Handle ContentBlock list
+    text = extract_text(msg.content)
+else:
+    assert False, f"Invalid content type: {type(msg.content)}"
+```
+
+**Why**: Makes invisible assumptions visible. No mental simulation required.
+
+### 2. Assertions Everywhere (Crash Loud)
+- Minimum 2 assertions per function
+- Split compound assertions: `assert a; assert b;` not `assert a and b`
+- Document invariants: `assert embedding_dim % num_heads == 0  # Must be evenly divisible`
+
+```python
+# GOOD - Clear failure messages
+assert isinstance(msg.content, (str, list)), f"content must be str or list[ContentBlock], got {type(msg.content)}"
+```
+
+### 3. Unified Message Type (Design Decision)
+**Decision**: Keep single `Message` class, not split into UserMessage/AssistantMessage/ToolResultMessage like pi-ai.
+
+**Rationale**:
+- Python doesn't benefit from TypeScript's compile-time type safety
+- Simpler to work with (no type juggling)
+- Lower coupling (not forced to share contracts)
+- Runtime assertions catch errors during tests
+
+**Message structure**:
+```python
+@dataclass(frozen=True)
+class Message:
+    role: str  # "user", "assistant", "tool"
+    content: str | list[ContentBlock] | None
+    provider: str | None
+    api: str | None
+    model: str | None
+    tool_call_id: str | None  # For tool role only
+```
+
+**No legacy fields** - Removed `tool_calls`, `thinking_content`, `reasoning_content`. Use ContentBlocks only.
+
+### 4. Support Both String and ContentBlock Content
+**Pi-AI design**: UserMessage content is `string | (TextContent | ImageContent)[]`
+
+Our providers must handle **both**:
+- String: Simple text messages (most common case)
+- ContentBlock list: Structured messages with thinking/tools/images
+
+**Never assume** content is always a list. This is the #1 bug we're fixing.
+
+### 5. Continuous Granularity
+Provide both high-level and low-level functions:
+- High-level: `transform_messages(msgs, target_provider="openai", target_api="...")`
+- Low-level: `transform_messages(msgs, from_provider="anthropic", from_api="...", to_provider="openai", to_api="...")`
+
+Each level uses the lower level. Don't delete low-level functions.
+
+### 6. Migration Strategy
+**Phase 1** (Current): Provider input functions handle BOTH formats
+- ✅ `_message_to_anthropic` handles string and ContentBlocks
+- 🚧 `_messages_to_openai_responses` handles string and ContentBlocks
+- ⏳ `_message_to_openai` needs ContentBlock support
+
+**Phase 2** (After 2+ providers migrated): Evaluate whether to:
+- Keep unified Message type OR
+- Split into UserMessage/AssistantMessage/ToolResultMessage (like pi-ai)
+
+**Decision deferred** until we have 2+ examples to compress (Semantic Compression principle).
 
 ---
 

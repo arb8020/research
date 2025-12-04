@@ -40,16 +40,21 @@ from .dtypes import (
     AgentState,
     ChatCompletion,
     Choice,
+    ContentBlock,
     Endpoint,
     Environment,
+    ImageContent,
     Logprob,
     Logprobs,
     Message,
     RunConfig,
     StopReason,
     StreamChunk,
+    TextContent,
+    ThinkingContent,
     Tool,
     ToolCall,
+    ToolCallContent,
     ToolConfirmResult,
     ToolFunction,
     ToolFunctionParameter,
@@ -82,12 +87,17 @@ from .models import (
 # Providers (rollout functions)
 from .providers import get_provider_function, rollout_anthropic, rollout_google, rollout_openai, rollout_openai_responses, rollout_sglang
 
+# Message transformation
+from .transform_messages import transform_messages
+
 __all__ = [
     # Core types
     'Endpoint', 'Actor', 'AgentState', 'RunConfig', 'Environment',
     'Usage', 'Logprob', 'Logprobs', 'Choice', 'ChatCompletion',
     # Message types
     'Message', 'ToolCall', 'ToolResult', 'Trajectory',
+    # ContentBlock types
+    'ContentBlock', 'TextContent', 'ThinkingContent', 'ToolCallContent', 'ImageContent',
     # Tool types
     'Tool', 'ToolFunction', 'ToolFunctionParameter', 'StopReason', 'ToolConfirmResult',
     # Stream handling
@@ -104,6 +114,8 @@ __all__ = [
     'FileCheckpointStore',
     # Providers
     'rollout_openai', 'rollout_sglang', 'rollout_anthropic', 'get_provider_function',
+    # Message transformation
+    'transform_messages',
     # Model registry
     'get_providers', 'get_models', 'get_model', 'register_model', 'get_api_type', 'calculate_cost',
     'Provider', 'ApiType', 'ModelMetadata', 'ModelCost',
