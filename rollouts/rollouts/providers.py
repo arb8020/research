@@ -2300,37 +2300,54 @@ async def aggregate_anthropic_stream(
     # Emit done event
     await on_chunk(StreamDone(finish_reason=finish_reason))
 
-    # Build final message with ContentBlocks
+    # Build final message with ContentBlocks from accumulated streaming state
     from .dtypes import TextContent, ThinkingContent, ToolCallContent
 
-    content_blocks: list = []
+    final_content_blocks: list = []
 
-    # Add thinking content if present
-    if thinking_content:
-        content_blocks.append(
-            ThinkingContent(
-                thinking=thinking_content,
-                thinking_signature=thinking_signature,
+
+    # Reconstruct content blocks in order from the content_blocks tracking dict
+    # Sort by index to maintain order
+    for index in sorted(content_blocks.keys()):
+        block_info = content_blocks[index]
+        block_type = block_info["type"]
+        accumulated = block_info["accumulated"]
+
+        if block_type == "text" and accumulated:
+            final_content_blocks.append(TextContent(text=accumulated))
+        elif block_type == "thinking" and accumulated:
+            final_content_blocks.append(
+                ThinkingContent(
+                    thinking=accumulated,
+                    thinking_signature=thinking_signature,
+                )
             )
-        )
+        elif block_type == "tool_use" and index in tool_metadata:
+            # Get the final tool call from tool_calls list
+            # Match by id
+            for tc in tool_calls:
+                if tc.id == tool_metadata[index]["id"]:
+                    final_content_blocks.append(
+                        ToolCallContent(
+                            id=tc.id,
+                            name=tc.name,
+                            arguments=tc.args,
+                        )
+                    )
+                    break
 
-    # Add text content if present
-    if accumulated_content:
-        content_blocks.append(TextContent(text=accumulated_content))
-
-    # Add tool calls as ToolCallContent blocks
-    for tc in tool_calls:
-        content_blocks.append(
-            ToolCallContent(
-                id=tc.id,
-                name=tc.name,
-                arguments=tc.args,
-            )
+    # Validate we actually received content from the stream
+    if not final_content_blocks:
+        raise ValueError(
+            "aggregate_anthropic_stream produced empty message. "
+            "No content blocks were received from the Anthropic stream. "
+            f"content_blocks dict had {len(content_blocks)} entries. "
+            "This may indicate the API call returned no content or streaming failed."
         )
 
     final_message = Message(
         role="assistant",
-        content=content_blocks,
+        content=final_content_blocks,
     )
 
     final_anthropic_message = await stream.get_final_message()
@@ -2489,6 +2506,10 @@ async def rollout_anthropic(
                 )
                 # Fail immediately - don't retry configuration errors
                 assert False, f"API returned 400 Bad Request: {e}\nThis indicates invalid configuration or a bug in request construction. See logs above for full request."
+
+            # Fail fast on ValueError - these are programming errors (e.g., empty message)
+            if isinstance(e, ValueError):
+                raise
 
             print(
                 f"🔄 Anthropic API error (attempt {attempt + 1}/{max_retries + 1}): {str(e)}"
