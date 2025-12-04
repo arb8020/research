@@ -1,70 +1,97 @@
 # TUI Interactive Agent
 
-Interactive terminal UI for running agents with streaming responses, tool execution, and user input.
+Interactive terminal UI for running agents with streaming responses, tool execution, and session persistence.
 
-## Usage
-
-### Basic Usage
+## Quick Start
 
 ```bash
-# Run with default settings (GPT-4o-mini)
-python -m rollouts.frontends.tui.cli
+# Basic chat (no tools)
+python -m rollouts.frontends.tui.cli --provider anthropic --model claude-sonnet-4-5
 
-# Specify model
-python -m rollouts.frontends.tui.cli --model gpt-4o
+# Coding agent with file/shell tools
+python -m rollouts.frontends.tui.cli --env coding --provider anthropic --model claude-sonnet-4-5
 
-# Use Anthropic
-python -m rollouts.frontends.tui.cli --model claude-sonnet-4-5 --provider anthropic
-
-# Custom system prompt
-python -m rollouts.frontends.tui.cli --system-prompt "You are a helpful coding assistant."
+# Non-interactive query
+python -m rollouts.frontends.tui.cli -p "explain this error" --provider anthropic --model claude-sonnet-4-5
 ```
 
-### Programmatic Usage
+## CLI Options
 
-```python
-from rollouts.frontends.tui.interactive_agent import run_interactive_agent
-from rollouts.rollouts.dtypes import Endpoint, Message, Trajectory
-import trio
-
-endpoint = Endpoint(provider="openai", model="gpt-4o-mini")
-trajectory = Trajectory(messages=[Message(role="system", content="You are helpful.")])
-
-states = trio.run(run_interactive_agent, trajectory, endpoint)
+### Model Configuration
+```bash
+--provider {openai,anthropic}  # API provider (default: openai)
+--model MODEL                   # Model name (default: gpt-4o-mini)
+--api-key KEY                   # API key (or use env var)
+--system-prompt TEXT            # Custom system prompt
 ```
 
-## Features
+### Environment
+```bash
+--env {none,calculator,coding}  # Tool environment (default: none)
+--cwd PATH                      # Working directory for coding env
+```
 
-- ✅ Streaming text responses with markdown rendering
-- ✅ Thinking/reasoning blocks (muted styling)
-- ✅ Tool execution display with status colors
-- ✅ Multi-line text input with cursor
-- ✅ Ctrl+C cancellation support
-- ✅ Message queuing while agent streams
-- ✅ Differential rendering (only updates changed lines)
+### Session Management
+```bash
+-c, --continue      # Resume most recent session
+-s, --session       # Interactive session picker
+-s PATH             # Resume specific session file
+--no-session        # Don't persist to disk
+```
+
+### Execution Mode
+```bash
+-p "query"          # Non-interactive: run query, print result, exit
+--max-turns N       # Maximum agent turns (default: 50)
+```
+
+## Session Persistence
+
+Sessions are stored in `~/.rollouts/sessions/--encoded-cwd--/` as JSONL files.
+
+```bash
+# Start new session (auto-created)
+python -m rollouts.frontends.tui.cli --env coding
+
+# Continue where you left off
+python -m rollouts.frontends.tui.cli --env coding -c
+
+# Pick from previous sessions
+python -m rollouts.frontends.tui.cli --env coding -s
+```
+
+## Coding Environment Tools
+
+The `--env coding` flag provides:
+- **read**: Read file contents with offset/limit
+- **write**: Write files (auto-creates directories)
+- **edit**: Replace exact text in files
+- **bash**: Execute shell commands
 
 ## Keyboard Shortcuts
 
 - **Enter**: Submit message
-- **Ctrl+C**: Cancel agent and exit
-- **Ctrl+K**: Delete to end of line (in input)
-- **Ctrl+U**: Delete to start of line (in input)
-- **Ctrl+W**: Delete word backwards (in input)
-- **Arrow keys**: Navigate text (in input)
+- **Ctrl+C**: Cancel and exit
+- **Arrow keys**: Navigate input text
 
 ## Architecture
 
-- `AgentRenderer`: Connects `StreamEvent` types to TUI components
-- `InteractiveAgentRunner`: Coordinates agent loop with TUI
-- `Input`: Multi-line text editor component
-- `AssistantMessage`: Streaming text/thinking display
-- `ToolExecution`: Tool call display with results
+```
+cli.py                 # Entry point, arg parsing
+interactive_agent.py   # Agent loop coordinator
+agent_renderer.py      # StreamEvent → TUI components
+sessions.py            # Session persistence (functional)
+terminal.py            # Raw mode, cursor, escape sequences
+tui.py                 # Differential rendering engine
+theme.py               # Color definitions
+components/
+  input.py             # Text editor
+  assistant_message.py # Streaming text display
+  user_message.py      # User message display
+  markdown.py          # Markdown rendering
+```
 
-## Missing Features (Future Work)
+## See Also
 
-- [ ] Tool result event handling (currently tool results are added as messages)
-- [ ] Interactive tool confirmation (currently auto-confirms)
-- [ ] Input history (up/down arrows for previous messages)
-- [ ] Scrollback for long conversations
-- [ ] Environment-specific tool result formatting
-
+- `TUI_TODO.md` - Roadmap and missing features
+- `docs/SESSION_DESIGN.md` - Session persistence design doc
