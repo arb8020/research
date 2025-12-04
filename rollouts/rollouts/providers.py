@@ -208,6 +208,7 @@ from .dtypes import (
     Actor,
     ChatCompletion,
     Choice,
+    LLMCallStart,
     Message,
     StreamChunk,
     StreamEvent,
@@ -2485,6 +2486,9 @@ async def rollout_anthropic(
 
     for attempt in range(max_retries + 1):
         try:
+            # Emit LLMCallStart before making the API call
+            await on_chunk(LLMCallStart())
+
             async with client.messages.stream(  # type: ignore[missing-argument]
                 **params,
                 extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},

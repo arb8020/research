@@ -183,8 +183,15 @@ class StreamChunk(JsonSerializable):
 
 
 @dataclass(frozen=True)
+class LLMCallStart(JsonSerializable):
+    """Emitted before making the LLM API call (before connection established)"""
+    type: Literal["llm_call_start"] = "llm_call_start"
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
 class StreamStart(JsonSerializable):
-    """Emitted at the start of a streaming response"""
+    """Emitted at the start of a streaming response (connection established, first event received)"""
     type: Literal["start"] = "start"
     timestamp: float = field(default_factory=time.time)
 
@@ -305,7 +312,8 @@ class StreamError(JsonSerializable):
 
 # Union type for all streaming events
 StreamEvent = (
-    StreamStart
+    LLMCallStart
+    | StreamStart
     | TextStart
     | TextDelta
     | TextEnd

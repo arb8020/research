@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from rollouts.dtypes import (
+    LLMCallStart,
     StreamEvent,
     StreamStart,
     TextStart,
@@ -92,6 +93,9 @@ class AgentRenderer:
             event: StreamEvent to handle
         """
         match event:
+            case LLMCallStart():
+                self._handle_llm_call_start()
+
             case StreamStart():
                 self._handle_stream_start()
 
@@ -133,13 +137,29 @@ class AgentRenderer:
 
         self.tui.request_render()
 
-    def _handle_stream_start(self) -> None:
-        """Handle stream start - show loader."""
+    def _handle_llm_call_start(self) -> None:
+        """Handle LLM call start - show 'Calling LLM...' loader."""
         if self.loader:
             self.loader.stop()
         self.status_container.clear()
         self.loader = Loader(
-            "Working... (Ctrl+C to interrupt)",
+            "Calling LLM...",
+            spinner_color_fn=_cyan,
+            text_color_fn=_dim,
+        )
+        self.status_container.add_child(self.loader)
+
+    def _handle_stream_start(self) -> None:
+        """Handle stream start - hide loader since content is about to stream."""
+        # Content is about to stream, hide the loader
+        if self.loader:
+            self.loader.stop()
+            self.loader = None
+        self.status_container.clear()
+        # Note: We could show a different loader here like "Streaming..."
+        # but it's cleaner to just hide it since the streaming text is visible
+        self.loader = Loader(
+            "Streaming... (Ctrl+C to interrupt)",
             spinner_color_fn=_cyan,
             text_color_fn=_dim,
         )
