@@ -336,28 +336,9 @@ def apply_background_to_line(line: str, width: int, bg_fn) -> str:
 
     Returns:
         Line with background applied and padded to width
-
-    Note: Replaces RESET codes (\x1b[0m) with background reapplication to prevent
-    foreground styling from breaking the background color.
     """
     visible_len = visible_width(line)
     padding_needed = max(0, width - visible_len)
     padding = " " * padding_needed
     with_padding = line + padding
-
-    # Apply background
-    result = bg_fn(with_padding)
-
-    # Fix RESET codes that would kill the background
-    # Replace \x1b[0m with \x1b[0m followed by background reapplication
-    # We need to extract the background code from bg_fn(" ")
-    bg_sample = bg_fn(" ")
-    # Extract the background ANSI code (between start and the space and reset)
-    import re
-    bg_code_match = re.search(r'(\x1b\[48;2;\d+;\d+;\d+m)', bg_sample)
-    if bg_code_match:
-        bg_code = bg_code_match.group(1)
-        # Replace all RESET codes with RESET + background reapplication
-        result = result.replace('\x1b[0m', f'\x1b[0m{bg_code}')
-
-    return result
+    return bg_fn(with_padding)
