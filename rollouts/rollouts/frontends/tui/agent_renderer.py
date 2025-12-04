@@ -211,7 +211,6 @@ class AgentRenderer:
 
         # Create tool execution component
         if tool_call_id not in self.pending_tools:
-            self.chat_container.add_child(Spacer(1, debug_label="before-tool", debug_layout=self.debug_layout))
             tool_component = ToolExecution(
                 tool_name,
                 args={},
