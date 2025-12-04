@@ -1875,10 +1875,11 @@ async def rollout_google(
         final_message, usage_data = await trio_asyncio.aio_as_trio(_call_google_in_asyncio)()
 
     # Build completion object
+    # Map Google's field names to Usage dataclass
     usage = Usage(
-        input_tokens=usage_data.get("input_tokens", 0),
-        output_tokens=usage_data.get("output_tokens", 0),
-        cache_read_tokens=usage_data.get("cache_read_tokens", 0),
+        prompt_tokens=usage_data.get("input_tokens", 0),
+        completion_tokens=usage_data.get("output_tokens", 0),
+        total_tokens=usage_data.get("input_tokens", 0) + usage_data.get("output_tokens", 0),
     )
 
     # Enrich message with provider/api/model metadata for cross-provider handoff
@@ -2227,9 +2228,11 @@ async def aggregate_anthropic_stream(
 
     final_anthropic_message = await stream.get_final_message()
 
+    # Map Anthropic's field names to Usage dataclass
     usage = Usage(
-        input_tokens=final_anthropic_message.usage.input_tokens,
-        output_tokens=final_anthropic_message.usage.output_tokens,
+        prompt_tokens=final_anthropic_message.usage.input_tokens,
+        completion_tokens=final_anthropic_message.usage.output_tokens,
+        total_tokens=final_anthropic_message.usage.input_tokens + final_anthropic_message.usage.output_tokens,
     )
 
     completion = ChatCompletion(
