@@ -128,8 +128,10 @@ class Text(Component):
         use_rounded = self._theme and getattr(self._theme, "use_rounded_corners", False)
 
         # Render content lines with margins and background
+        # If we have a gutter, render to reduced width so final line fits after adding gutter
+        render_width = width - gutter_width if gutter_width > 0 else width
         content_lines = [
-            _render_line_with_margins(line, width, self._padding_x, self._custom_bg_fn)
+            _render_line_with_margins(line, render_width, self._padding_x, self._custom_bg_fn)
             for line in wrapped_lines
         ]
 
@@ -153,9 +155,9 @@ class Text(Component):
                 " " * (self._padding_x - 1)
             )
 
-        # Add vertical padding
-        top_lines = _render_empty_lines(self._padding_top, width, self._padding_x, self._custom_bg_fn)
-        bottom_lines = _render_empty_lines(self._padding_bottom, width, self._padding_x, self._custom_bg_fn)
+        # Add vertical padding (use render_width if we have a gutter)
+        top_lines = _render_empty_lines(self._padding_top, render_width, self._padding_x, self._custom_bg_fn)
+        bottom_lines = _render_empty_lines(self._padding_bottom, render_width, self._padding_x, self._custom_bg_fn)
 
         result = [*top_lines, *content_lines, *bottom_lines]
 

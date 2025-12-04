@@ -155,14 +155,16 @@ class Markdown(Component):
             wrapped_lines.extend(wrap_text_with_ansi(line, content_width))
 
         # Render content lines with margins and background
+        # If we have a gutter, render to reduced width so final line fits after adding gutter
+        render_width = width - gutter_width if gutter_width > 0 else width
         content_lines = [
-            _render_line_with_margins(line, width, self._padding_x, self._bg_fn)
+            _render_line_with_margins(line, render_width, self._padding_x, self._bg_fn)
             for line in wrapped_lines
         ]
 
-        # Add vertical padding
-        top_lines = _render_empty_lines(self._padding_y, width, self._padding_x, self._bg_fn)
-        bottom_lines = _render_empty_lines(self._padding_y, width, self._padding_x, self._bg_fn)
+        # Add vertical padding (use render_width if we have a gutter)
+        top_lines = _render_empty_lines(self._padding_y, render_width, self._padding_x, self._bg_fn)
+        bottom_lines = _render_empty_lines(self._padding_y, render_width, self._padding_x, self._bg_fn)
 
         result = [*top_lines, *content_lines, *bottom_lines]
 
