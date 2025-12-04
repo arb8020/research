@@ -1,5 +1,5 @@
 [tool.uv.workspace]
-members = ["bifrost", "broker", "shared", "rollouts", "miniray", "kerbal", "dev/kernel-learning"]
+members = ["bifrost", "broker", "shared", "rollouts/rollouts", "miniray", "kerbal", "dev/kernel-learning"]
 
 [project]
 name = "gpu-research-tools"
