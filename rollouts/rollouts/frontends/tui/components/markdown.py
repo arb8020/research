@@ -165,11 +165,36 @@ class Markdown(Component):
         if self._gutter_prefix:
             from ..utils import visible_width
             gutter_len = visible_width(self._gutter_prefix)
-            result = [
-                self._gutter_prefix + " " + line[gutter_len + 1:] if i == 0
-                else " " * (gutter_len + 1) + line[gutter_len + 1:]
-                for i, line in enumerate(result)
-            ]
+            # Find the position where visible characters start (skip ANSI codes)
+            def skip_ansi_and_get_pos(line, visible_chars_to_skip):
+                """Find byte position after skipping N visible characters, preserving ANSI."""
+                pos = 0
+                visible_count = 0
+                while pos < len(line) and visible_count < visible_chars_to_skip:
+                    if line[pos:pos+2] == '\x1b[':
+                        # Skip ANSI escape sequence
+                        end = line.find('m', pos)
+                        if end != -1:
+                            pos = end + 1
+                        else:
+                            pos += 1
+                    else:
+                        # Regular visible character
+                        visible_count += 1
+                        pos += 1
+                return pos
+
+            new_result = []
+            for i, line in enumerate(result):
+                if i == 0:
+                    # First line: add gutter prefix
+                    pos = skip_ansi_and_get_pos(line, gutter_len + 1)
+                    new_result.append(self._gutter_prefix + " " + line[pos:])
+                else:
+                    # Other lines: add spacing
+                    pos = skip_ansi_and_get_pos(line, gutter_len + 1)
+                    new_result.append(" " * (gutter_len + 1) + line[pos:])
+            result = new_result
 
         # Update cache
         self._cached_text = self._text
