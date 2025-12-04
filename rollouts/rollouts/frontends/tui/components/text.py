@@ -117,7 +117,11 @@ class Text(Component):
 
         # Normalize and wrap text
         normalized_text = self._text.replace("\t", "   ")
-        content_width = max(1, width - self._padding_x * 2)
+        # Account for gutter prefix width if present
+        gutter_width = 0
+        if self._gutter_prefix:
+            gutter_width = visible_width(self._gutter_prefix) + 1  # +1 for space after prefix
+        content_width = max(1, width - self._padding_x * 2 - gutter_width)
         wrapped_lines = wrap_text_with_ansi(normalized_text, content_width)
 
         # Check if we should use rounded corners
