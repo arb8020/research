@@ -44,7 +44,7 @@ class AssistantMessage(Component):
                 padding_x=2,
                 padding_y=0,
                 theme=DefaultMarkdownTheme(self._theme),
-                gutter_prefix="˙ᵕ˙",
+                gutter_prefix="🤖",
             )
             self._content_container.add_child(self._text_md)
 
@@ -110,7 +110,7 @@ class AssistantMessage(Component):
                 padding_y=1,
                 theme=DefaultMarkdownTheme(self._theme),
                 bg_fn=lambda x: f"{hex_to_bg(self._theme.tool_pending_bg)}{x}{RESET}",
-                gutter_prefix="˙ᵕ˙",
+                gutter_prefix="🤖",
             )
             self._content_container.add_child(self._thinking_md)
 
@@ -125,7 +125,7 @@ class AssistantMessage(Component):
                 padding_x=2,
                 padding_y=0,
                 theme=DefaultMarkdownTheme(self._theme),
-                gutter_prefix="˙ᵕ˙",
+                gutter_prefix="🤖",
             )
             self._content_container.add_child(self._text_md)
 
