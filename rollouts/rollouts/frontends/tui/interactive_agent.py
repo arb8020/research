@@ -51,6 +51,7 @@ class InteractiveAgentRunner:
         environment: Optional[Environment] = None,
         max_turns: int = 50,
         session: Optional[Session] = None,
+        theme_name: str = "dark",
     ) -> None:
         """Initialize interactive agent runner.
 
@@ -60,9 +61,11 @@ class InteractiveAgentRunner:
             environment: Optional environment for tool execution
             max_turns: Maximum number of turns
             session: Optional session for persistence
+            theme_name: Theme name (dark or rounded)
         """
         self.initial_trajectory = initial_trajectory
         self.endpoint = endpoint
+        self.theme_name = theme_name
         self.environment = environment
         self.max_turns = max_turns
         self.session = session
@@ -196,9 +199,12 @@ class InteractiveAgentRunner:
         Returns:
             List of agent states from the run
         """
-        # Create terminal and TUI
+        # Create terminal and TUI with selected theme
+        from .theme import DARK_THEME, ROUNDED_THEME
+        theme = ROUNDED_THEME if self.theme_name == "rounded" else DARK_THEME
+
         self.terminal = ProcessTerminal()
-        self.tui = TUI(self.terminal, debug=True)  # TODO: make configurable
+        self.tui = TUI(self.terminal, theme=theme, debug=True)  # TODO: make debug configurable
 
         # Create renderer
         self.renderer = AgentRenderer(self.tui)
@@ -209,6 +215,11 @@ class InteractiveAgentRunner:
             self.renderer.render_history(self.initial_trajectory.messages)
             # Mark that we've already shown messages, so next user message isn't "first"
             self.is_first_user_message = False
+
+            # Debug: dump chat state after loading history
+            import os
+            if os.environ.get("ROLLOUTS_DEBUG_CHAT"):
+                self.renderer.debug_dump_chat()
 
         # Create input component with theme
         # Add spacer above input box for visual separation
@@ -349,6 +360,7 @@ async def run_interactive_agent(
     environment: Optional[Environment] = None,
     max_turns: int = 50,
     session: Optional[Session] = None,
+    theme_name: str = "dark",
 ) -> list[AgentState]:
     """Run an interactive agent with TUI.
 
@@ -358,6 +370,7 @@ async def run_interactive_agent(
         environment: Optional environment for tool execution
         max_turns: Maximum number of turns
         session: Optional session for persistence
+        theme_name: Theme name (dark or rounded)
 
     Returns:
         List of agent states from the run
@@ -368,6 +381,7 @@ async def run_interactive_agent(
         environment=environment,
         max_turns=max_turns,
         session=session,
+        theme_name=theme_name,
     )
     return await runner.run()
 
