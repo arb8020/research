@@ -7,6 +7,7 @@ from .user_message import UserMessage
 from .assistant_message import AssistantMessage
 from .tool_execution import ToolExecution
 from .input import Input
+from .loader_container import LoaderContainer
 
 __all__ = [
     "Text",
@@ -17,4 +18,5 @@ __all__ = [
     "AssistantMessage",
     "ToolExecution",
     "Input",
+    "LoaderContainer",
 ]

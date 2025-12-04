@@ -5,7 +5,7 @@ Ported from pi-mono/packages/tui.
 """
 
 from .terminal import Terminal, ProcessTerminal
-from .tui import Component, Container, TUI, render_loader_line
+from .tui import Component, Container, TUI
 from .utils import visible_width, wrap_text_with_ansi, truncate_to_width, apply_background_to_line
 from .components import (
     Text,
@@ -16,6 +16,7 @@ from .components import (
     AssistantMessage,
     ToolExecution,
     Input,
+    LoaderContainer,
 )
 from .agent_renderer import AgentRenderer
 
@@ -27,7 +28,6 @@ __all__ = [
     "Component",
     "Container",
     "TUI",
-    "render_loader_line",
     # Utils
     "visible_width",
     "wrap_text_with_ansi",
@@ -42,6 +42,7 @@ __all__ = [
     "AssistantMessage",
     "ToolExecution",
     "Input",
+    "LoaderContainer",
     # Agent integration
     "AgentRenderer",
 ]
