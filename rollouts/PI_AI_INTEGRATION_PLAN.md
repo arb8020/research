@@ -2,19 +2,32 @@
 
 ## Current Status (2025-12-03)
 
+**Phase 2 In Progress** 🚧 - Cross-Provider Context Handoff:
+- ✅ ContentBlock-based Message structure implemented
+- ✅ `transform_messages()` function created
+- ✅ All 3 providers updated to use ContentBlocks:
+  - ✅ `anthropic-messages` - Updated message conversion & metadata enrichment
+  - ✅ `openai-responses` - Updated message conversion & metadata enrichment
+  - ✅ `google-generative-ai` - Updated message conversion & metadata enrichment
+- ✅ Provider metadata enrichment (provider/api/model fields)
+- ⏳ Integration tests pending
+
 **Phase 0.3 Complete** ✅ - All 4 API types implemented and tested:
 - ✅ `openai-completions` - OpenAI, Groq (tested)
 - ✅ `openai-responses` - o1, o3, GPT-5 Codex (tested with GPT-5.1-Codex-Mini)
 - ✅ `anthropic-messages` - Claude (tested)
 - ✅ `google-generative-ai` - Gemini (implemented, ready for testing)
 
-**Recent Fix**: GPT-5 Codex reasoning item persistence bug - models now correctly re-submit reasoning items in conversation history.
+**Recent Updates**:
+- Recovered from beads git mishap (lesson: commit early and often!)
+- Re-applied all provider updates from session history
+- All providers now build messages using ContentBlocks (TextContent, ThinkingContent, ToolCallContent, ImageContent)
 
 **Implementation Philosophy**: Port [pi-ai TypeScript](https://github.com/badlogic/pi-mono/tree/main/packages/ai/src/providers) to Python. Pi-ai is battle-tested and provides clean patterns for streaming, event handling, and provider abstraction.
 
 ---
 
-## Next Phase: Cross-Provider Context Handoff (Phase 2)
+## Next Steps: Testing & Validation (Phase 2 Completion)
 
 **Goal**: Enable switching models mid-conversation with automatic message transformation.
 

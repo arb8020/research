@@ -1103,39 +1103,41 @@ async def aggregate_openai_responses_stream(
     await on_chunk(StreamDone(finish_reason=finish_reason))
 
     # Build final message
-    text_content = ""
-    thinking_content = ""
-    thinking_signature = None
-    tool_calls = []
+    # Build final message with ContentBlocks
+    from .dtypes import TextContent, ThinkingContent, ToolCallContent
+
+    final_content_blocks: list = []
 
     for block in content_blocks:
         if block["type"] == "text":
-            text_content += block["text"]
+            final_content_blocks.append(TextContent(text=block["text"]))
         elif block["type"] == "thinking":
-            thinking_content += block["thinking"]
-            # Store signature for re-submission to API
-            if "thinkingSignature" in block:
-                thinking_signature = block["thinkingSignature"]
+            thinking_sig = block.get("thinkingSignature")
+            final_content_blocks.append(
+                ThinkingContent(
+                    thinking=block["thinking"],
+                    thinking_signature=thinking_sig,
+                )
+            )
         elif block["type"] == "toolCall":
             try:
                 args = json.loads(block["arguments"]) if block["arguments"] else {}
-                tool_calls.append(ToolCall(
-                    id=block["id"],
-                    name=block["name"],
-                    args=args,
-                ))
+                final_content_blocks.append(
+                    ToolCallContent(
+                        id=block["id"],
+                        name=block["name"],
+                        arguments=args,
+                    )
+                )
             except json.JSONDecodeError:
                 pass
 
     final_message = Message(
         role="assistant",
-        content=text_content,
-        tool_calls=tool_calls,
-        thinking_content=thinking_content if thinking_content else None,
-        thinking_signature=thinking_signature if thinking_signature else None,
+        content=final_content_blocks,
     )
 
-    logger.debug(f"Built final message with thinking_content={bool(thinking_content)}, thinking_signature={bool(thinking_signature)}, tool_calls={len(tool_calls)}")
+    logger.debug(f"Built final message with {len(final_content_blocks)} content blocks")
 
     return final_message, usage_data
 
@@ -1143,81 +1145,81 @@ async def aggregate_openai_responses_stream(
 def _messages_to_openai_responses(messages: list[Message]) -> list[dict[str, Any]]:
     """Convert rollouts Messages to OpenAI Responses API format.
 
+    Handles new ContentBlock-based message structure:
+    - Extracts text from TextContent blocks
+    - Extracts thinking from ThinkingContent blocks (with signature for re-use)
+    - Converts ToolCallContent to function_call format
+
     Key differences from chat completions:
     - User messages use input_text content type
     - Assistant messages become separate message/function_call objects
     - Tool calls are separate function_call objects, not properties on messages
     - Tool results become function_call_output objects
     """
+    from .dtypes import TextContent, ThinkingContent, ToolCallContent, ImageContent
+
     result: list[dict[str, Any]] = []
 
     for msg in messages:
         if msg.role == "user":
-            # User messages with input_text content
-            if isinstance(msg.content, str):
-                result.append({
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": msg.content}]
-                })
-            else:
-                # Handle multimodal content (future: images, etc.)
-                result.append({
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": str(msg.content)}]
-                })
+            # Extract text from ContentBlocks
+            text_blocks = [b for b in msg.content if isinstance(b, TextContent)]
+            user_text = "\n".join(b.text for b in text_blocks) if text_blocks else ""
+            result.append({
+                "role": "user",
+                "content": [{"type": "input_text", "text": user_text}]
+            })
 
         elif msg.role == "assistant":
             # Assistant messages become separate objects
             output: list[dict[str, Any]] = []
 
-            # Add thinking block if present (with signature for re-use)
-            # Check for thinking_signature (which exists even without thinking_content when summaries not requested)
-            if hasattr(msg, "thinking_signature") and msg.thinking_signature:
-                # Reuse existing reasoning item
-                logger.debug(f"Found thinking_signature, re-submitting reasoning item")
-                try:
-                    reasoning_item = json.loads(msg.thinking_signature)
-                    output.append(reasoning_item)
-                    logger.debug(f"Added reasoning item: {reasoning_item.get('type', 'unknown')}, id={reasoning_item.get('id', 'unknown')}")
-                except json.JSONDecodeError as e:
-                    logger.error(f"Failed to parse thinking_signature: {e}")
-                    pass
+            # Process ContentBlocks
+            for block in msg.content:
+                if isinstance(block, ThinkingContent) and block.thinking_signature:
+                    # Reuse existing reasoning item
+                    logger.debug(f"Found thinking_signature, re-submitting reasoning item")
+                    try:
+                        reasoning_item = json.loads(block.thinking_signature)
+                        output.append(reasoning_item)
+                        logger.debug(f"Added reasoning item: {reasoning_item.get('type', 'unknown')}, id={reasoning_item.get('id', 'unknown')}")
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Failed to parse thinking_signature: {e}")
+                        pass
+                elif isinstance(block, TextContent):
+                    # Add text content as message object
+                    output.append({
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": block.text, "annotations": []}],
+                        "status": "completed",
+                        "id": f"msg_{int(time.time())}_{id(msg)}",
+                    })
+                elif isinstance(block, ToolCallContent):
+                    # Tool call IDs in responses API use format: call_id|id
+                    # Split if already in that format, otherwise use as call_id
+                    if "|" in block.id:
+                        call_id, func_id = block.id.split("|", 1)
+                    else:
+                        call_id = block.id
+                        func_id = f"fc_{int(time.time())}"
 
-            # Add text content as message object
-            if msg.content:
-                output.append({
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": msg.content, "annotations": []}],
-                    "status": "completed",
-                    "id": f"msg_{int(time.time())}_{id(msg)}",
-                })
-
-            # Add tool calls as separate function_call objects
-            for tool_call in msg.tool_calls:
-                # Tool call IDs in responses API use format: call_id|id
-                # Split if already in that format, otherwise use as call_id
-                if "|" in tool_call.id:
-                    call_id, func_id = tool_call.id.split("|", 1)
-                else:
-                    call_id = tool_call.id
-                    func_id = f"fc_{int(time.time())}"
-
-                output.append({
-                    "type": "function_call",
-                    "id": func_id,
-                    "call_id": call_id,
-                    "name": tool_call.name,
-                    "arguments": json.dumps(tool_call.args),
-                })
+                    output.append({
+                        "type": "function_call",
+                        "id": func_id,
+                        "call_id": call_id,
+                        "name": block.name,
+                        "arguments": json.dumps(block.arguments),
+                    })
 
             # Add all output objects
             if output:
                 result.extend(output)
 
         elif msg.role == "tool":
-            # Tool results become function_call_output
-            tool_result_text = msg.content if isinstance(msg.content, str) else str(msg.content)
+            # Extract text from ContentBlocks for tool result
+            text_blocks = [b for b in msg.content if isinstance(b, TextContent)]
+            tool_result_text = "\n".join(b.text for b in text_blocks) if text_blocks else ""
 
             # Extract call_id from tool_call_id (format: call_id|id or just call_id)
             call_id = msg.tool_call_id
@@ -1259,9 +1261,17 @@ async def rollout_openai_responses(
         timeout=actor.endpoint.timeout,
     )
 
+    # Transform messages for cross-provider compatibility (like pi-ai does)
+    from .transform_messages import transform_messages
+    transformed_messages = transform_messages(
+        actor.trajectory.messages,
+        target_provider=actor.endpoint.provider,
+        target_api="openai-responses"
+    )
+
     # Convert messages to OpenAI Responses format
     # Note: The Responses API uses a completely different message format than chat completions
-    messages = _messages_to_openai_responses(actor.trajectory.messages)
+    messages = _messages_to_openai_responses(transformed_messages)
 
     params = {
         "model": actor.endpoint.model,
@@ -1360,6 +1370,16 @@ async def rollout_openai_responses(
         prompt_tokens=usage_data.get("input_tokens", 0),
         completion_tokens=usage_data.get("output_tokens", 0),
         total_tokens=usage_data.get("input_tokens", 0) + usage_data.get("output_tokens", 0),
+    )
+
+    # Enrich message with provider/api/model metadata for cross-provider handoff
+    final_message = replace(
+        final_message,
+        provider=actor.endpoint.provider,
+        api="openai-responses",
+        model=actor.endpoint.model,
+        usage=usage,
+        stop_reason="stop",  # Responses API doesn't provide finish_reason in stream
     )
 
     completion = ChatCompletion(
@@ -1598,32 +1618,35 @@ async def aggregate_google_stream(
     # Emit done event
     await on_chunk(StreamDone(finish_reason=finish_reason))
 
-    # Build final message
-    text_content = ""
-    thinking_content = ""
-    tool_calls = []
+    # Build final message with ContentBlocks
+    from .dtypes import TextContent, ThinkingContent, ToolCallContent
+
+    final_content_blocks: list = []
 
     for block in content_blocks:
         if block["type"] == "text":
-            text_content += block["text"]
+            final_content_blocks.append(TextContent(text=block["text"]))
         elif block["type"] == "thinking":
-            thinking_content += block["thinking"]
+            final_content_blocks.append(
+                ThinkingContent(
+                    thinking=block["thinking"],
+                    thinking_signature=block.get("thinkingSignature"),
+                )
+            )
         elif block["type"] == "toolCall":
-            tool_calls.append(ToolCall(
-                id=block["id"],
-                name=block["name"],
-                args=block["arguments"],
-            ))
+            final_content_blocks.append(
+                ToolCallContent(
+                    id=block["id"],
+                    name=block["name"],
+                    arguments=block["arguments"],
+                    thought_signature=block.get("thoughtSignature"),
+                )
+            )
 
     final_message = Message(
         role="assistant",
-        content=text_content,
-        tool_calls=tool_calls,
+        content=final_content_blocks,
     )
-
-    # Add thinking content if present
-    if thinking_content:
-        final_message.thinking_content = thinking_content
 
     return final_message, usage_data
 
@@ -1671,39 +1694,55 @@ async def rollout_google(
                 "or provide it in endpoint.api_key"
             )
 
+    # Transform messages for cross-provider compatibility (like pi-ai does)
+    from .transform_messages import transform_messages
+    transformed_messages = transform_messages(
+        actor.trajectory.messages,
+        target_provider=actor.endpoint.provider,
+        target_api="google-generative-ai"
+    )
+
     # Prepare message conversion outside asyncio context
     # Convert messages to Google format
+    from .dtypes import TextContent, ToolCallContent
+
     contents = []
-    for m in actor.trajectory.messages:
+    for m in transformed_messages:
         if m.role == "user":
+            # Extract text from ContentBlocks
+            text_blocks = [b for b in m.content if isinstance(b, TextContent)]
+            user_text = "\n".join(b.text for b in text_blocks) if text_blocks else ""
             contents.append(types.Content(
                 role="user",
-                parts=[types.Part(text=m.content)]
+                parts=[types.Part(text=user_text)]
             ))
         elif m.role == "assistant":
             parts = []
-            if m.content:
-                parts.append(types.Part(text=m.content))
-            for tc in m.tool_calls:
-                parts.append(types.Part(
-                    function_call=types.FunctionCall(
-                        name=tc.name,
-                        args=tc.args,
-                    )
-                ))
+            # Process ContentBlocks
+            for block in m.content:
+                if isinstance(block, TextContent):
+                    parts.append(types.Part(text=block.text))
+                elif isinstance(block, ToolCallContent):
+                    parts.append(types.Part(
+                        function_call=types.FunctionCall(
+                            name=block.name,
+                            args=block.arguments,
+                        )
+                    ))
             if parts:
                 contents.append(types.Content(
                     role="model",
                     parts=parts
                 ))
         elif m.role == "tool":
-            # Tool results go back as user content
-            tool_result_text = m.content if isinstance(m.content, str) else str(m.content)
+            # Extract text from ContentBlocks for tool result
+            text_blocks = [b for b in m.content if isinstance(b, TextContent)]
+            tool_result_text = "\n".join(b.text for b in text_blocks) if text_blocks else ""
             contents.append(types.Content(
                 role="user",
                 parts=[types.Part(
                     function_response=types.FunctionResponse(
-                        name=getattr(m, "tool_name", "unknown"),
+                        name=m.tool_name if m.tool_name else "unknown",
                         response={"result": tool_result_text}
                     )
                 )]
@@ -1767,9 +1806,19 @@ async def rollout_google(
 
     # Build completion object
     usage = Usage(
-        prompt_tokens=usage_data.get("input_tokens", 0),
-        completion_tokens=usage_data.get("output_tokens", 0),
-        total_tokens=usage_data.get("input_tokens", 0) + usage_data.get("output_tokens", 0),
+        input_tokens=usage_data.get("input_tokens", 0),
+        output_tokens=usage_data.get("output_tokens", 0),
+        cache_read_tokens=usage_data.get("cache_read_tokens", 0),
+    )
+
+    # Enrich message with provider/api/model metadata for cross-provider handoff
+    final_message = replace(
+        final_message,
+        provider=actor.endpoint.provider,
+        api="google-generative-ai",
+        model=actor.endpoint.model,
+        usage=usage,
+        stop_reason="stop",
     )
 
     completion = ChatCompletion(
@@ -1805,7 +1854,16 @@ def _apply_inline_thinking_template(
 def _message_to_anthropic(
     m: Message, inline_thinking: str | None = None
 ) -> dict[str, Any]:
-    """Convert a `Message` into Anthropic's streaming-compatible schema."""
+    """Convert a `Message` into Anthropic's streaming-compatible schema.
+
+    Handles new ContentBlock-based message structure:
+    - Extracts text from TextContent blocks
+    - Extracts thinking from ThinkingContent blocks
+    - Converts ToolCallContent to Anthropic tool_use format
+    - Handles ImageContent for vision messages
+    """
+    from .dtypes import TextContent, ThinkingContent, ToolCallContent, ImageContent
+
     assert m is not None
     assert isinstance(m, Message)
     assert m.role is not None
@@ -1813,7 +1871,7 @@ def _message_to_anthropic(
 
     # Validate message content - catch empty messages early
     # Tiger Style: Use assertions for programmer errors (bugs in our code)
-    if not m.content and not (hasattr(m, 'tool_calls') and m.tool_calls):
+    if not m.content:
         import logging
         logger = logging.getLogger(__name__)
         logger.error(f"❌ Empty message content detected! Role: {m.role}")
@@ -1827,58 +1885,52 @@ def _message_to_anthropic(
 
     msg: dict[str, Any] = {"role": m.role}
 
-    if m.role == "assistant" and m.tool_calls:
-        content_blocks = []
+    # Build content blocks from ContentBlock list
+    content_blocks = []
 
-        if (
-            inline_thinking
-            and hasattr(m, "thinking_content")
-            and m.thinking_content
-            and m.content
-            and isinstance(m.content, str)
-        ):
-            combined_text = _apply_inline_thinking_template(
-                m.thinking_content, m.content, inline_thinking
-            )
-            content_blocks.append({"type": "text", "text": combined_text})
-        else:
-            if hasattr(m, "thinking_content") and m.thinking_content:
-                thinking_block = {"type": "thinking", "thinking": m.thinking_content}
-                if hasattr(m, "thinking_signature") and m.thinking_signature:
-                    thinking_block["signature"] = m.thinking_signature
-                content_blocks.append(thinking_block)
+    for block in m.content:
+        if isinstance(block, TextContent):
+            content_blocks.append({"type": "text", "text": block.text})
+        elif isinstance(block, ThinkingContent):
+            thinking_block = {"type": "thinking", "thinking": block.thinking}
+            if block.thinking_signature:
+                thinking_block["signature"] = block.thinking_signature
+            content_blocks.append(thinking_block)
+        elif isinstance(block, ToolCallContent):
+            content_blocks.append({
+                "type": "tool_use",
+                "id": block.id,
+                "name": block.name,
+                "input": block.arguments,
+            })
+        elif isinstance(block, ImageContent):
+            # Anthropic vision format
+            if block.data.startswith("http"):
+                # URL-based image
+                content_blocks.append({
+                    "type": "image",
+                    "source": {
+                        "type": "url",
+                        "url": block.data,
+                    }
+                })
+            else:
+                # Base64-encoded image
+                content_blocks.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": block.mime_type,
+                        "data": block.data,
+                    }
+                })
 
-            if m.content:
-                content_blocks.append({"type": "text", "text": m.content})
-
-        for tc in m.tool_calls:
-            content_blocks.append(
-                {
-                    "type": "tool_use",
-                    "id": tc.id,
-                    "name": tc.name,
-                    "input": tc.args,
-                }
-            )
-
-        msg["content"] = content_blocks
+    # If we have multiple blocks or any non-text blocks, use array format
+    # Otherwise use string format for simple text messages
+    if len(content_blocks) == 1 and content_blocks[0].get("type") == "text":
+        msg["content"] = content_blocks[0]["text"]
     else:
-        if (
-            inline_thinking
-            and hasattr(m, "thinking_content")
-            and m.thinking_content
-            and m.content
-            and isinstance(m.content, str)
-        ):
-            combined_text = _apply_inline_thinking_template(
-                m.thinking_content, m.content, inline_thinking
-            )
-            msg["content"] = combined_text
-        else:
-            # Content should have been validated above, but double-check
-            # Tiger Style: Assertion for programmer error (should never happen)
-            assert m.content, f"Message content is empty after validation (role={m.role})"
-            msg["content"] = m.content
+        msg["content"] = content_blocks
 
     return msg
 
@@ -2062,21 +2114,44 @@ async def aggregate_anthropic_stream(
     # Emit done event
     await on_chunk(StreamDone(finish_reason=finish_reason))
 
+    # Build final message with ContentBlocks
+    from .dtypes import TextContent, ThinkingContent, ToolCallContent
+
+    content_blocks: list = []
+
+    # Add thinking content if present
+    if thinking_content:
+        content_blocks.append(
+            ThinkingContent(
+                thinking=thinking_content,
+                thinking_signature=thinking_signature,
+            )
+        )
+
+    # Add text content if present
+    if accumulated_content:
+        content_blocks.append(TextContent(text=accumulated_content))
+
+    # Add tool calls as ToolCallContent blocks
+    for tc in tool_calls:
+        content_blocks.append(
+            ToolCallContent(
+                id=tc.id,
+                name=tc.name,
+                arguments=tc.args,
+            )
+        )
+
     final_message = Message(
         role="assistant",
-        content=accumulated_content if accumulated_content else "",
-        thinking_content=thinking_content or None,
-        thinking_signature=thinking_signature,
-        tool_calls=tool_calls,
+        content=content_blocks,
     )
 
     final_anthropic_message = await stream.get_final_message()
 
     usage = Usage(
-        prompt_tokens=final_anthropic_message.usage.input_tokens,
-        completion_tokens=final_anthropic_message.usage.output_tokens,
-        total_tokens=final_anthropic_message.usage.input_tokens
-        + final_anthropic_message.usage.output_tokens,
+        input_tokens=final_anthropic_message.usage.input_tokens,
+        output_tokens=final_anthropic_message.usage.output_tokens,
     )
 
     completion = ChatCompletion(
@@ -2098,7 +2173,10 @@ async def rollout_anthropic(
     turn_idx: int = 0,
     inline_thinking: str | None = None,
 ) -> Actor:
-    """Call Anthropic's API using streaming and update the actor."""
+    """Call Anthropic's API using streaming and update the actor.
+
+    Note: **kwargs accepts but ignores provider-specific params (e.g., openai reasoning params)
+    """
 
     client_kwargs: dict[str, Any] = {
         "api_key": actor.endpoint.api_key,
@@ -2111,15 +2189,28 @@ async def rollout_anthropic(
         client_kwargs["base_url"] = base_url
     client = AsyncAnthropic(**client_kwargs)
 
-    truncated_trajectory = actor.trajectory
+    # Transform messages for cross-provider compatibility (like pi-ai does)
+    from .transform_messages import transform_messages
+    transformed_messages = transform_messages(
+        actor.trajectory.messages,
+        target_provider=actor.endpoint.provider,
+        target_api="anthropic-messages"
+    )
 
     system_prompt = None
     messages = []
 
-    for m in truncated_trajectory.messages:
+    from .dtypes import TextContent
+
+    for m in transformed_messages:
         if m.role == "system":
-            system_prompt = m.content
+            # Extract text from ContentBlocks
+            text_blocks = [b for b in m.content if isinstance(b, TextContent)]
+            system_prompt = "\n".join(b.text for b in text_blocks) if text_blocks else ""
         elif m.role == "tool":
+            # Extract text from ContentBlocks for tool result
+            text_blocks = [b for b in m.content if isinstance(b, TextContent)]
+            tool_result_text = "\n".join(b.text for b in text_blocks) if text_blocks else ""
             messages.append(
                 {
                     "role": "user",
@@ -2127,7 +2218,7 @@ async def rollout_anthropic(
                         {
                             "type": "tool_result",
                             "tool_use_id": m.tool_call_id,
-                            "content": m.content,
+                            "content": tool_result_text,
                         }
                     ],
                 }
@@ -2224,6 +2315,16 @@ async def rollout_anthropic(
 
     completion = replace(completion, model=actor.endpoint.model)
     final_message = completion.choices[0].message
+
+    # Enrich message with provider/api/model metadata for cross-provider handoff
+    final_message = replace(
+        final_message,
+        provider=actor.endpoint.provider,
+        api="anthropic-messages",
+        model=actor.endpoint.model,
+        usage=completion.usage if completion.usage else None,
+        stop_reason=completion.choices[0].finish_reason,
+    )
 
     new_trajectory = replace(
         actor.trajectory,
