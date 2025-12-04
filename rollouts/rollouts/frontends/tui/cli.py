@@ -3,8 +3,11 @@
 CLI entry point for interactive TUI agent.
 
 Usage:
-    python -m rollouts.frontends.tui.cli --model gpt-4o-mini
-    python -m rollouts.frontends.tui.cli --model claude-sonnet-4-5 --provider anthropic
+    python -m rollouts.frontends.tui.cli
+    python -m rollouts.frontends.tui.cli --model openai/gpt-4o-mini
+    python -m rollouts.frontends.tui.cli --model anthropic/claude-sonnet-4-5 --thinking disabled
+
+Model format is "provider/model" (explicit, no inference).
 """
 
 from __future__ import annotations
@@ -128,9 +131,59 @@ def pick_session(working_dir: Path) -> Session | None:
             return None
 
 
-def create_endpoint(provider: str, model: str, api_base: str | None = None, api_key: str | None = None) -> Endpoint:
-    """Create endpoint from CLI arguments."""
+def parse_model_string(model_str: str) -> tuple[str, str]:
+    """Parse model string into (provider, model_name).
+
+    Requires explicit "provider/model" format (e.g., "anthropic/claude-3-5-haiku-20241022").
+
+    Args:
+        model_str: Model string in "provider/model" format
+
+    Returns:
+        Tuple of (provider, model_name)
+
+    Raises:
+        ValueError: If model_str doesn't contain "/"
+    """
+    if "/" not in model_str:
+        raise ValueError(
+            f'Model must be in "provider/model" format (e.g., "anthropic/claude-sonnet-4-5"). '
+            f'Got: "{model_str}"'
+        )
+
+    provider, model = model_str.split("/", 1)
+    return provider, model
+
+
+def create_endpoint(model_str: str, api_base: str | None = None, api_key: str | None = None, thinking: str = "enabled") -> Endpoint:
+    """Create endpoint from CLI arguments.
+
+    Args:
+        model_str: Model string in "provider/model" format (e.g., "anthropic/claude-sonnet-4-5")
+        api_base: Optional API base URL
+        api_key: Optional API key (otherwise from env)
+        thinking: Extended thinking setting ("enabled" or "disabled")
+    """
     import os
+    from rollouts.models import get_model
+
+    # Parse model string
+    provider, model = parse_model_string(model_str)
+
+    # Check model capabilities if thinking is enabled
+    if thinking == "enabled":
+        model_metadata = get_model(provider, model)  # type: ignore
+        if model_metadata is not None:
+            if not model_metadata.reasoning:
+                raise ValueError(
+                    f"Model '{model}' does not support extended thinking/reasoning.\n"
+                    f"Either:\n"
+                    f"  1. Use a model that supports reasoning (e.g., anthropic/claude-3-5-sonnet-20241022)\n"
+                    f"  2. Disable thinking with --thinking disabled"
+                )
+        # If model not in registry, warn but allow (might be custom endpoint)
+        elif provider == "anthropic":
+            print(f"⚠️  Warning: Model '{model}' not in registry. Cannot verify thinking support.")
 
     if api_base is None:
         if provider == "openai":
@@ -149,11 +202,23 @@ def create_endpoint(provider: str, model: str, api_base: str | None = None, api_
         else:
             api_key = ""
 
+    # Configure extended thinking for Anthropic
+    thinking_config = None
+    thinking_budget = 10000
+    if provider == "anthropic" and thinking == "enabled":
+        thinking_config = {"type": "enabled", "budget_tokens": thinking_budget}
+
+    # max_tokens must be greater than thinking budget
+    # Set to a reasonable value that accommodates both thinking and response
+    max_tokens = 16384 if thinking_config else 8192
+
     return Endpoint(
         provider=provider,
         model=model,
         api_base=api_base,
         api_key=api_key,
+        thinking=thinking_config,
+        max_tokens=max_tokens,
     )
 
 
@@ -165,15 +230,8 @@ def main() -> int:
     parser.add_argument(
         "--model",
         type=str,
-        default="gpt-4o-mini",
-        help="Model to use (default: gpt-4o-mini)",
-    )
-    parser.add_argument(
-        "--provider",
-        type=str,
-        default="openai",
-        choices=["openai", "anthropic"],
-        help="Provider to use (default: openai)",
+        default="anthropic/claude-haiku-4-5-20251001",
+        help='Model in "provider/model" format (e.g., "anthropic/claude-haiku-4-5-20251001", "openai/gpt-4o-mini"). Default: anthropic/claude-haiku-4-5-20251001',
     )
     parser.add_argument(
         "--api-base",
@@ -244,14 +302,32 @@ def main() -> int:
         help="Non-interactive mode: run query and print result",
     )
 
+    # Theme selection
+    parser.add_argument(
+        "--theme",
+        type=str,
+        choices=["dark", "rounded"],
+        default="dark",
+        help="UI theme (default: dark)",
+    )
+
+    # Extended thinking (Anthropic)
+    parser.add_argument(
+        "--thinking",
+        type=str,
+        choices=["enabled", "disabled"],
+        default="enabled",
+        help="Enable extended thinking for Anthropic models (default: enabled)",
+    )
+
     args = parser.parse_args()
 
     # Create endpoint
-    endpoint = create_endpoint(args.provider, args.model, args.api_base, args.api_key)
+    endpoint = create_endpoint(args.model, args.api_base, args.api_key, args.thinking)
 
     # Validate API key is set
     if not endpoint.api_key:
-        env_var = "OPENAI_API_KEY" if args.provider == "openai" else "ANTHROPIC_API_KEY"
+        env_var = "OPENAI_API_KEY" if endpoint.provider == "openai" else "ANTHROPIC_API_KEY"
         print(f"\n❌ Error: No API key found. Please set {env_var} environment variable or use --api-key flag.", file=sys.stderr)
         return 1
 
@@ -299,7 +375,7 @@ def main() -> int:
 
     # Create new session if needed (and not --no-session)
     if session is None and not args.no_session:
-        session = create_session(working_dir, args.provider, args.model)
+        session = create_session(working_dir, endpoint.provider, endpoint.model)
         print(f"New session: {session.session_id}")
 
     # Get system prompt (user-provided or default for env)
@@ -328,6 +404,7 @@ def main() -> int:
             environment,
             args.max_turns,
             session,  # Pass session for persistence
+            args.theme,  # Pass theme selection
         )
         return 0
     except KeyboardInterrupt:

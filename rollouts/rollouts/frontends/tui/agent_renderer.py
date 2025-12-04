@@ -134,7 +134,7 @@ class AgentRenderer:
         if self.current_message is None:
             # Add spacer before assistant message for visual separation
             self.chat_container.add_child(Spacer(1))
-            self.current_message = AssistantMessage()
+            self.current_message = AssistantMessage(theme=self.theme)
             self.chat_container.add_child(self.current_message)
 
         self.current_text_index = content_index
@@ -146,7 +146,7 @@ class AgentRenderer:
             # Start new message if we don't have one
             # Add spacer before assistant message for visual separation
             self.chat_container.add_child(Spacer(1))
-            self.current_message = AssistantMessage()
+            self.current_message = AssistantMessage(theme=self.theme)
             self.chat_container.add_child(self.current_message)
             self.current_text_index = content_index
 
@@ -167,7 +167,9 @@ class AgentRenderer:
         """Handle thinking block start."""
         # Create assistant message if needed
         if self.current_message is None:
-            self.current_message = AssistantMessage()
+            # Add spacer before assistant message for visual separation
+            self.chat_container.add_child(Spacer(1))
+            self.current_message = AssistantMessage(theme=self.theme)
             self.chat_container.add_child(self.current_message)
 
         self.current_thinking_index = content_index
@@ -177,7 +179,9 @@ class AgentRenderer:
         """Handle thinking delta - append to current message."""
         if self.current_message is None:
             # Start new message if we don't have one
-            self.current_message = AssistantMessage()
+            # Add spacer before assistant message for visual separation
+            self.chat_container.add_child(Spacer(1))
+            self.current_message = AssistantMessage(theme=self.theme)
             self.chat_container.add_child(self.current_message)
             self.current_thinking_index = content_index
 
@@ -328,7 +332,7 @@ class AgentRenderer:
             messages: List of Message objects to render
             skip_system: Whether to skip system messages (default True)
         """
-        from rollouts.dtypes import Message
+        from rollouts.dtypes import Message, TextContent, ThinkingContent, ToolCallContent
 
         for msg in messages:
             if not isinstance(msg, Message):
@@ -341,9 +345,11 @@ class AgentRenderer:
             if msg.role == "user":
                 self._render_user_message(msg)
             elif msg.role == "assistant":
-                self._render_assistant_message(msg)
+                # Convert assistant message to events and replay through handlers
+                self._replay_assistant_message_as_events(msg)
             elif msg.role == "tool":
-                self._render_tool_result(msg)
+                # Convert tool result to event and replay through handler
+                self._replay_tool_result_as_event(msg)
 
         self.tui.request_render()
 
@@ -367,112 +373,97 @@ class AgentRenderer:
             user_component = UserMessage(text, is_first=is_first, theme=self.theme)
             self.chat_container.add_child(user_component)
 
-    def _render_assistant_message(self, msg) -> None:
-        """Render an assistant message from history."""
+    def _replay_assistant_message_as_events(self, msg) -> None:
+        """Convert assistant message from history into events and replay through handlers.
+
+        This ensures history rendering uses the exact same code path as live streaming.
+        """
         from rollouts.dtypes import TextContent, ThinkingContent, ToolCallContent
 
         content = msg.content
         if content is None:
             return
 
-        # Handle string content
+        # Handle string content - convert to TextContent
         if isinstance(content, str):
             if content:
-                # Add spacer before assistant message for visual separation
-                self.chat_container.add_child(Spacer(1))
-                assistant_msg = AssistantMessage()
-                assistant_msg.set_text(content)
-                self.chat_container.add_child(assistant_msg)
-                # Add spacer after assistant message
-                self.chat_container.add_child(Spacer(1))
-            return
+                content = [TextContent(text=content)]
+            else:
+                return
 
         # Handle list of content blocks
         if not isinstance(content, list):
             return
 
-        # Add spacer before assistant message for visual separation
-        self.chat_container.add_child(Spacer(1))
-
-        text_content = ""
-        thinking_content = ""
-
+        content_index = 0
         for block in content:
             # Handle dataclass types
             if isinstance(block, TextContent):
-                text_content += block.text
-            elif isinstance(block, ThinkingContent):
-                thinking_content += block.thinking
-            elif isinstance(block, ToolCallContent):
-                # Render any accumulated text first
-                if text_content or thinking_content:
-                    assistant_msg = AssistantMessage()
-                    if thinking_content:
-                        assistant_msg.set_thinking(thinking_content)
-                    if text_content:
-                        assistant_msg.set_text(text_content)
-                    self.chat_container.add_child(assistant_msg)
-                    text_content = ""
-                    thinking_content = ""
+                # Simulate text streaming: start -> delta -> end
+                self._handle_text_start(content_index)
+                self._handle_text_delta(content_index, block.text)
+                self._handle_text_end(content_index, block.text)
+                content_index += 1
 
-                # Render tool call
-                self.chat_container.add_child(Spacer(1))
-                tool_component = ToolExecution(
-                    block.name,
-                    args=dict(block.arguments),
-                    bg_fn_pending=self.theme.tool_pending_bg_fn,
-                    bg_fn_success=self.theme.tool_success_bg_fn,
-                    bg_fn_error=self.theme.tool_error_bg_fn,
+            elif isinstance(block, ThinkingContent):
+                # Simulate thinking streaming: start -> delta -> end
+                self._handle_thinking_start(content_index)
+                self._handle_thinking_delta(content_index, block.thinking)
+                self._handle_thinking_end(content_index, block.thinking)
+                content_index += 1
+
+            elif isinstance(block, ToolCallContent):
+                # Simulate tool call: start -> end
+                # Create a minimal ToolCall object for the handler
+                from rollouts.dtypes import ToolCall
+                tool_call = ToolCall(
+                    id=block.id,
+                    name=block.name,
+                    args=dict(block.arguments)
                 )
-                self.chat_container.add_child(tool_component)
-                self.pending_tools[block.id] = tool_component
+                self._handle_tool_call_start(content_index, block.id, block.name)
+                self._handle_tool_call_end(content_index, tool_call)
+                content_index += 1
+
             # Handle legacy dict format
             elif isinstance(block, dict):
                 block_type = block.get("type")
                 if block_type == "text":
-                    text_content += block.get("text", "")
-                elif block_type == "thinking":
-                    thinking_content += block.get("thinking", "")
-                elif block_type in ("tool_use", "toolCall"):
-                    if text_content or thinking_content:
-                        assistant_msg = AssistantMessage()
-                        if thinking_content:
-                            assistant_msg.set_thinking(thinking_content)
-                        if text_content:
-                            assistant_msg.set_text(text_content)
-                        self.chat_container.add_child(assistant_msg)
-                        text_content = ""
-                        thinking_content = ""
+                    text = block.get("text", "")
+                    if text:
+                        self._handle_text_start(content_index)
+                        self._handle_text_delta(content_index, text)
+                        self._handle_text_end(content_index, text)
+                        content_index += 1
 
+                elif block_type == "thinking":
+                    thinking = block.get("thinking", "")
+                    if thinking:
+                        self._handle_thinking_start(content_index)
+                        self._handle_thinking_delta(content_index, thinking)
+                        self._handle_thinking_end(content_index, thinking)
+                        content_index += 1
+
+                elif block_type in ("tool_use", "toolCall"):
                     tool_name = block.get("name", "unknown")
                     tool_id = block.get("id", "")
                     tool_args = block.get("input", block.get("arguments", {}))
 
-                    self.chat_container.add_child(Spacer(1))
-                    tool_component = ToolExecution(
-                        tool_name,
-                        args=tool_args,
-                        bg_fn_pending=self.theme.tool_pending_bg_fn,
-                        bg_fn_success=self.theme.tool_success_bg_fn,
-                        bg_fn_error=self.theme.tool_error_bg_fn,
+                    from rollouts.dtypes import ToolCall
+                    tool_call = ToolCall(
+                        id=tool_id,
+                        name=tool_name,
+                        args=tool_args
                     )
-                    self.chat_container.add_child(tool_component)
-                    self.pending_tools[tool_id] = tool_component
+                    self._handle_tool_call_start(content_index, tool_id, tool_name)
+                    self._handle_tool_call_end(content_index, tool_call)
+                    content_index += 1
 
-        # Render any remaining text/thinking content
-        if text_content or thinking_content:
-            assistant_msg = AssistantMessage()
-            if thinking_content:
-                assistant_msg.set_thinking(thinking_content)
-            if text_content:
-                assistant_msg.set_text(text_content)
-            self.chat_container.add_child(assistant_msg)
+        # Simulate stream done to finalize the message
+        self._handle_stream_done()
 
-        # Add spacer after assistant message
-        self.chat_container.add_child(Spacer(1))
-
-    def _render_tool_result(self, msg) -> None:
-        """Render a tool result from history."""
+    def _replay_tool_result_as_event(self, msg) -> None:
+        """Convert tool result from history into event and replay through handler."""
         tool_call_id = msg.tool_call_id
         if not tool_call_id:
             return
@@ -490,11 +481,6 @@ class AgentRenderer:
         else:
             result_text = str(content) if content else ""
 
-        # Update the pending tool component if it exists
-        if tool_call_id in self.pending_tools:
-            self.pending_tools[tool_call_id].update_result(
-                {"content": [{"type": "text", "text": result_text}]},
-                is_error=False,
-            )
-            del self.pending_tools[tool_call_id]
+        # Replay through the same handler used for live tool results
+        self._handle_tool_result(tool_call_id, result_text, is_error=False, error=None)
 

@@ -877,6 +877,12 @@ class Endpoint(JsonSerializable):
                     f"Claude thinking budget_tokens must be >= 1024, got {budget}. "
                     "Anthropic API requirement for extended thinking mode."
                 )
+                # max_tokens must be greater than thinking budget
+                assert self.max_tokens > budget, (
+                    f"max_tokens ({self.max_tokens}) must be greater than thinking.budget_tokens ({budget}). "
+                    f"Anthropic requires max_tokens > budget_tokens to allow space for both thinking and response. "
+                    f"See https://docs.claude.com/en/docs/build-with-claude/extended-thinking#max-tokens-and-context-window-size"
+                )
                 # Anthropic requires temperature=1.0 when thinking is enabled
                 assert self.temperature == 1.0, (
                     f"Anthropic requires temperature=1.0 when thinking is enabled, got {self.temperature}. "
