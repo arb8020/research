@@ -72,31 +72,42 @@ class BinarySearchEnvironment(Environment):
         """No feedback needed for binary search environment."""
         return state
 
-    async def exec_tool(self, tool_call: ToolCall) -> ToolResult:
+    async def exec_tool(
+        self,
+        tool_call: ToolCall,
+        current_state: AgentState,
+        run_config: RunConfig,
+        checkpoint_store=None,
+        cancel_scope: trio.CancelScope | None = None,
+    ) -> ToolResult:
         try:
             if tool_call.name == "guess_answer":
                 guess = int(tool_call.args["number"])
                 self._correct = (guess == self.answer)
                 if self._correct:
                     return ToolResult(
-                        call_id=tool_call.id, ok=True,
+                        tool_call_id=tool_call.id,
+                        is_error=False,
                         content=f"CONGRATS!!!! {guess} is correct!",
                         stop_reason=StopReason.TASK_COMPLETED
                     )
                 else:
                     hint = "too high" if guess > self.answer else "too low"
                     return ToolResult(
-                        call_id=tool_call.id, ok=True,
+                        tool_call_id=tool_call.id,
+                        is_error=False,
                         content=f"Wrong! {guess} is {hint}. Try again!"
                     )
             else:
                 return ToolResult(
-                    call_id=tool_call.id, ok=False,
+                    tool_call_id=tool_call.id,
+                    is_error=True,
                     content=f"{tool_call.name} is not a valid tool",
                 )
         except Exception as e:
             return ToolResult(
-                call_id=tool_call.id, ok=False,
+                tool_call_id=tool_call.id,
+                is_error=True,
                 content="",
                 error=str(e)
             )
@@ -138,14 +149,10 @@ async def main():
     sys_msg = Message(
         role="system",
         content=f"You are helpful tool use agent. Your job is to guess a number in the range {environment.range_min} and {environment.range_max} inclusive.",
-        tool_calls=[],
-        tool_call_id=None
     )
     user_msg = Message(
         role="user",
         content="I'll take a backset while you do this task. Have fun!",
-        tool_calls=[],
-        tool_call_id=None
     )
     
     trajectory = Trajectory(messages=[sys_msg, user_msg])
@@ -176,7 +183,7 @@ async def main():
     print(f"💬 Total messages: {len(final_state.actor.trajectory.messages)}")
     
     # Count tool calls
-    tool_calls = sum(len(msg.tool_calls) for msg in final_state.actor.trajectory.messages)
+    tool_calls = sum(len(msg.get_tool_calls()) for msg in final_state.actor.trajectory.messages)
     print(f"🔧 Total tool calls: {tool_calls}")
 
     # (optionally) save trajectory to disk

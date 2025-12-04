@@ -424,6 +424,8 @@ class Message(JsonSerializable):
     model: str | None = None  # e.g., "claude-3-5-sonnet-20241022", "gpt-4o"
     # For tool role messages: which tool call this is responding to
     tool_call_id: str | None = None
+    # UI-only structured data (stripped before LLM)
+    details: dict[str, Any] | None = None
 
     def get_tool_calls(self) -> list[ToolCall]:
         """Extract tool calls from ContentBlocks.
@@ -725,15 +727,18 @@ class StopReason(Enum):
     PROVIDER_ERROR = "PROVIDER_ERROR"
     NO_TOOL_CALLED = "NO_TOOL_CALLED"
     TASK_COMPLETED = "TASK_COMPLETED"
+    ABORTED = "ABORTED"
 
 
 @dataclass(frozen=True)
 class ToolResult(JsonSerializable):
-    call_id: str = ""
-    ok: bool = False
+    tool_call_id: str = ""
+    is_error: bool = False
     content: str = ""
     error: str | None = None
     stop_reason: StopReason | None = None
+    # UI-only structured data (stripped before LLM)
+    details: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -754,9 +759,23 @@ class Environment(Protocol):
         """Return available tools for this environment."""
         ...
 
-    async def exec_tool(self, tool_call: ToolCall, current_state: 'AgentState',
-                       run_config: 'RunConfig', checkpoint_store=None) -> ToolResult:
-        """Execute a tool call in this environment."""
+    async def exec_tool(
+        self,
+        tool_call: ToolCall,
+        current_state: 'AgentState',
+        run_config: 'RunConfig',
+        checkpoint_store=None,
+        cancel_scope: trio.CancelScope | None = None,
+    ) -> ToolResult:
+        """Execute a tool call in this environment.
+        
+        Args:
+            tool_call: The tool call to execute
+            current_state: Current agent state
+            run_config: Run configuration
+            checkpoint_store: Optional checkpoint store for persistence
+            cancel_scope: Optional Trio cancel scope for graceful cancellation
+        """
         ...
 
     def requires_confirmation(self, tool_call: ToolCall) -> bool:
@@ -896,6 +915,7 @@ class RunConfig:
     inline_thinking: str | None = None
     checkpoint_store: Any | None = None
     show_progress: bool = False  # Enable turn-level progress tracking
+    cancel_scope: trio.CancelScope | None = None  # Optional Trio cancel scope for graceful cancellation
 
 
 # ── Evaluation Types ──────────────────────────────────────────────────────────

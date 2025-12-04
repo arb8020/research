@@ -38,11 +38,18 @@ class ScreenSpotEnvironment:
         """No feedback needed for ScreenSpot environment."""
         return state
 
-    async def exec_tool(self, tool_call: ToolCall, current_state: AgentState, run_config, checkpoint_store=None) -> ToolResult:
+    async def exec_tool(
+        self,
+        tool_call: ToolCall,
+        current_state: AgentState,
+        run_config,
+        checkpoint_store=None,
+        cancel_scope=None,
+    ) -> ToolResult:
         """No tools available in ScreenSpot environment."""
         return ToolResult(
-            call_id=tool_call.id,
-            ok=False,
+            tool_call_id=tool_call.id,
+            is_error=True,
             error="No tools available in ScreenSpot environment"
         )
 
