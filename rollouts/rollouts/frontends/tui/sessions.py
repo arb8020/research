@@ -331,3 +331,31 @@ def compact_session(
         append_message(new_session, msg)
 
     return new_session
+
+
+# ── Delete session ────────────────────────────────────────────────────────────
+
+
+def delete_session(session: Session) -> None:
+    """Delete a session file.
+
+    Args:
+        session: Session to delete
+    """
+    if session.file_path.exists():
+        session.file_path.unlink()
+
+
+def clear_all_sessions(working_dir: Path) -> int:
+    """Delete all sessions in the working directory.
+
+    Args:
+        working_dir: Working directory containing .rollouts folder
+
+    Returns:
+        Number of sessions deleted
+    """
+    sessions = list_sessions(working_dir)
+    for session in sessions:
+        delete_session(session)
+    return len(sessions)
