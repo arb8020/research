@@ -7,6 +7,8 @@ Ported from pi-mono/packages/tui - same architecture, same visual output.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import datetime
+from pathlib import Path
 from typing import Callable, Protocol, Optional, List
 import os
 import time
@@ -343,10 +345,21 @@ class TUI(Container):
 
             line = new_lines[i]
             if visible_width(line) > width:
-                # Line too wide - this is a bug, but handle gracefully
-                # In production, could log to debug file like pi-mono does
+                # Line too wide - write debug log and raise
+                crash_log_path = Path.home() / ".rollouts" / "crash.log"
+                crash_log_path.parent.mkdir(parents=True, exist_ok=True)
+                crash_data = [
+                    f"Crash at {datetime.now().isoformat()}",
+                    f"Terminal width: {width}",
+                    f"Line {i} visible width: {visible_width(line)}",
+                    "",
+                    "=== All rendered lines ===",
+                    *[f"[{idx}] (w={visible_width(ln)}) {ln}" for idx, ln in enumerate(new_lines)],
+                    "",
+                ]
+                crash_log_path.write_text("\n".join(crash_data))
                 raise ValueError(
-                    f"Rendered line {i} exceeds terminal width ({visible_width(line)} > {width})"
+                    f"Rendered line {i} exceeds terminal width. Debug log: {crash_log_path}"
                 )
             buffer += line
 
