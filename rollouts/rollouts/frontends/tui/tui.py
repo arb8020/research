@@ -12,6 +12,7 @@ import os
 import time
 
 from .terminal import Terminal
+from .theme import Theme, DARK_THEME
 from .utils import visible_width
 
 
@@ -108,9 +109,10 @@ class Container(Component):
 class TUI(Container):
     """Main class for managing terminal UI with differential rendering."""
 
-    def __init__(self, terminal: Terminal) -> None:
+    def __init__(self, terminal: Terminal, theme: Optional[Theme] = None) -> None:
         super().__init__()
         self._terminal = terminal
+        self.theme = theme or DARK_THEME
         self._previous_lines: List[str] = []
         self._previous_width: int = 0
         self._focused_component: Optional[Component] = None

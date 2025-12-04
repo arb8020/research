@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import List, Optional
 
 from ..tui import Component, Container
+from ..theme import Theme, DARK_THEME, hex_to_fg, RESET
 from .markdown import Markdown, DefaultMarkdownTheme
 from .spacer import Spacer
 from .text import Text
@@ -15,11 +16,13 @@ from .text import Text
 class AssistantMessage(Component):
     """Component that renders assistant message with text and thinking blocks."""
 
-    def __init__(self) -> None:
+    def __init__(self, theme: Optional[Theme] = None) -> None:
         """Initialize assistant message component."""
+        self._theme = theme or DARK_THEME
         self._content_container = Container()
         self._text_content = ""
         self._thinking_content = ""
+        self._thinking_intensity = "medium"  # minimal, low, medium, high
 
     def append_text(self, delta: str) -> None:
         """Append text delta to current text content."""
@@ -39,6 +42,11 @@ class AssistantMessage(Component):
     def set_thinking(self, thinking: str) -> None:
         """Set complete thinking content."""
         self._thinking_content = thinking
+        self._rebuild_content()
+
+    def set_thinking_intensity(self, intensity: str) -> None:
+        """Set thinking intensity level (minimal, low, medium, high)."""
+        self._thinking_intensity = intensity
         self._rebuild_content()
 
     def clear(self) -> None:
@@ -65,9 +73,8 @@ class AssistantMessage(Component):
 
         # Render thinking blocks first (if any)
         if self._thinking_content and self._thinking_content.strip():
-            # Thinking in muted/dim color, italic style
-            # Use a custom theme that applies muted color
-            thinking_theme = _MutedMarkdownTheme()
+            # Thinking with intensity-based color
+            thinking_theme = _ThinkingMarkdownTheme(self._theme, self._thinking_intensity)
             thinking_md = Markdown(
                 self._thinking_content.strip(),
                 padding_x=1,
@@ -83,7 +90,7 @@ class AssistantMessage(Component):
                 self._text_content.strip(),
                 padding_x=1,
                 padding_y=0,
-                theme=DefaultMarkdownTheme(),
+                theme=DefaultMarkdownTheme(self._theme),
             )
             self._content_container.add_child(text_md)
 
@@ -92,48 +99,60 @@ class AssistantMessage(Component):
         return self._content_container.render(width)
 
 
-class _MutedMarkdownTheme(DefaultMarkdownTheme):
-    """Markdown theme with muted/dim colors for thinking blocks."""
+class _ThinkingMarkdownTheme(DefaultMarkdownTheme):
+    """Markdown theme for thinking blocks with intensity-based colors."""
+
+    def __init__(self, theme: Theme, intensity: str = "medium") -> None:
+        super().__init__(theme)
+        # Get thinking color based on intensity
+        colors = {
+            "minimal": theme.thinking_minimal,
+            "low": theme.thinking_low,
+            "medium": theme.thinking_medium,
+            "high": theme.thinking_high,
+        }
+        self._thinking_color = colors.get(intensity, theme.thinking_medium)
+        self._color_prefix = hex_to_fg(self._thinking_color)
 
     def heading(self, text: str) -> str:
-        return f"\x1b[2m{text}\x1b[0m"  # Dim
+        return f"\x1b[3m{self._color_prefix}{text}{RESET}"  # Italic + thinking color
 
     def link(self, text: str) -> str:
-        return f"\x1b[2;4m{text}\x1b[0m"  # Dim underline
+        return f"\x1b[4m{self._color_prefix}{text}{RESET}"
 
     def link_url(self, text: str) -> str:
-        return f"\x1b[2m{text}\x1b[0m"  # Dim
+        return f"{self._color_prefix}{text}{RESET}"
 
     def code(self, text: str) -> str:
-        return f"\x1b[2;33m{text}\x1b[0m"  # Dim yellow
+        return f"{self._color_prefix}{text}{RESET}"
 
     def code_block(self, text: str) -> str:
-        return f"\x1b[2;33m{text}\x1b[0m"  # Dim yellow
+        return f"{self._color_prefix}{text}{RESET}"
 
     def code_block_border(self, text: str) -> str:
-        return f"\x1b[2m{text}\x1b[0m"  # Dim
+        return f"{self._color_prefix}{text}{RESET}"
 
     def quote(self, text: str) -> str:
-        return f"\x1b[2;3m{text}\x1b[0m"  # Dim italic
+        return f"\x1b[3m{self._color_prefix}{text}{RESET}"
 
     def quote_border(self, text: str) -> str:
-        return f"\x1b[2;36m{text}\x1b[0m"  # Dim cyan
+        return f"{self._color_prefix}{text}{RESET}"
 
     def hr(self, text: str) -> str:
-        return f"\x1b[2m{text}\x1b[0m"  # Dim
+        return f"{self._color_prefix}{text}{RESET}"
 
     def list_bullet(self, text: str) -> str:
-        return f"\x1b[2;36m{text}\x1b[0m"  # Dim cyan
+        return f"{self._color_prefix}{text}{RESET}"
 
     def bold(self, text: str) -> str:
-        return f"\x1b[2;1m{text}\x1b[0m"  # Dim bold
+        return f"\x1b[1m{self._color_prefix}{text}{RESET}"
 
     def italic(self, text: str) -> str:
-        return f"\x1b[2;3m{text}\x1b[0m"  # Dim italic
+        return f"\x1b[3m{self._color_prefix}{text}{RESET}"
 
     def strikethrough(self, text: str) -> str:
-        return f"\x1b[2;9m{text}\x1b[0m"  # Dim strikethrough
+        return f"\x1b[9m{self._color_prefix}{text}{RESET}"
 
     def underline(self, text: str) -> str:
-        return f"\x1b[2;4m{text}\x1b[0m"  # Dim underline
+        return f"\x1b[4m{self._color_prefix}{text}{RESET}"
 

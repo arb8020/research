@@ -27,6 +27,7 @@ from .dtypes import (
     ToolCall,
     ToolConfirmResult,
     ToolResult,
+    ToolResultReceived,
 )
 from .providers import (
     rollout_anthropic,
@@ -594,12 +595,12 @@ async def process_pending_tools(
         
         # Emit tool result
         assert tool_result
-        await rcfg.on_chunk(StreamChunk("tool_result", {
-            "call_id": tool_call.id,
-            "ok": not tool_result.is_error,  # Legacy format: ok = not is_error
-            "content": tool_result.content,
-            "error": tool_result.error
-        }))
+        await rcfg.on_chunk(ToolResultReceived(
+            tool_call_id=tool_call.id,
+            content=tool_result.content,
+            is_error=tool_result.is_error,
+            error=tool_result.error,
+        ))
         
         # Add tool result message
         result_message = Message(
