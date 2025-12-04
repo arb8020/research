@@ -157,6 +157,54 @@ def list_sessions(working_dir: Path) -> list[Session]:
     return [load_session(f) for f in session_files]
 
 
+@dataclass(frozen=True)
+class SessionInfo:
+    """Session metadata for display in picker."""
+    session: Session
+    header: SessionHeader
+    message_count: int
+    first_user_message: str | None
+    modified: datetime
+
+
+def get_session_info(session: Session) -> SessionInfo:
+    """Get detailed info about a session for display."""
+    header = load_header(session)
+    messages = load_messages(session)
+
+    # Find first user message for preview
+    first_user = None
+    for msg in messages:
+        if msg.role == "user":
+            content = msg.content
+            if isinstance(content, str):
+                first_user = content[:60] + "..." if len(content) > 60 else content
+            elif isinstance(content, list):
+                # Extract text from content blocks
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        text = block.get("text", "")
+                        first_user = text[:60] + "..." if len(text) > 60 else text
+                        break
+            break
+
+    modified = datetime.fromtimestamp(session.file_path.stat().st_mtime)
+
+    return SessionInfo(
+        session=session,
+        header=header,
+        message_count=len(messages),
+        first_user_message=first_user,
+        modified=modified,
+    )
+
+
+def list_sessions_with_info(working_dir: Path) -> list[SessionInfo]:
+    """List all sessions with detailed info, newest first."""
+    sessions = list_sessions(working_dir)
+    return [get_session_info(s) for s in sessions]
+
+
 # ── Message I/O ───────────────────────────────────────────────────────────────
 
 
