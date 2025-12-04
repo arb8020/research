@@ -15,7 +15,7 @@ import sys
 
 import trio
 
-from rollouts.rollouts.dtypes import Endpoint, Message, Trajectory
+from rollouts.dtypes import Endpoint, Message, Trajectory
 from rollouts.frontends.tui.interactive_agent import run_interactive_agent
 
 

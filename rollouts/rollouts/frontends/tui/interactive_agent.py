@@ -13,8 +13,8 @@ from typing import Optional
 
 import trio
 
-from rollouts.rollouts.agents import AgentState, Actor, run_agent
-from rollouts.rollouts.dtypes import (
+from rollouts.agents import AgentState, Actor, run_agent
+from rollouts.dtypes import (
     Endpoint,
     Message,
     RunConfig,
@@ -23,7 +23,7 @@ from rollouts.rollouts.dtypes import (
     ToolConfirmResult,
     StopReason,
 )
-from rollouts.rollouts.providers import Environment
+from rollouts.providers import Environment
 
 from .terminal import ProcessTerminal
 from .tui import TUI
@@ -222,7 +222,7 @@ class InteractiveAgentRunner:
 
     def _handle_stop(self, state: AgentState) -> AgentState:
         """Handle stop condition - check max turns."""
-        from rollouts.rollouts.dtypes import replace
+        from rollouts.dtypes import replace
 
         if state.turn_idx >= self.max_turns:
             return replace(state, stop=StopReason.MAX_TURNS)

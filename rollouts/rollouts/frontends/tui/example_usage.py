@@ -10,8 +10,8 @@ from __future__ import annotations
 import asyncio
 
 from rollouts.frontends.tui import ProcessTerminal, TUI, AgentRenderer
-from rollouts.rollouts.dtypes import RunConfig, StreamEvent
-from rollouts.rollouts.agents import AgentState, Actor, run_agent
+from rollouts.dtypes import RunConfig, StreamEvent
+from rollouts.agents import AgentState, Actor, run_agent
 
 
 async def example_main():
