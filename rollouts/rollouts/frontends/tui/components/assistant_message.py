@@ -63,13 +63,9 @@ class AssistantMessage(Component):
         """Rebuild content container from current text and thinking."""
         self._content_container.clear()
 
-        # Add spacer if we have any content
-        has_content = (
-            (self._text_content and self._text_content.strip())
-            or (self._thinking_content and self._thinking_content.strip())
-        )
-        if has_content:
-            self._content_container.add_child(Spacer(1))
+        # Note: We don't add a spacer here - the previous component (UserMessage)
+        # already has padding_y=1 which provides spacing. Adding a spacer here
+        # would overwrite that colored padding during differential re-rendering.
 
         # Render thinking blocks first (if any)
         if self._thinking_content and self._thinking_content.strip():

@@ -111,7 +111,7 @@ class Container(Component):
 class TUI(Container):
     """Main class for managing terminal UI with differential rendering."""
 
-    def __init__(self, terminal: Terminal, theme: Optional[Theme] = None) -> None:
+    def __init__(self, terminal: Terminal, theme: Optional[Theme] = None, debug: bool = False) -> None:
         super().__init__()
         self._terminal = terminal
         self.theme = theme or DARK_THEME
@@ -121,6 +121,7 @@ class TUI(Container):
         self._render_requested: bool = False
         self._cursor_row: int = 0  # Track where cursor is (0-indexed, relative to our first line)
         self._running: bool = False
+        self._debug = debug
 
         # Loader state - centralized here instead of separate Loader class
         # Why: Loader needs periodic re-renders during blocking operations (e.g. API calls).
@@ -249,6 +250,15 @@ class TUI(Container):
             self._focused_component.handle_input(data)
             self.request_render()
 
+    def _debug_log(self, msg: str) -> None:
+        """Write debug message to log file."""
+        if not self._debug:
+            return
+        log_path = Path.home() / ".rollouts" / "tui-debug.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a") as f:
+            f.write(f"{datetime.now().isoformat()} {msg}\n")
+
     def _do_render(self) -> None:
         """Perform the actual render with differential updates."""
         width = self._terminal.columns
@@ -293,6 +303,16 @@ class TUI(Container):
         # Find first changed line
         first_changed = -1
         max_lines = max(len(new_lines), len(self._previous_lines))
+
+        # Log when line count changes significantly (new content added)
+        if abs(len(new_lines) - len(self._previous_lines)) >= 3:
+            self._debug_log(f"LINE_COUNT_CHANGE prev={len(self._previous_lines)} new={len(new_lines)}")
+            # Dump last 10 lines of new content to see padding
+            self._debug_log("=== LAST 10 NEW LINES ===")
+            for i, line in enumerate(new_lines[-10:]):
+                line_idx = len(new_lines) - 10 + i
+                self._debug_log(f"  [{line_idx}] {repr(line[-30:])} (len={len(line)})")
+
         for i in range(max_lines):
             old_line = self._previous_lines[i] if i < len(self._previous_lines) else ""
             new_line = new_lines[i] if i < len(new_lines) else ""
@@ -300,6 +320,7 @@ class TUI(Container):
             if old_line != new_line:
                 if first_changed == -1:
                     first_changed = i
+                    self._debug_log(f"first_changed={i} old={repr(old_line[:80])} new={repr(new_line[:80])}")
 
         # No changes
         if first_changed == -1:
@@ -330,6 +351,7 @@ class TUI(Container):
 
         # Move cursor to first changed line
         line_diff = first_changed - self._cursor_row
+        self._debug_log(f"CURSOR_MOVE cursor_row={self._cursor_row} first_changed={first_changed} line_diff={line_diff} total_lines={len(new_lines)} term_height={height}")
         if line_diff > 0:
             buffer += f"\x1b[{line_diff}B"  # Move down
         elif line_diff < 0:

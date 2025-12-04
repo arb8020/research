@@ -17,8 +17,10 @@ class Spacer(Component):
 
     def render(self, width: int) -> List[str]:
         """Render empty lines."""
-        empty_line = " " * width
-        return [empty_line] * self._lines
+        # Return empty strings, not space-padded lines
+        # This matches pi-mono behavior and avoids overwriting
+        # background-colored padding from adjacent components
+        return [""] * self._lines
 
     def invalidate(self) -> None:
         """No cached state to invalidate."""

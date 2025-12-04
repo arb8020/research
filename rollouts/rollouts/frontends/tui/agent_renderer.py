@@ -132,6 +132,8 @@ class AgentRenderer:
         """Handle text block start."""
         # Create assistant message if needed
         if self.current_message is None:
+            # Add spacer before assistant message for visual separation
+            self.chat_container.add_child(Spacer(1))
             self.current_message = AssistantMessage()
             self.chat_container.add_child(self.current_message)
 
@@ -142,6 +144,8 @@ class AgentRenderer:
         """Handle text delta - append to current message."""
         if self.current_message is None:
             # Start new message if we don't have one
+            # Add spacer before assistant message for visual separation
+            self.chat_container.add_child(Spacer(1))
             self.current_message = AssistantMessage()
             self.chat_container.add_child(self.current_message)
             self.current_text_index = content_index
@@ -268,6 +272,9 @@ class AgentRenderer:
         """Handle stream done - hide loader."""
         self.tui.hide_loader()
 
+        # Add spacer after assistant message for visual separation
+        self.chat_container.add_child(Spacer(1))
+
         # Finalize current message
         self.current_message = None
         self.current_text_index = None
@@ -371,14 +378,21 @@ class AgentRenderer:
         # Handle string content
         if isinstance(content, str):
             if content:
+                # Add spacer before assistant message for visual separation
+                self.chat_container.add_child(Spacer(1))
                 assistant_msg = AssistantMessage()
                 assistant_msg.set_text(content)
                 self.chat_container.add_child(assistant_msg)
+                # Add spacer after assistant message
+                self.chat_container.add_child(Spacer(1))
             return
 
         # Handle list of content blocks
         if not isinstance(content, list):
             return
+
+        # Add spacer before assistant message for visual separation
+        self.chat_container.add_child(Spacer(1))
 
         text_content = ""
         thinking_content = ""
@@ -453,6 +467,9 @@ class AgentRenderer:
             if text_content:
                 assistant_msg.set_text(text_content)
             self.chat_container.add_child(assistant_msg)
+
+        # Add spacer after assistant message
+        self.chat_container.add_child(Spacer(1))
 
     def _render_tool_result(self, msg) -> None:
         """Render a tool result from history."""

@@ -37,6 +37,7 @@ from .terminal import ProcessTerminal
 from .tui import TUI
 from .agent_renderer import AgentRenderer
 from .components.input import Input
+from .components.spacer import Spacer
 from .sessions import Session, append_message
 
 
@@ -197,7 +198,7 @@ class InteractiveAgentRunner:
         """
         # Create terminal and TUI
         self.terminal = ProcessTerminal()
-        self.tui = TUI(self.terminal)
+        self.tui = TUI(self.terminal, debug=True)  # TODO: make configurable
 
         # Create renderer
         self.renderer = AgentRenderer(self.tui)
@@ -210,9 +211,13 @@ class InteractiveAgentRunner:
             self.is_first_user_message = False
 
         # Create input component with theme
+        # Add spacer above input box for visual separation
+        self.tui.add_child(Spacer(1))
         self.input_component = Input(theme=self.tui.theme)
         self.input_component.set_on_submit(self._handle_input_submit)
         self.tui.add_child(self.input_component)
+        # Add spacers below input box to push it up from the bottom
+        self.tui.add_child(Spacer(3))
 
         # Set up signal handler for Ctrl+C
         signal.signal(signal.SIGINT, self._handle_sigint)
