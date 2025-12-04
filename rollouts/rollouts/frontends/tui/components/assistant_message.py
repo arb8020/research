@@ -35,12 +35,14 @@ class AssistantMessage(Component):
         """Append text delta to current text content."""
         self._text_content += delta
         if self._text_md:
-            # Update existing component
-            self._text_md.set_text(self._text_content.strip())
+            # Update existing component with robot emoji prefix
+            prefixed_text = f"🤖 {self._text_content.strip()}"
+            self._text_md.set_text(prefixed_text)
         else:
             # Create text component without destroying existing thinking component
+            prefixed_text = f"🤖 {self._text_content.strip()}"
             self._text_md = Markdown(
-                self._text_content.strip(),
+                prefixed_text,
                 padding_x=2,
                 padding_y=0,
                 theme=DefaultMarkdownTheme(self._theme),
@@ -101,8 +103,8 @@ class AssistantMessage(Component):
 
         # Render thinking blocks first (if any)
         if self._thinking_content and self._thinking_content.strip():
-            # Format thinking like a tool call with background
-            thinking_text = f"thinking()\n\n{self._thinking_content.strip()}"
+            # Format thinking like a tool call with background and robot emoji prefix
+            thinking_text = f"🤖 thinking()\n\n{self._thinking_content.strip()}"
             self._thinking_md = Markdown(
                 thinking_text,
                 padding_x=2,
@@ -118,8 +120,9 @@ class AssistantMessage(Component):
 
         # Render text content (if any)
         if self._text_content and self._text_content.strip():
+            prefixed_text = f"🤖 {self._text_content.strip()}"
             self._text_md = Markdown(
-                self._text_content.strip(),
+                prefixed_text,
                 padding_x=2,
                 padding_y=0,
                 theme=DefaultMarkdownTheme(self._theme),

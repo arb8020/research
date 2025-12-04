@@ -26,9 +26,10 @@ class UserMessage(Container):
         super().__init__()
         self._theme = theme or DARK_THEME
 
-        # Add user message text with background color from theme
+        # Add user message text with > prefix and background color from theme
+        prefixed_text = f"> {text}"
         user_text = Text(
-            text,
+            prefixed_text,
             padding_x=2,
             padding_y=0,
             custom_bg_fn=self._theme.user_message_bg_fn,
