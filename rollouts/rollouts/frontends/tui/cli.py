@@ -15,8 +15,10 @@ import sys
 
 import trio
 
+from pathlib import Path
+
 from rollouts.dtypes import Endpoint, Message, Trajectory
-from rollouts.environments import CalculatorEnvironment
+from rollouts.environments import CalculatorEnvironment, CodingEnvironment
 from rollouts.frontends.tui.interactive_agent import run_interactive_agent
 
 
@@ -33,6 +35,19 @@ For calculations:
 3. Use complete_task when done
 
 Example: For "(5 + 3) * 2", first add(5), then add(3), then multiply(2).""",
+    "coding": """You are a coding assistant with access to file and shell tools.
+
+Available tools:
+- read: Read file contents (supports offset/limit for large files)
+- write: Write content to a file (creates directories automatically)
+- edit: Replace exact text in a file (must be unique match)
+- bash: Execute shell commands
+
+When working on code:
+1. First read relevant files to understand context
+2. Make precise edits using the edit tool
+3. Use bash to run tests, linting, etc.
+4. Prefer small, focused changes over large rewrites""",
 }
 
 
@@ -104,9 +119,15 @@ def main() -> int:
     parser.add_argument(
         "--env",
         type=str,
-        choices=["none", "calculator"],
+        choices=["none", "calculator", "coding"],
         default="none",
-        help="Environment with tools: none, calculator (default: none)",
+        help="Environment with tools: none, calculator, coding (default: none)",
+    )
+    parser.add_argument(
+        "--cwd",
+        type=str,
+        default=None,
+        help="Working directory for coding environment (default: current directory)",
     )
     parser.add_argument(
         "--max-turns",
@@ -130,6 +151,9 @@ def main() -> int:
     environment = None
     if args.env == "calculator":
         environment = CalculatorEnvironment()
+    elif args.env == "coding":
+        working_dir = Path(args.cwd) if args.cwd else Path.cwd()
+        environment = CodingEnvironment(working_dir=working_dir)
 
     # Get system prompt (user-provided or default for env)
     system_prompt = args.system_prompt or SYSTEM_PROMPTS.get(args.env, SYSTEM_PROMPTS["none"])
