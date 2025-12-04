@@ -382,10 +382,6 @@ async def rollout(
     assert on_chunk is not None
     assert callable(on_chunk)
 
-    # Early abort check
-    if cancel_scope and cancel_scope.cancelled_caught:
-        raise trio.Cancelled("Rollout aborted before start")
-
     from rollouts.providers import get_provider_function
 
     provider = actor.endpoint.provider
@@ -416,16 +412,15 @@ async def run_agent_step(
     Turn atomicity: Execute ALL tools before giving control back to LLM.
     This simplifies reasoning but prevents early stopping or parallel execution.
     
+    Cancellation is handled automatically by Trio - any await will raise
+    trio.Cancelled if the cancel_scope was cancelled.
+    
     Args:
         state: Current agent state
         rcfg: Run configuration (contains cancel_scope for cancellation)
     """
     assert state is not None
     assert rcfg is not None
-
-    # Early abort check
-    if rcfg.cancel_scope and rcfg.cancel_scope.cancelled_caught:
-        return replace(state, stop=StopReason.ABORTED)
 
     state = rcfg.handle_stop(state)
     if state.stop:
@@ -547,6 +542,9 @@ async def process_pending_tools(
 ) -> AgentState:
     """Resume processing tools from next_tool_idx.
     
+    Cancellation is handled automatically by Trio - any await will raise
+    trio.Cancelled if the cancel_scope was cancelled.
+    
     Args:
         state: Current agent state with pending tool calls
         rcfg: Run configuration (contains cancel_scope for cancellation)
@@ -557,19 +555,10 @@ async def process_pending_tools(
     
     current_state = state
 
-    # Early abort check
-    if rcfg.cancel_scope and rcfg.cancel_scope.cancelled_caught:
-        return replace(current_state, stop=StopReason.ABORTED)
-
     # SERIALIZE environment state before tool processing
     env_data = await current_state.environment.serialize()
     
     for i in range(state.next_tool_idx, len(state.pending_tool_calls)):
-        # Early abort check before each tool
-        if rcfg.cancel_scope and rcfg.cancel_scope.cancelled_caught:
-            current_state = replace(current_state, stop=StopReason.ABORTED)
-            break
-            
         tool_call = state.pending_tool_calls[i]
         current_state = replace(current_state, next_tool_idx=i)
         
@@ -671,6 +660,9 @@ async def run_agent(
 ) -> list[AgentState]:
     """Run agent until stop condition, checkpointing each state.
     
+    If run_config.cancel_scope is provided and cancelled, raises trio.Cancelled.
+    Caller is responsible for handling cancellation at their boundary.
+    
     Args:
         state: Initial agent state
         run_config: Run configuration (contains cancel_scope for cancellation)
@@ -691,35 +683,44 @@ async def run_agent(
             disable=False
         )
 
-    while not current_state.stop:
-        # Check stop condition via handle_stop callback (allows custom budgets)
-        current_state = run_config.handle_stop(current_state)
-        if current_state.stop:
-            break
-
-        # Early abort check
-        if run_config.cancel_scope and run_config.cancel_scope.cancelled_caught:
-            current_state = replace(current_state, stop=StopReason.ABORTED)
-            break
-
-        # Tiger Style: Centralize control flow - emit start/end in same scope for clarity
-        # Casey: Semantic compression - consistent pattern (start→step→end) repeated each iteration
-        await handle_checkpoint_event(current_state, "turn_start", run_config, session_id)
-
-        next_state = await run_agent_step(current_state, run_config)
-        current_state = next_state
-        states.append(current_state)
-
-        # Update inner progress bar
-        if turn_pbar:
-            turn_pbar.update(1)
-            postfix = {}
+    try:
+        while not current_state.stop:
+            # Check stop condition via handle_stop callback (allows custom budgets)
+            current_state = run_config.handle_stop(current_state)
             if current_state.stop:
-                postfix['stop'] = str(current_state.stop).split('.')[-1]
-            turn_pbar.set_postfix(postfix)
+                break
 
-        # Checkpoint after each turn completes
-        await handle_checkpoint_event(current_state, "turn_end", run_config, session_id)
+            # Tiger Style: Centralize control flow - emit start/end in same scope for clarity
+            # Casey: Semantic compression - consistent pattern (start→step→end) repeated each iteration
+            await handle_checkpoint_event(current_state, "turn_start", run_config, session_id)
+
+            # Run one step - this is where HTTP calls happen
+            # Trio will raise Cancelled if cancel_scope.cancel() was called
+            next_state = await run_agent_step(current_state, run_config)
+            current_state = next_state
+            states.append(current_state)
+
+            # Update inner progress bar
+            if turn_pbar:
+                turn_pbar.update(1)
+                postfix = {}
+                if current_state.stop:
+                    postfix['stop'] = str(current_state.stop).split('.')[-1]
+                turn_pbar.set_postfix(postfix)
+
+            # Checkpoint after each turn completes
+            await handle_checkpoint_event(current_state, "turn_end", run_config, session_id)
+
+    except trio.Cancelled:
+        # Convert Trio's cancellation to our domain
+        # This is the boundary where we translate external signals to internal state
+        aborted_state = replace(current_state, stop=StopReason.ABORTED)
+        states.append(aborted_state)
+        current_state = aborted_state
+        # Checkpoint the aborted state
+        await handle_checkpoint_event(current_state, "final", run_config, session_id)
+        # Re-raise to let Trio handle cleanup properly
+        raise
 
     # Save final state
     await handle_checkpoint_event(current_state, "final", run_config, session_id)
