@@ -4,6 +4,7 @@ Agent renderer - connects StreamEvents to TUI components.
 
 from __future__ import annotations
 
+import json
 from typing import Any, Optional
 
 from rollouts.dtypes import (
@@ -483,4 +484,17 @@ class AgentRenderer:
 
         # Replay through the same handler used for live tool results
         self._handle_tool_result(tool_call_id, result_text, is_error=False, error=None)
+
+    def debug_dump_chat(self) -> None:
+        """Dump chat container state as JSONL for debugging."""
+        print("\n=== CHAT CONTAINER DEBUG DUMP ===")
+        for i, child in enumerate(self.chat_container.children):
+            state = {
+                "index": i,
+                "type": type(child).__name__,
+            }
+            if hasattr(child, "debug_state"):
+                state.update(child.debug_state())
+            print(json.dumps(state))
+        print(f"=== TOTAL: {len(self.chat_container.children)} components ===\n")
 

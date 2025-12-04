@@ -4,7 +4,8 @@ Assistant message component - displays streaming assistant text and thinking blo
 
 from __future__ import annotations
 
-from typing import List, Optional
+import json
+from typing import List, Optional, Dict, Any
 
 from ..tui import Component, Container
 from ..theme import Theme, DARK_THEME, hex_to_fg, hex_to_bg, RESET
@@ -36,8 +37,14 @@ class AssistantMessage(Component):
             # Update existing component
             self._text_md.set_text(self._text_content.strip())
         else:
-            # Create component on first delta
-            self._rebuild_content()
+            # Create text component without destroying existing thinking component
+            self._text_md = Markdown(
+                self._text_content.strip(),
+                padding_x=2,
+                padding_y=0,
+                theme=DefaultMarkdownTheme(self._theme),
+            )
+            self._content_container.add_child(self._text_md)
 
     def append_thinking(self, delta: str) -> None:
         """Append thinking delta to current thinking content."""
@@ -128,4 +135,19 @@ class AssistantMessage(Component):
     def render(self, width: int) -> List[str]:
         """Render assistant message."""
         return self._content_container.render(width)
+
+    def debug_state(self) -> Dict[str, Any]:
+        """Return debug state as JSON-serializable dict."""
+        return {
+            "type": "AssistantMessage",
+            "thinking_content": self._thinking_content[:100] + "..." if len(self._thinking_content) > 100 else self._thinking_content,
+            "thinking_content_length": len(self._thinking_content),
+            "text_content": self._text_content[:100] + "..." if len(self._text_content) > 100 else self._text_content,
+            "text_content_length": len(self._text_content),
+            "has_thinking_md": self._thinking_md is not None,
+            "has_text_md": self._text_md is not None,
+            "has_thinking_spacer": self._thinking_spacer is not None,
+            "container_children_count": len(self._content_container.children),
+            "container_children_types": [type(child).__name__ for child in self._content_container.children],
+        }
 
