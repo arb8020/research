@@ -2079,10 +2079,17 @@ def _message_to_anthropic(
         if isinstance(block, TextContent):
             content_blocks.append({"type": "text", "text": block.text})
         elif isinstance(block, ThinkingContent):
-            thinking_block = {"type": "thinking", "thinking": block.thinking}
-            if block.thinking_signature:
+            # If thinking signature is missing/empty (e.g., from aborted stream),
+            # convert to text block to avoid API rejection per Anthropic API requirements
+            if not block.thinking_signature or block.thinking_signature.strip() == "":
+                content_blocks.append({
+                    "type": "text",
+                    "text": f"<thinking>\n{block.thinking}\n</thinking>"
+                })
+            else:
+                thinking_block = {"type": "thinking", "thinking": block.thinking}
                 thinking_block["signature"] = block.thinking_signature
-            content_blocks.append(thinking_block)
+                content_blocks.append(thinking_block)
         elif isinstance(block, ToolCallContent):
             content_blocks.append({
                 "type": "tool_use",
@@ -2220,9 +2227,13 @@ async def aggregate_anthropic_stream(
                 thinking_text = block.thinking
                 thinking_content += thinking_text
                 content_blocks[index]["accumulated"] += thinking_text
-                if hasattr(block, "signature") and block.signature:
-                    thinking_signature = block.signature
                 await on_chunk(ThinkingDelta(content_index=index, delta=thinking_text))
+
+            elif block.type == "signature_delta":
+                # Accumulate thinking signature across deltas
+                if thinking_signature is None:
+                    thinking_signature = ""
+                thinking_signature += block.signature
 
             elif block.type == "input_json_delta":
                 tool_json_accumulator[index] += block.partial_json
