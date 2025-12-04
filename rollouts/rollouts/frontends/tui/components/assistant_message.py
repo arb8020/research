@@ -32,7 +32,12 @@ class AssistantMessage(Component):
     def append_text(self, delta: str) -> None:
         """Append text delta to current text content."""
         self._text_content += delta
-        self._rebuild_content()
+        if self._text_md:
+            # Update existing component
+            self._text_md.set_text(self._text_content.strip())
+        else:
+            # Create component on first delta
+            self._rebuild_content()
 
     def append_thinking(self, delta: str) -> None:
         """Append thinking delta to current thinking content."""
@@ -48,12 +53,23 @@ class AssistantMessage(Component):
     def set_text(self, text: str) -> None:
         """Set complete text content."""
         self._text_content = text
-        self._rebuild_content()
+        if self._text_md:
+            # Update existing component
+            self._text_md.set_text(text.strip())
+        else:
+            # Need to rebuild to create component
+            self._rebuild_content()
 
     def set_thinking(self, thinking: str) -> None:
         """Set complete thinking content."""
         self._thinking_content = thinking
-        self._rebuild_content()
+        if self._thinking_md:
+            # Update existing component
+            thinking_text = f"thinking()\n\n{thinking.strip()}"
+            self._thinking_md.set_text(thinking_text)
+        else:
+            # Need to rebuild to create component
+            self._rebuild_content()
 
     def set_thinking_intensity(self, intensity: str) -> None:
         """Set thinking intensity level (minimal, low, medium, high)."""
