@@ -79,8 +79,9 @@ class Component(ABC):
 class Container(Component):
     """A component that contains other components."""
 
-    def __init__(self) -> None:
+    def __init__(self, debug_layout: bool = False) -> None:
         self.children: List[Component] = []
+        self._debug_layout = debug_layout
 
     def add_child(self, component: Component) -> None:
         """Add a child component."""
@@ -111,7 +112,7 @@ class Container(Component):
 class TUI(Container):
     """Main class for managing terminal UI with differential rendering."""
 
-    def __init__(self, terminal: Terminal, theme: Optional[Theme] = None, debug: bool = False) -> None:
+    def __init__(self, terminal: Terminal, theme: Optional[Theme] = None, debug: bool = False, debug_layout: bool = False) -> None:
         super().__init__()
         self._terminal = terminal
         self.theme = theme or DARK_THEME
@@ -122,6 +123,7 @@ class TUI(Container):
         self._cursor_row: int = 0  # Track where cursor is (0-indexed, relative to our first line)
         self._running: bool = False
         self._debug = debug
+        self._debug_layout = debug_layout
 
         # Loader state - centralized here instead of separate Loader class
         # Why: Loader needs periodic re-renders during blocking operations (e.g. API calls).
@@ -210,8 +212,65 @@ class TUI(Container):
         self._animation_task_running = False
 
     def render(self, width: int) -> List[str]:
-        """Render all children plus loader if active."""
-        lines = super().render(width)
+        """Render all children plus loader if active, with optional debug gutter."""
+        # Debug mode: add single-character gutter showing component types
+        if self._debug_layout:
+            gutter_width = 2  # Just 1 char + space
+            content_width = width - gutter_width
+
+            # Component type to character mapping
+            def get_component_char(component):
+                name = type(component).__name__
+                if name == "Spacer":
+                    if hasattr(component, '_debug_label') and component._debug_label:
+                        label = component._debug_label
+                        if 'thinking-to-text' in label:
+                            return '·'  # Spacer between thinking and text
+                        elif 'before-thinking' in label:
+                            return '·'  # Spacer before thinking
+                    return '·'  # Generic spacer
+                elif name == "Container":
+                    return 'C'
+                elif name == "UserMessage":
+                    return 'U'
+                elif name == "AssistantMessage":
+                    return 'A'
+                elif name == "ToolExecution":
+                    return 'T'
+                elif name == "Input":
+                    return 'I'
+                elif name == "Markdown":
+                    return 'M'
+                elif name == "Text":
+                    return 't'
+                else:
+                    return '?'
+
+            def render_with_gutter(component, width, recurse_containers=True):
+                """Recursively render component and its children with gutter."""
+                # Special handling for plain Container: render its children individually
+                # But don't recurse into component containers like UserMessage, AssistantMessage
+                component_name = type(component).__name__
+                is_plain_container = isinstance(component, Container) and component_name == "Container"
+
+                if is_plain_container and recurse_containers:
+                    result = []
+                    for child in component.children:
+                        result.extend(render_with_gutter(child, width, recurse_containers=True))
+                    return result
+                else:
+                    # Render component as a single unit
+                    char = get_component_char(component)
+                    component_lines = component.render(width)
+                    return [char + ' ' + line for line in component_lines]
+
+            all_lines: List[str] = []
+            for child in self.children:
+                all_lines.extend(render_with_gutter(child, content_width, recurse_containers=True))
+
+            lines = all_lines
+        else:
+            lines = super().render(width)
 
         # Append loader line if active
         if self._loader_text is not None:
@@ -219,10 +278,12 @@ class TUI(Container):
             loader_line = render_loader_line(
                 self._loader_text,
                 elapsed,
-                width,
+                width if not self._debug_layout else width - 2,  # Account for gutter
                 self._loader_spinner_color_fn,
                 self._loader_text_color_fn,
             )
+            if self._debug_layout:
+                loader_line = 'L ' + loader_line
             lines.append(loader_line)
 
         return lines
@@ -265,7 +326,15 @@ class TUI(Container):
         height = self._terminal.rows
 
         # Render all components to get new lines
-        new_lines = self.render(width)
+        all_lines = self.render(width)
+
+        # Viewport logic: if total lines exceed terminal height, show only the bottom portion
+        # This ensures the input box (at the end) stays visible
+        if len(all_lines) > height:
+            new_lines = all_lines[-height:]
+            self._debug_log(f"VIEWPORT total_lines={len(all_lines)} showing_bottom={height}")
+        else:
+            new_lines = all_lines
 
         # Width changed - need full re-render
         width_changed = self._previous_width != 0 and self._previous_width != width

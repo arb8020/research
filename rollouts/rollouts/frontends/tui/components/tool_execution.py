@@ -88,7 +88,6 @@ class ToolExecution(Container):
     def _rebuild_display(self) -> None:
         """Rebuild the display from current state."""
         self.clear()
-        self.add_child(Spacer(1))
 
         # Determine background function based on state
         if self._result:
@@ -100,7 +99,7 @@ class ToolExecution(Container):
         formatted_text = self._format_tool_execution()
 
         # Create text component with background
-        self._content_text = Text(formatted_text, padding_x=1, padding_y=1, custom_bg_fn=bg_fn)
+        self._content_text = Text(formatted_text, padding_x=2, padding_y=1, custom_bg_fn=bg_fn)
         self.add_child(self._content_text)
 
     def _get_text_output(self) -> str:
@@ -135,7 +134,7 @@ class ToolExecution(Container):
 
         if self._tool_name == "bash":
             command = self._args.get("command", "")
-            text = f"$ {command or '...'}"
+            text = f"bash(command={repr(command or '...')})"
 
             if self._result:
                 output = self._get_text_output().strip()
@@ -154,12 +153,13 @@ class ToolExecution(Container):
             offset = self._args.get("offset")
             limit = self._args.get("limit")
 
-            path_display = path if path else "..."
+            params = f"file_path={repr(path if path else '...')}"
             if offset is not None:
-                end_line = offset + limit if limit is not None else ""
-                path_display += f":{offset}{f'-{end_line}' if end_line else ''}"
+                params += f", offset={offset}"
+            if limit is not None:
+                params += f", limit={limit}"
 
-            text = f"read {path_display}"
+            text = f"read({params})"
 
             if self._result:
                 output = self._get_text_output()
@@ -178,9 +178,9 @@ class ToolExecution(Container):
             lines = file_content.split("\n") if file_content else []
             total_lines = len(lines)
 
-            text = f"write {path if path else '...'}"
+            text = f"write(file_path={repr(path if path else '...')})"
             if total_lines > 10:
-                text += f" ({total_lines} lines)"
+                text += f"  # {total_lines} lines"
 
             if file_content:
                 max_lines = len(lines) if self._expanded else 10
@@ -191,19 +191,35 @@ class ToolExecution(Container):
                 if remaining > 0:
                     text += f"\n... ({remaining} more lines)"
 
+        elif self._tool_name == "edit":
+            path = _shorten_path(self._args.get("file_path") or self._args.get("path") or "")
+            old_string = self._args.get("old_string", "")
+            new_string = self._args.get("new_string", "")
+
+            text = f"edit(file_path={repr(path if path else '...')}, old_string=..., new_string=...)"
+
+            if self._result:
+                output = self._get_text_output()
+                if output:
+                    text += "\n\n" + output
+
         else:
-            # Generic tool - show name and JSON args
-            text = self._tool_name
+            # Generic tool - show name(params)
             if self._args:
-                try:
-                    args_json = json.dumps(self._args, indent=2)
-                    text += "\n\n" + args_json
-                except (TypeError, ValueError):
-                    text += "\n\n" + str(self._args)
+                params_list = []
+                for key, value in self._args.items():
+                    if isinstance(value, str):
+                        params_list.append(f"{key}={repr(value)}")
+                    else:
+                        params_list.append(f"{key}={value}")
+                params_str = ", ".join(params_list)
+                text = f"{self._tool_name}({params_str})"
+            else:
+                text = f"{self._tool_name}()"
 
             output = self._get_text_output()
             if output:
-                text += "\n" + output
+                text += "\n\n" + output
 
         return text
 

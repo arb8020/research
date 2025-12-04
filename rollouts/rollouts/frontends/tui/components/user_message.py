@@ -26,20 +26,13 @@ class UserMessage(Container):
         super().__init__()
         self._theme = theme or DARK_THEME
 
-        # Add spacing before message (except first)
-        if not is_first:
-            self.add_child(Spacer(1))
-
         # Add user message text with background color from theme
         user_text = Text(
             text,
-            padding_x=1,
-            padding_y=1,
+            padding_x=2,
+            padding_y=0,
             custom_bg_fn=self._theme.user_message_bg_fn,
+            theme=self._theme,
         )
         self.add_child(user_text)
-
-        # Add spacer AFTER user message - this acts as a buffer that can be
-        # safely overwritten by streaming content without affecting the colored padding
-        self.add_child(Spacer(1))
 

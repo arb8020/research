@@ -87,8 +87,10 @@ class Input(Component):
         # Top border
         result.append(horizontal * width)
 
-        # Layout text lines
-        layout_lines = self._layout_text(width)
+        # Layout text lines with 2-space left padding
+        left_padding = "  "
+        content_width = width - 2  # Account for left padding
+        layout_lines = self._layout_text(content_width)
 
         for layout_line in layout_lines:
             display_text = layout_line["text"]
@@ -107,7 +109,7 @@ class Input(Component):
                     display_text = before + cursor + rest_after
                 else:
                     # Cursor at end - add highlighted space if room
-                    if len(display_text) < width:
+                    if len(display_text) < content_width:
                         cursor = "\x1b[7m \x1b[0m"
                         display_text = before + cursor
                         visible_len = len(display_text)
@@ -117,9 +119,9 @@ class Input(Component):
                         cursor = f"\x1b[7m{last_char}\x1b[0m"
                         display_text = before[:-1] + cursor
 
-            # Pad to width
-            padding = " " * max(0, width - visible_len)
-            result.append(display_text + padding)
+            # Pad to width (accounting for left padding)
+            padding = " " * max(0, content_width - visible_len)
+            result.append(left_padding + display_text + padding)
 
         # Bottom border
         result.append(horizontal * width)

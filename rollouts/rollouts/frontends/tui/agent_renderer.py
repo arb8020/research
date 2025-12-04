@@ -37,14 +37,16 @@ from .components.spacer import Spacer
 class AgentRenderer:
     """Renders agent StreamEvents to TUI."""
 
-    def __init__(self, tui: TUI) -> None:
+    def __init__(self, tui: TUI, debug_layout: bool = False) -> None:
         """Initialize agent renderer.
 
         Args:
             tui: TUI instance to render to
+            debug_layout: Show component boundaries and spacing
         """
         self.tui = tui
         self.theme = tui.theme
+        self.debug_layout = debug_layout
         self.chat_container = Container()
         self.tui.add_child(self.chat_container)
 
@@ -133,9 +135,8 @@ class AgentRenderer:
         """Handle text block start."""
         # Create assistant message if needed
         if self.current_message is None:
-            # Add spacer before assistant message for visual separation
-            self.chat_container.add_child(Spacer(1))
-            self.current_message = AssistantMessage(theme=self.theme)
+            self.chat_container.add_child(Spacer(1, debug_label="before-assistant", debug_layout=self.debug_layout))
+            self.current_message = AssistantMessage(theme=self.theme, debug_layout=self.debug_layout)
             self.chat_container.add_child(self.current_message)
 
         self.current_text_index = content_index
@@ -145,9 +146,8 @@ class AgentRenderer:
         """Handle text delta - append to current message."""
         if self.current_message is None:
             # Start new message if we don't have one
-            # Add spacer before assistant message for visual separation
-            self.chat_container.add_child(Spacer(1))
-            self.current_message = AssistantMessage(theme=self.theme)
+            self.chat_container.add_child(Spacer(1, debug_label="before-assistant", debug_layout=self.debug_layout))
+            self.current_message = AssistantMessage(theme=self.theme, debug_layout=self.debug_layout)
             self.chat_container.add_child(self.current_message)
             self.current_text_index = content_index
 
@@ -168,9 +168,8 @@ class AgentRenderer:
         """Handle thinking block start."""
         # Create assistant message if needed
         if self.current_message is None:
-            # Add spacer before assistant message for visual separation
-            self.chat_container.add_child(Spacer(1))
-            self.current_message = AssistantMessage(theme=self.theme)
+            self.chat_container.add_child(Spacer(1, debug_label="before-assistant", debug_layout=self.debug_layout))
+            self.current_message = AssistantMessage(theme=self.theme, debug_layout=self.debug_layout)
             self.chat_container.add_child(self.current_message)
 
         self.current_thinking_index = content_index
@@ -180,9 +179,8 @@ class AgentRenderer:
         """Handle thinking delta - append to current message."""
         if self.current_message is None:
             # Start new message if we don't have one
-            # Add spacer before assistant message for visual separation
-            self.chat_container.add_child(Spacer(1))
-            self.current_message = AssistantMessage(theme=self.theme)
+            self.chat_container.add_child(Spacer(1, debug_label="before-assistant", debug_layout=self.debug_layout))
+            self.current_message = AssistantMessage(theme=self.theme, debug_layout=self.debug_layout)
             self.chat_container.add_child(self.current_message)
             self.current_thinking_index = content_index
 
@@ -213,7 +211,7 @@ class AgentRenderer:
 
         # Create tool execution component
         if tool_call_id not in self.pending_tools:
-            self.chat_container.add_child(Spacer(1))
+            self.chat_container.add_child(Spacer(1, debug_label="before-tool", debug_layout=self.debug_layout))
             tool_component = ToolExecution(
                 tool_name,
                 args={},
@@ -277,9 +275,6 @@ class AgentRenderer:
         """Handle stream done - hide loader."""
         self.tui.hide_loader()
 
-        # Add spacer after assistant message for visual separation
-        self.chat_container.add_child(Spacer(1))
-
         # Finalize current message
         self.current_message = None
         self.current_text_index = None
@@ -302,6 +297,8 @@ class AgentRenderer:
             text: User message text
             is_first: Whether this is the first user message
         """
+        if not is_first:
+            self.chat_container.add_child(Spacer(1, debug_label="before-user", debug_layout=self.debug_layout))
         user_component = UserMessage(text, is_first=is_first, theme=self.theme)
         self.chat_container.add_child(user_component)
         self.tui.request_render()
@@ -371,6 +368,8 @@ class AgentRenderer:
 
         if text:
             is_first = len(self.chat_container.children) == 0
+            if not is_first:
+                self.chat_container.add_child(Spacer(1, debug_label="before-user", debug_layout=self.debug_layout))
             user_component = UserMessage(text, is_first=is_first, theme=self.theme)
             self.chat_container.add_child(user_component)
 

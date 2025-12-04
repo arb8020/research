@@ -55,6 +55,8 @@ class InteractiveAgentRunner:
         max_turns: int = 50,
         session: Optional[Session] = None,
         theme_name: str = "dark",
+        debug: bool = False,
+        debug_layout: bool = False,
     ) -> None:
         """Initialize interactive agent runner.
 
@@ -65,6 +67,8 @@ class InteractiveAgentRunner:
             max_turns: Maximum number of turns
             session: Optional session for persistence
             theme_name: Theme name (dark or rounded)
+            debug: Enable debug logging and chat state dumps
+            debug_layout: Show component boundaries and spacing
         """
         self.initial_trajectory = initial_trajectory
         self.endpoint = endpoint
@@ -72,6 +76,8 @@ class InteractiveAgentRunner:
         self.environment = environment
         self.max_turns = max_turns
         self.session = session
+        self.debug = debug
+        self.debug_layout = debug_layout
 
         # TUI components
         self.terminal: Optional[ProcessTerminal] = None
@@ -222,10 +228,10 @@ class InteractiveAgentRunner:
         theme = ROUNDED_THEME if self.theme_name == "rounded" else DARK_THEME
 
         self.terminal = ProcessTerminal()
-        self.tui = TUI(self.terminal, theme=theme, debug=True)  # TODO: make debug configurable
+        self.tui = TUI(self.terminal, theme=theme, debug=self.debug, debug_layout=self.debug_layout)
 
         # Create renderer
-        self.renderer = AgentRenderer(self.tui)
+        self.renderer = AgentRenderer(self.tui, debug_layout=self.debug_layout)
 
         # Render history from initial trajectory (for resumed sessions)
         # Skip system messages, render user/assistant/tool messages
@@ -235,8 +241,7 @@ class InteractiveAgentRunner:
             self.is_first_user_message = False
 
             # Debug: dump chat state after loading history
-            import os
-            if os.environ.get("ROLLOUTS_DEBUG_CHAT"):
+            if self.debug:
                 self.renderer.debug_dump_chat()
 
         # Create input component with theme
@@ -379,6 +384,8 @@ async def run_interactive_agent(
     max_turns: int = 50,
     session: Optional[Session] = None,
     theme_name: str = "dark",
+    debug: bool = False,
+    debug_layout: bool = False,
 ) -> list[AgentState]:
     """Run an interactive agent with TUI.
 
@@ -389,6 +396,8 @@ async def run_interactive_agent(
         max_turns: Maximum number of turns
         session: Optional session for persistence
         theme_name: Theme name (dark or rounded)
+        debug: Enable debug logging and chat state dumps
+        debug_layout: Show component boundaries and spacing
 
     Returns:
         List of agent states from the run
@@ -400,6 +409,8 @@ async def run_interactive_agent(
         max_turns=max_turns,
         session=session,
         theme_name=theme_name,
+        debug=debug,
+        debug_layout=debug_layout,
     )
     return await runner.run()
 
