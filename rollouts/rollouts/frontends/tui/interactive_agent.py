@@ -21,8 +21,10 @@ from rollouts.dtypes import (
     RunConfig,
     StreamDone,
     StreamEvent,
+    TextContent,
     TextDelta,
     TextEnd,
+    ToolCallContent,
     ToolCallEnd,
     ToolResultReceived,
     Trajectory,
@@ -144,24 +146,23 @@ class InteractiveAgentRunner:
             self._current_text += event.delta
         elif isinstance(event, ToolCallEnd):
             self._current_tool_calls.append({
-                "id": event.id,
-                "name": event.name,
-                "arguments": event.arguments,
+                "id": event.tool_call.id,
+                "name": event.tool_call.name,
+                "arguments": event.tool_call.args,
             })
         elif isinstance(event, StreamDone):
             # Persist accumulated assistant message
             if self.session and (self._current_text or self._current_tool_calls):
-                # Build content blocks
+                # Build content blocks using proper dataclass types
                 content: list[ContentBlock] = []
                 if self._current_text:
-                    content.append({"type": "text", "text": self._current_text})
+                    content.append(TextContent(text=self._current_text))
                 for tc in self._current_tool_calls:
-                    content.append({
-                        "type": "tool_use",
-                        "id": tc["id"],
-                        "name": tc["name"],
-                        "input": tc["arguments"],
-                    })
+                    content.append(ToolCallContent(
+                        id=tc["id"],
+                        name=tc["name"],
+                        arguments=dict(tc["arguments"]),
+                    ))
 
                 assistant_msg = Message(role="assistant", content=content)
                 append_message(self.session, assistant_msg)
@@ -174,7 +175,7 @@ class InteractiveAgentRunner:
             if self.session:
                 tool_msg = Message(
                     role="tool",
-                    content=event.result,
+                    content=event.content,
                     tool_call_id=event.tool_call_id,
                 )
                 append_message(self.session, tool_msg)
@@ -200,6 +201,13 @@ class InteractiveAgentRunner:
 
         # Create renderer
         self.renderer = AgentRenderer(self.tui)
+
+        # Render history from initial trajectory (for resumed sessions)
+        # Skip system messages, render user/assistant/tool messages
+        if self.initial_trajectory.messages:
+            self.renderer.render_history(self.initial_trajectory.messages)
+            # Mark that we've already shown messages, so next user message isn't "first"
+            self.is_first_user_message = False
 
         # Create input component with theme
         self.input_component = Input(theme=self.tui.theme)
