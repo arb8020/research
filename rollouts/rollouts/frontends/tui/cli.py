@@ -320,6 +320,20 @@ def main() -> int:
         help="Enable extended thinking for Anthropic models (default: enabled)",
     )
 
+    # Debug mode
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug logging and chat state dumps",
+    )
+
+    # Visual debug mode
+    parser.add_argument(
+        "--debug-layout",
+        action="store_true",
+        help="Show component boundaries and spacing in the UI",
+    )
+
     args = parser.parse_args()
 
     # Create endpoint
@@ -405,6 +419,8 @@ def main() -> int:
             args.max_turns,
             session,  # Pass session for persistence
             args.theme,  # Pass theme selection
+            args.debug,  # Pass debug flag
+            args.debug_layout,  # Pass layout debug flag
         )
         return 0
     except KeyboardInterrupt:

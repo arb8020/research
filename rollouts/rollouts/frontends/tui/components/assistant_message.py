@@ -17,9 +17,10 @@ from .text import Text
 class AssistantMessage(Component):
     """Component that renders assistant message with text and thinking blocks."""
 
-    def __init__(self, theme: Optional[Theme] = None) -> None:
+    def __init__(self, theme: Optional[Theme] = None, debug_layout: bool = False) -> None:
         """Initialize assistant message component."""
         self._theme = theme or DARK_THEME
+        self._debug_layout = debug_layout
         self._content_container = Container()
         self._text_content = ""
         self._thinking_content = ""
@@ -60,23 +61,14 @@ class AssistantMessage(Component):
     def set_text(self, text: str) -> None:
         """Set complete text content."""
         self._text_content = text
-        if self._text_md:
-            # Update existing component
-            self._text_md.set_text(text.strip())
-        else:
-            # Need to rebuild to create component
-            self._rebuild_content()
+        # Always rebuild to ensure proper spacing between thinking and text
+        self._rebuild_content()
 
     def set_thinking(self, thinking: str) -> None:
         """Set complete thinking content."""
         self._thinking_content = thinking
-        if self._thinking_md:
-            # Update existing component
-            thinking_text = f"thinking()\n\n{thinking.strip()}"
-            self._thinking_md.set_text(thinking_text)
-        else:
-            # Need to rebuild to create component
-            self._rebuild_content()
+        # Always rebuild to ensure proper spacing between thinking and text
+        self._rebuild_content()
 
     def set_thinking_intensity(self, intensity: str) -> None:
         """Set thinking intensity level (minimal, low, medium, high)."""
@@ -111,7 +103,6 @@ class AssistantMessage(Component):
         if self._thinking_content and self._thinking_content.strip():
             # Format thinking like a tool call with background
             thinking_text = f"thinking()\n\n{self._thinking_content.strip()}"
-            self._thinking_spacer = Spacer(1)
             self._thinking_md = Markdown(
                 thinking_text,
                 padding_x=2,
@@ -119,8 +110,11 @@ class AssistantMessage(Component):
                 theme=DefaultMarkdownTheme(self._theme),
                 bg_fn=lambda x: f"{hex_to_bg(self._theme.tool_pending_bg)}{x}{RESET}",
             )
-            self._content_container.add_child(self._thinking_spacer)
             self._content_container.add_child(self._thinking_md)
+
+        # Add spacer between thinking and text response
+        if self._thinking_content and self._thinking_content.strip() and self._text_content and self._text_content.strip():
+            self._content_container.add_child(Spacer(1, debug_label="after-thinking", debug_layout=self._debug_layout))
 
         # Render text content (if any)
         if self._text_content and self._text_content.strip():

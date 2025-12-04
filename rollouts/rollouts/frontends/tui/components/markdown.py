@@ -11,7 +11,8 @@ import re
 
 from ..tui import Component
 from ..theme import Theme, DARK_THEME, hex_to_fg, RESET
-from ..utils import apply_background_to_line, visible_width, wrap_text_with_ansi
+from ..utils import wrap_text_with_ansi
+from .text import _render_line_with_margins, _render_empty_lines
 
 
 class MarkdownTheme(Protocol):
@@ -126,21 +127,16 @@ class Markdown(Component):
         ):
             return self._cached_lines
 
-        # Empty text
+        # Empty text - return empty list
         if not self._text or self._text.strip() == "":
-            result: List[str] = []
             self._cached_text = self._text
             self._cached_width = width
-            self._cached_lines = result
-            return result
+            self._cached_lines = []
+            return []
 
-        # Calculate content width
-        content_width = max(1, width - self._padding_x * 2)
-
-        # Normalize tabs
+        # Normalize and render markdown
         normalized_text = self._text.replace("\t", "   ")
-
-        # Render markdown to styled lines
+        content_width = max(1, width - self._padding_x * 2)
         rendered_lines = self._render_markdown(normalized_text, content_width)
 
         # Wrap lines
@@ -148,37 +144,24 @@ class Markdown(Component):
         for line in rendered_lines:
             wrapped_lines.extend(wrap_text_with_ansi(line, content_width))
 
-        # Add margins and background
-        left_margin = " " * self._padding_x
-        right_margin = " " * self._padding_x
-        content_lines: List[str] = []
-
-        for line in wrapped_lines:
-            line_with_margins = left_margin + line + right_margin
-            if self._bg_fn:
-                content_lines.append(apply_background_to_line(line_with_margins, width, self._bg_fn))
-            else:
-                visible_len = visible_width(line_with_margins)
-                padding_needed = max(0, width - visible_len)
-                content_lines.append(line_with_margins + " " * padding_needed)
+        # Render content lines with margins and background
+        content_lines = [
+            _render_line_with_margins(line, width, self._padding_x, self._bg_fn)
+            for line in wrapped_lines
+        ]
 
         # Add vertical padding
-        empty_line = " " * width
-        empty_lines: List[str] = []
-        for _ in range(self._padding_y):
-            if self._bg_fn:
-                empty_lines.append(apply_background_to_line(empty_line, width, self._bg_fn))
-            else:
-                empty_lines.append(empty_line)
+        top_lines = _render_empty_lines(self._padding_y, width, self._padding_x, self._bg_fn)
+        bottom_lines = _render_empty_lines(self._padding_y, width, self._padding_x, self._bg_fn)
 
-        result = [*empty_lines, *content_lines, *empty_lines]
+        result = [*top_lines, *content_lines, *bottom_lines]
 
         # Update cache
         self._cached_text = self._text
         self._cached_width = width
         self._cached_lines = result
 
-        return result if result else [""]
+        return result
 
     def _render_markdown(self, text: str, width: int) -> List[str]:
         """Simple markdown renderer.
@@ -268,6 +251,13 @@ class Markdown(Component):
         """Render inline markdown elements."""
         result = text
 
+        # Inline code: `text` - MUST process FIRST to protect from other formatters
+        result = re.sub(
+            r"`([^`]+)`",
+            lambda m: self._theme.code(m.group(1)),
+            result,
+        )
+
         # Bold: **text** or __text__
         result = re.sub(
             r"\*\*(.+?)\*\*|__(.+?)__",
@@ -286,13 +276,6 @@ class Markdown(Component):
         result = re.sub(
             r"~~(.+?)~~",
             lambda m: self._theme.strikethrough(m.group(1)),
-            result,
-        )
-
-        # Inline code: `text`
-        result = re.sub(
-            r"`([^`]+)`",
-            lambda m: self._theme.code(m.group(1)),
             result,
         )
 

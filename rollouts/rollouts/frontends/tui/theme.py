@@ -120,3 +120,21 @@ class Theme:
 
 # Default dark theme instance
 DARK_THEME = Theme()
+
+
+@dataclass
+class RoundedTheme(Theme):
+    """Rounded theme variant with border decorations."""
+
+    # Enable rounded corners
+    use_rounded_corners: bool = True
+
+    # Corner characters
+    corner_tl: str = "╭"  # Top-left
+    corner_tr: str = "╮"  # Top-right
+    corner_bl: str = "╰"  # Bottom-left
+    corner_br: str = "╯"  # Bottom-right
+
+
+# Rounded theme instance
+ROUNDED_THEME = RoundedTheme()
