@@ -106,6 +106,6 @@ if not final_content_blocks:
 
 ## Priority
 
-**Fix Issue 2 first** - Graceful failure will give better error messages and prevent cascade.
+**Fix Issue 2 first** - Graceful failure will give better error messages and prevent cascade. ✅ FIXED in commit 32ea4fc
 
-**Fix Issue 1 second** - Proper control flow for interactive chat.
+**Fix Issue 1 second** - Proper control flow for interactive chat. ✅ FIXED - Added `handle_no_tool_interactive` callback that waits for user input before continuing the agent loop.

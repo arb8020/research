@@ -206,11 +206,29 @@ class InteractiveAgentRunner:
                 async def auto_confirm_tool(tc: ToolCall, state: AgentState, rcfg: RunConfig) -> tuple[AgentState, ToolConfirmResult]:
                     return state, ToolConfirmResult(proceed=True)
 
+                # Handle no-tool response: wait for user input before continuing
+                async def handle_no_tool_interactive(state: AgentState, rcfg: RunConfig) -> AgentState:
+                    """Wait for user input when LLM responds without tool calls."""
+                    from dataclasses import replace as dc_replace
+
+                    # Get user input via the TUI
+                    user_input = await rcfg.on_input("Enter your message: ")
+
+                    # Append user message to trajectory
+                    new_trajectory = Trajectory(
+                        messages=state.actor.trajectory.messages + [
+                            Message(role="user", content=user_input)
+                        ]
+                    )
+                    new_actor = dc_replace(state.actor, trajectory=new_trajectory)
+                    return dc_replace(state, actor=new_actor)
+
                 run_config = RunConfig(
                     on_chunk=self.renderer.handle_event,
                     on_input=self._tui_input_handler,
                     confirm_tool=auto_confirm_tool,
                     handle_stop=self._handle_stop,
+                    handle_no_tool=handle_no_tool_interactive,
                 )
 
                 # Store agent result
