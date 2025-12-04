@@ -204,6 +204,8 @@ class AgentRenderer:
 
         # Finalize current message if we have one
         if self.current_message:
+            # Add spacer after thinking/text before first tool
+            self.chat_container.add_child(Spacer(1, debug_label="before-tool", debug_layout=self.debug_layout))
             # Message is complete, clear reference
             self.current_message = None
             self.current_text_index = None
