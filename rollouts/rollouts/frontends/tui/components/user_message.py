@@ -39,3 +39,7 @@ class UserMessage(Container):
         )
         self.add_child(user_text)
 
+        # Add spacer AFTER user message - this acts as a buffer that can be
+        # safely overwritten by streaming content without affecting the colored padding
+        self.add_child(Spacer(1))
+

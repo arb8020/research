@@ -18,11 +18,15 @@ class Text(Component):
         text: str = "",
         padding_x: int = 1,
         padding_y: int = 1,
+        padding_top: Optional[int] = None,
+        padding_bottom: Optional[int] = None,
         custom_bg_fn: Optional[Callable[[str], str]] = None,
     ) -> None:
         self._text = text
         self._padding_x = padding_x
-        self._padding_y = padding_y
+        # Allow separate top/bottom padding, falling back to padding_y
+        self._padding_top = padding_top if padding_top is not None else padding_y
+        self._padding_bottom = padding_bottom if padding_bottom is not None else padding_y
         self._custom_bg_fn = custom_bg_fn
 
         # Cache for rendered output
@@ -93,16 +97,24 @@ class Text(Component):
                 padding_needed = max(0, width - visible_len)
                 content_lines.append(line_with_margins + " " * padding_needed)
 
-        # Add top/bottom padding (empty lines)
+        # Add top padding (empty lines)
         empty_line = " " * width
-        empty_lines: List[str] = []
-        for _ in range(self._padding_y):
+        top_lines: List[str] = []
+        for _ in range(self._padding_top):
             if self._custom_bg_fn:
-                empty_lines.append(apply_background_to_line(empty_line, width, self._custom_bg_fn))
+                top_lines.append(apply_background_to_line(empty_line, width, self._custom_bg_fn))
             else:
-                empty_lines.append(empty_line)
+                top_lines.append(empty_line)
 
-        result = [*empty_lines, *content_lines, *empty_lines]
+        # Add bottom padding (empty lines)
+        bottom_lines: List[str] = []
+        for _ in range(self._padding_bottom):
+            if self._custom_bg_fn:
+                bottom_lines.append(apply_background_to_line(empty_line, width, self._custom_bg_fn))
+            else:
+                bottom_lines.append(empty_line)
+
+        result = [*top_lines, *content_lines, *bottom_lines]
 
         # Update cache
         self._cached_text = self._text
