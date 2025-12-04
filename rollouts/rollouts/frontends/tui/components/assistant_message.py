@@ -24,6 +24,11 @@ class AssistantMessage(Component):
         self._thinking_content = ""
         self._thinking_intensity = "medium"  # minimal, low, medium, high
 
+        # Keep references to components for efficient updates
+        self._thinking_md: Optional[Markdown] = None
+        self._text_md: Optional[Markdown] = None
+        self._thinking_spacer: Optional[Spacer] = None
+
     def append_text(self, delta: str) -> None:
         """Append text delta to current text content."""
         self._text_content += delta
@@ -32,7 +37,13 @@ class AssistantMessage(Component):
     def append_thinking(self, delta: str) -> None:
         """Append thinking delta to current thinking content."""
         self._thinking_content += delta
-        self._rebuild_content()
+        if self._thinking_md:
+            # Update existing component
+            thinking_text = f"thinking()\n\n{self._thinking_content.strip()}"
+            self._thinking_md.set_text(thinking_text)
+        else:
+            # Create component on first delta
+            self._rebuild_content()
 
     def set_text(self, text: str) -> None:
         """Set complete text content."""
@@ -53,6 +64,9 @@ class AssistantMessage(Component):
         """Clear all content."""
         self._text_content = ""
         self._thinking_content = ""
+        self._thinking_md = None
+        self._text_md = None
+        self._thinking_spacer = None
         self._content_container.clear()
 
     def invalidate(self) -> None:
@@ -62,6 +76,9 @@ class AssistantMessage(Component):
     def _rebuild_content(self) -> None:
         """Rebuild content container from current text and thinking."""
         self._content_container.clear()
+        self._thinking_md = None
+        self._text_md = None
+        self._thinking_spacer = None
 
         # Note: We don't add a spacer here - the previous component (UserMessage)
         # already has padding_y=1 which provides spacing. Adding a spacer here
@@ -71,25 +88,26 @@ class AssistantMessage(Component):
         if self._thinking_content and self._thinking_content.strip():
             # Format thinking like a tool call with background
             thinking_text = f"thinking()\n\n{self._thinking_content.strip()}"
-            thinking_md = Markdown(
+            self._thinking_spacer = Spacer(1)
+            self._thinking_md = Markdown(
                 thinking_text,
                 padding_x=2,
                 padding_y=1,
                 theme=DefaultMarkdownTheme(self._theme),
                 bg_fn=lambda x: f"{hex_to_bg(self._theme.tool_pending_bg)}{x}{RESET}",
             )
-            self._content_container.add_child(Spacer(1))
-            self._content_container.add_child(thinking_md)
+            self._content_container.add_child(self._thinking_spacer)
+            self._content_container.add_child(self._thinking_md)
 
         # Render text content (if any)
         if self._text_content and self._text_content.strip():
-            text_md = Markdown(
+            self._text_md = Markdown(
                 self._text_content.strip(),
                 padding_x=2,
                 padding_y=0,
                 theme=DefaultMarkdownTheme(self._theme),
             )
-            self._content_container.add_child(text_md)
+            self._content_container.add_child(self._text_md)
 
     def render(self, width: int) -> List[str]:
         """Render assistant message."""
