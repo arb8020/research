@@ -180,12 +180,12 @@ class Text(Component):
             new_result = []
             for i, line in enumerate(result):
                 if i == 0:
-                    # First line: add gutter prefix
-                    pos = skip_ansi_and_get_pos(line, gutter_len + 1)
+                    # First line: add gutter prefix, skip padding_x spaces
+                    pos = skip_ansi_and_get_pos(line, self._padding_x)
                     new_result.append(self._gutter_prefix + " " + line[pos:])
                 else:
-                    # Other lines: add spacing
-                    pos = skip_ansi_and_get_pos(line, gutter_len + 1)
+                    # Other lines: add spacing, skip padding_x spaces
+                    pos = skip_ansi_and_get_pos(line, self._padding_x)
                     new_result.append(" " * (gutter_len + 1) + line[pos:])
             result = new_result
 
