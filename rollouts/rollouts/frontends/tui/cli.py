@@ -16,7 +16,24 @@ import sys
 import trio
 
 from rollouts.dtypes import Endpoint, Message, Trajectory
+from rollouts.environments import CalculatorEnvironment
 from rollouts.frontends.tui.interactive_agent import run_interactive_agent
+
+
+SYSTEM_PROMPTS = {
+    "none": "You are a helpful assistant.",
+    "calculator": """You are a calculator assistant with access to math tools.
+
+Available tools: add, subtract, multiply, divide, clear, complete_task.
+Each tool operates on a running total (starts at 0).
+
+For calculations:
+1. Break down the problem into steps
+2. Use tools to compute each step
+3. Use complete_task when done
+
+Example: For "(5 + 3) * 2", first add(5), then add(3), then multiply(2).""",
+}
 
 
 def create_endpoint(provider: str, model: str, api_base: str | None = None, api_key: str | None = None) -> Endpoint:
@@ -81,8 +98,15 @@ def main() -> int:
     parser.add_argument(
         "--system-prompt",
         type=str,
-        default="You are a helpful assistant.",
-        help="System prompt (default: 'You are a helpful assistant.')",
+        default=None,
+        help="System prompt (default: depends on --env)",
+    )
+    parser.add_argument(
+        "--env",
+        type=str,
+        choices=["none", "calculator"],
+        default="none",
+        help="Environment with tools: none, calculator (default: none)",
     )
     parser.add_argument(
         "--max-turns",
@@ -102,8 +126,16 @@ def main() -> int:
         print(f"\n❌ Error: No API key found. Please set {env_var} environment variable or use --api-key flag.", file=sys.stderr)
         return 1
 
+    # Create environment
+    environment = None
+    if args.env == "calculator":
+        environment = CalculatorEnvironment()
+
+    # Get system prompt (user-provided or default for env)
+    system_prompt = args.system_prompt or SYSTEM_PROMPTS.get(args.env, SYSTEM_PROMPTS["none"])
+
     # Create initial trajectory
-    system_msg = Message(role="system", content=args.system_prompt)
+    system_msg = Message(role="system", content=system_prompt)
     trajectory = Trajectory(messages=[system_msg])
 
     # Run interactive agent
@@ -112,7 +144,7 @@ def main() -> int:
             run_interactive_agent,
             trajectory,
             endpoint,
-            None,  # No tools by default
+            environment,
             args.max_turns,
         )
         return 0

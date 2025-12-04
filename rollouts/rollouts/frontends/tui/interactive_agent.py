@@ -136,8 +136,8 @@ class InteractiveAgentRunner:
         # Create renderer
         self.renderer = AgentRenderer(self.tui)
 
-        # Create input component
-        self.input_component = Input()
+        # Create input component with theme
+        self.input_component = Input(theme=self.tui.theme)
         self.input_component.set_on_submit(self._handle_input_submit)
         self.tui.add_child(self.input_component)
 

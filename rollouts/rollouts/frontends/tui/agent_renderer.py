@@ -20,40 +20,17 @@ from rollouts.dtypes import (
     ToolCallDelta,
     ToolCallEnd,
     ToolCallError,
+    ToolResultReceived,
     StreamDone,
     StreamError,
 )
 
 from .tui import TUI, Container
+from .theme import Theme
 from .components.assistant_message import AssistantMessage
 from .components.tool_execution import ToolExecution
 from .components.user_message import UserMessage
 from .components.spacer import Spacer
-
-
-def _cyan(text: str) -> str:
-    """Colorize text cyan."""
-    return f"\x1b[36m{text}\x1b[0m"
-
-
-def _dim(text: str) -> str:
-    """Colorize text dim/muted."""
-    return f"\x1b[2m{text}\x1b[0m"
-
-
-def _bg_pending(text: str) -> str:
-    """Background color for pending tool."""
-    return f"\x1b[48;5;238m{text}\x1b[0m"  # Dark gray background
-
-
-def _bg_success(text: str) -> str:
-    """Background color for successful tool."""
-    return f"\x1b[48;5;22m{text}\x1b[0m"  # Dark green background
-
-
-def _bg_error(text: str) -> str:
-    """Background color for error tool."""
-    return f"\x1b[48;5;52m{text}\x1b[0m"  # Dark red background
 
 
 class AgentRenderer:
@@ -66,6 +43,7 @@ class AgentRenderer:
             tui: TUI instance to render to
         """
         self.tui = tui
+        self.theme = tui.theme
         self.chat_container = Container()
         self.tui.add_child(self.chat_container)
 
@@ -123,6 +101,9 @@ class AgentRenderer:
             case ToolCallError(content_index=idx, tool_call_id=tool_id, tool_name=name, error=err):
                 self._handle_tool_call_error(idx, tool_id, name, err)
 
+            case ToolResultReceived(tool_call_id=tool_id, content=content, is_error=is_err, error=err):
+                self._handle_tool_result(tool_id, content, is_err, err)
+
             case StreamDone():
                 self._handle_stream_done()
 
@@ -133,12 +114,19 @@ class AgentRenderer:
 
     def _handle_llm_call_start(self) -> None:
         """Handle LLM call start - show 'Calling LLM...' loader."""
-        self.tui.show_loader("Calling LLM...", spinner_color_fn=_cyan, text_color_fn=_dim)
+        self.tui.show_loader(
+            "Calling LLM...",
+            spinner_color_fn=self.theme.fg(self.theme.accent),
+            text_color_fn=self.theme.fg(self.theme.muted),
+        )
 
     def _handle_stream_start(self) -> None:
         """Handle stream start - switch to streaming loader."""
-        # Switch to streaming message - content is about to stream
-        self.tui.show_loader("Streaming... (Ctrl+C to interrupt)", spinner_color_fn=_cyan, text_color_fn=_dim)
+        self.tui.show_loader(
+            "Streaming... (Ctrl+C to interrupt)",
+            spinner_color_fn=self.theme.fg(self.theme.accent),
+            text_color_fn=self.theme.fg(self.theme.muted),
+        )
 
     def _handle_text_start(self, content_index: int) -> None:
         """Handle text block start."""
@@ -220,9 +208,9 @@ class AgentRenderer:
             tool_component = ToolExecution(
                 tool_name,
                 args={},
-                bg_fn_pending=_bg_pending,
-                bg_fn_success=_bg_success,
-                bg_fn_error=_bg_error,
+                bg_fn_pending=self.theme.tool_pending_bg_fn,
+                bg_fn_success=self.theme.tool_success_bg_fn,
+                bg_fn_error=self.theme.tool_error_bg_fn,
             )
             self.chat_container.add_child(tool_component)
             self.pending_tools[tool_call_id] = tool_component
@@ -265,6 +253,17 @@ class AgentRenderer:
             # Remove from pending (error is final)
             del self.pending_tools[tool_call_id]
 
+    def _handle_tool_result(self, tool_call_id: str, content: str, is_error: bool, error: Optional[str]) -> None:
+        """Handle tool execution result - update tool component from pending to success/error."""
+        if tool_call_id in self.pending_tools:
+            result_text = error if is_error and error else content
+            self.pending_tools[tool_call_id].update_result(
+                {"content": [{"type": "text", "text": result_text}]},
+                is_error=is_error,
+            )
+            # Remove from pending (result is final)
+            del self.pending_tools[tool_call_id]
+
     def _handle_stream_done(self) -> None:
         """Handle stream done - hide loader."""
         self.tui.hide_loader()
@@ -291,7 +290,7 @@ class AgentRenderer:
             text: User message text
             is_first: Whether this is the first user message
         """
-        user_component = UserMessage(text, is_first=is_first)
+        user_component = UserMessage(text, is_first=is_first, theme=self.theme)
         self.chat_container.add_child(user_component)
         self.tui.request_render()
 

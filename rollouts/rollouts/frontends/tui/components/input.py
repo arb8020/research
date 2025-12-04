@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Callable, List, Optional
 
 from ..tui import Component
+from ..theme import Theme, DARK_THEME
 from ..utils import visible_width
 
 
@@ -16,17 +17,21 @@ class Input(Component):
     def __init__(
         self,
         border_color_fn: Optional[Callable[[str], str]] = None,
+        theme: Optional[Theme] = None,
     ) -> None:
         """Initialize input component.
 
         Args:
             border_color_fn: Function to colorize border (text -> styled text)
+            theme: Theme for styling (used if border_color_fn not provided)
         """
+        self._theme = theme or DARK_THEME
         self._lines: List[str] = [""]
         self._cursor_line = 0
         self._cursor_col = 0
         self._last_width = 80
-        self._border_color_fn = border_color_fn or (lambda x: x)
+        # Use provided border_color_fn or fall back to theme
+        self._border_color_fn = border_color_fn or self._theme.border_fg
         self._on_submit: Optional[Callable[[str], None]] = None
         self._on_change: Optional[Callable[[str], None]] = None
         self._disable_submit = False

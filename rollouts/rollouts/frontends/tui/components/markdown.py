@@ -10,6 +10,7 @@ from typing import Callable, Optional, List, Protocol
 import re
 
 from ..tui import Component
+from ..theme import Theme, DARK_THEME, hex_to_fg, RESET
 from ..utils import apply_background_to_line, visible_width, wrap_text_with_ansi
 
 
@@ -33,37 +34,41 @@ class MarkdownTheme(Protocol):
 
 
 class DefaultMarkdownTheme:
-    """Default markdown theme using ANSI codes."""
+    """Default markdown theme using colors from Theme."""
+
+    def __init__(self, theme: Optional[Theme] = None) -> None:
+        self._theme = theme or DARK_THEME
 
     def heading(self, text: str) -> str:
-        return f"\x1b[1;36m{text}\x1b[0m"  # Bold cyan
+        # Golden heading (pi-mono style)
+        return f"\x1b[1m{hex_to_fg(self._theme.md_heading)}{text}{RESET}"
 
     def link(self, text: str) -> str:
-        return f"\x1b[4;34m{text}\x1b[0m"  # Underline blue
+        return f"\x1b[4m{hex_to_fg(self._theme.md_link)}{text}{RESET}"
 
     def link_url(self, text: str) -> str:
-        return f"\x1b[2m{text}\x1b[0m"  # Dim
+        return f"{hex_to_fg(self._theme.md_link_url)}{text}{RESET}"
 
     def code(self, text: str) -> str:
-        return f"\x1b[33m{text}\x1b[0m"  # Yellow
+        return f"{hex_to_fg(self._theme.md_code)}{text}{RESET}"
 
     def code_block(self, text: str) -> str:
-        return f"\x1b[33m{text}\x1b[0m"  # Yellow
+        return f"{hex_to_fg(self._theme.md_code_block)}{text}{RESET}"
 
     def code_block_border(self, text: str) -> str:
-        return f"\x1b[2m{text}\x1b[0m"  # Dim
+        return f"{hex_to_fg(self._theme.md_code_border)}{text}{RESET}"
 
     def quote(self, text: str) -> str:
-        return f"\x1b[3m{text}\x1b[0m"  # Italic
+        return f"\x1b[3m{hex_to_fg(self._theme.md_quote)}{text}{RESET}"
 
     def quote_border(self, text: str) -> str:
-        return f"\x1b[36m{text}\x1b[0m"  # Cyan
+        return f"{hex_to_fg(self._theme.md_quote_border)}{text}{RESET}"
 
     def hr(self, text: str) -> str:
-        return f"\x1b[2m{text}\x1b[0m"  # Dim
+        return f"{hex_to_fg(self._theme.md_hr)}{text}{RESET}"
 
     def list_bullet(self, text: str) -> str:
-        return f"\x1b[36m{text}\x1b[0m"  # Cyan
+        return f"{hex_to_fg(self._theme.md_list_bullet)}{text}{RESET}"
 
     def bold(self, text: str) -> str:
         return f"\x1b[1m{text}\x1b[0m"
