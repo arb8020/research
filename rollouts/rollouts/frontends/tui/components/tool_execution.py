@@ -144,9 +144,14 @@ class ToolExecution(Container):
                     display_lines = lines[:max_lines]
                     remaining = len(lines) - max_lines
 
-                    text += "\n\n" + "\n".join(display_lines)
+                    # Add summary line with ⎿, then indented content
+                    is_error = self._result.get("isError", False)
+                    summary = "Command failed" if is_error else "Command completed"
+                    text += f"\n⎿ {summary}"
+                    for line in display_lines:
+                        text += "\n  " + line
                     if remaining > 0:
-                        text += f"\n... ({remaining} more lines)"
+                        text += f"\n  ... ({remaining} more lines)"
 
         elif self._tool_name == "read":
             path = _shorten_path(self._args.get("file_path") or self._args.get("path") or "")
@@ -168,9 +173,14 @@ class ToolExecution(Container):
                 display_lines = lines[:max_lines]
                 remaining = len(lines) - max_lines
 
-                text += "\n\n" + "\n".join(_replace_tabs(line) for line in display_lines)
+                # Add summary line with ⎿, then indented content
+                total_lines = len(lines)
+                summary = f"Read {total_lines} line{'s' if total_lines != 1 else ''}"
+                text += f"\n⎿ {summary}"
+                for line in display_lines:
+                    text += "\n  " + _replace_tabs(line)
                 if remaining > 0:
-                    text += f"\n... ({remaining} more lines)"
+                    text += f"\n  ... ({remaining} more lines)"
 
         elif self._tool_name == "write":
             path = _shorten_path(self._args.get("file_path") or self._args.get("path") or "")
@@ -179,17 +189,19 @@ class ToolExecution(Container):
             total_lines = len(lines)
 
             text = f"write(file_path={repr(path if path else '...')})"
-            if total_lines > 10:
-                text += f"  # {total_lines} lines"
 
             if file_content:
                 max_lines = len(lines) if self._expanded else 10
                 display_lines = lines[:max_lines]
                 remaining = len(lines) - max_lines
 
-                text += "\n\n" + "\n".join(_replace_tabs(line) for line in display_lines)
+                # Add summary line with ⎿, then indented content
+                summary = f"Wrote {total_lines} line{'s' if total_lines != 1 else ''} to {path or '...'}"
+                text += f"\n⎿ {summary}"
+                for line in display_lines:
+                    text += "\n  " + _replace_tabs(line)
                 if remaining > 0:
-                    text += f"\n... ({remaining} more lines)"
+                    text += f"\n  ... ({remaining} more lines)"
 
         elif self._tool_name == "edit":
             path = _shorten_path(self._args.get("file_path") or self._args.get("path") or "")
@@ -201,7 +213,13 @@ class ToolExecution(Container):
             if self._result:
                 output = self._get_text_output()
                 if output:
-                    text += "\n\n" + output
+                    # Add summary line with ⎿, then indented content
+                    is_error = self._result.get("isError", False)
+                    summary = "Edit failed" if is_error else f"Updated {path or '...'}"
+                    text += f"\n⎿ {summary}"
+                    lines = output.split("\n")
+                    for line in lines:
+                        text += "\n  " + line
 
         else:
             # Generic tool - show name(params)
