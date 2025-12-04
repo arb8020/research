@@ -99,7 +99,12 @@ class ToolExecution(Container):
         formatted_text = self._format_tool_execution()
 
         # Create text component with background and gutter prefix
-        self._content_text = Text(formatted_text, padding_x=2, padding_y=1, custom_bg_fn=bg_fn, gutter_prefix="🤖")
+        # Use smiling face for success, frowning face for error
+        if self._result:
+            gutter = "☹" if self._result.get("isError") else "☺"
+        else:
+            gutter = "☺"  # Pending state uses smiling face
+        self._content_text = Text(formatted_text, padding_x=2, padding_y=1, custom_bg_fn=bg_fn, gutter_prefix=gutter)
         self.add_child(self._content_text)
 
     def _get_text_output(self) -> str:
