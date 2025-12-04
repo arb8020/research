@@ -98,8 +98,8 @@ class ToolExecution(Container):
         # Format tool execution text
         formatted_text = self._format_tool_execution()
 
-        # Create text component with background
-        self._content_text = Text(formatted_text, padding_x=2, padding_y=1, custom_bg_fn=bg_fn)
+        # Create text component with background and gutter prefix
+        self._content_text = Text(formatted_text, padding_x=2, padding_y=1, custom_bg_fn=bg_fn, gutter_prefix="˙ᵕ˙")
         self.add_child(self._content_text)
 
     def _get_text_output(self) -> str:
@@ -134,7 +134,7 @@ class ToolExecution(Container):
 
         if self._tool_name == "bash":
             command = self._args.get("command", "")
-            text = f"🤖 bash(command={repr(command or '...')})"
+            text = f"bash(command={repr(command or '...')})"
 
             if self._result:
                 output = self._get_text_output().strip()
@@ -164,7 +164,7 @@ class ToolExecution(Container):
             if limit is not None:
                 params += f", limit={limit}"
 
-            text = f"🤖 read({params})"
+            text = f"read({params})"
 
             if self._result:
                 output = self._get_text_output()
@@ -188,7 +188,7 @@ class ToolExecution(Container):
             lines = file_content.split("\n") if file_content else []
             total_lines = len(lines)
 
-            text = f"🤖 write(file_path={repr(path if path else '...')})"
+            text = f"write(file_path={repr(path if path else '...')})"
 
             if file_content:
                 max_lines = len(lines) if self._expanded else 10
@@ -208,7 +208,7 @@ class ToolExecution(Container):
             old_string = self._args.get("old_string", "")
             new_string = self._args.get("new_string", "")
 
-            text = f"🤖 edit(file_path={repr(path if path else '...')}, old_string=..., new_string=...)"
+            text = f"edit(file_path={repr(path if path else '...')}, old_string=..., new_string=...)"
 
             if self._result:
                 output = self._get_text_output()
@@ -231,9 +231,9 @@ class ToolExecution(Container):
                     else:
                         params_list.append(f"{key}={value}")
                 params_str = ", ".join(params_list)
-                text = f"🤖 {self._tool_name}({params_str})"
+                text = f"{self._tool_name}({params_str})"
             else:
-                text = f"🤖 {self._tool_name}()"
+                text = f"{self._tool_name}()"
 
             output = self._get_text_output()
             if output:

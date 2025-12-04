@@ -64,6 +64,7 @@ class Text(Component):
         padding_bottom: Optional[int] = None,
         custom_bg_fn: Optional[Callable[[str], str]] = None,
         theme: Optional["Theme"] = None,
+        gutter_prefix: Optional[str] = None,
     ) -> None:
         self._text = text
         self._padding_x = padding_x
@@ -71,11 +72,13 @@ class Text(Component):
         self._padding_bottom = padding_bottom if padding_bottom is not None else padding_y
         self._custom_bg_fn = custom_bg_fn
         self._theme = theme
+        self._gutter_prefix = gutter_prefix
 
         # Cache for rendered output
         self._cached_text: Optional[str] = None
         self._cached_width: Optional[int] = None
         self._cached_lines: Optional[List[str]] = None
+        self._cached_gutter_prefix: Optional[str] = None
 
     def set_text(self, text: str) -> None:
         """Update the text content."""
@@ -92,6 +95,7 @@ class Text(Component):
         self._cached_text = None
         self._cached_width = None
         self._cached_lines = None
+        self._cached_gutter_prefix = None
 
     def render(self, width: int) -> List[str]:
         """Render text with word wrapping and padding."""
@@ -100,6 +104,7 @@ class Text(Component):
             self._cached_lines is not None
             and self._cached_text == self._text
             and self._cached_width == width
+            and self._cached_gutter_prefix == self._gutter_prefix
         ):
             return self._cached_lines
 
@@ -150,9 +155,19 @@ class Text(Component):
 
         result = [*top_lines, *content_lines, *bottom_lines]
 
+        # Add gutter prefix if specified
+        if self._gutter_prefix:
+            gutter_len = visible_width(self._gutter_prefix)
+            result = [
+                self._gutter_prefix + " " + line[gutter_len + 1:] if i == 0
+                else " " * (gutter_len + 1) + line[gutter_len + 1:]
+                for i, line in enumerate(result)
+            ]
+
         # Update cache
         self._cached_text = self._text
         self._cached_width = width
+        self._cached_gutter_prefix = self._gutter_prefix
         self._cached_lines = result
 
         return result
