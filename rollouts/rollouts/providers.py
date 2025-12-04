@@ -328,7 +328,8 @@ def _message_to_openai(m: Message) -> ChatCompletionMessageParam:
 
     # Validate message content - catch empty messages early
     # Tiger Style: Use assertions for programmer errors (bugs in our code)
-    if not m.content and not (hasattr(m, 'tool_calls') and m.tool_calls) and m.role != "tool":
+    tool_calls = m.get_tool_calls()
+    if not m.content and not tool_calls and m.role != "tool":
         import logging
         logger = logging.getLogger(__name__)
         logger.error(f"❌ Empty message content detected! Role: {m.role}")
@@ -345,8 +346,8 @@ def _message_to_openai(m: Message) -> ChatCompletionMessageParam:
     if m.content is not None:
         msg["content"] = m.content
 
-    if m.tool_calls and m.role == "assistant":
-        assert isinstance(m.tool_calls, list)
+    if tool_calls and m.role == "assistant":
+        assert isinstance(tool_calls, list)
         msg["tool_calls"] = [
             {
                 "id": tc.id,
@@ -356,7 +357,7 @@ def _message_to_openai(m: Message) -> ChatCompletionMessageParam:
                     "arguments": json.dumps(tc.args),
                 },
             }
-            for tc in m.tool_calls
+            for tc in tool_calls
         ]
 
     if m.role == "tool":
@@ -417,6 +418,8 @@ def _parse_completion(resp: Any) -> ChatCompletion:
     assert hasattr(resp, 'model')
     assert hasattr(resp, 'usage')
 
+    from .dtypes import TextContent, ToolCallContent
+
     choices = []
     for c in resp.choices:
         assert c is not None
@@ -435,10 +438,22 @@ def _parse_completion(resp: Any) -> ChatCompletion:
                     )
                 )
 
+        # Build ContentBlocks
+        content_blocks: list = []
+        if c.message.content:
+            content_blocks.append(TextContent(text=c.message.content))
+        for tc in tool_calls:
+            content_blocks.append(
+                ToolCallContent(
+                    id=tc.id,
+                    name=tc.name,
+                    arguments=tc.args,
+                )
+            )
+
         msg = Message(
             role=c.message.role,
-            content=c.message.content,
-            tool_calls=tool_calls,
+            content=content_blocks if content_blocks else c.message.content,
         )
         assert msg is not None
         choices.append(Choice(c.index, msg, c.finish_reason))
@@ -604,8 +619,22 @@ async def aggregate_stream(
     # Emit done event
     await on_chunk(StreamDone(finish_reason=finish_reason or "stop"))
 
-    # Build final message and completion
-    final_message = Message(role="assistant", content=accumulated_content or "", tool_calls=tool_calls)
+    # Build final message with ContentBlocks
+    from .dtypes import TextContent, ToolCallContent
+
+    content_blocks: list = []
+    if accumulated_content:
+        content_blocks.append(TextContent(text=accumulated_content))
+    for tc in tool_calls:
+        content_blocks.append(
+            ToolCallContent(
+                id=tc.id,
+                name=tc.name,
+                arguments=tc.args,
+            )
+        )
+
+    final_message = Message(role="assistant", content=content_blocks if content_blocks else "")
 
     assert final_message is not None
     assert isinstance(final_message, Message)
@@ -1162,9 +1191,17 @@ def _messages_to_openai_responses(messages: list[Message]) -> list[dict[str, Any
 
     for msg in messages:
         if msg.role == "user":
-            # Extract text from ContentBlocks
-            text_blocks = [b for b in msg.content if isinstance(b, TextContent)]
-            user_text = "\n".join(b.text for b in text_blocks) if text_blocks else ""
+            # Tiger Style: Explicit control flow - handle each content type
+            # Handle string content (simple text messages)
+            if isinstance(msg.content, str):
+                user_text = msg.content
+            # Handle ContentBlock list (structured messages)
+            elif isinstance(msg.content, list):
+                text_blocks = [b for b in msg.content if isinstance(b, TextContent)]
+                user_text = "\n".join(b.text for b in text_blocks) if text_blocks else ""
+            else:
+                assert False, f"User message content must be str or list[ContentBlock], got {type(msg.content)}"
+
             result.append({
                 "role": "user",
                 "content": [{"type": "input_text", "text": user_text}]
@@ -1174,43 +1211,55 @@ def _messages_to_openai_responses(messages: list[Message]) -> list[dict[str, Any
             # Assistant messages become separate objects
             output: list[dict[str, Any]] = []
 
-            # Process ContentBlocks
-            for block in msg.content:
-                if isinstance(block, ThinkingContent) and block.thinking_signature:
-                    # Reuse existing reasoning item
-                    logger.debug(f"Found thinking_signature, re-submitting reasoning item")
-                    try:
-                        reasoning_item = json.loads(block.thinking_signature)
-                        output.append(reasoning_item)
-                        logger.debug(f"Added reasoning item: {reasoning_item.get('type', 'unknown')}, id={reasoning_item.get('id', 'unknown')}")
-                    except json.JSONDecodeError as e:
-                        logger.error(f"Failed to parse thinking_signature: {e}")
-                        pass
-                elif isinstance(block, TextContent):
-                    # Add text content as message object
-                    output.append({
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [{"type": "output_text", "text": block.text, "annotations": []}],
-                        "status": "completed",
-                        "id": f"msg_{int(time.time())}_{id(msg)}",
-                    })
-                elif isinstance(block, ToolCallContent):
-                    # Tool call IDs in responses API use format: call_id|id
-                    # Split if already in that format, otherwise use as call_id
-                    if "|" in block.id:
-                        call_id, func_id = block.id.split("|", 1)
-                    else:
-                        call_id = block.id
-                        func_id = f"fc_{int(time.time())}"
+            # Tiger Style: Explicit control flow - handle each content type
+            # Handle string content (simple text response)
+            if isinstance(msg.content, str):
+                output.append({
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": msg.content, "annotations": []}],
+                    "status": "completed",
+                    "id": f"msg_{int(time.time())}_{id(msg)}",
+                })
+            # Handle ContentBlock list (structured response with thinking/tools)
+            elif isinstance(msg.content, list):
+                # Process ContentBlocks
+                for block in msg.content:
+                    if isinstance(block, ThinkingContent) and block.thinking_signature:
+                        # Reuse existing reasoning item
+                        logger.debug(f"Found thinking_signature, re-submitting reasoning item")
+                        try:
+                            reasoning_item = json.loads(block.thinking_signature)
+                            output.append(reasoning_item)
+                            logger.debug(f"Added reasoning item: {reasoning_item.get('type', 'unknown')}, id={reasoning_item.get('id', 'unknown')}")
+                        except json.JSONDecodeError as e:
+                            logger.error(f"Failed to parse thinking_signature: {e}")
+                            pass
+                    elif isinstance(block, TextContent):
+                        # Add text content as message object
+                        output.append({
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": block.text, "annotations": []}],
+                            "status": "completed",
+                            "id": f"msg_{int(time.time())}_{id(msg)}",
+                        })
+                    elif isinstance(block, ToolCallContent):
+                        # Tool call IDs in responses API use format: call_id|id
+                        # Split if already in that format, otherwise use as call_id
+                        if "|" in block.id:
+                            call_id, func_id = block.id.split("|", 1)
+                        else:
+                            call_id = block.id
+                            func_id = f"fc_{int(time.time())}"
 
-                    output.append({
-                        "type": "function_call",
-                        "id": func_id,
-                        "call_id": call_id,
-                        "name": block.name,
-                        "arguments": json.dumps(block.arguments),
-                    })
+                        output.append({
+                            "type": "function_call",
+                            "id": func_id,
+                            "call_id": call_id,
+                            "name": block.name,
+                            "arguments": json.dumps(block.arguments),
+                        })
 
             # Add all output objects
             if output:
@@ -1218,8 +1267,14 @@ def _messages_to_openai_responses(messages: list[Message]) -> list[dict[str, Any
 
         elif msg.role == "tool":
             # Extract text from ContentBlocks for tool result
-            text_blocks = [b for b in msg.content if isinstance(b, TextContent)]
-            tool_result_text = "\n".join(b.text for b in text_blocks) if text_blocks else ""
+            # Tiger Style: Explicit control flow - handle both string and ContentBlock content
+            if isinstance(msg.content, str):
+                tool_result_text = msg.content
+            elif isinstance(msg.content, list):
+                text_blocks = [b for b in msg.content if isinstance(b, TextContent)]
+                tool_result_text = "\n".join(b.text for b in text_blocks) if text_blocks else ""
+            else:
+                tool_result_text = ""
 
             # Extract call_id from tool_call_id (format: call_id|id or just call_id)
             call_id = msg.tool_call_id
@@ -1709,26 +1764,35 @@ async def rollout_google(
     contents = []
     for m in transformed_messages:
         if m.role == "user":
-            # Extract text from ContentBlocks
-            text_blocks = [b for b in m.content if isinstance(b, TextContent)]
-            user_text = "\n".join(b.text for b in text_blocks) if text_blocks else ""
+            # Tiger Style: Explicit control flow - handle both string and ContentBlock content
+            if isinstance(m.content, str):
+                user_text = m.content
+            elif isinstance(m.content, list):
+                text_blocks = [b for b in m.content if isinstance(b, TextContent)]
+                user_text = "\n".join(b.text for b in text_blocks) if text_blocks else ""
+            else:
+                user_text = ""
             contents.append(types.Content(
                 role="user",
                 parts=[types.Part(text=user_text)]
             ))
         elif m.role == "assistant":
             parts = []
-            # Process ContentBlocks
-            for block in m.content:
-                if isinstance(block, TextContent):
-                    parts.append(types.Part(text=block.text))
-                elif isinstance(block, ToolCallContent):
-                    parts.append(types.Part(
-                        function_call=types.FunctionCall(
-                            name=block.name,
-                            args=block.arguments,
-                        )
-                    ))
+            # Tiger Style: Explicit control flow - handle both string and ContentBlock content
+            if isinstance(m.content, str):
+                parts.append(types.Part(text=m.content))
+            elif isinstance(m.content, list):
+                # Process ContentBlocks
+                for block in m.content:
+                    if isinstance(block, TextContent):
+                        parts.append(types.Part(text=block.text))
+                    elif isinstance(block, ToolCallContent):
+                        parts.append(types.Part(
+                            function_call=types.FunctionCall(
+                                name=block.name,
+                                args=block.arguments,
+                            )
+                        ))
             if parts:
                 contents.append(types.Content(
                     role="model",
@@ -1736,8 +1800,14 @@ async def rollout_google(
                 ))
         elif m.role == "tool":
             # Extract text from ContentBlocks for tool result
-            text_blocks = [b for b in m.content if isinstance(b, TextContent)]
-            tool_result_text = "\n".join(b.text for b in text_blocks) if text_blocks else ""
+            # Tiger Style: Explicit control flow - handle both string and ContentBlock content
+            if isinstance(m.content, str):
+                tool_result_text = m.content
+            elif isinstance(m.content, list):
+                text_blocks = [b for b in m.content if isinstance(b, TextContent)]
+                tool_result_text = "\n".join(b.text for b in text_blocks) if text_blocks else ""
+            else:
+                tool_result_text = ""
             contents.append(types.Content(
                 role="user",
                 parts=[types.Part(
@@ -1885,7 +1955,15 @@ def _message_to_anthropic(
 
     msg: dict[str, Any] = {"role": m.role}
 
-    # Build content blocks from ContentBlock list
+    # Tiger Style: Explicit control flow - handle each content type
+    # Handle string content (simple text messages)
+    if isinstance(m.content, str):
+        msg["content"] = m.content
+        return msg
+
+    # Handle ContentBlock list (structured messages with text/thinking/tools/images)
+    assert isinstance(m.content, list), f"content must be str or list[ContentBlock], got {type(m.content)}"
+
     content_blocks = []
 
     for block in m.content:
@@ -2285,6 +2363,20 @@ async def rollout_anthropic(
                 break
 
         except Exception as e:
+            # Tiger Style: Fail fast on 400 errors (invalid requests)
+            # These indicate bugs in our code or invalid configuration, not transient issues
+            import anthropic
+            import json
+
+            if isinstance(e, anthropic.BadRequestError):
+                sanitized = sanitize_request_for_logging(params)
+                logger.error(
+                    f"Anthropic API 400 Bad Request - Invalid argument in request\n"
+                    f"Full sanitized request:\n{json.dumps(sanitized, indent=2)}"
+                )
+                # Fail immediately - don't retry configuration errors
+                assert False, f"API returned 400 Bad Request: {e}\nThis indicates invalid configuration or a bug in request construction. See logs above for full request."
+
             print(
                 f"🔄 Anthropic API error (attempt {attempt + 1}/{max_retries + 1}): {str(e)}"
             )
