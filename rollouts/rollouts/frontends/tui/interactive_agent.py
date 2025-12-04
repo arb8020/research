@@ -14,10 +14,17 @@ import trio
 
 from rollouts.agents import AgentState, Actor, run_agent
 from rollouts.dtypes import (
+    ContentBlock,
     Endpoint,
     Environment,
     Message,
     RunConfig,
+    StreamDone,
+    StreamEvent,
+    TextDelta,
+    TextEnd,
+    ToolCallEnd,
+    ToolResultReceived,
     Trajectory,
     ToolCall,
     ToolConfirmResult,
@@ -28,6 +35,7 @@ from .terminal import ProcessTerminal
 from .tui import TUI
 from .agent_renderer import AgentRenderer
 from .components.input import Input
+from .sessions import Session, append_message
 
 
 class InteractiveAgentRunner:
@@ -39,6 +47,7 @@ class InteractiveAgentRunner:
         endpoint: Endpoint,
         environment: Optional[Environment] = None,
         max_turns: int = 50,
+        session: Optional[Session] = None,
     ) -> None:
         """Initialize interactive agent runner.
 
@@ -47,11 +56,13 @@ class InteractiveAgentRunner:
             endpoint: LLM endpoint configuration
             environment: Optional environment for tool execution
             max_turns: Maximum number of turns
+            session: Optional session for persistence
         """
         self.initial_trajectory = initial_trajectory
         self.endpoint = endpoint
         self.environment = environment
         self.max_turns = max_turns
+        self.session = session
 
         # TUI components
         self.terminal: Optional[ProcessTerminal] = None
@@ -67,6 +78,10 @@ class InteractiveAgentRunner:
 
         # Cancellation
         self.cancel_scope: Optional[trio.CancelScope] = None
+
+        # Message accumulation for session persistence
+        self._current_text: str = ""
+        self._current_tool_calls: list[dict] = []
 
     def _handle_input_submit(self, text: str) -> None:
         """Handle input submission from TUI (sync wrapper for trio channel send).
@@ -112,7 +127,57 @@ class InteractiveAgentRunner:
             self.renderer.add_user_message(user_input, is_first=self.is_first_user_message)
             self.is_first_user_message = False
 
+        # Persist user message to session
+        if self.session:
+            append_message(self.session, Message(role="user", content=user_input))
+
         return user_input
+
+    async def _handle_stream_event(self, event: StreamEvent) -> None:
+        """Handle streaming event - render and accumulate for persistence."""
+        # Pass to renderer
+        if self.renderer:
+            await self.renderer.handle_event(event)
+
+        # Accumulate for session persistence
+        if isinstance(event, TextDelta):
+            self._current_text += event.delta
+        elif isinstance(event, ToolCallEnd):
+            self._current_tool_calls.append({
+                "id": event.id,
+                "name": event.name,
+                "arguments": event.arguments,
+            })
+        elif isinstance(event, StreamDone):
+            # Persist accumulated assistant message
+            if self.session and (self._current_text or self._current_tool_calls):
+                # Build content blocks
+                content: list[ContentBlock] = []
+                if self._current_text:
+                    content.append({"type": "text", "text": self._current_text})
+                for tc in self._current_tool_calls:
+                    content.append({
+                        "type": "tool_use",
+                        "id": tc["id"],
+                        "name": tc["name"],
+                        "input": tc["arguments"],
+                    })
+
+                assistant_msg = Message(role="assistant", content=content)
+                append_message(self.session, assistant_msg)
+
+            # Reset accumulators
+            self._current_text = ""
+            self._current_tool_calls = []
+        elif isinstance(event, ToolResultReceived):
+            # Persist tool result as separate message
+            if self.session:
+                tool_msg = Message(
+                    role="tool",
+                    content=event.result,
+                    tool_call_id=event.tool_call_id,
+                )
+                append_message(self.session, tool_msg)
 
     def _handle_sigint(self, signum, frame) -> None:
         """Handle SIGINT (Ctrl+C) - cancel agent.
@@ -230,7 +295,7 @@ class InteractiveAgentRunner:
                     return dc_replace(state, actor=new_actor)
 
                 run_config = RunConfig(
-                    on_chunk=self.renderer.handle_event,
+                    on_chunk=self._handle_stream_event,
                     on_input=self._tui_input_handler,
                     confirm_tool=auto_confirm_tool,
                     handle_stop=self._handle_stop,
@@ -270,6 +335,7 @@ async def run_interactive_agent(
     endpoint: Endpoint,
     environment: Optional[Environment] = None,
     max_turns: int = 50,
+    session: Optional[Session] = None,
 ) -> list[AgentState]:
     """Run an interactive agent with TUI.
 
@@ -278,6 +344,7 @@ async def run_interactive_agent(
         endpoint: LLM endpoint configuration
         environment: Optional environment for tool execution
         max_turns: Maximum number of turns
+        session: Optional session for persistence
 
     Returns:
         List of agent states from the run
@@ -287,6 +354,7 @@ async def run_interactive_agent(
         endpoint=endpoint,
         environment=environment,
         max_turns=max_turns,
+        session=session,
     )
     return await runner.run()
 

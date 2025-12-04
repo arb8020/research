@@ -17,9 +17,29 @@ import trio
 
 from pathlib import Path
 
-from rollouts.dtypes import Endpoint, Message, Trajectory
+from rollouts.agents import AgentState, Actor, run_agent
+from rollouts.dtypes import (
+    Endpoint,
+    Message,
+    RunConfig,
+    StreamEvent,
+    TextDelta,
+    Trajectory,
+    ToolConfirmResult,
+    StopReason,
+    ToolCall,
+)
 from rollouts.environments import CalculatorEnvironment, CodingEnvironment
 from rollouts.frontends.tui.interactive_agent import run_interactive_agent
+from rollouts.frontends.tui.sessions import (
+    Session,
+    create_session,
+    find_latest_session,
+    load_session,
+    load_messages,
+    load_header,
+    append_message,
+)
 
 
 SYSTEM_PROMPTS = {
@@ -136,6 +156,35 @@ def main() -> int:
         help="Maximum number of turns (default: 50)",
     )
 
+    # Session management
+    parser.add_argument(
+        "--continue", "-c",
+        dest="continue_session",
+        action="store_true",
+        help="Continue most recent session",
+    )
+    parser.add_argument(
+        "--session",
+        type=str,
+        default=None,
+        help="Resume specific session by file path",
+    )
+    parser.add_argument(
+        "--no-session",
+        action="store_true",
+        help="Don't persist session to disk",
+    )
+
+    # Unix utility mode
+    parser.add_argument(
+        "-p", "--print",
+        dest="print_mode",
+        type=str,
+        default=None,
+        metavar="QUERY",
+        help="Non-interactive mode: run query and print result",
+    )
+
     args = parser.parse_args()
 
     # Create endpoint
@@ -147,20 +196,59 @@ def main() -> int:
         print(f"\n❌ Error: No API key found. Please set {env_var} environment variable or use --api-key flag.", file=sys.stderr)
         return 1
 
+    # Determine working directory
+    working_dir = Path(args.cwd) if args.cwd else Path.cwd()
+
     # Create environment
     environment = None
     if args.env == "calculator":
         environment = CalculatorEnvironment()
     elif args.env == "coding":
-        working_dir = Path(args.cwd) if args.cwd else Path.cwd()
         environment = CodingEnvironment(working_dir=working_dir)
+
+    # Handle session resumption
+    session: Session | None = None
+    messages: list[Message] = []
+
+    if args.session:
+        # Resume specific session
+        session = load_session(Path(args.session))
+        messages = load_messages(session)
+        header = load_header(session)
+        print(f"Resuming session: {session.session_id}")
+        print(f"  {len(messages)} messages from {header.timestamp}")
+    elif args.continue_session:
+        # Continue most recent session
+        session = find_latest_session(working_dir)
+        if session:
+            messages = load_messages(session)
+            header = load_header(session)
+            print(f"Continuing session: {session.session_id}")
+            print(f"  {len(messages)} messages from {header.timestamp}")
+        else:
+            print("No previous session found, starting new session")
+
+    # Create new session if needed (and not --no-session)
+    if session is None and not args.no_session:
+        session = create_session(working_dir, args.provider, args.model)
+        print(f"New session: {session.session_id}")
 
     # Get system prompt (user-provided or default for env)
     system_prompt = args.system_prompt or SYSTEM_PROMPTS.get(args.env, SYSTEM_PROMPTS["none"])
 
-    # Create initial trajectory
-    system_msg = Message(role="system", content=system_prompt)
-    trajectory = Trajectory(messages=[system_msg])
+    # Build trajectory from messages or start fresh
+    if messages:
+        # Check if first message is system prompt, if not prepend one
+        if not messages or messages[0].role != "system":
+            messages.insert(0, Message(role="system", content=system_prompt))
+        trajectory = Trajectory(messages=messages)
+    else:
+        system_msg = Message(role="system", content=system_prompt)
+        trajectory = Trajectory(messages=[system_msg])
+
+    # Non-interactive print mode
+    if args.print_mode:
+        return trio.run(run_print_mode, trajectory, endpoint, environment, args.print_mode, session)
 
     # Run interactive agent
     try:
@@ -170,6 +258,7 @@ def main() -> int:
             endpoint,
             environment,
             args.max_turns,
+            session,  # Pass session for persistence
         )
         return 0
     except KeyboardInterrupt:
@@ -181,6 +270,82 @@ def main() -> int:
 
         traceback.print_exc()
         return 1
+
+
+async def run_print_mode(
+    trajectory: Trajectory,
+    endpoint: Endpoint,
+    environment,
+    query: str,
+    session: Session | None,
+) -> int:
+    """Run in non-interactive print mode - execute query and print result."""
+
+    # Add user query to trajectory
+    trajectory = Trajectory(
+        messages=trajectory.messages + [Message(role="user", content=query)]
+    )
+
+    # Persist user message
+    if session:
+        append_message(session, Message(role="user", content=query))
+
+    # Create initial state
+    initial_state = AgentState(
+        actor=Actor(
+            trajectory=trajectory,
+            endpoint=endpoint,
+            tools=environment.get_tools() if environment else [],
+        ),
+        environment=environment,
+    )
+
+    # Simple streaming handler - just print text
+    accumulated_text = ""
+
+    async def print_handler(event: StreamEvent) -> None:
+        nonlocal accumulated_text
+        if isinstance(event, TextDelta):
+            print(event.delta, end="", flush=True)
+            accumulated_text += event.delta
+
+    # Auto-confirm tools
+    async def auto_confirm(tc: ToolCall, state: AgentState, rcfg: RunConfig) -> tuple[AgentState, ToolConfirmResult]:
+        return state, ToolConfirmResult(proceed=True)
+
+    # Stop after one turn (no tool handling for now in print mode)
+    def handle_stop(state: AgentState) -> AgentState:
+        from dataclasses import replace
+        # Stop after first turn completes (turn_idx > 0 means we completed a turn)
+        if state.turn_idx > 0:
+            return replace(state, stop=StopReason.TASK_COMPLETED)
+        return state
+
+    run_config = RunConfig(
+        on_chunk=print_handler,
+        confirm_tool=auto_confirm,
+        handle_stop=handle_stop,
+    )
+
+    error_occurred = False
+    try:
+        await run_agent(initial_state, run_config)
+    except ValueError as e:
+        # Ignore aggregation errors - text was already printed
+        if "empty message" not in str(e):
+            print(f"\nError: {e}", file=sys.stderr)
+            error_occurred = True
+    except Exception as e:
+        print(f"\nError: {e}", file=sys.stderr)
+        error_occurred = True
+
+    print()  # Final newline
+
+    # Persist assistant response (even if there was an error, save what we got)
+    if session and accumulated_text:
+        append_message(session, Message(role="assistant", content=accumulated_text))
+
+    return 1 if error_occurred else 0
 
 
 if __name__ == "__main__":
