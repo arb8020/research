@@ -318,7 +318,7 @@ class TUI(Container):
         # Width changed - full re-render
         if width_changed:
             buffer = "\x1b[?2026h"  # Begin synchronized output
-            buffer += "\x1b[3J\x1b[2J\x1b[H"  # Clear scrollback, screen, and home
+            buffer += "\x1b[2J\x1b[H"  # Clear screen and home (preserves scrollback)
             for i, line in enumerate(new_lines):
                 if i > 0:
                     buffer += "\r\n"
@@ -364,7 +364,7 @@ class TUI(Container):
         if first_changed < viewport_top:
             # First change is above viewport - need full re-render
             buffer = "\x1b[?2026h"  # Begin synchronized output
-            buffer += "\x1b[3J\x1b[2J\x1b[H"  # Clear scrollback, screen, and home
+            buffer += "\x1b[2J\x1b[H"  # Clear screen and home (preserves scrollback)
             for i, line in enumerate(new_lines):
                 if i > 0:
                     buffer += "\r\n"
