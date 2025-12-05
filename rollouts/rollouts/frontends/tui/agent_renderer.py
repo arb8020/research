@@ -37,15 +37,17 @@ from .components.spacer import Spacer
 class AgentRenderer:
     """Renders agent StreamEvents to TUI."""
 
-    def __init__(self, tui: TUI, debug_layout: bool = False) -> None:
+    def __init__(self, tui: TUI, environment: Optional[Any] = None, debug_layout: bool = False) -> None:
         """Initialize agent renderer.
 
         Args:
             tui: TUI instance to render to
+            environment: Optional environment for custom tool formatters
             debug_layout: Show component boundaries and spacing
         """
         self.tui = tui
         self.theme = tui.theme
+        self.environment = environment
         self.debug_layout = debug_layout
         self.chat_container = Container()
         self.tui.add_child(self.chat_container)
@@ -213,6 +215,11 @@ class AgentRenderer:
 
         # Create tool execution component
         if tool_call_id not in self.pending_tools:
+            # Get custom formatter from environment if available
+            custom_formatter = None
+            if self.environment and hasattr(self.environment, 'get_tool_formatter'):
+                custom_formatter = self.environment.get_tool_formatter(tool_name)
+
             tool_component = ToolExecution(
                 tool_name,
                 args={},
@@ -220,6 +227,7 @@ class AgentRenderer:
                 bg_fn_success=self.theme.tool_success_bg_fn,
                 bg_fn_error=self.theme.tool_error_bg_fn,
                 theme=self.theme,
+                custom_formatter=custom_formatter,
             )
             self.chat_container.add_child(tool_component)
             self.pending_tools[tool_call_id] = tool_component

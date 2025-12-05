@@ -26,6 +26,9 @@ import trio
 # Current: Simple fallback for type hints - actual tensor handling is done at runtime via hasattr checks
 TorchTensor = Any
 
+# TUI formatter type - receives (tool_name, args, result, expanded) and returns formatted string
+ToolFormatter = Callable[[str, dict[str, Any], dict[str, Any] | None, bool], str]
+
 
 # Verbose function for debugging
 def verbose(level=1):
@@ -788,7 +791,7 @@ class Environment(Protocol):
         cancel_scope: trio.CancelScope | None = None,
     ) -> ToolResult:
         """Execute a tool call in this environment.
-        
+
         Args:
             tool_call: The tool call to execute
             current_state: Current agent state
@@ -800,6 +803,19 @@ class Environment(Protocol):
 
     def requires_confirmation(self, tool_call: ToolCall) -> bool:
         """Check if tool requires confirmation."""
+        ...
+
+    def get_tool_formatter(self, tool_name: str) -> 'ToolFormatter | None':
+        """Return optional TUI formatter for this tool.
+
+        Args:
+            tool_name: Name of the tool to format
+
+        Returns:
+            A formatter function or None to use the default formatter.
+            The formatter receives (tool_name, args, result, expanded) and returns
+            a formatted string for display in the TUI.
+        """
         ...
 
     async def on_assistant_message(self, message: 'Message', state: 'AgentState') -> 'AgentState':

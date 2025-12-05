@@ -56,6 +56,7 @@ from .dtypes import (
     ToolCall,
     ToolCallContent,
     ToolConfirmResult,
+    ToolFormatter,
     ToolFunction,
     ToolFunctionParameter,
     ToolResult,
@@ -99,7 +100,7 @@ __all__ = [
     # ContentBlock types
     'ContentBlock', 'TextContent', 'ThinkingContent', 'ToolCallContent', 'ImageContent',
     # Tool types
-    'Tool', 'ToolFunction', 'ToolFunctionParameter', 'StopReason', 'ToolConfirmResult',
+    'Tool', 'ToolFunction', 'ToolFunctionParameter', 'ToolFormatter', 'StopReason', 'ToolConfirmResult',
     # Stream handling
     'StreamChunk', 'stdout_handler',
     # Agent execution

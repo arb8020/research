@@ -38,6 +38,7 @@ class ToolExecution(Container):
         bg_fn_success: Optional[Callable[[str], str]] = None,
         bg_fn_error: Optional[Callable[[str], str]] = None,
         theme: Optional[Any] = None,
+        custom_formatter: Optional[Callable[[str, Dict[str, Any], Optional[Dict[str, Any]], bool], str]] = None,
     ) -> None:
         """Initialize tool execution component.
 
@@ -47,6 +48,8 @@ class ToolExecution(Container):
             bg_fn_pending: Background color function for pending state
             bg_fn_success: Background color function for success state
             bg_fn_error: Background color function for error state
+            theme: Theme for styling
+            custom_formatter: Optional custom formatter function (tool_name, args, result, expanded) -> str
         """
         super().__init__()
         self._tool_name = tool_name
@@ -54,6 +57,7 @@ class ToolExecution(Container):
         self._result: Optional[Dict[str, Any]] = None
         self._expanded = False
         self._theme = theme
+        self._custom_formatter = custom_formatter
 
         # Default background functions (can be overridden)
         self._bg_fn_pending = bg_fn_pending or (lambda x: x)
@@ -144,6 +148,11 @@ class ToolExecution(Container):
 
     def _format_tool_execution(self) -> str:
         """Format tool execution display based on tool type."""
+        # Use custom formatter if provided
+        if self._custom_formatter:
+            return self._custom_formatter(self._tool_name, self._args, self._result, self._expanded)
+
+        # Otherwise use built-in formatters
         text = ""
 
         if self._tool_name == "bash":
