@@ -87,9 +87,9 @@ class Input(Component):
         # Top border
         result.append(horizontal * width)
 
-        # Layout text lines with 2-space left padding
-        left_padding = "  "
-        content_width = width - 2  # Account for left padding
+        # Layout text lines with "> " gutter prefix
+        left_padding = "> "
+        content_width = width - 2  # Account for gutter prefix
         layout_lines = self._layout_text(content_width)
 
         for layout_line in layout_lines:
