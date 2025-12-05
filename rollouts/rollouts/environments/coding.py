@@ -126,15 +126,12 @@ class LocalFilesystemEnvironment:
         return tool_call.name == "bash"
 
     def get_tool_formatter(self, tool_name: str):
-        """Return custom formatter for tools that need special rendering."""
-        if tool_name == "edit":
-            return self._format_edit_tool
-        return None
+        """Return custom formatter for tools that need special rendering.
 
-    def _format_edit_tool(self, tool_name: str, args: dict, result: dict | None, expanded: bool) -> str:
-        """Custom formatter for edit tool - shows colored diff."""
-        # Return None to use the built-in formatter in ToolExecution
-        # which will handle the diff rendering with theme colors
+        Returns None to use built-in formatters in ToolExecution component.
+        The edit tool's diff rendering is handled by the built-in formatter
+        using details["diff"] from ToolResult.
+        """
         return None
 
     def get_tools(self) -> list[Tool]:
