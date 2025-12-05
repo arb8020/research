@@ -320,17 +320,13 @@ class AgentRenderer:
             text: System message text
         """
         from .components.text import Text
-        from .theme import hex_to_fg, RESET
-
-        # Pre-color the text with theme.text color so it's visible on dim background
-        colored_text = f"{hex_to_fg(self.theme.text)}{text}{RESET}"
 
         self.chat_container.add_child(Spacer(1, debug_label="before-system", debug_layout=self.debug_layout))
         system_text = Text(
-            colored_text,
+            text,
             padding_x=2,
             padding_y=0,
-            custom_bg_fn=lambda _: self.theme.dim,
+            custom_bg_fn=self.theme.user_message_bg_fn,  # Use same background as user messages
             theme=self.theme,
             gutter_prefix="ℹ ",
         )
