@@ -15,3 +15,6 @@ https://mariozechner.at/posts/2025-11-30-pi-coding-agent/#toc_3
     - [ ] ctx management/compaction
     - [ ] show sys message
     - [ ] sanitize broken sessions (remove last k ?)
+
+
+
