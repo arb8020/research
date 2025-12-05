@@ -390,9 +390,12 @@ class TUI(Container):
         buffer += "\r"  # Move to column 0
 
         # Render from first changed line to end, clearing each line before writing
+        # Track where cursor ends up after rendering
+        cursor_after_render = first_changed  # Start at first_changed
         for i in range(first_changed, len(new_lines)):
             if i > first_changed:
                 buffer += "\r\n"
+                cursor_after_render = i
             buffer += "\x1b[2K"  # Clear current line
 
             line = new_lines[i]
@@ -418,19 +421,13 @@ class TUI(Container):
         # If we had more lines before, clear them
         if len(self._previous_lines) > len(new_lines):
             extra_lines = len(self._previous_lines) - len(new_lines)
-            # Clear each extra line. We're currently at first_changed.
-            # The lines to clear start at len(new_lines).
+            # After render loop, cursor is at cursor_after_render (or first_changed if loop didn't run)
+            # We need to move down to clear the extra lines, then back up
             for i in range(extra_lines):
-                if i == 0 and first_changed == len(new_lines):
-                    # Already at first stale line, just clear it
-                    buffer += "\x1b[2K"
-                else:
-                    buffer += "\r\n\x1b[2K"
-            # Move cursor back up to end of actual content
+                buffer += "\r\n\x1b[2K"
+            # Cursor is now at cursor_after_render + extra_lines
             # We need to end at len(new_lines) - 1
-            lines_to_move_up = first_changed + extra_lines - (len(new_lines) - 1)
-            if first_changed == len(new_lines):
-                lines_to_move_up = extra_lines
+            lines_to_move_up = cursor_after_render + extra_lines - (len(new_lines) - 1)
             if lines_to_move_up > 0:
                 buffer += f"\x1b[{lines_to_move_up}A"
 
