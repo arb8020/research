@@ -600,6 +600,7 @@ async def process_pending_tools(
             content=tool_result.content,
             is_error=tool_result.is_error,
             error=tool_result.error,
+            details=tool_result.details,
         ))
         
         # Add tool result message
