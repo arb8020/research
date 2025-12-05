@@ -79,7 +79,6 @@ class InteractiveAgentRunner:
         self.session = session
         self.debug = debug
         self.debug_layout = debug_layout
-        self.current_actor = None  # Will be set when agent starts
 
         # TUI components
         self.terminal: Optional[ProcessTerminal] = None
@@ -157,10 +156,8 @@ class InteractiveAgentRunner:
                 thinking_str = "enabled" if self.endpoint.thinking else "disabled"
                 new_endpoint = create_endpoint(args, thinking=thinking_str)
 
-                # Update endpoint (both the runner's reference and the actor's)
+                # Update endpoint - will be applied to actor on next agent step
                 self.endpoint = new_endpoint
-                if hasattr(self, 'current_actor') and self.current_actor:
-                    self.current_actor.endpoint = new_endpoint
 
                 # Log config change to session
                 if self.session:
@@ -201,10 +198,8 @@ class InteractiveAgentRunner:
                 model_str = f"{self.endpoint.provider}/{self.endpoint.model}"
                 new_endpoint = create_endpoint(model_str, thinking=args_lower)
 
-                # Update endpoint (both the runner's reference and the actor's)
+                # Update endpoint - will be applied to actor on next agent step
                 self.endpoint = new_endpoint
-                if hasattr(self, 'current_actor') and self.current_actor:
-                    self.current_actor.endpoint = new_endpoint
 
                 # Log config change to session
                 if self.session:
@@ -508,16 +503,12 @@ Examples:
                     ]
                 )
 
-                actor = Actor(
-                    trajectory=initial_trajectory_with_user,
-                    endpoint=self.endpoint,
-                    tools=self.environment.get_tools() if self.environment else [],
-                )
-                # Store actor reference so slash commands can update its endpoint
-                self.current_actor = actor
-
                 initial_state = AgentState(
-                    actor=actor,
+                    actor=Actor(
+                        trajectory=initial_trajectory_with_user,
+                        endpoint=self.endpoint,
+                        tools=self.environment.get_tools() if self.environment else [],
+                    ),
                     environment=self.environment,
                 )
 
@@ -540,8 +531,17 @@ Examples:
                             Message(role="user", content=user_input)
                         ]
                     )
-                    new_actor = dc_replace(state.actor, trajectory=new_trajectory)
-                    return dc_replace(state, actor=new_actor)
+
+                    # Update actor with new trajectory and potentially new endpoint
+                    # (endpoint may have changed via slash commands)
+                    new_actor = dc_replace(
+                        state.actor,
+                        trajectory=new_trajectory,
+                        endpoint=self.endpoint  # Use current endpoint (may have been updated)
+                    )
+
+                    # Also update environment if it changed via /tools
+                    return dc_replace(state, actor=new_actor, environment=self.environment)
 
                 run_config = RunConfig(
                     on_chunk=self._handle_stream_event,
