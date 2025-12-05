@@ -12,7 +12,7 @@ Example usage:
 
 from dataclasses import dataclass
 
-from ..dtypes import AgentState, Message, RunConfig, Tool, ToolCall, ToolResult
+from ..dtypes import AgentState, Message, RunConfig, Tool, ToolCall, ToolFormatter, ToolResult
 
 
 @dataclass
@@ -65,6 +65,24 @@ class BasicEnvironment:
     async def on_assistant_message(self, message: Message, state: AgentState) -> AgentState:
         """No feedback needed for basic environment."""
         return state
+
+    def get_tool_formatter(self, tool_name: str) -> ToolFormatter | None:
+        """Return optional TUI formatter for tools.
+
+        BasicEnvironment has no tools, so returns None.
+
+        Example for custom environments:
+            def get_tool_formatter(self, tool_name: str) -> ToolFormatter | None:
+                if tool_name == "my_custom_tool":
+                    def formatter(tool_name, args, result, expanded):
+                        text = f"my_custom_tool(param={args.get('param')})"
+                        if result:
+                            text += f"\\n⎿ Custom result: {result}"
+                        return text
+                    return formatter
+                return None  # Use default formatter
+        """
+        return None
 
 
 # Backward compatibility alias

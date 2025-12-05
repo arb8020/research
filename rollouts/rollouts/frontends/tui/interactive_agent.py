@@ -232,8 +232,8 @@ class InteractiveAgentRunner:
         self.terminal = ProcessTerminal()
         self.tui = TUI(self.terminal, theme=theme, debug=self.debug, debug_layout=self.debug_layout)
 
-        # Create renderer
-        self.renderer = AgentRenderer(self.tui, debug_layout=self.debug_layout)
+        # Create renderer with environment for custom tool formatters
+        self.renderer = AgentRenderer(self.tui, environment=self.environment, debug_layout=self.debug_layout)
 
         # Render history from initial trajectory (for resumed sessions)
         # Render all messages including system messages
