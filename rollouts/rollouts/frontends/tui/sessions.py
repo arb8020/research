@@ -44,6 +44,15 @@ class MessageEntry:
     message: dict  # Serialized Message
 
 
+@dataclass(frozen=True)
+class ConfigChangeEntry:
+    """Config change entry in session JSONL."""
+    type: str  # Always "config_change"
+    timestamp: str
+    endpoint: dict  # Serialized Endpoint
+    environment_type: str  # e.g., "coding", "coding_readonly"
+
+
 # ── Path utilities ────────────────────────────────────────────────────────────
 
 
@@ -214,6 +223,25 @@ def append_message(session: Session, message: Message) -> None:
         type="message",
         timestamp=datetime.now().isoformat(),
         message=json.loads(message.to_json()),
+    )
+
+    with open(session.file_path, "a") as f:
+        f.write(json.dumps(asdict(entry)) + "\n")
+
+
+def append_config_change(session: Session, endpoint: dict, environment_type: str) -> None:
+    """Append config change entry to session file.
+
+    Args:
+        session: Session to append to
+        endpoint: Serialized endpoint dict (from endpoint.to_json())
+        environment_type: Environment type identifier (e.g., "coding", "coding_readonly")
+    """
+    entry = ConfigChangeEntry(
+        type="config_change",
+        timestamp=datetime.now().isoformat(),
+        endpoint=endpoint,
+        environment_type=environment_type,
     )
 
     with open(session.file_path, "a") as f:

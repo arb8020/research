@@ -42,7 +42,7 @@ from .agent_renderer import AgentRenderer
 from .components.input import Input
 from .components.spacer import Spacer
 from .components.loader_container import LoaderContainer
-from .sessions import Session, append_message
+from .sessions import Session, append_message, append_config_change
 
 
 class InteractiveAgentRunner:
@@ -112,6 +112,158 @@ class InteractiveAgentRunner:
         if text.strip() and self.input_send:
             self.input_send.send_nowait(text.strip())
 
+    async def _handle_slash_command(self, command: str) -> bool:
+        """Handle slash commands like /model, /thinking, /tools.
+
+        Args:
+            command: The slash command string
+
+        Returns:
+            True if command was handled, False if it should be passed to LLM
+        """
+        parts = command.strip().split(maxsplit=1)
+        cmd = parts[0].lower()
+        args = parts[1] if len(parts) > 1 else ""
+
+        if cmd == "/model":
+            if not args:
+                if self.renderer:
+                    self.renderer.add_system_message(f"Current model: {self.endpoint.provider}/{self.endpoint.model}\nUsage: /model <provider/model>")
+                return True
+
+            # Parse and create new endpoint
+            try:
+                from .cli import parse_model_string, create_endpoint
+                provider, model = parse_model_string(args)
+
+                # Preserve thinking config from current endpoint
+                thinking_str = "enabled" if self.endpoint.thinking else "disabled"
+                new_endpoint = create_endpoint(args, thinking=thinking_str)
+
+                # Update endpoint
+                self.endpoint = new_endpoint
+
+                # Log config change to session
+                if self.session:
+                    import json
+                    env_type = type(self.environment).__name__ if self.environment else "none"
+                    append_config_change(
+                        self.session,
+                        json.loads(new_endpoint.to_json()),
+                        env_type
+                    )
+
+                if self.renderer:
+                    self.renderer.add_system_message(f"Switched to model: {provider}/{model}")
+            except Exception as e:
+                if self.renderer:
+                    self.renderer.add_system_message(f"Error switching model: {e}")
+            return True
+
+        elif cmd == "/thinking":
+            if not args:
+                current = "enabled" if self.endpoint.thinking else "disabled"
+                if self.renderer:
+                    self.renderer.add_system_message(f"Current thinking: {current}\nUsage: /thinking <enabled|disabled>")
+                return True
+
+            # Toggle thinking
+            try:
+                from .cli import create_endpoint
+                args_lower = args.lower()
+                if args_lower not in ["enabled", "disabled"]:
+                    if self.renderer:
+                        self.renderer.add_system_message("Invalid thinking level. Use: enabled or disabled")
+                    return True
+
+                # Create new endpoint with updated thinking
+                model_str = f"{self.endpoint.provider}/{self.endpoint.model}"
+                new_endpoint = create_endpoint(model_str, thinking=args_lower)
+
+                # Update endpoint
+                self.endpoint = new_endpoint
+
+                # Log config change to session
+                if self.session:
+                    import json
+                    env_type = type(self.environment).__name__ if self.environment else "none"
+                    append_config_change(
+                        self.session,
+                        json.loads(new_endpoint.to_json()),
+                        env_type
+                    )
+
+                if self.renderer:
+                    self.renderer.add_system_message(f"Thinking set to: {args_lower}")
+            except Exception as e:
+                if self.renderer:
+                    self.renderer.add_system_message(f"Error changing thinking: {e}")
+            return True
+
+        elif cmd == "/tools":
+            if not args:
+                current_name = self.environment.get_name() if hasattr(self.environment, 'get_name') else "unknown"
+                if self.renderer:
+                    from ...environments.tool_presets import get_preset_names
+                    available = ", ".join(get_preset_names())
+                    self.renderer.add_system_message(f"Current preset: {current_name}\nAvailable: {available}\nUsage: /tools <preset>")
+                return True
+
+            # Switch tool preset
+            try:
+                from ...environments.tool_presets import create_preset
+                from pathlib import Path
+
+                # Get working dir from current environment
+                working_dir = self.environment.working_dir if hasattr(self.environment, 'working_dir') else Path.cwd()
+
+                # Create new environment with preset
+                new_environment = create_preset(args, working_dir)
+
+                # Update environment
+                self.environment = new_environment
+
+                # Update renderer's environment reference
+                if self.renderer:
+                    self.renderer.environment = new_environment
+
+                # Log config change to session
+                if self.session:
+                    import json
+                    env_type = new_environment.get_name()
+                    append_config_change(
+                        self.session,
+                        json.loads(self.endpoint.to_json()),
+                        env_type
+                    )
+
+                if self.renderer:
+                    desc = new_environment.get_description() if hasattr(new_environment, 'get_description') else args
+                    self.renderer.add_system_message(f"Switched to preset: {args} ({desc})")
+            except Exception as e:
+                if self.renderer:
+                    self.renderer.add_system_message(f"Error switching tools: {e}")
+            return True
+
+        elif cmd == "/help":
+            help_text = """Available commands:
+  /model [name]     - Switch model (e.g., /model anthropic/claude-sonnet-4)
+  /thinking [level] - Change thinking level (enabled/disabled)
+  /tools [preset]   - Switch tool preset (full/readonly/no-write)
+  /help             - Show this help message
+
+Examples:
+  /model anthropic/claude-3-5-haiku-20241022
+  /model openai/gpt-4
+  /thinking disabled
+  /tools readonly"""
+            if self.renderer:
+                self.renderer.add_system_message(help_text)
+            return True
+
+        # Unknown command - pass to LLM
+        return False
+
     async def _tui_input_handler(self, prompt: str) -> str:
         """Async input handler for RunConfig.on_input.
 
@@ -140,6 +292,13 @@ class InteractiveAgentRunner:
             if self.tui:
                 self.tui.set_focus(None)
                 self.tui.request_render()
+
+        # Handle slash commands
+        if user_input.startswith("/"):
+            handled = await self._handle_slash_command(user_input)
+            if handled:
+                # Command was handled, request new input
+                return await self._tui_input_handler(prompt)
 
         # Add user message to chat
         if self.renderer:

@@ -45,6 +45,10 @@ class CodingEnvironment:
 
     working_dir: Path = field(default_factory=Path.cwd)
 
+    def get_name(self) -> str:
+        """Return environment name identifier."""
+        return "coding"
+
     async def serialize(self) -> dict:
         return {"working_dir": str(self.working_dir)}
 
