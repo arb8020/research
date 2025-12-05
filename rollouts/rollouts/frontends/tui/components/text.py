@@ -33,18 +33,51 @@ def _render_line_with_margins(line: str, width: int, padding_x: int, bg_fn: Opti
     return line_with_margins + " " * padding_needed
 
 
-def _render_empty_lines(count: int, width: int, padding_x: int, bg_fn: Optional[Callable[[str], str]]) -> List[str]:
-    """Render N empty lines with optional background, respecting left/right margins."""
+def _render_empty_lines(count: int, width: int, padding_x: int, bg_fn: Optional[Callable[[str], str]], use_compact: bool = False, is_top: bool = True) -> List[str]:
+    """Render N empty lines with optional background, respecting left/right margins.
+
+    Args:
+        count: Number of padding lines
+        width: Total width
+        padding_x: Horizontal padding
+        bg_fn: Background color function (when use_compact=True, this colors the block characters as foreground)
+        use_compact: If True, use half-block unicode characters colored with foreground (no background fill)
+        is_top: If True, use ▄ (lower half block) for top padding; if False, use ▀ (upper half block) for bottom padding
+    """
     if count == 0:
         return []
 
     if bg_fn:
-        # Apply background only to content area, not margins
         left_margin = " " * padding_x
         right_margin = " " * padding_x
         content_width = width - padding_x * 2
-        empty_content = " " * content_width
-        colored_line = left_margin + apply_background_to_line(empty_content, content_width, bg_fn) + right_margin
+
+        if use_compact:
+            # Use colored half-block characters with NO background
+            # Top padding: ▄ (lower half) - sits at bottom of line, separates from content above
+            # Bottom padding: ▀ (upper half) - sits at top of line, separates from content below
+            from ..theme import RESET
+            import re
+            test_output = bg_fn(" ")
+            # Extract the background color code from ANSI (format: \x1b[48;2;R;G;Bm)
+            bg_match = re.search(r'\x1b\[48;2;(\d+);(\d+);(\d+)m', test_output)
+            if bg_match:
+                r, g, b = bg_match.groups()
+                # Create foreground color from the same RGB
+                fg_color = f"\x1b[38;2;{r};{g};{b}m"
+                # Choose block character based on position
+                block_char = "▄" if is_top else "▀"
+                empty_content = block_char * content_width
+                colored_line = left_margin + fg_color + empty_content + RESET + right_margin
+            else:
+                # Fallback: just use spaces if we can't extract color
+                empty_content = " " * content_width
+                colored_line = left_margin + empty_content + right_margin
+        else:
+            # Full background color on empty space
+            empty_content = " " * content_width
+            colored_line = left_margin + apply_background_to_line(empty_content, content_width, bg_fn) + right_margin
+
         return [colored_line] * count
 
     # No background - just return empty lines
@@ -156,8 +189,9 @@ class Text(Component):
             )
 
         # Add vertical padding (use render_width if we have a gutter)
-        top_lines = _render_empty_lines(self._padding_top, render_width, self._padding_x, self._custom_bg_fn)
-        bottom_lines = _render_empty_lines(self._padding_bottom, render_width, self._padding_x, self._custom_bg_fn)
+        use_compact = self._theme and getattr(self._theme, "use_compact_padding", False)
+        top_lines = _render_empty_lines(self._padding_top, render_width, self._padding_x, self._custom_bg_fn, use_compact, is_top=True)
+        bottom_lines = _render_empty_lines(self._padding_bottom, render_width, self._padding_x, self._custom_bg_fn, use_compact, is_top=False)
 
         result = [*top_lines, *content_lines, *bottom_lines]
 

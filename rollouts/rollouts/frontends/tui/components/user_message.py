@@ -30,10 +30,10 @@ class UserMessage(Container):
         user_text = Text(
             text,
             padding_x=2,
-            padding_y=0,
+            padding_y=self._theme.message_padding_y,
             custom_bg_fn=self._theme.user_message_bg_fn,
             theme=self._theme,
-            gutter_prefix=">",
+            gutter_prefix=self._theme.user_gutter,
         )
         self.add_child(user_text)
 

@@ -103,6 +103,9 @@ class Markdown(Component):
         self._bg_fn = bg_fn
         self._gutter_prefix = gutter_prefix
 
+        # Extract TUI theme if available (for use_compact_padding setting)
+        self._tui_theme = getattr(self._theme, '_theme', None)
+
         # Cache
         self._cached_text: Optional[str] = None
         self._cached_width: Optional[int] = None
@@ -163,8 +166,9 @@ class Markdown(Component):
         ]
 
         # Add vertical padding (use render_width if we have a gutter)
-        top_lines = _render_empty_lines(self._padding_y, render_width, self._padding_x, self._bg_fn)
-        bottom_lines = _render_empty_lines(self._padding_y, render_width, self._padding_x, self._bg_fn)
+        use_compact = self._tui_theme and getattr(self._tui_theme, "use_compact_padding", False)
+        top_lines = _render_empty_lines(self._padding_y, render_width, self._padding_x, self._bg_fn, use_compact, is_top=True)
+        bottom_lines = _render_empty_lines(self._padding_y, render_width, self._padding_x, self._bg_fn, use_compact, is_top=False)
 
         result = [*top_lines, *content_lines, *bottom_lines]
 

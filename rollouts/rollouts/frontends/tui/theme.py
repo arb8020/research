@@ -46,6 +46,22 @@ class Theme:
     tool_success_bg: str = "#283228"
     tool_error_bg: str = "#3c2828"
 
+    # Padding settings (vertical padding in lines)
+    message_padding_y: int = 0  # Padding for regular message text
+    tool_padding_y: int = 0  # Padding for tool execution blocks
+    thinking_padding_y: int = 0  # Padding for thinking blocks
+
+    # Compact padding: Uses half-height unicode blocks instead of full blank lines
+    # When True, padding lines show "▁" (lower one eighth block) with background color
+    use_compact_padding: bool = False
+
+    # Gutter prefix symbols
+    assistant_gutter: str = "☻ "  # Assistant message prefix
+    user_gutter: str = "> "  # User message prefix
+    tool_success_gutter: str = "☺ "  # Tool success prefix
+    tool_error_gutter: str = "☹ "  # Tool error prefix
+    input_gutter: str = "> "  # Input box prefix
+
     # Markdown
     md_heading: str = "#f0c674"  # Golden
     md_link: str = "#81a2be"
@@ -118,8 +134,28 @@ class Theme:
         return self.fg(color)
 
 
-# Default dark theme instance
+# Default dark theme instance (minimal, no padding)
 DARK_THEME = Theme()
+
+
+# Soft dark theme with subtle padding separators
+SOFT_DARK_THEME = Theme(
+    message_padding_y=1,
+    tool_padding_y=1,
+    thinking_padding_y=1,
+    use_compact_padding=True,  # Use thin ▁ lines instead of blank space
+)
+
+
+# Example: Create a custom theme with padding
+# custom_theme = Theme(
+#     message_padding_y=1,  # Add 1 line of padding to messages
+#     tool_padding_y=1,     # Add 1 line of padding to tool blocks
+#     thinking_padding_y=1, # Add 1 line of padding to thinking blocks
+#     use_compact_padding=True,  # Use ▁ characters for subtle separation
+#     assistant_gutter="🤖 ",  # Use robot emoji instead
+#     user_gutter="👤 ",       # Use person emoji
+# )
 
 
 @dataclass
