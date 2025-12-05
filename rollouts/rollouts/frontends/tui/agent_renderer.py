@@ -320,7 +320,7 @@ class AgentRenderer:
             text: System message text
         """
         from .components.text import Text
-        from ..theme import hex_to_fg, RESET
+        from .theme import hex_to_fg, RESET
 
         # Pre-color the text with theme.text color so it's visible on dim background
         colored_text = f"{hex_to_fg(self.theme.text)}{text}{RESET}"
