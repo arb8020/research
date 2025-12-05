@@ -106,8 +106,8 @@ class AgentRenderer:
             case ToolCallError(content_index=idx, tool_call_id=tool_id, tool_name=name, error=err):
                 self._handle_tool_call_error(idx, tool_id, name, err)
 
-            case ToolResultReceived(tool_call_id=tool_id, content=content, is_error=is_err, error=err):
-                self._handle_tool_result(tool_id, content, is_err, err)
+            case ToolResultReceived(tool_call_id=tool_id, content=content, is_error=is_err, error=err, details=details):
+                self._handle_tool_result(tool_id, content, is_err, err, details)
 
             case StreamDone():
                 self._handle_stream_done()
@@ -270,12 +270,15 @@ class AgentRenderer:
             # Remove from pending (error is final)
             del self.pending_tools[tool_call_id]
 
-    def _handle_tool_result(self, tool_call_id: str, content: str, is_error: bool, error: Optional[str]) -> None:
+    def _handle_tool_result(self, tool_call_id: str, content: str, is_error: bool, error: Optional[str], details: Optional[dict] = None) -> None:
         """Handle tool execution result - update tool component from pending to success/error."""
         if tool_call_id in self.pending_tools:
             result_text = error if is_error and error else content
+            result_data = {"content": [{"type": "text", "text": result_text}]}
+            if details:
+                result_data["details"] = details
             self.pending_tools[tool_call_id].update_result(
-                {"content": [{"type": "text", "text": result_text}]},
+                result_data,
                 is_error=is_error,
             )
             # Remove from pending (result is final)

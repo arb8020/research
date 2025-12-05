@@ -304,6 +304,7 @@ class ToolResultReceived(JsonSerializable):
     content: str
     is_error: bool = False
     error: Optional[str] = None
+    details: Optional[dict[str, Any]] = None  # UI-only structured data (e.g., diff for edit tool)
     type: Literal["tool_result"] = "tool_result"
     timestamp: float = field(default_factory=time.time)
 
