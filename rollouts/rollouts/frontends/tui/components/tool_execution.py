@@ -234,8 +234,9 @@ class ToolExecution(Container):
             text = f"edit(file_path={repr(path if path else '...')}, old_string=..., new_string=...)"
 
             if self._result:
-                # Check for diff in details
-                details = self._result.get("details", {})
+                # Check for diff in details (result is wrapped in {"content": ..., "isError": ...})
+                content = self._result.get("content", {})
+                details = content.get("details", {}) if isinstance(content, dict) else {}
                 diff_str = details.get("diff") if details else None
 
                 if diff_str and self._theme:
