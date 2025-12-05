@@ -79,6 +79,7 @@ class InteractiveAgentRunner:
         self.session = session
         self.debug = debug
         self.debug_layout = debug_layout
+        self.current_actor = None  # Will be set when agent starts
 
         # TUI components
         self.terminal: Optional[ProcessTerminal] = None
@@ -156,8 +157,10 @@ class InteractiveAgentRunner:
                 thinking_str = "enabled" if self.endpoint.thinking else "disabled"
                 new_endpoint = create_endpoint(args, thinking=thinking_str)
 
-                # Update endpoint
+                # Update endpoint (both the runner's reference and the actor's)
                 self.endpoint = new_endpoint
+                if hasattr(self, 'current_actor') and self.current_actor:
+                    self.current_actor.endpoint = new_endpoint
 
                 # Log config change to session
                 if self.session:
@@ -196,8 +199,10 @@ class InteractiveAgentRunner:
                 model_str = f"{self.endpoint.provider}/{self.endpoint.model}"
                 new_endpoint = create_endpoint(model_str, thinking=args_lower)
 
-                # Update endpoint
+                # Update endpoint (both the runner's reference and the actor's)
                 self.endpoint = new_endpoint
+                if hasattr(self, 'current_actor') and self.current_actor:
+                    self.current_actor.endpoint = new_endpoint
 
                 # Log config change to session
                 if self.session:
@@ -500,12 +505,16 @@ Examples:
                     ]
                 )
 
+                actor = Actor(
+                    trajectory=initial_trajectory_with_user,
+                    endpoint=self.endpoint,
+                    tools=self.environment.get_tools() if self.environment else [],
+                )
+                # Store actor reference so slash commands can update its endpoint
+                self.current_actor = actor
+
                 initial_state = AgentState(
-                    actor=Actor(
-                        trajectory=initial_trajectory_with_user,
-                        endpoint=self.endpoint,
-                        tools=self.environment.get_tools() if self.environment else [],
-                    ),
+                    actor=actor,
                     environment=self.environment,
                 )
 
