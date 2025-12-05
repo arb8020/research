@@ -5,26 +5,12 @@ Tool execution component - displays tool calls with arguments and results.
 from __future__ import annotations
 
 import json
-import os
 from typing import Any, Callable, Dict, List, Optional
 
 from ..tui import Component, Container
 from .spacer import Spacer
 from .text import Text
 from ..utils import visible_width
-
-
-def _shorten_path(path: str) -> str:
-    """Convert absolute path to tilde notation if in home directory."""
-    home = os.path.expanduser("~")
-    if path.startswith(home):
-        return "~" + path[len(home) :]
-    return path
-
-
-def _replace_tabs(text: str) -> str:
-    """Replace tabs with spaces for consistent rendering."""
-    return text.replace("\t", "   ")
 
 
 class ToolExecution(Container):
@@ -38,7 +24,7 @@ class ToolExecution(Container):
         bg_fn_success: Optional[Callable[[str], str]] = None,
         bg_fn_error: Optional[Callable[[str], str]] = None,
         theme: Optional[Any] = None,
-        custom_formatter: Optional[Callable[[str, Dict[str, Any], Optional[Dict[str, Any]], bool], str]] = None,
+        formatter: Optional[Callable[[str, Dict[str, Any], Optional[Dict[str, Any]], bool, Any], str]] = None,
     ) -> None:
         """Initialize tool execution component.
 
@@ -49,7 +35,7 @@ class ToolExecution(Container):
             bg_fn_success: Background color function for success state
             bg_fn_error: Background color function for error state
             theme: Theme for styling
-            custom_formatter: Optional custom formatter function (tool_name, args, result, expanded) -> str
+            formatter: Formatter function from environment: (tool_name, args, result, expanded, theme) -> str
         """
         super().__init__()
         self._tool_name = tool_name
@@ -57,7 +43,7 @@ class ToolExecution(Container):
         self._result: Optional[Dict[str, Any]] = None
         self._expanded = False
         self._theme = theme
-        self._custom_formatter = custom_formatter
+        self._formatter = formatter
 
         # Default background functions (can be overridden)
         self._bg_fn_pending = bg_fn_pending or (lambda x: x)
@@ -147,140 +133,47 @@ class ToolExecution(Container):
         return ""
 
     def _format_tool_execution(self) -> str:
-        """Format tool execution display based on tool type."""
-        # Use custom formatter if provided
-        if self._custom_formatter:
-            return self._custom_formatter(self._tool_name, self._args, self._result, self._expanded)
+        """Format tool execution display.
 
-        # Otherwise use built-in formatters
-        text = ""
+        Uses environment-provided formatter if available, otherwise falls back
+        to a generic format showing tool name and arguments.
+        """
+        # Use environment formatter if provided
+        if self._formatter:
+            return self._formatter(self._tool_name, self._args, self._result, self._expanded, self._theme)
 
-        if self._tool_name == "bash":
-            command = self._args.get("command", "")
-            text = f"bash(command={repr(command or '...')})"
+        # Generic fallback for tools without a formatter
+        return self._format_generic()
 
-            if self._result:
-                output = self._get_text_output().strip()
-                if output:
-                    lines = output.split("\n")
-                    max_lines = len(lines) if self._expanded else 5
-                    display_lines = lines[:max_lines]
-                    remaining = len(lines) - max_lines
-
-                    # Add summary line with ⎿, then indented content
-                    is_error = self._result.get("isError", False)
-                    summary = "Command failed" if is_error else "Command completed"
-                    text += f"\n⎿ {summary}"
-                    for line in display_lines:
-                        text += "\n  " + line
-                    if remaining > 0:
-                        text += f"\n  ... ({remaining} more lines)"
-
-        elif self._tool_name == "read":
-            path = _shorten_path(self._args.get("file_path") or self._args.get("path") or "")
-            offset = self._args.get("offset")
-            limit = self._args.get("limit")
-
-            params = f"file_path={repr(path if path else '...')}"
-            if offset is not None:
-                params += f", offset={offset}"
-            if limit is not None:
-                params += f", limit={limit}"
-
-            text = f"read({params})"
-
-            if self._result:
-                output = self._get_text_output()
-                lines = output.split("\n")
-                max_lines = len(lines) if self._expanded else 10
-                display_lines = lines[:max_lines]
-                remaining = len(lines) - max_lines
-
-                # Add summary line with ⎿, then indented content
-                total_lines = len(lines)
-                summary = f"Read {total_lines} line{'s' if total_lines != 1 else ''}"
-                text += f"\n⎿ {summary}"
-                for line in display_lines:
-                    text += "\n  " + _replace_tabs(line)
-                if remaining > 0:
-                    text += f"\n  ... ({remaining} more lines)"
-
-        elif self._tool_name == "write":
-            path = _shorten_path(self._args.get("file_path") or self._args.get("path") or "")
-            file_content = self._args.get("content", "")
-            lines = file_content.split("\n") if file_content else []
-            total_lines = len(lines)
-
-            text = f"write(file_path={repr(path if path else '...')})"
-
-            if file_content:
-                max_lines = len(lines) if self._expanded else 10
-                display_lines = lines[:max_lines]
-                remaining = len(lines) - max_lines
-
-                # Add summary line with ⎿, then indented content
-                summary = f"Wrote {total_lines} line{'s' if total_lines != 1 else ''} to {path or '...'}"
-                text += f"\n⎿ {summary}"
-                for line in display_lines:
-                    text += "\n  " + _replace_tabs(line)
-                if remaining > 0:
-                    text += f"\n  ... ({remaining} more lines)"
-
-        elif self._tool_name == "edit":
-            path = _shorten_path(self._args.get("file_path") or self._args.get("path") or "")
-            old_string = self._args.get("old_string", "")
-            new_string = self._args.get("new_string", "")
-
-            text = f"edit(file_path={repr(path if path else '...')}, old_string=..., new_string=...)"
-
-            if self._result:
-                # Check for diff in details (result is wrapped in {"content": ..., "isError": ...})
-                content = self._result.get("content", {})
-                details = content.get("details", {}) if isinstance(content, dict) else {}
-                diff_str = details.get("diff") if details else None
-
-                if diff_str and self._theme:
-                    # Render colored diff
-                    is_error = self._result.get("isError", False)
-                    summary = "Edit failed" if is_error else f"Updated {path or '...'}"
-                    text += f"\n⎿ {summary}"
-
-                    diff_lines = diff_str.split("\n")
-                    for line in diff_lines:
-                        if line.startswith("+"):
-                            text += "\n  " + self._theme.diff_added_fg(line)
-                        elif line.startswith("-"):
-                            text += "\n  " + self._theme.diff_removed_fg(line)
-                        else:
-                            text += "\n  " + self._theme.diff_context_fg(line)
+    def _format_generic(self) -> str:
+        """Generic tool formatter - shows name(params) and output."""
+        if self._args:
+            params_list = []
+            for key, value in self._args.items():
+                if isinstance(value, str):
+                    # Truncate long strings
+                    display_value = value if len(value) <= 50 else value[:47] + "..."
+                    params_list.append(f"{key}={repr(display_value)}")
                 else:
-                    # Fallback to plain output
-                    output = self._get_text_output()
-                    if output:
-                        is_error = self._result.get("isError", False)
-                        summary = "Edit failed" if is_error else f"Updated {path or '...'}"
-                        text += f"\n⎿ {summary}"
-                        lines = output.split("\n")
-                        for line in lines:
-                            text += "\n  " + line
-
+                    params_list.append(f"{key}={value}")
+            params_str = ", ".join(params_list)
+            text = f"{self._tool_name}({params_str})"
         else:
-            # Generic tool - show name(params) with robot emoji prefix
-            if self._args:
-                params_list = []
-                for key, value in self._args.items():
-                    if isinstance(value, str):
-                        params_list.append(f"{key}={repr(value)}")
-                    else:
-                        params_list.append(f"{key}={value}")
-                params_str = ", ".join(params_list)
-                text = f"{self._tool_name}({params_str})"
-            else:
-                text = f"{self._tool_name}()"
+            text = f"{self._tool_name}()"
 
+        if self._result:
             output = self._get_text_output()
             if output:
-                text += "\n\n" + output
+                is_error = self._result.get("isError", False)
+                summary = "Failed" if is_error else "Completed"
+                text += f"\n⎿ {summary}"
+                lines = output.split("\n")
+                max_lines = len(lines) if self._expanded else 10
+                for line in lines[:max_lines]:
+                    text += "\n  " + line
+                remaining = len(lines) - max_lines
+                if remaining > 0:
+                    text += f"\n  ... ({remaining} more lines)"
 
         return text
 
