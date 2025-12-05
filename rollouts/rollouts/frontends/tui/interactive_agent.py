@@ -128,7 +128,23 @@ class InteractiveAgentRunner:
         if cmd == "/model":
             if not args:
                 if self.renderer:
-                    self.renderer.add_system_message(f"Current model: {self.endpoint.provider}/{self.endpoint.model}\nUsage: /model <provider/model>")
+                    self.renderer.add_system_message(f"Current model: {self.endpoint.provider}/{self.endpoint.model}\nUsage: /model <provider/model> or /model list")
+                return True
+
+            # Handle /model list
+            if args.lower() == "list":
+                try:
+                    from rollouts.models import MODELS
+                    lines = ["Available models:"]
+                    for provider, models in MODELS.items():
+                        lines.append(f"\n{provider}:")
+                        for model_id in models.keys():
+                            lines.append(f"  - {provider}/{model_id}")
+                    if self.renderer:
+                        self.renderer.add_system_message("\n".join(lines))
+                except Exception as e:
+                    if self.renderer:
+                        self.renderer.add_system_message(f"Error listing models: {e}")
                 return True
 
             # Parse and create new endpoint
@@ -248,11 +264,13 @@ class InteractiveAgentRunner:
         elif cmd == "/help":
             help_text = """Available commands:
   /model [name]     - Switch model (e.g., /model anthropic/claude-sonnet-4)
+  /model list       - List all available models
   /thinking [level] - Change thinking level (enabled/disabled)
   /tools [preset]   - Switch tool preset (full/readonly/no-write)
   /help             - Show this help message
 
 Examples:
+  /model list
   /model anthropic/claude-3-5-haiku-20241022
   /model openai/gpt-4
   /thinking disabled
