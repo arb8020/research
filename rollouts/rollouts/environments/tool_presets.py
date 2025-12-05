@@ -26,12 +26,12 @@ class ToolPreset(Protocol):
         ...
 
 
-class CodingEnvironmentFull:
+class LocalFilesystemEnvironmentFull:
     """Full coding environment with read, write, edit, bash tools."""
 
     def __init__(self, working_dir: Path):
-        from .coding import CodingEnvironment
-        self._env = CodingEnvironment(working_dir=working_dir)
+        from .coding import LocalFilesystemEnvironment
+        self._env = LocalFilesystemEnvironment(working_dir=working_dir)
 
     def get_name(self) -> str:
         return "coding"
@@ -47,12 +47,12 @@ class CodingEnvironmentFull:
         return getattr(self._env, name)
 
 
-class CodingEnvironmentReadOnly:
+class LocalFilesystemEnvironmentReadOnly:
     """Read-only coding environment with just read tool."""
 
     def __init__(self, working_dir: Path):
-        from .coding import CodingEnvironment
-        self._env = CodingEnvironment(working_dir=working_dir)
+        from .coding import LocalFilesystemEnvironment
+        self._env = LocalFilesystemEnvironment(working_dir=working_dir)
 
     def get_name(self) -> str:
         return "coding_readonly"
@@ -70,12 +70,12 @@ class CodingEnvironmentReadOnly:
         return getattr(self._env, name)
 
 
-class CodingEnvironmentNoWrite:
+class LocalFilesystemEnvironmentNoWrite:
     """Coding environment without write tool (read, edit, bash only)."""
 
     def __init__(self, working_dir: Path):
-        from .coding import CodingEnvironment
-        self._env = CodingEnvironment(working_dir=working_dir)
+        from .coding import LocalFilesystemEnvironment
+        self._env = LocalFilesystemEnvironment(working_dir=working_dir)
 
     def get_name(self) -> str:
         return "coding_no_write"
@@ -94,9 +94,9 @@ class CodingEnvironmentNoWrite:
 
 # Registry of available presets
 TOOL_PRESETS = {
-    "full": CodingEnvironmentFull,
-    "readonly": CodingEnvironmentReadOnly,
-    "no-write": CodingEnvironmentNoWrite,
+    "full": LocalFilesystemEnvironmentFull,
+    "readonly": LocalFilesystemEnvironmentReadOnly,
+    "no-write": LocalFilesystemEnvironmentNoWrite,
 }
 
 

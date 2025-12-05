@@ -32,7 +32,7 @@ from rollouts.dtypes import (
     StopReason,
     ToolCall,
 )
-from rollouts.environments import CalculatorEnvironment, CodingEnvironment
+from rollouts.environments import CalculatorEnvironment, LocalFilesystemEnvironment
 from rollouts.frontends.tui.interactive_agent import run_interactive_agent
 from rollouts.frontends.tui.sessions import (
     Session,
@@ -353,7 +353,7 @@ def main() -> int:
     if args.env == "calculator":
         environment = CalculatorEnvironment()
     elif args.env == "coding":
-        environment = CodingEnvironment(working_dir=working_dir)
+        environment = LocalFilesystemEnvironment(working_dir=working_dir)
 
     # Handle session resumption
     session: Session | None = None

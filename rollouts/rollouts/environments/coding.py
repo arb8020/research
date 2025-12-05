@@ -40,8 +40,8 @@ def expand_path(file_path: str) -> Path:
 
 
 @dataclass
-class CodingEnvironment:
-    """Minimal coding environment with read, write, edit, bash tools."""
+class LocalFilesystemEnvironment:
+    """Local filesystem environment with read, write, edit, bash tools."""
 
     working_dir: Path = field(default_factory=Path.cwd)
 
@@ -53,8 +53,8 @@ class CodingEnvironment:
         return {"working_dir": str(self.working_dir)}
 
     @staticmethod
-    async def deserialize(data: dict) -> 'CodingEnvironment':
-        return CodingEnvironment(working_dir=Path(data["working_dir"]))
+    async def deserialize(data: dict) -> 'LocalFilesystemEnvironment':
+        return LocalFilesystemEnvironment(working_dir=Path(data["working_dir"]))
 
     def requires_confirmation(self, tool_call: ToolCall) -> bool:
         """Only bash commands require confirmation by default."""
