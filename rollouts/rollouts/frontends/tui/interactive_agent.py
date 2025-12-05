@@ -226,8 +226,8 @@ class InteractiveAgentRunner:
             List of agent states from the run
         """
         # Create terminal and TUI with selected theme
-        from .theme import SOFT_DARK_THEME, ROUNDED_THEME
-        theme = ROUNDED_THEME if self.theme_name == "rounded" else SOFT_DARK_THEME
+        from .theme import DARK_THEME, ROUNDED_THEME
+        theme = ROUNDED_THEME if self.theme_name == "rounded" else DARK_THEME
 
         self.terminal = ProcessTerminal()
         self.tui = TUI(self.terminal, theme=theme, debug=self.debug, debug_layout=self.debug_layout)

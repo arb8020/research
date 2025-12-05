@@ -195,14 +195,24 @@ class Markdown(Component):
                         pos += 1
                 return pos
 
+            # Calculate which lines are padding vs content
+            num_top_padding = len(top_lines)
+            num_bottom_padding = len(bottom_lines)
+            num_content = len(content_lines)
+
             new_result = []
             for i, line in enumerate(result):
-                if i == 0:
-                    # First line: add gutter prefix, skip padding_x spaces
+                # Padding lines get spaces instead of gutter prefix
+                if i < num_top_padding or i >= (num_top_padding + num_content):
+                    # This is a padding line - add spaces instead of gutter
+                    pos = skip_ansi_and_get_pos(line, self._padding_x)
+                    new_result.append(" " * (gutter_len + 1) + line[pos:])
+                elif i == num_top_padding:
+                    # First content line: add gutter prefix
                     pos = skip_ansi_and_get_pos(line, self._padding_x)
                     new_result.append(self._gutter_prefix + " " + line[pos:])
                 else:
-                    # Other lines: add spacing, skip padding_x spaces
+                    # Other content lines: add spacing
                     pos = skip_ansi_and_get_pos(line, self._padding_x)
                     new_result.append(" " * (gutter_len + 1) + line[pos:])
             result = new_result
