@@ -215,10 +215,10 @@ class AgentRenderer:
 
         # Create tool execution component
         if tool_call_id not in self.pending_tools:
-            # Get custom formatter from environment if available
-            custom_formatter = None
+            # Get formatter from environment if available
+            formatter = None
             if self.environment and hasattr(self.environment, 'get_tool_formatter'):
-                custom_formatter = self.environment.get_tool_formatter(tool_name)
+                formatter = self.environment.get_tool_formatter(tool_name)
 
             tool_component = ToolExecution(
                 tool_name,
@@ -227,7 +227,7 @@ class AgentRenderer:
                 bg_fn_success=self.theme.tool_success_bg_fn,
                 bg_fn_error=self.theme.tool_error_bg_fn,
                 theme=self.theme,
-                custom_formatter=custom_formatter,
+                formatter=formatter,
             )
             self.chat_container.add_child(tool_component)
             self.pending_tools[tool_call_id] = tool_component

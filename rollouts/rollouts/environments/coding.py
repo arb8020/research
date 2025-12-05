@@ -39,6 +39,178 @@ def expand_path(file_path: str) -> Path:
     return Path(file_path).resolve()
 
 
+# ── Tool Formatting Utilities ─────────────────────────────────────────────────
+
+def _shorten_path(path: str) -> str:
+    """Convert absolute path to tilde notation if in home directory."""
+    home = os.path.expanduser("~")
+    if path.startswith(home):
+        return "~" + path[len(home):]
+    return path
+
+
+def _replace_tabs(text: str) -> str:
+    """Replace tabs with spaces for consistent rendering."""
+    return text.replace("\t", "   ")
+
+
+def _get_text_output(result: dict | None) -> str:
+    """Extract text output from tool result.
+
+    Result structure: {"content": {"content": [{"type": "text", "text": "..."}], ...}, "isError": bool}
+    """
+    if not result:
+        return ""
+
+    content = result.get("content", {})
+
+    # If content is a string, return it directly
+    if isinstance(content, str):
+        return content
+
+    # If content is a dict with a "content" key, extract from that
+    if isinstance(content, dict):
+        content_list = content.get("content", [])
+        if isinstance(content_list, list):
+            text_blocks = [c for c in content_list if isinstance(c, dict) and c.get("type") == "text"]
+            text_output = "\n".join(c.get("text", "") for c in text_blocks if c.get("text"))
+
+            # Strip ANSI codes and carriage returns
+            import re
+            text_output = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", text_output)
+            text_output = text_output.replace("\r", "")
+            return text_output
+
+    return ""
+
+
+# ── Tool Formatters ───────────────────────────────────────────────────────────
+# These format tool calls for display in the TUI.
+# Signature: (tool_name, args, result, expanded, theme) -> str
+
+def format_bash(tool_name: str, args: dict, result: dict | None, expanded: bool, theme=None) -> str:
+    """Format bash tool execution."""
+    command = args.get("command", "")
+    text = f"bash(command={repr(command or '...')})"
+
+    if result:
+        output = _get_text_output(result).strip()
+        if output:
+            lines = output.split("\n")
+            max_lines = len(lines) if expanded else 5
+            display_lines = lines[:max_lines]
+            remaining = len(lines) - max_lines
+
+            is_error = result.get("isError", False)
+            summary = "Command failed" if is_error else "Command completed"
+            text += f"\n⎿ {summary}"
+            for line in display_lines:
+                text += "\n  " + line
+            if remaining > 0:
+                text += f"\n  ... ({remaining} more lines)"
+
+    return text
+
+
+def format_read(tool_name: str, args: dict, result: dict | None, expanded: bool, theme=None) -> str:
+    """Format read tool execution."""
+    path = _shorten_path(args.get("file_path") or args.get("path") or "")
+    offset = args.get("offset")
+    limit = args.get("limit")
+
+    params = f"file_path={repr(path if path else '...')}"
+    if offset is not None:
+        params += f", offset={offset}"
+    if limit is not None:
+        params += f", limit={limit}"
+
+    text = f"read({params})"
+
+    if result:
+        output = _get_text_output(result)
+        lines = output.split("\n")
+        max_lines = len(lines) if expanded else 10
+        display_lines = lines[:max_lines]
+        remaining = len(lines) - max_lines
+
+        total_lines = len(lines)
+        summary = f"Read {total_lines} line{'s' if total_lines != 1 else ''}"
+        text += f"\n⎿ {summary}"
+        for line in display_lines:
+            text += "\n  " + _replace_tabs(line)
+        if remaining > 0:
+            text += f"\n  ... ({remaining} more lines)"
+
+    return text
+
+
+def format_write(tool_name: str, args: dict, result: dict | None, expanded: bool, theme=None) -> str:
+    """Format write tool execution."""
+    path = _shorten_path(args.get("file_path") or args.get("path") or "")
+    file_content = args.get("content", "")
+    lines = file_content.split("\n") if file_content else []
+    total_lines = len(lines)
+
+    text = f"write(file_path={repr(path if path else '...')})"
+
+    if file_content:
+        max_lines = len(lines) if expanded else 10
+        display_lines = lines[:max_lines]
+        remaining = len(lines) - max_lines
+
+        summary = f"Wrote {total_lines} line{'s' if total_lines != 1 else ''} to {path or '...'}"
+        text += f"\n⎿ {summary}"
+        for line in display_lines:
+            text += "\n  " + _replace_tabs(line)
+        if remaining > 0:
+            text += f"\n  ... ({remaining} more lines)"
+
+    return text
+
+
+def format_edit(tool_name: str, args: dict, result: dict | None, expanded: bool, theme=None) -> str:
+    """Format edit tool execution with colored diff."""
+    path = _shorten_path(args.get("file_path") or args.get("path") or "")
+
+    text = f"edit(file_path={repr(path if path else '...')}, old_string=..., new_string=...)"
+
+    if result:
+        # Check for diff in details (result is wrapped in {"content": ..., "isError": ...})
+        content = result.get("content", {})
+        details = content.get("details", {}) if isinstance(content, dict) else {}
+        diff_str = details.get("diff") if details else None
+
+        is_error = result.get("isError", False)
+        summary = "Edit failed" if is_error else f"Updated {path or '...'}"
+
+        if diff_str and theme:
+            # Render colored diff
+            text += f"\n⎿ {summary}"
+
+            diff_lines = diff_str.split("\n")
+            for line in diff_lines:
+                if line.startswith("+"):
+                    text += "\n  " + theme.diff_added_fg(line)
+                elif line.startswith("-"):
+                    text += "\n  " + theme.diff_removed_fg(line)
+                else:
+                    text += "\n  " + theme.diff_context_fg(line)
+        elif diff_str:
+            # No theme - plain diff
+            text += f"\n⎿ {summary}"
+            for line in diff_str.split("\n"):
+                text += "\n  " + line
+        else:
+            # Fallback to plain output
+            output = _get_text_output(result)
+            if output:
+                text += f"\n⎿ {summary}"
+                for line in output.split("\n"):
+                    text += "\n  " + line
+
+    return text
+
+
 def generate_diff(old_content: str, new_content: str, context_lines: int = 3) -> str:
     """Generate unified diff string with line numbers.
 
@@ -126,13 +298,20 @@ class LocalFilesystemEnvironment:
         return tool_call.name == "bash"
 
     def get_tool_formatter(self, tool_name: str):
-        """Return custom formatter for tools that need special rendering.
+        """Return formatter function for the given tool.
 
-        Returns None to use built-in formatters in ToolExecution component.
-        The edit tool's diff rendering is handled by the built-in formatter
-        using details["diff"] from ToolResult.
+        Returns a function with signature:
+            (tool_name, args, result, expanded, theme) -> str
+
+        Returns None for unknown tools (uses generic fallback).
         """
-        return None
+        formatters = {
+            "bash": format_bash,
+            "read": format_read,
+            "write": format_write,
+            "edit": format_edit,
+        }
+        return formatters.get(tool_name)
 
     def get_tools(self) -> list[Tool]:
         return [
