@@ -325,8 +325,7 @@ class AgentRenderer:
             text,
             padding_x=2,
             padding_y=0,
-            custom_bg_fn=lambda _: self.theme.dim,  # Use dim background
-            custom_fg_fn=lambda _: self.theme.text,  # Use text color for readability
+            custom_bg_fn=lambda _: self.theme.dim,  # Use dim background (text will be default terminal color)
             theme=self.theme,
             gutter_prefix="ℹ ",
         )
