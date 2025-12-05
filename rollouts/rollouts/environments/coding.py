@@ -39,6 +39,71 @@ def expand_path(file_path: str) -> Path:
     return Path(file_path).resolve()
 
 
+def generate_diff(old_content: str, new_content: str, context_lines: int = 3) -> str:
+    """Generate unified diff string with line numbers.
+
+    Args:
+        old_content: Original file content
+        new_content: New file content
+        context_lines: Number of context lines to show around changes
+
+    Returns:
+        Diff string formatted as:
+        +123 added line
+        -45 removed line
+         67 context line
+    """
+    old_lines = old_content.split("\n")
+    new_lines = new_content.split("\n")
+
+    # Simple line-by-line diff
+    output = []
+    max_line_num = max(len(old_lines), len(new_lines))
+    line_num_width = len(str(max_line_num))
+
+    # For simplicity, use a basic diff algorithm
+    # Find common prefix and suffix
+    i = 0
+    while i < len(old_lines) and i < len(new_lines) and old_lines[i] == new_lines[i]:
+        i += 1
+
+    j_old = len(old_lines) - 1
+    j_new = len(new_lines) - 1
+    while j_old >= i and j_new >= i and old_lines[j_old] == new_lines[j_new]:
+        j_old -= 1
+        j_new -= 1
+
+    # Show context before changes
+    context_start = max(0, i - context_lines)
+    if context_start > 0:
+        output.append(f" {''.ljust(line_num_width)} ...")
+
+    for line_idx in range(context_start, i):
+        line_num = str(line_idx + 1).rjust(line_num_width)
+        output.append(f" {line_num} {old_lines[line_idx]}")
+
+    # Show removed lines
+    for line_idx in range(i, j_old + 1):
+        line_num = str(line_idx + 1).rjust(line_num_width)
+        output.append(f"-{line_num} {old_lines[line_idx]}")
+
+    # Show added lines
+    for line_idx in range(i, j_new + 1):
+        line_num = str(line_idx + 1).rjust(line_num_width)
+        output.append(f"+{line_num} {new_lines[line_idx]}")
+
+    # Show context after changes
+    context_end = min(len(new_lines), j_new + 2 + context_lines)
+    for line_idx in range(j_new + 2, context_end):
+        line_num = str(line_idx + 1).rjust(line_num_width)
+        output.append(f" {line_num} {new_lines[line_idx]}")
+
+    if context_end < len(new_lines):
+        output.append(f" {''.ljust(line_num_width)} ...")
+
+    return "\n".join(output)
+
+
 @dataclass
 class LocalFilesystemEnvironment:
     """Local filesystem environment with read, write, edit, bash tools."""
@@ -59,6 +124,18 @@ class LocalFilesystemEnvironment:
     def requires_confirmation(self, tool_call: ToolCall) -> bool:
         """Only bash commands require confirmation by default."""
         return tool_call.name == "bash"
+
+    def get_tool_formatter(self, tool_name: str):
+        """Return custom formatter for tools that need special rendering."""
+        if tool_name == "edit":
+            return self._format_edit_tool
+        return None
+
+    def _format_edit_tool(self, tool_name: str, args: dict, result: dict | None, expanded: bool) -> str:
+        """Custom formatter for edit tool - shows colored diff."""
+        # Return None to use the built-in formatter in ToolExecution
+        # which will handle the diff rendering with theme colors
+        return None
 
     def get_tools(self) -> list[Tool]:
         return [
@@ -325,10 +402,14 @@ class LocalFilesystemEnvironment:
 
         abs_path.write_text(new_content, encoding="utf-8")
 
+        # Generate diff for UI display
+        diff_str = generate_diff(content, new_content)
+
         return ToolResult(
             tool_call_id=tool_call.id,
             is_error=False,
-            content=f"Successfully replaced text in {path_str}. Changed {len(old_text)} characters to {len(new_text)} characters."
+            content=f"Successfully replaced text in {path_str}. Changed {len(old_text)} characters to {len(new_text)} characters.",
+            details={"diff": diff_str}
         )
 
     async def _exec_bash(self, tool_call: ToolCall, cancel_scope: trio.CancelScope | None = None) -> ToolResult:

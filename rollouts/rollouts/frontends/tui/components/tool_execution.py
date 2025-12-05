@@ -234,15 +234,34 @@ class ToolExecution(Container):
             text = f"edit(file_path={repr(path if path else '...')}, old_string=..., new_string=...)"
 
             if self._result:
-                output = self._get_text_output()
-                if output:
-                    # Add summary line with ⎿, then indented content
+                # Check for diff in details
+                details = self._result.get("details", {})
+                diff_str = details.get("diff") if details else None
+
+                if diff_str and self._theme:
+                    # Render colored diff
                     is_error = self._result.get("isError", False)
                     summary = "Edit failed" if is_error else f"Updated {path or '...'}"
                     text += f"\n⎿ {summary}"
-                    lines = output.split("\n")
-                    for line in lines:
-                        text += "\n  " + line
+
+                    diff_lines = diff_str.split("\n")
+                    for line in diff_lines:
+                        if line.startswith("+"):
+                            text += "\n  " + self._theme.diff_added_fg(line)
+                        elif line.startswith("-"):
+                            text += "\n  " + self._theme.diff_removed_fg(line)
+                        else:
+                            text += "\n  " + self._theme.diff_context_fg(line)
+                else:
+                    # Fallback to plain output
+                    output = self._get_text_output()
+                    if output:
+                        is_error = self._result.get("isError", False)
+                        summary = "Edit failed" if is_error else f"Updated {path or '...'}"
+                        text += f"\n⎿ {summary}"
+                        lines = output.split("\n")
+                        for line in lines:
+                            text += "\n  " + line
 
         else:
             # Generic tool - show name(params) with robot emoji prefix

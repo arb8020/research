@@ -46,6 +46,11 @@ class Theme:
     tool_success_bg: str = "#283228"
     tool_error_bg: str = "#3c2828"
 
+    # Diff colors (pi-mono inspired)
+    diff_added: str = "#2d4a2d"  # Dark green for added lines
+    diff_removed: str = "#4a2d2d"  # Dark red for removed lines
+    diff_context: str = "#505050"  # Dim gray for context
+
     # Padding settings (vertical padding in lines)
     message_padding_y: int = 0  # Padding for regular message text
     tool_padding_y: int = 0  # Padding for tool execution blocks
@@ -120,6 +125,16 @@ class Theme:
     # User message background
     def user_message_bg_fn(self, text: str) -> str:
         return f"{hex_to_bg(self.user_message_bg)}{text}{RESET}"
+
+    # Diff colors (foreground only, for readability)
+    def diff_added_fg(self, text: str) -> str:
+        return f"{hex_to_fg(self.diff_added)}{text}{RESET}"
+
+    def diff_removed_fg(self, text: str) -> str:
+        return f"{hex_to_fg(self.diff_removed)}{text}{RESET}"
+
+    def diff_context_fg(self, text: str) -> str:
+        return f"{hex_to_fg(self.diff_context)}{text}{RESET}"
 
     # Thinking colors by intensity
     def thinking_fg(self, intensity: str = "medium") -> Callable[[str], str]:
