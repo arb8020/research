@@ -87,9 +87,10 @@ class Input(Component):
         # Top border
         result.append(horizontal * width)
 
-        # Layout text lines with "> " gutter prefix
-        left_padding = "> "
-        content_width = width - 2  # Account for gutter prefix
+        # Layout text lines with gutter prefix from theme
+        gutter = self._theme.input_gutter if hasattr(self._theme, 'input_gutter') else "> "
+        left_padding = gutter
+        content_width = width - len(gutter)  # Account for gutter prefix
         layout_lines = self._layout_text(content_width)
 
         for layout_line in layout_lines:

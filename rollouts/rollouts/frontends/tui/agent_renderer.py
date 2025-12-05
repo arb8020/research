@@ -219,6 +219,7 @@ class AgentRenderer:
                 bg_fn_pending=self.theme.tool_pending_bg_fn,
                 bg_fn_success=self.theme.tool_success_bg_fn,
                 bg_fn_error=self.theme.tool_error_bg_fn,
+                theme=self.theme,
             )
             self.chat_container.add_child(tool_component)
             self.pending_tools[tool_call_id] = tool_component

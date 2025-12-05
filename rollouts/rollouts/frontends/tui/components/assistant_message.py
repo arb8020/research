@@ -38,13 +38,18 @@ class AssistantMessage(Component):
             # Update existing component
             self._text_md.set_text(self._text_content.strip())
         else:
+            # First text delta - add spacer if we have thinking content
+            if self._thinking_content and self._thinking_content.strip():
+                self._thinking_spacer = Spacer(1, debug_label="after-thinking", debug_layout=self._debug_layout)
+                self._content_container.add_child(self._thinking_spacer)
+
             # Create text component without destroying existing thinking component
             self._text_md = Markdown(
                 self._text_content.strip(),
                 padding_x=2,
-                padding_y=0,
+                padding_y=self._theme.message_padding_y,
                 theme=DefaultMarkdownTheme(self._theme),
-                gutter_prefix="☻ ",
+                gutter_prefix=self._theme.assistant_gutter,
             )
             self._content_container.add_child(self._text_md)
 
@@ -107,10 +112,10 @@ class AssistantMessage(Component):
             self._thinking_md = Markdown(
                 thinking_text,
                 padding_x=2,
-                padding_y=1,
+                padding_y=self._theme.thinking_padding_y,
                 theme=DefaultMarkdownTheme(self._theme),
                 bg_fn=lambda x: f"{hex_to_bg(self._theme.tool_pending_bg)}{x}{RESET}",
-                gutter_prefix="☻ ",
+                gutter_prefix=self._theme.assistant_gutter,
             )
             self._content_container.add_child(self._thinking_md)
 
@@ -123,9 +128,9 @@ class AssistantMessage(Component):
             self._text_md = Markdown(
                 self._text_content.strip(),
                 padding_x=2,
-                padding_y=0,
+                padding_y=self._theme.message_padding_y,
                 theme=DefaultMarkdownTheme(self._theme),
-                gutter_prefix="☻ ",
+                gutter_prefix=self._theme.assistant_gutter,
             )
             self._content_container.add_child(self._text_md)
 

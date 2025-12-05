@@ -37,6 +37,7 @@ class ToolExecution(Container):
         bg_fn_pending: Optional[Callable[[str], str]] = None,
         bg_fn_success: Optional[Callable[[str], str]] = None,
         bg_fn_error: Optional[Callable[[str], str]] = None,
+        theme: Optional[Any] = None,
     ) -> None:
         """Initialize tool execution component.
 
@@ -52,6 +53,7 @@ class ToolExecution(Container):
         self._args = args or {}
         self._result: Optional[Dict[str, Any]] = None
         self._expanded = False
+        self._theme = theme
 
         # Default background functions (can be overridden)
         self._bg_fn_pending = bg_fn_pending or (lambda x: x)
@@ -99,12 +101,19 @@ class ToolExecution(Container):
         formatted_text = self._format_tool_execution()
 
         # Create text component with background and gutter prefix
-        # Use smiling face for success, frowning face for error
-        if self._result:
-            gutter = "☹ " if self._result.get("isError") else "☺ "
+        # Get gutter and padding from theme if available
+        if self._theme:
+            if self._result:
+                gutter = self._theme.tool_error_gutter if self._result.get("isError") else self._theme.tool_success_gutter
+            else:
+                gutter = self._theme.tool_success_gutter  # Pending state uses success gutter
+            padding_y = self._theme.tool_padding_y if hasattr(self._theme, 'tool_padding_y') else 0
         else:
-            gutter = "☺ "  # Pending state uses smiling face
-        self._content_text = Text(formatted_text, padding_x=2, padding_y=1, custom_bg_fn=bg_fn, gutter_prefix=gutter)
+            # Fallback if no theme provided
+            gutter = "☹ " if (self._result and self._result.get("isError")) else "☺ "
+            padding_y = 0
+
+        self._content_text = Text(formatted_text, padding_x=2, padding_y=padding_y, custom_bg_fn=bg_fn, gutter_prefix=gutter)
         self.add_child(self._content_text)
 
     def _get_text_output(self) -> str:
