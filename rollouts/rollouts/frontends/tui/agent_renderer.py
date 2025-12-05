@@ -325,7 +325,8 @@ class AgentRenderer:
             text,
             padding_x=2,
             padding_y=0,
-            custom_bg_fn=lambda _: self.theme.muted,  # Use muted color for system messages
+            custom_bg_fn=lambda _: self.theme.dim,  # Use dim background
+            custom_fg_fn=lambda _: self.theme.text,  # Use text color for readability
             theme=self.theme,
             gutter_prefix="ℹ ",
         )
