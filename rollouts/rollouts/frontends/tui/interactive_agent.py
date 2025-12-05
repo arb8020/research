@@ -173,7 +173,9 @@ class InteractiveAgentRunner:
                     )
 
                 if self.renderer:
-                    self.renderer.add_system_message(f"Switched to model: {provider}/{model}")
+                    thinking_status = "enabled" if new_endpoint.thinking else "disabled"
+                    msg = f"Switched to model: {provider}/{model}\nThinking: {thinking_status}"
+                    self.renderer.add_system_message(msg)
             except Exception as e:
                 if self.renderer:
                     self.renderer.add_system_message(f"Error switching model: {e}")
@@ -215,7 +217,8 @@ class InteractiveAgentRunner:
                     )
 
                 if self.renderer:
-                    self.renderer.add_system_message(f"Thinking set to: {args_lower}")
+                    msg = f"Thinking set to: {args_lower}\nModel: {new_endpoint.provider}/{new_endpoint.model}"
+                    self.renderer.add_system_message(msg)
             except Exception as e:
                 if self.renderer:
                     self.renderer.add_system_message(f"Error changing thinking: {e}")
