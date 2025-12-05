@@ -1,28 +1,39 @@
 import argparse
-from typing import List
+
 import trio
 
-from ..dtypes import (
-    Message, Trajectory, Endpoint, Actor, AgentState, Environment,
-    Tool, ToolFunction, ToolFunctionParameter, ToolCall, ToolResult, StopReason,
-    RunConfig,
+from ..agents import (
+    confirm_tool_with_feedback,
+    handle_stop_max_turns,
+    handle_tool_error,
+    inject_tool_reminder,
+    inject_turn_warning,
+    run_agent,
+    stdout_handler,
 )
 from ..checkpoints import FileCheckpointStore
-from ..agents import (
-    stdout_handler,
-    confirm_tool_with_feedback,
-    handle_tool_error,
-    inject_turn_warning,  
-    handle_stop_max_turns,
-    inject_tool_reminder,
-    run_agent,
+from ..dtypes import (
+    Actor,
+    AgentState,
+    Endpoint,
+    Environment,
+    Message,
+    RunConfig,
+    StopReason,
+    Tool,
+    ToolCall,
+    ToolFunction,
+    ToolFunctionParameter,
+    ToolResult,
+    Trajectory,
 )
+
 
 class BinarySearchEnvironment(Environment):
     def __init__(
-            self, range_min:int=0, range_max:int=7, 
-            space_size: int=8, answer: int=0,
-            _turns = 0, _correct = False
+            self, range_min: int = 0, range_max: int = 7, 
+            space_size: int = 8, answer: int = 0,
+            _turns=0, _correct=False
         ):
         self.range_min:  int = range_min
         self.range_max:  int = range_max
@@ -33,7 +44,7 @@ class BinarySearchEnvironment(Environment):
         self._turns: int = _turns
         self._correct: bool = _correct
 
-        assert abs(range_min - range_max)+1 == space_size, f"[{range_min},{range_max}] is not {space_size}"
+        assert abs(range_min - range_max) + 1 == space_size, f"[{range_min},{range_max}] is not {space_size}"
         assert (answer >= range_min) & (answer <= range_max)
     
     async def serialize(self):
@@ -43,15 +54,15 @@ class BinarySearchEnvironment(Environment):
     async def deserialize(data: dict) -> 'BinarySearchEnvironment':
         return BinarySearchEnvironment(**data)
     
-    def get_tools(self) -> List[Tool]:
+    def get_tools(self) -> list[Tool]:
         return [
             Tool(function=ToolFunction(
                 name="guess_answer",
-                description = "Guess the hidden number. You'll be told if your guess is too high or too low.",
-                parameters = ToolFunctionParameter(
+                description="Guess the hidden number. You'll be told if your guess is too high or too low.",
+                parameters=ToolFunctionParameter(
                     properties={"number": {"type": "number", "description": "Your guess"}},
                 ),
-                required = ["number"],
+                required=["number"],
             ))
         ]
     
@@ -61,31 +72,42 @@ class BinarySearchEnvironment(Environment):
         """No feedback needed for binary search environment."""
         return state
 
-    async def exec_tool(self, tool_call: ToolCall) -> ToolResult:
+    async def exec_tool(
+        self,
+        tool_call: ToolCall,
+        current_state: AgentState,
+        run_config: RunConfig,
+        checkpoint_store=None,
+        cancel_scope: trio.CancelScope | None = None,
+    ) -> ToolResult:
         try:
             if tool_call.name == "guess_answer":
                 guess = int(tool_call.args["number"])
                 self._correct = (guess == self.answer)
                 if self._correct:
                     return ToolResult(
-                        call_id = tool_call.id, ok=True,
-                        content = f"CONGRATS!!!! {guess} is correct!",
+                        tool_call_id=tool_call.id,
+                        is_error=False,
+                        content=f"CONGRATS!!!! {guess} is correct!",
                         stop_reason=StopReason.TASK_COMPLETED
                     )
                 else:
                     hint = "too high" if guess > self.answer else "too low"
                     return ToolResult(
-                        call_id = tool_call.id, ok=True,
-                        content = f"Wrong! {guess} is {hint}. Try again!"
+                        tool_call_id=tool_call.id,
+                        is_error=False,
+                        content=f"Wrong! {guess} is {hint}. Try again!"
                     )
             else:
                 return ToolResult(
-                    call_id=tool_call.id, ok=False,
+                    tool_call_id=tool_call.id,
+                    is_error=True,
                     content=f"{tool_call.name} is not a valid tool",
                 )
         except Exception as e:
             return ToolResult(
-                call_id=tool_call.id, ok=False,
+                tool_call_id=tool_call.id,
+                is_error=True,
                 content="",
                 error=str(e)
             )
@@ -112,7 +134,7 @@ async def main():
     # Create run config (same for both paths)
     run_config = RunConfig(
         on_chunk=stdout_handler,
-        confirm_tool=confirm_tool_with_feedback, #type: ignore
+        confirm_tool=confirm_tool_with_feedback,  # type: ignore
         handle_tool_error=handle_tool_error,
         handle_stop=handle_stop_max_turns,
         handle_no_tool=inject_tool_reminder,
@@ -127,14 +149,10 @@ async def main():
     sys_msg = Message(
         role="system",
         content=f"You are helpful tool use agent. Your job is to guess a number in the range {environment.range_min} and {environment.range_max} inclusive.",
-        tool_calls=[],
-        tool_call_id=None
     )
     user_msg = Message(
         role="user",
         content="I'll take a backset while you do this task. Have fun!",
-        tool_calls=[],
-        tool_call_id=None
     )
     
     trajectory = Trajectory(messages=[sys_msg, user_msg])
@@ -156,16 +174,16 @@ async def main():
     
     states = await run_agent(initial_state, run_config)
     
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("📊 Conversation Summary")
-    print("="*80)
+    print("=" * 80)
     
     final_state = states[-1]
     print(f"✅ Total turns: {final_state.turn_idx}")
     print(f"💬 Total messages: {len(final_state.actor.trajectory.messages)}")
     
     # Count tool calls
-    tool_calls = sum(len(msg.tool_calls) for msg in final_state.actor.trajectory.messages)
+    tool_calls = sum(len(msg.get_tool_calls()) for msg in final_state.actor.trajectory.messages)
     print(f"🔧 Total tool calls: {tool_calls}")
 
     # (optionally) save trajectory to disk

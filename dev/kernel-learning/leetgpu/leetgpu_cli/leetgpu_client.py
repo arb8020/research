@@ -1,10 +1,10 @@
 """
 Python client for submitting code to LeetGPU programmatically.
 """
-import requests
-import json
-from typing import Optional, Literal
 from dataclasses import dataclass
+from typing import Literal
+
+import requests
 
 
 @dataclass
@@ -135,8 +135,8 @@ class LeetGPUClient:
     def get_submissions(
         self,
         challenge_id: int,
-        language: Optional[str] = None,
-        gpu: Optional[str] = None,
+        language: str | None = None,
+        gpu: str | None = None,
     ) -> list[dict]:
         """
         Get submissions for a challenge.
@@ -183,7 +183,7 @@ class LeetGPUClient:
         Returns:
             SubmissionResult with submission details
         """
-        with open(file_path, "r") as f:
+        with open(file_path) as f:
             code = f.read()
 
         return self.submit_code(

@@ -8,6 +8,7 @@ from enum import Enum
 from pathlib import Path
 from typing import (
     Any,
+    Literal,
     Optional,
     Protocol,
     runtime_checkable,
@@ -25,11 +26,110 @@ import trio
 # Current: Simple fallback for type hints - actual tensor handling is done at runtime via hasattr checks
 TorchTensor = Any
 
+# TUI formatter type - receives (tool_name, args, result, expanded) and returns formatted string
+ToolFormatter = Callable[[str, dict[str, Any], dict[str, Any] | None, bool], str]
+
 
 # Verbose function for debugging
 def verbose(level=1):
     """Check if verbose logging is enabled at given level"""
     return int(os.getenv("VERBOSE", 0)) >= level
+
+
+def parse_streaming_json(partial_json: str) -> dict[str, Any]:
+    """Parse partial JSON string, returning best-effort partial object.
+
+    During streaming, tool call arguments arrive incrementally as incomplete JSON.
+    This function attempts to extract valid key-value pairs from incomplete JSON.
+
+    Examples:
+        '{"foo": "bar"'          -> {"foo": "bar"}
+        '{"foo": "bar", "baz":'  -> {"foo": "bar"}
+        '{"nested": {"a": 1'     -> {"nested": {"a": 1}}
+        '{"arr": [1, 2'          -> {"arr": [1, 2]}
+        ''                       -> {}
+        '{'                      -> {}
+
+    Tiger Style: Best-effort parsing, crash-loud on programmer error.
+    - Invalid UTF-8 -> crash (caller must ensure valid encoding)
+    - Incomplete JSON -> return partial parsed dict (expected during streaming)
+    - Malformed JSON -> return empty dict (streaming hasn't started yet)
+    """
+    assert isinstance(partial_json, str), f"Expected str, got {type(partial_json)}"
+
+    if not partial_json or partial_json.strip() == "":
+        return {}
+
+    # Try parsing as complete JSON first
+    try:
+        result = json.loads(partial_json)
+        assert isinstance(result, dict), f"Tool args must be object, got {type(result)}"
+        return result
+    except json.JSONDecodeError:
+        pass
+
+    # Incomplete JSON - try to extract what we can
+    # Strategy: Progressively trim incomplete parts from the end
+    # 1. Close incomplete string values
+    # 2. Remove incomplete keys
+    # 3. Close incomplete arrays
+    # 4. Close incomplete objects
+
+    cleaned = partial_json.strip()
+
+    # Handle edge cases
+    if cleaned in ("{", "[", ""):
+        return {}
+
+    # Try adding closing braces/brackets progressively
+    attempts = [
+        cleaned + '"}',      # Close incomplete string value
+        cleaned + ']',       # Close incomplete array
+        cleaned + '}',       # Close incomplete object
+        cleaned + '"}]',     # Close string in array
+        cleaned + '"}}'      # Close string in nested object
+    ]
+
+    # Also try removing trailing incomplete key/value
+    if "," in cleaned:
+        # Remove everything after the last comma (incomplete key-value pair)
+        last_comma = cleaned.rfind(",")
+        truncated = cleaned[:last_comma]
+        attempts.extend([
+            truncated + "}",
+            truncated + "]}",
+            truncated + "}}"
+        ])
+
+    # If there's a colon without a value, remove the incomplete pair
+    if ":" in cleaned:
+        # Find the last complete comma before incomplete value
+        parts = cleaned.split(",")
+        for i in range(len(parts) - 1, -1, -1):
+            # Check if this part has both key and value
+            truncated = ",".join(parts[:i])
+            if truncated:
+                attempts.extend([
+                    truncated + "}",
+                    truncated + "]}",
+                    truncated + "}}"
+                ])
+
+    # Try each repair strategy
+    for attempt in attempts:
+        try:
+            result = json.loads(attempt)
+            if isinstance(result, dict):
+                return result
+            elif isinstance(result, list):
+                # Array of objects - return last object if available
+                if result and isinstance(result[-1], dict):
+                    return result[-1]
+        except json.JSONDecodeError:
+            continue
+
+    # All strategies failed - return empty dict
+    return {}
 
 
 class JsonSerializable:
@@ -71,21 +171,302 @@ class ToolCall(JsonSerializable):
 
 @dataclass(frozen=True)
 class StreamChunk(JsonSerializable):
-    """A chunk of data emitted during streaming"""
+    """DEPRECATED: Legacy streaming event format. Use StreamEvent types instead.
+
+    This class is kept temporarily for backward compatibility during migration.
+    Will be removed once all consumers switch to the new granular event types.
+    """
     type: str  # "token", "tool_call_complete", "tool_result", etc.
     data: Mapping[str, Any]
     timestamp: float = field(default_factory=time.time)
 
 
+# New granular streaming events (inspired by pi-ai)
+# Each event includes content_index for tracking which content block and timestamp for logging
+
+
+@dataclass(frozen=True)
+class LLMCallStart(JsonSerializable):
+    """Emitted before making the LLM API call (before connection established)"""
+    type: Literal["llm_call_start"] = "llm_call_start"
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class StreamStart(JsonSerializable):
+    """Emitted at the start of a streaming response (connection established, first event received)"""
+    type: Literal["start"] = "start"
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class TextStart(JsonSerializable):
+    """Emitted when a text content block begins"""
+    content_index: int
+    type: Literal["text_start"] = "text_start"
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class TextDelta(JsonSerializable):
+    """Emitted for each text token/chunk during streaming"""
+    content_index: int
+    delta: str
+    type: Literal["text_delta"] = "text_delta"
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class TextEnd(JsonSerializable):
+    """Emitted when a text content block completes"""
+    content_index: int
+    content: str  # Complete accumulated text
+    type: Literal["text_end"] = "text_end"
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class ThinkingStart(JsonSerializable):
+    """Emitted when a thinking/reasoning content block begins"""
+    content_index: int
+    type: Literal["thinking_start"] = "thinking_start"
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class ThinkingDelta(JsonSerializable):
+    """Emitted for each thinking token/chunk during streaming"""
+    content_index: int
+    delta: str
+    type: Literal["thinking_delta"] = "thinking_delta"
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class ThinkingEnd(JsonSerializable):
+    """Emitted when a thinking/reasoning content block completes"""
+    content_index: int
+    content: str  # Complete accumulated thinking
+    type: Literal["thinking_end"] = "thinking_end"
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class ToolCallStart(JsonSerializable):
+    """Emitted when a tool call content block begins"""
+    content_index: int
+    tool_call_id: str
+    tool_name: str
+    type: Literal["toolcall_start"] = "toolcall_start"
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class ToolCallDelta(JsonSerializable):
+    """Emitted for each chunk of tool call arguments during streaming
+
+    The partial_args field contains the best-effort parsed JSON from the
+    accumulated argument string so far. May be incomplete objects/arrays.
+    """
+    content_index: int
+    tool_call_id: str
+    delta: str  # Raw JSON chunk
+    partial_args: dict[str, Any]  # Best-effort parsed partial JSON
+    type: Literal["toolcall_delta"] = "toolcall_delta"
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class ToolCallEnd(JsonSerializable):
+    """Emitted when a tool call content block completes"""
+    content_index: int
+    tool_call: ToolCall  # Complete parsed tool call
+    type: Literal["toolcall_end"] = "toolcall_end"
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class ToolCallError(JsonSerializable):
+    """Emitted when tool call argument parsing fails"""
+    content_index: int
+    tool_call_id: str
+    tool_name: str
+    error: str
+    raw_arguments: str
+    type: Literal["toolcall_error"] = "toolcall_error"
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class ToolResultReceived(JsonSerializable):
+    """Emitted when a tool execution result is received"""
+    tool_call_id: str
+    content: str
+    is_error: bool = False
+    error: Optional[str] = None
+    type: Literal["tool_result"] = "tool_result"
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class StreamDone(JsonSerializable):
+    """Emitted when streaming completes successfully"""
+    finish_reason: str  # "stop", "length", "tool_calls", etc.
+    type: Literal["done"] = "done"
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class StreamError(JsonSerializable):
+    """Emitted when streaming encounters an error"""
+    error: str
+    type: Literal["error"] = "error"
+    timestamp: float = field(default_factory=time.time)
+
+
+# Union type for all streaming events
+StreamEvent = (
+    LLMCallStart
+    | StreamStart
+    | TextStart
+    | TextDelta
+    | TextEnd
+    | ThinkingStart
+    | ThinkingDelta
+    | ThinkingEnd
+    | ToolCallStart
+    | ToolCallDelta
+    | ToolCallEnd
+    | ToolCallError
+    | ToolResultReceived
+    | StreamDone
+    | StreamError
+)
+
+
+# Provider abstraction protocol (inspired by pi-ai)
+# All provider streaming functions must implement this interface
+@runtime_checkable
+class ProviderStreamFunction(Protocol):
+    """Protocol for provider-specific streaming functions.
+
+    All providers (OpenAI, Anthropic, Google, etc.) must implement a function
+    matching this signature. The function accepts an Actor (with endpoint, trajectory, tools)
+    and an event callback, then streams granular events back via the callback.
+
+    Providers may accept additional provider-specific parameters via **kwargs.
+
+    Example implementations:
+    - rollout_openai(actor, on_chunk) -> Actor
+    - rollout_anthropic(actor, on_chunk, user_message_for_thinking=..., **kwargs) -> Actor
+    - rollout_google(actor, on_chunk) -> Actor
+    """
+
+    async def __call__(
+        self,
+        actor: 'Actor',
+        on_chunk: Callable[[StreamEvent], Awaitable[None]],
+        **kwargs: Any,
+    ) -> 'Actor':
+        """Stream LLM response and return updated Actor with new trajectory message.
+
+        Args:
+            actor: Current actor state (endpoint, trajectory, tools)
+            on_chunk: Async callback for streaming events
+            **kwargs: Provider-specific optional parameters
+
+        Returns:
+            Updated actor with new assistant message appended to trajectory
+        """
+        ...
+
+
+# ContentBlock types for structured message content (inspired by pi-ai)
+# These allow messages to contain mixed content: text, thinking, tool calls, images
+
+
+@dataclass(frozen=True)
+class TextContent(JsonSerializable):
+    """Text content block in a message."""
+    type: Literal["text"] = "text"
+    text: str = ""
+    text_signature: str | None = None  # Provider-specific identifier
+
+
+@dataclass(frozen=True)
+class ThinkingContent(JsonSerializable):
+    """Thinking/reasoning content block in a message.
+
+    Used by Anthropic (thinking blocks) and OpenAI o1/o3 (reasoning_content).
+    """
+    type: Literal["thinking"] = "thinking"
+    thinking: str = ""
+    thinking_signature: str | None = None  # Provider-specific identifier (e.g., GPT-5 Codex reasoning item ID)
+
+
+@dataclass(frozen=True)
+class ToolCallContent(JsonSerializable):
+    """Tool call content block in a message."""
+    type: Literal["toolCall"] = "toolCall"
+    id: str = ""
+    name: str = ""
+    arguments: dict[str, Any] = field(default_factory=dict)
+    thought_signature: str | None = None  # Google-specific opaque context
+
+
+@dataclass(frozen=True)
+class ImageContent(JsonSerializable):
+    """Image content block in a message (for vision models)."""
+    type: Literal["image"] = "image"
+    image_url: str = ""  # base64 data URL or HTTP URL
+    detail: str | None = None  # OpenAI detail parameter: "low", "high", "auto"
+
+
+# Union type for all content blocks
+ContentBlock = TextContent | ThinkingContent | ToolCallContent | ImageContent
+
+
 @dataclass(frozen=True)
 class Message(JsonSerializable):
+    """Unified message type supporting all providers.
+
+    Content can be:
+    - str: Simple text message (most common)
+    - list[ContentBlock]: Structured message with text/thinking/tools/images
+
+    Role can be:
+    - "user": User input
+    - "assistant": Model response
+    - "tool": Tool execution result
+    """
     role: str
-    content: str | list[dict[str, Any]] | None  # str for text, List[Dict] for vision (OpenAI format)
-    reasoning_content: Any | None = None
-    thinking_content: str | None = None
-    thinking_signature: str | None = None
-    tool_calls: list[ToolCall] = field(default_factory=list)
+    content: str | list[ContentBlock] | None
+    # Provider metadata for message transformation
+    provider: str | None = None  # e.g., "anthropic", "openai", "google"
+    api: str | None = None  # e.g., "anthropic-messages", "openai-completions", "openai-responses"
+    model: str | None = None  # e.g., "claude-3-5-sonnet-20241022", "gpt-4o"
+    # For tool role messages: which tool call this is responding to
     tool_call_id: str | None = None
+    # UI-only structured data (stripped before LLM)
+    details: dict[str, Any] | None = None
+
+    def get_tool_calls(self) -> list[ToolCall]:
+        """Extract tool calls from ContentBlocks.
+
+        Tiger Style: Helper for common operation, makes migration easier.
+        """
+        if not isinstance(self.content, list):
+            return []
+
+        tool_calls = []
+        for block in self.content:
+            if isinstance(block, ToolCallContent):
+                tool_calls.append(ToolCall(
+                    id=block.id,
+                    name=block.name,
+                    args=block.arguments
+                ))
+        return tool_calls
 
     def __repr__(self) -> str:
         """Tiger Style: Bounded repr, truncate large content.
@@ -97,8 +478,9 @@ class Message(JsonSerializable):
         if isinstance(self.content, str):
             content_preview = self.content[:100] + "..." if len(self.content) > 100 else self.content
         elif isinstance(self.content, list):
-            # Vision message - show structure but not base64 data
-            content_preview = f"[vision message with {len(self.content)} parts]"
+            # Show ContentBlock types
+            block_types = [b.type for b in self.content if hasattr(b, 'type')]
+            content_preview = f"[{len(self.content)} blocks: {', '.join(block_types)}]"
         else:
             content_preview = str(self.content)
 
@@ -368,15 +750,18 @@ class StopReason(Enum):
     PROVIDER_ERROR = "PROVIDER_ERROR"
     NO_TOOL_CALLED = "NO_TOOL_CALLED"
     TASK_COMPLETED = "TASK_COMPLETED"
+    ABORTED = "ABORTED"
 
 
 @dataclass(frozen=True)
 class ToolResult(JsonSerializable):
-    call_id: str = ""
-    ok: bool = False
+    tool_call_id: str = ""
+    is_error: bool = False
     content: str = ""
     error: str | None = None
     stop_reason: StopReason | None = None
+    # UI-only structured data (stripped before LLM)
+    details: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -397,13 +782,40 @@ class Environment(Protocol):
         """Return available tools for this environment."""
         ...
 
-    async def exec_tool(self, tool_call: ToolCall, current_state: 'AgentState',
-                       run_config: 'RunConfig', checkpoint_store=None) -> ToolResult:
-        """Execute a tool call in this environment."""
+    async def exec_tool(
+        self,
+        tool_call: ToolCall,
+        current_state: 'AgentState',
+        run_config: 'RunConfig',
+        checkpoint_store=None,
+        cancel_scope: trio.CancelScope | None = None,
+    ) -> ToolResult:
+        """Execute a tool call in this environment.
+
+        Args:
+            tool_call: The tool call to execute
+            current_state: Current agent state
+            run_config: Run configuration
+            checkpoint_store: Optional checkpoint store for persistence
+            cancel_scope: Optional Trio cancel scope for graceful cancellation
+        """
         ...
 
     def requires_confirmation(self, tool_call: ToolCall) -> bool:
         """Check if tool requires confirmation."""
+        ...
+
+    def get_tool_formatter(self, tool_name: str) -> 'ToolFormatter | None':
+        """Return optional TUI formatter for this tool.
+
+        Args:
+            tool_name: Name of the tool to format
+
+        Returns:
+            A formatter function or None to use the default formatter.
+            The formatter receives (tool_name, args, result, expanded) and returns
+            a formatted string for display in the TUI.
+        """
         ...
 
     async def on_assistant_message(self, message: 'Message', state: 'AgentState') -> 'AgentState':
@@ -466,6 +878,33 @@ class Endpoint(JsonSerializable):
     # Extra params merged into the raw chat request for custom servers
     extra_params: dict[str, Any] | None = None
 
+    def __post_init__(self):
+        """Validate endpoint configuration.
+
+        Tiger Style: Crash loud on invalid config, explicit error messages.
+        """
+        # Validate Claude thinking budget (Anthropic requires >= 1024 tokens)
+        if self.thinking is not None and self.provider == "anthropic":
+            assert isinstance(self.thinking, dict), f"thinking must be dict, got {type(self.thinking)}"
+            if self.thinking.get("type") == "enabled":
+                budget = self.thinking.get("budget_tokens", 0)
+                assert isinstance(budget, int), f"budget_tokens must be int, got {type(budget)}"
+                assert budget >= 1024, (
+                    f"Claude thinking budget_tokens must be >= 1024, got {budget}. "
+                    "Anthropic API requirement for extended thinking mode."
+                )
+                # max_tokens must be greater than thinking budget
+                assert self.max_tokens > budget, (
+                    f"max_tokens ({self.max_tokens}) must be greater than thinking.budget_tokens ({budget}). "
+                    f"Anthropic requires max_tokens > budget_tokens to allow space for both thinking and response. "
+                    f"See https://docs.claude.com/en/docs/build-with-claude/extended-thinking#max-tokens-and-context-window-size"
+                )
+                # Anthropic requires temperature=1.0 when thinking is enabled
+                assert self.temperature == 1.0, (
+                    f"Anthropic requires temperature=1.0 when thinking is enabled, got {self.temperature}. "
+                    "See https://docs.claude.com/en/docs/build-with-claude/extended-thinking"
+                )
+
 
 @dataclass(frozen=True)
 class Actor(JsonSerializable):
@@ -507,7 +946,7 @@ class RunConfig:
     # Currently if a sync function is passed, it gets set to None silently, causing
     # "object NoneType can't be used in 'await' expression" errors later. Should validate
     # that on_chunk is properly async and has correct signature at construction time.
-    on_chunk: Callable[[StreamChunk], Awaitable[None]]
+    on_chunk: Callable[[StreamEvent], Awaitable[None]]
     on_input: Callable[[str], Awaitable[str]] = field(default_factory=lambda: default_stdin_handler)
     confirm_tool: Callable[[ToolCall, 'AgentState', 'RunConfig'], Awaitable[tuple['AgentState', ToolConfirmResult]]] = field(default_factory=lambda: default_confirm_tool)
     handle_tool_error: Callable[[ToolResult, 'AgentState'], 'AgentState'] = lambda tr, s: s
@@ -518,6 +957,7 @@ class RunConfig:
     inline_thinking: str | None = None
     checkpoint_store: Any | None = None
     show_progress: bool = False  # Enable turn-level progress tracking
+    cancel_scope: trio.CancelScope | None = None  # Optional Trio cancel scope for graceful cancellation. When cancel_scope.cancel() is called, any in-flight HTTP request is immediately cancelled and trio.Cancelled is raised. The agent loop catches this and sets stop=StopReason.ABORTED.
 
 
 # ── Evaluation Types ──────────────────────────────────────────────────────────

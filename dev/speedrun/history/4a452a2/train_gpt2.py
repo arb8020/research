@@ -1,17 +1,17 @@
+import glob
+import math
 import os
 import sys
 import uuid
-import math
-import glob
 from dataclasses import dataclass
 
 import numpy as np
 import torch
-from torch import nn
-import torch.nn.functional as F
 import torch._inductor.config as config
+import torch.nn.functional as F
+from torch import nn
+from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.distributed import init_process_group, destroy_process_group
 
 with open(sys.argv[0]) as f:
     code = f.read()
@@ -19,10 +19,12 @@ with open(sys.argv[0]) as f:
 # -----------------------------------------------------------------------------
 # PyTorch nn.Module definitions for the GPT-2 model
 
+
 def rmsnorm(x0, eps=1e-6):
     x = x0.float()
     x = x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + eps)
     return x.type_as(x0)
+
 
 class CausalSelfAttention(nn.Module):
 
@@ -38,32 +40,34 @@ class CausalSelfAttention(nn.Module):
         self.n_embd = config.n_embd
 
     def forward(self, x):
-        B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
+        B, T, C = x.size()  # batch size, sequence length, embedding dimensionality (n_embd)
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
         qkv = self.c_attn(x)
         q, k, v = qkv.split(self.n_embd, dim=2)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
         y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
-        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
+        y = y.transpose(1, 2).contiguous().view(B, T, C)  # re-assemble all head outputs side by side
         # output projection
         y = self.c_proj(y)
         y = y / math.sqrt(24)
         return y
 
+
 class MLP(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=False)
-        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=False)
+        self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd, bias=False)
+        self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=False)
 
     def forward(self, x):
         x = self.c_fc(x)
         x = F.gelu(x)
         x = self.c_proj(x)
         return x
+
 
 class Block(nn.Module):
 
@@ -80,6 +84,7 @@ class Block(nn.Module):
 # -----------------------------------------------------------------------------
 # The main GPT-2 model
 
+
 @dataclass
 class GPTConfig:
     block_size: int = 1024
@@ -88,6 +93,7 @@ class GPTConfig:
     n_head: int = 12
     n_embd: int = 768
 
+
 class GPT(nn.Module):
 
     def __init__(self, config):
@@ -95,13 +101,13 @@ class GPT(nn.Module):
         self.config = config
 
         self.transformer = nn.ModuleDict(dict(
-            wte = nn.Embedding(config.vocab_size, config.n_embd),
-            wpe = nn.Embedding(config.block_size, config.n_embd),
-            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+            wte=nn.Embedding(config.vocab_size, config.n_embd),
+            wpe=nn.Embedding(config.block_size, config.n_embd),
+            h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        self.lm_head.LLMC_SKIP_INIT = 1 # don't init this one, we will tie weights
-        self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
+        self.lm_head.LLMC_SKIP_INIT = 1  # don't init this one, we will tie weights
+        self.transformer.wte.weight = self.lm_head.weight  # https://paperswithcode.com/method/weight-tying
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
@@ -112,11 +118,11 @@ class GPT(nn.Module):
     def forward(self, idx, targets=None, return_logits=True):
         b, t = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
-        pos = torch.arange(0, t, dtype=torch.long, device=idx.device) # shape (t)
+        pos = torch.arange(0, t, dtype=torch.long, device=idx.device)  # shape (t)
 
         # forward the GPT model itself
-        tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
-        pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
+        tok_emb = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
+        pos_emb = self.transformer.wpe(pos)  # position embeddings of shape (t, n_embd)
         x = tok_emb + pos_emb
 
         for block in self.transformer.h:
@@ -129,7 +135,7 @@ class GPT(nn.Module):
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
-            logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
+            logits = self.lm_head(x[:, [-1], :])  # note: using list [-1] to preserve the time dim
             loss = None
 
         # there are performance reasons why not returning logits is prudent, if not needed
@@ -145,11 +151,12 @@ class GPT(nn.Module):
 # -----------------------------------------------------------------------------
 # Our own simple Distributed Data Loader
 
+
 def _peek_data_shard(filename):
     # only reads the header, returns header data
     with open(filename, "rb") as f:
         # first read the header, which is 256 int32 integers (4 bytes each)
-        header = np.frombuffer(f.read(256*4), dtype=np.int32)
+        header = np.frombuffer(f.read(256 * 4), dtype=np.int32)
     if header[0] != 20240520:
         print("ERROR: magic number mismatch in the data .bin file!")
         print("---> HINT: Are you passing in a correct file with --input_bin?")
@@ -157,20 +164,22 @@ def _peek_data_shard(filename):
         print("---> HINT: For example re-run: `python dev/data/tinyshakespeare.py`, then re-try")
         exit(1)
     assert header[1] == 1, "unsupported version"
-    ntok = header[2] # number of tokens (claimed)
-    return ntok # for now just return the number of tokens
+    ntok = header[2]  # number of tokens (claimed)
+    return ntok  # for now just return the number of tokens
+
 
 def _load_data_shard(filename):
     with open(filename, "rb") as f:
         # first read the header, which is 256 int32 integers (4 bytes each)
-        header = np.frombuffer(f.read(256*4), dtype=np.int32)
+        header = np.frombuffer(f.read(256 * 4), dtype=np.int32)
         assert header[0] == 20240520, "magic number mismatch in the data .bin file"
         assert header[1] == 1, "unsupported version"
-        ntok = header[2] # number of tokens (claimed)
+        ntok = header[2]  # number of tokens (claimed)
         # the rest of it are tokens, stored as uint16
         tokens = np.frombuffer(f.read(), dtype=np.uint16)
     assert len(tokens) == ntok, "number of tokens read does not match header?"
     return tokens
+
 
 class DistributedDataLoader:
     def __init__(self, filename_pattern, B, T, process_rank, num_processes):
@@ -200,7 +209,7 @@ class DistributedDataLoader:
         self.current_position = self.process_rank * self.B * self.T
         self.tokens = _load_data_shard(self.files[self.current_shard])
 
-    def advance(self): # advance to next data shard
+    def advance(self):  # advance to next data shard
         self.current_shard = (self.current_shard + 1) % len(self.files)
         self.current_position = self.process_rank * self.B * self.T
         self.tokens = _load_data_shard(self.files[self.current_shard])
@@ -208,10 +217,10 @@ class DistributedDataLoader:
     def next_batch(self):
         B = self.B
         T = self.T
-        buf = self.tokens[self.current_position : self.current_position+B*T+1]
+        buf = self.tokens[self.current_position : self.current_position + B * T + 1]
         buf = torch.tensor(buf.astype(np.int32), dtype=torch.long)
-        x = (buf[:-1]).view(B, T) # inputs
-        y = (buf[1:]).view(B, T) # targets
+        x = (buf[:-1]).view(B, T)  # inputs
+        y = (buf[1:]).view(B, T)  # targets
         # advance current position and load next shard if necessary
         self.current_position += B * T * self.num_processes
         if self.current_position + (B * T * self.num_processes + 1) > len(self.tokens):
@@ -221,15 +230,18 @@ class DistributedDataLoader:
 # -----------------------------------------------------------------------------
 # int main
 
+
 def print0(*args, **kwargs):
     # modified print that only prints from the master process
     # if this is not a distributed run, it's just a print
     if int(os.environ.get("RANK", 0)) == 0:
         print(*args, **kwargs)
 
+
 if __name__ == "__main__":
-    import time
     import argparse
+    import time
+
     import tiktoken
     print0(f"Running pytorch {torch.version.__version__}")
 
@@ -269,8 +281,8 @@ if __name__ == "__main__":
     ddp_world_size = int(os.environ['WORLD_SIZE'])
     device = f'cuda:{ddp_local_rank}'
     torch.cuda.set_device(device)
-    master_process = ddp_rank == 0 # this process will do logging, checkpointing etc.
-    seed_offset = 0 # each process gets the exact same seed
+    master_process = ddp_rank == 0  # this process will do logging, checkpointing etc.
+    seed_offset = 0  # each process gets the exact same seed
     print(f"using device: {device}")
 
     tokens_per_fwdbwd = B * T * ddp_world_size
@@ -292,7 +304,7 @@ if __name__ == "__main__":
     model = GPT(model_config)
     model = model.train().cuda()
     if hasattr(config, "coordinate_descent_tuning"):
-        config.coordinate_descent_tuning = True # suggested by @Chillee
+        config.coordinate_descent_tuning = True  # suggested by @Chillee
     print0("compiling the model...")
     model = torch.compile(model)
 
@@ -305,7 +317,7 @@ if __name__ == "__main__":
 
     # here we wrap model into DDP container
     model = DDP(model, device_ids=[ddp_local_rank])
-    raw_model = model.module # always contains the "raw" unwrapped model
+    raw_model = model.module  # always contains the "raw" unwrapped model
 
     # init the optimizer
     optimizer = raw_model.configure_optimizers(weight_decay=args.weight_decay,
@@ -317,7 +329,7 @@ if __name__ == "__main__":
         assert it <= args.num_iterations
         # 1) linear warmup for warmup_iters steps
         if it < args.warmup_iters:
-            return args.learning_rate * (it+1) / args.warmup_iters
+            return args.learning_rate * (it + 1) / args.warmup_iters
         # 2) linear decay down to min learning rate
         decay_ratio = (it - args.warmup_iters) / (args.num_iterations - args.warmup_iters)
         assert 0 <= decay_ratio <= 1
@@ -341,7 +353,7 @@ if __name__ == "__main__":
         last_step = (step == args.num_iterations)
 
         # once in a while evaluate the validation dataset
-        if (args.val_loss_every > 0 \
+        if (args.val_loss_every > 0 
             and (step % args.val_loss_every == 0 or last_step)) \
             and (val_loader is not None):
             model.eval()
@@ -390,9 +402,9 @@ if __name__ == "__main__":
         # time and print
         t1 = time.time()
         # the 0th iteration is often an outlier (much slower) => skip logging it
-        tokens_per_second = ddp_world_size * B * T / (t1-t0)
-        lossf = loss.item() # keep track of the mean loss
-        print0(f"step {step+1:4d}/{args.num_iterations} | train loss {lossf:.6f} | norm {norm:.4f} | lr {lr:.2e} | ({(t1-t0)*1000:.2f} ms | {tokens_per_second:.0f} tok/s)")
+        tokens_per_second = ddp_world_size * B * T / (t1 - t0)
+        lossf = loss.item()  # keep track of the mean loss
+        print0(f"step {step + 1:4d}/{args.num_iterations} | train loss {lossf:.6f} | norm {norm:.4f} | lr {lr:.2e} | ({(t1 - t0) * 1000:.2f} ms | {tokens_per_second:.0f} tok/s)")
         # log to logile
         if master_process and logfile is not None:
             with open(logfile, "a") as f:
@@ -400,11 +412,11 @@ if __name__ == "__main__":
 
         # keep track of smooth timings, last 20 iterations
         if step > 0 and step > args.num_iterations - 20:
-            timings.append(t1-t0)
+            timings.append(t1 - t0)
 
     # print the average of the last 20 timings, to get something smooth-ish
     timings = timings[-20:]
-    print0(f"final {len(timings)} iters avg: {np.mean(timings)*1000:.3f}ms")
+    print0(f"final {len(timings)} iters avg: {np.mean(timings) * 1000:.3f}ms")
     print0(f"peak memory consumption: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB")
 
     # -------------------------------------------------------------------------

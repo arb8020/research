@@ -11,13 +11,12 @@ from pathlib import Path
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 
 # Import local modules
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from config import GPT2Config
-from backends.jax.model import gpt2_forward
 from backends.jax.loader import load_weights
+from backends.jax.model import gpt2_forward
+from config import GPT2Config
 
 
 def main():
@@ -27,7 +26,7 @@ def main():
     # Load model weights
     print("\n📦 Loading GPT-2 weights...")
     weights = load_weights("gpt2")
-    print(f"✅ Loaded weights")
+    print("✅ Loaded weights")
 
     # Create config
     config = GPT2Config()
@@ -44,7 +43,7 @@ def main():
     print("\n🔥 Running forward pass...")
     logits_BTV = gpt2_forward(input_ids_BT, weights, config)
 
-    print(f"✅ Forward pass complete!")
+    print("✅ Forward pass complete!")
     print(f"   Logits shape: {logits_BTV.shape}")
     print(f"   Logits range: [{logits_BTV.min():.3f}, {logits_BTV.max():.3f}]")
 
@@ -56,7 +55,7 @@ def main():
     top_probs = jax.nn.softmax(next_token_logits)[top_indices]
 
     for i, (token_id, prob) in enumerate(zip(top_indices, top_probs)):
-        print(f"   {i+1}. Token {token_id}: {prob:.4f}")
+        print(f"   {i + 1}. Token {token_id}: {prob:.4f}")
 
     print("\n✅ Example complete!")
 

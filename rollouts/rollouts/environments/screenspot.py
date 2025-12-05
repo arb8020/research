@@ -5,8 +5,8 @@ Reward computation happens in evaluation script after generation.
 """
 
 import re
-from typing import List, Optional
-from rollouts.dtypes import Tool, ToolCall, ToolResult, Message, AgentState
+
+from rollouts.dtypes import AgentState, Message, Tool, ToolCall, ToolResult
 
 
 class ScreenSpotEnvironment:
@@ -22,7 +22,7 @@ class ScreenSpotEnvironment:
         """Initialize ScreenSpot environment."""
         pass
 
-    def get_tools(self) -> List[Tool]:
+    def get_tools(self) -> list[Tool]:
         """Return empty tool list - ScreenSpot doesn't use tools.
 
         Returns:
@@ -38,16 +38,23 @@ class ScreenSpotEnvironment:
         """No feedback needed for ScreenSpot environment."""
         return state
 
-    async def exec_tool(self, tool_call: ToolCall, current_state: AgentState, run_config, checkpoint_store=None) -> ToolResult:
+    async def exec_tool(
+        self,
+        tool_call: ToolCall,
+        current_state: AgentState,
+        run_config,
+        checkpoint_store=None,
+        cancel_scope=None,
+    ) -> ToolResult:
         """No tools available in ScreenSpot environment."""
         return ToolResult(
-            call_id=tool_call.id,
-            ok=False,
+            tool_call_id=tool_call.id,
+            is_error=True,
             error="No tools available in ScreenSpot environment"
         )
 
     @staticmethod
-    def extract_bbox(text: str) -> Optional[List[float]]:
+    def extract_bbox(text: str) -> list[float] | None:
         """Extract first bounding box in format [[x0,y0,x1,y1]].
 
         Args:
@@ -73,7 +80,7 @@ class ScreenSpotEnvironment:
         return None
 
     @staticmethod
-    def extract_point(text: str) -> Optional[List[float]]:
+    def extract_point(text: str) -> list[float] | None:
         """Extract first point in format [[x,y]].
 
         Args:
@@ -94,7 +101,7 @@ class ScreenSpotEnvironment:
         return None
 
     @staticmethod
-    def compute_reward(response_text: str, gt_bbox: List[int], img_size: List[int]) -> float:
+    def compute_reward(response_text: str, gt_bbox: list[int], img_size: list[int]) -> float:
         """Compute grounding reward (0.0 or 1.0).
 
         Args:

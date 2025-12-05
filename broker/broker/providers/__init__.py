@@ -4,8 +4,8 @@ GPU Provider implementations and protocol.
 All providers must implement the ProviderProtocol to ensure consistent behavior.
 """
 
-from typing import Protocol, Optional
 import logging
+from typing import Optional, Protocol
 
 logger = logging.getLogger(__name__)
 

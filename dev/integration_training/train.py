@@ -25,7 +25,6 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
 
 import trio
 
@@ -35,7 +34,6 @@ from base_config import Config
 # Import from rollouts module (installed via workspace)
 from rollouts.training import (
     JSONLLogger,
-    PyTorchTrainingBackend,
     SFTTrainingConfig,
     load_sft_dataset,
     run_sft_training,
@@ -75,7 +73,7 @@ def load_config_from_file(config_path: str) -> Config:
     spec.loader.exec_module(module)
 
     assert hasattr(module, 'config'), "Config file must define 'config' variable"
-    config: Config = getattr(module, 'config')
+    config: Config = module.config
     assert isinstance(config, Config), f"Expected Config object, got {type(config)}"
 
     return config
@@ -184,10 +182,10 @@ async def create_fsdp_backend(config: Config, output_dir: Path):
 
     # Load model using Tier 1 factory functions (will be wrapped by FSDP)
     from rollouts.training.backends import (
-        parse_dtype,
         compute_device_map_single_gpu,
-        load_hf_model,
         create_cross_entropy_loss,
+        load_hf_model,
+        parse_dtype,
     )
 
     torch_dtype = parse_dtype(config.model.dtype)
@@ -363,18 +361,17 @@ async def run_rl(config: Config, output_dir: Path, source_checkpoint: str | None
         logger.info(f"Loading from checkpoint: {source_checkpoint}")
         # TODO: Implement checkpoint loading
         raise NotImplementedError("Checkpoint loading not yet implemented")
-    else:
-        # Create backend using Tier 2 convenience factory
-        backend = create_pytorch_backend(
-            model_name=config.model.name,
-            checkpoint_dir=output_dir / "checkpoints",
-            device_type=config.target.device_type,
-            dtype=config.model.dtype,
-            gpu_rank=config.target.gpu_ranks[0],
-            learning_rate=config.rl.matrix_lr,
-            adam_betas=(config.rl.adam_beta1, config.rl.adam_beta2),
-            weight_decay=config.rl.weight_decay,
-        )
+    # Create backend using Tier 2 convenience factory
+    backend = create_pytorch_backend(
+        model_name=config.model.name,
+        checkpoint_dir=output_dir / "checkpoints",
+        device_type=config.target.device_type,
+        dtype=config.model.dtype,
+        gpu_rank=config.target.gpu_ranks[0],
+        learning_rate=config.rl.matrix_lr,
+        adam_betas=(config.rl.adam_beta1, config.rl.adam_beta2),
+        weight_decay=config.rl.weight_decay,
+    )
 
     # Load RL dataset (GSM8K)
     logger.info(f"Loading RL dataset: {config.data.rl_dataset}")

@@ -2,9 +2,9 @@
 """Quick test of embedding pipeline with synthetic data."""
 
 import json
+import sys
 import tempfile
 from pathlib import Path
-import sys
 
 # Create a small test dataset
 test_chunks = [
@@ -14,6 +14,7 @@ test_chunks = [
     {"shard_id": 0, "chunk_id": 3, "text": "Natural language processing enables computers to understand text."},
     {"shard_id": 0, "chunk_id": 4, "text": "Deep learning models require large amounts of training data."},
 ]
+
 
 def main():
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -44,6 +45,7 @@ def main():
         result = subprocess.run(cmd, capture_output=False)
 
         return result.returncode
+
 
 if __name__ == "__main__":
     sys.exit(main())

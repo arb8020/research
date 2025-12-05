@@ -2,9 +2,11 @@
 """Corpus definitions and streaming access without local downloads."""
 
 import logging
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Iterator, Optional, cast
-from datasets import load_dataset, IterableDataset
+from typing import cast
+
+from datasets import IterableDataset, load_dataset
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +21,8 @@ class CorpusConfig:
     name: str
     dataset_name: str  # HuggingFace dataset name
     split: str = "train"
-    config_name: Optional[str] = None  # HuggingFace dataset config (e.g., "all", "main")
-    num_shards: Optional[int] = None  # None = all shards
+    config_name: str | None = None  # HuggingFace dataset config (e.g., "all", "main")
+    num_shards: int | None = None  # None = all shards
     streaming: bool = True  # Stream instead of download
 
     def __post_init__(self):
@@ -214,18 +216,18 @@ def main():
         ARC_CHALLENGE_TRAIN,
     ]
 
-    logger.info("="*80)
+    logger.info("=" * 80)
     logger.info("Testing corpus access (dry-run)")
-    logger.info("="*80)
+    logger.info("=" * 80)
 
     results = {}
     for corpus in corpora:
         logger.info(f"\nTesting: {corpus.name}")
         results[corpus.name] = verify_corpus_access(corpus)
 
-    logger.info("\n" + "="*80)
+    logger.info("\n" + "=" * 80)
     logger.info("Results:")
-    logger.info("="*80)
+    logger.info("=" * 80)
     for name, success in results.items():
         status = "✅ PASS" if success else "❌ FAIL"
         logger.info(f"{status}: {name}")

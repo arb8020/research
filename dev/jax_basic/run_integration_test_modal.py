@@ -13,7 +13,6 @@ Compare with run_integration_test.py (broker/bifrost approach).
 
 import argparse
 import logging
-import os
 from pathlib import Path
 
 import modal

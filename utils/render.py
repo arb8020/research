@@ -2,6 +2,7 @@
 https://blog.ezyang.com/2025/10/draw-high-dimensional-tensors-as-a-matrix-of-matrices/
 """
 
+
 def render(tensor, cell_width=None):
     """
     Print a tensor following the matrix-of-matrices algorithm.

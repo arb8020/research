@@ -7,7 +7,7 @@ Design: Casey Muratori (no retention), Tiger Style (explicit state).
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from rollouts.training.backends import PyTorchTrainingBackend
 from rollouts.training.metrics import MetricsLogger
@@ -18,10 +18,10 @@ logger = logging.getLogger(__name__)
 
 async def run_sft_training(
     backend: PyTorchTrainingBackend,
-    samples: List[Sample],
+    samples: list[Sample],
     config: SFTTrainingConfig,
-    metrics_logger: Optional[MetricsLogger] = None,
-) -> List[Dict[str, float]]:
+    metrics_logger: MetricsLogger | None = None,
+) -> list[dict[str, float]]:
     """Run SFT training (pure function, no hidden state).
 
     Args:
@@ -107,10 +107,10 @@ async def run_sft_training(
 
 
 def collate_batch(
-    samples: List[Sample],
+    samples: list[Sample],
     batch_size: int,
     step: int,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Pure function: Collate samples into training batch.
 
     Args:
@@ -139,7 +139,7 @@ def collate_batch(
     return prepare_sft_batch(batch_samples)
 
 
-def prepare_sft_batch(samples: List[Sample]) -> Dict[str, Any]:
+def prepare_sft_batch(samples: list[Sample]) -> dict[str, Any]:
     """Pure function: Convert samples to training batch using sequence packing.
 
     Uses SLIME-style packing: concatenates sequences instead of padding.

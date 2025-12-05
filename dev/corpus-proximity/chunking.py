@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Chunking strategies for splitting text into smaller pieces."""
 
-import re
-from typing import List, Optional
 
 # Optional imports - will use if available, fallback to regex if not
 try:
@@ -26,7 +24,7 @@ except ImportError:
     NLTK_AVAILABLE = False
 
 
-def chunk_text(text: str, strategy: str, chunk_size: int = 512, overlap_pct: float = 0.15, tokenizer=None) -> List[str]:
+def chunk_text(text: str, strategy: str, chunk_size: int = 512, overlap_pct: float = 0.15, tokenizer=None) -> list[str]:
     """Split text into chunks based on strategy.
 
     Following Casey Muratori: Redundancy for convenience.
@@ -65,7 +63,7 @@ def chunk_text(text: str, strategy: str, chunk_size: int = 512, overlap_pct: flo
         raise ValueError(f"Unknown chunking strategy: {strategy}")
 
 
-def chunk_paragraph(text: str) -> List[str]:
+def chunk_paragraph(text: str) -> list[str]:
     """Split by double newline (paragraphs).
 
     Following Casey Muratori: Simplicity - just split and filter.
@@ -90,7 +88,7 @@ def chunk_paragraph(text: str) -> List[str]:
     return chunks
 
 
-def chunk_fixed_chars(text: str, size: int, overlap_pct: float = 0.15) -> List[str]:
+def chunk_fixed_chars(text: str, size: int, overlap_pct: float = 0.15) -> list[str]:
     """Split into fixed character length chunks with overlap.
 
     Following Casey Muratori: Explicit about overlap strategy.
@@ -139,7 +137,7 @@ def chunk_fixed_chars(text: str, size: int, overlap_pct: float = 0.15) -> List[s
     return chunks
 
 
-def chunk_fixed_tokens(text: str, tokenizer, max_tokens: int = 512, overlap_pct: float = 0.15) -> List[str]:
+def chunk_fixed_tokens(text: str, tokenizer, max_tokens: int = 512, overlap_pct: float = 0.15) -> list[str]:
     """Split into fixed token-length chunks with overlap.
 
     Token-aware chunking ensures chunks don't exceed embedding model limits.
@@ -203,7 +201,7 @@ def chunk_fixed_tokens(text: str, tokenizer, max_tokens: int = 512, overlap_pct:
     return chunks
 
 
-def chunk_sentence_spacy(text: str) -> List[str]:
+def chunk_sentence_spacy(text: str) -> list[str]:
     """Split by sentence boundaries using spaCy.
 
     Most accurate method - uses trained models and linguistic analysis.
@@ -248,7 +246,7 @@ def chunk_sentence_spacy(text: str) -> List[str]:
     return sentences
 
 
-def chunk_sentence_nltk(text: str) -> List[str]:
+def chunk_sentence_nltk(text: str) -> list[str]:
     """Split by sentence boundaries using NLTK.
 
     Good accuracy - uses trained Punkt tokenizer.
@@ -276,8 +274,6 @@ def chunk_sentence_nltk(text: str) -> List[str]:
         return [text.strip()]
 
     return sentences
-
-
 
 
 def main():
@@ -317,7 +313,7 @@ Third paragraph here. Mr. Johnson calculated that 3.14 is pi."""
             for i, chunk in enumerate(spacy_chunks):
                 logging.info(f"chunk {i}: {chunk}")
         except Exception as e:
-            logging.error(f"spacy error: {e}")
+            logging.exception(f"spacy error: {e}")
 
     # Test NLTK if available
     if NLTK_AVAILABLE:
@@ -327,7 +323,7 @@ Third paragraph here. Mr. Johnson calculated that 3.14 is pi."""
             for i, chunk in enumerate(nltk_chunks):
                 logging.info(f"chunk {i}: {chunk}")
         except Exception as e:
-            logging.error(f"nltk error: {e}")
+            logging.exception(f"nltk error: {e}")
 
     logging.info("summary:")
     logging.info(f"paragraphs: {len(para_chunks)} chunks")
@@ -336,12 +332,12 @@ Third paragraph here. Mr. Johnson calculated that 3.14 is pi."""
         try:
             logging.info(f"sentences (spacy): {len(chunk_sentence_spacy(test_text))} chunks")
         except:
-            logging.info(f"sentences (spacy): not available (model not installed)")
+            logging.info("sentences (spacy): not available (model not installed)")
     if NLTK_AVAILABLE:
         try:
             logging.info(f"sentences (nltk): {len(chunk_sentence_nltk(test_text))} chunks")
         except:
-            logging.info(f"sentences (nltk): error")
+            logging.info("sentences (nltk): error")
 
     return 0
 

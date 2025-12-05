@@ -12,9 +12,8 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional
-import numpy as np
 
+import numpy as np
 
 # Dense (non-MoE) models
 DENSE_MODELS = {
@@ -96,13 +95,13 @@ def is_dense_model(model_name: str) -> bool:
     return model_name in DENSE_MODELS
 
 
-def load_perplexity_result(perplexity_dir: Path) -> Optional[Dict]:
+def load_perplexity_result(perplexity_dir: Path) -> dict | None:
     """Load perplexity result from a directory."""
     json_file = perplexity_dir / "perplexity_results.json"
     if not json_file.exists():
         return None
 
-    with open(json_file, 'r') as f:
+    with open(json_file) as f:
         data = json.load(f)
 
     return {
@@ -111,9 +110,9 @@ def load_perplexity_result(perplexity_dir: Path) -> Optional[Dict]:
     }
 
 
-def extract_outliers_from_json(file_path: Path) -> Optional[List[Dict]]:
+def extract_outliers_from_json(file_path: Path) -> list[dict] | None:
     """Extract all_systematic_outliers from JSON file."""
-    with open(file_path, 'r') as f:
+    with open(file_path) as f:
         content = f.read(50_000_000)
 
     match = re.search(
@@ -130,7 +129,7 @@ def extract_outliers_from_json(file_path: Path) -> Optional[List[Dict]]:
     return outliers
 
 
-def calculate_outlier_metrics(outliers: List[Dict]) -> Dict:
+def calculate_outlier_metrics(outliers: list[dict]) -> dict:
     """Calculate aggregate metrics from outliers list."""
     if not outliers:
         return {
@@ -149,11 +148,11 @@ def calculate_outlier_metrics(outliers: List[Dict]) -> Dict:
     }
 
 
-def extract_model_name_from_result(result_dir: Path) -> Optional[str]:
+def extract_model_name_from_result(result_dir: Path) -> str | None:
     """Extract model name from result directory."""
     config_file = result_dir / "config.json"
     if config_file.exists():
-        with open(config_file, 'r') as f:
+        with open(config_file) as f:
             config = json.load(f)
             model_name = config.get('model', {}).get('name')
             if model_name:
@@ -161,7 +160,7 @@ def extract_model_name_from_result(result_dir: Path) -> Optional[str]:
 
     outlier_file = result_dir / "final_analysis_results.json"
     if outlier_file.exists():
-        with open(outlier_file, 'r') as f:
+        with open(outlier_file) as f:
             content = f.read(10000)
         match = re.search(r'"model":\s*"([^"]+)"', content)
         if match:
@@ -170,7 +169,7 @@ def extract_model_name_from_result(result_dir: Path) -> Optional[str]:
     return None
 
 
-def load_all_results(results_dir: Path) -> List[Dict]:
+def load_all_results(results_dir: Path) -> list[dict]:
     """Load all results (outlier + perplexity data)."""
     # First, load all perplexity results
     perplexity_map = {}
@@ -222,7 +221,7 @@ def load_all_results(results_dir: Path) -> List[Dict]:
 
 
 def create_plot(
-    results: List[Dict],
+    results: list[dict],
     x_key: str,
     y_key: str,
     output_path: Path,
@@ -232,8 +231,8 @@ def create_plot(
     use_log_x: bool = False
 ):
     """Create a plot with 0-100% y-axis."""
-    import matplotlib.pyplot as plt
     import matplotlib
+    import matplotlib.pyplot as plt
     matplotlib.use('Agg')
 
     x_values = [r[x_key] for r in results]
@@ -270,7 +269,7 @@ def create_plot(
     print(f"  📊 Saved: {output_path.name}")
 
 
-def generate_all_plots(results: List[Dict], output_dir: Path):
+def generate_all_plots(results: list[dict], output_dir: Path):
     """Generate all plots with 0-100% y-axis."""
     output_dir.mkdir(exist_ok=True, parents=True)
 
@@ -278,7 +277,7 @@ def generate_all_plots(results: List[Dict], output_dir: Path):
     dense_results = [r for r in results if r['is_dense']]
     moe_results = [r for r in results if not r['is_dense']]
 
-    print(f"\n📊 Generating plots with 0-100% y-axis...")
+    print("\n📊 Generating plots with 0-100% y-axis...")
     print(f"   Dense models: {len(dense_results)}")
     print(f"   MoE models: {len(moe_results)}")
 

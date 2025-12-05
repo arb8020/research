@@ -8,19 +8,18 @@ Usage:
     python run_eval.py --config configs/screenspot.py
 """
 
-import trio
 import argparse
 import json
 import logging
 import os
 import sys
 from pathlib import Path
-from typing import Optional
 
+import trio
 from dotenv import load_dotenv
 
-from rollouts.dtypes import Endpoint, Actor, AgentState
-from rollouts.agents import run_agent, RunConfig, stdout_handler
+from rollouts.agents import RunConfig, run_agent
+from rollouts.dtypes import Actor, AgentState, Endpoint
 from rollouts.logging_utils import init_rollout_logging
 from rollouts.progress import tqdm
 
@@ -30,7 +29,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
-def load_config_from_file(config_path: Path, workspace_root: Optional[Path] = None):
+def load_config_from_file(config_path: Path, workspace_root: Path | None = None):
     """Load and resolve config from Python file.
 
     This is a reusable function for loading configs, suitable for
@@ -189,7 +188,7 @@ async def run_evaluation(config, result_dir: Path) -> dict:
     async def run_sample(i: int, row: dict):
         """Run a single sample evaluation."""
         async with semaphore:
-            sample_id = f"Sample {i+1}/{len(dataset)}"
+            sample_id = f"Sample {i + 1}/{len(dataset)}"
 
             try:
                 # Transform to trajectory
@@ -298,7 +297,7 @@ async def run_evaluation(config, result_dir: Path) -> dict:
     total_reward = sum(r.get("reward", 0.0) for r in results if r and "reward" in r)
     num_errors = len(dataset) - num_completed
 
-    logger.info(f"summary:")
+    logger.info("summary:")
     logger.info(f"total samples: {len(dataset)}")
     logger.info(f"completed: {num_completed}")
     logger.info(f"errors: {num_errors}")
@@ -355,7 +354,7 @@ def main():
         if not os.getenv(required_key):
             print(f"❌ Error: {required_key} not found in environment")
             print(f"   Provider '{config.provider}' requires {required_key}")
-            print(f"   Please add it to your .env file or set it in your environment")
+            print("   Please add it to your .env file or set it in your environment")
             return 1
         else:
             print(f"✅ Found {required_key} in environment")

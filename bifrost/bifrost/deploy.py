@@ -1,14 +1,14 @@
 """Git-based code deployment for Bifrost."""
 
-import os
-import subprocess
-import uuid
 import logging
-import shlex
+import os
 import re
-from typing import Tuple, Optional, Dict
+import shlex
+import subprocess
+
 import paramiko
 from rich.console import Console
+
 from .job_manager import JobManager, generate_job_id
 
 logger = logging.getLogger(__name__)
@@ -67,7 +67,8 @@ else
 fi
 '''
 
-def make_env_payload(env_dict: Dict[str, str]) -> bytes:
+
+def make_env_payload(env_dict: dict[str, str]) -> bytes:
     """Create secure environment variable payload for stdin injection."""
     lines = []
     for k, v in env_dict.items():
@@ -77,6 +78,7 @@ def make_env_payload(env_dict: Dict[str, str]) -> bytes:
         lines.append(f"{k}={shlex.quote(v)}")
     return ("\n".join(lines) + "\n").encode()
 
+
 def wrap_with_env_loader(user_command: str) -> str:
     """Wrap user command to load environment variables from stdin."""
     # set -a: automatically export all subsequently defined variables
@@ -85,11 +87,12 @@ def wrap_with_env_loader(user_command: str) -> str:
     # Use bash -c instead of exec to handle shell builtins like cd
     return f"set -a; . /dev/stdin; set +a; bash -c {shlex.quote(user_command)}"
 
+
 def execute_with_env_injection(
     client: paramiko.SSHClient, 
     command: str, 
-    env_dict: Optional[Dict[str, str]] = None
-) -> Tuple[int, str, str]:
+    env_dict: dict[str, str] | None = None
+) -> tuple[int, str, str]:
     """Execute command with secure environment variable injection via stdin."""
     
     # Debug log the command being executed
@@ -175,7 +178,7 @@ class GitDeployment:
         self.ssh_host = ssh_host
         self.ssh_port = ssh_port
     
-    def detect_bootstrap_command(self, client: paramiko.SSHClient, worktree_path: str, uv_extra: Optional[str] = None) -> str:
+    def detect_bootstrap_command(self, client: paramiko.SSHClient, worktree_path: str, uv_extra: str | None = None) -> str:
         """Detect Python dependency files and return appropriate bootstrap command."""
         # Allow callers to skip or freeze dependency bootstrap for faster reuse
         skip_bootstrap = os.environ.get("BIFROST_SKIP_BOOTSTRAP") == "1"
@@ -208,7 +211,7 @@ class GitDeployment:
         logger.debug("📦 No Python dependency files detected, skipping bootstrap")
         return ""
         
-    def detect_git_repo(self) -> Tuple[str, str]:
+    def detect_git_repo(self) -> tuple[str, str]:
         """Detect git repository and get repo name and current commit."""
         try:
             # Check if we're in a git repo
@@ -233,7 +236,7 @@ class GitDeployment:
         except subprocess.CalledProcessError:
             raise ValueError("Not in a git repository. Please run bifrost from a git repository.")
     
-    def setup_remote_structure(self, client: paramiko.SSHClient, repo_name: str, job_id: Optional[str] = None) -> str:
+    def setup_remote_structure(self, client: paramiko.SSHClient, repo_name: str, job_id: str | None = None) -> str:
         """Set up ~/.bifrost directory structure on remote.
 
         Args:
@@ -447,7 +450,7 @@ class GitDeployment:
         cmd = f"rm -rf ~/.bifrost/jobs/{job_id}"
         client.exec_command(cmd)
     
-    def deploy_and_execute(self, client: paramiko.SSHClient, command: str, env_vars: Optional[Dict[str, str]] = None, uv_extra: Optional[str] = None) -> int:
+    def deploy_and_execute(self, client: paramiko.SSHClient, command: str, env_vars: dict[str, str] | None = None, uv_extra: str | None = None) -> int:
         """Deploy code and execute command using shared workspace for better Python imports.
 
         Args:
@@ -473,7 +476,7 @@ class GitDeployment:
 
         return exit_code
     
-    def deploy_to_workspace(self, client: paramiko.SSHClient, workspace_path: str = "~/.bifrost/workspace", uv_extra: Optional[str] = None) -> str:
+    def deploy_to_workspace(self, client: paramiko.SSHClient, workspace_path: str = "~/.bifrost/workspace", uv_extra: str | None = None) -> str:
         """Deploy code to shared workspace directory.
 
         This method:
@@ -525,7 +528,7 @@ class GitDeployment:
         logger.info(f"code deployed successfully to workspace: {workspace_path}")
         return workspace_path
     
-    def deploy_code_only(self, client: paramiko.SSHClient, job_id: Optional[str] = None, target_dir: Optional[str] = None, uv_extra: Optional[str] = None) -> str:
+    def deploy_code_only(self, client: paramiko.SSHClient, job_id: str | None = None, target_dir: str | None = None, uv_extra: str | None = None) -> str:
         """Deploy code without executing commands. Returns worktree path.
 
         This method:
@@ -605,7 +608,7 @@ class GitDeployment:
         logger.info(f"code deployed to: {worktree_path}")
         return worktree_path
     
-    def deploy_and_execute_detached(self, client: paramiko.SSHClient, command: str, env_vars: Optional[Dict[str, str]] = None) -> str:
+    def deploy_and_execute_detached(self, client: paramiko.SSHClient, command: str, env_vars: dict[str, str] | None = None) -> str:
         """Deploy code and execute command in detached mode, return job ID.
 
         Args:
@@ -640,8 +643,8 @@ class GitDeployment:
         repo_name: str,
         commit_hash: str,
         command: str,
-        env_vars: Optional[Dict[str, str]],
-        uv_extra: Optional[str] = None
+        env_vars: dict[str, str] | None,
+        uv_extra: str | None = None
     ) -> str:
         """Execute the main deployment steps for detached job.
 
@@ -685,7 +688,7 @@ class GitDeployment:
         
         return job_id
 
-    def deploy_and_execute_detached_workspace(self, client: paramiko.SSHClient, command: str, env_vars: Optional[Dict[str, str]] = None, job_id: Optional[str] = None) -> str:
+    def deploy_and_execute_detached_workspace(self, client: paramiko.SSHClient, command: str, env_vars: dict[str, str] | None = None, job_id: str | None = None) -> str:
         """Deploy code to shared workspace and execute command in detached mode.
 
         Args:

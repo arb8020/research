@@ -5,7 +5,7 @@ Supports common datasets for SFT and RL training.
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 try:
     from datasets import load_dataset
@@ -21,9 +21,11 @@ def _get_tokenize_conversation():
     from rollouts.training.datasets.sft import tokenize_conversation
     return tokenize_conversation
 
+
 def _get_compute_loss_mask():
     from rollouts.training.datasets.sft import compute_loss_mask
     return compute_loss_mask
+
 
 logger = logging.getLogger(__name__)
 
@@ -31,11 +33,11 @@ logger = logging.getLogger(__name__)
 def load_sft_dataset(
     dataset_name: str,
     split: str = "train",
-    subset: Optional[str] = None,
-    tokenizer: Optional[Any] = None,
-    max_samples: Optional[int] = None,
+    subset: str | None = None,
+    tokenizer: Any | None = None,
+    max_samples: int | None = None,
     max_length: int = 2048,
-) -> List[Sample]:
+) -> list[Sample]:
     """Load HuggingFace dataset and convert to SFT samples.
 
     Loads a chat/instruction dataset from HuggingFace and converts conversations
@@ -137,7 +139,7 @@ def load_sft_dataset(
 
 
 def _estimate_conversation_length(
-    conversation: List[Dict[str, str]],
+    conversation: list[dict[str, str]],
     tokenizer: Any,
 ) -> int:
     """Estimate token length of conversation without full tokenization.
@@ -163,7 +165,7 @@ def _estimate_conversation_length(
     return len(tokens)
 
 
-def _extract_conversation(example: Dict[str, Any]) -> Optional[List[Dict[str, str]]]:
+def _extract_conversation(example: dict[str, Any]) -> list[dict[str, str]] | None:
     """Extract conversation from dataset example.
 
     Handles different dataset formats:
@@ -213,8 +215,8 @@ def _extract_conversation(example: Dict[str, Any]) -> Optional[List[Dict[str, st
 def load_rl_prompts(
     dataset_name: str,
     split: str = "train",
-    max_prompts: Optional[int] = None,
-) -> List[str]:
+    max_prompts: int | None = None,
+) -> list[str]:
     """Load prompts for RL training from HuggingFace dataset.
 
     Loads a dataset and extracts prompts (questions/instructions) for RL rollout generation.
@@ -262,7 +264,7 @@ def load_rl_prompts(
     return prompts
 
 
-def _extract_prompt(example: Dict[str, Any]) -> Optional[str]:
+def _extract_prompt(example: dict[str, Any]) -> str | None:
     """Extract prompt from dataset example.
 
     Handles different prompt field names.
@@ -289,8 +291,8 @@ def _extract_prompt(example: Dict[str, Any]) -> Optional[str]:
 def load_dataset_with_answers(
     dataset_name: str,
     split: str = "train",
-    max_samples: Optional[int] = None,
-) -> List[Dict[str, str]]:
+    max_samples: int | None = None,
+) -> list[dict[str, str]]:
     """Load dataset with prompts and ground truth answers (for RL reward computation).
 
     Args:
@@ -336,7 +338,7 @@ def load_dataset_with_answers(
     return data
 
 
-def _extract_answer(example: Dict[str, Any]) -> Optional[str]:
+def _extract_answer(example: dict[str, Any]) -> str | None:
     """Extract ground truth answer from dataset example.
 
     Args:

@@ -2,7 +2,8 @@
 """Full clustering config for production corpus."""
 
 from pathlib import Path
-from config import Config, DataConfig, ClusteringConfig
+
+from config import ClusteringConfig, Config, DataConfig
 
 _BASE_DIR = Path(__file__).parent.parent.parent / "data"  # Go up to repo root, then into data/
 

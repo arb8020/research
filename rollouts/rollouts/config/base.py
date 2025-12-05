@@ -12,11 +12,12 @@ All configs are frozen dataclasses for immutability.
 All defaults are explicit (no magic).
 """
 
-from dataclasses import dataclass, field, asdict
-from pathlib import Path
-from typing import Dict, Any, List, Callable, Optional
 import json
 import os
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any
 
 from rollouts.dtypes import Endpoint, EvalConfig, Message, RunConfig
 
@@ -183,7 +184,7 @@ class BaseEnvironmentConfig:
     max_steps: int = 100
     timeout_seconds: float = 300.0
 
-    def prepare_messages(self, sample_data: Dict[str, Any]) -> List[Message]:
+    def prepare_messages(self, sample_data: dict[str, Any]) -> list[Message]:
         """Prepare initial messages from dataset sample.
 
         Default implementation: simple prompt from "prompt" field.
@@ -263,7 +264,7 @@ class BaseEvaluationConfig:
 
     # Streaming settings
     stream_tokens: bool = False  # Whether to stream LLM tokens to stdout
-    run_config: Optional[RunConfig] = None  # Optional custom RunConfig
+    run_config: RunConfig | None = None  # Optional custom RunConfig
 
     def to_eval_config(self, reward_fn: Callable) -> EvalConfig:
         """Convert to rollouts EvalConfig.

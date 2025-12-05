@@ -2,7 +2,6 @@
 Example showing Phase 3 API - Enhanced job management with sessions
 """
 
-import os
 from bifrost import BifrostClient
 
 # Phase 3: Enhanced job management

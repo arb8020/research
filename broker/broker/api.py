@@ -3,11 +3,19 @@ Main functional API for GPU cloud operations
 """
 
 import logging
-from typing import Any, Callable, List, Optional, Union, cast
+from collections.abc import Callable
+from typing import Any, cast
 
-from .providers import runpod, primeintellect, lambdalabs, vast
+from .providers import lambdalabs, primeintellect, runpod, vast
 from .query import QueryType
-from .types import GPUInstance, GPUOffer, ProvisionRequest, ProvisionResult, ProvisionAttempt, ProviderModule
+from .types import (
+    GPUInstance,
+    GPUOffer,
+    ProviderModule,
+    ProvisionAttempt,
+    ProvisionRequest,
+    ProvisionResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -22,23 +30,23 @@ PROVIDER_MODULES: dict[str, ProviderModule] = {
 
 
 def search(
-    query: Optional[QueryType] = None,
+    query: QueryType | None = None,
     # Legacy parameters for backward compatibility
-    gpu_type: Optional[str] = None,
-    max_price_per_hour: Optional[float] = None,
-    provider: Optional[str] = None,
-    cuda_version: Optional[str] = None,
-    manufacturer: Optional[str] = None,
+    gpu_type: str | None = None,
+    max_price_per_hour: float | None = None,
+    provider: str | None = None,
+    cuda_version: str | None = None,
+    manufacturer: str | None = None,
     # Resource requirements for accurate pricing
-    memory_gb: Optional[int] = None,
-    container_disk_gb: Optional[int] = None,
+    memory_gb: int | None = None,
+    container_disk_gb: int | None = None,
     gpu_count: int = 1,
     # New sorting parameters
-    sort: Optional[Callable[[Any], Any]] = None,
+    sort: Callable[[Any], Any] | None = None,
     reverse: bool = False,
     # API credentials (dict mapping provider to API key)
-    credentials: Optional[dict] = None
-) -> List[GPUOffer]:
+    credentials: dict | None = None
+) -> list[GPUOffer]:
     """
     Search for available GPU offers across providers
 
@@ -116,7 +124,7 @@ def search(
     return offers
 
 
-def get_instance(instance_id: str, provider: str, credentials: Optional[dict] = None) -> Optional[GPUInstance]:
+def get_instance(instance_id: str, provider: str, credentials: dict | None = None) -> GPUInstance | None:
     """
     Get details of a specific instance
 
@@ -147,7 +155,7 @@ def get_instance(instance_id: str, provider: str, credentials: Optional[dict] = 
     return None
 
 
-def terminate_instance(instance_id: str, provider: str, credentials: Optional[dict] = None) -> bool:
+def terminate_instance(instance_id: str, provider: str, credentials: dict | None = None) -> bool:
     """
     Terminate a GPU instance
 
@@ -175,12 +183,10 @@ def terminate_instance(instance_id: str, provider: str, credentials: Optional[di
     return False
 
 
-
-
 def _normalize_query_input(
     query, gpu_type, max_price_per_hour, provider, cuda_version,
     manufacturer, gpu_count, sort, reverse, credentials, kwargs
-) -> List[GPUOffer]:
+) -> list[GPUOffer]:
     """Normalize query input to list of GPUOffers.
 
     Tiger Style: Extracted to keep create() under 70 lines.
@@ -247,7 +253,7 @@ def _try_provision_with_fallback(
             # Tiger Style: Assert postcondition - successful attempt must have instance
             # This enforces the invariant that error=None implies instance is set
             assert attempt.instance is not None, \
-                f"Successful attempt (error=None) but instance not stored in ProvisionAttempt"
+                "Successful attempt (error=None) but instance not stored in ProvisionAttempt"
 
             instance = attempt.instance
 
@@ -309,7 +315,7 @@ def _build_provision_request(
     )
 
 
-def _categorize_failure(attempts: List[ProvisionAttempt], total_offers: int) -> ProvisionResult:
+def _categorize_failure(attempts: list[ProvisionAttempt], total_offers: int) -> ProvisionResult:
     """Categorize provisioning failure based on attempt errors.
 
     Tiger Style: Extracted for clarity.
@@ -347,7 +353,7 @@ def _categorize_failure(attempts: List[ProvisionAttempt], total_offers: int) -> 
 def _try_provision_from_offer(
     offer: GPUOffer,
     request: ProvisionRequest,
-    ssh_startup_script: Optional[str],
+    ssh_startup_script: str | None,
     credentials: dict
 ) -> ProvisionAttempt:
     """Try to provision from a single offer with explicit error categorization.
@@ -450,31 +456,32 @@ def _try_provision_from_offer(
                 instance=None  # Explicit None for failed attempts
             )
 
+
 def create(
-    query: Union[QueryType, List[GPUOffer], GPUOffer] = None,
+    query: QueryType | list[GPUOffer] | GPUOffer = None,
     image: str = "runpod/pytorch:1.0.0-cu1281-torch280-ubuntu2204",
-    name: Optional[str] = None,
+    name: str | None = None,
     # Search parameters for when query is a filter
-    gpu_type: Optional[str] = None,
-    max_price_per_hour: Optional[float] = None,
-    provider: Optional[str] = None,
-    cuda_version: Optional[str] = None,
-    manufacturer: Optional[str] = None,
+    gpu_type: str | None = None,
+    max_price_per_hour: float | None = None,
+    provider: str | None = None,
+    cuda_version: str | None = None,
+    manufacturer: str | None = None,
     gpu_count: int = 1,
-    sort: Optional[Callable[[Any], Any]] = None,
+    sort: Callable[[Any], Any] | None = None,
     reverse: bool = False,
     # Port exposure configuration
-    exposed_ports: Optional[List[int]] = None,
+    exposed_ports: list[int] | None = None,
     enable_http_proxy: bool = True,
     # Jupyter configuration
     start_jupyter: bool = False,
-    jupyter_password: Optional[str] = None,
+    jupyter_password: str | None = None,
     # RunPod-specific: Template support
-    template_id: Optional[str] = None,
+    template_id: str | None = None,
     # Offer selection parameters
     n_offers: int = 3,
     # API credentials
-    credentials: Optional[dict] = None,
+    credentials: dict | None = None,
     **kwargs
 ) -> ProvisionResult:
     """
@@ -523,7 +530,7 @@ def create(
     )
 
     # Tiger Style: Assert postcondition from normalization
-    assert isinstance(suitable_offers, list), f"_normalize_query_input must return list"
+    assert isinstance(suitable_offers, list), "_normalize_query_input must return list"
 
     # Check if search returned empty
     if not suitable_offers:
@@ -541,7 +548,7 @@ def create(
     )
 
 
-def list_instances(provider: Optional[str] = None, credentials: Optional[dict] = None) -> List[GPUInstance]:
+def list_instances(provider: str | None = None, credentials: dict | None = None) -> list[GPUInstance]:
     """
     List all user's instances across providers
 

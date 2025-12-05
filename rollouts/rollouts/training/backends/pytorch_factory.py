@@ -38,15 +38,14 @@ Example (Tier 1 - custom control):
     >>> backend = PyTorchTrainingBackend(model, optimizer, ...)
 """
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Optional
 
 import torch
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
 from rollouts.training.backends.pytorch import PyTorchTrainingBackend
-
 
 # ============================================================================
 # TIER 1: Granular Primitives (Casey: Fine control, pure functions)
@@ -346,7 +345,7 @@ def create_pytorch_backend(
     learning_rate: float = 1e-4,
     adam_betas: tuple[float, float] = (0.9, 0.95),
     weight_decay: float = 0.0,
-    loss_fn: Optional[Callable] = None,
+    loss_fn: Callable | None = None,
 ) -> PyTorchTrainingBackend:
     """Create PyTorch backend with sensible defaults (Tier 2 convenience).
 

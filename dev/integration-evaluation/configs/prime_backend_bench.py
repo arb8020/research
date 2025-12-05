@@ -14,19 +14,28 @@ Configuration:
     - Print interception: Enabled to capture backend-bench print() output
 """
 
-from pathlib import Path
-from dataclasses import dataclass, field
-from typing import Dict, Any, List
-import trio_asyncio
 import logging
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
-from rollouts.dtypes import Endpoint, EvalConfig, Message, Tool, ToolFunction, ToolFunctionParameter, AgentState
+import trio_asyncio
+from rollouts.dtypes import (
+    AgentState,
+    Endpoint,
+    EvalConfig,
+    Message,
+    Tool,
+    ToolFunction,
+    ToolFunctionParameter,
+)
+
 from shared import intercept_prints
 
 logger = logging.getLogger(__name__)
 
 
-def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
+def prepare_messages(sample_data: dict[str, Any]) -> list[Message]:
     """Prepare messages for backend-bench environment.
 
     backend-bench uses 'prompt' field as a list of message dicts.
@@ -50,7 +59,7 @@ class IntegrationEvalConfig:
     api_base: str = "https://api.openai.com/v1"
     api_key_env_var: str = "OPENAI_API_KEY"
     temperature: float = 0.0
-    max_tokens: int = 8192 # Kernel code can be longer
+    max_tokens: int = 8192  # Kernel code can be longer
 
     # Option 2: Gemini (10 req/min quota - use max_concurrent=1)
     # model_name: str = "gemini-2.0-flash-exp"
@@ -78,7 +87,7 @@ class IntegrationEvalConfig:
     #   - feedback_loop: 'until_correct' | 'until_max_turns' | 'none'
     backend_bench_gpu: str = "local"  # Use 'local' for remote node's GPU (no Modal)
     backend_bench_suite: str = "torchbench"
-    backend_bench_ops: List[str] | None = None
+    backend_bench_ops: list[str] | None = None
     backend_bench_num_turns: int = 1
     backend_bench_feedback_loop: str = "until_max_turns"
 
@@ -157,7 +166,7 @@ class BackendBenchEnvironment:
         self.messages = []
         self.logger = logging.getLogger(f"{__name__}.BackendBenchEnvironment")
 
-    def get_tools(self) -> List[Tool]:
+    def get_tools(self) -> list[Tool]:
         """Return OpenAI-style tools from Prime environment.
 
         backend-bench provides oai_tools which we convert to rollouts Tools.
@@ -199,6 +208,7 @@ class BackendBenchEnvironment:
             ToolResult with execution result
         """
         import json
+
         from rollouts.dtypes import ToolResult
 
         try:
@@ -303,7 +313,7 @@ class BackendBenchEnvironment:
             # Log summary of last result (not the full object!)
             if results:
                 last_result = results[-1]
-                self.logger.info(f"  Last result summary:")
+                self.logger.info("  Last result summary:")
                 self.logger.info(f"    - Correctness score: {last_result.correctness_score}")
                 self.logger.info(f"    - Performance score: {last_result.performance_score}")
                 self.logger.info(f"    - Is correct: {last_result.is_correct}")
@@ -318,13 +328,13 @@ class BackendBenchEnvironment:
                     else:
                         self.logger.info(f"    - Correctness test {i}: {'PASS' if test.is_correct else 'FAIL'}")
         else:
-            self.logger.info(f"  results: NOT FOUND")
+            self.logger.info("  results: NOT FOUND")
 
         best_result = updated_state.get('best_result')
         if best_result:
             self.logger.info(f"  best_result: correctness={best_result.correctness_score}, perf={best_result.performance_score}")
         else:
-            self.logger.info(f"  best_result: NOT FOUND")
+            self.logger.info("  best_result: NOT FOUND")
 
         self.logger.info("=" * 60)
 

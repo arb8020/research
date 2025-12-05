@@ -76,17 +76,17 @@ Constraints
   1 &le; M, N, K &le; 8192
   Performance is measured with M = 8192, N = 6144, K = 4096
 """
-import cutlass
 import cutlass.cute as cute
+
 
 @cute.jit
 def solve(A: cute.Tensor, B: cute.Tensor, C: cute.Tensor, M: cute.Int32, N: cute.Int32, K: cute.Int32):
 
-    kernel = matmul(A,B,C,M,N,K)
+    kernel = matmul(A, B, C, M, N, K)
 
-    block_threads = 32 # 32 x 32 for 2D grid, 1024 tpb
+    block_threads = 32  # 32 x 32 for 2D grid, 1024 tpb
 
-    matmul_ops = M * K # C[i,j] = A[i,k] * B[k,j]
+    matmul_ops = M * K  # C[i,j] = A[i,k] * B[k,j]
 
     # need to set up launch config as 2D now
     # based on M, K
@@ -128,7 +128,6 @@ def matmul(A: cute.Tensor, B: cute.Tensor, C: cute.Tensor, M: cute.Int32, N: cut
             # B[k,j] -> B is [N,K]
             
             acc_dot += A[i, n] * B[n, j]
-
 
         C[i, j] = acc_dot 
 

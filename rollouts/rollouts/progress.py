@@ -90,7 +90,7 @@ class tqdm(Generic[T]):
             """Format seconds as H:MM:SS."""
             return ':'.join(
                 f'{x:02d}' if i else str(x)
-                for i, x in enumerate([int(t)//3600, int(t)%3600//60, int(t)%60])
+                for i, x in enumerate([int(t) // 3600, int(t) % 3600 // 60, int(t) % 60])
                 if i or x
             )
 
@@ -111,7 +111,7 @@ class tqdm(Generic[T]):
 
         # ETA text
         if self.t:
-            est_text = f'<{HMS(elapsed/prog - elapsed) if self.n else "?"}'
+            est_text = f'<{HMS(elapsed / prog - elapsed) if self.n else "?"}'
         else:
             est_text = ''
 
@@ -123,7 +123,7 @@ class tqdm(Generic[T]):
                 it_text = f"{inv_rate:5.2f}s/{self.unit}"
             else:
                 # Show unit/s (e.g., "0.01sample/s") - standard format
-                it_text = SI(self.n/elapsed) if self.unit_scale else f"{self.n/elapsed:5.2f}"
+                it_text = SI(self.n / elapsed) if self.unit_scale else f"{self.n / elapsed:5.2f}"
                 it_text = f"{it_text}{self.unit}/s"
         else:
             it_text = f"?{self.unit}/s" if not self.use_inverse_rate else f"?s/{self.unit}"
@@ -145,12 +145,12 @@ class tqdm(Generic[T]):
             partial_block_idx = int(8 * num) % 8
             partial_block = ' ▏▎▍▌▋▊▉'[partial_block_idx].strip()
             bar_content = ('█' * full_blocks + partial_block).ljust(sz, ' ')
-            bar = f'\r{self.desc}{100*prog:3.0f}%|{bar_content}| {suf}'
+            bar = f'\r{self.desc}{100 * prog:3.0f}%|{bar_content}| {suf}'
         else:
             bar = f'\r{self.desc}{suf}'
 
         # Print (truncate to terminal width)
-        print(bar[:ncols+1], flush=True, end='\n'*close, file=sys.stderr)
+        print(bar[:ncols + 1], flush=True, end='\n' * close, file=sys.stderr)
 
     def close(self):
         """Finalize the progress bar."""

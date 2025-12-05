@@ -10,7 +10,6 @@ PyTorch: NCCL requires specific env vars for multi-node.
 
 import os
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass
@@ -76,7 +75,7 @@ class NCCLConfig:
         )
 
 
-def setup_nccl_env(config: NCCLConfig) -> dict[str, Optional[str]]:
+def setup_nccl_env(config: NCCLConfig) -> dict[str, str | None]:
     """Set up environment variables for NCCL.
 
     Call this BEFORE torch.distributed.init_process_group().
@@ -136,7 +135,7 @@ def setup_nccl_env(config: NCCLConfig) -> dict[str, Optional[str]]:
     return old_env
 
 
-def restore_nccl_env(old_env: dict[str, Optional[str]]) -> None:
+def restore_nccl_env(old_env: dict[str, str | None]) -> None:
     """Restore environment variables to previous state.
 
     Args:

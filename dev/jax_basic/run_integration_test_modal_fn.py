@@ -97,14 +97,14 @@ def benchmark(gpu: str = "T4", iterations: int = 5):
     times = []
 
     for i in range(iterations):
-        print(f"\n=== Iteration {i+1}/{iterations} ===")
+        print(f"\n=== Iteration {i + 1}/{iterations} ===")
         start = time.time()
         run_jax_test.remote()
         elapsed = time.time() - start
         times.append(elapsed)
         print(f"Time: {elapsed:.2f}s")
 
-    print(f"\n=== Results ===")
+    print("\n=== Results ===")
     print(f"Cold start: {times[0]:.2f}s")
     if len(times) > 1:
         warm_avg = sum(times[1:]) / len(times[1:])

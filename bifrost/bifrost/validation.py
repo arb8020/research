@@ -8,12 +8,11 @@ Each validator returns the validated/normalized value on success.
 import logging
 import secrets
 from datetime import datetime
-from typing import Dict, List, Union, Optional
 
 logger = logging.getLogger(__name__)
 
 
-def validate_job_id(job_id: str, session_name: Optional[str] = None) -> str:
+def validate_job_id(job_id: str, session_name: str | None = None) -> str:
     """Validate job ID format (Tiger Style: assert everything).
 
     Args:
@@ -50,7 +49,7 @@ def validate_job_id(job_id: str, session_name: Optional[str] = None) -> str:
     return job_id
 
 
-def validate_bootstrap_cmd(bootstrap_cmd: Union[str, List[str]]) -> Union[str, List[str]]:
+def validate_bootstrap_cmd(bootstrap_cmd: str | list[str]) -> str | list[str]:
     """Validate bootstrap command(s) (Tiger Style: assert everything).
 
     Args:
@@ -132,7 +131,7 @@ def validate_session_name(session_name: str) -> str:
     return safe_name
 
 
-def generate_job_id(session_name: Optional[str] = None) -> str:
+def generate_job_id(session_name: str | None = None) -> str:
     """Generate job ID with optional human-readable component.
 
     Uses timestamp + random suffix to avoid collisions.
@@ -164,7 +163,7 @@ def generate_job_id(session_name: Optional[str] = None) -> str:
     return validate_job_id(job_id, session_name)
 
 
-def validate_environment_variables(env: Dict[str, str]) -> Dict[str, str]:
+def validate_environment_variables(env: dict[str, str]) -> dict[str, str]:
     """Validate environment variables dictionary (Tiger Style: assert everything).
 
     Args:

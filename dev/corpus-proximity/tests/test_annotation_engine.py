@@ -7,7 +7,6 @@ import unittest
 from pathlib import Path
 
 import numpy as np
-
 from annotation import annotate_text, split_into_sentences
 from cluster_corpus import ClusterNode, build_chunk_to_cluster_map
 from corpus_index import CorpusIndex

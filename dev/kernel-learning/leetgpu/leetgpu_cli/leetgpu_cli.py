@@ -2,12 +2,10 @@
 """
 LeetGPU CLI - Command-line interface for LeetGPU challenges
 """
-import sys
-import os
-from pathlib import Path
 import argparse
-from leetgpu_client import LeetGPUClient
+from pathlib import Path
 
+from leetgpu_client import LeetGPUClient
 
 USER_ID = "0e7dac69-c082-4aee-b652-36824ffe2f62"
 
@@ -148,11 +146,11 @@ def init_challenge(args):
             # For C-like languages, use block comments
             f.write('/*\n')
             f.write(f" * {challenge['title']}\n")
-            f.write(f" *\n")
+            f.write(" *\n")
             f.write(f" * Difficulty: {challenge['difficulty']}\n")
             f.write(f" * Challenge ID: {challenge_id}\n")
             f.write(f" * Language: {language}\n")
-            f.write(f" *\n")
+            f.write(" *\n")
             for line in spec_text.strip().split('\n'):
                 f.write(f" * {line}\n")
             f.write(' */\n\n')
@@ -165,7 +163,7 @@ def init_challenge(args):
     print(f"  - {solution_file.name} (problem + starter code for working)")
     print(f"  - {spec_file.name} (problem description)")
     print(f"  - {metadata_file.name} (metadata)")
-    print(f"\nNext steps:")
+    print("\nNext steps:")
     print(f"  1. cd {challenge_dir}")
     print(f"  2. Edit {solution_file.name}")
     print(f"  3. Run: leetgpu submit {solution_file.name}")
@@ -210,7 +208,7 @@ def submit_solution(args):
             gpu=gpu,
             is_public=not args.private,
         )
-        print(f"\n✓ Submission successful!")
+        print("\n✓ Submission successful!")
         print(f"  Submission ID: {result.submission_id}")
         print(f"  Status: {result.status}")
         if result.runtime > 0:
@@ -238,7 +236,7 @@ def show_info(args):
             print(f"Error: No challenge found matching '{args.challenge}'")
             return
         elif len(matches) > 1:
-            print(f"Multiple challenges found:")
+            print("Multiple challenges found:")
             for m in matches:
                 print(f"  {m['id']}: {m['title']}")
             return
@@ -256,15 +254,15 @@ def show_info(args):
     # Get starter code to show available languages
     starter = client.get_starter_code(challenge_id)
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"{challenge['title']}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"ID:         {challenge['id']}")
     print(f"Difficulty: {challenge['difficulty']}")
     print(f"Languages:  {', '.join(starter['languages'])}")
-    print(f"\nDescription:")
+    print("\nDescription:")
     print(challenge['spec'])
-    print(f"\n{'='*60}\n")
+    print(f"\n{'=' * 60}\n")
 
 
 def main():

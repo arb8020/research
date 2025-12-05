@@ -17,16 +17,22 @@ from pathlib import Path
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from kernel_utils.task import SMOKE_TESTS
-from kernel_utils.utils import make_match_reference, benchmark_kernel, compare_backends, profile_kernel, ncu_profile_kernel
+from nvfp4.reference_kernel import ref_kernel
+
 from kernel_utils.backends import BACKENDS
 from kernel_utils.results import (
+    BackendResults,
     CorrectnessResult,
     PerformanceResult,
-    BackendResults,
     TestSuiteResults,
 )
-from nvfp4.reference_kernel import ref_kernel
+from kernel_utils.task import SMOKE_TESTS
+from kernel_utils.utils import (
+    benchmark_kernel,
+    make_match_reference,
+    ncu_profile_kernel,
+    profile_kernel,
+)
 
 # Register reference backend explicitly
 BACKENDS.register(
@@ -88,9 +94,9 @@ def run_smoke_tests(
     print(f"   Backends: {', '.join(backend_names)}")
     print(f"   Reference: {reference_backend}")
     if enable_profiling:
-        print(f"   Torch Profiling: ENABLED")
+        print("   Torch Profiling: ENABLED")
     if enable_ncu:
-        print(f"   NCU Profiling: ENABLED")
+        print("   NCU Profiling: ENABLED")
     print("=" * 80)
 
     # Reference for correctness checking
@@ -135,7 +141,7 @@ def run_smoke_tests(
             )
 
             if is_correct:
-                print(f"   ✅ Correctness: PASS")
+                print("   ✅ Correctness: PASS")
 
                 # Benchmark this backend
                 test_input_bench = test.generate()  # Fresh data for benchmark
@@ -233,7 +239,7 @@ def run_smoke_tests(
                 else:
                     print(f"   ⚠️  Benchmark failed: {bench_err}")
             else:
-                print(f"   ❌ Correctness: FAIL")
+                print("   ❌ Correctness: FAIL")
                 if error_msg:
                     # Print first line of error
                     first_line = error_msg.split('\n')[0]
@@ -279,20 +285,20 @@ def run_smoke_tests(
 
     # Print profile summary if profiling was enabled
     if enable_profiling and profile_traces:
-        print(f"\n📊 Torch Profiling Summary:")
+        print("\n📊 Torch Profiling Summary:")
         print(f"   {len(profile_traces)} profile trace(s) generated")
-        print(f"   Location: profiles/")
-        print(f"\n   To view torch profiles:")
-        print(f"   1. Chrome trace: Open chrome://tracing and load .json files")
-        print(f"   2. TensorBoard: tensorboard --logdir=profiles/")
+        print("   Location: profiles/")
+        print("\n   To view torch profiles:")
+        print("   1. Chrome trace: Open chrome://tracing and load .json files")
+        print("   2. TensorBoard: tensorboard --logdir=profiles/")
 
     # Print NCU summary if NCU profiling was enabled
     if enable_ncu and ncu_reports:
-        print(f"\n📊 NCU Profiling Summary:")
+        print("\n📊 NCU Profiling Summary:")
         print(f"   {len(ncu_reports)} NCU report(s) generated")
-        print(f"   Location: ncu_reports/")
-        print(f"\n   To view NCU reports:")
-        print(f"   CSV files in ncu_reports/")
+        print("   Location: ncu_reports/")
+        print("\n   To view NCU reports:")
+        print("   CSV files in ncu_reports/")
 
     # Determine overall success
     all_passed = all(br.all_correct for br in all_backend_results)

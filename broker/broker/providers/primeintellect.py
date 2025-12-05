@@ -4,12 +4,12 @@ Prime Intellect provider implementation
 
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import requests
+from shared.retry import retry
 
 from ..types import CloudType, GPUInstance, GPUOffer, InstanceStatus, ProvisionRequest
-from shared.retry import retry
 
 logger = logging.getLogger(__name__)
 
@@ -17,8 +17,8 @@ PRIME_API_BASE_URL = "https://api.primeintellect.ai/api/v1"
 
 
 @retry(max_attempts=3, delay=1, backoff=2, exceptions=(requests.RequestException, requests.Timeout))
-def _make_api_request(method: str, endpoint: str, data: Optional[Dict] = None,
-                     params: Optional[Dict] = None, api_key: Optional[str] = None) -> Dict[str, Any]:
+def _make_api_request(method: str, endpoint: str, data: dict | None = None,
+                     params: dict | None = None, api_key: str | None = None) -> dict[str, Any]:
     """Make a REST API request to Prime Intellect API with automatic retries.
 
     Retries up to 3 times with exponential backoff (1s, 2s, 4s) on network errors.
@@ -51,7 +51,7 @@ def _make_api_request(method: str, endpoint: str, data: Optional[Dict] = None,
             timeout=(10, 30),  # Connect timeout, read timeout
         )
         response.raise_for_status()
-    except requests.Timeout as exc:
+    except requests.Timeout:
         logger.error("Prime Intellect API request timed out")
         raise
     except requests.RequestException as exc:
@@ -65,9 +65,9 @@ def _make_api_request(method: str, endpoint: str, data: Optional[Dict] = None,
     return response.json()
 
 
-def search_gpu_offers(cuda_version: Optional[str] = None, manufacturer: Optional[str] = None,
-                      memory_gb: Optional[int] = None, container_disk_gb: Optional[int] = None,
-                      gpu_count: int = 1, api_key: Optional[str] = None) -> List[GPUOffer]:
+def search_gpu_offers(cuda_version: str | None = None, manufacturer: str | None = None,
+                      memory_gb: int | None = None, container_disk_gb: int | None = None,
+                      gpu_count: int = 1, api_key: str | None = None) -> list[GPUOffer]:
     """Search for available GPU offers on Prime Intellect with optional filtering
 
     Note: Prime Intellect's availability API doesn't support gpu_count as a query parameter,
@@ -152,8 +152,8 @@ def search_gpu_offers(cuda_version: Optional[str] = None, manufacturer: Optional
         return []
 
 
-def provision_instance(request: ProvisionRequest, ssh_startup_script: Optional[str] = None,
-                      api_key: Optional[str] = None) -> Optional[GPUInstance]:
+def provision_instance(request: ProvisionRequest, ssh_startup_script: str | None = None,
+                      api_key: str | None = None) -> GPUInstance | None:
     """Provision a GPU instance on Prime Intellect"""
     # Build the pod definition
     pod_data = {
@@ -234,7 +234,7 @@ def provision_instance(request: ProvisionRequest, ssh_startup_script: Optional[s
         return None
 
 
-def get_instance_details(instance_id: str, api_key: Optional[str] = None) -> Optional[GPUInstance]:
+def get_instance_details(instance_id: str, api_key: str | None = None) -> GPUInstance | None:
     """Get details of a specific instance"""
     try:
         data = _make_api_request("GET", f"/pods/{instance_id}", api_key=api_key)
@@ -249,7 +249,7 @@ def get_instance_details(instance_id: str, api_key: Optional[str] = None) -> Opt
         return None
 
 
-def list_instances(api_key: Optional[str] = None) -> List[GPUInstance]:
+def list_instances(api_key: str | None = None) -> list[GPUInstance]:
     """List all user's instances"""
     try:
         data = _make_api_request("GET", "/pods/", api_key=api_key)
@@ -274,7 +274,7 @@ def list_instances(api_key: Optional[str] = None) -> List[GPUInstance]:
         return []
 
 
-def terminate_instance(instance_id: str, api_key: Optional[str] = None) -> bool:
+def terminate_instance(instance_id: str, api_key: str | None = None) -> bool:
     """Terminate a Prime Intellect instance"""
     try:
         _make_api_request("DELETE", f"/pods/{instance_id}", api_key=api_key)
@@ -286,7 +286,7 @@ def terminate_instance(instance_id: str, api_key: Optional[str] = None) -> bool:
         return False
 
 
-def _parse_pod_to_instance(pod: Dict[str, Any], api_key: Optional[str] = None) -> GPUInstance:
+def _parse_pod_to_instance(pod: dict[str, Any], api_key: str | None = None) -> GPUInstance:
     """Parse a pod dictionary into a GPUInstance"""
     
     # Map Prime Intellect statuses to our enum
@@ -342,7 +342,7 @@ def _parse_pod_to_instance(pod: Dict[str, Any], api_key: Optional[str] = None) -
     )
 
 
-def get_user_balance(api_key: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def get_user_balance(api_key: str | None = None) -> dict[str, Any] | None:
     """Get user balance and spending information from Prime Intellect"""
 
     # Note: This endpoint might not exist in Prime Intellect API

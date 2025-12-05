@@ -16,12 +16,11 @@ Then run:
 
 import json
 import sys
-from typing import Dict, Optional
 
 import requests
 
 
-def test_with_browser_headers(pod_id: str, headers: Dict[str, str]) -> None:
+def test_with_browser_headers(pod_id: str, headers: dict[str, str]) -> None:
     """Test HAPI endpoint with headers copied from browser."""
 
     url = f"https://hapi.runpod.net/v1/pod/{pod_id}/logs"

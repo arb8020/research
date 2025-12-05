@@ -8,14 +8,13 @@ To use this:
 2. Uncomment the code below
 3. Rename to cute_kernel.py
 """
-import torch
-from kernel_utils.task import input_t, output_t
-from kernel_utils.backends import BACKENDS
-
 # Uncomment when CUTLASS is installed:
 import cutlass
+import torch
 from cutlass.backend import cute
 from cutlass.backend.blockscaled_utils import blockscaled_utils
+from kernel_utils.backends import BACKENDS
+from kernel_utils.task import input_t, output_t
 
 # Configuration
 mma_tiler_mnk = (128, 1, 64)
@@ -141,6 +140,7 @@ def my_kernel(
 
 # Kernel cache
 _compiled_kernel_cache = None
+
 
 def compile_kernel():
     global _compiled_kernel_cache

@@ -13,9 +13,10 @@ Status: STUB - Not yet implemented
 Estimated effort: ~1-2 days
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any
 
 # import jax
 # import jax.numpy as jnp
@@ -66,7 +67,7 @@ class JAXTrainingBackend:
     current_step: int = 0
 
     # JIT-compiled train step
-    _train_step_fn: Optional[Callable] = field(default=None, init=False, repr=False)
+    _train_step_fn: Callable | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self):
         """Initialize JIT-compiled train step."""
@@ -75,7 +76,7 @@ class JAXTrainingBackend:
             "See docs/D6_TRAINING_BACKEND.md for implementation plan."
         )
 
-    def forward_backward(self, batch: Dict[str, Any]) -> TrainFuture[Dict[str, float]]:
+    def forward_backward(self, batch: dict[str, Any]) -> TrainFuture[dict[str, float]]:
         """Compute loss and gradients (JAX style).
 
         Note: In JAX, forward and backward are combined (jax.value_and_grad).
@@ -83,7 +84,7 @@ class JAXTrainingBackend:
         """
         raise NotImplementedError("D6v3: Not yet implemented")
 
-    def optim_step(self) -> TrainFuture[Dict[str, float]]:
+    def optim_step(self) -> TrainFuture[dict[str, float]]:
         """Apply gradients (no-op in JAX, already done in forward_backward).
 
         This is a compatibility shim for the protocol. In JAX, the optimizer
@@ -95,19 +96,19 @@ class JAXTrainingBackend:
     async def save_checkpoint(
         self,
         step: int,
-        metrics: Dict[str, float] = {},
+        metrics: dict[str, float] = {},
     ) -> Path:
         """Save checkpoint using Orbax."""
         raise NotImplementedError("D6v3: Not yet implemented")
 
-    async def load_checkpoint(self, checkpoint_path: Path) -> Dict[str, Any]:
+    async def load_checkpoint(self, checkpoint_path: Path) -> dict[str, Any]:
         """Load checkpoint using Orbax."""
         raise NotImplementedError("D6v3: Not yet implemented")
 
-    def get_weights(self) -> TrainFuture[Dict[str, Any]]:
+    def get_weights(self) -> TrainFuture[dict[str, Any]]:
         """Get model weights (JAX PyTree)."""
         raise NotImplementedError("D6v3: Not yet implemented")
 
-    def load_weights(self, weights: Dict[str, Any]) -> TrainFuture[None]:
+    def load_weights(self, weights: dict[str, Any]) -> TrainFuture[None]:
         """Load weights (JAX PyTree)."""
         raise NotImplementedError("D6v3: Not yet implemented")

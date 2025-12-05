@@ -8,14 +8,14 @@ This demonstrates Phase 1: Evaluation with Prime Intellect verifiers.
 ACEBench tests multi-step API calling on simulated phone/travel platforms.
 """
 
-from pathlib import Path
 from dataclasses import dataclass
-from typing import Dict, Any, List
+from pathlib import Path
+from typing import Any
 
 from rollouts.dtypes import Endpoint, EvalConfig, Message
 
 
-def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
+def prepare_messages(sample_data: dict[str, Any]) -> list[Message]:
     """Prepare messages for ACEBench environment.
 
     ACEBench uses 'prompt' field as a list of message dicts.

@@ -12,7 +12,7 @@ import os
 import signal
 import socket
 import sys
-from typing import Callable
+from collections.abc import Callable
 
 
 class WorkerServer:

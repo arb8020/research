@@ -16,26 +16,26 @@ Usage:
     python deploy.py configs/03_qwen_medium.py --keep-running
 """
 
-import sys
-import os
-import json
-import logging
 import importlib.util
-from pathlib import Path, PurePosixPath
+import logging
+import os
+import sys
 from datetime import datetime
+from pathlib import Path, PurePosixPath
 from typing import Literal, TypeAlias
-from dotenv import load_dotenv
 
-# Import broker and bifrost for deployment
-from broker.client import GPUClient, ClientGPUInstance
 from bifrost.client import BifrostClient
 
-# Import shared logging
-from shared.logging_config import setup_logging
+# Import broker and bifrost for deployment
+from broker.client import ClientGPUInstance, GPUClient
 
 # Import local config
 from config import Config
+from dotenv import load_dotenv
 from estimate_vram import estimate_vram_requirements
+
+# Import shared logging
+from shared.logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +80,7 @@ def normalize_save_dir(save_dir: Path | str) -> str:
 
     return normalized
 
+
 # Type aliases for provision result
 ProvisionError: TypeAlias = Literal["create_failed", "ssh_timeout"]
 ProvisionResult: TypeAlias = (
@@ -106,8 +107,8 @@ def load_config_from_file(config_path: str) -> Config:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    assert hasattr(module, 'config'), f"Config file must define 'config' variable"
-    config: Config = getattr(module, 'config')
+    assert hasattr(module, 'config'), "Config file must define 'config' variable"
+    config: Config = module.config
     assert isinstance(config, Config), f"Expected Config object, got {type(config)}"
 
     return config
@@ -318,7 +319,7 @@ def start_analysis(bifrost_client: 'BifrostClient', config: Config, config_path:
     bifrost_client.exec(f"mkdir -p {remote_config_dir}")
 
     # Upload config file
-    with open(config_path, 'r') as f:
+    with open(config_path) as f:
         config_content = f.read()
 
     remote_config_path = f"{remote_config_dir}/{Path(config_path).name}"
@@ -466,7 +467,7 @@ def sync_results(bifrost_client: 'BifrostClient', config: Config, output_dir: Pa
         if result and result.success and result.files_copied > 0:
             logger.info(f"✅ Synced: {log_filename}")
         else:
-            logger.warning(f"⚠️  Log not ready yet")
+            logger.warning("⚠️  Log not ready yet")
     except Exception as e:
         logger.warning(f"⚠️  Could not sync log: {e}")
 
@@ -503,7 +504,7 @@ def sync_results(bifrost_client: 'BifrostClient', config: Config, output_dir: Pa
             local_path=str(output_dir / "config.json")
         )
         if result and result.success and result.files_copied > 0:
-            logger.info(f"✅ Synced: config.json")
+            logger.info("✅ Synced: config.json")
     except Exception as e:
         logger.debug(f"Config not synced: {e}")
 
@@ -613,7 +614,7 @@ def main():
         if not config.deployment.keep_running:
             cleanup_instance(gpu_instance.id)
         else:
-            logger.info(f"\n🎯 Keeping GPU running")
+            logger.info("\n🎯 Keeping GPU running")
             logger.info(f"   SSH: {gpu_instance.ssh_connection_string()}")
             logger.info(f"   Terminate: broker terminate {gpu_instance.id}")
 
@@ -627,7 +628,7 @@ def main():
 
         # Cleanup GPU instance even on failure (unless explicitly kept)
         if 'gpu_instance' in locals() and gpu_instance and not config.deployment.keep_running:
-            logger.info(f"\n🧹 Cleaning up GPU instance after failure...")
+            logger.info("\n🧹 Cleaning up GPU instance after failure...")
             try:
                 cleanup_instance(gpu_instance.id)
             except Exception as cleanup_error:

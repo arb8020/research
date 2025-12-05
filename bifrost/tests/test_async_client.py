@@ -2,8 +2,8 @@
 
 import pytest
 import trio
-from bifrost import AsyncBifrostClient
 
+from bifrost import AsyncBifrostClient
 
 # Mark all tests in this module as trio tests
 pytestmark = pytest.mark.trio

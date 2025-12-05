@@ -12,9 +12,10 @@ Maturity: torchax v0.0.4 (very early)
 Recommendation: Skip for now, revisit in 6-12 months
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict
+from typing import Any
 
 import torch
 
@@ -81,30 +82,30 @@ class TorchaxTrainingBackend:
             "See docs/D6_TRAINING_BACKEND.md for details."
         )
 
-    def forward_backward(self, batch: Dict[str, Any]) -> TrainFuture[Dict[str, float]]:
+    def forward_backward(self, batch: dict[str, Any]) -> TrainFuture[dict[str, float]]:
         """Standard PyTorch training step (runs on JAX runtime)."""
         raise NotImplementedError("D6v4: Not implemented")
 
-    def optim_step(self) -> TrainFuture[Dict[str, float]]:
+    def optim_step(self) -> TrainFuture[dict[str, float]]:
         """PyTorch optimizer step (runs on JAX)."""
         raise NotImplementedError("D6v4: Not implemented")
 
     async def save_checkpoint(
         self,
         step: int,
-        metrics: Dict[str, float] = {},
+        metrics: dict[str, float] = {},
     ) -> Path:
         """Save checkpoint (PyTorch format, should work via torchax)."""
         raise NotImplementedError("D6v4: Not implemented")
 
-    async def load_checkpoint(self, checkpoint_path: Path) -> Dict[str, Any]:
+    async def load_checkpoint(self, checkpoint_path: Path) -> dict[str, Any]:
         """Load checkpoint (PyTorch format)."""
         raise NotImplementedError("D6v4: Not implemented")
 
-    def get_weights(self) -> TrainFuture[Dict[str, Any]]:
+    def get_weights(self) -> TrainFuture[dict[str, Any]]:
         """Get model weights (PyTorch state_dict on JAX)."""
         raise NotImplementedError("D6v4: Not implemented")
 
-    def load_weights(self, weights: Dict[str, Any]) -> TrainFuture[None]:
+    def load_weights(self, weights: dict[str, Any]) -> TrainFuture[None]:
         """Load weights (PyTorch state_dict)."""
         raise NotImplementedError("D6v4: Not implemented")

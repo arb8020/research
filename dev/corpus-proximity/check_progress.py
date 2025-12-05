@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Quick script to check clustering progress on remote instance."""
 
-import sys
-from broker import GPUClient
-from bifrost import BifrostClient
-from shared.config import get_runpod_key, get_prime_key
 import os
+import sys
+
+from shared.config import get_prime_key, get_runpod_key
+
+from bifrost import BifrostClient
+from broker import GPUClient
+
 
 def main():
     instance_id = sys.argv[1] if len(sys.argv) > 1 else None
@@ -58,6 +61,7 @@ def main():
         return 1
 
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())

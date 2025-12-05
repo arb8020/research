@@ -11,7 +11,6 @@ Heinrich Kuttler: Simple distributed workers, no magic.
 import subprocess
 import time
 from dataclasses import dataclass, field
-from typing import List, Optional
 
 from miniray.remote_worker import RemoteWorker
 
@@ -40,7 +39,7 @@ class NodeConfig:
     gpus_per_worker: int = 1
     """GPUs per worker (for GPU affinity)"""
 
-    ssh_key: Optional[str] = None
+    ssh_key: str | None = None
     """SSH key path (None = default)"""
 
     python_bin: str = "python"
@@ -78,9 +77,9 @@ class Cluster:
         nodes: List of node configurations
     """
 
-    nodes: List[NodeConfig]
-    processes: List[subprocess.Popen] = field(default_factory=list, init=False)
-    workers: List[RemoteWorker] = field(default_factory=list, init=False)
+    nodes: list[NodeConfig]
+    processes: list[subprocess.Popen] = field(default_factory=list, init=False)
+    workers: list[RemoteWorker] = field(default_factory=list, init=False)
 
     def __post_init__(self):
         """Validate cluster configuration."""
@@ -142,7 +141,7 @@ class Cluster:
         self,
         timeout: float = 10.0,
         verbose: bool = True,
-    ) -> List[RemoteWorker]:
+    ) -> list[RemoteWorker]:
         """Connect to launched worker servers.
 
         Args:
@@ -170,7 +169,7 @@ class Cluster:
         assert len(self.processes) > 0, "No servers launched - call launch_servers() first"
 
         if verbose:
-            print(f"[MiniRay] Connecting to workers...")
+            print("[MiniRay] Connecting to workers...")
 
         self._connect_workers(verbose)
 
@@ -184,7 +183,7 @@ class Cluster:
         work_fn: str,
         wait_time: float = 3.0,
         verbose: bool = True,
-    ) -> List[RemoteWorker]:
+    ) -> list[RemoteWorker]:
         """Launch worker servers and connect (convenience method).
 
         This is a convenience wrapper that calls:
@@ -301,7 +300,7 @@ class Cluster:
                 except (ConnectionRefusedError, TimeoutError) as e:
                     print(f"[MiniRay] ERROR: Cannot connect to {node.host}:{port}")
                     print(f"[MiniRay]        {e}")
-                    print(f"[MiniRay]        Check that worker_server.py is running")
+                    print("[MiniRay]        Check that worker_server.py is running")
                     # Continue connecting to other workers
                     continue
 
@@ -368,11 +367,11 @@ class Cluster:
 
 
 def spawn_distributed_workers(
-    nodes: List[NodeConfig],
+    nodes: list[NodeConfig],
     work_fn: str,
     wait_time: float = 3.0,
     verbose: bool = True,
-) -> List[RemoteWorker]:
+) -> list[RemoteWorker]:
     """Spawn distributed workers (convenience function).
 
     Args:
@@ -404,7 +403,6 @@ def spawn_distributed_workers(
 
 if __name__ == "__main__":
     """Test cluster management"""
-    import sys
 
     # Example work function for testing
     def echo_worker_fn(handle):

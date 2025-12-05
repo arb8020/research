@@ -6,7 +6,7 @@ Load Python files as modules and extract the 'config' variable.
 
 import importlib.util
 from pathlib import Path
-from typing import TypeVar, Any
+from typing import Any, TypeVar
 
 T = TypeVar('T')
 
