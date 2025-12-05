@@ -313,6 +313,25 @@ class AgentRenderer:
         self.chat_container.add_child(user_component)
         self.tui.request_render()
 
+    def add_system_message(self, text: str) -> None:
+        """Add a system message to the chat (for command feedback, etc).
+
+        Args:
+            text: System message text
+        """
+        from .components.text import Text
+        self.chat_container.add_child(Spacer(1, debug_label="before-system", debug_layout=self.debug_layout))
+        system_text = Text(
+            text,
+            padding_x=2,
+            padding_y=0,
+            custom_bg_fn=lambda _: self.theme.muted,  # Use muted color for system messages
+            theme=self.theme,
+            gutter_prefix="ℹ ",
+        )
+        self.chat_container.add_child(system_text)
+        self.tui.request_render()
+
     def set_tool_result(self, tool_call_id: str, result: dict, is_error: bool = False) -> None:
         """Set tool execution result.
 
