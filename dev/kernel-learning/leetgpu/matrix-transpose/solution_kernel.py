@@ -58,8 +58,8 @@ Constraints
   Output matrix dimensions: cols × rows
 """
 
-import cutlass
 import cutlass.cute as cute
+
 
 # input, output are tensors on the GPU
 @cute.jit
@@ -68,19 +68,20 @@ def solve(input: cute.Tensor, output: cute.Tensor, rows: cute.Int32, cols: cute.
     kernel = transpose(input, output, rows, cols)
 
     n_ops = rows * cols
-    n_tpb = 32 # 1024
+    n_tpb = 32  # 1024
 
-    ceil_div = lambda n, d: (n+d-1)//d
+    ceil_div = lambda n, d: (n + d - 1) // d
 
-    grid_blocks_x = ceil_div(rows,n_tpb)
-    grid_blocks_y = ceil_div(cols,n_tpb)
+    grid_blocks_x = ceil_div(rows, n_tpb)
+    grid_blocks_y = ceil_div(cols, n_tpb)
     
     kernel.launch(
-            grid=(grid_blocks_x, grid_blocks_y,1),
-            block=(n_tpb,n_tpb,1)
+            grid=(grid_blocks_x, grid_blocks_y, 1),
+            block=(n_tpb, n_tpb, 1)
     )
 
     pass
+
 
 @cute.kernel
 def transpose(input: cute.Tensor, output: cute.Tensor, rows: cute.Int32, cols: cute.Int32):
@@ -96,6 +97,6 @@ def transpose(input: cute.Tensor, output: cute.Tensor, rows: cute.Int32, cols: c
     i = bidy * bdimy + tidy
 
     if i < rows and j < cols:
-        output[j,i] = input[i,j]
+        output[j, i] = input[i, j]
 
     pass

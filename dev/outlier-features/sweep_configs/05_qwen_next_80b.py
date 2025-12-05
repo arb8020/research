@@ -5,8 +5,9 @@ Expected: PROBABILISTIC outliers (Qwen architecture pattern).
 Runtime: ~40-50 minutes on 2xA100 with aggressive chunking.
 """
 
-from pathlib import Path
 import sys
+from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import Config

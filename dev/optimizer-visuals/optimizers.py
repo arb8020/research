@@ -8,11 +8,11 @@ Following Tiger Style:
 - No hidden state
 """
 
+from collections.abc import Callable
+from typing import Any, NamedTuple
+
 import jax
 import jax.numpy as jnp
-from typing import NamedTuple, Callable, Any
-from functools import partial
-
 
 # Type definitions
 PyTree = Any  # JAX pytree of parameters
@@ -279,7 +279,7 @@ def main():
     # Define grad function (loss + gradients)
     grad_fn = jax.value_and_grad(quadratic_loss)
 
-    print(f"\nProblem: minimize f(x) = x^T x / 2")
+    print("\nProblem: minimize f(x) = x^T x / 2")
     print(f"Initial params: {init_params}")
     print(f"Learning rate: {learning_rate}")
     print(f"Steps: {num_steps}\n")
@@ -299,7 +299,7 @@ def main():
     for i in range(min(5, len(losses))):
         print(f"  Step {i}: loss={losses[i]:.6f}, params={params_history[i]}")
     print("  ...")
-    print(f"  Step {len(losses)-1}: loss={losses[-1]:.6f}, params={params_history[-1]}")
+    print(f"  Step {len(losses) - 1}: loss={losses[-1]:.6f}, params={params_history[-1]}")
 
     # Visualize
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
@@ -334,7 +334,7 @@ def main():
 
     plt.tight_layout()
     plt.savefig('/Users/chiraagbalu/research/examples/optimizer-visuals/sgd_test.png', dpi=150)
-    print(f"\nVisualization saved to: examples/optimizer-visuals/sgd_test.png")
+    print("\nVisualization saved to: examples/optimizer-visuals/sgd_test.png")
 
     return 0
 

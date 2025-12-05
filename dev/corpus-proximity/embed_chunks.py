@@ -3,20 +3,19 @@
 
 import json
 import logging
-import numpy as np
 import time
 from pathlib import Path
-from typing import List, Dict, Optional, cast
+from typing import cast
 
 import httpx
-from sentence_transformers import SentenceTransformer
-
+import numpy as np
 from config import Config
+from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
 
-def extract_rate_limit_info(exception: Exception) -> tuple[Optional[int], Optional[int], Optional[int]]:
+def extract_rate_limit_info(exception: Exception) -> tuple[int | None, int | None, int | None]:
     """
     Extract rate limit information from HuggingFace HTTP exception.
 
@@ -67,7 +66,7 @@ def extract_rate_limit_info(exception: Exception) -> tuple[Optional[int], Option
     return retry_after, requests_remaining, reset_time
 
 
-def load_chunks(input_path: Path) -> tuple[List[str], List[Dict]]:
+def load_chunks(input_path: Path) -> tuple[list[str], list[dict]]:
     """Load chunks from JSONL file."""
     if not input_path.exists():
         raise FileNotFoundError(f"Input file not found: {input_path}")
@@ -78,7 +77,7 @@ def load_chunks(input_path: Path) -> tuple[List[str], List[Dict]]:
     texts = []
     metadata = []
 
-    with open(input_path, 'r') as f:
+    with open(input_path) as f:
         for line in f:
             chunk = json.loads(line)
             texts.append(chunk['text'])
@@ -94,11 +93,11 @@ def load_chunks(input_path: Path) -> tuple[List[str], List[Dict]]:
 
 def load_model_with_retry(
     model_name: str,
-    device: Optional[str],
+    device: str | None,
     max_retries: int,
     retry_delay_seconds: int,
     retry_backoff_multiplier: float,
-    hf_token: Optional[str]
+    hf_token: str | None
 ) -> SentenceTransformer:
     """
     Load SentenceTransformer model with exponential backoff retry on rate limits.
@@ -164,7 +163,7 @@ def load_model_with_retry(
                 if rate_info_parts:
                     logger.warning(f"Rate limit hit: {', '.join(rate_info_parts)}")
                 else:
-                    logger.warning(f"Rate limit hit (no rate limit headers available)")
+                    logger.warning("Rate limit hit (no rate limit headers available)")
 
                 last_error = e
                 attempt += 1
@@ -189,14 +188,14 @@ def load_model_with_retry(
 
 
 def embed_chunks(
-    texts: List[str],
+    texts: list[str],
     model_name: str,
     batch_size: int,
-    device: Optional[str] = None,
+    device: str | None = None,
     max_retries: int = 3,
     retry_delay_seconds: int = 60,
     retry_backoff_multiplier: float = 2.0,
-    hf_token: Optional[str] = None
+    hf_token: str | None = None
 ) -> np.ndarray:
     """Embed text chunks using sentence-transformers."""
     # Preconditions
@@ -235,7 +234,7 @@ def embed_chunks(
 
 def save_embeddings(
     embeddings: np.ndarray,
-    metadata: List[Dict],
+    metadata: list[dict],
     output_dir: Path,
     use_memmap: bool = False
 ):
@@ -285,9 +284,9 @@ def verify_embeddings(output_dir: Path, num_samples: int = 3):
         logger.error(f"Output files not found in {output_dir}")
         return
 
-    logger.info(f"\n{'='*80}")
+    logger.info(f"\n{'=' * 80}")
     logger.info("Embeddings verification:")
-    logger.info(f"{'='*80}")
+    logger.info(f"{'=' * 80}")
 
     # Load embeddings
     embeddings = np.load(embeddings_path)
@@ -297,7 +296,7 @@ def verify_embeddings(output_dir: Path, num_samples: int = 3):
 
     # Load metadata
     metadata = []
-    with open(metadata_path, 'r') as f:
+    with open(metadata_path) as f:
         for line in f:
             metadata.append(json.loads(line))
 
@@ -310,12 +309,12 @@ def verify_embeddings(output_dir: Path, num_samples: int = 3):
                    f"mean={embeddings[i].mean():.4f}, std={embeddings[i].std():.4f}")
         logger.info(f"    Metadata: {metadata[i]}")
 
-    logger.info(f"{'='*80}\n")
+    logger.info(f"{'=' * 80}\n")
 
 
 def main():
-    import sys
     import importlib.util
+    import sys
 
     # Setup logging
     logging.basicConfig(
@@ -333,17 +332,17 @@ def main():
             raise ImportError(f"Spec has no loader: {sys.argv[1]}")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        config: Config = getattr(module, "config")
+        config: Config = module.config
     else:
         # Use default config
         config = Config()
 
-    logger.info("="*80)
-    logger.info(f"Starting embedding pipeline")
+    logger.info("=" * 80)
+    logger.info("Starting embedding pipeline")
     logger.info(f"  Model: {config.embedding.model}")
     logger.info(f"  Batch size: {config.embedding.batch_size}")
     logger.info(f"  Device: {config.embedding.device or 'auto'}")
-    logger.info("="*80)
+    logger.info("=" * 80)
 
     pipeline_start = time.time()
 
@@ -385,9 +384,9 @@ def main():
         logger.info(f"Saved config to {config_output}")
 
         total_time = time.time() - pipeline_start
-        logger.info("="*80)
-        logger.info(f"Embedding pipeline complete! Total time: {total_time:.2f}s ({total_time/60:.1f} min)")
-        logger.info("="*80)
+        logger.info("=" * 80)
+        logger.info(f"Embedding pipeline complete! Total time: {total_time:.2f}s ({total_time / 60:.1f} min)")
+        logger.info("=" * 80)
         return 0
 
     except Exception as e:

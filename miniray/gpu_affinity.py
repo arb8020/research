@@ -51,7 +51,7 @@ def set_gpu_affinity(local_rank: int = None, verbose: bool = True) -> bool:
         import torch
         if torch.version.hip is not None:
             if verbose:
-                print(f"[MiniRay] ROCm/HIP detected, skipping NUMA affinity")
+                print("[MiniRay] ROCm/HIP detected, skipping NUMA affinity")
             return False
 
         # Import pynvml
@@ -79,7 +79,7 @@ def set_gpu_affinity(local_rank: int = None, verbose: bool = True) -> bool:
     except ImportError as e:
         if verbose:
             print(f"[MiniRay] pynvml not available, skipping NUMA affinity: {e}")
-            print(f"[MiniRay] Install with: pip install nvidia-ml-py")
+            print("[MiniRay] Install with: pip install nvidia-ml-py")
         return False
 
     except Exception as e:
@@ -135,8 +135,8 @@ if __name__ == "__main__":
     success = set_gpu_affinity(local_rank=local_rank, verbose=True)
 
     if success:
-        print(f"✅ Successfully set NUMA affinity")
+        print("✅ Successfully set NUMA affinity")
         numa_node = get_gpu_numa_node(local_rank)
         print(f"GPU {local_rank} NUMA node: {numa_node}")
     else:
-        print(f"❌ Failed to set NUMA affinity (see above)")
+        print("❌ Failed to set NUMA affinity (see above)")

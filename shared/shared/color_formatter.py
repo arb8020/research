@@ -15,7 +15,7 @@ class Colors:
     INFO = '\033[37m'       # White (default)
     WARNING = '\033[33m'    # Yellow
     ERROR = '\033[31m'      # Red
-    CRITICAL = '\033[31;1m' # Bold Red
+    CRITICAL = '\033[31;1m'  # Bold Red
 
     # Component colors
     TIMESTAMP = '\033[90m'  # Dark gray

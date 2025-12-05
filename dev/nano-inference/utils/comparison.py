@@ -2,12 +2,14 @@
 Simple logits comparison utility.
 """
 
+from pathlib import Path
+from typing import Any
+
 import numpy as np
 import torch
 import torch.nn.functional as F
-from transformers import GPT2LMHeadModel, LlamaForCausalLM, AutoModelForCausalLM
-from typing import Dict, Any
-from pathlib import Path
+from transformers import AutoModelForCausalLM, LlamaForCausalLM
+
 try:
     import llama_stack
     LLAMA_STACK_AVAILABLE = True
@@ -21,7 +23,7 @@ def compare_logits(
     rtol: float = 1e-3,
     atol: float = 1e-5,
     verbose: bool = True
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Compare two sets of logits for numerical similarity.
     
@@ -121,7 +123,7 @@ def get_transformers_from_local_checkpoint(input_ids_BL: np.ndarray, model_name:
     Returns:
         Logits array of shape (batch_size, seq_len, vocab_size)
     """
-    from transformers import LlamaForCausalLM, LlamaConfig
+    from transformers import LlamaConfig
     
     print(f"🤗 Loading local checkpoint into official transformers: {model_name}")
     
@@ -341,7 +343,7 @@ def get_llama_stack_logits(input_ids_BL: np.ndarray, model_name: str = "Llama-3.
     Returns:
         Logits array of shape (batch_size, seq_len, vocab_size)
     """
-    print(f"🦙 Using local llama-stack checkpoint with official transformers")
+    print("🦙 Using local llama-stack checkpoint with official transformers")
     
     # Use official transformers loaded from local checkpoint
     return get_transformers_from_local_checkpoint(input_ids_BL, model_name)
@@ -362,7 +364,7 @@ def get_reference_logits(input_ids_BL: np.ndarray, model_name: str = "meta-llama
     """
     if use_llama_stack:
         try:
-            print(f"🦙 Attempting to use local llama-stack checkpoint")
+            print("🦙 Attempting to use local llama-stack checkpoint")
             # Extract model name for llama-stack (remove meta-llama/ prefix)
             stack_model_name = model_name.replace("meta-llama/", "")
             return get_llama_stack_logits(input_ids_BL, stack_model_name)
@@ -370,8 +372,8 @@ def get_reference_logits(input_ids_BL: np.ndarray, model_name: str = "meta-llama
             print(f"⚠️  llama-stack failed with error: {type(e).__name__}: {e}")
             import traceback
             traceback.print_exc()
-            print(f"🔄 Falling back to HuggingFace...")
+            print("🔄 Falling back to HuggingFace...")
             return get_hf_logits(input_ids_BL, model_name)
     else:
-        print(f"🤗 Using HuggingFace directly")
+        print("🤗 Using HuggingFace directly")
         return get_hf_logits(input_ids_BL, model_name)

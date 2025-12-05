@@ -15,20 +15,19 @@ from pathlib import Path
 # Add nano-inference root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+import argparse
+
+import numpy as np
+from backends.jax.loader import load_weights
+from backends.jax.model import gpt2_forward
+from config import GPT2Config
+from utils.comparison import compare_logits, get_hf_logits
+
 import jax
 import jax.numpy as jnp
-import numpy as np
-import argparse
-from typing import Dict
-
-from utils.comparison import compare_logits, get_hf_logits
-from utils.weights import download_gpt2_weights, load_gpt2_weights
-from config import GPT2Config
-from backends.jax.model import gpt2_forward
-from backends.jax.loader import load_weights
 
 
-def load_weights_for_jax() -> Dict[str, jax.Array]:
+def load_weights_for_jax() -> dict[str, jax.Array]:
     """Download and load GPT-2 weights, convert to JAX arrays."""
     print("📦 Loading GPT-2 weights...")
     weights = load_weights("gpt2")
@@ -73,7 +72,7 @@ def generate_test_batches(k=5):
     return test_batches[:k]
 
 
-def test_single_batch(input_ids_BT: np.ndarray, weights: Dict[str, jax.Array], config: GPT2Config):
+def test_single_batch(input_ids_BT: np.ndarray, weights: dict[str, jax.Array], config: GPT2Config):
     """Test a single batch and return comparison results."""
     # Get HuggingFace reference
     print("📚 Getting HuggingFace logits...")
@@ -103,7 +102,7 @@ def test_single_batch(input_ids_BT: np.ndarray, weights: Dict[str, jax.Array], c
     return comparison
 
 
-def test_multiple_batches(weights: Dict[str, jax.Array], config: GPT2Config, k=5):
+def test_multiple_batches(weights: dict[str, jax.Array], config: GPT2Config, k=5):
     """Test across k different batches."""
     print("🧪 Testing JAX GPT-2 vs HuggingFace across multiple batches")
     print("=" * 70)
@@ -112,7 +111,7 @@ def test_multiple_batches(weights: Dict[str, jax.Array], config: GPT2Config, k=5
     results = []
 
     for i, batch in enumerate(test_batches):
-        print(f"\n📊 Batch {i+1}/{k}: {batch['name']}")
+        print(f"\n📊 Batch {i + 1}/{k}: {batch['name']}")
         print("-" * 40)
 
         test_input = batch['tokens']
@@ -168,7 +167,7 @@ def print_summary(results):
     print(f"Total batches tested: {total_batches}")
     print(f"Batches passed: {passed_batches}")
     print(f"Batches failed: {total_batches - passed_batches}")
-    print(f"Pass rate: {passed_batches/total_batches*100:.1f}%")
+    print(f"Pass rate: {passed_batches / total_batches * 100:.1f}%")
 
     print("\nPer-batch results:")
     for i, result in enumerate(results):
@@ -178,7 +177,7 @@ def print_summary(results):
             diff_str = "ERROR"
         else:
             diff_str = f"{max_diff:8.6f}"
-        print(f"  {i+1}. {result['name']:15} - Max diff: {diff_str} - {status}")
+        print(f"  {i + 1}. {result['name']:15} - Max diff: {diff_str} - {status}")
 
     if passed_batches == total_batches:
         print("\n🎉 ALL TESTS PASSED! Your GPT-2 implementation matches HuggingFace!")

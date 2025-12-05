@@ -3,8 +3,10 @@
 Provides a simple registry system for managing multiple kernel backends
 (reference, Triton, CuTe, etc.) with consistent interfaces.
 """
-from typing import Callable, Protocol
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Protocol
+
 from kernel_utils.task import input_t, output_t
 
 

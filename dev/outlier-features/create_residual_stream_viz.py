@@ -2,13 +2,16 @@
 """Create residual stream visualizations showing outlier features."""
 
 import sys
+
 sys.path.append('/Users/chiraagbalu/research')
 
 import numpy as np
+
 from utils.render import render
 
 # Set random seed for reproducibility
 np.random.seed(42)
+
 
 def create_residual_stream_example(batch_size, seq_len, hidden_dim, outlier_dim=None):
     """
@@ -120,7 +123,6 @@ def main():
     output_file = "residual_stream_examples.txt"
     with open(output_file, 'w') as f:
         # Redirect stdout to file
-        import io
         original_stdout = sys.stdout
         sys.stdout = f
 

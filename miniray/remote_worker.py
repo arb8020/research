@@ -10,7 +10,7 @@ Heinrich Kuttler: Simple primitives, no pickle overhead.
 import json
 import socket
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 
 @dataclass
@@ -35,7 +35,7 @@ class RemoteWorker:
 
     host: str
     port: int
-    _sock: Optional[socket.socket] = field(default=None, init=False, repr=False)
+    _sock: socket.socket | None = field(default=None, init=False, repr=False)
     r: Any = field(default=None, init=False, repr=False)
     w: Any = field(default=None, init=False, repr=False)
     _connected: bool = field(default=False, init=False, repr=False)
@@ -103,13 +103,13 @@ class RemoteWorker:
                 f"Cannot connect to worker server at {self.host}:{self.port}. "
                 "Is WorkerServer running on the remote node?"
             )
-        except socket.timeout:
+        except TimeoutError:
             raise TimeoutError(
                 f"Timeout connecting to {self.host}:{self.port}. "
                 "Check network connectivity."
             )
 
-    def recv(self, max_size: int, timeout: Optional[float] = None) -> Any:
+    def recv(self, max_size: int, timeout: float | None = None) -> Any:
         """Receive message from remote worker (blocking).
 
         Args:
@@ -155,8 +155,8 @@ class RemoteWorker:
 
             return json.loads(line)
 
-        except socket.timeout:
-            raise socket.timeout(
+        except TimeoutError:
+            raise TimeoutError(
                 f"Timeout waiting for response from {self.host}:{self.port}"
             )
         finally:

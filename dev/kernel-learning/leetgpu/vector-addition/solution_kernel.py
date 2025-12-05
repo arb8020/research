@@ -32,7 +32,6 @@ Constraints
   1 &le; N &le; 100,000,000
 """
 
-import cutlass
 import cutlass.cute as cute
 
 # runs on host, launches the cute.kernel decorated functions
@@ -53,11 +52,11 @@ import cutlass.cute as cute
 # and what block configuration to launch
 # ie: how many threads and in what shape
 
+
 @cute.jit
 def solve(A: cute.Tensor, B: cute.Tensor, C: cute.Tensor, N: cute.Uint32):
     
-    
-    kernel = vec_add_1D(A,B,C,N)
+    kernel = vec_add_1D(A, B, C, N)
 
     # we only need 1D
     # GPUs also execute threads in groups of 32 called warps
@@ -84,6 +83,7 @@ def solve(A: cute.Tensor, B: cute.Tensor, C: cute.Tensor, N: cute.Uint32):
 # so each thread needs to know which part of the vector its doing
 # how do we calculate 'i' for a given run of the kernel operation then?
 
+
 @cute.kernel
 def vec_add_1D(gA: cute.Tensor, gB: cute.Tensor, gC: cute.Tensor, N: cute.Uint32):
    
@@ -102,7 +102,7 @@ def vec_add_1D(gA: cute.Tensor, gB: cute.Tensor, gC: cute.Tensor, N: cute.Uint32
 
     thread_idx = bdim * bidx + tidx
 
-    if thread_idx < N: # protect against out of range access
+    if thread_idx < N:  # protect against out of range access
         gC[thread_idx] = gA[thread_idx] + gB[thread_idx]
 
 # naming convention note: 

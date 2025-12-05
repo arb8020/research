@@ -1,11 +1,19 @@
-from typing import List
 from dataclasses import dataclass
+
 import trio
 
 from ..dtypes import (
-    Tool, ToolFunction, ToolFunctionParameter,
-    ToolCall, ToolResult, StopReason, AgentState, RunConfig, Environment, Message
+    AgentState,
+    Message,
+    RunConfig,
+    StopReason,
+    Tool,
+    ToolCall,
+    ToolFunction,
+    ToolFunctionParameter,
+    ToolResult,
 )
+
 
 @dataclass
 class CalculatorEnvironment:
@@ -23,7 +31,7 @@ class CalculatorEnvironment:
         """Calculator tools don't require confirmation by default."""
         return False
     
-    def get_tools(self) -> List[Tool]:
+    def get_tools(self) -> list[Tool]:
         return [
             Tool(
                 type="function",
@@ -110,16 +118,22 @@ class CalculatorEnvironment:
         """No feedback needed for calculator environment."""
         return state
 
-    async def exec_tool(self, tool_call: ToolCall, current_state: 'AgentState',
-                       run_config: 'RunConfig', checkpoint_store = None) -> ToolResult:
+    async def exec_tool(
+        self,
+        tool_call: ToolCall,
+        current_state: 'AgentState',
+        run_config: 'RunConfig',
+        checkpoint_store=None,
+        cancel_scope: trio.CancelScope | None = None,
+    ) -> ToolResult:
         """Execute tool call, mutating environment state"""
         try:
             if tool_call.name == "add":
                 value = tool_call.args["value"]
                 self.current_value += value
                 return ToolResult(
-                    call_id=tool_call.id,
-                    ok=True,
+                    tool_call_id=tool_call.id,
+                    is_error=False,
                     content=f"Added {value}. Current value: {self.current_value}"
                 )
             
@@ -127,8 +141,8 @@ class CalculatorEnvironment:
                 value = tool_call.args["value"]
                 self.current_value -= value
                 return ToolResult(
-                    call_id=tool_call.id,
-                    ok=True,
+                    tool_call_id=tool_call.id,
+                    is_error=False,
                     content=f"Subtracted {value}. Current value: {self.current_value}"
                 )
             
@@ -136,8 +150,8 @@ class CalculatorEnvironment:
                 value = tool_call.args["value"]
                 self.current_value *= value
                 return ToolResult(
-                    call_id=tool_call.id,
-                    ok=True,
+                    tool_call_id=tool_call.id,
+                    is_error=False,
                     content=f"Multiplied by {value}. Current value: {self.current_value}"
                 )
             
@@ -145,23 +159,23 @@ class CalculatorEnvironment:
                 value = tool_call.args["value"]
                 if value == 0:
                     return ToolResult(
-                        call_id=tool_call.id,
-                        ok=False,
+                        tool_call_id=tool_call.id,
+                        is_error=True,
                         content="",
                         error="Cannot divide by zero"
                     )
                 self.current_value /= value
                 return ToolResult(
-                    call_id=tool_call.id,
-                    ok=True,
+                    tool_call_id=tool_call.id,
+                    is_error=False,
                     content=f"Divided by {value}. Current value: {self.current_value}"
                 )
             
             elif tool_call.name == "clear":
                 self.current_value = 0.0
                 return ToolResult(
-                    call_id=tool_call.id,
-                    ok=True,
+                    tool_call_id=tool_call.id,
+                    is_error=False,
                     content="Reset to zero. Current value: 0.0"
                 )
             
@@ -170,33 +184,35 @@ class CalculatorEnvironment:
                 final_result = tool_call.args.get("final_result", self.current_value)
                 
                 return ToolResult(
-                    call_id=tool_call.id,
-                    ok=True,
+                    tool_call_id=tool_call.id,
+                    is_error=False,
                     content=f"Calculation task completed: {summary}. Final result: {final_result}",
                     stop_reason=StopReason.TASK_COMPLETED  # This will stop the agent!
                 )
             
             else:
                 return ToolResult(
-                    call_id=tool_call.id,
-                    ok=False,
+                    tool_call_id=tool_call.id,
+                    is_error=True,
                     content="",
                     error=f"Unknown operation: {tool_call.name}"
                 )
                 
         except Exception as e:
             return ToolResult(
-                call_id=tool_call.id,
-                ok=False,
+                tool_call_id=tool_call.id,
+                is_error=True,
                 content="",
                 error=str(e)
             )
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+
 async def main():
     """Simple demo main function"""
     print("Use the simple_calculator.py example in examples/ instead!")
+
 
 if __name__ == "__main__":
     trio.run(main)

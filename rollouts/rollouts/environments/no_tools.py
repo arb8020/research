@@ -10,9 +10,10 @@ Example usage:
     environment = BasicEnvironment()
 """
 
-from typing import List
 from dataclasses import dataclass
-from ..dtypes import Tool, Environment, ToolCall, ToolResult, AgentState, RunConfig, Message
+
+from ..dtypes import AgentState, Message, RunConfig, Tool, ToolCall, ToolFormatter, ToolResult
+
 
 @dataclass
 class BasicEnvironment:
@@ -29,7 +30,7 @@ class BasicEnvironment:
     external tools or functions.
     """
     
-    def get_tools(self) -> List[Tool]:
+    def get_tools(self) -> list[Tool]:
         """Return empty tool list - no tools available."""
         return []
     
@@ -46,14 +47,43 @@ class BasicEnvironment:
         """No tools, so no confirmation needed."""
         return False
 
-    async def exec_tool(self, tool_call: ToolCall, current_state: AgentState,
-                       run_config: RunConfig, checkpoint_store=None) -> ToolResult:
+    async def exec_tool(
+        self,
+        tool_call: ToolCall,
+        current_state: AgentState,
+        run_config: RunConfig,
+        checkpoint_store=None,
+        cancel_scope=None,
+    ) -> ToolResult:
         """No tools available in basic environment."""
-        return ToolResult(content="No tools available in basic environment")
+        return ToolResult(
+            tool_call_id=tool_call.id,
+            is_error=True,
+            content="No tools available in basic environment"
+        )
 
     async def on_assistant_message(self, message: Message, state: AgentState) -> AgentState:
         """No feedback needed for basic environment."""
         return state
+
+    def get_tool_formatter(self, tool_name: str) -> ToolFormatter | None:
+        """Return optional TUI formatter for tools.
+
+        BasicEnvironment has no tools, so returns None.
+
+        Example for custom environments:
+            def get_tool_formatter(self, tool_name: str) -> ToolFormatter | None:
+                if tool_name == "my_custom_tool":
+                    def formatter(tool_name, args, result, expanded):
+                        text = f"my_custom_tool(param={args.get('param')})"
+                        if result:
+                            text += f"\\n⎿ Custom result: {result}"
+                        return text
+                    return formatter
+                return None  # Use default formatter
+        """
+        return None
+
 
 # Backward compatibility alias
 NoToolsEnvironment = BasicEnvironment

@@ -8,7 +8,6 @@ Casey Muratori: Minimal coupling, explicit operations.
 """
 
 from datetime import timedelta
-from typing import Any, Optional, Union
 
 import torch
 import torch.distributed as dist
@@ -26,11 +25,8 @@ try:
 except ImportError:
     # Fallback for older PyTorch versions
     from torch.distributed import (
-        Backend,
-        PrefixStore,
         Store,
         default_pg_timeout,
-        rendezvous,
     )
     _new_process_group_helper = None
     _world = None
@@ -42,12 +38,12 @@ GLOO_GROUP = None
 
 def init_process_group(
     backend: str = "nccl",
-    init_method: Optional[str] = None,
-    timeout: Optional[timedelta] = None,
+    init_method: str | None = None,
+    timeout: timedelta | None = None,
     world_size: int = -1,
     rank: int = -1,
-    store: Optional[Store] = None,
-    group_name: Optional[str] = None,
+    store: Store | None = None,
+    group_name: str | None = None,
 ) -> None:
     """Initialize distributed process group.
 
@@ -221,7 +217,7 @@ def barrier() -> None:
 def all_reduce(
     tensor: torch.Tensor,
     op: dist.ReduceOp = dist.ReduceOp.SUM,
-    group: Optional[dist.ProcessGroup] = None,
+    group: dist.ProcessGroup | None = None,
 ) -> torch.Tensor:
     """All-reduce tensor across all processes.
 
@@ -247,7 +243,7 @@ def all_reduce(
 def all_gather(
     tensor_list: list[torch.Tensor],
     tensor: torch.Tensor,
-    group: Optional[dist.ProcessGroup] = None,
+    group: dist.ProcessGroup | None = None,
 ) -> None:
     """Gather tensors from all processes into a list.
 
@@ -276,7 +272,7 @@ def all_gather(
 def broadcast(
     tensor: torch.Tensor,
     src: int = 0,
-    group: Optional[dist.ProcessGroup] = None,
+    group: dist.ProcessGroup | None = None,
 ) -> torch.Tensor:
     """Broadcast tensor from src rank to all other ranks.
 
@@ -305,7 +301,7 @@ def broadcast(
 def distributed_masked_whiten(
     values: torch.Tensor,
     mask: torch.Tensor,
-    process_group: Optional[dist.ProcessGroup] = None,
+    process_group: dist.ProcessGroup | None = None,
     shift_mean: bool = True,
     epsilon: float = 1e-8,
 ) -> torch.Tensor:

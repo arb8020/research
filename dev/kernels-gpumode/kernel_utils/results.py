@@ -3,9 +3,8 @@
 Provides structured results for correctness and performance tests,
 enabling JSON export and result aggregation.
 """
-from dataclasses import dataclass, asdict
-from typing import Optional
 import json
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
@@ -17,10 +16,10 @@ class CorrectnessResult:
     backend_name: str
     is_correct: bool
     test_params: str  # Serialized test parameters (m, k, l, seed)
-    max_abs_error: Optional[float] = None
-    max_rel_error: Optional[float] = None
-    error_msg: Optional[str] = None
-    error_type: Optional[str] = None
+    max_abs_error: float | None = None
+    max_rel_error: float | None = None
+    error_msg: str | None = None
+    error_type: str | None = None
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
@@ -36,9 +35,9 @@ class PerformanceResult:
     successfully_ran: bool
     test_params: str  # Serialized test parameters
     avg_time_ms: float
-    speedup: Optional[float] = None  # vs reference backend
-    reference_time_ms: Optional[float] = None
-    error_msg: Optional[str] = None
+    speedup: float | None = None  # vs reference backend
+    reference_time_ms: float | None = None
+    error_msg: str | None = None
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
@@ -129,7 +128,7 @@ class TestSuiteResults:
     suite_name: str
     backends: list[BackendResults]
 
-    def get_backend(self, name: str) -> Optional[BackendResults]:
+    def get_backend(self, name: str) -> BackendResults | None:
         """Get results for a specific backend."""
         for backend in self.backends:
             if backend.backend_name == name:
@@ -189,7 +188,7 @@ class TestSuiteResults:
         Returns:
             TestSuiteResults instance
         """
-        with open(filepath, 'r') as f:
+        with open(filepath) as f:
             data = json.load(f)
 
         backends = []

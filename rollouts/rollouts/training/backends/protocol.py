@@ -8,7 +8,7 @@ Minimal surface area (Tinker-inspired):
 Tiger Style: Protocol-based, explicit operations.
 """
 
-from typing import Any, Dict, Protocol
+from typing import Any, Protocol
 
 from rollouts.training.types import TrainFuture
 
@@ -22,7 +22,7 @@ class TrainingBackend(Protocol):
     Casey: Protocol over inheritance (low coupling).
     """
 
-    def forward_backward(self, batch: Dict[str, Any]) -> TrainFuture[Dict[str, float]]:
+    def forward_backward(self, batch: dict[str, Any]) -> TrainFuture[dict[str, float]]:
         """Compute loss and gradients
 
         Args:
@@ -40,7 +40,7 @@ class TrainingBackend(Protocol):
         """
         ...
 
-    def optim_step(self) -> TrainFuture[Dict[str, float]]:
+    def optim_step(self) -> TrainFuture[dict[str, float]]:
         """Apply gradients and update weights
 
         Returns:
@@ -50,7 +50,7 @@ class TrainingBackend(Protocol):
         """
         ...
 
-    def get_weights(self) -> TrainFuture[Dict[str, Any]]:
+    def get_weights(self) -> TrainFuture[dict[str, Any]]:
         """Get model weights for syncing to inference
 
         Returns:
@@ -58,7 +58,7 @@ class TrainingBackend(Protocol):
         """
         ...
 
-    def load_weights(self, weights: Dict[str, Any]) -> TrainFuture[None]:
+    def load_weights(self, weights: dict[str, Any]) -> TrainFuture[None]:
         """Load model weights from inference or checkpoint
 
         Args:

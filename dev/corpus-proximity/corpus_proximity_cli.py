@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Iterable
+from typing import Any
 
 
 def _load_cli_module() -> ModuleType:

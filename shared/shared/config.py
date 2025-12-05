@@ -8,36 +8,36 @@ Precedence:
 4. Error with helpful message
 """
 
-from pathlib import Path
-from typing import Optional, List
-from dotenv import load_dotenv
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 # Load .env on import
 load_dotenv()
 
 
-def get_runpod_key() -> Optional[str]:
+def get_runpod_key() -> str | None:
     """Get RunPod API key from environment"""
     return os.getenv("RUNPOD_API_KEY")
 
 
-def get_prime_key() -> Optional[str]:
+def get_prime_key() -> str | None:
     """Get Prime Intellect API key from environment"""
     return os.getenv("PRIME_API_KEY")
 
 
-def get_lambda_key() -> Optional[str]:
+def get_lambda_key() -> str | None:
     """Get Lambda Labs API key from environment"""
     return os.getenv("LAMBDA_API_KEY")
 
 
-def get_vast_key() -> Optional[str]:
+def get_vast_key() -> str | None:
     """Get Vast.ai API key from environment"""
     return os.getenv("VAST_API_KEY")
 
 
-def get_modal_token() -> Optional[str]:
+def get_modal_token() -> str | None:
     """Get Modal token from environment or ~/.modal.toml
 
     Precedence:
@@ -82,12 +82,12 @@ def get_modal_token() -> Optional[str]:
     return None
 
 
-def get_ssh_key_path() -> Optional[str]:
+def get_ssh_key_path() -> str | None:
     """Get SSH key path from environment"""
     return os.getenv("SSH_KEY_PATH")
 
 
-def discover_ssh_keys() -> List[str]:
+def discover_ssh_keys() -> list[str]:
     """Find SSH keys in common locations"""
     common_paths = [
         Path.home() / ".ssh" / "id_ed25519",

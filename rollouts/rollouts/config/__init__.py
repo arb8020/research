@@ -24,22 +24,20 @@ Usage:
         def to_endpoint(self) -> Endpoint: ...
 """
 
-from rollouts.config.protocols import (
-    HasModelConfig,
-    HasEnvironmentConfig,
-    HasEvaluationConfig,
-    HasOutputConfig,
-)
-
 from rollouts.config.base import (
-    BaseModelConfig,
     BaseEnvironmentConfig,
     BaseEvaluationConfig,
+    BaseModelConfig,
     BaseOutputConfig,
 )
-
 from rollouts.config.loader import (
     load_config_from_file,
+)
+from rollouts.config.protocols import (
+    HasEnvironmentConfig,
+    HasEvaluationConfig,
+    HasModelConfig,
+    HasOutputConfig,
 )
 
 __all__ = [

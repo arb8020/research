@@ -4,16 +4,15 @@
 import asyncio
 import json
 import logging
-import numpy as np
 import os
 import random
 from pathlib import Path
-from typing import List, Optional, Dict
-from dotenv import load_dotenv
 
+import numpy as np
 from cluster_corpus import ClusterNode, get_cache_key, get_max_depth
-from rollout import Endpoint, Rollout, Message, generate
 from config import Config
+from dotenv import load_dotenv
+from rollout import Endpoint, Message, Rollout, generate
 
 logger = logging.getLogger(__name__)
 
@@ -24,10 +23,10 @@ logger = logging.getLogger(__name__)
 def sample_cluster_texts(
     node: ClusterNode,
     embeddings: np.ndarray,
-    texts: List[str],
+    texts: list[str],
     k: int = 5,
     strategy: str = "centroid"
-) -> List[str]:
+) -> list[str]:
     """
     Sample representative texts from cluster.
 
@@ -64,9 +63,9 @@ def sample_cluster_texts(
 
 def sample_noise_points(
     node: ClusterNode,
-    texts: List[str],
+    texts: list[str],
     k: int = 5
-) -> List[str]:
+) -> list[str]:
     """
     Sample random texts from noise points.
 
@@ -94,9 +93,9 @@ def sample_noise_points(
 async def generate_cluster_name(
     node: ClusterNode,
     embeddings: np.ndarray,
-    texts: List[str],
+    texts: list[str],
     endpoint: Endpoint,
-    parent_name: Optional[str] = None,
+    parent_name: str | None = None,
     num_samples: int = 5
 ) -> str:
     """
@@ -161,7 +160,7 @@ Examples from this cluster (cluster has {node.size} total texts):
 async def name_cluster_tree(
     root: ClusterNode,
     embeddings: np.ndarray,
-    texts: List[str],
+    texts: list[str],
     endpoint: Endpoint
 ) -> ClusterNode:
     """
@@ -218,7 +217,7 @@ async def name_cluster_tree(
 # ────────────────────────────── Tree Traversal Helpers ──────────────────────────────
 
 
-def collect_nodes_at_depth(node: ClusterNode, target_depth: int, result: List[ClusterNode]):
+def collect_nodes_at_depth(node: ClusterNode, target_depth: int, result: list[ClusterNode]):
     """Collect all nodes at target depth (recursive helper)."""
     if node.depth == target_depth:
         result.append(node)
@@ -226,7 +225,7 @@ def collect_nodes_at_depth(node: ClusterNode, target_depth: int, result: List[Cl
         collect_nodes_at_depth(child, target_depth, result)
 
 
-def find_node_by_id(node: ClusterNode, cluster_id: str) -> Optional[ClusterNode]:
+def find_node_by_id(node: ClusterNode, cluster_id: str) -> ClusterNode | None:
     """Find node by cluster_id (recursive helper)."""
     if node.cluster_id == cluster_id:
         return node
@@ -237,7 +236,7 @@ def find_node_by_id(node: ClusterNode, cluster_id: str) -> Optional[ClusterNode]
     return None
 
 
-def list_all_clusters(node: ClusterNode) -> List[ClusterNode]:
+def list_all_clusters(node: ClusterNode) -> list[ClusterNode]:
     """Get flat list of all clusters (depth-first)."""
     result = [node]
     for child in node.children:
@@ -263,7 +262,7 @@ def print_cluster_tree(node: ClusterNode, indent: int = 0):
 def inspect_cluster(
     cluster_id: str,
     root: ClusterNode,
-    texts: List[str],
+    texts: list[str],
     num_samples: int = 5,
     show_noise: bool = False
 ):
@@ -283,7 +282,7 @@ def inspect_cluster(
         print(f"Cluster '{cluster_id}' not found")
         return
 
-    print("="*80)
+    print("=" * 80)
     print(f"Cluster: {cluster_id}")
     if node.name:
         print(f"Name: {node.name}")
@@ -292,7 +291,7 @@ def inspect_cluster(
     print(f"Silhouette: {node.silhouette_score:.3f}")
     print(f"Noise points: {len(node.noise_indices)}")
     print(f"Children: {len(node.children)}")
-    print("="*80)
+    print("=" * 80)
 
     # Show random samples
     print(f"\nRandom samples ({min(num_samples, len(node.indices))} of {len(node.indices)}):\n")
@@ -320,9 +319,8 @@ def inspect_cluster(
 
 
 async def main():
-    import sys
-    import importlib.util
     import argparse
+    import importlib.util
 
     # Parse arguments
     parser = argparse.ArgumentParser(description="Name clusters and inspect cluster tree")
@@ -350,7 +348,7 @@ async def main():
         raise ImportError(f"Spec has no loader: {args.config}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    config: Config = getattr(module, "config")
+    config: Config = module.config
 
     # Get cache directory
     cache_key = get_cache_key(config)
@@ -375,13 +373,13 @@ async def main():
     # Load original chunks
     original_chunks = []
     chunks_path = config.data.processed_dir / config.data.output_file
-    with open(chunks_path, 'r') as f:
+    with open(chunks_path) as f:
         for line in f:
             original_chunks.append(json.loads(line))
 
     # Re-chunk to match embeddings (same logic as cluster_corpus.py)
-    from transformers import AutoTokenizer
     from chunking import chunk_text
+    from transformers import AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(config.clustering.embedding_model)
 
@@ -476,13 +474,13 @@ async def main():
     return 0
 
 
-def reconstruct_tree(tree_dict: Dict, embeddings: np.ndarray, texts: List[str]) -> ClusterNode:
+def reconstruct_tree(tree_dict: dict, embeddings: np.ndarray, texts: list[str]) -> ClusterNode:
     """Reconstruct ClusterNode tree from JSON dict.
 
     Note: We don't have the original indices stored, so we'll use empty lists.
     This is fine for inspection purposes.
     """
-    def reconstruct_node(d: Dict, parent_id: Optional[str] = None) -> ClusterNode:
+    def reconstruct_node(d: dict, parent_id: str | None = None) -> ClusterNode:
         # Create node (indices now stored in JSON)
         node = ClusterNode(
             cluster_id=d["cluster_id"],

@@ -12,8 +12,9 @@ Tiger Style: Explicit abort handling, clear state transitions.
 SLIME: Dynamic sampling strategy, quality filtering.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any
 
 import trio
 
@@ -74,7 +75,7 @@ class AsyncRolloutManager:
 
     async def generate_batch(
         self,
-        reward_fn: Optional[Callable[[Sample], float]] = None,
+        reward_fn: Callable[[Sample], float] | None = None,
     ) -> RolloutBatch:
         """Generate one batch with dynamic over-sampling.
 
@@ -296,7 +297,7 @@ class AsyncRolloutManager:
 async def generate_rollout_batch(
     buffer: DataBuffer,
     config: RolloutConfig,
-    reward_fn: Optional[Callable[[Sample], float]] = None,
+    reward_fn: Callable[[Sample], float] | None = None,
     **rollout_kwargs: Any,
 ) -> RolloutBatch:
     """Generate a single batch with dynamic sampling (convenience function).

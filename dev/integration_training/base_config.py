@@ -8,9 +8,9 @@ Design follows:
 This config.py is the schema. Actual experiments go in configs/*.py files.
 """
 
-from dataclasses import dataclass, field, asdict
-from pathlib import Path
 import json
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
 
 @dataclass

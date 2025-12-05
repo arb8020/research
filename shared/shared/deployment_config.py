@@ -7,7 +7,6 @@ Everything else is superficially similar but actually different.
 """
 
 from dataclasses import dataclass, field
-from typing import List
 
 
 @dataclass(frozen=True)
@@ -22,7 +21,7 @@ class GPUConfig:
     This is proven duplication after implementing both systems.
     """
     # GPU selection
-    gpu_ranks: List[int] = field(default_factory=lambda: [0])  # Which GPUs to use
+    gpu_ranks: list[int] = field(default_factory=lambda: [0])  # Which GPUs to use
     gpu_type: str = "H100"  # For memory estimation: "H100", "B200", "A100", etc.
 
     # Runtime environment (for venv bootstrap)

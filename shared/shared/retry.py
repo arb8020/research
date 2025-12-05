@@ -11,13 +11,14 @@ This is a lightweight alternative to tenacity with the essential features:
 - Async support via trio
 """
 
-import logging
-import time
-import random
-from typing import Callable, Tuple, Type, TypeVar, cast, Any, Optional
-from dataclasses import dataclass
 import functools
 import inspect
+import logging
+import random
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any, TypeVar, cast
 
 # Type variable for the decorated function
 F = TypeVar('F', bound=Callable)
@@ -28,12 +29,12 @@ class RetryState:
     """State passed to callbacks during retry attempts."""
     attempt: int
     delay: float
-    exception: Optional[Exception] = None
+    exception: Exception | None = None
     result: Any = None
 
 
 # Pure helper functions (no control flow, just computation)
-def _calculate_sleep_time(base_delay: float, jitter: bool, max_delay: Optional[float]) -> float:
+def _calculate_sleep_time(base_delay: float, jitter: bool, max_delay: float | None) -> float:
     """Calculate sleep time with optional jitter and cap. Pure function."""
     assert base_delay > 0, f"base_delay must be > 0, got {base_delay}"
     assert isinstance(jitter, bool), f"jitter must be bool, got {type(jitter)}"
@@ -49,7 +50,7 @@ def _calculate_sleep_time(base_delay: float, jitter: bool, max_delay: Optional[f
     return sleep_time
 
 
-def _should_retry_on_result(result: Any, retry_predicate: Optional[Callable[[Any], bool]]) -> bool:
+def _should_retry_on_result(result: Any, retry_predicate: Callable[[Any], bool] | None) -> bool:
     """Check if result should trigger retry. Pure function."""
     if retry_predicate is None:
         return False
@@ -62,7 +63,7 @@ def _log_retry_attempt(
     attempt: int,
     max_attempts: int,
     sleep_time: float,
-    exception: Optional[Exception],
+    exception: Exception | None,
     has_result_predicate: bool
 ) -> None:
     """Log retry attempt. Leaf function with no control flow."""
@@ -89,7 +90,7 @@ def retry(
     max_attempts: int = 3,
     delay: float = 1,
     backoff: float = 2,
-    exceptions: Tuple[Type[Exception], ...] = (Exception,)
+    exceptions: tuple[type[Exception], ...] = (Exception,)
 ) -> Callable[[F], F]:
     """Retry decorator with exponential backoff.
 
@@ -151,11 +152,11 @@ def retry_v2(
     max_attempts: int = 3,
     delay: float = 1,
     backoff: float = 2,
-    max_delay: Optional[float] = None,
+    max_delay: float | None = None,
     jitter: bool = False,
-    exceptions: Tuple[Type[Exception], ...] = (Exception,),
-    retry_on_result: Optional[Callable[[Any], bool]] = None,
-    on_retry: Optional[Callable[[RetryState], None]] = None,
+    exceptions: tuple[type[Exception], ...] = (Exception,),
+    retry_on_result: Callable[[Any], bool] | None = None,
+    on_retry: Callable[[RetryState], None] | None = None,
 ) -> Callable[[F], F]:
     """Enhanced retry decorator with composable strategies (lightweight tenacity).
 
@@ -273,11 +274,11 @@ def async_retry(
     max_attempts: int = 3,
     delay: float = 1,
     backoff: float = 2,
-    max_delay: Optional[float] = None,
+    max_delay: float | None = None,
     jitter: bool = False,
-    exceptions: Tuple[Type[Exception], ...] = (Exception,),
-    retry_on_result: Optional[Callable[[Any], bool]] = None,
-    on_retry: Optional[Callable[[RetryState], None]] = None,
+    exceptions: tuple[type[Exception], ...] = (Exception,),
+    retry_on_result: Callable[[Any], bool] | None = None,
+    on_retry: Callable[[RetryState], None] | None = None,
 ) -> Callable[[F], F]:
     """Async retry decorator with exponential backoff using trio (lightweight tenacity).
 

@@ -10,15 +10,13 @@ simpler and faster than UMAP+HDBSCAN, though less sophisticated for noise handli
 and discovering non-convex clusters. Worth considering for very large corpora.
 """
 
-import json
 import hashlib
+import json
 import logging
-import numpy as np
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Dict, Optional
 
-
+import numpy as np
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -32,19 +30,19 @@ class ClusterNode:
     """A node in the cluster tree."""
     cluster_id: str  # Hierarchical ID like "0", "0.1", "0.1.2"
     depth: int
-    parent_id: Optional[str]
+    parent_id: str | None
 
     # Data (indices into original corpus)
-    indices: List[int]  # Indices into the embeddings/texts passed to recursive_cluster
+    indices: list[int]  # Indices into the embeddings/texts passed to recursive_cluster
 
     # Cluster info
     centroid: np.ndarray    # (D,) cluster center
     size: int               # Number of chunks
-    silhouette_score: float # Cluster coherence
+    silhouette_score: float  # Cluster coherence
 
     # Subclusters (populated during recursion)
-    children: List["ClusterNode"]
-    noise_indices: List[int]  # HDBSCAN noise points (-1 label)
+    children: list["ClusterNode"]
+    noise_indices: list[int]  # HDBSCAN noise points (-1 label)
 
     # LLM-generated name (populated later)
     name: str = ""
@@ -67,7 +65,7 @@ class ClusterNode:
 # ──────────────────────────── Helper Functions ─────────────────────────────
 
 
-def build_chunk_to_cluster_map(tree: ClusterNode) -> Dict[int, str]:
+def build_chunk_to_cluster_map(tree: ClusterNode) -> dict[int, str]:
     """Build mapping from chunk index to most specific cluster ID.
 
     Args:
@@ -76,7 +74,7 @@ def build_chunk_to_cluster_map(tree: ClusterNode) -> Dict[int, str]:
     Returns:
         Dictionary mapping global chunk indices to cluster identifiers.
     """
-    mapping: Dict[int, str] = {}
+    mapping: dict[int, str] = {}
 
     def traverse(node: ClusterNode):
         if not node.children:
@@ -110,8 +108,8 @@ def build_chunk_to_cluster_map(tree: ClusterNode) -> Dict[int, str]:
 
 def recursive_cluster(
     embeddings: np.ndarray,
-    texts: List[str],
-    metadata: List[Dict],
+    texts: list[str],
+    metadata: list[dict],
     depth: int = 0,
     max_depth: int = 3,
     base_pct: float = 0.05,
@@ -120,7 +118,7 @@ def recursive_cluster(
     umap_n_components: int = 50,
     umap_metric: str = "cosine",
     hdbscan_min_samples: int = 10,
-    parent_id: Optional[str] = None,
+    parent_id: str | None = None,
     cluster_index: int = 0
 ) -> ClusterNode:
     """
@@ -147,9 +145,9 @@ def recursive_cluster(
     Returns:
         ClusterNode with children populated if recursion occurred
     """
-    from umap import UMAP
     from hdbscan import HDBSCAN
     from sklearn.metrics import silhouette_score
+    from umap import UMAP
 
     # Generate cluster ID
     cluster_id = str(cluster_index) if parent_id is None else f"{parent_id}.{cluster_index}"
@@ -197,7 +195,7 @@ def recursive_cluster(
 
     labels = None
     noise_mask = None
-    noise_indices: List[int] = []
+    noise_indices: list[int] = []
     unique_labels: set[int] = set()
     n_clusters = 0
     noise_ratio = 0.0
@@ -371,8 +369,8 @@ def get_cache_key(config: Config) -> str:
 
 def save_cluster_tree(
     node: ClusterNode,
-    texts: List[str],
-    metadata: List[Dict],
+    texts: list[str],
+    metadata: list[dict],
     output_path: Path
 ):
     """Save cluster tree to JSON (recursive).
@@ -410,9 +408,9 @@ def save_cluster_tree(
     logger.info(f"Saved cluster tree to {output_path}")
 
 
-def compute_cluster_stats(node: ClusterNode) -> Dict:
+def compute_cluster_stats(node: ClusterNode) -> dict:
     """Compute statistics for cluster tree."""
-    def traverse(n: ClusterNode, stats: Dict):
+    def traverse(n: ClusterNode, stats: dict):
         stats['total_clusters'] += 1
         stats['clusters_by_depth'][n.depth] = stats['clusters_by_depth'].get(n.depth, 0) + 1
         stats['total_noise_points'] += len(n.noise_indices)
@@ -445,7 +443,7 @@ def get_max_depth(node: ClusterNode) -> int:
 # ────────────────────────────── Main Pipeline ──────────────────────────────
 
 
-def load_and_embed_corpus(config: Config) -> tuple[np.ndarray, List[str], List[Dict]]:
+def load_and_embed_corpus(config: Config) -> tuple[np.ndarray, list[str], list[dict]]:
     """Load corpus, re-chunk with fixed_tokens, and embed with Arctic-Embed-L.
 
     Args:
@@ -454,9 +452,9 @@ def load_and_embed_corpus(config: Config) -> tuple[np.ndarray, List[str], List[D
     Returns:
         Tuple of (embeddings, texts, metadata)
     """
+    from chunking import chunk_text
     from sentence_transformers import SentenceTransformer
     from transformers import AutoTokenizer
-    from chunking import chunk_text
 
     logger.info("Loading corpus...")
 
@@ -467,7 +465,7 @@ def load_and_embed_corpus(config: Config) -> tuple[np.ndarray, List[str], List[D
 
     # Read all chunks
     original_chunks = []
-    with open(chunks_path, 'r') as f:
+    with open(chunks_path) as f:
         for line in f:
             original_chunks.append(json.loads(line))
 
@@ -520,8 +518,8 @@ def load_and_embed_corpus(config: Config) -> tuple[np.ndarray, List[str], List[D
 
 
 def main():
-    import sys
     import importlib.util
+    import sys
 
     # Setup logging
     logging.basicConfig(
@@ -542,7 +540,7 @@ def main():
             raise ImportError(f"Spec has no loader: {sys.argv[1]}")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        config: Config = getattr(module, "config")
+        config: Config = module.config
     else:
         config = Config()
 
@@ -552,9 +550,9 @@ def main():
         if marker.exists():
             marker.unlink()
 
-    logger.info("="*80)
+    logger.info("=" * 80)
     logger.info("Recursive Clustering Pipeline")
-    logger.info("="*80)
+    logger.info("=" * 80)
     logger.info(f"  Embedding model: {config.clustering.embedding_model}")
     logger.info(f"  Chunking: {config.clustering.chunking_strategy} (max {config.clustering.chunk_max_tokens} tokens)")
     logger.info(f"  Max depth: {config.clustering.max_depth}")
@@ -594,9 +592,9 @@ def main():
                 f.write(json.dumps(meta) + '\n')
 
         logger.info("")
-        logger.info("="*80)
+        logger.info("=" * 80)
         logger.info("Starting recursive clustering...")
-        logger.info("="*80)
+        logger.info("=" * 80)
 
         root_node = recursive_cluster(
             embeddings=embeddings,
@@ -613,9 +611,9 @@ def main():
         )
 
         logger.info("")
-        logger.info("="*80)
+        logger.info("=" * 80)
         logger.info("Clustering complete!")
-        logger.info("="*80)
+        logger.info("=" * 80)
 
         stats = compute_cluster_stats(root_node)
         logger.info(f"Total clusters: {stats['total_clusters']}")
@@ -644,9 +642,9 @@ def main():
         logger.info(f"Saved config to {config_path}")
 
         logger.info("")
-        logger.info("="*80)
+        logger.info("=" * 80)
         logger.info("Pipeline complete!")
-        logger.info("="*80)
+        logger.info("=" * 80)
 
         success_marker.touch()
         logger.info(f"✅ Clustering complete, marker: {success_marker}")

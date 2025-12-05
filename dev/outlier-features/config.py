@@ -1,8 +1,8 @@
 """Configuration for outlier features analysis experiments."""
 
-from dataclasses import dataclass, field, asdict
-from pathlib import Path
 import json
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
 
 @dataclass

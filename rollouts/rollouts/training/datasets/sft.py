@@ -389,7 +389,7 @@ def load_samples_from_jsonl(
 
     samples = []
 
-    with open(input_file, "r") as f:
+    with open(input_file) as f:
         for line_num, line in enumerate(f, start=1):
             if limit and line_num > limit:
                 break

@@ -7,6 +7,7 @@ Attempts to download the model and captures detailed error information.
 import logging
 import sys
 from typing import cast
+
 import httpx
 from sentence_transformers import SentenceTransformer
 
@@ -22,9 +23,9 @@ def test_rate_limit():
 
     model_name = "sentence-transformers/all-MiniLM-L6-v2"
 
-    print("="*80)
+    print("=" * 80)
     print("RATE LIMIT SMOKE TEST")
-    print("="*80)
+    print("=" * 80)
     print(f"\nAttempting to load model: {model_name}")
     print("This will try to download from HuggingFace and capture error details...\n")
 
@@ -36,17 +37,17 @@ def test_rate_limit():
         return 0
 
     except Exception as e:
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("❌ ERROR CAPTURED")
-        print("="*80)
+        print("=" * 80)
 
         print(f"\nException type: {type(e).__name__}")
         print(f"\nException message:\n{str(e)}")
 
         # Try to extract additional info from the exception
-        print("\n" + "-"*80)
+        print("\n" + "-" * 80)
         print("DETAILED EXCEPTION ATTRIBUTES:")
-        print("-"*80)
+        print("-" * 80)
 
         for attr in dir(e):
             if not attr.startswith('_'):
@@ -59,14 +60,14 @@ def test_rate_limit():
 
         # Check if there's response info (for HTTP errors)
         if hasattr(e, 'response'):
-            print("\n" + "-"*80)
+            print("\n" + "-" * 80)
             print("HTTP RESPONSE DETAILS:")
-            print("-"*80)
+            print("-" * 80)
             response = cast(httpx.Response, e.response)
 
             print(f"  Status code: {response.status_code}")
 
-            print(f"\n  Response headers:")
+            print("\n  Response headers:")
             for key, value in response.headers.items():
                 print(f"    {key}: {value}")
 
@@ -74,21 +75,21 @@ def test_rate_limit():
 
         # Check for nested exceptions
         if hasattr(e, '__cause__') and e.__cause__:
-            print("\n" + "-"*80)
+            print("\n" + "-" * 80)
             print("ORIGINAL CAUSE:")
-            print("-"*80)
+            print("-" * 80)
             print(f"  Type: {type(e.__cause__).__name__}")
             print(f"  Message: {str(e.__cause__)}")
 
             if hasattr(e.__cause__, 'response'):
                 cause_response = cast(httpx.Response, e.__cause__.response)
-                print(f"\n  Original response headers:")
+                print("\n  Original response headers:")
                 for key, value in cause_response.headers.items():
                     print(f"    {key}: {value}")
 
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("KEY FINDINGS:")
-        print("="*80)
+        print("=" * 80)
 
         # Extract key info
         findings = []
@@ -127,7 +128,7 @@ def test_rate_limit():
         for finding in findings:
             print(f"  {finding}")
 
-        print("="*80)
+        print("=" * 80)
 
         return 1
 

@@ -10,11 +10,29 @@ Includes:
 
 # Training loops
 # Backends
+# Agent integration
+from rollouts.training.agent_integration import (
+    agent_rollout_to_sample,
+    generate_rollout_batch,
+    trajectory_to_sample,
+)
 from rollouts.training.backends import PyTorchTrainingBackend
 from rollouts.training.backends.protocol import TrainingBackend
 
 # Datasets
 from rollouts.training.datasets import DataBuffer, load_sft_dataset
+
+# Filters (SLIME-style)
+from rollouts.training.filters import (
+    check_any_success,
+    check_min_reward,
+    check_quality_and_diversity,
+    check_reasonable_length,
+    check_response_diversity,
+    check_reward_nonzero_std,
+    make_length_filter,
+    make_threshold_filter,
+)
 from rollouts.training.loops import run_rl_training, run_sft_training
 
 # Metrics
@@ -33,25 +51,6 @@ from rollouts.training.types import (
     RolloutConfig,
     Sample,
     SFTTrainingConfig,
-)
-
-# Filters (SLIME-style)
-from rollouts.training.filters import (
-    check_reward_nonzero_std,
-    check_min_reward,
-    check_response_diversity,
-    check_reasonable_length,
-    check_any_success,
-    check_quality_and_diversity,
-    make_threshold_filter,
-    make_length_filter,
-)
-
-# Agent integration
-from rollouts.training.agent_integration import (
-    agent_rollout_to_sample,
-    generate_rollout_batch,
-    trajectory_to_sample,
 )
 
 __all__ = [

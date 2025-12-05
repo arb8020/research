@@ -2,17 +2,17 @@
 """Test visualization backends with optimizer data."""
 
 import sys
+from pathlib import Path
+
 import jax
 import jax.numpy as jnp
 import numpy as np
-from pathlib import Path
-
-from optimizers import sgd_init, sgd_update, optimize
-from loss_landscapes import quadratic_loss, narrow_valley_loss, narrow_valley_loss_numpy
+from loss_landscapes import narrow_valley_loss, narrow_valley_loss_numpy, quadratic_loss
+from optimizers import optimize, sgd_init, sgd_update
 from viz_data import create_viz_data
-from viz_matplotlib import plot_optimization_summary, compare_optimizers
-from viz_terminal import plot_optimization_summary_terminal
+from viz_matplotlib import compare_optimizers, plot_optimization_summary
 from viz_raw import print_optimization_summary_raw
+from viz_terminal import plot_optimization_summary_terminal
 
 
 def main():

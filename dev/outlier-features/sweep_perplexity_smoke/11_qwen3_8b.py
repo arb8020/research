@@ -4,8 +4,9 @@ Quick perplexity computation to validate pipeline on large dense model.
 Runtime: ~5-10 minutes on 1xGPU.
 """
 
-from pathlib import Path
 import sys
+from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import Config

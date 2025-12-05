@@ -19,11 +19,13 @@ import argparse
 import logging
 import os
 from typing import Literal, TypeAlias
+
 from dotenv import load_dotenv
-from broker import GPUClient, CloudType, GPUInstance
-from bifrost import BifrostClient
-from shared.config import get_runpod_key, get_prime_key
+from shared.config import get_prime_key, get_runpod_key
 from shared.logging_config import setup_logging
+
+from bifrost import BifrostClient
+from broker import CloudType, GPUClient, GPUInstance
 
 load_dotenv()
 logger = logging.getLogger(__name__)

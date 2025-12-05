@@ -1,10 +1,12 @@
 # weights.py
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import Any, Dict, Tuple, Optional, Union, TYPE_CHECKING
+
 import pathlib
-import numpy as np
 import re
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+import numpy as np
 
 if TYPE_CHECKING:
     from jax import Array
@@ -13,15 +15,17 @@ if TYPE_CHECKING:
 # GPT-2 Weight Loading
 # -----------------------------
 
+
 @dataclass(frozen=True)
 class GPT2Weights:
     """
     Immutable struct holding raw numpy arrays keyed by canonical GPT-2 names.
     Keeps it generic so your pure-numpy inference can wire these in.
     """
-    params: Dict[str, np.ndarray]  # e.g., "wte", "wpe", "h.0.attn.c_attn.weight", ...
+    params: dict[str, np.ndarray]  # e.g., "wte", "wpe", "h.0.attn.c_attn.weight", ...
 
-def _maybe_load_safetensors(model_dir: pathlib.Path) -> Dict[str, np.ndarray] | None:
+
+def _maybe_load_safetensors(model_dir: pathlib.Path) -> dict[str, np.ndarray] | None:
     try:
         from safetensors.numpy import load_file
     except ImportError:
@@ -42,7 +46,8 @@ def _maybe_load_safetensors(model_dir: pathlib.Path) -> Dict[str, np.ndarray] | 
         return out
     return None
 
-def _maybe_load_pytorch_bin(model_dir: pathlib.Path) -> Dict[str, np.ndarray] | None:
+
+def _maybe_load_pytorch_bin(model_dir: pathlib.Path) -> dict[str, np.ndarray] | None:
     try:
         import torch
     except ImportError:
@@ -55,7 +60,8 @@ def _maybe_load_pytorch_bin(model_dir: pathlib.Path) -> Dict[str, np.ndarray] | 
     state = torch.load(str(bin_path), map_location="cpu")
     return {k: v.detach().cpu().numpy() for k, v in state.items()}
 
-def _maybe_load_npz(model_dir: pathlib.Path) -> Dict[str, np.ndarray] | None:
+
+def _maybe_load_npz(model_dir: pathlib.Path) -> dict[str, np.ndarray] | None:
     # Support a single-file export you may have created yourself.
     npzs = list(model_dir.glob("*.npz"))
     if not npzs:
@@ -63,7 +69,8 @@ def _maybe_load_npz(model_dir: pathlib.Path) -> Dict[str, np.ndarray] | None:
     data = np.load(str(npzs[0]))
     return {k: data[k] for k in data.files}
 
-def _canonicalize(params: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+
+def _canonicalize(params: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     """
     Keep HF naming, but surface a few friendly aliases.
     """
@@ -89,6 +96,7 @@ def _canonicalize(params: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
             out[k.replace(".ln_f.bias", ".lnf.beta")] = out[k]
     return out
 
+
 def load_gpt2_weights(model_dir: str | pathlib.Path) -> GPT2Weights:
     """
     Load GPT-2 weights from a directory containing model files.
@@ -108,15 +116,17 @@ def load_gpt2_weights(model_dir: str | pathlib.Path) -> GPT2Weights:
 # LLaMA Weight Loading
 # -----------------------------
 
+
 @dataclass(frozen=True)
 class LlamaWeights:
     """
     Immutable struct holding raw numpy arrays keyed by canonical LLaMA names.
     Keeps it generic so your pure-numpy inference can wire these in.
     """
-    params: Dict[str, np.ndarray]  # e.g., "model.embed_tokens.weight", "model.layers.0.self_attn.q_proj.weight", ...
+    params: dict[str, np.ndarray]  # e.g., "model.embed_tokens.weight", "model.layers.0.self_attn.q_proj.weight", ...
 
-def _maybe_load_safetensors_llama(model_dir: pathlib.Path) -> Dict[str, np.ndarray] | None:
+
+def _maybe_load_safetensors_llama(model_dir: pathlib.Path) -> dict[str, np.ndarray] | None:
     try:
         from safetensors.numpy import load_file
     except ImportError:
@@ -137,7 +147,8 @@ def _maybe_load_safetensors_llama(model_dir: pathlib.Path) -> Dict[str, np.ndarr
         return out
     return None
 
-def _maybe_load_pytorch_bin_llama(model_dir: pathlib.Path) -> Dict[str, np.ndarray] | None:
+
+def _maybe_load_pytorch_bin_llama(model_dir: pathlib.Path) -> dict[str, np.ndarray] | None:
     try:
         import torch
     except ImportError:
@@ -150,7 +161,8 @@ def _maybe_load_pytorch_bin_llama(model_dir: pathlib.Path) -> Dict[str, np.ndarr
     state = torch.load(str(bin_path), map_location="cpu")
     return {k: v.detach().cpu().numpy() for k, v in state.items()}
 
-def _maybe_load_npz_llama(model_dir: pathlib.Path) -> Dict[str, np.ndarray] | None:
+
+def _maybe_load_npz_llama(model_dir: pathlib.Path) -> dict[str, np.ndarray] | None:
     # Support a single-file export you may have created yourself.
     npzs = list(model_dir.glob("*.npz"))
     if not npzs:
@@ -158,7 +170,8 @@ def _maybe_load_npz_llama(model_dir: pathlib.Path) -> Dict[str, np.ndarray] | No
     data = np.load(str(npzs[0]))
     return {k: data[k] for k in data.files}
 
-def _canonicalize_llama(params: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+
+def _canonicalize_llama(params: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     """
     Keep HF naming, but surface a few friendly aliases for LLaMA.
     """
@@ -184,6 +197,7 @@ def _canonicalize_llama(params: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
     
     return out
 
+
 def load_llama_weights(model_dir: str | pathlib.Path) -> LlamaWeights:
     """
     Load LLaMA weights from a directory containing model files.
@@ -203,7 +217,8 @@ def load_llama_weights(model_dir: str | pathlib.Path) -> LlamaWeights:
 # Helper to download from HuggingFace
 # -----------------------------
 
-def download_llama_weights(model_name: str = "meta-llama/Llama-3.1-8B-Instruct", cache_dir: Optional[Union[str, pathlib.Path]] = None) -> pathlib.Path:
+
+def download_llama_weights(model_name: str = "meta-llama/Llama-3.1-8B-Instruct", cache_dir: str | pathlib.Path | None = None) -> pathlib.Path:
     """
     Download LLaMA model weights from HuggingFace.
     Returns path to directory containing model weights.
@@ -218,7 +233,8 @@ def download_llama_weights(model_name: str = "meta-llama/Llama-3.1-8B-Instruct",
     
     return pathlib.Path(local_dir)
 
-def download_gpt2_weights(model_name: str = "gpt2", cache_dir: Optional[Union[str, pathlib.Path]] = None) -> pathlib.Path:
+
+def download_gpt2_weights(model_name: str = "gpt2", cache_dir: str | pathlib.Path | None = None) -> pathlib.Path:
     """
     Download GPT-2 model weights from HuggingFace.
     Returns path to directory containing model weights.
@@ -233,7 +249,8 @@ def download_gpt2_weights(model_name: str = "gpt2", cache_dir: Optional[Union[st
     
     return pathlib.Path(local_dir)
 
-def validate_gpt2_weights(weights: Dict[str, Any], expected_keys: list[str]) -> None:
+
+def validate_gpt2_weights(weights: dict[str, Any], expected_keys: list[str]) -> None:
     """
     Validate that all expected keys exist in weights dictionary.
     Provides helpful error messages with suggestions for missing keys.
@@ -265,7 +282,8 @@ def validate_gpt2_weights(weights: Dict[str, Any], expected_keys: list[str]) -> 
     
     print("✅ All required weight keys found")
 
-def validate_llama_weights(weights: Dict[str, Any], expected_keys: list[str]) -> None:
+
+def validate_llama_weights(weights: dict[str, Any], expected_keys: list[str]) -> None:
     """
     Validate that all expected keys exist in weights dictionary.
     Provides helpful error messages with suggestions for missing keys.
@@ -297,8 +315,8 @@ def validate_llama_weights(weights: Dict[str, Any], expected_keys: list[str]) ->
     
     print("✅ All required weight keys found")
 
-def load_and_print_llama_weights_jax() -> Dict[str, 'Array']:
-    import jax
+
+def load_and_print_llama_weights_jax() -> dict[str, Array]:
     import jax.numpy as jnp
     """Load and analyze LLaMA model weights from any source."""
     
@@ -343,8 +361,8 @@ def load_and_print_llama_weights_jax() -> Dict[str, 'Array']:
     
     return weights
 
-def load_and_print_gpt2_weights_jax() -> Dict[str, 'Array']:
-    import jax
+
+def load_and_print_gpt2_weights_jax() -> dict[str, Array]:
     import jax.numpy as jnp
     """Load and analyze model weights from any source."""
     
@@ -390,7 +408,8 @@ def load_and_print_gpt2_weights_jax() -> Dict[str, 'Array']:
 # Weight shape inspection
 # -----------------------------
 
-def _shape_hints_llama(weights: LlamaWeights) -> Dict[str, Tuple[int, ...]]:
+
+def _shape_hints_llama(weights: LlamaWeights) -> dict[str, tuple[int, ...]]:
     # Pull a few common shapes to sanity-check the checkpoint.
     hints = {}
     for name in [
@@ -411,7 +430,8 @@ def _shape_hints_llama(weights: LlamaWeights) -> Dict[str, Tuple[int, ...]]:
             hints[name] = tuple(weights.params[name].shape)
     return hints
 
-def _shape_hints(weights: GPT2Weights) -> Dict[str, Tuple[int, ...]]:
+
+def _shape_hints(weights: GPT2Weights) -> dict[str, tuple[int, ...]]:
     # Pull a few common shapes to sanity-check the checkpoint.
     hints = {}
     for name in [
@@ -426,6 +446,7 @@ def _shape_hints(weights: GPT2Weights) -> Dict[str, Tuple[int, ...]]:
         if name in weights.params:
             hints[name] = tuple(weights.params[name].shape)
     return hints
+
 
 if __name__ == "__main__":
     import argparse

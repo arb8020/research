@@ -2,9 +2,8 @@
 
 This is a template - replace the implementation with your actual Triton kernel.
 """
-import torch
-from kernel_utils.task import input_t, output_t
 from kernel_utils.backends import BACKENDS
+from kernel_utils.task import input_t, output_t
 
 # Uncomment when you implement the kernel
 # import triton

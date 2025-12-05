@@ -3,11 +3,12 @@
 Provides tolerance-based matching and performance measurement,
 following backend-bench patterns but with explicit error handling.
 """
-from typing import Callable
-import torch
 import time
 import traceback
+from collections.abc import Callable
 from pathlib import Path
+
+import torch
 
 
 def allclose_with_error(
@@ -381,9 +382,9 @@ def ncu_profile_kernel(
         report_path is the path to the saved .csv file
         error_msg is None on success
     """
+    import json
     import subprocess
     import sys
-    import json
 
     assert callable(kernel_fn), "kernel_fn must be callable"
 

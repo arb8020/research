@@ -4,8 +4,9 @@ First systematic MoE model in original analysis.
 Runtime: ~15-20 minutes on 2xA100.
 """
 
-from pathlib import Path
 import sys
+from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import Config

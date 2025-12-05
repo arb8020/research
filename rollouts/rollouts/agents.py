@@ -5,6 +5,8 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 
+import trio
+
 from .progress import tqdm
 
 logger = logging.getLogger(__name__)
@@ -18,9 +20,14 @@ from .dtypes import (
     RunConfig,
     StopReason,
     StreamChunk,
+    StreamEvent,
+    TextDelta,
+    ThinkingDelta,
+    ToolCallEnd,
     ToolCall,
     ToolConfirmResult,
     ToolResult,
+    ToolResultReceived,
 )
 from .providers import (
     rollout_anthropic,
@@ -59,17 +66,16 @@ async def handle_checkpoint_event(state: 'AgentState', event: str, run_config: '
     ))
 
 
-async def stdout_handler(chunk: StreamChunk):
-    """Simple stdout handler for chunks"""
-    if chunk.type == "token":
-        print(chunk.data["text"], end='', flush=True)
-    elif chunk.type == "tool_call_complete":
-        print(f"\n🔧 Calling {chunk.data['name']}({chunk.data['args']})")
-    elif chunk.type == "tool_result":
-        status = "✓" if chunk.data["ok"] else "✗"
-        print(f"\n  {status} {chunk.data['content'][:100]}...")
-    elif chunk.type == "thinking":
-        print(f"\033[95m{chunk.data['text']}\033[0m", end='', flush=True)
+async def stdout_handler(event: StreamEvent):
+    """Simple stdout handler for granular streaming events"""
+    if isinstance(event, TextDelta):
+        print(event.delta, end='', flush=True)
+    elif isinstance(event, ThinkingDelta):
+        # Magenta color for thinking
+        print(f"\033[95m{event.delta}\033[0m", end='', flush=True)
+    elif isinstance(event, ToolCallEnd):
+        print(f"\n🔧 Calling {event.tool_call.name}({event.tool_call.args})")
+    # Note: tool_result events are emitted separately by the agent loop, not by stream aggregators
 
 # ── Core agent functions ──────────────────────────────────────────────────────
 # Provider-specific rollout functions and stream handling imported from providers.py
@@ -102,8 +108,8 @@ async def confirm_tool_with_feedback(tc: ToolCall, state: AgentState, run_config
         result_with_feedback = ToolConfirmResult(
             proceed=False,
             tool_result=ToolResult(
-                call_id=tc.id,
-                ok=False,
+                tool_call_id=tc.id,
+                is_error=True,
                 error="Rejected by user"
             ),
             user_message=feedback
@@ -115,8 +121,8 @@ async def confirm_tool_with_feedback(tc: ToolCall, state: AgentState, run_config
         result_skip = ToolConfirmResult(
             proceed=False,
             tool_result=ToolResult(
-                call_id=tc.id,
-                ok=False,
+                tool_call_id=tc.id,
+                is_error=True,
                 error="Skipped by user"
             )
         )
@@ -162,7 +168,6 @@ def inject_turn_warning(max_turns: int, warning_at: int = 2) -> Callable[[AgentS
             warning = Message(
                 role="user",
                 content=f"⚠️ You have {warning_at} turns remaining. Please complete your task quickly.",
-                tool_calls=[]
             )
             new_trajectory = replace(
                 state.actor.trajectory,
@@ -270,7 +275,7 @@ def handle_stop_on_empty_message() -> Callable[[AgentState], AgentState]:
             last_msg = state.actor.trajectory.messages[-1]
             if (last_msg.role == "assistant" and
                 not last_msg.content and
-                not (hasattr(last_msg, 'tool_calls') and last_msg.tool_calls)):
+                not last_msg.get_tool_calls()):
                 result_state = replace(state, stop=StopReason.MAX_TURNS)
                 assert result_state.stop is not None
                 return result_state
@@ -328,7 +333,6 @@ async def inject_tool_reminder(state: AgentState, run_config: 'RunConfig') -> Ag
     reminder = Message(
         role="user",
         content="Please use the available tools to complete the task. What calculation would you like to perform?",
-        tool_calls=[]
     )
     new_trajectory = replace(
         state.actor.trajectory,
@@ -349,26 +353,75 @@ FullAuto = RunConfig(
 )
 
 
-async def rollout(actor: Actor, on_chunk: Callable[[StreamChunk], Awaitable[None]] = stdout_handler,
-                  user_message_for_thinking: str | None = None, turn_idx: int = 0, inline_thinking: str | None = None) -> Actor:
+async def rollout(
+    actor: Actor,
+    on_chunk: Callable[[StreamEvent], Awaitable[None]] = stdout_handler,
+    user_message_for_thinking: str | None = None,
+    turn_idx: int = 0,
+    inline_thinking: str | None = None,
+    cancel_scope: trio.CancelScope | None = None,
+) -> Actor:
+    """Route to appropriate provider function using unified API type abstraction.
+
+    This function uses the provider registry to automatically select the correct
+    streaming implementation based on the provider and model. Multiple providers
+    (e.g., OpenAI, Groq, xAI) may share the same implementation if they use
+    compatible APIs.
+
+    Args:
+        actor: Current actor state with endpoint and trajectory
+        on_chunk: Callback for streaming events
+        user_message_for_thinking: Anthropic-specific parameter for thinking context
+        turn_idx: Anthropic-specific parameter for turn tracking
+        inline_thinking: Anthropic-specific parameter for thinking template
+        cancel_scope: Optional Trio cancel scope for graceful cancellation
+
+    Returns:
+        Updated actor with new message in trajectory
+    """
+    assert actor is not None
+    assert on_chunk is not None
+    assert callable(on_chunk)
+
+    from rollouts.providers import get_provider_function
+
     provider = actor.endpoint.provider
-    if provider == "openai":
-        new_actor = await rollout_openai(actor, on_chunk)
-    elif provider in ("sglang", "vllm"):  # Accept both for backwards compat
-        new_actor = await rollout_sglang(actor, on_chunk)
-    elif provider == "anthropic":
-        new_actor = await rollout_anthropic(actor, on_chunk, user_message_for_thinking, turn_idx, inline_thinking)
-    else:
-        assert False, f"Invalid provider {actor.endpoint.provider}. Must be one of: openai, sglang, vllm, anthropic"
+    model_id = actor.endpoint.model
+
+    # Get the appropriate provider function via API type mapping
+    provider_func = get_provider_function(provider, model_id)
+
+    # Call with provider-specific kwargs if needed
+    # Anthropic needs extra params, others don't - but **kwargs makes this flexible
+    # Note: Provider functions don't yet support cancel_scope, but we pass it for future support
+    new_actor = await provider_func(
+        actor,
+        on_chunk,
+        user_message_for_thinking=user_message_for_thinking,
+        turn_idx=turn_idx,
+        inline_thinking=inline_thinking,
+    )
     return new_actor
 
 
-async def run_agent_step(state: AgentState, rcfg: RunConfig) -> AgentState:
+async def run_agent_step(
+    state: AgentState,
+    rcfg: RunConfig,
+) -> AgentState:
     """Execute one complete turn: LLM call → ALL tool executions → next turn.
     
     Turn atomicity: Execute ALL tools before giving control back to LLM.
     This simplifies reasoning but prevents early stopping or parallel execution.
+    
+    Cancellation is handled automatically by Trio - any await will raise
+    trio.Cancelled if the cancel_scope was cancelled.
+    
+    Args:
+        state: Current agent state
+        rcfg: Run configuration (contains cancel_scope for cancellation)
     """
+    assert state is not None
+    assert rcfg is not None
 
     state = rcfg.handle_stop(state)
     if state.stop:
@@ -388,26 +441,47 @@ async def run_agent_step(state: AgentState, rcfg: RunConfig) -> AgentState:
     logger.debug(f"🔍 BEFORE rollout() - Turn {state.turn_idx}")
     logger.debug(f"   Trajectory messages count: {len(updated_actor.trajectory.messages)}")
     for i, msg in enumerate(updated_actor.trajectory.messages):
-        content_len = len(msg.content) if msg.content else 0
-        content_preview = (msg.content[:50] if msg.content else 'None') + '...'
+        if isinstance(msg.content, str):
+            content_len = len(msg.content) if msg.content else 0
+            content_preview = (msg.content[:50] if msg.content else 'None') + '...'
+        elif isinstance(msg.content, list):
+            content_len = len(msg.content)
+            content_preview = f"[{len(msg.content)} blocks]..."
+        else:
+            content_len = 0
+            content_preview = 'None...'
         logger.debug(f"      Message {i} ({msg.role}): {content_len} chars - {content_preview}")
 
-    # Make LLM call
-    next_actor = await rollout(updated_actor, rcfg.on_chunk, rcfg.user_message_for_thinking, state.turn_idx, rcfg.inline_thinking)
+    # Make LLM call (with cancellation support)
+    next_actor = await rollout(
+        updated_actor,
+        rcfg.on_chunk,
+        rcfg.user_message_for_thinking,
+        state.turn_idx,
+        rcfg.inline_thinking,
+        cancel_scope=rcfg.cancel_scope,
+    )
 
     # DEBUG: Log what rollout returned
     logger.debug(f"🔍 AFTER rollout() - Turn {state.turn_idx}")
     logger.debug(f"   Trajectory messages count: {len(next_actor.trajectory.messages)}")
     for i, msg in enumerate(next_actor.trajectory.messages):
-        content_len = len(msg.content) if msg.content else 0
-        content_preview = (msg.content[:50] if msg.content else 'None') + '...'
+        if isinstance(msg.content, str):
+            content_len = len(msg.content) if msg.content else 0
+            content_preview = (msg.content[:50] if msg.content else 'None') + '...'
+        elif isinstance(msg.content, list):
+            content_len = len(msg.content)
+            content_preview = f"[{len(msg.content)} blocks]..."
+        else:
+            content_len = 0
+            content_preview = 'None...'
         logger.debug(f"      Message {i} ({msg.role}): {content_len} chars - {content_preview}")
 
     # Extract tool calls from last message (if it's an assistant message)
     last_message = next_actor.trajectory.messages[-1] if next_actor.trajectory.messages else None
     tool_calls = []
     if last_message and last_message.role == "assistant":
-        tool_calls = last_message.tool_calls if last_message.tool_calls else []
+        tool_calls = last_message.get_tool_calls()
 
     # Update state with new actor AND pending tools
     current_state = replace(
@@ -463,9 +537,23 @@ async def run_agent_step(state: AgentState, rcfg: RunConfig) -> AgentState:
 # See next_tool_idx which already tracks progress within a tool batch.
 
 
-async def process_pending_tools(state: AgentState, rcfg: RunConfig) -> AgentState:
-    """Resume processing tools from next_tool_idx"""
+async def process_pending_tools(
+    state: AgentState,
+    rcfg: RunConfig,
+) -> AgentState:
+    """Resume processing tools from next_tool_idx.
+    
+    Cancellation is handled automatically by Trio - any await will raise
+    trio.Cancelled if the cancel_scope was cancelled.
+    
+    Args:
+        state: Current agent state with pending tool calls
+        rcfg: Run configuration (contains cancel_scope for cancellation)
+    """
     assert state.environment is not None, "process_pending_tools requires environment"
+    assert state is not None
+    assert rcfg is not None
+    
     current_state = state
 
     # SERIALIZE environment state before tool processing
@@ -482,8 +570,14 @@ async def process_pending_tools(state: AgentState, rcfg: RunConfig) -> AgentStat
             # DESERIALIZE fresh environment for each tool call
             fresh_env = await current_state.environment.__class__.deserialize(env_data)
             
-            # Execute tool on fresh environment
-            tool_result = await fresh_env.exec_tool(tool_call, current_state, rcfg, None)
+            # Execute tool on fresh environment with cancellation support
+            tool_result = await fresh_env.exec_tool(
+                tool_call,
+                current_state,
+                rcfg,
+                None,
+                cancel_scope=rcfg.cancel_scope,
+            )
 
             # ALWAYS serialize the environment state after tool execution
             # (even if tool failed, environment state like _initialized may have changed)
@@ -501,18 +595,19 @@ async def process_pending_tools(state: AgentState, rcfg: RunConfig) -> AgentStat
         
         # Emit tool result
         assert tool_result
-        await rcfg.on_chunk(StreamChunk("tool_result", {
-            "call_id": tool_call.id,
-            "ok": tool_result.ok,
-            "content": tool_result.content,
-            "error": tool_result.error
-        }))
+        await rcfg.on_chunk(ToolResultReceived(
+            tool_call_id=tool_call.id,
+            content=tool_result.content,
+            is_error=tool_result.is_error,
+            error=tool_result.error,
+        ))
         
         # Add tool result message
         result_message = Message(
             role="tool",
-            content=tool_result.content if tool_result.ok else f"Error: {tool_result.error}",
-            tool_call_id=tool_call.id
+            content=tool_result.content if not tool_result.is_error else f"Error: {tool_result.error}",
+            tool_call_id=tool_call.id,
+            details=tool_result.details  # Include UI-only structured data
         )
         
         messages_to_add = [result_message]
@@ -522,7 +617,6 @@ async def process_pending_tools(state: AgentState, rcfg: RunConfig) -> AgentStat
             user_msg = Message(
                 role="user",
                 content=confirm_result.user_message,
-                tool_calls=[]
             )
             messages_to_add.append(user_msg)
         
@@ -563,9 +657,18 @@ async def process_pending_tools(state: AgentState, rcfg: RunConfig) -> AgentStat
 async def run_agent(
     state: AgentState,
     run_config: RunConfig,
-    session_id: str | None = None
+    session_id: str | None = None,
 ) -> list[AgentState]:
-    """Run agent until stop condition, checkpointing each state"""
+    """Run agent until stop condition, checkpointing each state.
+    
+    If run_config.cancel_scope is provided and cancelled, raises trio.Cancelled.
+    Caller is responsible for handling cancellation at their boundary.
+    
+    Args:
+        state: Initial agent state
+        run_config: Run configuration (contains cancel_scope for cancellation)
+        session_id: Optional session ID for checkpointing
+    """
     if run_config.checkpoint_store and not session_id:
         session_id = f"session_{int(time.time() * 1000)}"  # ms timestamp
 
@@ -581,30 +684,44 @@ async def run_agent(
             disable=False
         )
 
-    while not current_state.stop:
-        # Check stop condition via handle_stop callback (allows custom budgets)
-        current_state = run_config.handle_stop(current_state)
-        if current_state.stop:
-            break
-
-        # Tiger Style: Centralize control flow - emit start/end in same scope for clarity
-        # Casey: Semantic compression - consistent pattern (start→step→end) repeated each iteration
-        await handle_checkpoint_event(current_state, "turn_start", run_config, session_id)
-
-        next_state = await run_agent_step(current_state, run_config)
-        current_state = next_state
-        states.append(current_state)
-
-        # Update inner progress bar
-        if turn_pbar:
-            turn_pbar.update(1)
-            postfix = {}
+    try:
+        while not current_state.stop:
+            # Check stop condition via handle_stop callback (allows custom budgets)
+            current_state = run_config.handle_stop(current_state)
             if current_state.stop:
-                postfix['stop'] = str(current_state.stop).split('.')[-1]
-            turn_pbar.set_postfix(postfix)
+                break
 
-        # Checkpoint after each turn completes
-        await handle_checkpoint_event(current_state, "turn_end", run_config, session_id)
+            # Tiger Style: Centralize control flow - emit start/end in same scope for clarity
+            # Casey: Semantic compression - consistent pattern (start→step→end) repeated each iteration
+            await handle_checkpoint_event(current_state, "turn_start", run_config, session_id)
+
+            # Run one step - this is where HTTP calls happen
+            # Trio will raise Cancelled if cancel_scope.cancel() was called
+            next_state = await run_agent_step(current_state, run_config)
+            current_state = next_state
+            states.append(current_state)
+
+            # Update inner progress bar
+            if turn_pbar:
+                turn_pbar.update(1)
+                postfix = {}
+                if current_state.stop:
+                    postfix['stop'] = str(current_state.stop).split('.')[-1]
+                turn_pbar.set_postfix(postfix)
+
+            # Checkpoint after each turn completes
+            await handle_checkpoint_event(current_state, "turn_end", run_config, session_id)
+
+    except trio.Cancelled:
+        # Convert Trio's cancellation to our domain
+        # This is the boundary where we translate external signals to internal state
+        aborted_state = replace(current_state, stop=StopReason.ABORTED)
+        states.append(aborted_state)
+        current_state = aborted_state
+        # Checkpoint the aborted state
+        await handle_checkpoint_event(current_state, "final", run_config, session_id)
+        # Re-raise to let Trio handle cleanup properly
+        raise
 
     # Save final state
     await handle_checkpoint_event(current_state, "final", run_config, session_id)

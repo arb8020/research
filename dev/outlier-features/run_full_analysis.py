@@ -7,23 +7,24 @@ Adapted from run_full_analysis.py
 Split into functions <70 lines following Tiger Style.
 """
 
-import sys
-import json
-import shutil
-import logging
 import importlib.util
-from pathlib import Path
+import json
+import logging
+import shutil
+import sys
 from datetime import datetime
-from transformers import AutoTokenizer
+from pathlib import Path
 
-# Import shared logging setup
-from shared.logging_config import setup_logging
+from analyze_activations import analyze_run_for_outliers
 
 # Import local modules
 from config import Config
-from extract_activations import extract_activations_optimized
-from analyze_activations import analyze_run_for_outliers
 from dataset_utils import get_text_sequences
+from extract_activations import extract_activations_optimized
+
+# Import shared logging setup
+from shared.logging_config import setup_logging
+from transformers import AutoTokenizer
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +51,8 @@ def load_config_from_file(config_path: str) -> Config:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    assert hasattr(module, 'config'), f"Config file must define 'config' variable"
-    config: Config = getattr(module, 'config')
+    assert hasattr(module, 'config'), "Config file must define 'config' variable"
+    config: Config = module.config
     assert isinstance(config, Config), f"Expected Config object, got {type(config)}"
 
     return config
@@ -69,9 +70,9 @@ def load_dataset_sequences(config: Config) -> tuple[AutoTokenizer, list[str]]:
     Raises:
         RuntimeError: If tokenizer or dataset loading fails
     """
-    logger.info("="*80)
+    logger.info("=" * 80)
     logger.info("LOADING TOKENIZER AND DATASET")
-    logger.info("="*80)
+    logger.info("=" * 80)
 
     try:
         # Load tokenizer
@@ -93,7 +94,7 @@ def load_dataset_sequences(config: Config) -> tuple[AutoTokenizer, list[str]]:
             buffer_size=config.dataset.shuffle_buffer,
         )
         logger.info(f"✓ Loaded {len(text_sequences)} sequences")
-        logger.info("="*80 + "\n")
+        logger.info("=" * 80 + "\n")
 
         return tokenizer, text_sequences
 
@@ -114,9 +115,9 @@ def load_model_optimized(config: Config):
     import torch
     from nnsight import LanguageModel
 
-    logger.info("="*80)
+    logger.info("=" * 80)
     logger.info("LOADING MODEL (MEMORY OPTIMIZED)")
-    logger.info("="*80)
+    logger.info("=" * 80)
     logger.info(f"Model: {config.model.name}")
 
     # Auto-detect available GPUs
@@ -132,7 +133,7 @@ def load_model_optimized(config: Config):
             torch_dtype=getattr(torch, config.model.torch_dtype)
         )
     else:
-        logger.info(f"Using multi-GPU balanced configuration with 76GB per GPU limit...")
+        logger.info("Using multi-GPU balanced configuration with 76GB per GPU limit...")
         max_memory = {i: "76GiB" for i in range(gpu_count)}
         llm = LanguageModel(
             config.model.name,
@@ -152,7 +153,7 @@ def load_model_optimized(config: Config):
         llm.config.use_cache = config.model.use_cache
 
     logger.info("✓ Model loaded successfully")
-    logger.info("="*80 + "\n")
+    logger.info("=" * 80 + "\n")
 
     return llm
 
@@ -200,7 +201,7 @@ def process_single_batch(
     import torch
 
     batch_label = f"{batch_idx + 1}/{num_batches}" if num_batches else f"{batch_idx + 1}"
-    logger.info(f"\n{'='*20} BATCH {batch_label} {'='*20}")
+    logger.info(f"\n{'=' * 20} BATCH {batch_label} {'=' * 20}")
     logger.info(f"Processing {len(batch_texts)} sequences")
 
     # Step 1: Extract activations
@@ -241,7 +242,7 @@ def process_single_batch(
     # Step 4: Cleanup activation files to save disk space
     run_dir_path = Path(run_dir)
     if run_dir_path.exists():
-        disk_freed_mb = sum(f.stat().st_size for f in run_dir_path.rglob('*.pt')) / (1024*1024)
+        disk_freed_mb = sum(f.stat().st_size for f in run_dir_path.rglob('*.pt')) / (1024 * 1024)
         shutil.rmtree(run_dir_path)
         logger.info(f"🗑️  Cleaned up activation files: {run_dir_path.name} ({disk_freed_mb:.1f}MB freed)")
 
@@ -261,9 +262,9 @@ def aggregate_batch_results(batch_results: list[dict], config: Config) -> dict:
     Returns:
         Dict with aggregated results
     """
-    logger.info("="*80)
+    logger.info("=" * 80)
     logger.info("AGGREGATING RESULTS")
-    logger.info("="*80)
+    logger.info("=" * 80)
     logger.info(f"Aggregating results from {len(batch_results)} completed batches...")
 
     all_systematic_outliers = []
@@ -299,7 +300,7 @@ def aggregate_batch_results(batch_results: list[dict], config: Config) -> dict:
             reverse=True
         )
 
-        logger.info(f"\nTop outlier features across all batches:")
+        logger.info("\nTop outlier features across all batches:")
         for i, feature in enumerate(top_features[:5], 1):
             logger.info(
                 f"  {i}. Feature {feature['feature_dim']}: "
@@ -310,7 +311,7 @@ def aggregate_batch_results(batch_results: list[dict], config: Config) -> dict:
         top_features = []
         logger.info("\nNo systematic outlier features found across any batch.")
 
-    logger.info("="*80 + "\n")
+    logger.info("=" * 80 + "\n")
 
     return {
         'all_systematic_outliers': all_systematic_outliers,
@@ -383,9 +384,9 @@ def main():
         }
     )
 
-    logger.info("="*80)
+    logger.info("=" * 80)
     logger.info("OUTLIER FEATURES ANALYSIS PIPELINE")
-    logger.info("="*80)
+    logger.info("=" * 80)
     logger.info(f"Model: {config.model.name}")
     logger.info(f"Dataset: {config.dataset.name}")
     logger.info(f"Sequences: {config.dataset.num_sequences} x {config.dataset.sequence_length} tokens")
@@ -393,7 +394,7 @@ def main():
     logger.info(f"Threshold: {config.analysis.magnitude_threshold}")
     if config.output.experiment_name:
         logger.info(f"Experiment: {config.output.experiment_name}")
-    logger.info("="*80 + "\n")
+    logger.info("=" * 80 + "\n")
 
     try:
         # Validate config
@@ -411,9 +412,9 @@ def main():
         cleanup_huggingface_cache()
 
         # Process batches
-        logger.info("="*80)
+        logger.info("=" * 80)
         logger.info("EXTRACTING AND ANALYZING ACTIVATIONS")
-        logger.info("="*80)
+        logger.info("=" * 80)
 
         num_batches = config.dataset.num_sequences // config.analysis.batch_size
         batch_results = []

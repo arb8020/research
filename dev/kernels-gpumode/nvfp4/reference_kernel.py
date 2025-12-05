@@ -5,6 +5,7 @@ from kernel_utils.utils import make_match_reference
 # Scaling factor vector size
 sf_vec_size = 16
 
+
 # Helper function for ceiling division
 def ceil_div(a, b):
     return (a + b - 1) // b

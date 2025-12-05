@@ -4,12 +4,12 @@ Vast.ai provider implementation
 
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import requests
+from shared.retry import retry
 
 from ..types import CloudType, GPUInstance, GPUOffer, InstanceStatus, ProvisionRequest
-from shared.retry import retry
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +33,8 @@ def _map_status(actual_status: str) -> InstanceStatus:
 
 
 @retry(max_attempts=3, delay=1, backoff=2, exceptions=(requests.RequestException, requests.Timeout))
-def _make_api_request(method: str, endpoint: str, data: Optional[Dict] = None,
-                     params: Optional[Dict] = None, api_key: Optional[str] = None) -> Dict[str, Any]:
+def _make_api_request(method: str, endpoint: str, data: dict | None = None,
+                     params: dict | None = None, api_key: str | None = None) -> dict[str, Any]:
     """Make a REST API request to Vast.ai with automatic retries.
 
     Retries up to 3 times with exponential backoff (1s, 2s, 4s) on network errors.
@@ -63,7 +63,7 @@ def _make_api_request(method: str, endpoint: str, data: Optional[Dict] = None,
             timeout=(10, 30),  # (connect_timeout, read_timeout)
         )
         response.raise_for_status()
-    except requests.Timeout as exc:
+    except requests.Timeout:
         logger.error("Vast.ai API request timed out")
         raise
     except requests.RequestException as exc:
@@ -84,10 +84,10 @@ def _make_api_request(method: str, endpoint: str, data: Optional[Dict] = None,
     return response.json()
 
 
-def search_gpu_offers(cuda_version: Optional[str] = None, manufacturer: Optional[str] = None,
-                      memory_gb: Optional[int] = None, container_disk_gb: Optional[int] = None,
+def search_gpu_offers(cuda_version: str | None = None, manufacturer: str | None = None,
+                      memory_gb: int | None = None, container_disk_gb: int | None = None,
                       gpu_count: int = 1, min_reliability: float = 0.95,
-                      api_key: Optional[str] = None) -> List[GPUOffer]:
+                      api_key: str | None = None) -> list[GPUOffer]:
     """Search for available GPU offers on Vast.ai
 
     Args:
@@ -173,9 +173,9 @@ def search_gpu_offers(cuda_version: Optional[str] = None, manufacturer: Optional
             # Filter based on manufacturer
             if mfr_lower == "nvidia" and not is_nvidia:
                 continue
-            elif mfr_lower == "amd" and not is_amd:
+            if mfr_lower == "amd" and not is_amd:
                 continue
-            elif mfr_lower not in ["nvidia", "amd"]:
+            if mfr_lower not in ["nvidia", "amd"]:
                 # Intel, other manufacturers not yet supported by Vast.ai
                 continue
 
@@ -231,8 +231,8 @@ def search_gpu_offers(cuda_version: Optional[str] = None, manufacturer: Optional
     return offers
 
 
-def provision_instance(request: ProvisionRequest, ssh_startup_script: Optional[str] = None,
-                      api_key: Optional[str] = None) -> Optional[GPUInstance]:
+def provision_instance(request: ProvisionRequest, ssh_startup_script: str | None = None,
+                      api_key: str | None = None) -> GPUInstance | None:
     """Provision a GPU instance on Vast.ai
 
     Args:
@@ -337,7 +337,7 @@ def provision_instance(request: ProvisionRequest, ssh_startup_script: Optional[s
         return None
 
 
-def get_instance_details(instance_id: str, api_key: Optional[str] = None) -> Optional[GPUInstance]:
+def get_instance_details(instance_id: str, api_key: str | None = None) -> GPUInstance | None:
     """Get details of a specific Vast.ai instance
 
     Args:
@@ -371,7 +371,7 @@ def get_instance_details(instance_id: str, api_key: Optional[str] = None) -> Opt
         return None
 
 
-def _parse_instance(inst: Dict[str, Any], api_key: str) -> GPUInstance:
+def _parse_instance(inst: dict[str, Any], api_key: str) -> GPUInstance:
     """Parse Vast.ai instance data into GPUInstance
 
     Helper function to convert raw API response to GPUInstance.
@@ -407,7 +407,7 @@ def _parse_instance(inst: Dict[str, Any], api_key: str) -> GPUInstance:
     )
 
 
-def list_instances(api_key: Optional[str] = None) -> List[GPUInstance]:
+def list_instances(api_key: str | None = None) -> list[GPUInstance]:
     """List all user's Vast.ai instances
 
     Args:
@@ -432,7 +432,7 @@ def list_instances(api_key: Optional[str] = None) -> List[GPUInstance]:
         return []
 
 
-def terminate_instance(instance_id: str, api_key: Optional[str] = None) -> bool:
+def terminate_instance(instance_id: str, api_key: str | None = None) -> bool:
     """Terminate a Vast.ai instance
 
     Args:
@@ -528,7 +528,7 @@ def wait_for_ssh_ready(instance, timeout: int = 300) -> bool:
             instance.ssh_username = fresh_instance.ssh_username
             break
 
-        logger.debug(f"SSH details not yet available, waiting...")
+        logger.debug("SSH details not yet available, waiting...")
         time.sleep(5)
 
     # Step 3: Test SSH connectivity

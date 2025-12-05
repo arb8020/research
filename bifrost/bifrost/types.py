@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 
 class JobStatus(Enum):
@@ -136,12 +136,12 @@ class JobInfo:
     job_id: str
     status: JobStatus
     command: str
-    tmux_session: Optional[str] = None  # Main command session
-    bootstrap_session: Optional[str] = None  # Bootstrap session (if applicable)
-    start_time: Optional[datetime] = None
-    end_time: Optional[datetime] = None
-    exit_code: Optional[int] = None
-    runtime_seconds: Optional[float] = None
+    tmux_session: str | None = None  # Main command session
+    bootstrap_session: str | None = None  # Bootstrap session (if applicable)
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    exit_code: int | None = None
+    runtime_seconds: float | None = None
 
     @property
     def is_running(self) -> bool:
@@ -161,7 +161,7 @@ class CopyResult:
     files_copied: int
     total_bytes: int
     duration_seconds: float
-    error_message: Optional[str] = None
+    error_message: str | None = None
     
     @property
     def throughput_mbps(self) -> float:
@@ -214,7 +214,7 @@ class EnvironmentVariables:
     Validates variable names follow shell naming rules.
     Immutable to prevent accidental modification during execution.
     """
-    variables: Dict[str, str]
+    variables: dict[str, str]
 
     def __post_init__(self):
         # Tiger Style: assert all inputs
@@ -230,12 +230,12 @@ class EnvironmentVariables:
         # Assert output invariant
         assert len(self.variables) >= 0, "variables dict created"
 
-    def to_dict(self) -> Dict[str, str]:
+    def to_dict(self) -> dict[str, str]:
         """Convert to dict for backward compatibility."""
         return self.variables.copy()
 
     @classmethod
-    def from_dict(cls, variables: Optional[Dict[str, str]]) -> Optional['EnvironmentVariables']:
+    def from_dict(cls, variables: dict[str, str] | None) -> Optional['EnvironmentVariables']:
         """Create from optional dict (for gradual migration)."""
         if variables is None:
             return None
@@ -252,8 +252,8 @@ class SessionInfo:
     job_id: str
     main_session: str
     attach_main: str
-    bootstrap_session: Optional[str] = None
-    attach_bootstrap: Optional[str] = None
+    bootstrap_session: str | None = None
+    attach_bootstrap: str | None = None
 
     def __post_init__(self):
         # Tiger Style: assert inputs and invariants
@@ -290,8 +290,8 @@ class JobMetadata:
     worktree_path: str
     git_commit: str
     repo_name: str
-    end_time: Optional[str] = None  # ISO 8601 format
-    exit_code: Optional[int] = None
+    end_time: str | None = None  # ISO 8601 format
+    exit_code: int | None = None
 
     def __post_init__(self):
         # Tiger Style: assert all inputs and invariants
@@ -319,7 +319,7 @@ class JobMetadata:
         # Assert output invariant
         assert self.job_id, "job metadata validated"
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dict for JSON serialization."""
         return {
             "job_id": self.job_id,
@@ -336,7 +336,7 @@ class JobMetadata:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'JobMetadata':
+    def from_dict(cls, data: dict[str, Any]) -> 'JobMetadata':
         """Create from dict (for JSON deserialization)."""
         return cls(
             job_id=data["job_id"],

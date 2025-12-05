@@ -18,6 +18,7 @@ from typing import Protocol
 # Protocol (Casey: minimal interface, decoupled)
 # ══════════════════════════════════════════════════════════════
 
+
 class MetricsLogger(Protocol):
     """Protocol for metrics logging.
 
