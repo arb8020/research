@@ -390,7 +390,10 @@ class TUI(Container):
         buffer += "\r"  # Move to column 0
 
         # Render from first changed line to end, clearing each line before writing
-        # Track where cursor ends up after rendering
+        # Track where cursor ends up after rendering. This is needed because when we
+        # clear extra lines below, we need to know the actual cursor position - NOT
+        # first_changed, which was a bug that caused ghost artifacts when content shrank
+        # (e.g., when loader hides after streaming completes).
         cursor_after_render = first_changed  # Start at first_changed
         for i in range(first_changed, len(new_lines)):
             if i > first_changed:
