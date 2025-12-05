@@ -101,9 +101,9 @@ class ToolExecution(Container):
         # Create text component with background and gutter prefix
         # Use smiling face for success, frowning face for error
         if self._result:
-            gutter = "☹" if self._result.get("isError") else "☺"
+            gutter = "☹ " if self._result.get("isError") else "☺ "
         else:
-            gutter = "☺"  # Pending state uses smiling face
+            gutter = "☺ "  # Pending state uses smiling face
         self._content_text = Text(formatted_text, padding_x=2, padding_y=1, custom_bg_fn=bg_fn, gutter_prefix=gutter)
         self.add_child(self._content_text)
 
