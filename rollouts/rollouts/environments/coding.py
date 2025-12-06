@@ -181,27 +181,48 @@ def format_edit(tool_name: str, args: dict, result: dict | None, expanded: bool,
         diff_str = details.get("diff") if details else None
 
         is_error = result.get("isError", False)
-        summary = "Edit failed" if is_error else f"Updated {path or '...'}"
 
         if diff_str and theme:
+            # Count additions and removals
+            diff_lines = diff_str.split("\n")
+            additions = sum(1 for line in diff_lines if " + " in line)
+            removals = sum(1 for line in diff_lines if " - " in line)
+
+            # Build summary like "Updated file.py with 2 additions and 1 removal"
+            if is_error:
+                summary = "Edit failed"
+            else:
+                parts = []
+                if additions:
+                    parts.append(f"{additions} addition{'s' if additions != 1 else ''}")
+                if removals:
+                    parts.append(f"{removals} removal{'s' if removals != 1 else ''}")
+                if parts:
+                    summary = f"Updated {path or '...'} with {' and '.join(parts)}"
+                else:
+                    summary = f"Updated {path or '...'}"
+
             # Render colored diff
             text += f"\n⎿ {summary}"
 
-            diff_lines = diff_str.split("\n")
             for line in diff_lines:
-                if line.startswith("+"):
-                    text += "\n  " + theme.diff_added_fg(line)
-                elif line.startswith("-"):
+                # New format: "  607 - content" or "  607 + content" or "  607   content"
+                # Find the marker position (after line number, before content)
+                if " - " in line:
                     text += "\n  " + theme.diff_removed_fg(line)
+                elif " + " in line:
+                    text += "\n  " + theme.diff_added_fg(line)
                 else:
                     text += "\n  " + theme.diff_context_fg(line)
         elif diff_str:
             # No theme - plain diff
+            summary = "Edit failed" if is_error else f"Updated {path or '...'}"
             text += f"\n⎿ {summary}"
             for line in diff_str.split("\n"):
                 text += "\n  " + line
         else:
             # Fallback to plain output
+            summary = "Edit failed" if is_error else f"Updated {path or '...'}"
             output = _get_text_output(result)
             if output:
                 text += f"\n⎿ {summary}"
@@ -212,7 +233,7 @@ def format_edit(tool_name: str, args: dict, result: dict | None, expanded: bool,
 
 
 def generate_diff(old_content: str, new_content: str, context_lines: int = 3) -> str:
-    """Generate unified diff string with line numbers.
+    """Generate unified diff string with line numbers in gutter.
 
     Args:
         old_content: Original file content
@@ -220,10 +241,12 @@ def generate_diff(old_content: str, new_content: str, context_lines: int = 3) ->
         context_lines: Number of context lines to show around changes
 
     Returns:
-        Diff string formatted as:
-        +123 added line
-        -45 removed line
-         67 context line
+        Diff string formatted as (line number in gutter, marker after):
+             605                    tool_call,
+             606                    current_state,
+             607 -                  None,
+             607                    cancel_scope=rcfg.cancel_scope,
+             608                )
     """
     old_lines = old_content.split("\n")
     new_lines = new_content.split("\n")
@@ -248,30 +271,31 @@ def generate_diff(old_content: str, new_content: str, context_lines: int = 3) ->
     # Show context before changes
     context_start = max(0, i - context_lines)
     if context_start > 0:
-        output.append(f" {''.ljust(line_num_width)} ...")
+        output.append(f"{''.rjust(line_num_width)}   ...")
 
     for line_idx in range(context_start, i):
         line_num = str(line_idx + 1).rjust(line_num_width)
-        output.append(f" {line_num} {old_lines[line_idx]}")
+        output.append(f"{line_num}   {old_lines[line_idx]}")
 
-    # Show removed lines
+    # Show removed lines (use old line numbers)
     for line_idx in range(i, j_old + 1):
         line_num = str(line_idx + 1).rjust(line_num_width)
-        output.append(f"-{line_num} {old_lines[line_idx]}")
+        output.append(f"{line_num} - {old_lines[line_idx]}")
 
-    # Show added lines
-    for line_idx in range(i, j_new + 1):
-        line_num = str(line_idx + 1).rjust(line_num_width)
-        output.append(f"+{line_num} {new_lines[line_idx]}")
+    # Show added lines (use new line numbers, continuing from where removed ended)
+    new_line_start = i
+    for idx, line_idx in enumerate(range(i, j_new + 1)):
+        line_num = str(new_line_start + idx + 1).rjust(line_num_width)
+        output.append(f"{line_num} + {new_lines[line_idx]}")
 
-    # Show context after changes
+    # Show context after changes (use new line numbers)
     context_end = min(len(new_lines), j_new + 2 + context_lines)
-    for line_idx in range(j_new + 2, context_end):
+    for line_idx in range(j_new + 1, context_end):
         line_num = str(line_idx + 1).rjust(line_num_width)
-        output.append(f" {line_num} {new_lines[line_idx]}")
+        output.append(f"{line_num}   {new_lines[line_idx]}")
 
     if context_end < len(new_lines):
-        output.append(f" {''.ljust(line_num_width)} ...")
+        output.append(f"{''.rjust(line_num_width)}   ...")
 
     return "\n".join(output)
 
