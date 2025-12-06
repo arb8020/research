@@ -228,6 +228,7 @@ class InteractiveAgentRunner:
                     role="tool",
                     content=event.content,
                     tool_call_id=event.tool_call_id,
+                    details=event.details,  # Preserve details for diff rendering on resume
                 )
                 append_message(self.session, tool_msg)
 
@@ -247,8 +248,13 @@ class InteractiveAgentRunner:
             List of agent states from the run
         """
         # Create terminal and TUI with selected theme
-        from .theme import DARK_THEME, ROUNDED_THEME
-        theme = ROUNDED_THEME if self.theme_name == "rounded" else DARK_THEME
+        from .theme import DARK_THEME, ROUNDED_THEME, MINIMAL_THEME
+        if self.theme_name == "rounded":
+            theme = ROUNDED_THEME
+        elif self.theme_name == "minimal":
+            theme = MINIMAL_THEME
+        else:
+            theme = DARK_THEME
 
         self.terminal = ProcessTerminal()
         self.tui = TUI(self.terminal, theme=theme, debug=self.debug, debug_layout=self.debug_layout)
