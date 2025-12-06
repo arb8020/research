@@ -162,6 +162,32 @@ SOFT_DARK_THEME = Theme(
 )
 
 
+@dataclass
+class MinimalTheme(Theme):
+    """Minimal theme - no backgrounds on tools/thinking, only user messages."""
+
+    def tool_pending_bg_fn(self, text: str) -> str:
+        return text
+
+    def tool_success_bg_fn(self, text: str) -> str:
+        return text
+
+    def tool_error_bg_fn(self, text: str) -> str:
+        return text
+
+    def thinking_bg_fn(self, text: str) -> str:
+        return text
+
+
+# Minimal theme instance - clean look without colored backgrounds
+MINIMAL_THEME = MinimalTheme(
+    # Brighter diff colors for better visibility without backgrounds
+    diff_added="#98c379",  # Bright green
+    diff_removed="#e06c75",  # Bright red
+    diff_context="#abb2bf",  # Light gray
+)
+
+
 # Example: Create a custom theme with padding
 # custom_theme = Theme(
 #     message_padding_y=1,  # Add 1 line of padding to messages

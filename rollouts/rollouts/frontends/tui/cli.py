@@ -13,12 +13,10 @@ Model format is "provider/model" (explicit, no inference).
 from __future__ import annotations
 
 import argparse
-import asyncio
 import sys
+from pathlib import Path
 
 import trio
-
-from pathlib import Path
 
 from rollouts.agents import AgentState, Actor, run_agent
 from rollouts.dtypes import (
@@ -34,17 +32,8 @@ from rollouts.dtypes import (
 )
 from rollouts.environments import CalculatorEnvironment, LocalFilesystemEnvironment
 from rollouts.frontends.tui.interactive_agent import run_interactive_agent
-from rollouts.frontends.tui.sessions import (
-    Session,
-    SessionInfo,
-    create_session,
-    find_latest_session,
-    list_sessions_with_info,
-    load_session,
-    load_messages,
-    load_header,
-    append_message,
-)
+from rollouts.store import FileSessionStore
+from rollouts import AgentSession, EndpointConfig, EnvironmentConfig
 
 
 SYSTEM_PROMPTS = {
@@ -76,9 +65,14 @@ When working on code:
 }
 
 
-def format_time_ago(dt: 'datetime') -> str:
-    """Format a datetime as relative time (e.g., '2h ago', '3d ago')."""
-    from datetime import datetime, timezone
+def format_time_ago(dt_str: str) -> str:
+    """Format a datetime string as relative time (e.g., '2h ago', '3d ago')."""
+    from datetime import datetime
+    try:
+        dt = datetime.fromisoformat(dt_str)
+    except (ValueError, TypeError):
+        return "unknown"
+
     now = datetime.now()
     diff = now - dt
 
@@ -96,19 +90,20 @@ def format_time_ago(dt: 'datetime') -> str:
         return f"{days}d ago"
 
 
-def pick_session(working_dir: Path) -> Session | None:
+async def pick_session_async(session_store: FileSessionStore) -> AgentSession | None:
     """Interactive session picker. Returns None if no sessions or user cancels."""
-    sessions = list_sessions_with_info(working_dir)
+    sessions = await session_store.list(limit=20)
 
     if not sessions:
-        print("No sessions found for this directory.")
+        print("No sessions found.")
         return None
 
-    print(f"\nSessions for {working_dir}:\n")
-    for i, info in enumerate(sessions):
-        time_ago = format_time_ago(info.modified)
-        preview = info.first_user_message or "(no messages)"
-        print(f"  [{i + 1}] {time_ago:>10}  {info.message_count:>3} msgs  {preview}")
+    print("\nRecent sessions:\n")
+    for i, session in enumerate(sessions):
+        time_ago = format_time_ago(session.created_at)
+        msg_count = len(session.messages) if session.messages else "?"
+        status = session.status.value if session.status else "?"
+        print(f"  [{i + 1}] {time_ago:>10}  {msg_count:>3} msgs  [{status}]  {session.session_id}")
 
     print(f"\n  [0] Cancel")
     print()
@@ -122,7 +117,12 @@ def pick_session(working_dir: Path) -> Session | None:
             if num == 0:
                 return None
             if 1 <= num <= len(sessions):
-                return sessions[num - 1].session
+                # Load full session with messages
+                full_session, err = await session_store.get(sessions[num - 1].session_id)
+                if err:
+                    print(f"Error loading session: {err}")
+                    return None
+                return full_session
             print(f"Please enter 0-{len(sessions)}")
         except ValueError:
             print("Please enter a number")
@@ -230,8 +230,8 @@ def main() -> int:
     parser.add_argument(
         "--model",
         type=str,
-        default="anthropic/claude-haiku-4-5-20251001",
-        help='Model in "provider/model" format (e.g., "anthropic/claude-haiku-4-5-20251001", "openai/gpt-4o-mini"). Default: anthropic/claude-haiku-4-5-20251001',
+        default="openai/gpt-5.1-codex",
+        help='Model in "provider/model" format (e.g., "openai/gpt-5.1-codex", "anthropic/claude-sonnet-4-5"). Default: openai/gpt-5.1-codex',
     )
     parser.add_argument(
         "--api-base",
@@ -306,9 +306,9 @@ def main() -> int:
     parser.add_argument(
         "--theme",
         type=str,
-        choices=["dark", "rounded"],
-        default="dark",
-        help="UI theme (default: dark)",
+        choices=["dark", "rounded", "minimal"],
+        default="minimal",
+        help="UI theme (default: minimal)",
     )
 
     # Extended thinking (Anthropic)
@@ -355,77 +355,112 @@ def main() -> int:
     elif args.env == "coding":
         environment = LocalFilesystemEnvironment(working_dir=working_dir)
 
-    # Handle session resumption
-    session: Session | None = None
-    messages: list[Message] = []
-
-    if args.session is not None:
-        if args.session == "":
-            # --session without path: show picker
-            session = pick_session(working_dir)
-            if session is None:
-                return 0  # User cancelled or no sessions
-            messages = load_messages(session)
-            header = load_header(session)
-            print(f"Resuming session: {session.session_id}")
-            print(f"  {len(messages)} messages from {header.timestamp}")
-        else:
-            # Resume specific session by path
-            session = load_session(Path(args.session))
-            messages = load_messages(session)
-            header = load_header(session)
-            print(f"Resuming session: {session.session_id}")
-            print(f"  {len(messages)} messages from {header.timestamp}")
-    elif args.continue_session:
-        # Continue most recent session
-        session = find_latest_session(working_dir)
-        if session:
-            messages = load_messages(session)
-            header = load_header(session)
-            print(f"Continuing session: {session.session_id}")
-            print(f"  {len(messages)} messages from {header.timestamp}")
-        else:
-            print("No previous session found, starting new session")
-
-    # Create new session if needed (and not --no-session)
-    if session is None and not args.no_session:
-        session = create_session(working_dir, endpoint.provider, endpoint.model)
-        print(f"New session: {session.session_id}")
+    # Session store
+    session_store = FileSessionStore() if not args.no_session else None
 
     # Get system prompt (user-provided or default for env)
     system_prompt = args.system_prompt or SYSTEM_PROMPTS.get(args.env, SYSTEM_PROMPTS["none"])
 
-    # Build trajectory from messages or start fresh
-    if messages:
-        # Check if first message is system prompt, if not prepend one
-        if not messages or messages[0].role != "system":
-            messages.insert(0, Message(role="system", content=system_prompt))
-        trajectory = Trajectory(messages=messages)
-    else:
-        system_msg = Message(role="system", content=system_prompt)
-        trajectory = Trajectory(messages=[system_msg])
+    # Run async main to handle session operations
+    async def async_main() -> int:
+        session_id: str | None = None
+        messages: list[Message] = []
 
-    # Non-interactive print mode
-    if args.print_mode:
-        return trio.run(run_print_mode, trajectory, endpoint, environment, args.print_mode, session)
+        if session_store is not None:
+            # Handle session resumption
+            if args.session is not None:
+                if args.session == "":
+                    # --session without path: show picker
+                    session = await pick_session_async(session_store)
+                    if session is None:
+                        return 0  # User cancelled or no sessions
+                    session_id = session.session_id
+                    # Convert SessionMessage to Message
+                    messages = [
+                        Message(role=m.role, content=m.content, tool_call_id=m.tool_call_id)
+                        for m in session.messages
+                    ]
+                    print(f"Resuming session: {session_id}")
+                    print(f"  {len(messages)} messages from {session.created_at}")
+                else:
+                    # Resume specific session by ID
+                    session, err = await session_store.get(args.session)
+                    if err or session is None:
+                        print(f"Error loading session: {err}", file=sys.stderr)
+                        return 1
+                    session_id = session.session_id
+                    messages = [
+                        Message(role=m.role, content=m.content, tool_call_id=m.tool_call_id)
+                        for m in session.messages
+                    ]
+                    print(f"Resuming session: {session_id}")
+                    print(f"  {len(messages)} messages from {session.created_at}")
+            elif args.continue_session:
+                # Continue most recent session
+                session, err = await session_store.get_latest()
+                if session:
+                    session_id = session.session_id
+                    messages = [
+                        Message(role=m.role, content=m.content, tool_call_id=m.tool_call_id)
+                        for m in session.messages
+                    ]
+                    print(f"Continuing session: {session_id}")
+                    print(f"  {len(messages)} messages from {session.created_at}")
+                else:
+                    print("No previous session found, starting new session")
 
-    # Run interactive agent
+            # Create new session if needed
+            if session_id is None:
+                endpoint_config = EndpointConfig(
+                    model=endpoint.model,
+                    provider=endpoint.provider,
+                    temperature=endpoint.temperature,
+                )
+                env_config = EnvironmentConfig(
+                    type=args.env,
+                    config={"cwd": str(working_dir)},
+                )
+                session = await session_store.create(
+                    endpoint=endpoint_config,
+                    environment=env_config,
+                )
+                session_id = session.session_id
+                print(f"New session: {session_id}")
+
+        # Build trajectory from messages or start fresh
+        if messages:
+            # Check if first message is system prompt, if not prepend one
+            if not messages or messages[0].role != "system":
+                messages.insert(0, Message(role="system", content=system_prompt))
+            trajectory = Trajectory(messages=messages)
+        else:
+            system_msg = Message(role="system", content=system_prompt)
+            trajectory = Trajectory(messages=[system_msg])
+
+        # Non-interactive print mode
+        if args.print_mode:
+            return await run_print_mode(trajectory, endpoint, environment, args.print_mode, session_store, session_id)
+
+        # Run interactive agent
+        try:
+            states = await run_interactive_agent(
+                trajectory,
+                endpoint,
+                environment,
+                args.max_turns,
+                session_store,  # Pass session store for persistence
+                session_id,  # Pass session ID
+                args.theme,  # Pass theme selection
+                args.debug,  # Pass debug flag
+                args.debug_layout,  # Pass layout debug flag
+            )
+            return 0
+        except KeyboardInterrupt:
+            print("\n\n✅ Agent stopped")
+            return 0
+
     try:
-        states = trio.run(
-            run_interactive_agent,
-            trajectory,
-            endpoint,
-            environment,
-            args.max_turns,
-            session,  # Pass session for persistence
-            args.theme,  # Pass theme selection
-            args.debug,  # Pass debug flag
-            args.debug_layout,  # Pass layout debug flag
-        )
-        return 0
-    except KeyboardInterrupt:
-        print("\n\n✅ Agent stopped")
-        return 0
+        return trio.run(async_main)
     except Exception as e:
         print(f"\n\n❌ Error: {e}", file=sys.stderr)
         import traceback
@@ -439,18 +474,18 @@ async def run_print_mode(
     endpoint: Endpoint,
     environment,
     query: str,
-    session: Session | None,
+    session_store: FileSessionStore | None,
+    session_id: str | None,
 ) -> int:
-    """Run in non-interactive print mode - execute query and print result."""
+    """Run in non-interactive print mode - execute query and print result.
+
+    Session persistence is handled by run_agent() via RunConfig.session_store.
+    """
 
     # Add user query to trajectory
     trajectory = Trajectory(
         messages=trajectory.messages + [Message(role="user", content=query)]
     )
-
-    # Persist user message
-    if session:
-        append_message(session, Message(role="user", content=query))
 
     # Create initial state
     initial_state = AgentState(
@@ -463,13 +498,9 @@ async def run_print_mode(
     )
 
     # Simple streaming handler - just print text
-    accumulated_text = ""
-
     async def print_handler(event: StreamEvent) -> None:
-        nonlocal accumulated_text
         if isinstance(event, TextDelta):
             print(event.delta, end="", flush=True)
-            accumulated_text += event.delta
 
     # Auto-confirm tools
     async def auto_confirm(tc: ToolCall, state: AgentState, rcfg: RunConfig) -> tuple[AgentState, ToolConfirmResult]:
@@ -487,6 +518,8 @@ async def run_print_mode(
         on_chunk=print_handler,
         confirm_tool=auto_confirm,
         handle_stop=handle_stop,
+        session_store=session_store,
+        session_id=session_id,
     )
 
     error_occurred = False
@@ -502,10 +535,6 @@ async def run_print_mode(
         error_occurred = True
 
     print()  # Final newline
-
-    # Persist assistant response (even if there was an error, save what we got)
-    if session and accumulated_text:
-        append_message(session, Message(role="assistant", content=accumulated_text))
 
     return 1 if error_occurred else 0
 

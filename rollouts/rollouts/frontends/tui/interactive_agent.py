@@ -2,32 +2,26 @@
 Interactive TUI agent runner.
 
 Provides a complete interactive agent loop with TUI rendering.
+Session persistence is handled by run_agent() via RunConfig.session_store.
 """
 
 from __future__ import annotations
 
 import signal
 import sys
-from typing import Optional
+from typing import TYPE_CHECKING
 
 import trio
 
 from rollouts.agents import AgentState, Actor, run_agent
 from rollouts.dtypes import (
-    ContentBlock,
     Endpoint,
     Environment,
     Message,
     RunConfig,
-    StreamDone,
     StreamEvent,
-    TextContent,
     TextDelta,
-    TextEnd,
-    ThinkingContent,
     ThinkingDelta,
-    ThinkingEnd,
-    ToolCallContent,
     ToolCallEnd,
     ToolResultReceived,
     Trajectory,
@@ -42,7 +36,9 @@ from .agent_renderer import AgentRenderer
 from .components.input import Input
 from .components.spacer import Spacer
 from .components.loader_container import LoaderContainer
-from .sessions import Session, append_message, append_config_change
+
+if TYPE_CHECKING:
+    from rollouts.store import SessionStore
 
 
 class InteractiveAgentRunner:
@@ -52,9 +48,10 @@ class InteractiveAgentRunner:
         self,
         initial_trajectory: Trajectory,
         endpoint: Endpoint,
-        environment: Optional[Environment] = None,
+        environment: Environment | None = None,
         max_turns: int = 50,
-        session: Optional[Session] = None,
+        session_store: SessionStore | None = None,
+        session_id: str | None = None,
         theme_name: str = "dark",
         debug: bool = False,
         debug_layout: bool = False,
@@ -66,7 +63,8 @@ class InteractiveAgentRunner:
             endpoint: LLM endpoint configuration
             environment: Optional environment for tool execution
             max_turns: Maximum number of turns
-            session: Optional session for persistence
+            session_store: Optional session store for persistence
+            session_id: Optional session ID (required if session_store is set)
             theme_name: Theme name (dark or rounded)
             debug: Enable debug logging and chat state dumps
             debug_layout: Show component boundaries and spacing
@@ -76,31 +74,26 @@ class InteractiveAgentRunner:
         self.theme_name = theme_name
         self.environment = environment
         self.max_turns = max_turns
-        self.session = session
+        self.session_store = session_store
+        self.session_id = session_id
         self.debug = debug
         self.debug_layout = debug_layout
 
         # TUI components
-        self.terminal: Optional[ProcessTerminal] = None
-        self.tui: Optional[TUI] = None
-        self.renderer: Optional[AgentRenderer] = None
-        self.input_component: Optional[Input] = None
-        self.loader_container: Optional[LoaderContainer] = None
+        self.terminal: ProcessTerminal | None = None
+        self.tui: TUI | None = None
+        self.renderer: AgentRenderer | None = None
+        self.input_component: Input | None = None
+        self.loader_container: LoaderContainer | None = None
 
         # Input coordination - use Trio memory channels instead of asyncio.Queue
-        self.input_send: Optional[trio.MemorySendChannel[str]] = None
-        self.input_receive: Optional[trio.MemoryReceiveChannel[str]] = None
+        self.input_send: trio.MemorySendChannel[str] | None = None
+        self.input_receive: trio.MemoryReceiveChannel[str] | None = None
         self.input_pending: bool = False
         self.is_first_user_message = True
 
         # Cancellation
-        self.cancel_scope: Optional[trio.CancelScope] = None
-
-        # Message accumulation for session persistence
-        self._current_text: str = ""
-        self._current_thinking: str = ""
-        self._current_thinking_signature: str | None = None
-        self._current_tool_calls: list[dict] = []
+        self.cancel_scope: trio.CancelScope | None = None
 
     def _handle_input_submit(self, text: str) -> None:
         """Handle input submission from TUI (sync wrapper for trio channel send).
@@ -167,70 +160,17 @@ class InteractiveAgentRunner:
             self.renderer.add_user_message(user_input, is_first=self.is_first_user_message)
             self.is_first_user_message = False
 
-        # Persist user message to session
-        if self.session:
-            append_message(self.session, Message(role="user", content=user_input))
+        # Session persistence is handled by run_agent() via RunConfig.session_store
 
         return user_input
 
     async def _handle_stream_event(self, event: StreamEvent) -> None:
-        """Handle streaming event - render and accumulate for persistence."""
-        # Pass to renderer
+        """Handle streaming event - render to TUI.
+
+        Session persistence is handled by run_agent() via RunConfig.session_store.
+        """
         if self.renderer:
             await self.renderer.handle_event(event)
-
-        # Accumulate for session persistence
-        if isinstance(event, ThinkingDelta):
-            self._current_thinking += event.delta
-        elif isinstance(event, ThinkingEnd):
-            # Capture thinking signature if available
-            # Note: signature comes from the aggregate_anthropic_stream function
-            pass  # Signature is accumulated in the stream aggregator
-        elif isinstance(event, TextDelta):
-            self._current_text += event.delta
-        elif isinstance(event, ToolCallEnd):
-            self._current_tool_calls.append({
-                "id": event.tool_call.id,
-                "name": event.tool_call.name,
-                "arguments": event.tool_call.args,
-            })
-        elif isinstance(event, StreamDone):
-            # Persist accumulated assistant message
-            if self.session and (self._current_thinking or self._current_text or self._current_tool_calls):
-                # Build content blocks using proper dataclass types
-                content: list[ContentBlock] = []
-                if self._current_thinking:
-                    content.append(ThinkingContent(
-                        thinking=self._current_thinking,
-                        thinking_signature=self._current_thinking_signature
-                    ))
-                if self._current_text:
-                    content.append(TextContent(text=self._current_text))
-                for tc in self._current_tool_calls:
-                    content.append(ToolCallContent(
-                        id=tc["id"],
-                        name=tc["name"],
-                        arguments=dict(tc["arguments"]),
-                    ))
-
-                assistant_msg = Message(role="assistant", content=content)
-                append_message(self.session, assistant_msg)
-
-            # Reset accumulators
-            self._current_thinking = ""
-            self._current_thinking_signature = None
-            self._current_text = ""
-            self._current_tool_calls = []
-        elif isinstance(event, ToolResultReceived):
-            # Persist tool result as separate message
-            if self.session:
-                tool_msg = Message(
-                    role="tool",
-                    content=event.content,
-                    tool_call_id=event.tool_call_id,
-                    details=event.details,  # Preserve details for diff rendering on resume
-                )
-                append_message(self.session, tool_msg)
 
     def _handle_sigint(self, signum, frame) -> None:
         """Handle SIGINT (Ctrl+C) - cancel agent.
@@ -393,6 +333,8 @@ class InteractiveAgentRunner:
                     confirm_tool=auto_confirm_tool,
                     handle_stop=self._handle_stop,
                     handle_no_tool=handle_no_tool_interactive,
+                    session_store=self.session_store,
+                    session_id=self.session_id,
                 )
 
                 # Store agent result
@@ -426,9 +368,10 @@ class InteractiveAgentRunner:
 async def run_interactive_agent(
     initial_trajectory: Trajectory,
     endpoint: Endpoint,
-    environment: Optional[Environment] = None,
+    environment: Environment | None = None,
     max_turns: int = 50,
-    session: Optional[Session] = None,
+    session_store: SessionStore | None = None,
+    session_id: str | None = None,
     theme_name: str = "dark",
     debug: bool = False,
     debug_layout: bool = False,
@@ -440,7 +383,8 @@ async def run_interactive_agent(
         endpoint: LLM endpoint configuration
         environment: Optional environment for tool execution
         max_turns: Maximum number of turns
-        session: Optional session for persistence
+        session_store: Optional session store for persistence
+        session_id: Optional session ID (required if session_store is set)
         theme_name: Theme name (dark or rounded)
         debug: Enable debug logging and chat state dumps
         debug_layout: Show component boundaries and spacing
@@ -453,7 +397,8 @@ async def run_interactive_agent(
         endpoint=endpoint,
         environment=environment,
         max_turns=max_turns,
-        session=session,
+        session_store=session_store,
+        session_id=session_id,
         theme_name=theme_name,
         debug=debug,
         debug_layout=debug_layout,

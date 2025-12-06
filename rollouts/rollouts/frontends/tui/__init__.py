@@ -6,7 +6,7 @@ Ported from pi-mono/packages/tui.
 
 from .terminal import Terminal, ProcessTerminal
 from .tui import Component, Container, TUI
-from .theme import Theme, DARK_THEME, SOFT_DARK_THEME
+from .theme import Theme, DARK_THEME, SOFT_DARK_THEME, MINIMAL_THEME
 from .utils import visible_width, wrap_text_with_ansi, truncate_to_width, apply_background_to_line
 from .components import (
     Text,
@@ -33,6 +33,7 @@ __all__ = [
     "Theme",
     "DARK_THEME",
     "SOFT_DARK_THEME",
+    "MINIMAL_THEME",
     # Utils
     "visible_width",
     "wrap_text_with_ansi",
