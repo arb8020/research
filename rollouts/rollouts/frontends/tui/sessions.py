@@ -1,6 +1,21 @@
 """
 Session persistence for TUI agent.
 
+DEPRECATED: This module is deprecated. Use rollouts.store.FileSessionStore instead.
+Session persistence is now handled by run_agent() via RunConfig.session_store.
+
+Example migration:
+    # Old way
+    from rollouts.frontends.tui.sessions import create_session, append_message
+    session = create_session(working_dir, provider, model)
+    append_message(session, msg)
+
+    # New way
+    from rollouts import FileSessionStore, EndpointConfig, EnvironmentConfig
+    store = FileSessionStore()
+    session = await store.create(endpoint_config, env_config)
+    # Messages are automatically persisted by run_agent() via RunConfig.session_store
+
 Functional approach: frozen Session dataclass + pure functions.
 Format: JSONL with session header + message entries.
 """

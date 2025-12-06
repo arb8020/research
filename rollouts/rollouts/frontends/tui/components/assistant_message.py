@@ -109,12 +109,19 @@ class AssistantMessage(Component):
         if self._thinking_content and self._thinking_content.strip():
             # Format thinking like a tool call with background and gutter prefix
             thinking_text = f"thinking()\n\n{self._thinking_content.strip()}"
+
+            # Use theme's thinking_bg_fn if available (MinimalTheme), otherwise default
+            if hasattr(self._theme, 'thinking_bg_fn'):
+                bg_fn = self._theme.thinking_bg_fn
+            else:
+                bg_fn = lambda x: f"{hex_to_bg(self._theme.tool_pending_bg)}{x}{RESET}"
+
             self._thinking_md = Markdown(
                 thinking_text,
                 padding_x=2,
                 padding_y=self._theme.thinking_padding_y,
                 theme=DefaultMarkdownTheme(self._theme),
-                bg_fn=lambda x: f"{hex_to_bg(self._theme.tool_pending_bg)}{x}{RESET}",
+                bg_fn=bg_fn,
                 gutter_prefix=self._theme.assistant_gutter,
             )
             self._content_container.add_child(self._thinking_md)

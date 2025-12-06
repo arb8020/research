@@ -17,8 +17,11 @@ from .agents import (
     stdout_handler,
 )
 
-# Checkpoints
+# Checkpoints (DEPRECATED: use sessions instead)
 from .checkpoints import FileCheckpointStore
+
+# Sessions
+from .store import FileSessionStore, SessionStore, generate_session_id
 
 # Configuration (new in 0.3.0)
 from .config import (
@@ -37,17 +40,22 @@ from .config import (
 )
 from .dtypes import (
     Actor,
+    AgentSession,
     AgentState,
     ChatCompletion,
     Choice,
     ContentBlock,
     Endpoint,
+    EndpointConfig,
     Environment,
+    EnvironmentConfig,
     ImageContent,
     Logprob,
     Logprobs,
     Message,
     RunConfig,
+    SessionMessage,
+    SessionStatus,
     StopReason,
     StreamChunk,
     TextContent,
@@ -111,8 +119,12 @@ __all__ = [
     # Environments
     'CalculatorEnvironment',
     'BasicEnvironment', 'NoToolsEnvironment',
-    # Checkpoints
+    # Checkpoints (DEPRECATED: use sessions instead)
     'FileCheckpointStore',
+    # Sessions
+    'SessionStore', 'FileSessionStore', 'generate_session_id',
+    'AgentSession', 'SessionMessage', 'SessionStatus',
+    'EndpointConfig', 'EnvironmentConfig',
     # Providers
     'rollout_openai', 'rollout_sglang', 'rollout_anthropic', 'get_provider_function',
     # Message transformation

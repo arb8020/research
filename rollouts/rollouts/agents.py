@@ -4,6 +4,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
+from typing import Any
 
 import trio
 
@@ -18,6 +19,8 @@ from .dtypes import (
     AgentState,
     Message,
     RunConfig,
+    SessionMessage,
+    SessionStatus,
     StopReason,
     StreamChunk,
     StreamEvent,
@@ -64,6 +67,33 @@ async def handle_checkpoint_event(state: 'AgentState', event: str, run_config: '
         event,
         {"turn": state.turn_idx, "session_id": session_id},
     ))
+
+
+def _message_to_session_message(msg: Message) -> SessionMessage:
+    """Convert rollouts Message to SessionMessage for storage."""
+    # Handle different content types
+    if isinstance(msg.content, str):
+        content: str | list[dict[str, Any]] = msg.content
+    elif isinstance(msg.content, list):
+        # Content blocks - serialize to dicts
+        content = []
+        for block in msg.content:
+            if hasattr(block, "to_dict"):
+                content.append(block.to_dict())
+            elif hasattr(block, "__dict__"):
+                content.append(vars(block))
+            else:
+                content.append({"type": "unknown", "value": str(block)})
+    elif msg.content is None:
+        content = ""
+    else:
+        content = str(msg.content)
+
+    return SessionMessage(
+        role=msg.role,
+        content=content,
+        tool_call_id=msg.tool_call_id,
+    )
 
 
 async def stdout_handler(event: StreamEvent):
@@ -661,20 +691,33 @@ async def run_agent(
     session_id: str | None = None,
 ) -> list[AgentState]:
     """Run agent until stop condition, checkpointing each state.
-    
+
     If run_config.cancel_scope is provided and cancelled, raises trio.Cancelled.
     Caller is responsible for handling cancellation at their boundary.
-    
+
+    Session persistence:
+    - If run_config.session_store and run_config.session_id are set, messages are
+      persisted to the session store after each turn
+    - Caller is responsible for creating the session via session_store.create()
+    - Final status and environment state are saved when agent stops
+
     Args:
         state: Initial agent state
         run_config: Run configuration (contains cancel_scope for cancellation)
-        session_id: Optional session ID for checkpointing
+        session_id: Optional session ID for checkpointing (DEPRECATED: use run_config.session_id)
     """
     if run_config.checkpoint_store and not session_id:
         session_id = f"session_{int(time.time() * 1000)}"  # ms timestamp
 
+    # Session persistence setup
+    session_store = run_config.session_store
+    effective_session_id = run_config.session_id or session_id
+
     states = [state]
     current_state = state
+
+    # Track message count for incremental persistence
+    last_persisted_message_count = len(state.actor.trajectory.messages)
 
     # Initialize inner progress bar for turn-level tracking
     turn_pbar = None
@@ -702,6 +745,14 @@ async def run_agent(
             current_state = next_state
             states.append(current_state)
 
+            # Persist new messages to session store
+            if session_store and effective_session_id:
+                current_messages = current_state.actor.trajectory.messages
+                for msg in current_messages[last_persisted_message_count:]:
+                    session_msg = _message_to_session_message(msg)
+                    await session_store.append_message(effective_session_id, session_msg)
+                last_persisted_message_count = len(current_messages)
+
             # Update inner progress bar
             if turn_pbar:
                 turn_pbar.update(1)
@@ -721,11 +772,46 @@ async def run_agent(
         current_state = aborted_state
         # Checkpoint the aborted state
         await handle_checkpoint_event(current_state, "final", run_config, session_id)
+
+        # Save session with aborted status
+        if session_store and effective_session_id:
+            env_state = None
+            if current_state.environment is not None:
+                env_state = await current_state.environment.serialize()
+            await session_store.update(
+                effective_session_id,
+                status=SessionStatus.ABORTED,
+                environment_state=env_state,
+            )
+
         # Re-raise to let Trio handle cleanup properly
         raise
 
     # Save final state
     await handle_checkpoint_event(current_state, "final", run_config, session_id)
+
+    # Save final session status and environment state
+    if session_store and effective_session_id:
+        # Determine final status
+        if current_state.stop == StopReason.TASK_COMPLETED:
+            status = SessionStatus.COMPLETED
+        elif current_state.stop == StopReason.ABORTED:
+            status = SessionStatus.ABORTED
+        elif current_state.stop in (StopReason.MAX_TURNS,):
+            status = SessionStatus.TRUNCATED
+        else:
+            status = SessionStatus.PENDING
+
+        # Save environment state
+        env_state = None
+        if current_state.environment is not None:
+            env_state = await current_state.environment.serialize()
+
+        await session_store.update(
+            effective_session_id,
+            status=status,
+            environment_state=env_state,
+        )
 
     # Close progress bar on normal completion
     if turn_pbar:

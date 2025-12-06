@@ -956,9 +956,12 @@ class RunConfig:
     handle_no_tool: Callable[['AgentState', 'RunConfig'], Awaitable['AgentState']] = field(default_factory=lambda: default_no_tool_handler)
     user_message_for_thinking: str | None = None
     inline_thinking: str | None = None
-    checkpoint_store: Any | None = None
+    checkpoint_store: Any | None = None  # DEPRECATED: Use session_store instead
     show_progress: bool = False  # Enable turn-level progress tracking
     cancel_scope: trio.CancelScope | None = None  # Optional Trio cancel scope for graceful cancellation. When cancel_scope.cancel() is called, any in-flight HTTP request is immediately cancelled and trio.Cancelled is raised. The agent loop catches this and sets stop=StopReason.ABORTED.
+    # Session persistence (replaces checkpoint_store)
+    session_store: Any | None = None  # SessionStore instance for persistence
+    session_id: str | None = None  # Session ID for this run
 
 
 # ── Evaluation Types ──────────────────────────────────────────────────────────
@@ -1008,3 +1011,185 @@ class EvalConfig:
     verbose: bool = True
     show_progress: bool = False  # Enable sample-level progress tracking
     stream_tokens: bool = False  # Stream LLM tokens to stdout (used if run_config is None)
+
+
+# ── Session Types ──────────────────────────────────────────────────────────────
+# Types for persisting agent sessions (trajectories, config, environment state).
+# See docs/design/rollouts-session-design.md for design details.
+
+
+class SessionStatus(Enum):
+    """Session status."""
+
+    PENDING = "pending"
+    COMPLETED = "completed"
+    TRUNCATED = "truncated"
+    ABORTED = "aborted"
+
+
+@dataclass
+class EndpointConfig:
+    """LLM endpoint configuration.
+
+    Stored in session for reproducibility. This is the serializable subset
+    of Endpoint - excludes api_key and other runtime-only fields.
+    """
+
+    model: str
+    provider: str = "anthropic"
+    temperature: float = 0.0
+    max_tokens: int | None = None
+    # Extended thinking
+    thinking: bool = False
+    thinking_budget: int | None = None
+    # Additional params
+    extra: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "model": self.model,
+            "provider": self.provider,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "thinking": self.thinking,
+            "thinking_budget": self.thinking_budget,
+            "extra": self.extra,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "EndpointConfig":
+        return cls(
+            model=data["model"],
+            provider=data.get("provider", "anthropic"),
+            temperature=data.get("temperature", 0.0),
+            max_tokens=data.get("max_tokens"),
+            thinking=data.get("thinking", False),
+            thinking_budget=data.get("thinking_budget"),
+            extra=data.get("extra", {}),
+        )
+
+
+@dataclass
+class EnvironmentConfig:
+    """Environment configuration.
+
+    Stored in session for reproducibility.
+    """
+
+    type: str  # e.g., "gpumode", "localfs"
+    # Environment-specific config
+    config: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": self.type,
+            "config": self.config,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "EnvironmentConfig":
+        return cls(
+            type=data["type"],
+            config=data.get("config", {}),
+        )
+
+
+@dataclass
+class SessionMessage:
+    """A message in the session trajectory.
+
+    This is a simplified serializable version of Message for session storage.
+    """
+
+    role: str  # user, assistant, tool
+    content: str | list[dict[str, Any]]  # text or content blocks
+    tool_call_id: str | None = None  # for tool results
+    # Additional metadata
+    timestamp: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "role": self.role,
+            "content": self.content,
+        }
+        if self.tool_call_id:
+            result["tool_call_id"] = self.tool_call_id
+        if self.timestamp:
+            result["timestamp"] = self.timestamp
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SessionMessage":
+        return cls(
+            role=data["role"],
+            content=data["content"],
+            tool_call_id=data.get("tool_call_id"),
+            timestamp=data.get("timestamp"),
+        )
+
+
+@dataclass
+class AgentSession:
+    """A persisted agent session.
+
+    This is the record stored in ~/.rollouts/sessions/<session_id>/
+    """
+
+    # Identity
+    session_id: str
+    parent_id: str | None = None  # None for root sessions
+    branch_point: int | None = None  # message index where branched from parent
+
+    # Config (serializable, stored in session.json)
+    endpoint: EndpointConfig = field(default_factory=lambda: EndpointConfig(model=""))
+    environment: EnvironmentConfig = field(default_factory=lambda: EnvironmentConfig(type=""))
+
+    # Trajectory
+    messages: list[SessionMessage] = field(default_factory=list)
+
+    # Environment state (opaque, env-specific)
+    environment_state: dict[str, Any] | None = None
+
+    # Outcome
+    status: SessionStatus = SessionStatus.PENDING
+    reward: float | dict[str, float] | None = None
+
+    # Metadata
+    tags: dict[str, str] = field(default_factory=dict)
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to dict for JSON storage."""
+        return {
+            "session_id": self.session_id,
+            "parent_id": self.parent_id,
+            "branch_point": self.branch_point,
+            "endpoint": self.endpoint.to_dict(),
+            "environment": self.environment.to_dict(),
+            # messages are stored separately in messages.jsonl
+            "environment_state": self.environment_state,
+            "status": self.status.value,
+            "reward": self.reward,
+            "tags": self.tags,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any], messages: list[SessionMessage] | None = None) -> "AgentSession":
+        """Deserialize from dict."""
+        return cls(
+            session_id=data["session_id"],
+            parent_id=data.get("parent_id"),
+            branch_point=data.get("branch_point"),
+            endpoint=EndpointConfig.from_dict(data["endpoint"]),
+            environment=EnvironmentConfig.from_dict(data["environment"]),
+            messages=messages or [],
+            environment_state=data.get("environment_state"),
+            status=SessionStatus(data.get("status", "pending")),
+            reward=data.get("reward"),
+            tags=data.get("tags", {}),
+            created_at=data.get("created_at", datetime.now().isoformat()),
+            updated_at=data.get("updated_at", datetime.now().isoformat()),
+        )

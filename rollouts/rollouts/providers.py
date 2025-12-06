@@ -1056,7 +1056,10 @@ async def aggregate_openai_responses_stream(
         # Handle reasoning summary deltas
         elif event_type == "response.reasoning_summary_part.added":
             if current_item and current_item.get("type") == "reasoning":
-                current_item.setdefault("summary", []).append({"text": ""})
+                # Push the full part object which includes 'type' field required for re-submission
+                # The part has structure like {"type": "summary_text", "text": "..."}
+                part_dict = {"type": getattr(event.part, "type", "summary_text"), "text": ""}
+                current_item.setdefault("summary", []).append(part_dict)
                 logger.debug(f"Added new summary part, total parts: {len(current_item['summary'])}")
 
         elif event_type == "response.reasoning_summary_text.delta":
@@ -1162,8 +1165,9 @@ async def aggregate_openai_responses_stream(
                 current_item = None
 
             elif item_type == "message" and current_block_index >= 0:
-                # Finalize text block
+                # Finalize text block - save message ID for re-submission
                 text_content = content_blocks[current_block_index]["text"]
+                content_blocks[current_block_index]["textSignature"] = getattr(item, "id", None)
                 await on_chunk(TextEnd(
                     content_index=current_block_index,
                     content=text_content,
@@ -1245,7 +1249,10 @@ async def aggregate_openai_responses_stream(
 
     for block in content_blocks:
         if block["type"] == "text":
-            final_content_blocks.append(TextContent(text=block["text"]))
+            final_content_blocks.append(TextContent(
+                text=block["text"],
+                text_signature=block.get("textSignature"),  # Message ID for re-submission
+            ))
         elif block["type"] == "thinking":
             thinking_sig = block.get("thinkingSignature")
             final_content_blocks.append(
@@ -1332,23 +1339,29 @@ def _messages_to_openai_responses(messages: list[Message]) -> list[dict[str, Any
                 # Process ContentBlocks
                 for block in msg.content:
                     if isinstance(block, ThinkingContent) and block.thinking_signature:
-                        # Reuse existing reasoning item
-                        logger.debug(f"Found thinking_signature, re-submitting reasoning item")
+                        # Reuse existing reasoning item only if it has encrypted_content
+                        # Without encrypted_content, the API rejects the reasoning item
+                        # See: https://community.openai.com/t/need-reasoning-false-option-for-gpt-5/1351588/7
                         try:
                             reasoning_item = json.loads(block.thinking_signature)
-                            output.append(reasoning_item)
-                            logger.debug(f"Added reasoning item: {reasoning_item.get('type', 'unknown')}, id={reasoning_item.get('id', 'unknown')}")
+                            if reasoning_item.get("encrypted_content"):
+                                output.append(reasoning_item)
+                                logger.debug(f"Added reasoning item with encrypted_content: id={reasoning_item.get('id', 'unknown')}")
+                            else:
+                                logger.debug(f"Skipping reasoning item without encrypted_content: id={reasoning_item.get('id', 'unknown')}")
                         except json.JSONDecodeError as e:
                             logger.error(f"Failed to parse thinking_signature: {e}")
                             pass
                     elif isinstance(block, TextContent):
                         # Add text content as message object
+                        # Use actual message ID from API if available (for proper re-submission)
+                        msg_id = block.text_signature or f"msg_{int(time.time())}_{id(msg)}"
                         output.append({
                             "type": "message",
                             "role": "assistant",
                             "content": [{"type": "output_text", "text": block.text, "annotations": []}],
                             "status": "completed",
-                            "id": f"msg_{int(time.time())}_{id(msg)}",
+                            "id": msg_id,
                         })
                     elif isinstance(block, ToolCallContent):
                         # Tool call IDs in responses API use format: call_id|id
@@ -1468,12 +1481,27 @@ async def rollout_openai_responses(
     except (KeyError, ValueError):
         is_reasoning_model = False
 
-    # Only set reasoning config if user explicitly requested it
-    # GPT-5 models will still emit reasoning items, but without summaries unless requested
-    if actor.endpoint.reasoning_effort is not None and is_reasoning_model:
+    # GPT-5 models always produce reasoning, so we must always request encrypted_content
+    # to be able to re-submit the reasoning items in subsequent turns
+    # See: https://community.openai.com/t/need-reasoning-false-option-for-gpt-5/1351588/7
+    if is_reasoning_model and model_name.startswith("gpt-5"):
+        if actor.endpoint.reasoning_effort is not None:
+            params["reasoning"] = {
+                "effort": actor.endpoint.reasoning_effort,
+                "summary": "auto",
+            }
+        else:
+            # Default to low effort to minimize cost when not explicitly requested
+            params["reasoning"] = {
+                "effort": "low",
+                "summary": "auto",
+            }
+        params["include"] = ["reasoning.encrypted_content"]
+    elif actor.endpoint.reasoning_effort is not None and is_reasoning_model:
+        # Non-GPT-5 reasoning models with explicit reasoning_effort
         params["reasoning"] = {
             "effort": actor.endpoint.reasoning_effort,
-            "summary": "auto",  # Request summary so we can re-submit it
+            "summary": "auto",
         }
         params["include"] = ["reasoning.encrypted_content"]
 
