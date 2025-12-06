@@ -271,7 +271,7 @@ def generate_diff(old_content: str, new_content: str, context_lines: int = 3) ->
     # Show context before changes
     context_start = max(0, i - context_lines)
     if context_start > 0:
-        output.append(f"{''.rjust(line_num_width)}   ...")
+        output.append("     ...")
 
     for line_idx in range(context_start, i):
         line_num = str(line_idx + 1).rjust(line_num_width)
@@ -295,7 +295,7 @@ def generate_diff(old_content: str, new_content: str, context_lines: int = 3) ->
         output.append(f"{line_num}   {new_lines[line_idx]}")
 
     if context_end < len(new_lines):
-        output.append(f"{''.rjust(line_num_width)}   ...")
+        output.append("     ...")
 
     return "\n".join(output)
 
