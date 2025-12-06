@@ -17,9 +17,6 @@ from .agents import (
     stdout_handler,
 )
 
-# Checkpoints (DEPRECATED: use sessions instead)
-from .checkpoints import FileCheckpointStore
-
 # Sessions
 from .store import FileSessionStore, SessionStore, generate_session_id
 
@@ -119,8 +116,6 @@ __all__ = [
     # Environments
     'CalculatorEnvironment',
     'BasicEnvironment', 'NoToolsEnvironment',
-    # Checkpoints (DEPRECATED: use sessions instead)
-    'FileCheckpointStore',
     # Sessions
     'SessionStore', 'FileSessionStore', 'generate_session_id',
     'AgentSession', 'SessionMessage', 'SessionStatus',

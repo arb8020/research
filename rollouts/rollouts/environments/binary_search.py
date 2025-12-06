@@ -11,7 +11,6 @@ from ..agents import (
     run_agent,
     stdout_handler,
 )
-from ..checkpoints import FileCheckpointStore
 from ..dtypes import (
     Actor,
     AgentState,
@@ -77,7 +76,6 @@ class BinarySearchEnvironment(Environment):
         tool_call: ToolCall,
         current_state: AgentState,
         run_config: RunConfig,
-        checkpoint_store=None,
         cancel_scope: trio.CancelScope | None = None,
     ) -> ToolResult:
         try:
@@ -115,31 +113,18 @@ class BinarySearchEnvironment(Environment):
 
 async def main():
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Calculator Agent')
-    parser.add_argument('--resume', action='store_true', help='Resume from checkpoint')
-    parser.add_argument('--checkpoint-dir', default='/tmp/agent-checkpoints', help='Checkpoint directory')
+    parser = argparse.ArgumentParser(description='Binary Search Agent')
     parser.add_argument('--model', default='gpt-4o-mini', help='Model to use')
-    parser.add_argument('--no-checkpoint', action='store_true', help='Disable checkpointing')
     args = parser.parse_args()
-    
-    # Create checkpoint store (might not use it)
-    environment_registry = {
-        "BinarySearchEnvironment": BinarySearchEnvironment,
-    }
-    checkpoint_store = FileCheckpointStore(
-        environment_registry=environment_registry,
-        directory=args.checkpoint_dir
-    ) if not args.no_checkpoint else None
-    
-    # Create run config (same for both paths)
+
+    # Create run config
     run_config = RunConfig(
         on_chunk=stdout_handler,
         confirm_tool=confirm_tool_with_feedback,  # type: ignore
         handle_tool_error=handle_tool_error,
         handle_stop=handle_stop_max_turns,
         handle_no_tool=inject_tool_reminder,
-        on_step_start=inject_turn_warning,  # Use on_step_start for turn warnings
-        checkpoint_store=checkpoint_store
+        on_step_start=inject_turn_warning,
     )
         
     # Create the initial environment
@@ -187,12 +172,9 @@ async def main():
     print(f"🔧 Total tool calls: {tool_calls}")
 
     # (optionally) save trajectory to disk
-    Trajectory.save_jsonl([final_state.actor.trajectory], "./trajectory.jsonl") 
+    Trajectory.save_jsonl([final_state.actor.trajectory], "./trajectory.jsonl")
     if final_state.stop:
         print(f"🛑 Stopped due to: {final_state.stop.value}")
-    
-    if checkpoint_store:
-        print(f"\n💾 Session checkpoints saved in: {args.checkpoint_dir}")
 
 
 if __name__ == "__main__":

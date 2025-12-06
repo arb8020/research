@@ -12,6 +12,8 @@ Example usage:
 
 from dataclasses import dataclass
 
+import trio
+
 from ..dtypes import AgentState, Message, RunConfig, Tool, ToolCall, ToolFormatter, ToolResult
 
 
@@ -52,8 +54,7 @@ class BasicEnvironment:
         tool_call: ToolCall,
         current_state: AgentState,
         run_config: RunConfig,
-        checkpoint_store=None,
-        cancel_scope=None,
+        cancel_scope: trio.CancelScope | None = None,
     ) -> ToolResult:
         """No tools available in basic environment."""
         return ToolResult(
