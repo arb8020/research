@@ -123,7 +123,6 @@ class CalculatorEnvironment:
         tool_call: ToolCall,
         current_state: 'AgentState',
         run_config: 'RunConfig',
-        checkpoint_store=None,
         cancel_scope: trio.CancelScope | None = None,
     ) -> ToolResult:
         """Execute tool call, mutating environment state"""

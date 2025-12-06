@@ -663,11 +663,7 @@ async def process_pending_tools(
         
         # Handle tool errors
         current_state = rcfg.handle_tool_error(tool_result, current_state)
-        
-        # Fire tool_complete event after each tool (if checkpoint strategy supports it)
-        if hasattr(rcfg, 'checkpoint_store') and rcfg.checkpoint_store:
-            await handle_checkpoint_event(current_state, "tool_complete", rcfg)
-        
+
         # Check if tool requested agent to stop
         if tool_result.stop_reason:
             current_state = replace(current_state, stop=tool_result.stop_reason)
@@ -706,9 +702,6 @@ async def run_agent(
         run_config: Run configuration (contains cancel_scope for cancellation)
         session_id: Optional session ID for checkpointing (DEPRECATED: use run_config.session_id)
     """
-    if run_config.checkpoint_store and not session_id:
-        session_id = f"session_{int(time.time() * 1000)}"  # ms timestamp
-
     # Session persistence setup
     session_store = run_config.session_store
     effective_session_id = run_config.session_id or session_id

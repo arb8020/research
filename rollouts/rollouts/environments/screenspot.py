@@ -43,8 +43,7 @@ class ScreenSpotEnvironment:
         tool_call: ToolCall,
         current_state: AgentState,
         run_config,
-        checkpoint_store=None,
-        cancel_scope=None,
+        cancel_scope: trio.CancelScope | None = None,
     ) -> ToolResult:
         """No tools available in ScreenSpot environment."""
         return ToolResult(

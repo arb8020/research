@@ -788,7 +788,6 @@ class Environment(Protocol):
         tool_call: ToolCall,
         current_state: 'AgentState',
         run_config: 'RunConfig',
-        checkpoint_store=None,
         cancel_scope: trio.CancelScope | None = None,
     ) -> ToolResult:
         """Execute a tool call in this environment.
@@ -797,7 +796,6 @@ class Environment(Protocol):
             tool_call: The tool call to execute
             current_state: Current agent state
             run_config: Run configuration
-            checkpoint_store: Optional checkpoint store for persistence
             cancel_scope: Optional Trio cancel scope for graceful cancellation
         """
         ...
@@ -956,10 +954,9 @@ class RunConfig:
     handle_no_tool: Callable[['AgentState', 'RunConfig'], Awaitable['AgentState']] = field(default_factory=lambda: default_no_tool_handler)
     user_message_for_thinking: str | None = None
     inline_thinking: str | None = None
-    checkpoint_store: Any | None = None  # DEPRECATED: Use session_store instead
     show_progress: bool = False  # Enable turn-level progress tracking
     cancel_scope: trio.CancelScope | None = None  # Optional Trio cancel scope for graceful cancellation. When cancel_scope.cancel() is called, any in-flight HTTP request is immediately cancelled and trio.Cancelled is raised. The agent loop catches this and sets stop=StopReason.ABORTED.
-    # Session persistence (replaces checkpoint_store)
+    # Session persistence
     session_store: Any | None = None  # SessionStore instance for persistence
     session_id: str | None = None  # Session ID for this run
 
