@@ -286,16 +286,8 @@ class TUI(Container):
         height = self._terminal.rows
 
         # Render all components to get new lines
-        all_lines = self.render(width)
-
-        # Viewport logic: if total lines exceed terminal height, show only the bottom portion
-        # This ensures the input box (at the end) stays visible with 4 lines of padding above it
-        viewport_height = height - 4  # Add 4 lines of padding
-        if len(all_lines) > viewport_height:
-            new_lines = all_lines[-viewport_height:]
-            self._debug_log(f"VIEWPORT total_lines={len(all_lines)} showing_bottom={viewport_height} (height={height}, padding=4)")
-        else:
-            new_lines = all_lines
+        # No viewport truncation - render everything and let terminal scrollback handle history
+        new_lines = self.render(width)
 
         # Width changed - need full re-render
         width_changed = self._previous_width != 0 and self._previous_width != width
