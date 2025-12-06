@@ -605,7 +605,6 @@ async def process_pending_tools(
                 tool_call,
                 current_state,
                 rcfg,
-                None,
                 cancel_scope=rcfg.cancel_scope,
             )
 
