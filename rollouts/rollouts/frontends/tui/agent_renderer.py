@@ -515,7 +515,8 @@ class AgentRenderer:
             result_text = str(content) if content else ""
 
         # Replay through the same handler used for live tool results
-        self._handle_tool_result(tool_call_id, result_text, is_error=False, error=None)
+        # Pass details from message to ensure diffs render on resume
+        self._handle_tool_result(tool_call_id, result_text, is_error=False, error=None, details=msg.details)
 
     def debug_dump_chat(self) -> None:
         """Dump chat container state as JSONL for debugging."""
