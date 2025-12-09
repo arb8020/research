@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Qwen 0.5B on Reverse-Text - debug config.
+"""Qwen 0.5B on Reverse-Text.
 
-Quick CI test: 10 steps, 100 samples. ~2 min on GPU.
+100 steps, 1000 samples. ~5 min on GPU.
 
 Usage:
     python examples/sft/qwen_reverse_01_01.py
@@ -14,10 +14,10 @@ from base_config import BaseConfig, train, run_remote
 
 config = replace(
     BaseConfig(),
-    num_steps=10,
-    max_samples=100,
-    log_every=2,
-    checkpoint_every=5,
+    num_steps=100,
+    max_samples=1000,
+    log_every=10,
+    checkpoint_every=50,
 )
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ dependencies = [
     "aiohttp>=3.9.0",
     "trio>=0.32.0",
     "shared",
+    "datasets>=4.4.1",
 ]
 
 [project.optional-dependencies]
