@@ -218,11 +218,11 @@ def run_remote(script_path: str, keep_alive: bool = False, gpu_id: str | None = 
 
     try:
         if gpu_id:
-            # Reuse existing GPU
+            # Reuse existing GPU (assumes runpod for now)
             print(f"Reusing GPU: {gpu_id}")
-            gpu = client.get_instance(gpu_id)
+            gpu = client.get_instance(gpu_id, provider="runpod")
             if not gpu:
-                print(f"GPU {gpu_id} not found")
+                print(f"GPU {gpu_id} not found (is it still running?)")
                 return
             # When reusing, always keep alive unless explicitly terminated
             keep_alive = True
