@@ -348,6 +348,10 @@ def create_causal_mask(
     if attention_mask is None:
         return None
 
+    # If all values are 1 (no padding), use is_causal=True path for better numerical match
+    if attention_mask.all():
+        return None
+
     batch_size = attention_mask.shape[0]
 
     # Create causal mask: (1, 1, seq_len, seq_len)
