@@ -220,20 +220,14 @@ def attention(
     k = repeat_kv(k, num_kv_groups)
     v = repeat_kv(v, num_kv_groups)
 
-    # Scaled dot-product attention
-    scale = head_dim ** -0.5
-    attn_weights = torch.matmul(q, k.transpose(2, 3)) * scale
-
-    # Causal mask
-    causal_mask = torch.triu(
-        torch.full((seq_len, seq_len), float("-inf"), device=hidden_states.device, dtype=hidden_states.dtype),
-        diagonal=1,
+    # Use scaled_dot_product_attention for numerical consistency with HF
+    # (HF uses SDPA by default which has different numerical behavior than manual attention)
+    attn_output = F.scaled_dot_product_attention(
+        q, k, v,
+        attn_mask=None,
+        dropout_p=0.0,
+        is_causal=True,
     )
-    attn_weights = attn_weights + causal_mask
-
-    # Softmax and attention output
-    attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(hidden_states.dtype)
-    attn_output = torch.matmul(attn_weights, v)
 
     # Reshape and project output
     attn_output = attn_output.transpose(1, 2).contiguous()
