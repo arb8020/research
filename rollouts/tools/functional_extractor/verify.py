@@ -125,7 +125,7 @@ def run_on_gpu(
         bifrost = BifrostClient(gpu.ssh_connection_string(), ssh_key_path)
         bootstrap = [
             "cd rollouts && uv python install 3.12 && uv sync --python 3.12",
-            "uv pip install torch 'transformers<4.52' datasets accelerate",
+            "uv pip install torch 'git+https://github.com/huggingface/transformers.git' datasets accelerate huggingface_hub",
         ]
         bifrost.push(workspace_path=workspace, bootstrap_cmd=bootstrap)
         print("Code deployed")
