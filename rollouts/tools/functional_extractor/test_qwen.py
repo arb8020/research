@@ -201,8 +201,8 @@ def test_on_gpu():
 
         first_real_match = all(d < 1e-5 for d in first_real_diffs)
 
-        # Overall match with looser tolerance (SDPA differences accumulate over layers)
-        overall_match = max_diff_real < 2.0  # Allow up to 2.0 diff for non-padded positions
+        # Overall match - with min_dtype fix, should be much tighter
+        overall_match = max_diff_real < 1e-4  # Should match closely now
 
         status = "PASS" if (first_real_match and overall_match) else "FAIL"
         print(f"  {name}: batch={batch_size}, seq={seq_len}, max_diff_real={max_diff_real:.2e}, first_pos_diffs={[f'{d:.2e}' for d in first_real_diffs]} [{status}]")
