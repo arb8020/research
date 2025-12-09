@@ -177,16 +177,16 @@ def train(config: BaseConfig) -> list[dict]:
     return trio.run(_train_async, config)
 
 
-def run_remote(script_path: str, keep_alive: bool = False):
+def run_remote(script_path: str, keep_alive: bool = False, gpu_id: str | None = None):
     """Run script on remote GPU via broker/bifrost.
 
     Args:
         script_path: Path to the script (__file__ from caller)
         keep_alive: Keep GPU running after completion
+        gpu_id: Reuse existing GPU instance ID (skips provisioning)
 
     TODO:
         - Sync results back to local (checkpoints, metrics)
-        - Stream output instead of waiting for completion
         - Timeout handling for hung training
         - VRAM estimation from model name
     """
@@ -208,31 +208,40 @@ def run_remote(script_path: str, keep_alive: bool = False):
     ).strip())
     rel_path = script.relative_to(git_root)
 
-    print(f"Provisioning GPU...")
-
-    # Provision
+    # Provision or reuse GPU
     runpod_key = os.getenv("RUNPOD_API_KEY")
     assert runpod_key, "RUNPOD_API_KEY not set"
-
-    client = GPUClient(credentials={"runpod": runpod_key})
-    gpu = client.create(
-        query=(client.vram_gb >= 24) & (client.price_per_hour <= 0.5),
-        name=f"sft-{script.stem}",
-    )
-
-    if not gpu:
-        print("Failed to provision GPU")
-        return
-
-    print(f"GPU ready: {gpu.id}")
-
-    if not gpu.wait_until_ssh_ready(timeout=300):
-        print("SSH timeout")
-        client.terminate_instance(gpu.id, gpu.provider)
-        return
-
     ssh_key_path = os.getenv("SSH_KEY_PATH", "~/.ssh/id_ed25519")
-    print(f"SSH ready: {gpu.ssh_connection_string()}")
+
+    client = GPUClient(credentials={"runpod": runpod_key}, ssh_key_path=ssh_key_path)
+
+    if gpu_id:
+        # Reuse existing GPU
+        print(f"Reusing GPU: {gpu_id}")
+        gpu = client.get_instance(gpu_id)
+        if not gpu:
+            print(f"GPU {gpu_id} not found")
+            return
+        # When reusing, always keep alive unless explicitly terminated
+        keep_alive = True
+    else:
+        # Provision new GPU
+        print("Provisioning GPU...")
+        gpu = client.create(
+            query=(client.vram_gb >= 24) & (client.price_per_hour <= 0.5),
+            name=f"sft-{script.stem}",
+        )
+        if not gpu:
+            print("Failed to provision GPU")
+            return
+        print(f"GPU ready: {gpu.id}")
+
+        if not gpu.wait_until_ssh_ready(timeout=300):
+            print("SSH timeout")
+            client.terminate_instance(gpu.id, gpu.provider)
+            return
+
+    print(f"SSH: {gpu.ssh_connection_string()}")
 
     try:
         # Deploy
@@ -256,8 +265,14 @@ def run_remote(script_path: str, keep_alive: bool = False):
 
     finally:
         if keep_alive:
-            print(f"\nGPU kept alive: {gpu.ssh_connection_string()}")
-            print(f"Terminate with: broker terminate {gpu.id}")
+            print()
+            print("=" * 50)
+            print(f"GPU kept alive: {gpu.id}")
+            print(f"SSH: {gpu.ssh_connection_string()}")
+            print()
+            print(f"Rerun with:   --gpu-id {gpu.id}")
+            print(f"Terminate:    broker terminate {gpu.id}")
+            print("=" * 50)
         else:
             print("Cleaning up...")
             client.terminate_instance(gpu.id, gpu.provider)
