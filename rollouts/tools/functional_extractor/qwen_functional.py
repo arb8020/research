@@ -342,7 +342,7 @@ def create_causal_mask(
             1 = attend, 0 = mask out
 
     Returns:
-        4D mask of shape (batch, 1, seq_len, seq_len) with 0 for attend, -inf for mask,
+        4D mask of shape (batch, 1, seq_len, seq_len) with 0 for attend, min_dtype for mask,
         or None if no padding mask and we can use is_causal=True
     """
     if attention_mask is None:
@@ -362,8 +362,10 @@ def create_causal_mask(
     # Combine: attend only where BOTH causal and padding allow
     combined_mask = causal_mask & padding_mask  # (batch, 1, seq_len, seq_len)
 
-    # Convert to float mask: 0 for attend, -inf for mask
-    mask = torch.where(combined_mask, 0.0, float("-inf"))
+    # Convert to float mask: 0 for attend, min_dtype for mask
+    # HF uses torch.finfo(dtype).min instead of -inf for numerical stability
+    min_dtype = torch.finfo(dtype).min
+    mask = torch.where(combined_mask, 0.0, min_dtype)
     return mask.to(dtype)
 
 
