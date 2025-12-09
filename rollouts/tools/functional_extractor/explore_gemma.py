@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Explore Phi-3 architecture to understand what's different."""
+"""Explore model architectures to understand differences."""
 
 import os
 import sys
@@ -13,13 +13,16 @@ def explore():
     import torch
     from transformers import AutoModelForCausalLM, AutoConfig
 
+    # Model to explore - change this to explore different models
+    MODEL_NAME = "Qwen/Qwen3-Next-80B-A3B-Instruct-FP8"  # MoE model: 80B total, 3B active
+
     print("=" * 60)
-    print("Exploring Phi-3-mini Architecture")
+    print(f"Exploring {MODEL_NAME} Architecture")
     print("=" * 60)
 
     # First just get config
     print("\n### Config ###")
-    config = AutoConfig.from_pretrained("microsoft/Phi-3-mini-4k-instruct", trust_remote_code=True)
+    config = AutoConfig.from_pretrained(MODEL_NAME, trust_remote_code=True)
     print(f"hidden_size: {config.hidden_size}")
     print(f"intermediate_size: {config.intermediate_size}")
     print(f"num_hidden_layers: {config.num_hidden_layers}")
@@ -39,10 +42,10 @@ def explore():
         if val != 'N/A':
             print(f"{attr}: {val}")
 
-    # Load model to see structure
+    # Load the actual model for structure exploration
     print("\n### Loading model... ###")
     model = AutoModelForCausalLM.from_pretrained(
-        "microsoft/Phi-3-mini-4k-instruct",
+        MODEL_NAME,
         torch_dtype=torch.bfloat16,
         device_map="cuda:0",
         trust_remote_code=True,
@@ -65,9 +68,13 @@ def explore():
 
     # Check for special attributes
     print("\nSpecial attributes:")
-    for attr in ['scaling', 'softcap', 'is_causal', 'attention_dropout']:
+    for attr in ['scaling', 'softcap', 'is_causal', 'attention_dropout', 'q_norm', 'k_norm']:
         if hasattr(attn, attr):
-            print(f"  {attr}: {getattr(attn, attr)}")
+            val = getattr(attn, attr)
+            if hasattr(val, 'weight'):
+                print(f"  {attr}: {type(val).__name__} (has weight)")
+            else:
+                print(f"  {attr}: {val}")
 
     # Check MLP
     mlp = model.model.layers[0].mlp
@@ -92,13 +99,13 @@ def explore():
     print("\n### Weight keys (sample) ###")
     weights = dict(model.state_dict())
     layer0_keys = [k for k in weights.keys() if 'layers.0.' in k]
-    for k in sorted(layer0_keys)[:20]:
+    for k in sorted(layer0_keys)[:25]:
         print(f"  {k}: {weights[k].shape}")
 
     # Check if there's q_norm/k_norm
     print("\n### Q/K Norm check ###")
     q_norm_keys = [k for k in weights.keys() if 'q_norm' in k.lower() or 'k_norm' in k.lower()]
-    print(f"Q/K norm keys found: {q_norm_keys[:5]}")
+    print(f"Q/K norm keys found: {q_norm_keys[:10]}")
 
     # Test basic forward
     print("\n### Basic forward test ###")
@@ -110,14 +117,31 @@ def explore():
 
 
 if __name__ == "__main__":
-    import torch
-    if torch.cuda.is_available():
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--gpu-id", type=str, help="Reuse existing GPU instance")
+    parser.add_argument("--keep-alive", action="store_true", help="Keep GPU alive after run")
+    parser.add_argument("--max-price", type=float, default=3.0, help="Max price per hour")
+    parser.add_argument("--remote", action="store_true", help="Run on remote GPU")
+    args = parser.parse_args()
+
+    # Check if we have local GPU
+    try:
+        import torch
+        has_gpu = torch.cuda.is_available()
+    except ImportError:
+        has_gpu = False
+
+    if has_gpu and not args.remote:
         explore()
     else:
-        print("No GPU available. Run on remote GPU.")
+        print("No local GPU. Running on remote GPU...")
         from verify import run_on_gpu
-        import argparse
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--gpu-id", type=str)
-        args = parser.parse_args()
-        run_on_gpu(__file__, gpu_id=args.gpu_id, keep_alive=True, vram_gb=24)
+        run_on_gpu(
+            __file__,
+            gpu_id=args.gpu_id,
+            keep_alive=args.keep_alive or bool(args.gpu_id),
+            vram_gb=80,  # Need large GPU for 80B model
+            max_price=args.max_price,
+        )

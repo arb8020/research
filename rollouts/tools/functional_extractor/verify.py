@@ -98,8 +98,15 @@ def run_on_gpu(
         else:
             print("Provisioning GPU...")
             gpu = client.create(
-                query=(client.vram_gb >= vram_gb) & (client.price_per_hour <= max_price),
+                query=(
+                    (client.vram_gb >= vram_gb) &
+                    (client.price_per_hour <= max_price) &
+                    (client.manufacturer == 'Nvidia')
+                ),
                 name=f"verify-{script.stem}",
+                cloud_type="secure",  # Required for direct SSH access
+                sort=lambda x: x.price_per_hour,
+                reverse=False,
             )
             if not gpu:
                 print("Failed to provision GPU")
@@ -283,6 +290,7 @@ if __name__ == "__main__":
             gpu = client.create(
                 query=(client.vram_gb >= 16) & (client.price_per_hour <= 0.5),
                 name="verify-functional",
+                cloud_type="secure",  # Required for direct SSH access
             )
             if not gpu:
                 return VerificationResult(
