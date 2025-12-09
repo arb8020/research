@@ -134,14 +134,21 @@ $ functional-extract model.py --entry forward --verify
 
 ## Implementation Path
 
-### Phase 1: Manual (Now)
-- Use HF model as black box
-- Build functional everything else around it
+### Phase 1: Manual ✅ DONE
+Working implementation in `tools/functional_extractor/`:
+- `qwen_functional.py:1-320` - Qwen2.5-0.5B forward pass, numerically identical to HF
+- `tools.py` - `read_module_source()`, `get_weight_info()`, `capture_intermediate()`
+- `verify.py` - GPU verification via bifrost/broker
+- `test_qwen.py`, `debug_qwen.py` - Test and debug scripts
 
-### Phase 2: Semi-Automated (Later)
-- Build the tracer
-- LLM generates functional code
-- Human verifies
+Key bugs found during manual implementation:
+- RMSNorm: must multiply weight AFTER casting back to input dtype (`qwen_functional.py:64`)
+- Attention: must use `F.scaled_dot_product_attention` to match HF's SDPA (`qwen_functional.py:223-230`)
+
+### Phase 2: Semi-Automated (Next)
+- Build Environment with tools as reward signals
+- `verify_component()` as the critical tool - tells agent if code is correct
+- LLM iterates on functional code using verification feedback
 
 ### Phase 3: Fully Automated (Eventually)
 - RL-trained model that:

@@ -51,20 +51,14 @@ def test_on_gpu():
 
     weights = {k: v for k, v in model.state_dict().items()}
 
-    # Test cases
-    test_inputs = [
-        [1, 2, 3, 4],  # Short sequence
-        [100, 200, 300, 400, 500],  # Different tokens
-        [1],  # Single token
-        list(range(1, 33)),  # Longer sequence (32 tokens)
-    ]
-
-    print(f"\nRunning {len(test_inputs)} test cases...")
-    print("-" * 60)
-
+    # ========== Test Suite ==========
     all_passed = True
-    for i, input_seq in enumerate(test_inputs):
-        input_ids = torch.tensor([input_seq], device="cuda:0")
+    test_count = 0
+
+    def run_test(name: str, input_ids: torch.Tensor) -> bool:
+        """Run a single test and return True if passed."""
+        nonlocal test_count
+        test_count += 1
 
         with torch.no_grad():
             original_logits = model(input_ids).logits
@@ -73,25 +67,63 @@ def test_on_gpu():
         matches = torch.allclose(original_logits, functional_logits, rtol=1e-5, atol=1e-5)
         max_diff = (original_logits - functional_logits).abs().max().item()
 
+        batch, seq_len, vocab = original_logits.shape
         status = "PASS" if matches else "FAIL"
-        print(f"Test {i+1}: seq_len={len(input_seq):2d}, max_diff={max_diff:.2e}, {status}")
+        print(f"  {name}: batch={batch}, seq={seq_len}, max_diff={max_diff:.2e} [{status}]")
 
         if not matches:
-            all_passed = False
-            # Debug: find where the difference is largest
             diff = (original_logits - functional_logits).abs()
             max_idx = diff.argmax()
-            print(f"  Max diff at index: {max_idx.item()}")
-            print(f"  Original value: {original_logits.view(-1)[max_idx].item():.6f}")
-            print(f"  Functional value: {functional_logits.view(-1)[max_idx].item():.6f}")
+            print(f"    Max diff at flat index: {max_idx.item()}")
 
-    print("-" * 60)
+        return matches
+
+    # --- Sequence Length Tests ---
+    print("\n### Sequence Length Tests ###")
+    seq_lengths = [1, 4, 16, 32, 64, 128]
+    for seq_len in seq_lengths:
+        input_ids = torch.randint(1, 1000, (1, seq_len), device="cuda:0")
+        if not run_test(f"seq_len={seq_len:3d}", input_ids):
+            all_passed = False
+
+    # --- Batch Size Tests ---
+    print("\n### Batch Size Tests ###")
+    batch_sizes = [1, 2, 4, 8]
+    for batch_size in batch_sizes:
+        input_ids = torch.randint(1, 1000, (batch_size, 16), device="cuda:0")
+        if not run_test(f"batch={batch_size}, seq=16", input_ids):
+            all_passed = False
+
+    # --- Edge Cases ---
+    print("\n### Edge Cases ###")
+
+    # Single token
+    input_ids = torch.tensor([[42]], device="cuda:0")
+    if not run_test("single_token", input_ids):
+        all_passed = False
+
+    # Repeated tokens
+    input_ids = torch.full((1, 32), 100, device="cuda:0")
+    if not run_test("repeated_token", input_ids):
+        all_passed = False
+
+    # Sequential tokens
+    input_ids = torch.arange(1, 65, device="cuda:0").unsqueeze(0)
+    if not run_test("sequential_tokens", input_ids):
+        all_passed = False
+
+    # High token IDs (near vocab boundary)
+    input_ids = torch.randint(150000, 151000, (1, 16), device="cuda:0")
+    if not run_test("high_token_ids", input_ids):
+        all_passed = False
+
+    # --- Summary ---
+    print("\n" + "=" * 60)
     if all_passed:
-        print("ALL TESTS PASSED!")
+        print(f"ALL {test_count} TESTS PASSED!")
         print("Functional implementation is numerically identical to HF model.")
     else:
-        print("SOME TESTS FAILED!")
-        print("Functional implementation has numerical differences.")
+        print(f"SOME TESTS FAILED (out of {test_count})")
         sys.exit(1)
 
 
