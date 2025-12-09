@@ -196,10 +196,14 @@ def run_remote(script_path: str, keep_alive: bool = False):
 
     load_dotenv()
 
-    # Get script path relative to repo root
-    script = Path(script_path)
-    repo_root = script.parent.parent.parent  # examples/sft/foo.py -> repo root
-    rel_path = script.relative_to(repo_root)
+    # Get script path relative to git root
+    import subprocess
+    script = Path(script_path).resolve()
+    git_root = Path(subprocess.check_output(
+        ['git', 'rev-parse', '--show-toplevel'],
+        text=True
+    ).strip())
+    rel_path = script.relative_to(git_root)
 
     print(f"Provisioning GPU...")
 
