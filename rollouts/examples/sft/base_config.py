@@ -250,7 +250,8 @@ def run_remote(script_path: str, keep_alive: bool = False, gpu_id: str | None = 
         bifrost = BifrostClient(gpu.ssh_connection_string(), ssh_key_path)
         bootstrap = [
             "cd rollouts && uv python install 3.12 && uv sync --python 3.12",
-            "uv pip install torch transformers datasets accelerate",
+            # Pin transformers to avoid additional_chat_templates bug in newer versions
+            "uv pip install torch 'transformers<4.52' datasets accelerate",
         ]
         bifrost.push(workspace_path=workspace, bootstrap_cmd=bootstrap)
         print("Code deployed")
