@@ -183,11 +183,19 @@ def _extract_conversation(example: dict[str, Any]) -> list[dict[str, str]] | Non
     if "messages" in example:
         return example["messages"]
 
-    # Format 2: prompt/completion (instruction format)
+    # Format 2: prompt/completion (instruction format or message lists)
     if "prompt" in example and "completion" in example:
+        prompt = example["prompt"]
+        completion = example["completion"]
+
+        # Check if prompt/completion are message lists (PrimeIntellect format)
+        if isinstance(prompt, list) and isinstance(completion, list):
+            return prompt + completion
+
+        # Otherwise treat as strings
         return [
-            {"role": "user", "content": example["prompt"]},
-            {"role": "assistant", "content": example["completion"]},
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": completion},
         ]
 
     # Format 3: instruction/output (common instruction format)
