@@ -17,6 +17,16 @@ import sys
 
 def test_on_gpu():
     """Run full verification test on GPU."""
+    import os
+    import sys
+
+    # Add parent dirs to path for imports to work both locally and remotely
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    tools_dir = os.path.dirname(script_dir)  # tools/
+    repo_dir = os.path.dirname(tools_dir)    # rollouts/
+    if repo_dir not in sys.path:
+        sys.path.insert(0, repo_dir)
+
     import torch
     from transformers import AutoModelForCausalLM
 
