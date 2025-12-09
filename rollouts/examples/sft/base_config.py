@@ -214,36 +214,37 @@ def run_remote(script_path: str, keep_alive: bool = False, gpu_id: str | None = 
     ssh_key_path = os.getenv("SSH_KEY_PATH", "~/.ssh/id_ed25519")
 
     client = GPUClient(credentials={"runpod": runpod_key}, ssh_key_path=ssh_key_path)
-
-    if gpu_id:
-        # Reuse existing GPU
-        print(f"Reusing GPU: {gpu_id}")
-        gpu = client.get_instance(gpu_id)
-        if not gpu:
-            print(f"GPU {gpu_id} not found")
-            return
-        # When reusing, always keep alive unless explicitly terminated
-        keep_alive = True
-    else:
-        # Provision new GPU
-        print("Provisioning GPU...")
-        gpu = client.create(
-            query=(client.vram_gb >= 24) & (client.price_per_hour <= 0.5),
-            name=f"sft-{script.stem}",
-        )
-        if not gpu:
-            print("Failed to provision GPU")
-            return
-        print(f"GPU ready: {gpu.id}")
-
-        if not gpu.wait_until_ssh_ready(timeout=300):
-            print("SSH timeout")
-            client.terminate_instance(gpu.id, gpu.provider)
-            return
-
-    print(f"SSH: {gpu.ssh_connection_string()}")
+    gpu = None
 
     try:
+        if gpu_id:
+            # Reuse existing GPU
+            print(f"Reusing GPU: {gpu_id}")
+            gpu = client.get_instance(gpu_id)
+            if not gpu:
+                print(f"GPU {gpu_id} not found")
+                return
+            # When reusing, always keep alive unless explicitly terminated
+            keep_alive = True
+        else:
+            # Provision new GPU
+            print("Provisioning GPU...")
+            gpu = client.create(
+                query=(client.vram_gb >= 24) & (client.price_per_hour <= 0.5),
+                name=f"sft-{script.stem}",
+            )
+            if not gpu:
+                print("Failed to provision GPU")
+                return
+            print(f"GPU ready: {gpu.id}")
+
+            if not gpu.wait_until_ssh_ready(timeout=300):
+                print("SSH timeout")
+                client.terminate_instance(gpu.id, gpu.provider)
+                return
+
+        print(f"SSH: {gpu.ssh_connection_string()}")
+
         # Deploy
         workspace = "~/.bifrost/workspaces/rollouts"
         bifrost = BifrostClient(gpu.ssh_connection_string(), ssh_key_path)
@@ -263,7 +264,13 @@ def run_remote(script_path: str, keep_alive: bool = False, gpu_id: str | None = 
             print(line, end="")
         print("-" * 50)
 
+    except KeyboardInterrupt:
+        print("\n\nInterrupted!")
+        keep_alive = True  # Don't terminate on Ctrl+C, let user decide
+
     finally:
+        if gpu is None:
+            return
         if keep_alive:
             print()
             print("=" * 50)
