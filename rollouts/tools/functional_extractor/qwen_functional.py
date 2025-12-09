@@ -408,14 +408,10 @@ def qwen_forward(
     # Token embeddings
     hidden_states = F.embedding(input_ids, weights["model.embed_tokens.weight"])
 
-    # Compute position IDs from attention mask (like HuggingFace does)
-    # For left-padded sequences [0, 0, 1, 1, 1, 1], positions should be [0, 0, 0, 1, 2, 3]
-    if attention_mask is not None:
-        # cumsum of mask gives positions: [0,0,1,1,1,1] -> [0,0,1,2,3,4]
-        # subtract 1 and clamp to get [0,0,0,1,2,3]
-        positions = (attention_mask.cumsum(-1) - 1).clamp(min=0).long()
-    else:
-        positions = torch.arange(seq_len, device=device).unsqueeze(0).expand(batch_size, -1)
+    # Position IDs are always sequential [0, 1, 2, ..., seq_len-1]
+    # HF uses cache_position = torch.arange(0, seq_len) for RoPE computation
+    # The attention_mask only affects what positions can attend to, NOT position embeddings
+    positions = torch.arange(seq_len, device=device).unsqueeze(0).expand(batch_size, -1)
 
     # Compute RoPE embeddings once
     cos, sin = compute_rope_embeddings(positions, dtype=hidden_states.dtype)
