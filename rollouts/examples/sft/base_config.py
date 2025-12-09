@@ -87,7 +87,9 @@ def cross_entropy_loss(logits: torch.Tensor, batch: dict) -> torch.Tensor:
 
 async def _train_async(config: BaseConfig) -> list[dict]:
     """Async training implementation."""
+    import logging
     import torch
+    from rollouts._logging import setup_logging
     from rollouts.training import (
         PyTorchTrainingBackend,
         SFTTrainingConfig,
@@ -95,29 +97,32 @@ async def _train_async(config: BaseConfig) -> list[dict]:
         run_sft_training,
     )
 
-    print(f"Model: {config.model_name}")
-    print(f"Data: {config.data_path}")
-    print(f"Device: {config.device}")
-    print()
+    # Setup logging with colors
+    setup_logging(level="INFO", use_color=True)
+    logger = logging.getLogger(__name__)
+
+    logger.info(f"Model: {config.model_name}")
+    logger.info(f"Data: {config.data_path}")
+    logger.info(f"Device: {config.device}")
 
     # Load tokenizer and data
-    print("Loading tokenizer...")
+    logger.info("Loading tokenizer...")
     tokenizer = load_tokenizer(config.model_name)
 
-    print("Loading data...")
+    logger.info("Loading data...")
     samples = load_sft_dataset(
         config.data_path,
         tokenizer=tokenizer,
         max_samples=config.max_samples,
         max_length=config.max_seq_len,
     )
-    print(f"Loaded {len(samples)} samples")
+    logger.info(f"Loaded {len(samples)} samples")
 
     # Load model
-    print("Loading model...")
+    logger.info("Loading model...")
     model, optimizer = load_model(config.model_name, config.device, config.lr)
     param_count = sum(p.numel() for p in model.parameters())
-    print(f"Model: {param_count / 1e6:.1f}M params")
+    logger.info(f"Model: {param_count / 1e6:.1f}M params")
 
     # Create backend
     output_dir = Path(config.output_dir)
@@ -132,10 +137,9 @@ async def _train_async(config: BaseConfig) -> list[dict]:
     )
 
     # Train
-    print()
-    print("=" * 50)
-    print("Training...")
-    print("=" * 50)
+    logger.info("=" * 50)
+    logger.info("Training...")
+    logger.info("=" * 50)
 
     training_config = SFTTrainingConfig(
         num_steps=config.num_steps,
@@ -153,11 +157,10 @@ async def _train_async(config: BaseConfig) -> list[dict]:
     # Summary
     first_loss = metrics[0]["loss"]
     last_loss = metrics[-1]["loss"]
-    print()
-    print("=" * 50)
-    print(f"First loss: {first_loss:.4f}")
-    print(f"Last loss:  {last_loss:.4f}")
-    print("=" * 50)
+    logger.info("=" * 50)
+    logger.info(f"First loss: {first_loss:.4f}")
+    logger.info(f"Last loss:  {last_loss:.4f}")
+    logger.info("=" * 50)
 
     return metrics
 
@@ -242,12 +245,14 @@ def run_remote(script_path: str, keep_alive: bool = False):
         bifrost.push(workspace_path=workspace, bootstrap_cmd=bootstrap)
         print("Code deployed")
 
-        # Run
+        # Run with streaming output
         remote_script = f"{workspace}/{rel_path}"
-        result = bifrost.exec(f"cd {workspace} && uv run python {remote_script}")
-        print(result.stdout)
-        if result.stderr:
-            print(result.stderr)
+        cmd = f"cd {workspace}/rollouts && uv run python {remote_script}"
+        print(f"Running: {cmd}")
+        print("-" * 50)
+        for line in bifrost.exec_stream(cmd):
+            print(line, end="")
+        print("-" * 50)
 
     finally:
         if keep_alive:
