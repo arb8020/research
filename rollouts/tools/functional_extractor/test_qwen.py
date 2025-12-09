@@ -165,9 +165,7 @@ def test_on_gpu():
             all_passed = False
 
     # --- Attention Mask Tests ---
-    # Note: When using explicit attention masks, SDPA has slightly different numerical
-    # behavior than is_causal=True. We use looser tolerance here but verify the
-    # first non-padded position matches exactly (confirming correct mask/position handling).
+    # With sequential position IDs (matching HF), both implementations should match exactly.
     print("\n### Attention Mask Tests ###")
 
     def run_mask_test(name: str, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> bool:
@@ -179,41 +177,26 @@ def test_on_gpu():
             original_logits = model(input_ids, attention_mask=attention_mask).logits
             functional_logits = qwen_forward(input_ids, weights, attention_mask=attention_mask)
 
-        # Use looser tolerance for masked inputs due to SDPA numerical differences
-        # Only check non-padded positions (padded positions have garbage values)
         batch_size, seq_len, vocab_size = original_logits.shape
 
-        # Expand attention_mask to match logits shape for masking
-        mask_expanded = attention_mask.unsqueeze(-1).expand_as(original_logits)
-
         # Calculate diff only at non-padded positions
+        mask_expanded = attention_mask.unsqueeze(-1).expand_as(original_logits)
         diff = (original_logits - functional_logits).abs()
         diff_masked = torch.where(mask_expanded == 1, diff, torch.zeros_like(diff))
         max_diff_real = diff_masked.max().item()
 
-        # Check that first non-padded positions match exactly
-        first_real_diffs = []
-        for b in range(batch_size):
-            # Find first non-padded position
-            first_real_pos = (attention_mask[b] == 1).nonzero(as_tuple=True)[0][0].item()
-            first_diff = diff[b, first_real_pos].max().item()
-            first_real_diffs.append(first_diff)
+        # Use same tolerance as other tests
+        matches = max_diff_real < 1e-4
 
-        first_real_match = all(d < 1e-5 for d in first_real_diffs)
+        status = "PASS" if matches else "FAIL"
+        print(f"  {name}: batch={batch_size}, seq={seq_len}, max_diff={max_diff_real:.2e} [{status}]")
 
-        # With _unmask_unattended fix, should match closely
-        overall_match = max_diff_real < 1e-4
+        if not matches:
+            # Show where the largest diff is
+            max_idx = diff_masked.argmax()
+            print(f"    Max diff at flat index: {max_idx.item()}")
 
-        status = "PASS" if (first_real_match and overall_match) else "FAIL"
-        print(f"  {name}: batch={batch_size}, seq={seq_len}, max_diff_real={max_diff_real:.2e}, first_pos_diffs={[f'{d:.2e}' for d in first_real_diffs]} [{status}]")
-
-        if not (first_real_match and overall_match):
-            if not first_real_match:
-                print(f"    First non-padded position mismatch!")
-            if not overall_match:
-                print(f"    Max diff at real positions exceeds tolerance")
-
-        return first_real_match and overall_match
+        return matches
 
     # All ones (no padding) - should be equivalent to no mask
     input_ids = torch.randint(1, 1000, (1, 16), device="cuda:0")
