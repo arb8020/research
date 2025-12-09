@@ -201,9 +201,8 @@ def test_on_gpu():
 
         first_real_match = all(d < 1e-5 for d in first_real_diffs)
 
-        # Overall match - SDPA with explicit mask has different numerics than is_causal=True
-        # Expect ~0.02 diff per layer, accumulating to ~0.5-1.0 over 24 layers
-        overall_match = max_diff_real < 1.0
+        # With _unmask_unattended fix, should match closely
+        overall_match = max_diff_real < 1e-4
 
         status = "PASS" if (first_real_match and overall_match) else "FAIL"
         print(f"  {name}: batch={batch_size}, seq={seq_len}, max_diff_real={max_diff_real:.2e}, first_pos_diffs={[f'{d:.2e}' for d in first_real_diffs]} [{status}]")
