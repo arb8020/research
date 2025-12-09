@@ -61,7 +61,8 @@ def rms_norm(x: Tensor, weight: Tensor, eps: float = RMS_NORM_EPS) -> Tensor:
     x_fp32 = x.to(torch.float32)
     variance = x_fp32.pow(2).mean(-1, keepdim=True)
     x_normed = x_fp32 * torch.rsqrt(variance + eps)
-    return (weight * x_normed).to(input_dtype)
+    # HF does: weight * hidden_states.to(input_dtype) - multiply after cast
+    return weight * x_normed.to(input_dtype)
 
 
 def rotate_half(x: Tensor) -> Tensor:
