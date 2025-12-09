@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Test functional Llama implementation against HuggingFace model.
+"""Test functional SmolLM2 implementation against HuggingFace model.
+
+SmolLM2 has Llama-style architecture (same code patterns) but is openly available.
 
 Run locally (requires GPU):
     python -m tools.functional_extractor.test_llama
@@ -28,12 +30,12 @@ def test_on_gpu():
     import torch
     from transformers import AutoModelForCausalLM
 
-    from llama_functional import llama_forward
+    from llama_functional import smollm_forward
     from test_template import run_test_suite
 
-    print("Loading Llama 3.2 1B for testing...")
+    print("Loading SmolLM2-135M for testing...")
     model = AutoModelForCausalLM.from_pretrained(
-        "meta-llama/Llama-3.2-1B",
+        "HuggingFaceTB/SmolLM2-135M",
         torch_dtype=torch.bfloat16,
         device_map="cuda:0",
     )
@@ -46,8 +48,8 @@ def test_on_gpu():
 
     # Run the test suite
     result = run_test_suite(
-        model_name="meta-llama/Llama-3.2-1B",
-        functional_forward=llama_forward,
+        model_name="HuggingFaceTB/SmolLM2-135M",
+        functional_forward=smollm_forward,
         weights=weights,
         device="cuda:0",
         dtype=torch.bfloat16,
@@ -58,7 +60,7 @@ def test_on_gpu():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Test functional Llama implementation")
+    parser = argparse.ArgumentParser(description="Test functional SmolLM2 implementation")
     parser.add_argument("--remote", action="store_true", help="Run on remote GPU")
     parser.add_argument("--gpu-id", type=str, help="Reuse existing GPU instance")
     parser.add_argument("--keep-alive", action="store_true", help="Keep GPU alive after test")
@@ -71,7 +73,7 @@ def main():
             script_path=__file__,
             gpu_id=args.gpu_id,
             keep_alive=args.keep_alive or bool(args.gpu_id),
-            vram_gb=24,  # Llama 3.2 1B needs more VRAM than Qwen 0.5B
+            vram_gb=16,  # SmolLM2-135M is small
         )
     else:
         # Check if we have GPU

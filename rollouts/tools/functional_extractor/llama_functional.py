@@ -1,28 +1,31 @@
 #!/usr/bin/env python3
-"""Functional implementation of Llama 3.2 1B forward pass.
+"""Functional implementation of SmolLM2 135M forward pass.
 
 This is a single-file, pure PyTorch implementation with no classes.
 Uses only torch and torch.nn.functional.
+
+SmolLM2 has Llama-style architecture so this tests the same code patterns
+as Llama would, but the model is openly available (not gated).
 
 Usage:
     from transformers import AutoModelForCausalLM
     import torch
 
-    model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-3.2-1B")
+    model = AutoModelForCausalLM.from_pretrained("HuggingFaceTB/SmolLM2-135M")
     weights = dict(model.state_dict())
 
     input_ids = torch.tensor([[1, 2, 3, 4]])
-    logits = llama_forward(input_ids, weights)
+    logits = smollm_forward(input_ids, weights)
 
-Architecture (Llama 3.2 1B):
-    hidden_size: 2048
-    intermediate_size: 8192
-    num_layers: 16
-    num_attention_heads: 32
-    num_kv_heads: 8
+Architecture (SmolLM2-135M):
+    hidden_size: 576
+    intermediate_size: 1536
+    num_layers: 30
+    num_attention_heads: 9
+    num_kv_heads: 3
     head_dim: 64
-    vocab_size: 128256
-    rope_theta: 500000.0
+    vocab_size: 49152
+    rope_theta: 10000.0
     rms_norm_eps: 1e-5
 """
 
@@ -32,15 +35,15 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-# Config constants for Llama 3.2 1B
-HIDDEN_SIZE = 2048
-INTERMEDIATE_SIZE = 8192
-NUM_LAYERS = 16
-NUM_HEADS = 32
-NUM_KV_HEADS = 8
+# Config constants for SmolLM2-135M
+HIDDEN_SIZE = 576
+INTERMEDIATE_SIZE = 1536
+NUM_LAYERS = 30
+NUM_HEADS = 9
+NUM_KV_HEADS = 3
 HEAD_DIM = 64
-VOCAB_SIZE = 128256
-ROPE_THETA = 500000.0
+VOCAB_SIZE = 49152
+ROPE_THETA = 10000.0
 RMS_NORM_EPS = 1e-5
 
 
@@ -344,13 +347,13 @@ def create_causal_mask(
     return mask
 
 
-def llama_forward(
+def smollm_forward(
     input_ids: Tensor,
     weights: dict[str, Tensor],
     attention_mask: Tensor | None = None,
     num_layers: int = NUM_LAYERS,
 ) -> Tensor:
-    """Full Llama 3.2 1B forward pass.
+    """Full SmolLM2-135M forward pass.
 
     Args:
         input_ids: Input token IDs of shape (batch, seq_len)
@@ -392,11 +395,15 @@ def llama_forward(
     return logits
 
 
+# For backwards compatibility
+llama_forward = smollm_forward
+
+
 # For testing
 if __name__ == "__main__":
     import sys
 
-    print("Testing functional Llama implementation...")
+    print("Testing functional SmolLM2 implementation...")
 
     # Check if we have GPU
     if not torch.cuda.is_available():
@@ -405,9 +412,9 @@ if __name__ == "__main__":
 
     from transformers import AutoModelForCausalLM
 
-    print("Loading Llama 3.2 1B...")
+    print("Loading SmolLM2-135M...")
     model = AutoModelForCausalLM.from_pretrained(
-        "meta-llama/Llama-3.2-1B",
+        "HuggingFaceTB/SmolLM2-135M",
         torch_dtype=torch.bfloat16,
         device_map="cuda:0",
     )
@@ -423,7 +430,7 @@ if __name__ == "__main__":
 
     print("Running functional implementation...")
     with torch.no_grad():
-        functional_logits = llama_forward(input_ids, weights)
+        functional_logits = smollm_forward(input_ids, weights)
 
     print(f"Original shape: {original_logits.shape}")
     print(f"Functional shape: {functional_logits.shape}")
