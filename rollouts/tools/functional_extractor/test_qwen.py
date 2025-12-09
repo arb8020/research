@@ -117,6 +117,97 @@ def test_on_gpu():
     if not run_test("high_token_ids", input_ids):
         all_passed = False
 
+    # --- Dtype Tests ---
+    print("\n### Dtype Tests ###")
+
+    def run_dtype_test(name: str, dtype: torch.dtype) -> bool:
+        """Run test with specific dtype by reloading model."""
+        nonlocal test_count
+        test_count += 1
+
+        # Load model with specified dtype
+        model_typed = AutoModelForCausalLM.from_pretrained(
+            "Qwen/Qwen2.5-0.5B",
+            torch_dtype=dtype,
+            device_map="cuda:0",
+        )
+        model_typed.eval()
+        weights_typed = {k: v for k, v in model_typed.state_dict().items()}
+
+        input_ids = torch.randint(1, 1000, (1, 16), device="cuda:0")
+
+        with torch.no_grad():
+            original_logits = model_typed(input_ids).logits
+            functional_logits = qwen_forward(input_ids, weights_typed)
+
+        # Use looser tolerance for fp16 which has less precision
+        rtol = 1e-3 if dtype == torch.float16 else 1e-5
+        atol = 1e-3 if dtype == torch.float16 else 1e-5
+        matches = torch.allclose(original_logits, functional_logits, rtol=rtol, atol=atol)
+        max_diff = (original_logits - functional_logits).abs().max().item()
+
+        status = "PASS" if matches else "FAIL"
+        print(f"  {name}: max_diff={max_diff:.2e} [{status}]")
+
+        # Cleanup to free GPU memory
+        del model_typed, weights_typed
+
+        return matches
+
+    for dtype_name, dtype in [("bf16", torch.bfloat16), ("fp16", torch.float16), ("fp32", torch.float32)]:
+        if not run_dtype_test(dtype_name, dtype):
+            all_passed = False
+
+    # --- Attention Mask Tests ---
+    print("\n### Attention Mask Tests ###")
+
+    def run_mask_test(name: str, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> bool:
+        """Run test with attention mask."""
+        nonlocal test_count
+        test_count += 1
+
+        with torch.no_grad():
+            original_logits = model(input_ids, attention_mask=attention_mask).logits
+            functional_logits = qwen_forward(input_ids, weights, attention_mask=attention_mask)
+
+        matches = torch.allclose(original_logits, functional_logits, rtol=1e-5, atol=1e-5)
+        max_diff = (original_logits - functional_logits).abs().max().item()
+
+        batch, seq_len, vocab = original_logits.shape
+        status = "PASS" if matches else "FAIL"
+        print(f"  {name}: batch={batch}, seq={seq_len}, max_diff={max_diff:.2e} [{status}]")
+
+        if not matches:
+            diff = (original_logits - functional_logits).abs()
+            max_idx = diff.argmax()
+            print(f"    Max diff at flat index: {max_idx.item()}")
+
+        return matches
+
+    # All ones (no padding) - should be equivalent to no mask
+    input_ids = torch.randint(1, 1000, (1, 16), device="cuda:0")
+    attention_mask = torch.ones_like(input_ids)
+    if not run_mask_test("all_ones", input_ids, attention_mask):
+        all_passed = False
+
+    # Left padding (common for batched inference)
+    input_ids = torch.randint(1, 1000, (2, 16), device="cuda:0")
+    attention_mask = torch.ones_like(input_ids)
+    attention_mask[0, :4] = 0  # First 4 tokens are padding for batch item 0
+    attention_mask[1, :2] = 0  # First 2 tokens are padding for batch item 1
+    if not run_mask_test("left_padding", input_ids, attention_mask):
+        all_passed = False
+
+    # Variable length sequences
+    input_ids = torch.randint(1, 1000, (4, 32), device="cuda:0")
+    attention_mask = torch.ones_like(input_ids)
+    attention_mask[0, :8] = 0   # 24 real tokens
+    attention_mask[1, :16] = 0  # 16 real tokens
+    attention_mask[2, :24] = 0  # 8 real tokens
+    attention_mask[3, :4] = 0   # 28 real tokens
+    if not run_mask_test("variable_length", input_ids, attention_mask):
+        all_passed = False
+
     # --- Summary ---
     print("\n" + "=" * 60)
     if all_passed:
