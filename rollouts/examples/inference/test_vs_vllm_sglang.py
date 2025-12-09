@@ -125,10 +125,10 @@ def start_vllm_server(model_name: str, port: int) -> subprocess.Popen:
             "--model", model_name,
             "--dtype", "bfloat16",
             "--port", str(port),
-            "--gpu-memory-utilization", "0.4",  # Leave room for SGLang
+            "--gpu-memory-utilization", "0.4",  # Leave room for other engines
         ],
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=subprocess.STDOUT,  # Combine stderr with stdout for debugging
     )
     return proc
 
@@ -142,12 +142,28 @@ def start_sglang_server(model_name: str, port: int) -> subprocess.Popen:
             "--model-path", model_name,
             "--dtype", "bfloat16",
             "--port", str(port),
-            "--mem-fraction-static", "0.4",  # Leave room for vLLM
+            "--mem-fraction-static", "0.4",  # Leave room for other engines
         ],
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
     )
     return proc
+
+
+def get_server_output(proc: subprocess.Popen, timeout: float = 0.1) -> str:
+    """Get any available output from server process."""
+    import select
+    output = []
+    while True:
+        if proc.stdout and select.select([proc.stdout], [], [], timeout)[0]:
+            line = proc.stdout.readline()
+            if line:
+                output.append(line.decode('utf-8', errors='replace'))
+            else:
+                break
+        else:
+            break
+    return ''.join(output)
 
 
 def compare_results(name_a: str, results_a: list, name_b: str, results_b: list):
@@ -235,6 +251,11 @@ def run_comparison():
             print(f"Got {len(vllm_results)} results from vLLM")
         else:
             print("vLLM server failed to start")
+            # Print any error output
+            if vllm_proc:
+                output = get_server_output(vllm_proc, timeout=1.0)
+                if output:
+                    print(f"vLLM output:\n{output[:2000]}")
     except Exception as e:
         print(f"vLLM error: {e}")
     finally:
@@ -263,6 +284,11 @@ def run_comparison():
             print(f"Got {len(sglang_results)} results from SGLang")
         else:
             print("SGLang server failed to start")
+            # Print any error output
+            if sglang_proc:
+                output = get_server_output(sglang_proc, timeout=1.0)
+                if output:
+                    print(f"SGLang output:\n{output[:2000]}")
     except Exception as e:
         print(f"SGLang error: {e}")
     finally:
