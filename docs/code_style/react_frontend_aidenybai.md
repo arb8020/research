@@ -18,6 +18,14 @@ Choose to create a new component abstraction when you're nesting conditional log
 
 Avoid putting dependent logic in useEffects - it causes misdirection of what the logic is doing. Choose to explicitly define logic rather than depend on implicit reactive behavior.
 
+A huge reason useEffect is a red flag in React is because it allows code like this:
+> On A, set B. When B changes, do C
+
+when what you really need is:
+> On A, set B and do C
+
+🚩 When you see a useEffect, make sure it's not introducing this problem.
+
 ## Timing
 
 setTimeouts are flaky and usually a hack. Provide a comment on why.

@@ -280,3 +280,27 @@ def prepare_messages(sample_data):
 - Type-safe with dataclasses
 - Still serializable for reproducibility
 - IDs scoped per benchmark directory
+
+### Directory Structure
+
+Each experiment family (task + model combination) gets its own directory. IDs are scoped per directory - new base config means new directory, numbering restarts at 01.
+
+```
+experiments/
+├── sft/
+│   ├── qwen_0.5b/                  # family: SFT on Qwen 0.5B
+│   │   ├── baseline_01_01.py       # base config (parent is self)
+│   │   ├── lora_02_01.py           # derived from 01
+│   │   └── lora_bf16_03_02.py      # derived from 02
+│   └── llama_3b/                   # new family, IDs restart at 01
+│       ├── baseline_01_01.py       # new base
+│       └── long_ctx_02_01.py       # derived from 01
+├── rl/
+│   ├── calculator/
+│   │   ├── grpo_01_01.py
+│   │   └── grpo_high_lr_02_01.py
+│   └── code_exec/
+│       └── ppo_01_01.py
+```
+
+**Rule:** New base config = new directory. Don't end up with `sft_qwen_47_38.py` - keep IDs small and scoped.
