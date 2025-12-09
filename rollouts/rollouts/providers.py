@@ -17,7 +17,7 @@ from dacite import from_dict
 from openai import AsyncOpenAI
 from openai.types import CompletionUsage
 from openai.types.chat import ChatCompletionMessageParam
-from shared.retry import async_retry
+from rollouts._retry import async_retry
 
 logger = logging.getLogger(__name__)
 
