@@ -53,9 +53,9 @@ def get_nano_inference_logprobs(model_name: str, prompts: list[str], max_new_tok
     for prompt, sample in zip(prompts, samples):
         results.append({
             "prompt": prompt,
-            "generated_ids": sample.output_ids,
-            "generated_text": engine.tokenizer.decode(sample.output_ids),
-            "logprobs": sample.output_logprobs,
+            "generated_ids": list(sample.completion_tokens),
+            "generated_text": engine.tokenizer.decode(sample.completion_tokens),
+            "logprobs": list(sample.logprobs),
         })
 
     return results
