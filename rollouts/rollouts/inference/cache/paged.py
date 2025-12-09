@@ -120,8 +120,13 @@ class PagedKVCache:
             # Only complete blocks can be cached
             is_complete = len(block_tokens) == self.block_size
 
-            if is_complete and not cache_miss:
+            # Compute hash for complete blocks (needed for both lookup and storage)
+            block_hash = -1
+            if is_complete:
                 block_hash = compute_block_hash(block_tokens, prefix_hash)
+
+            # Try cache lookup (only if we haven't had a miss yet)
+            if is_complete and not cache_miss:
                 cached_block_id = self.hash_to_block_id.get(block_hash, -1)
 
                 # Check for cache hit
@@ -138,10 +143,7 @@ class PagedKVCache:
                         prefix_hash = block_hash
                         continue
 
-                # Cache miss
-                cache_miss = True
-                prefix_hash = block_hash
-            else:
+                # Cache miss - stop trying to lookup
                 cache_miss = True
 
             # Allocate new block
@@ -151,8 +153,9 @@ class PagedKVCache:
 
             # Update hash table for complete blocks
             if is_complete:
-                block.update(prefix_hash, block_tokens)
-                self.hash_to_block_id[prefix_hash] = new_block_id
+                block.update(block_hash, block_tokens)
+                self.hash_to_block_id[block_hash] = new_block_id
+                prefix_hash = block_hash
 
         self.seq_to_blocks[seq_id] = block_ids
         self.seq_cached_tokens[seq_id] = cached_tokens

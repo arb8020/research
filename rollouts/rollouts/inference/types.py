@@ -70,6 +70,44 @@ class SchedulerOutput:
     preempted_seqs: tuple[int, ...]  # seq_ids evicted
 
 
+@dataclass(frozen=True)
+class InferenceContext:
+    """Context for one forward pass. Immutable, passed explicitly.
+
+    Contains all information attention layers need to:
+    - Store K/V into the right cache slots
+    - Compute attention with the right masking
+
+    Why frozen?
+    - Context doesn't change during forward pass
+    - Explicit input to every layer (no hidden global state)
+    - Thread-safe, testable
+    """
+
+    # Mode
+    is_prefill: bool
+
+    # Cache slot mapping: where to store new K/V
+    # Shape: [total_tokens] - maps each token position to cache slot
+    slot_mapping: tuple[int, ...] | None = None
+
+    # Block tables: which cache blocks each sequence uses
+    # Shape: [num_seqs, max_blocks_per_seq]
+    block_tables: tuple[tuple[int, ...], ...] | None = None
+
+    # Sequence lengths for attention masking
+    # For prefill: cumulative sequence lengths [0, len1, len1+len2, ...]
+    # For decode: context length per sequence
+    seq_lens: tuple[int, ...] | None = None
+
+    # Maximum sequence lengths in batch (for kernel optimization)
+    max_seq_len: int = 0
+
+    # Block mask for FlexAttention (precomputed)
+    # This is the actual mask object, not a tensor
+    block_mask: object | None = None
+
+
 # ═══════════════════════════════════════════════════
 # INTERNAL STATE: Mutable during generation
 # ═══════════════════════════════════════════════════
