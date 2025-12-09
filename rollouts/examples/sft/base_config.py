@@ -235,7 +235,11 @@ def run_remote(script_path: str, keep_alive: bool = False):
         # Deploy
         workspace = "~/.bifrost/workspaces/rollouts"
         bifrost = BifrostClient(gpu.ssh_connection_string(), ssh_key_path)
-        bifrost.push(workspace_path=workspace, bootstrap_cmd="uv sync")
+        bootstrap = [
+            "cd rollouts && uv sync",
+            "uv pip install torch transformers datasets accelerate",
+        ]
+        bifrost.push(workspace_path=workspace, bootstrap_cmd=bootstrap)
         print("Code deployed")
 
         # Run
