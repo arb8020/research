@@ -15,6 +15,7 @@ if script_dir not in sys.path:
 def debug_on_gpu():
     """Compare each component against HF implementation."""
     import torch
+    import torch.nn.functional as F
     from transformers import AutoModelForCausalLM
 
     from qwen_functional import (
@@ -84,9 +85,68 @@ def debug_on_gpu():
     print(f"HF cos shape: {hf_cos.shape}, my cos shape: {my_cos.shape}")
 
     # ========== Test 4: Attention (layer 0) ==========
-    print("\n### Test 4: Attention (layer 0) ###")
+    print("\n### Test 4: Attention (layer 0) - Detailed ###")
+
+    # Get HF attention module for comparison
+    hf_attn = model.model.layers[0].self_attn
+
     with torch.no_grad():
-        # Run HF attention
+        # Step by step comparison
+        # Q, K, V projections
+        hf_q = hf_attn.q_proj(hf_norm)
+        hf_k = hf_attn.k_proj(hf_norm)
+        hf_v = hf_attn.v_proj(hf_norm)
+
+        my_q = F.linear(hf_norm, weights["model.layers.0.self_attn.q_proj.weight"],
+                        weights["model.layers.0.self_attn.q_proj.bias"])
+        my_k = F.linear(hf_norm, weights["model.layers.0.self_attn.k_proj.weight"],
+                        weights["model.layers.0.self_attn.k_proj.bias"])
+        my_v = F.linear(hf_norm, weights["model.layers.0.self_attn.v_proj.weight"],
+                        weights["model.layers.0.self_attn.v_proj.bias"])
+
+        print(f"  Q proj match: {torch.allclose(hf_q, my_q)}, diff: {(hf_q - my_q).abs().max().item():.2e}")
+        print(f"  K proj match: {torch.allclose(hf_k, my_k)}, diff: {(hf_k - my_k).abs().max().item():.2e}")
+        print(f"  V proj match: {torch.allclose(hf_v, my_v)}, diff: {(hf_v - my_v).abs().max().item():.2e}")
+
+        # Reshape for attention (HF way)
+        batch_size, seq_len, _ = hf_norm.shape
+        head_dim = hf_attn.head_dim
+        num_heads = hf_attn.config.num_attention_heads
+        num_kv_heads = hf_attn.config.num_key_value_heads
+
+        hf_q_reshaped = hf_q.view(batch_size, seq_len, num_heads, head_dim).transpose(1, 2)
+        hf_k_reshaped = hf_k.view(batch_size, seq_len, num_kv_heads, head_dim).transpose(1, 2)
+        hf_v_reshaped = hf_v.view(batch_size, seq_len, num_kv_heads, head_dim).transpose(1, 2)
+
+        my_q_reshaped = my_q.view(batch_size, seq_len, num_heads, head_dim).transpose(1, 2)
+        my_k_reshaped = my_k.view(batch_size, seq_len, num_kv_heads, head_dim).transpose(1, 2)
+        my_v_reshaped = my_v.view(batch_size, seq_len, num_kv_heads, head_dim).transpose(1, 2)
+
+        print(f"  Q reshaped match: {torch.allclose(hf_q_reshaped, my_q_reshaped)}")
+        print(f"  K reshaped match: {torch.allclose(hf_k_reshaped, my_k_reshaped)}")
+        print(f"  V reshaped match: {torch.allclose(hf_v_reshaped, my_v_reshaped)}")
+
+        # Apply RoPE
+        from qwen_functional import apply_rotary_pos_emb as my_apply_rope
+
+        # HF apply rope
+        cos_unsqueezed = hf_cos.unsqueeze(1)  # (batch, 1, seq, head_dim)
+        sin_unsqueezed = hf_sin.unsqueeze(1)
+
+        def hf_rotate_half(x):
+            x1 = x[..., : x.shape[-1] // 2]
+            x2 = x[..., x.shape[-1] // 2 :]
+            return torch.cat((-x2, x1), dim=-1)
+
+        hf_q_rope = (hf_q_reshaped * cos_unsqueezed) + (hf_rotate_half(hf_q_reshaped) * sin_unsqueezed)
+        hf_k_rope = (hf_k_reshaped * cos_unsqueezed) + (hf_rotate_half(hf_k_reshaped) * sin_unsqueezed)
+
+        my_q_rope, my_k_rope = my_apply_rope(my_q_reshaped, my_k_reshaped, my_cos, my_sin)
+
+        print(f"  Q after RoPE match: {torch.allclose(hf_q_rope, my_q_rope)}, diff: {(hf_q_rope - my_q_rope).abs().max().item():.2e}")
+        print(f"  K after RoPE match: {torch.allclose(hf_k_rope, my_k_rope)}, diff: {(hf_k_rope - my_k_rope).abs().max().item():.2e}")
+
+        # Run full HF attention for comparison
         hf_attn_out, _ = model.model.layers[0].self_attn(
             hidden_states=hf_norm,
             position_embeddings=(hf_cos, hf_sin),
@@ -109,7 +169,7 @@ def debug_on_gpu():
 
     attn_match = torch.allclose(hf_attn_out, my_attn_out, rtol=1e-5, atol=1e-5)
     attn_diff = (hf_attn_out - my_attn_out).abs().max().item()
-    print(f"Attention match: {attn_match}, max_diff: {attn_diff:.2e}")
+    print(f"  Full attention match: {attn_match}, max_diff: {attn_diff:.2e}")
 
     # ========== Test 5: MLP (layer 0) ==========
     print("\n### Test 5: MLP (layer 0) ###")
