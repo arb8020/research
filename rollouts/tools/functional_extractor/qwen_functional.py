@@ -177,6 +177,7 @@ def attention(
     o_weight: Tensor,
     cos: Tensor,
     sin: Tensor,
+    attention_mask: Tensor | None = None,
     num_heads: int = NUM_HEADS,
     num_kv_heads: int = NUM_KV_HEADS,
     head_dim: int = HEAD_DIM,
@@ -190,6 +191,9 @@ def attention(
         v_weight, v_bias: Value projection weights
         o_weight: Output projection weight (no bias)
         cos, sin: RoPE embeddings
+        attention_mask: Optional mask of shape (batch, 1, seq_len, seq_len) or None.
+            Should be 0 for positions to attend to, -inf for masked positions.
+            If None, uses causal masking.
         num_heads: Number of attention heads
         num_kv_heads: Number of key-value heads
         head_dim: Dimension per head
@@ -222,11 +226,12 @@ def attention(
 
     # Use scaled_dot_product_attention for numerical consistency with HF
     # (HF uses SDPA by default which has different numerical behavior than manual attention)
+    # When attention_mask is provided, we can't use is_causal=True, so the mask must include causal masking
     attn_output = F.scaled_dot_product_attention(
         q, k, v,
-        attn_mask=None,
+        attn_mask=attention_mask,
         dropout_p=0.0,
-        is_causal=True,
+        is_causal=(attention_mask is None),
     )
 
     # Reshape and project output
@@ -269,6 +274,7 @@ def transformer_layer(
     layer_idx: int,
     cos: Tensor,
     sin: Tensor,
+    attention_mask: Tensor | None = None,
 ) -> Tensor:
     """Single transformer decoder layer.
 
@@ -277,6 +283,7 @@ def transformer_layer(
         layer_weights: Dict of weight tensors for this layer
         layer_idx: Layer index (for weight key prefix)
         cos, sin: RoPE embeddings
+        attention_mask: Optional attention mask
 
     Returns:
         Output tensor of shape (batch, seq_len, hidden_size)
@@ -298,6 +305,7 @@ def transformer_layer(
         o_weight=layer_weights[f"{prefix}.self_attn.o_proj.weight"],
         cos=cos,
         sin=sin,
+        attention_mask=attention_mask,
     )
 
     hidden_states = residual + hidden_states
@@ -318,9 +326,51 @@ def transformer_layer(
     return hidden_states
 
 
+def create_causal_mask(
+    seq_len: int,
+    device: torch.device,
+    dtype: torch.dtype,
+    attention_mask: Tensor | None = None,
+) -> Tensor | None:
+    """Create a 4D causal attention mask, optionally combined with padding mask.
+
+    Args:
+        seq_len: Sequence length
+        device: Device for the mask
+        dtype: Dtype for the mask (should match hidden states)
+        attention_mask: Optional 2D padding mask of shape (batch, seq_len) where
+            1 = attend, 0 = mask out
+
+    Returns:
+        4D mask of shape (batch, 1, seq_len, seq_len) with 0 for attend, -inf for mask,
+        or None if no padding mask and we can use is_causal=True
+    """
+    if attention_mask is None:
+        return None
+
+    batch_size = attention_mask.shape[0]
+
+    # Create causal mask: (1, 1, seq_len, seq_len)
+    # Lower triangular = True (attend), upper triangular = False (mask)
+    causal_mask = torch.tril(torch.ones(seq_len, seq_len, device=device, dtype=torch.bool))
+    causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)  # (1, 1, seq_len, seq_len)
+
+    # Expand padding mask: (batch, seq_len) -> (batch, 1, 1, seq_len)
+    # This masks out attending TO padded positions (columns)
+    padding_mask = attention_mask[:, None, None, :].bool()  # (batch, 1, 1, seq_len)
+
+    # Combine: attend only where BOTH causal and padding allow
+    combined_mask = causal_mask & padding_mask  # (batch, 1, seq_len, seq_len)
+
+    # Convert to float mask: 0 for attend, -inf for mask
+    mask = torch.where(combined_mask, 0.0, float("-inf"))
+    return mask.to(dtype)
+
+
 def qwen_forward(
     input_ids: Tensor,
     weights: dict[str, Tensor],
+    attention_mask: Tensor | None = None,
     num_layers: int = NUM_LAYERS,
 ) -> Tensor:
     """Full Qwen2.5-0.5B forward pass.
@@ -328,6 +378,8 @@ def qwen_forward(
     Args:
         input_ids: Input token IDs of shape (batch, seq_len)
         weights: Dict of all model weights (from model.state_dict())
+        attention_mask: Optional 2D padding mask of shape (batch, seq_len) where
+            1 = real token, 0 = padding. If None, no padding is assumed.
         num_layers: Number of transformer layers
 
     Returns:
@@ -348,9 +400,14 @@ def qwen_forward(
     # Compute RoPE embeddings once
     cos, sin = compute_rope_embeddings(positions, dtype=hidden_states.dtype)
 
+    # Create attention mask if padding is provided
+    attn_mask_4d = create_causal_mask(seq_len, device, hidden_states.dtype, attention_mask)
+
     # Transformer layers
     for layer_idx in range(num_layers):
-        hidden_states = transformer_layer(hidden_states, weights, layer_idx, cos, sin)
+        hidden_states = transformer_layer(
+            hidden_states, weights, layer_idx, cos, sin, attn_mask_4d
+        )
 
     # Final norm
     hidden_states = rms_norm(hidden_states, weights["model.norm.weight"])
