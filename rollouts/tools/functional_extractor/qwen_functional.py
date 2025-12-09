@@ -370,7 +370,15 @@ def create_causal_mask(
     # HF uses torch.finfo(dtype).min instead of -inf for numerical stability
     min_dtype = torch.finfo(dtype).min
     mask = torch.where(combined_mask, 0.0, min_dtype)
-    return mask.to(dtype)
+    mask = mask.to(dtype)
+
+    # _unmask_unattended: For rows that are fully masked (padding positions),
+    # make them attend to all tokens. This is required by SDPA memory-efficient path.
+    # See: https://github.com/pytorch/pytorch/issues/110213
+    fully_masked_rows = torch.all(mask == min_dtype, dim=-1, keepdim=True)
+    mask = mask * (~fully_masked_rows)
+
+    return mask
 
 
 def qwen_forward(
