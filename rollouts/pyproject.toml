@@ -9,6 +9,7 @@ dependencies = [
     "dacite>=1.8.0",
     "aiohttp>=3.9.0",
     "trio>=0.32.0",
+    "shared",
 ]
 
 [project.optional-dependencies]
@@ -29,6 +30,9 @@ allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["rollouts"]
+
+[tool.uv.sources]
+shared = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
