@@ -1,14 +1,13 @@
 """Logging utilities for rollouts framework.
 
 Tiger Style: Simple, bounded logging with timestamped results directories.
-
-Requires 'shared' package from /Users/chiraagbalu/research/shared/
 """
+
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from shared.logging_config import setup_logging
+from rollouts._logging import setup_logging
 
 
 def init_rollout_logging(
