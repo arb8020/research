@@ -21,9 +21,19 @@ def test_on_gpu():
     import sys
 
     # Add parent dirs to path for imports to work both locally and remotely
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    tools_dir = os.path.dirname(script_dir)  # tools/
-    repo_dir = os.path.dirname(tools_dir)    # rollouts/
+    # Script is at: <repo>/tools/functional_extractor/test_qwen.py
+    # We need <repo> in sys.path so "from tools.functional_extractor import ..." works
+    script_dir = os.path.dirname(os.path.abspath(__file__))  # functional_extractor/
+    tools_dir = os.path.dirname(script_dir)                   # tools/
+    repo_dir = os.path.dirname(tools_dir)                     # <repo> (rollouts/)
+
+    # Debug: print paths
+    print(f"script_dir: {script_dir}")
+    print(f"tools_dir: {tools_dir}")
+    print(f"repo_dir: {repo_dir}")
+    print(f"repo_dir exists: {os.path.exists(repo_dir)}")
+    print(f"tools in repo: {os.path.exists(os.path.join(repo_dir, 'tools'))}")
+
     if repo_dir not in sys.path:
         sys.path.insert(0, repo_dir)
 
