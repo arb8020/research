@@ -27,21 +27,15 @@ def test_on_gpu():
     tools_dir = os.path.dirname(script_dir)                   # tools/
     repo_dir = os.path.dirname(tools_dir)                     # <repo> (rollouts/)
 
-    # Debug: print paths
-    print(f"script_dir: {script_dir}")
-    print(f"tools_dir: {tools_dir}")
-    print(f"repo_dir: {repo_dir}")
-    print(f"repo_dir exists: {os.path.exists(repo_dir)}")
-    print(f"tools in repo: {os.path.exists(os.path.join(repo_dir, 'tools'))}")
-
-    if repo_dir not in sys.path:
-        sys.path.insert(0, repo_dir)
+    # Add the functional_extractor dir itself to path for direct import
+    if script_dir not in sys.path:
+        sys.path.insert(0, script_dir)
 
     import torch
     from transformers import AutoModelForCausalLM
 
-    # Import functional implementation
-    from tools.functional_extractor.qwen_functional import qwen_forward
+    # Import functional implementation (direct import from same directory)
+    from qwen_functional import qwen_forward
 
     print("=" * 60)
     print("Qwen2.5-0.5B Functional Implementation Test")
