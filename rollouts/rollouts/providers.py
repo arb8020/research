@@ -2423,11 +2423,26 @@ async def rollout_anthropic(
     Note: **kwargs accepts but ignores provider-specific params (e.g., openai reasoning params)
     """
 
-    client_kwargs: dict[str, Any] = {
-        "api_key": actor.endpoint.api_key,
-        "max_retries": actor.endpoint.max_retries,
-        "timeout": actor.endpoint.timeout,
-    }
+    # Support OAuth bearer token authentication (takes precedence over api_key)
+    # OAuth tokens use Authorization: Bearer header instead of x-api-key
+    if actor.endpoint.oauth_token:
+        # Use OAuth bearer token via custom httpx client
+        import httpx
+        http_client = httpx.AsyncClient(
+            headers={"Authorization": f"Bearer {actor.endpoint.oauth_token}"},
+            timeout=actor.endpoint.timeout,
+        )
+        client_kwargs: dict[str, Any] = {
+            "api_key": "placeholder",  # Required but not used with bearer auth
+            "max_retries": actor.endpoint.max_retries,
+            "http_client": http_client,
+        }
+    else:
+        client_kwargs: dict[str, Any] = {
+            "api_key": actor.endpoint.api_key,
+            "max_retries": actor.endpoint.max_retries,
+            "timeout": actor.endpoint.timeout,
+        }
     if actor.endpoint.api_base:
         # Anthropic SDK adds /v1 automatically, so remove it if present
         base_url = actor.endpoint.api_base.rstrip('/v1').rstrip('/')

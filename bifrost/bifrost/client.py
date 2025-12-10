@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import socket
 import time
 from collections.abc import Callable, Iterator
 from datetime import datetime
@@ -313,7 +314,7 @@ class BifrostClient:
 
         return workspace_path
     
-    def exec(self, command: str, env: EnvironmentVariables | dict[str, str] | None = None, working_dir: str | None = None) -> ExecResult:
+    def exec(self, command: str, env: EnvironmentVariables | dict[str, str] | None = None, working_dir: str | None = None, timeout: float | None = None) -> ExecResult:
         """
         Execute command in remote environment.
 
@@ -329,12 +330,13 @@ class BifrostClient:
             command: Command to execute
             env: Environment variables to set (dict or EnvironmentVariables)
             working_dir: Working directory (defaults to ~/.bifrost/workspace/ if deployed)
+            timeout: Optional timeout in seconds for command execution
 
         Returns:
             ExecResult with stdout, stderr, exit_code
 
         Raises:
-            ConnectionError: SSH connection failed
+            ConnectionError: SSH connection failed or timeout exceeded
         """
         try:
             ssh_client = self._get_ssh_client()
@@ -360,20 +362,27 @@ class BifrostClient:
 
             # Execute command
             stdin, stdout, stderr = ssh_client.exec_command(full_command)
-            exit_code = stdout.channel.recv_exit_status()
 
-            return ExecResult(
-                stdout=stdout.read().decode(),
-                stderr=stderr.read().decode(),
-                exit_code=exit_code
-            )
+            # Set timeout on channel if specified
+            if timeout is not None:
+                stdout.channel.settimeout(timeout)
+
+            try:
+                exit_code = stdout.channel.recv_exit_status()
+                return ExecResult(
+                    stdout=stdout.read().decode(),
+                    stderr=stderr.read().decode(),
+                    exit_code=exit_code
+                )
+            except socket.timeout:
+                raise ConnectionError(f"Command timed out after {timeout}s: {command}")
 
         except Exception as e:
             if isinstance(e, ConnectionError):
                 raise
             raise ConnectionError(f"Execution failed: {e}")
 
-    def exec_stream(self, command: str, env: EnvironmentVariables | dict[str, str] | None = None, working_dir: str | None = None) -> Iterator[str]:
+    def exec_stream(self, command: str, env: EnvironmentVariables | dict[str, str] | None = None, working_dir: str | None = None, timeout: float | None = None) -> Iterator[str]:
         """
         Execute command and stream output line-by-line in real-time.
 
@@ -384,12 +393,13 @@ class BifrostClient:
             command: Command to execute
             env: Environment variables to set (dict or EnvironmentVariables)
             working_dir: Working directory (defaults to ~/.bifrost/workspace/ if deployed)
+            timeout: Optional timeout in seconds for command execution
 
         Yields:
             Lines of output (stdout and stderr interleaved) as they're produced
 
         Raises:
-            ConnectionError: SSH connection failed
+            ConnectionError: SSH connection failed or timeout exceeded
         """
         try:
             ssh_client = self._get_ssh_client()
@@ -423,27 +433,35 @@ class BifrostClient:
                 channel = transport.open_session()
                 channel.set_combine_stderr(True)
                 channel.get_pty()
+
+                # Set timeout on channel if specified
+                if timeout is not None:
+                    channel.settimeout(timeout)
+
                 channel.exec_command(full_command)
 
                 buffer = ""
                 while True:
-                    if channel.recv_ready():
-                        chunk = channel.recv(4096)
-                        if not chunk:
+                    try:
+                        if channel.recv_ready():
+                            chunk = channel.recv(4096)
+                            if not chunk:
+                                break
+
+                            text = chunk.decode(errors="replace")
+                            buffer += text
+
+                            while "\n" in buffer:
+                                line, buffer = buffer.split("\n", 1)
+                                yield line.rstrip("\r")
+                            continue
+
+                        if channel.exit_status_ready():
                             break
 
-                        text = chunk.decode(errors="replace")
-                        buffer += text
-
-                        while "\n" in buffer:
-                            line, buffer = buffer.split("\n", 1)
-                            yield line.rstrip("\r")
-                        continue
-
-                    if channel.exit_status_ready():
-                        break
-
-                    time.sleep(0.1)
+                        time.sleep(0.1)
+                    except socket.timeout:
+                        raise ConnectionError(f"Command timed out after {timeout}s: {command}")
 
                 # Drain any remaining data after command exit
                 while channel.recv_ready():

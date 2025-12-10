@@ -6,8 +6,10 @@ Usage:
     python -m rollouts.frontends.tui.cli
     python -m rollouts.frontends.tui.cli --model openai/gpt-4o-mini
     python -m rollouts.frontends.tui.cli --model anthropic/claude-sonnet-4-5 --thinking disabled
+    python -m rollouts.frontends.tui.cli --login-claude  # Login with Claude Pro/Max account
 
 Model format is "provider/model" (explicit, no inference).
+For Anthropic: auto-uses OAuth if logged in, otherwise ANTHROPIC_API_KEY.
 """
 
 from __future__ import annotations
@@ -155,13 +157,18 @@ def parse_model_string(model_str: str) -> tuple[str, str]:
     return provider, model
 
 
-def create_endpoint(model_str: str, api_base: str | None = None, api_key: str | None = None, thinking: str = "enabled") -> Endpoint:
+def create_endpoint(
+    model_str: str,
+    api_base: str | None = None,
+    api_key: str | None = None,
+    thinking: str = "enabled",
+) -> Endpoint:
     """Create endpoint from CLI arguments.
 
     Args:
         model_str: Model string in "provider/model" format (e.g., "anthropic/claude-sonnet-4-5")
         api_base: Optional API base URL
-        api_key: Optional API key (otherwise from env)
+        api_key: Optional API key (otherwise from env, or OAuth for Anthropic)
         thinking: Extended thinking setting ("enabled" or "disabled")
     """
     import os
@@ -193,12 +200,24 @@ def create_endpoint(model_str: str, api_base: str | None = None, api_key: str | 
         else:
             api_base = "https://api.openai.com/v1"  # Default
 
-    # Get API key from environment if not provided
+    # For Anthropic: auto-detect OAuth if no API key provided
+    oauth_token = ""
+    if api_key is None and provider == "anthropic":
+        # Check for OAuth token first
+        from .oauth import get_oauth_client
+        client = get_oauth_client()
+        tokens = client.tokens
+        if tokens and not tokens.is_expired():
+            oauth_token = tokens.access_token
+            print(f"🔐 Using OAuth authentication (Claude Pro/Max)")
+        else:
+            # Fall back to environment variable
+            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+
+    # Get API key from environment if not provided (non-Anthropic or no OAuth)
     if api_key is None:
         if provider == "openai":
             api_key = os.environ.get("OPENAI_API_KEY", "")
-        elif provider == "anthropic":
-            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
         else:
             api_key = ""
 
@@ -217,6 +236,7 @@ def create_endpoint(model_str: str, api_base: str | None = None, api_key: str | 
         model=model,
         api_base=api_base,
         api_key=api_key,
+        oauth_token=oauth_token,
         thinking=thinking_config,
         max_tokens=max_tokens,
     )
@@ -334,15 +354,45 @@ def main() -> int:
         help="Show component boundaries and spacing in the UI",
     )
 
+    # OAuth authentication (Claude Pro/Max)
+    parser.add_argument(
+        "--login-claude",
+        action="store_true",
+        help="Login with Claude Pro/Max account (OAuth)",
+    )
+    parser.add_argument(
+        "--logout-claude",
+        action="store_true",
+        help="Logout and revoke Claude OAuth tokens",
+    )
+
     args = parser.parse_args()
 
-    # Create endpoint
-    endpoint = create_endpoint(args.model, args.api_base, args.api_key, args.thinking)
+    # Handle Claude OAuth login/logout commands
+    if args.login_claude or args.logout_claude:
+        from .oauth import login, logout, OAuthError
+        async def oauth_action() -> int:
+            try:
+                if args.login_claude:
+                    await login()
+                    return 0
+                else:
+                    await logout()
+                    return 0
+            except OAuthError as e:
+                print(f"❌ OAuth error: {e}", file=sys.stderr)
+                return 1
+        return trio.run(oauth_action)
 
-    # Validate API key is set
-    if not endpoint.api_key:
+    # Create endpoint (auto-detect OAuth for Anthropic if logged in)
+    endpoint = create_endpoint(
+        args.model, args.api_base, args.api_key, args.thinking
+    )
+
+    # Validate authentication is available
+    if not endpoint.api_key and not endpoint.oauth_token:
         env_var = "OPENAI_API_KEY" if endpoint.provider == "openai" else "ANTHROPIC_API_KEY"
-        print(f"\n❌ Error: No API key found. Please set {env_var} environment variable or use --api-key flag.", file=sys.stderr)
+        print(f"\n❌ Error: No API key found. Please set {env_var} environment variable, use --api-key flag, or login with --login.", file=sys.stderr)
         return 1
 
     # Determine working directory
