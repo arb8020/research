@@ -14,9 +14,9 @@ from tools.functional_extractor.config import DeploymentConfig, VerificationConf
 
 deployment = DeploymentConfig(
     vram_gb=80,
-    gpu_filter="A100",
+    gpu_filter="H100",  # FP8 requires compute capability >= 8.9 (H100/4090)
     gpu_count=1,  # FP8 fits on single 80GB GPU
-    max_price=3.0,
+    max_price=4.0,  # H100 is more expensive
     min_cpu_ram=64,
     container_disk=250,
 )
