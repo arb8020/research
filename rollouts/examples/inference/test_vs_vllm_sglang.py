@@ -447,9 +447,9 @@ def run_remote(script_path: str, keep_alive: bool = False, gpu_id: str | None = 
                 "httpx",
                 # Pin huggingface-hub to avoid 404 bug
                 "huggingface-hub>=0.36,<1.0",
-                # vLLM and SGLang
+                # vLLM and SGLang (0.4+ for triton 3.x compatibility)
                 "vllm>=0.7.0",
-                "sglang[all]",
+                "sglang[all]>=0.4.0",
             ],
             venv_path=".venv-test",  # Isolated from main workspace .venv
             python_version=">=3.10",
