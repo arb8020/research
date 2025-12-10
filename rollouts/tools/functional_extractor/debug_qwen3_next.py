@@ -67,7 +67,7 @@ def debug():
         SELF_ATTN_LAYERS,
     )
 
-    MODEL_NAME = "Qwen/Qwen3-Next-80B-A3B-Instruct"
+    MODEL_NAME = "Qwen/Qwen3-Next-80B-A3B-Instruct-FP8"  # FP8 version fits on single 80GB GPU
 
     print("=" * 60)
     print(f"Debugging {MODEL_NAME} Functional Implementation")
@@ -78,7 +78,7 @@ def debug():
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
         torch_dtype=torch.bfloat16,
-        device_map="balanced",
+        device_map="auto",  # Single GPU for FP8
         trust_remote_code=True,
     )
     model.eval()
