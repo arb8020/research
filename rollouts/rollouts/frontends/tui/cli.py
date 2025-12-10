@@ -188,9 +188,12 @@ def create_endpoint(
                     f"  1. Use a model that supports reasoning (e.g., anthropic/claude-3-5-sonnet-20241022)\n"
                     f"  2. Disable thinking with --thinking disabled"
                 )
-        # If model not in registry, warn but allow (might be custom endpoint)
-        elif provider == "anthropic":
-            print(f"⚠️  Warning: Model '{model}' not in registry. Cannot verify thinking support.")
+        # If model not in registry, fail fast
+        else:
+            raise ValueError(
+                f"Model '{model}' not found in registry.\n"
+                f"Use a registered model or add it to rollouts/models.py"
+            )
 
     if api_base is None:
         if provider == "openai":
@@ -207,10 +210,23 @@ def create_endpoint(
         from .oauth import get_oauth_client
         client = get_oauth_client()
         tokens = client.tokens
-        if tokens and not tokens.is_expired():
-            oauth_token = tokens.access_token
-            print(f"🔐 Using OAuth authentication (Claude Pro/Max)")
-        else:
+        if tokens:
+            if tokens.is_expired():
+                # Token expired - try to refresh
+                import trio
+                try:
+                    tokens = trio.run(client.refresh_tokens)
+                    oauth_token = tokens.access_token
+                    print(f"🔐 OAuth token refreshed")
+                except Exception as e:
+                    # Refresh failed, fall back to API key
+                    print(f"⚠️  OAuth token expired and refresh failed: {e}")
+                    oauth_token = ""
+            else:
+                oauth_token = tokens.access_token
+            if oauth_token:
+                print(f"🔐 Using OAuth authentication (Claude Pro/Max)")
+        if not oauth_token:
             # Fall back to environment variable
             api_key = os.environ.get("ANTHROPIC_API_KEY", "")
 
@@ -250,8 +266,8 @@ def main() -> int:
     parser.add_argument(
         "--model",
         type=str,
-        default="openai/gpt-5.1-codex",
-        help='Model in "provider/model" format (e.g., "openai/gpt-5.1-codex", "anthropic/claude-sonnet-4-5"). Default: openai/gpt-5.1-codex',
+        default="anthropic/claude-sonnet-4-5-20250929",
+        help='Model in "provider/model" format (e.g., "anthropic/claude-sonnet-4-5-20250929", "openai/gpt-5.1-codex"). Default: anthropic/claude-sonnet-4-5-20250929',
     )
     parser.add_argument(
         "--api-base",
@@ -371,16 +387,18 @@ def main() -> int:
     # Handle Claude OAuth login/logout commands
     if args.login_claude or args.logout_claude:
         from .oauth import login, logout, OAuthError
+        if args.logout_claude:
+            logout()
+            return 0
         async def oauth_action() -> int:
             try:
-                if args.login_claude:
-                    await login()
-                    return 0
-                else:
-                    await logout()
-                    return 0
+                await login()
+                return 0
             except OAuthError as e:
                 print(f"❌ OAuth error: {e}", file=sys.stderr)
+                return 1
+            except KeyboardInterrupt:
+                print("\n⚠️  Login cancelled")
                 return 1
         return trio.run(oauth_action)
 
