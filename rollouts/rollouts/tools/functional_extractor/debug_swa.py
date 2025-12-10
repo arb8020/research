@@ -263,16 +263,17 @@ if __name__ == "__main__":
         env_state = setup_python_env(
             client=bifrost,
             workspace=workspace,
-            requirements=["torch", "transformers"],
+            requirements=["torch", "transformers", "xxhash"],
             python_version=">=3.10",
         )
 
-        # Run remotely
+        # Run remotely - need to cd into rollouts/ subdir for correct PYTHONPATH
         script = Path(__file__).resolve()
         git_root = Path(subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip())
         rel_path = script.relative_to(git_root)
         remote_script = f"{workspace}/{rel_path}"
-        cmd = f"cd {workspace} && PYTHONPATH=. {env_state.venv_python} {remote_script} --local"
+        # The rollouts package is in {workspace}/rollouts/rollouts/, so PYTHONPATH={workspace}/rollouts
+        cmd = f"cd {workspace}/rollouts && PYTHONPATH=. {env_state.venv_python} {remote_script} --local"
 
         print(f"Running: {cmd}")
         print("-" * 50)
