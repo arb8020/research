@@ -95,15 +95,27 @@ class InteractiveAgentRunner:
         # Cancellation
         self.cancel_scope: trio.CancelScope | None = None
 
+        # Store for passing multiple messages from input handler to no_tool handler
+        self._pending_user_messages: list[str] = []
+
     def _handle_input_submit(self, text: str) -> None:
         """Handle input submission from TUI (sync wrapper for trio channel send).
 
-        This is called synchronously from the Input component, but we need to
-        send to an async channel. We use send_nowait which works because the
-        channel is unbuffered (capacity 0) and there's always a receiver waiting.
+        This is called synchronously from the Input component. With a buffered
+        channel, messages can be queued while the agent is working.
         """
         if text.strip() and self.input_send:
-            self.input_send.send_nowait(text.strip())
+            try:
+                self.input_send.send_nowait(text.strip())
+                # Add to visual queue display (only if not currently waiting for input)
+                if not self.input_pending and self.input_component:
+                    self.input_component.add_queued_message(text.strip())
+                    if self.tui:
+                        self.tui.request_render()
+            except trio.WouldBlock:
+                # Buffer full (10 messages) - silently drop
+                # Could show a "queue full" indicator in the future
+                pass
 
     async def _handle_slash_command(self, command: str) -> bool:
         """Handle slash commands.
@@ -128,25 +140,44 @@ class InteractiveAgentRunner:
         Returns:
             User input string
         """
-        # Show input component if not already visible
-        if not self.input_pending:
+        if self.input_receive is None:
+            raise RuntimeError("Input channel not initialized")
+
+        # Drain all queued messages (non-blocking)
+        queued_messages: list[str] = []
+        while True:
+            try:
+                msg = self.input_receive.receive_nowait()
+                queued_messages.append(msg)
+                # Remove from visual queue display
+                if self.input_component:
+                    self.input_component.pop_queued_message()
+            except trio.WouldBlock:
+                break
+
+        if queued_messages:
+            # Store all messages - first one returned, rest stored for handle_no_tool
+            user_input = queued_messages[0]
+            self._pending_user_messages = queued_messages[1:]
+            if self.tui:
+                self.tui.request_render()
+        else:
+            user_input = None
+            self._pending_user_messages = []
+
+        if user_input is None:
+            # No queued message, show input and wait
             self.input_pending = True
             if self.input_component and self.tui:
                 self.tui.set_focus(self.input_component)
                 self.tui.request_render()
 
-        # Wait for input from channel
-        if self.input_receive is None:
-            raise RuntimeError("Input channel not initialized")
-        user_input = await self.input_receive.receive()
-        self.input_pending = False
+            user_input = await self.input_receive.receive()
+            self.input_pending = False
 
-        # Clear input component
-        if self.input_component:
-            self.input_component.set_text("")
-            if self.tui:
-                self.tui.set_focus(None)
-                self.tui.request_render()
+            # Clear input component
+            if self.input_component:
+                self.input_component.set_text("")
 
         # Handle slash commands
         if user_input.startswith("/"):
@@ -241,7 +272,12 @@ class InteractiveAgentRunner:
 
         try:
             # Create Trio memory channel for input coordination
-            self.input_send, self.input_receive = trio.open_memory_channel[str](0)
+            # Buffered channel allows queuing messages while agent is working
+            # TODO: Consider injecting queued messages as system reminders into the
+            # streaming context (like Claude Code does) so the agent is aware of
+            # pending user input while generating a response, rather than only
+            # processing them after the current turn completes.
+            self.input_send, self.input_receive = trio.open_memory_channel[str](10)
 
             # Set up terminal input reading loop
             # Terminal is in raw mode, so we need to poll for input
@@ -309,14 +345,21 @@ class InteractiveAgentRunner:
                     """Wait for user input when LLM responds without tool calls."""
                     from dataclasses import replace as dc_replace
 
-                    # Get user input via the TUI
+                    # Get user input via the TUI (may drain multiple queued messages)
                     user_input = await rcfg.on_input("Enter your message: ")
 
-                    # Append user message to trajectory
+                    # Build list of all user messages (first one + any pending)
+                    user_messages = [Message(role="user", content=user_input)]
+                    for pending_msg in self._pending_user_messages:
+                        # Render each pending message in chat
+                        if self.renderer:
+                            self.renderer.add_user_message(pending_msg, is_first=False)
+                        user_messages.append(Message(role="user", content=pending_msg))
+                    self._pending_user_messages = []
+
+                    # Append all user messages to trajectory
                     new_trajectory = Trajectory(
-                        messages=state.actor.trajectory.messages + [
-                            Message(role="user", content=user_input)
-                        ]
+                        messages=state.actor.trajectory.messages + user_messages
                     )
 
                     # Update actor with new trajectory

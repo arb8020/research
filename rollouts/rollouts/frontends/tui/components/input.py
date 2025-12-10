@@ -42,6 +42,9 @@ class Input(Component):
         self._paste_buffer = ""
         self._is_in_paste = False
 
+        # Queued messages display (shown in gray above input)
+        self._queued_messages: List[str] = []
+
     def set_on_submit(self, callback: Optional[Callable[[str], None]]) -> None:
         """Set callback for when user submits (Enter)."""
         self._on_submit = callback
@@ -53,6 +56,20 @@ class Input(Component):
     def set_disable_submit(self, disabled: bool) -> None:
         """Set whether submit is disabled."""
         self._disable_submit = disabled
+
+    def add_queued_message(self, message: str) -> None:
+        """Add a message to the queued display."""
+        self._queued_messages.append(message)
+
+    def pop_queued_message(self) -> str | None:
+        """Remove and return the first queued message, or None if empty."""
+        if self._queued_messages:
+            return self._queued_messages.pop(0)
+        return None
+
+    def get_queue_count(self) -> int:
+        """Get number of queued messages."""
+        return len(self._queued_messages)
 
     def get_text(self) -> str:
         """Get current text content."""
@@ -81,8 +98,22 @@ class Input(Component):
         """Render input component with cursor."""
         self._last_width = width
         horizontal = self._border_color_fn("─")
+        gray_fg = "\x1b[38;5;245m"  # Gray text for queued messages
+        reset = "\x1b[0m"
 
         result: List[str] = []
+
+        # Render queued messages above input (gray text)
+        if self._queued_messages:
+            for i, msg in enumerate(self._queued_messages):
+                # Truncate long messages
+                display_msg = msg if len(msg) <= width - 4 else msg[:width - 7] + "..."
+                prefix = f"{gray_fg}[{i + 1}] "
+                line = f"{prefix}{display_msg}{reset}"
+                # Pad to width
+                visible_len = len(f"[{i + 1}] ") + len(display_msg)
+                padding = " " * max(0, width - visible_len)
+                result.append(line + padding)
 
         # Top border
         result.append(horizontal * width)
