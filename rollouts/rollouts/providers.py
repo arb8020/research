@@ -2424,18 +2424,12 @@ async def rollout_anthropic(
     """
 
     # Support OAuth bearer token authentication (takes precedence over api_key)
-    # OAuth tokens use Authorization: Bearer header instead of x-api-key
+    # OAuth tokens use auth_token parameter for Bearer auth
     if actor.endpoint.oauth_token:
-        # Use OAuth bearer token via custom httpx client
-        import httpx
-        http_client = httpx.AsyncClient(
-            headers={"Authorization": f"Bearer {actor.endpoint.oauth_token}"},
-            timeout=actor.endpoint.timeout,
-        )
         client_kwargs: dict[str, Any] = {
-            "api_key": "placeholder",  # Required but not used with bearer auth
+            "auth_token": actor.endpoint.oauth_token,
             "max_retries": actor.endpoint.max_retries,
-            "http_client": http_client,
+            "timeout": actor.endpoint.timeout,
         }
     else:
         client_kwargs: dict[str, Any] = {
@@ -2548,9 +2542,14 @@ async def rollout_anthropic(
             # Emit LLMCallStart before making the API call
             await on_chunk(LLMCallStart())
 
+            # Build extra headers - include oauth beta header if using oauth
+            extra_headers = {"anthropic-beta": "prompt-caching-2024-07-31"}
+            if actor.endpoint.oauth_token:
+                extra_headers["anthropic-beta"] = "oauth-2025-04-20,prompt-caching-2024-07-31"
+
             async with client.messages.stream(  # type: ignore[missing-argument]
                 **params,
-                extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
+                extra_headers=extra_headers,
             ) as stream:
                 completion = await aggregate_anthropic_stream(stream, on_chunk)
                 break
@@ -2569,6 +2568,10 @@ async def rollout_anthropic(
                 )
                 # Fail immediately - don't retry configuration errors
                 assert False, f"API returned 400 Bad Request: {e}\nThis indicates invalid configuration or a bug in request construction. See logs above for full request."
+
+            # Fail fast on authentication errors - these won't resolve with retries
+            if isinstance(e, anthropic.AuthenticationError):
+                raise RuntimeError(f"Authentication failed: {e}\nCheck your API key or OAuth token.")
 
             # Fail fast on ValueError - these are programming errors (e.g., empty message)
             if isinstance(e, ValueError):
