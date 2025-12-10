@@ -128,7 +128,7 @@ class AgentRenderer:
     def _handle_stream_start(self) -> None:
         """Handle stream start - switch to streaming loader."""
         self.tui.show_loader(
-            "Streaming... (Ctrl+C to interrupt)",
+            "Streaming... (Esc to interrupt)",
             spinner_color_fn=self.theme.fg(self.theme.accent),
             text_color_fn=self.theme.fg(self.theme.muted),
         )
@@ -335,6 +335,25 @@ class AgentRenderer:
         )
         self.chat_container.add_child(system_text)
         self.tui.request_render()
+
+    def get_partial_response(self) -> str | None:
+        """Get any partial assistant response that was being streamed.
+
+        Returns:
+            Partial text content, or None if no streaming was in progress
+        """
+        if self.current_message and hasattr(self.current_message, '_text_content'):
+            text = self.current_message._text_content
+            if text and text.strip():
+                return text.strip()
+        return None
+
+    def finalize_partial_response(self) -> None:
+        """Mark any partial response as complete (for interrupts)."""
+        # Reset streaming state so next response creates a new message
+        self.current_message = None
+        self.current_text_index = None
+        self.current_thinking_index = None
 
     def set_tool_result(self, tool_call_id: str, result: dict, is_error: bool = False) -> None:
         """Set tool execution result.
