@@ -1,6 +1,6 @@
 """GPU verification for functional model extraction.
 
-Uses bifrost/broker to run verification on remote GPU instances.
+Uses bifrost/broker/kerbal to run verification on remote GPU instances.
 
 CLI Usage:
     # Verify functional code against model
@@ -61,6 +61,7 @@ class GPUHandle:
     client: GPUClient
     bifrost: BifrostClient
     ssh_key_path: str
+    workspace: str  # Expanded workspace path
 
 
 def _load_env() -> tuple[str, str]:
@@ -145,11 +146,15 @@ def provision_gpu(
     print(f"SSH: {instance.ssh_connection_string()}")
     bifrost = BifrostClient(instance.ssh_connection_string(), ssh_key_path)
 
+    # Expand workspace path
+    workspace = bifrost.expand_path("~/.bifrost/workspaces/verify")
+
     return GPUHandle(
         instance=instance,
         client=client,
         bifrost=bifrost,
         ssh_key_path=ssh_key_path,
+        workspace=workspace,
     )
 
 
@@ -171,22 +176,61 @@ def print_gpu_info(handle: GPUHandle) -> None:
     print("=" * 50)
 
 
+def setup_env(handle: GPUHandle, requirements: list[str]) -> str:
+    """Setup Python environment using kerbal.
+
+    Args:
+        handle: GPU handle with bifrost client
+        requirements: List of pip packages to install
+
+    Returns:
+        Path to venv python binary
+    """
+    from kerbal.python_env import setup_python_env
+
+    print("Setting up Python environment...")
+
+    # Create workspace directory
+    handle.bifrost.exec(f"mkdir -p {handle.workspace}")
+
+    # Use kerbal to setup environment
+    env_state = setup_python_env(
+        client=handle.bifrost,
+        workspace=handle.workspace,
+        requirements=requirements,
+        python_version=">=3.10",
+    )
+
+    print(f"Python environment ready: {env_state.venv_python}")
+    return env_state.venv_python
+
+
 def run_on_gpu(
     script_path: str,
     deployment: DeploymentConfig | None = None,
+    requirements: list[str] | None = None,
     keep_alive: bool = False,
     gpu_id: str | None = None,
 ) -> None:
-    """Run a script on a remote GPU via broker/bifrost.
+    """Run a script on a remote GPU via broker/bifrost/kerbal.
 
     Args:
         script_path: Path to the script (__file__ from caller)
         deployment: Deployment configuration (uses defaults if None)
+        requirements: Pip packages to install (uses defaults if None)
         keep_alive: Keep GPU running after completion
         gpu_id: Reuse existing GPU instance ID (skips provisioning)
     """
     if deployment is None:
         deployment = DeploymentConfig()
+
+    if requirements is None:
+        requirements = [
+            "torch",
+            "transformers>=4.50",
+            "accelerate",
+            "safetensors",
+        ]
 
     # Get script path relative to git root
     script = Path(script_path).resolve()
@@ -204,23 +248,21 @@ def run_on_gpu(
         if gpu_id:
             keep_alive = True  # Always keep alive when reusing
 
-        # Deploy code
-        workspace = "~/.bifrost/workspaces/rollouts"
-        bootstrap = [
-            "cd rollouts && uv python install 3.12 && uv sync --python 3.12",
-            "uv pip install torch 'huggingface_hub>=0.26.0' datasets accelerate",
-            "uv pip install 'git+https://github.com/huggingface/transformers.git'",
-        ]
-        handle.bifrost.push(workspace_path=workspace, bootstrap_cmd=bootstrap)
+        # Deploy code via git sync (no bootstrap - use kerbal instead)
+        print("Deploying code...")
+        handle.bifrost.push(workspace_path=handle.workspace)
         print("Code deployed")
 
+        # Setup Python environment with kerbal
+        venv_python = setup_env(handle, requirements)
+
         # Run with streaming output
-        remote_script = f"{workspace}/{rel_path}"
-        cmd = f"cd {workspace}/rollouts && uv run python {remote_script}"
+        remote_script = f"{handle.workspace}/rollouts/{rel_path}"
+        cmd = f"{venv_python} {remote_script}"
         print(f"Running: {cmd}")
         print("-" * 50)
-        for line in handle.bifrost.exec_stream(cmd):
-            print(line, end="")
+        for line in handle.bifrost.exec_stream(cmd, working_dir=handle.workspace):
+            print(line)
         print("-" * 50)
 
     except KeyboardInterrupt:
@@ -318,7 +360,7 @@ def verify_functional(
 
     This function:
     1. Provisions a GPU (or reuses gpu_id)
-    2. Pushes the functional code to remote
+    2. Sets up Python environment with kerbal
     3. Runs comparison with torch.allclose
     4. Returns results
 
@@ -356,33 +398,32 @@ def verify_functional(
         if gpu_id:
             keep_alive = True
 
-        # Bootstrap environment
-        bootstrap = [
-            "uv python install 3.12",
-            "uv venv .venv --python 3.12 || true",
-            "source .venv/bin/activate && uv pip install torch 'transformers<4.52'",
+        # Setup Python environment using kerbal
+        requirements = [
+            "torch",
+            "transformers>=4.50",
+            "accelerate",
+            "safetensors",
         ]
-        for cmd in bootstrap:
-            print(f"Running: {cmd}")
-            result = handle.bifrost.exec(cmd)
-            if result.exit_code != 0:
-                print(f"Bootstrap failed: {result.stderr}")
+        venv_python = setup_env(handle, requirements)
 
         # Write verification script to remote
         verify_script = _build_verification_script(functional_code, verification)
+        script_path = f"{handle.workspace}/verify_functional.py"
         handle.bifrost.exec(
-            f"cat > /tmp/verify_functional.py << 'SCRIPT_EOF'\n{verify_script}\nSCRIPT_EOF"
+            f"cat > {script_path} << 'SCRIPT_EOF'\n{verify_script}\nSCRIPT_EOF"
         )
 
         # Run verification
         print("Running verification...")
         print("-" * 50)
         for line in handle.bifrost.exec_stream(
-            "source .venv/bin/activate && python /tmp/verify_functional.py"
+            f"{venv_python} {script_path}",
+            working_dir=handle.workspace,
         ):
-            print(line, end="")
+            print(line)
             if line.startswith("RESULT_JSON:"):
-                result_json = json.loads(line[len("RESULT_JSON:") :])
+                result_json = json.loads(line[len("RESULT_JSON:"):])
         print("-" * 50)
 
         if result_json:
