@@ -121,7 +121,7 @@ def start_vllm_server(model_name: str, port: int) -> subprocess.Popen:
     print(f"Starting vLLM server on port {port}...")
     proc = subprocess.Popen(
         [
-            "python", "-m", "vllm.entrypoints.openai.api_server",
+            sys.executable, "-m", "vllm.entrypoints.openai.api_server",
             "--model", model_name,
             "--dtype", "bfloat16",
             "--port", str(port),
@@ -138,7 +138,7 @@ def start_sglang_server(model_name: str, port: int) -> subprocess.Popen:
     print(f"Starting SGLang server on port {port}...")
     proc = subprocess.Popen(
         [
-            "python", "-m", "sglang.launch_server",
+            sys.executable, "-m", "sglang.launch_server",
             "--model-path", model_name,
             "--dtype", "bfloat16",
             "--port", str(port),
@@ -354,7 +354,11 @@ def run_comparison():
 
 
 def run_remote(script_path: str, keep_alive: bool = False, gpu_id: str | None = None):
-    """Run script on remote GPU via broker/bifrost.
+    """Run script on remote GPU via broker/kerbal.
+
+    Uses Kerbal for isolated venv setup to avoid workspace dependency conflicts.
+    The workspace pins huggingface-hub==1.0.0rc2 which has a bug, so we create
+    a separate .venv-test with huggingface-hub>=0.36,<1.0.
 
     Args:
         script_path: Path to the script (__file__ from caller)
@@ -366,6 +370,7 @@ def run_remote(script_path: str, keep_alive: bool = False, gpu_id: str | None = 
 
     from broker.client import GPUClient
     from bifrost.client import BifrostClient
+    from kerbal import setup_python_env
     from dotenv import load_dotenv
 
     load_dotenv()
@@ -398,8 +403,14 @@ def run_remote(script_path: str, keep_alive: bool = False, gpu_id: str | None = 
         else:
             print("Provisioning GPU...")
             gpu = client.create(
-                query=(client.vram_gb >= 24) & (client.price_per_hour <= 0.5),
+                query=(
+                    (client.vram_gb >= 24) &
+                    (client.price_per_hour <= 0.5) &
+                    (client.manufacturer == 'Nvidia')
+                ),
                 name="test-vllm-sglang",
+                cloud_type="secure",
+                container_disk_gb=50,  # Need space for vLLM/SGLang + model
             )
             if not gpu:
                 print("Failed to provision GPU")
@@ -413,25 +424,43 @@ def run_remote(script_path: str, keep_alive: bool = False, gpu_id: str | None = 
 
         print(f"SSH: {gpu.ssh_connection_string()}")
 
-        # Deploy with vLLM and SGLang as extras
-        # Note: vllm-test and sglang-test are conflicting extras, so we install them
-        # separately via pip after the main sync
+        # Deploy code via bifrost (no bootstrap - we use Kerbal for deps)
         workspace = "~/.bifrost/workspaces/rollouts"
         bifrost = BifrostClient(gpu.ssh_connection_string(), ssh_key_path)
-        bootstrap = [
-            "cd rollouts && uv python install 3.12 && uv sync --python 3.12",
-            # Install vLLM with pinned huggingface-hub (avoids additional_chat_templates 404)
-            "cd rollouts && uv pip install 'vllm>=0.7.0' 'huggingface-hub>=0.36,<1.0' || echo 'vLLM install failed'",
-            # Install SGLang (separately, conflicts with vLLM torch version but we run sequentially)
-            "cd rollouts && uv pip install 'sglang[all]' || echo 'SGLang install failed'",
-        ]
-        bifrost.push(workspace_path=workspace, bootstrap_cmd=bootstrap)
-        print("Code deployed")
 
-        # Run with streaming output
+        # Push code without dependency bootstrap (BIFROST_SKIP_BOOTSTRAP=1)
+        os.environ["BIFROST_SKIP_BOOTSTRAP"] = "1"
+        bifrost.push(workspace_path=workspace)
+        print("Code deployed (no bootstrap)")
+
+        # Use Kerbal to create isolated venv with correct dependencies
+        # This avoids the workspace's huggingface-hub==1.0.0rc2 pin
+        print("\nSetting up isolated test environment with Kerbal...")
+
+        env_state = setup_python_env(
+            client=bifrost,
+            workspace=workspace,
+            requirements=[
+                # Core inference deps
+                "torch>=2.0",
+                "transformers",
+                "httpx",
+                # Pin huggingface-hub to avoid 404 bug
+                "huggingface-hub>=0.36,<1.0",
+                # vLLM and SGLang
+                "vllm>=0.7.0",
+                "sglang[all]",
+            ],
+            venv_path=".venv-test",  # Isolated from main workspace .venv
+            python_version=">=3.10",
+            timeout_sec=600,
+        )
+        print(f"Test venv ready: {env_state.venv_python}")
+
+        # Run with the isolated venv
         remote_script = f"{workspace}/{rel_path}"
-        cmd = f"cd {workspace}/rollouts && uv run python {remote_script}"
-        print(f"Running: {cmd}")
+        cmd = f"cd {workspace} && PYTHONPATH=. {env_state.venv_python} {remote_script}"
+        print(f"\nRunning: {cmd}")
         print("-" * 50)
         for line in bifrost.exec_stream(cmd):
             print(line, end="")

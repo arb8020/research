@@ -2,99 +2,192 @@
 
 Tiger Style evaluation framework inspired by llm-workbench/rollouts.
 Now with full agent framework for tool-use and multi-turn interactions.
+
+Uses lazy imports so submodules (e.g., rollouts.inference) can be imported
+without pulling in all dependencies (e.g., trio for agents).
 """
 
-# Core types from dtypes
-# Agent execution from agents
-from .agents import (
-    confirm_tool_with_feedback,
-    handle_stop_max_turns,
-    handle_tool_error,
-    inject_tool_reminder,
-    inject_turn_warning,
-    rollout,
-    run_agent,
-    stdout_handler,
-)
+import importlib
+from typing import TYPE_CHECKING
 
-# Sessions
-from .store import FileSessionStore, SessionStore, generate_session_id
+# For type checkers, import everything eagerly
+if TYPE_CHECKING:
+    from .agents import (
+        confirm_tool_with_feedback,
+        handle_stop_max_turns,
+        handle_tool_error,
+        inject_tool_reminder,
+        inject_turn_warning,
+        rollout,
+        run_agent,
+        stdout_handler,
+    )
+    from .config import (
+        BaseEnvironmentConfig,
+        BaseEvaluationConfig,
+        BaseModelConfig,
+        BaseOutputConfig,
+        HasEnvironmentConfig,
+        HasEvaluationConfig,
+        HasModelConfig,
+        HasOutputConfig,
+        load_config_from_file,
+    )
+    from .dtypes import (
+        Actor,
+        AgentSession,
+        AgentState,
+        ChatCompletion,
+        Choice,
+        ContentBlock,
+        Endpoint,
+        EndpointConfig,
+        Environment,
+        EnvironmentConfig,
+        ImageContent,
+        Logprob,
+        Logprobs,
+        Message,
+        RunConfig,
+        SessionMessage,
+        SessionStatus,
+        StopReason,
+        StreamChunk,
+        TextContent,
+        ThinkingContent,
+        Tool,
+        ToolCall,
+        ToolCallContent,
+        ToolConfirmResult,
+        ToolFormatter,
+        ToolFunction,
+        ToolFunctionParameter,
+        ToolResult,
+        Trajectory,
+        Usage,
+        default_confirm_tool,
+    )
+    from .environments import BasicEnvironment, CalculatorEnvironment, NoToolsEnvironment
+    from .evaluate import evaluate_dataset, evaluate_sample
+    from .models import (
+        ApiType,
+        ModelCost,
+        ModelMetadata,
+        Provider,
+        calculate_cost,
+        get_api_type,
+        get_model,
+        get_models,
+        get_providers,
+        register_model,
+    )
+    from .providers import (
+        get_provider_function,
+        rollout_anthropic,
+        rollout_google,
+        rollout_openai,
+        rollout_openai_responses,
+        rollout_sglang,
+    )
+    from .store import FileSessionStore, SessionStore, generate_session_id
+    from .transform_messages import transform_messages
 
-# Configuration (new in 0.3.0)
-from .config import (
-    BaseEnvironmentConfig,
-    BaseEvaluationConfig,
-    # Base configs
-    BaseModelConfig,
-    BaseOutputConfig,
-    HasEnvironmentConfig,
-    HasEvaluationConfig,
-    # Protocols
-    HasModelConfig,
-    HasOutputConfig,
-    # Utilities
-    load_config_from_file,
-)
-from .dtypes import (
-    Actor,
-    AgentSession,
-    AgentState,
-    ChatCompletion,
-    Choice,
-    ContentBlock,
-    Endpoint,
-    EndpointConfig,
-    Environment,
-    EnvironmentConfig,
-    ImageContent,
-    Logprob,
-    Logprobs,
-    Message,
-    RunConfig,
-    SessionMessage,
-    SessionStatus,
-    StopReason,
-    StreamChunk,
-    TextContent,
-    ThinkingContent,
-    Tool,
-    ToolCall,
-    ToolCallContent,
-    ToolConfirmResult,
-    ToolFormatter,
-    ToolFunction,
-    ToolFunctionParameter,
-    ToolResult,
-    Trajectory,
-    Usage,
-    default_confirm_tool,
-)
 
-# Environments
-from .environments import BasicEnvironment, CalculatorEnvironment, NoToolsEnvironment
+# Lazy import mappings: attribute -> (module, name)
+_LAZY_IMPORTS = {
+    # agents
+    'confirm_tool_with_feedback': ('.agents', 'confirm_tool_with_feedback'),
+    'handle_stop_max_turns': ('.agents', 'handle_stop_max_turns'),
+    'handle_tool_error': ('.agents', 'handle_tool_error'),
+    'inject_tool_reminder': ('.agents', 'inject_tool_reminder'),
+    'inject_turn_warning': ('.agents', 'inject_turn_warning'),
+    'rollout': ('.agents', 'rollout'),
+    'run_agent': ('.agents', 'run_agent'),
+    'stdout_handler': ('.agents', 'stdout_handler'),
+    # store
+    'FileSessionStore': ('.store', 'FileSessionStore'),
+    'SessionStore': ('.store', 'SessionStore'),
+    'generate_session_id': ('.store', 'generate_session_id'),
+    # config
+    'BaseEnvironmentConfig': ('.config', 'BaseEnvironmentConfig'),
+    'BaseEvaluationConfig': ('.config', 'BaseEvaluationConfig'),
+    'BaseModelConfig': ('.config', 'BaseModelConfig'),
+    'BaseOutputConfig': ('.config', 'BaseOutputConfig'),
+    'HasEnvironmentConfig': ('.config', 'HasEnvironmentConfig'),
+    'HasEvaluationConfig': ('.config', 'HasEvaluationConfig'),
+    'HasModelConfig': ('.config', 'HasModelConfig'),
+    'HasOutputConfig': ('.config', 'HasOutputConfig'),
+    'load_config_from_file': ('.config', 'load_config_from_file'),
+    # dtypes
+    'Actor': ('.dtypes', 'Actor'),
+    'AgentSession': ('.dtypes', 'AgentSession'),
+    'AgentState': ('.dtypes', 'AgentState'),
+    'ChatCompletion': ('.dtypes', 'ChatCompletion'),
+    'Choice': ('.dtypes', 'Choice'),
+    'ContentBlock': ('.dtypes', 'ContentBlock'),
+    'Endpoint': ('.dtypes', 'Endpoint'),
+    'EndpointConfig': ('.dtypes', 'EndpointConfig'),
+    'Environment': ('.dtypes', 'Environment'),
+    'EnvironmentConfig': ('.dtypes', 'EnvironmentConfig'),
+    'ImageContent': ('.dtypes', 'ImageContent'),
+    'Logprob': ('.dtypes', 'Logprob'),
+    'Logprobs': ('.dtypes', 'Logprobs'),
+    'Message': ('.dtypes', 'Message'),
+    'RunConfig': ('.dtypes', 'RunConfig'),
+    'SessionMessage': ('.dtypes', 'SessionMessage'),
+    'SessionStatus': ('.dtypes', 'SessionStatus'),
+    'StopReason': ('.dtypes', 'StopReason'),
+    'StreamChunk': ('.dtypes', 'StreamChunk'),
+    'TextContent': ('.dtypes', 'TextContent'),
+    'ThinkingContent': ('.dtypes', 'ThinkingContent'),
+    'Tool': ('.dtypes', 'Tool'),
+    'ToolCall': ('.dtypes', 'ToolCall'),
+    'ToolCallContent': ('.dtypes', 'ToolCallContent'),
+    'ToolConfirmResult': ('.dtypes', 'ToolConfirmResult'),
+    'ToolFormatter': ('.dtypes', 'ToolFormatter'),
+    'ToolFunction': ('.dtypes', 'ToolFunction'),
+    'ToolFunctionParameter': ('.dtypes', 'ToolFunctionParameter'),
+    'ToolResult': ('.dtypes', 'ToolResult'),
+    'Trajectory': ('.dtypes', 'Trajectory'),
+    'Usage': ('.dtypes', 'Usage'),
+    'default_confirm_tool': ('.dtypes', 'default_confirm_tool'),
+    # environments
+    'BasicEnvironment': ('.environments', 'BasicEnvironment'),
+    'CalculatorEnvironment': ('.environments', 'CalculatorEnvironment'),
+    'NoToolsEnvironment': ('.environments', 'NoToolsEnvironment'),
+    # evaluate
+    'evaluate_dataset': ('.evaluate', 'evaluate_dataset'),
+    'evaluate_sample': ('.evaluate', 'evaluate_sample'),
+    # models
+    'ApiType': ('.models', 'ApiType'),
+    'ModelCost': ('.models', 'ModelCost'),
+    'ModelMetadata': ('.models', 'ModelMetadata'),
+    'Provider': ('.models', 'Provider'),
+    'calculate_cost': ('.models', 'calculate_cost'),
+    'get_api_type': ('.models', 'get_api_type'),
+    'get_model': ('.models', 'get_model'),
+    'get_models': ('.models', 'get_models'),
+    'get_providers': ('.models', 'get_providers'),
+    'register_model': ('.models', 'register_model'),
+    # providers
+    'get_provider_function': ('.providers', 'get_provider_function'),
+    'rollout_anthropic': ('.providers', 'rollout_anthropic'),
+    'rollout_google': ('.providers', 'rollout_google'),
+    'rollout_openai': ('.providers', 'rollout_openai'),
+    'rollout_openai_responses': ('.providers', 'rollout_openai_responses'),
+    'rollout_sglang': ('.providers', 'rollout_sglang'),
+    # transform_messages
+    'transform_messages': ('.transform_messages', 'transform_messages'),
+}
 
-# Evaluation
-from .evaluate import evaluate_dataset, evaluate_sample
 
-# Model registry (new unified provider API)
-from .models import (
-    ApiType,
-    ModelCost,
-    ModelMetadata,
-    Provider,
-    calculate_cost,
-    get_api_type,
-    get_model,
-    get_models,
-    get_providers,
-    register_model,
-)
-
-# Providers (rollout functions)
-from .providers import get_provider_function, rollout_anthropic, rollout_google, rollout_openai, rollout_openai_responses, rollout_sglang
-
-# Message transformation
-from .transform_messages import transform_messages
+def __getattr__(name: str):
+    """Lazy import attributes on first access."""
+    if name in _LAZY_IMPORTS:
+        module_name, attr_name = _LAZY_IMPORTS[name]
+        module = importlib.import_module(module_name, __package__)
+        return getattr(module, attr_name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
     # Core types

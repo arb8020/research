@@ -62,8 +62,8 @@ class InferenceEngine:
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
             torch_dtype=torch.bfloat16,
-            device_map="auto",
         )
+        model.to(self.device)
         model.eval()
         return model
 
