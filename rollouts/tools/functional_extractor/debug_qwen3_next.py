@@ -67,7 +67,8 @@ def debug():
         SELF_ATTN_LAYERS,
     )
 
-    MODEL_NAME = "Qwen/Qwen3-Next-80B-A3B-Instruct-FP8"  # FP8 version fits on single 80GB GPU
+    # FP8 has a bug with num_local_experts, use bfloat16 instead
+    MODEL_NAME = "Qwen/Qwen3-Next-80B-A3B-Instruct"
 
     print("=" * 60)
     print(f"Debugging {MODEL_NAME} Functional Implementation")
