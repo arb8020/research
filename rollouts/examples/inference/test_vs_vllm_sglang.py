@@ -413,15 +413,16 @@ def run_remote(script_path: str, keep_alive: bool = False, gpu_id: str | None = 
 
         print(f"SSH: {gpu.ssh_connection_string()}")
 
-        # Deploy with vLLM and SGLang
+        # Deploy with vLLM and SGLang as extras
+        # Note: vllm-test and sglang-test are conflicting extras, so we install them
+        # separately via pip after the main sync
         workspace = "~/.bifrost/workspaces/rollouts"
         bifrost = BifrostClient(gpu.ssh_connection_string(), ssh_key_path)
         bootstrap = [
             "cd rollouts && uv python install 3.12 && uv sync --python 3.12",
-            # Core deps
-            "cd rollouts && uv pip install torch 'transformers<4.52' accelerate httpx",
-            # vLLM and SGLang (install with deps, they need their full stack)
-            "cd rollouts && uv pip install vllm || echo 'vLLM install failed'",
+            # Install vLLM with pinned huggingface-hub (avoids additional_chat_templates 404)
+            "cd rollouts && uv pip install 'vllm>=0.7.0' 'huggingface-hub>=0.36,<1.0' || echo 'vLLM install failed'",
+            # Install SGLang (separately, conflicts with vLLM torch version but we run sequentially)
             "cd rollouts && uv pip install 'sglang[all]' || echo 'SGLang install failed'",
         ]
         bifrost.push(workspace_path=workspace, bootstrap_cmd=bootstrap)
