@@ -13,19 +13,19 @@ def setup_environment():
     """Install required packages with correct versions."""
     print("Setting up environment...")
 
-    # Install packages in the right order
+    # Install packages using uv pip (pip not available in uv-managed venvs)
     subprocess.run([
-        sys.executable, "-m", "pip", "install", "-q",
+        "uv", "pip", "install", "-q",
         "huggingface_hub>=0.26.0"
     ], check=True)
 
     subprocess.run([
-        sys.executable, "-m", "pip", "install", "-q",
+        "uv", "pip", "install", "-q",
         "git+https://github.com/huggingface/transformers.git"
     ], check=True)
 
     subprocess.run([
-        sys.executable, "-m", "pip", "install", "-q",
+        "uv", "pip", "install", "-q",
         "accelerate", "safetensors"
     ], check=True)
 

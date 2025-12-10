@@ -2,37 +2,42 @@
 
 Uses bifrost/broker to run verification on remote GPU instances.
 
-Usage:
-    from tools.functional_extractor.verify import verify_functional, run_on_gpu
+CLI Usage:
+    # Verify functional code against model
+    python -m tools.functional_extractor.verify configs/qwen3_0.6b.py qwen3_functional.py
 
-    # Verify functional code matches original model
+    # Reuse existing GPU
+    python -m tools.functional_extractor.verify configs/qwen3_0.6b.py qwen3_functional.py --gpu-id abc123
+
+    # Keep GPU alive after completion
+    python -m tools.functional_extractor.verify configs/qwen3_0.6b.py qwen3_functional.py --keep-alive
+
+Programmatic Usage:
+    from tools.functional_extractor.verify import verify_functional
+    from tools.functional_extractor.config import DeploymentConfig, VerificationConfig
+
     result = verify_functional(
-        model_name="Qwen/Qwen2.5-0.5B",
-        functional_code=my_code_string,
-        test_inputs=[[1, 2, 3, 4], [5, 6, 7, 8]],
+        functional_code=Path("qwen3_functional.py").read_text(),
+        verification=VerificationConfig(model_name="Qwen/Qwen3-0.6B", forward_fn_name="qwen3_forward"),
+        deployment=DeploymentConfig(vram_gb=16),
     )
-    print(result.matches)  # True if torch.allclose passes
-    print(result.max_diff)  # Maximum difference
-
-    # Or run arbitrary code on GPU
-    run_on_gpu(
-        script_path=__file__,
-        keep_alive=True,
-        gpu_id="abc123",  # Reuse existing instance
-    )
+    assert result.matches, f"Max diff: {result.max_diff}"
 """
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import subprocess
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .config import DeploymentConfig, VerificationConfig
+
 if TYPE_CHECKING:
-    pass
+    from bifrost.client import BifrostClient
+    from broker.client import ClientGPUInstance, GPUClient
 
 
 @dataclass(frozen=True)
@@ -48,29 +53,140 @@ class VerificationResult:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class GPUHandle:
+    """Handle to a provisioned GPU instance."""
+
+    instance: ClientGPUInstance
+    client: GPUClient
+    bifrost: BifrostClient
+    ssh_key_path: str
+
+
+def _load_env() -> tuple[str, str]:
+    """Load environment variables for GPU provisioning."""
+    from dotenv import load_dotenv
+
+    env_path = Path(__file__).resolve().parents[3] / ".env"
+    load_dotenv(env_path)
+
+    runpod_key = os.getenv("RUNPOD_API_KEY")
+    assert runpod_key, f"RUNPOD_API_KEY not set (looked in {env_path})"
+    ssh_key_path = os.getenv("SSH_KEY_PATH", "~/.ssh/id_ed25519")
+
+    return runpod_key, ssh_key_path
+
+
+def provision_gpu(
+    deployment: DeploymentConfig,
+    gpu_id: str | None = None,
+    name: str = "verify-functional",
+) -> GPUHandle | None:
+    """Provision or reuse a GPU instance.
+
+    Args:
+        deployment: Deployment configuration
+        gpu_id: Existing GPU instance ID to reuse
+        name: Name for the GPU instance
+
+    Returns:
+        GPUHandle if successful, None if provisioning failed
+    """
+    from bifrost.client import BifrostClient
+    from broker.client import GPUClient
+
+    runpod_key, ssh_key_path = _load_env()
+    client = GPUClient(credentials={"runpod": runpod_key}, ssh_key_path=ssh_key_path)
+
+    if gpu_id:
+        print(f"Reusing GPU: {gpu_id}")
+        instance = client.get_instance(gpu_id, provider="runpod")
+        if not instance:
+            print(f"GPU {gpu_id} not found (is it still running?)")
+            return None
+    else:
+        print("Provisioning GPU...")
+
+        # Build query
+        query = (
+            (client.vram_gb >= deployment.vram_gb)
+            & (client.price_per_hour <= deployment.max_price)
+            & (client.manufacturer == "Nvidia")
+        )
+
+        if deployment.min_cpu_ram > 0:
+            query = query & (client.memory_gb >= deployment.min_cpu_ram)
+
+        if deployment.gpu_filter:
+            query = query & (client.gpu_type.contains(deployment.gpu_filter))
+
+        instance = client.create(
+            query=query,
+            name=name,
+            cloud_type=deployment.cloud_type,
+            gpu_count=deployment.gpu_count,
+            sort=lambda x: x.price_per_hour,
+            reverse=False,
+            container_disk_gb=deployment.container_disk,
+            volume_disk_gb=deployment.volume_disk if deployment.volume_disk > 0 else None,
+        )
+
+        if not instance:
+            print("Failed to provision GPU - no matching offers")
+            return None
+
+        print(f"GPU ready: {instance.id}")
+
+        if not instance.wait_until_ssh_ready(timeout=deployment.ssh_timeout):
+            print("SSH timeout")
+            client.terminate_instance(instance.id, instance.provider)
+            return None
+
+    print(f"SSH: {instance.ssh_connection_string()}")
+    bifrost = BifrostClient(instance.ssh_connection_string(), ssh_key_path)
+
+    return GPUHandle(
+        instance=instance,
+        client=client,
+        bifrost=bifrost,
+        ssh_key_path=ssh_key_path,
+    )
+
+
+def terminate_gpu(handle: GPUHandle) -> None:
+    """Terminate a GPU instance."""
+    print("Cleaning up...")
+    handle.client.terminate_instance(handle.instance.id, handle.instance.provider)
+
+
+def print_gpu_info(handle: GPUHandle) -> None:
+    """Print GPU connection info for reuse."""
+    print()
+    print("=" * 50)
+    print(f"GPU kept alive: {handle.instance.id}")
+    print(f"SSH: {handle.instance.ssh_connection_string()}")
+    print()
+    print(f"Rerun with:   --gpu-id {handle.instance.id}")
+    print(f"Terminate:    broker terminate {handle.instance.id}")
+    print("=" * 50)
+
+
 def run_on_gpu(
     script_path: str,
+    deployment: DeploymentConfig | None = None,
     keep_alive: bool = False,
     gpu_id: str | None = None,
-    vram_gb: int = 24,
-    max_price: float = 0.5,
 ) -> None:
     """Run a script on a remote GPU via broker/bifrost.
 
     Args:
         script_path: Path to the script (__file__ from caller)
+        deployment: Deployment configuration (uses defaults if None)
         keep_alive: Keep GPU running after completion
         gpu_id: Reuse existing GPU instance ID (skips provisioning)
-        vram_gb: Minimum VRAM required (default 24GB)
-        max_price: Maximum price per hour (default $0.50)
     """
-    from bifrost.client import BifrostClient
-    from broker.client import GPUClient
-    from dotenv import load_dotenv
-
-    # Load from parent .env (research/.env)
-    env_path = Path(__file__).resolve().parents[3] / ".env"
-    load_dotenv(env_path)
+    if deployment is None:
+        deployment = DeploymentConfig()
 
     # Get script path relative to git root
     script = Path(script_path).resolve()
@@ -79,56 +195,23 @@ def run_on_gpu(
     )
     rel_path = script.relative_to(git_root)
 
-    # Provision or reuse GPU
-    runpod_key = os.getenv("RUNPOD_API_KEY")
-    assert runpod_key, f"RUNPOD_API_KEY not set (looked in {env_path})"
-    ssh_key_path = os.getenv("SSH_KEY_PATH", "~/.ssh/id_ed25519")
-
-    client = GPUClient(credentials={"runpod": runpod_key}, ssh_key_path=ssh_key_path)
-    gpu = None
-
+    handle = None
     try:
+        handle = provision_gpu(deployment, gpu_id=gpu_id, name=f"run-{script.stem}")
+        if not handle:
+            return
+
         if gpu_id:
-            print(f"Reusing GPU: {gpu_id}")
-            gpu = client.get_instance(gpu_id, provider="runpod")
-            if not gpu:
-                print(f"GPU {gpu_id} not found (is it still running?)")
-                return
             keep_alive = True  # Always keep alive when reusing
-        else:
-            print("Provisioning GPU...")
-            gpu = client.create(
-                query=(
-                    (client.vram_gb >= vram_gb) &
-                    (client.price_per_hour <= max_price) &
-                    (client.manufacturer == 'Nvidia')
-                ),
-                name=f"verify-{script.stem}",
-                cloud_type="secure",  # Required for direct SSH access
-                sort=lambda x: x.price_per_hour,
-                reverse=False,
-            )
-            if not gpu:
-                print("Failed to provision GPU")
-                return
-            print(f"GPU ready: {gpu.id}")
-
-            if not gpu.wait_until_ssh_ready(timeout=300):
-                print("SSH timeout")
-                client.terminate_instance(gpu.id, gpu.provider)
-                return
-
-        print(f"SSH: {gpu.ssh_connection_string()}")
 
         # Deploy code
         workspace = "~/.bifrost/workspaces/rollouts"
-        bifrost = BifrostClient(gpu.ssh_connection_string(), ssh_key_path)
         bootstrap = [
             "cd rollouts && uv python install 3.12 && uv sync --python 3.12",
             "uv pip install torch 'huggingface_hub>=0.26.0' datasets accelerate",
             "uv pip install 'git+https://github.com/huggingface/transformers.git'",
         ]
-        bifrost.push(workspace_path=workspace, bootstrap_cmd=bootstrap)
+        handle.bifrost.push(workspace_path=workspace, bootstrap_cmd=bootstrap)
         print("Code deployed")
 
         # Run with streaming output
@@ -136,7 +219,7 @@ def run_on_gpu(
         cmd = f"cd {workspace}/rollouts && uv run python {remote_script}"
         print(f"Running: {cmd}")
         print("-" * 50)
-        for line in bifrost.exec_stream(cmd):
+        for line in handle.bifrost.exec_stream(cmd):
             print(line, end="")
         print("-" * 50)
 
@@ -145,64 +228,20 @@ def run_on_gpu(
         keep_alive = True
 
     finally:
-        if gpu is None:
+        if handle is None:
             return
         if keep_alive:
-            print()
-            print("=" * 50)
-            print(f"GPU kept alive: {gpu.id}")
-            print(f"SSH: {gpu.ssh_connection_string()}")
-            print()
-            print(f"Rerun with:   --gpu-id {gpu.id}")
-            print(f"Terminate:    broker terminate {gpu.id}")
-            print("=" * 50)
+            print_gpu_info(handle)
         else:
-            print("Cleaning up...")
-            client.terminate_instance(gpu.id, gpu.provider)
+            terminate_gpu(handle)
 
 
-def verify_functional(
-    model_name: str,
+def _build_verification_script(
     functional_code: str,
-    test_inputs: list[list[int]],
-    rtol: float = 1e-5,
-    atol: float = 1e-5,
-    gpu_id: str | None = None,
-    keep_alive: bool = True,
-) -> VerificationResult:
-    """Verify functional code produces same output as original model.
-
-    This function:
-    1. Provisions a GPU (or reuses gpu_id)
-    2. Pushes the functional code to remote
-    3. Runs comparison with torch.allclose
-    4. Returns results
-
-    Args:
-        model_name: HuggingFace model name (e.g., "Qwen/Qwen2.5-0.5B")
-        functional_code: The functional Python code as a string
-        test_inputs: List of input token sequences to test
-        rtol: Relative tolerance for torch.allclose
-        atol: Absolute tolerance for torch.allclose
-        gpu_id: Reuse existing GPU instance
-        keep_alive: Keep GPU running after verification
-
-    Returns:
-        VerificationResult with matches, max_diff, and shapes
-    """
-    from bifrost.client import BifrostClient
-    from broker.client import GPUClient
-    from dotenv import load_dotenv
-
-    env_path = Path(__file__).resolve().parents[3] / ".env"
-    load_dotenv(env_path)
-
-    runpod_key = os.getenv("RUNPOD_API_KEY")
-    assert runpod_key, f"RUNPOD_API_KEY not set"
-    ssh_key_path = os.getenv("SSH_KEY_PATH", "~/.ssh/id_ed25519")
-
-    # Create verification script
-    verify_script = f'''
+    verification: VerificationConfig,
+) -> str:
+    """Build the remote verification script."""
+    return f'''
 import torch
 from transformers import AutoModelForCausalLM
 import json
@@ -213,18 +252,18 @@ import json
 def main():
     print("Loading model...")
     model = AutoModelForCausalLM.from_pretrained(
-        "{model_name}",
-        torch_dtype=torch.bfloat16,
-        device_map="cuda:0",
+        "{verification.model_name}",
+        torch_dtype=torch.{verification.torch_dtype},
+        device_map="{verification.device_map}",
     )
     model.eval()
 
     # Extract weights dict
     weights = dict(model.state_dict())
 
-    test_inputs = {test_inputs!r}
-    rtol = {rtol}
-    atol = {atol}
+    test_inputs = {verification.test_inputs!r}
+    rtol = {verification.rtol}
+    atol = {verification.atol}
 
     results = []
     for input_seq in test_inputs:
@@ -234,7 +273,7 @@ def main():
             original_output = model(input_ids).logits
 
             # Run functional version
-            functional_output = qwen_forward(input_ids, weights)
+            functional_output = {verification.forward_fn_name}(input_ids, weights)
 
         matches = torch.allclose(original_output, functional_output, rtol=rtol, atol=atol)
         max_diff = (original_output - functional_output).abs().max().item()
@@ -267,59 +306,55 @@ if __name__ == "__main__":
     main()
 '''
 
-    client = GPUClient(credentials={"runpod": runpod_key}, ssh_key_path=ssh_key_path)
-    gpu = None
+
+def verify_functional(
+    functional_code: str,
+    verification: VerificationConfig,
+    deployment: DeploymentConfig | None = None,
+    gpu_id: str | None = None,
+    keep_alive: bool = True,
+) -> VerificationResult:
+    """Verify functional code produces same output as original model.
+
+    This function:
+    1. Provisions a GPU (or reuses gpu_id)
+    2. Pushes the functional code to remote
+    3. Runs comparison with torch.allclose
+    4. Returns results
+
+    Args:
+        functional_code: The functional Python code as a string
+        verification: Verification configuration (model, tolerances, etc.)
+        deployment: Deployment configuration (GPU specs, etc.)
+        gpu_id: Reuse existing GPU instance
+        keep_alive: Keep GPU running after verification
+
+    Returns:
+        VerificationResult with matches, max_diff, and shapes
+    """
+    import json
+
+    if deployment is None:
+        deployment = DeploymentConfig()
+
+    handle = None
     result_json = None
 
     try:
-        if gpu_id:
-            print(f"Reusing GPU: {gpu_id}")
-            gpu = client.get_instance(gpu_id, provider="runpod")
-            if not gpu:
-                return VerificationResult(
-                    matches=False,
-                    max_diff=float("inf"),
-                    rtol=rtol,
-                    atol=atol,
-                    original_shape=(),
-                    functional_shape=(),
-                    error=f"GPU {gpu_id} not found",
-                )
-            keep_alive = True
-        else:
-            print("Provisioning GPU...")
-            gpu = client.create(
-                query=(client.vram_gb >= 16) & (client.price_per_hour <= 0.5),
-                name="verify-functional",
-                cloud_type="secure",  # Required for direct SSH access
+        handle = provision_gpu(deployment, gpu_id=gpu_id, name="verify-functional")
+        if not handle:
+            return VerificationResult(
+                matches=False,
+                max_diff=float("inf"),
+                rtol=verification.rtol,
+                atol=verification.atol,
+                original_shape=(),
+                functional_shape=(),
+                error="Failed to provision GPU",
             )
-            if not gpu:
-                return VerificationResult(
-                    matches=False,
-                    max_diff=float("inf"),
-                    rtol=rtol,
-                    atol=atol,
-                    original_shape=(),
-                    functional_shape=(),
-                    error="Failed to provision GPU",
-                )
-            print(f"GPU ready: {gpu.id}")
 
-            if not gpu.wait_until_ssh_ready(timeout=300):
-                client.terminate_instance(gpu.id, gpu.provider)
-                return VerificationResult(
-                    matches=False,
-                    max_diff=float("inf"),
-                    rtol=rtol,
-                    atol=atol,
-                    original_shape=(),
-                    functional_shape=(),
-                    error="SSH timeout",
-                )
-
-        print(f"SSH: {gpu.ssh_connection_string()}")
-
-        bifrost = BifrostClient(gpu.ssh_connection_string(), ssh_key_path)
+        if gpu_id:
+            keep_alive = True
 
         # Bootstrap environment
         bootstrap = [
@@ -329,22 +364,25 @@ if __name__ == "__main__":
         ]
         for cmd in bootstrap:
             print(f"Running: {cmd}")
-            result = bifrost.exec(cmd)
+            result = handle.bifrost.exec(cmd)
             if result.exit_code != 0:
                 print(f"Bootstrap failed: {result.stderr}")
 
         # Write verification script to remote
-        escaped_script = verify_script.replace("'", "'\\''")
-        bifrost.exec(f"cat > /tmp/verify_functional.py << 'SCRIPT_EOF'\n{verify_script}\nSCRIPT_EOF")
+        verify_script = _build_verification_script(functional_code, verification)
+        handle.bifrost.exec(
+            f"cat > /tmp/verify_functional.py << 'SCRIPT_EOF'\n{verify_script}\nSCRIPT_EOF"
+        )
 
         # Run verification
         print("Running verification...")
         print("-" * 50)
-        for line in bifrost.exec_stream("source .venv/bin/activate && python /tmp/verify_functional.py"):
+        for line in handle.bifrost.exec_stream(
+            "source .venv/bin/activate && python /tmp/verify_functional.py"
+        ):
             print(line, end="")
             if line.startswith("RESULT_JSON:"):
-                import json
-                result_json = json.loads(line[len("RESULT_JSON:"):])
+                result_json = json.loads(line[len("RESULT_JSON:") :])
         print("-" * 50)
 
         if result_json:
@@ -360,8 +398,8 @@ if __name__ == "__main__":
             return VerificationResult(
                 matches=False,
                 max_diff=float("inf"),
-                rtol=rtol,
-                atol=atol,
+                rtol=verification.rtol,
+                atol=verification.atol,
                 original_shape=(),
                 functional_shape=(),
                 error="Failed to parse result",
@@ -373,25 +411,103 @@ if __name__ == "__main__":
         return VerificationResult(
             matches=False,
             max_diff=float("inf"),
-            rtol=rtol,
-            atol=atol,
+            rtol=verification.rtol,
+            atol=verification.atol,
             original_shape=(),
             functional_shape=(),
             error="Interrupted",
         )
 
     finally:
-        if gpu is None:
+        if handle is None:
             return
         if keep_alive:
-            print()
-            print("=" * 50)
-            print(f"GPU kept alive: {gpu.id}")
-            print(f"SSH: {gpu.ssh_connection_string()}")
-            print()
-            print(f"Rerun with:   gpu_id='{gpu.id}'")
-            print(f"Terminate:    broker terminate {gpu.id}")
-            print("=" * 50)
+            print_gpu_info(handle)
         else:
-            print("Cleaning up...")
-            client.terminate_instance(gpu.id, gpu.provider)
+            terminate_gpu(handle)
+
+
+def load_config_from_file(config_path: str) -> tuple[DeploymentConfig, VerificationConfig]:
+    """Load deployment and verification configs from a Python file.
+
+    Args:
+        config_path: Path to config .py file
+
+    Returns:
+        Tuple of (DeploymentConfig, VerificationConfig)
+    """
+    assert config_path.endswith(".py"), f"Config must be .py file, got {config_path}"
+
+    spec = importlib.util.spec_from_file_location("config_module", config_path)
+    assert spec is not None, f"Failed to load spec from {config_path}"
+    assert spec.loader is not None, f"Spec loader is None for {config_path}"
+
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert hasattr(module, "deployment"), "Config file must define 'deployment' variable"
+    assert hasattr(module, "verification"), "Config file must define 'verification' variable"
+
+    deployment: DeploymentConfig = module.deployment
+    verification: VerificationConfig = module.verification
+
+    assert isinstance(deployment, DeploymentConfig), f"Expected DeploymentConfig, got {type(deployment)}"
+    assert isinstance(verification, VerificationConfig), f"Expected VerificationConfig, got {type(verification)}"
+
+    return deployment, verification
+
+
+def main():
+    """CLI entry point."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Verify functional code matches original model on remote GPU"
+    )
+    parser.add_argument("config", help="Path to config file (e.g., configs/qwen3_0.6b.py)")
+    parser.add_argument("functional_code", help="Path to functional code .py file")
+    parser.add_argument("--gpu-id", type=str, help="Reuse existing GPU instance ID")
+    parser.add_argument("--keep-alive", action="store_true", help="Keep GPU after completion")
+    args = parser.parse_args()
+
+    # Load config
+    deployment, verification = load_config_from_file(args.config)
+
+    print(f"Model: {verification.model_name}")
+    print(f"Forward function: {verification.forward_fn_name}")
+    print(f"GPU: {deployment.vram_gb}GB VRAM, max ${deployment.max_price}/hr")
+    if deployment.gpu_filter:
+        print(f"GPU filter: {deployment.gpu_filter}")
+    if deployment.gpu_count > 1:
+        print(f"GPU count: {deployment.gpu_count}")
+    print()
+
+    # Load functional code
+    functional_code = Path(args.functional_code).read_text()
+
+    # Run verification
+    result = verify_functional(
+        functional_code=functional_code,
+        verification=verification,
+        deployment=deployment,
+        gpu_id=args.gpu_id,
+        keep_alive=args.keep_alive,
+    )
+
+    # Report results
+    print()
+    if result.error:
+        print(f"ERROR: {result.error}")
+        exit(1)
+    elif result.matches:
+        print(f"PASSED: Outputs match (max diff: {result.max_diff:.2e})")
+        exit(0)
+    else:
+        print(f"FAILED: Outputs do not match (max diff: {result.max_diff:.2e})")
+        print(f"  Original shape: {result.original_shape}")
+        print(f"  Functional shape: {result.functional_shape}")
+        exit(1)
+
+
+if __name__ == "__main__":
+    main()
