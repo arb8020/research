@@ -45,6 +45,9 @@ class Input(Component):
         # Queued messages display (shown in gray above input)
         self._queued_messages: List[str] = []
 
+        # External editor callback (Ctrl+G)
+        self._on_editor: Optional[Callable[[str], None]] = None
+
     def set_on_submit(self, callback: Optional[Callable[[str], None]]) -> None:
         """Set callback for when user submits (Enter)."""
         self._on_submit = callback
@@ -56,6 +59,10 @@ class Input(Component):
     def set_disable_submit(self, disabled: bool) -> None:
         """Set whether submit is disabled."""
         self._disable_submit = disabled
+
+    def set_on_editor(self, callback: Optional[Callable[[str], None]]) -> None:
+        """Set callback for when user requests external editor (Ctrl+G)."""
+        self._on_editor = callback
 
     def add_queued_message(self, message: str) -> None:
         """Add a message to the queued display."""
@@ -228,6 +235,12 @@ class Input(Component):
 
         # Ctrl+C - let parent handle
         if len(data) > 0 and ord(data[0]) == 3:
+            return
+
+        # Ctrl+G - open external editor
+        if len(data) > 0 and ord(data[0]) == 7:
+            if self._on_editor:
+                self._on_editor(self.get_text())
             return
 
         # Enter - submit

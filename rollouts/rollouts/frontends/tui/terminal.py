@@ -201,3 +201,67 @@ class ProcessTerminal:
         if select.select([sys.stdin], [], [], 0)[0]:
             return sys.stdin.read(1)
         return None
+
+    def run_external_editor(self, initial_content: str = "") -> Optional[str]:
+        """Temporarily exit raw mode, run $EDITOR, and return edited content.
+
+        Args:
+            initial_content: Initial text to populate the editor with
+
+        Returns:
+            Edited content, or None if editor failed or user quit without saving
+        """
+        import tempfile
+        import subprocess
+
+        # Get editor from environment, default to vim
+        editor = os.environ.get("EDITOR", os.environ.get("VISUAL", "vim"))
+
+        # Create temp file with initial content
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+            f.write(initial_content)
+            temp_path = f.name
+
+        try:
+            # Temporarily restore terminal to cooked mode
+            if self._old_settings is not None and sys.stdin.isatty():
+                termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, self._old_settings)
+
+            # Disable bracketed paste mode
+            sys.stdout.write("\x1b[?2004l")
+            # Show cursor
+            sys.stdout.write("\x1b[?25h")
+            # Clear screen for editor
+            sys.stdout.write("\x1b[2J\x1b[H")
+            sys.stdout.flush()
+
+            # Run editor
+            result = subprocess.run([editor, temp_path])
+
+            # Read edited content
+            if result.returncode == 0:
+                with open(temp_path, "r") as f:
+                    content = f.read()
+                return content.strip() if content.strip() else None
+            return None
+
+        finally:
+            # Clean up temp file
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+
+            # Restore raw mode
+            if sys.stdin.isatty():
+                tty.setraw(sys.stdin.fileno())
+
+            # Re-enable bracketed paste mode
+            sys.stdout.write("\x1b[?2004h")
+            # Clear screen (TUI will redraw)
+            sys.stdout.write("\x1b[2J\x1b[H")
+            sys.stdout.flush()
+
+            # Trigger resize handler to force full redraw
+            if self._resize_handler:
+                self._resize_handler()
