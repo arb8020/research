@@ -4,14 +4,21 @@ import torch
 from torch import Tensor
 
 from rollouts.inference.attention.config import CacheConfig
+from rollouts.inference.attention.mask import create_attention_mask
 from rollouts.inference.types import InferenceContext
 
 
 class FlexAttentionBackend:
     """FlexAttention backend using PyTorch stdlib.
 
+    Supports:
+    - Standard causal attention
+    - Sliding window attention (for Mistral, Qwen2.5, etc.)
+    - KV caching with paged memory
+
     Why a class (owns state)?
     - Owns KV cache tensors (shared across all layers)
+    - Caches block masks for efficiency
     - Needs initialization with config
 
     Why not nn.Module?
@@ -23,6 +30,10 @@ class FlexAttentionBackend:
         self.config = config
         self.num_heads_per_kv = 1  # Set by model, updated via set_num_heads()
         self.scale = config.head_dim**-0.5
+
+        # Cache block masks by (batch_size, seq_len) to avoid recomputation
+        # create_block_mask is expensive, so we cache results
+        self._mask_cache: dict[tuple[int, int], object] = {}
 
         # KV cache: [num_layers, total_slots, num_kv_heads, head_dim]
         # All layers share one allocation (indexed by layer_idx)
@@ -36,6 +47,48 @@ class FlexAttentionBackend:
     def set_num_heads(self, num_heads: int) -> None:
         """Set number of query heads (for GQA expansion)."""
         self.num_heads_per_kv = num_heads // self.config.num_kv_heads
+
+    def get_block_mask(self, batch_size: int, seq_len: int):
+        """Get or create block mask for attention.
+
+        Creates appropriate mask based on config (causal or sliding window).
+        Caches masks to avoid expensive recomputation.
+
+        Args:
+            batch_size: Number of sequences
+            seq_len: Sequence length
+
+        Returns:
+            BlockMask for flex_attention, or None if no special masking needed
+        """
+        # For simple causal without sliding window, we can use is_causal=True
+        # which is faster than creating a block mask
+        if self.config.sliding_window is None:
+            return None
+
+        # Check cache
+        cache_key = (batch_size, seq_len)
+        if cache_key in self._mask_cache:
+            return self._mask_cache[cache_key]
+
+        # Create mask
+        mask = create_attention_mask(
+            batch_size=batch_size,
+            seq_len=seq_len,
+            sliding_window=self.config.sliding_window,
+            block_size=self.config.block_size,
+            device=self.config.device,
+        )
+
+        # Cache for reuse (limit cache size to prevent memory bloat)
+        if len(self._mask_cache) < 100:
+            self._mask_cache[cache_key] = mask
+
+        return mask
+
+    def clear_mask_cache(self) -> None:
+        """Clear cached block masks (call if sequence lengths change significantly)."""
+        self._mask_cache.clear()
 
     def forward(
         self,
@@ -102,7 +155,7 @@ class FlexAttentionBackend:
         """Prefill attention: compute over full input sequence.
 
         For prefill, we use the input K/V directly (they're also stored in cache).
-        Uses FlexAttention with causal masking.
+        Uses FlexAttention with appropriate masking (causal or sliding window).
         """
         batch, seq_len, num_heads, head_dim = q.shape
 
@@ -116,11 +169,17 @@ class FlexAttentionBackend:
             k = k.repeat_interleave(self.num_heads_per_kv, dim=1)
             v = v.repeat_interleave(self.num_heads_per_kv, dim=1)
 
-        # Use FlexAttention if block_mask provided, else standard SDPA
-        if ctx.block_mask is not None:
+        # Get block mask: use provided mask, or create from config
+        block_mask = ctx.block_mask
+        if block_mask is None:
+            block_mask = self.get_block_mask(batch, seq_len)
+
+        # Use FlexAttention if we have a block_mask (e.g., sliding window),
+        # else standard SDPA with is_causal=True
+        if block_mask is not None:
             from torch.nn.attention.flex_attention import flex_attention
 
-            out = flex_attention(q, k, v, block_mask=ctx.block_mask, scale=self.scale)
+            out = flex_attention(q, k, v, block_mask=block_mask, scale=self.scale)
         else:
             out = torch.nn.functional.scaled_dot_product_attention(
                 q, k, v, is_causal=True, scale=self.scale
@@ -224,6 +283,7 @@ class FlexAttentionBackend:
         return k_out, v_out
 
     def clear_cache(self) -> None:
-        """Zero out all cache tensors."""
+        """Zero out all cache tensors and clear mask cache."""
         self.k_cache.zero_()
         self.v_cache.zero_()
+        self._mask_cache.clear()
