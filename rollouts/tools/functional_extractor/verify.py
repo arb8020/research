@@ -283,13 +283,24 @@ def _build_verification_script(
     verification: VerificationConfig,
 ) -> str:
     """Build the remote verification script."""
-    return f'''
+    # Strip __future__ imports from functional code - we'll add them at the top
+    functional_lines = functional_code.split('\n')
+    filtered_lines = [
+        line for line in functional_lines
+        if not line.strip().startswith('from __future__')
+    ]
+    functional_code_clean = '\n'.join(filtered_lines)
+
+    return f'''from __future__ import annotations
+
 import torch
 from transformers import AutoModelForCausalLM
 import json
+import torch.nn.functional as F
+from torch import Tensor
 
-# The functional code to verify
-{functional_code}
+# The functional code to verify (with __future__ imports stripped)
+{functional_code_clean}
 
 def main():
     print("Loading model...")
