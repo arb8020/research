@@ -257,7 +257,6 @@ def run_on_gpu(
         venv_python = setup_env(handle, requirements)
 
         # Run with streaming output
-        # workspace contains the cloned repo, rel_path is relative to git root
         remote_script = f"{handle.workspace}/{rel_path}"
         cmd = f"{venv_python} {remote_script}"
         print(f"Running: {cmd}")

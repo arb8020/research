@@ -10,6 +10,15 @@ Usage:
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# Add rollouts to path for imports
+_script_dir = Path(__file__).resolve().parent
+_rollouts_dir = _script_dir.parent.parent
+if str(_rollouts_dir) not in sys.path:
+    sys.path.insert(0, str(_rollouts_dir))
+
 
 def setup_environment():
     """Install required packages with correct versions."""
