@@ -85,6 +85,7 @@ class InteractiveAgentRunner:
         self.renderer: AgentRenderer | None = None
         self.input_component: Input | None = None
         self.loader_container: LoaderContainer | None = None
+        self.status_line: "StatusLine | None" = None
 
         # Input coordination - use Trio memory channels instead of asyncio.Queue
         self.input_send: trio.MemorySendChannel[str] | None = None
@@ -285,8 +286,15 @@ class InteractiveAgentRunner:
         self.input_component.set_on_editor(self._handle_open_editor)
         self.tui.add_child(self.input_component)
 
-        # Add spacer after input box to keep it 6 lines from bottom
-        self.tui.add_child(Spacer(6, debug_label="after-input"))
+        # Create status line below input
+        from .components.status_line import StatusLine
+        self.status_line = StatusLine(theme=self.tui.theme)
+        self.status_line.set_session_id(self.session_id)
+        self.status_line.set_model(f"{self.endpoint.provider}/{self.endpoint.model}")
+        self.tui.add_child(self.status_line)
+
+        # Add spacer after status line to keep it from bottom
+        self.tui.add_child(Spacer(5, debug_label="after-status"))
 
         # Set up signal handler for Ctrl+C
         signal.signal(signal.SIGINT, self._handle_sigint)
@@ -477,6 +485,14 @@ class InteractiveAgentRunner:
                 self.tui.stop()
             if self.terminal:
                 self.terminal.stop()
+
+            # Print session ID for easy resume
+            if self.session_id:
+                # Use \r\n for proper newlines after raw terminal mode
+                import sys
+                sys.stdout.write(f"\r\nSession: {self.session_id}\r\n")
+                sys.stdout.write(f"Resume with: --session {self.session_id}\r\n")
+                sys.stdout.flush()
 
     def _handle_stop(self, state: AgentState) -> AgentState:
         """Handle stop condition - check max turns."""
