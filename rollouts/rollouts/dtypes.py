@@ -864,6 +864,7 @@ class Endpoint(JsonSerializable):
     model: str
     api_base: str = ""
     api_key: str = ""
+    oauth_token: str = ""  # OAuth bearer token (takes precedence over api_key for Anthropic)
     max_tokens: int = 8192
     temperature: float = 1.0
     tool_choice: str | dict[str, Any] | None = None
