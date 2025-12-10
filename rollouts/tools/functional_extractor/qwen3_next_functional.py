@@ -181,7 +181,11 @@ def self_attention(
     rotary_dim: int,
     attention_mask: Tensor | None = None,
 ) -> Tensor:
-    """Self-attention with partial RoPE, GQA, and Q/K norms.
+    """Self-attention with partial RoPE, GQA, Q/K norms, and gated output.
+
+    Qwen3-Next attention uses gated attention:
+    - Q projection outputs 2x normal size, chunked into query + gate
+    - Output is multiplied by sigmoid(gate)
 
     Args:
         hidden_states: Input of shape (batch, seq_len, hidden_size)
@@ -197,20 +201,36 @@ def self_attention(
     batch_size, seq_len, _ = hidden_states.shape
     num_kv_groups = NUM_HEADS // NUM_KV_HEADS
 
-    # Project Q, K, V (no bias)
-    q = F.linear(hidden_states, weights[f"{prefix}.q_proj.weight"])
+    # Project Q - outputs 2x size for query + gate
+    q_proj_out = F.linear(hidden_states, weights[f"{prefix}.q_proj.weight"])
+    # Reshape to [batch, seq_len, num_heads, head_dim * 2] then chunk
+    q_proj_out = q_proj_out.view(batch_size, seq_len, NUM_HEADS, HEAD_DIM * 2)
+    query_states, gate = torch.chunk(q_proj_out, 2, dim=-1)
+
+    # Project K, V (normal size)
     k = F.linear(hidden_states, weights[f"{prefix}.k_proj.weight"])
     v = F.linear(hidden_states, weights[f"{prefix}.v_proj.weight"])
 
-    # Reshape to (batch, num_heads, seq_len, head_dim)
-    q = q.view(batch_size, seq_len, NUM_HEADS, HEAD_DIM).transpose(1, 2)
-    k = k.view(batch_size, seq_len, NUM_KV_HEADS, HEAD_DIM).transpose(1, 2)
-    v = v.view(batch_size, seq_len, NUM_KV_HEADS, HEAD_DIM).transpose(1, 2)
+    # Reshape K, V to (batch, seq_len, num_kv_heads, head_dim)
+    k = k.view(batch_size, seq_len, NUM_KV_HEADS, HEAD_DIM)
+    v = v.view(batch_size, seq_len, NUM_KV_HEADS, HEAD_DIM)
 
-    # Apply Q/K norms if present
+    # Apply Q/K norms (applied to [batch, seq_len, num_heads, head_dim] shape)
     if f"{prefix}.q_norm.weight" in weights:
-        q = rms_norm(q, weights[f"{prefix}.q_norm.weight"])
-        k = rms_norm(k, weights[f"{prefix}.k_norm.weight"])
+        # Flatten for RMS norm, then reshape back
+        query_states = rms_norm(
+            query_states.reshape(-1, HEAD_DIM),
+            weights[f"{prefix}.q_norm.weight"]
+        ).view(batch_size, seq_len, NUM_HEADS, HEAD_DIM)
+        k = rms_norm(
+            k.reshape(-1, HEAD_DIM),
+            weights[f"{prefix}.k_norm.weight"]
+        ).view(batch_size, seq_len, NUM_KV_HEADS, HEAD_DIM)
+
+    # Transpose to (batch, num_heads, seq_len, head_dim)
+    q = query_states.transpose(1, 2)
+    k = k.transpose(1, 2)
+    v = v.transpose(1, 2)
 
     # Apply partial RoPE
     q, k = apply_rotary_pos_emb_partial(q, k, cos, sin, rotary_dim)
@@ -227,9 +247,15 @@ def self_attention(
         is_causal=(attention_mask is None),
     )
 
-    # Reshape and project output
+    # Reshape output to (batch, seq_len, num_heads * head_dim)
     attn_output = attn_output.transpose(1, 2).contiguous()
     attn_output = attn_output.view(batch_size, seq_len, NUM_HEADS * HEAD_DIM)
+
+    # Apply gating: output = attn_output * sigmoid(gate)
+    gate = gate.view(batch_size, seq_len, NUM_HEADS * HEAD_DIM)
+    attn_output = attn_output * torch.sigmoid(gate)
+
+    # Output projection
     output = F.linear(attn_output, weights[f"{prefix}.o_proj.weight"])
 
     return output
