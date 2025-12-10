@@ -80,7 +80,7 @@ def explore():
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
         torch_dtype=torch.bfloat16,
-        device_map="cuda:0",
+        device_map="balanced",  # Use both GPUs
         trust_remote_code=True,
     )
     model.eval()
@@ -89,25 +89,38 @@ def explore():
     print(f"Model type: {type(model).__name__}")
     print(f"Base model type: {type(model.model).__name__}")
 
-    # Check attention module
-    attn = model.model.layers[0].self_attn
-    print(f"\n### Attention module (layer 0) ###")
-    print(f"Attention type: {type(attn).__name__}")
+    # Check attention module (may be self_attn or linear_attn)
+    layer0 = model.model.layers[0]
+    if hasattr(layer0, 'self_attn'):
+        attn = layer0.self_attn
+        attn_name = "self_attn"
+    elif hasattr(layer0, 'linear_attn'):
+        attn = layer0.linear_attn
+        attn_name = "linear_attn"
+    else:
+        attn = None
+        attn_name = "unknown"
+    print(f"\n### Attention module (layer 0): {attn_name} ###")
+    print(f"Attention type: {type(attn).__name__}" if attn else "No attention module found")
 
     # List all parameters in attention
-    print("\nAttention parameters:")
-    for name, param in attn.named_parameters():
-        print(f"  {name}: {param.shape}")
+    if attn:
+        print("\nAttention parameters:")
+        for name, param in attn.named_parameters():
+            print(f"  {name}: {param.shape}")
 
-    # Check for special attributes
-    print("\nSpecial attributes:")
-    for attr in ['scaling', 'softcap', 'is_causal', 'attention_dropout', 'q_norm', 'k_norm']:
-        if hasattr(attn, attr):
-            val = getattr(attn, attr)
-            if hasattr(val, 'weight'):
-                print(f"  {attr}: {type(val).__name__} (has weight)")
-            else:
-                print(f"  {attr}: {val}")
+        # Check for special attributes
+        print("\nSpecial attributes:")
+        for attr in ['scaling', 'softcap', 'is_causal', 'attention_dropout', 'q_norm', 'k_norm',
+                     'A_log', 'D', 'dt_bias', 'conv1d']:
+            if hasattr(attn, attr):
+                val = getattr(attn, attr)
+                if hasattr(val, 'weight'):
+                    print(f"  {attr}: {type(val).__name__} (has weight)")
+                elif hasattr(val, 'shape'):
+                    print(f"  {attr}: Tensor{list(val.shape)}")
+                else:
+                    print(f"  {attr}: {val}")
 
     # Check MLP / MoE block
     mlp = model.model.layers[0].mlp
