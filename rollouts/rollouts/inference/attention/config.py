@@ -1,4 +1,4 @@
-"""Cache configuration - frozen dataclass."""
+"""Cache and attention configuration - frozen dataclass."""
 
 from dataclasses import dataclass
 
@@ -7,9 +7,10 @@ import torch
 
 @dataclass(frozen=True)
 class CacheConfig:
-    """Configuration for KV cache. Immutable after creation.
+    """Configuration for KV cache and attention. Immutable after creation.
 
-    Passed at backend initialization. Defines cache tensor dimensions.
+    Passed at backend initialization. Defines cache tensor dimensions
+    and attention behavior (e.g., sliding window).
 
     Why frozen?
     - Cache dimensions don't change after init
@@ -25,6 +26,9 @@ class CacheConfig:
     # Cache dimensions
     num_blocks: int = 1024
     block_size: int = 16
+
+    # Attention configuration
+    sliding_window: int | None = None  # None = full attention, else window size
 
     # Hardware
     dtype: torch.dtype = torch.bfloat16
@@ -49,6 +53,7 @@ class CacheConfig:
                 self.head_dim,
                 self.num_blocks,
                 self.block_size,
+                self.sliding_window,
                 str(self.dtype),
                 self.device,
             )
