@@ -92,8 +92,9 @@ class InteractiveAgentRunner:
         self.input_pending: bool = False
         self.is_first_user_message = True
 
-        # Cancellation
-        self.cancel_scope: trio.CancelScope | None = None
+        # Cancellation - separate scope for agent vs entire TUI
+        self.cancel_scope: trio.CancelScope | None = None  # Outer nursery scope
+        self.agent_cancel_scope: trio.CancelScope | None = None  # Inner agent scope
 
         # Store for passing multiple messages from input handler to no_tool handler
         self._pending_user_messages: list[str] = []
@@ -311,12 +312,16 @@ class InteractiveAgentRunner:
                         # Read input (non-blocking)
                         input_data = self.terminal.read_input()
                         if input_data:
-                            # Check for Ctrl+C (ASCII 3) first
+                            # Check for Ctrl+C (ASCII 3) - exit TUI entirely
                             if len(input_data) > 0 and ord(input_data[0]) == 3:
-                                # Cancel the agent
                                 if self.cancel_scope:
                                     self.cancel_scope.cancel()
                                 return
+                            # Check for Escape (ASCII 27) - interrupt current agent run
+                            if len(input_data) == 1 and ord(input_data[0]) == 27:
+                                if self.agent_cancel_scope:
+                                    self.agent_cancel_scope.cancel()
+                                continue
                             # Route to TUI's input handler
                             if self.tui:
                                 self.tui._handle_input(input_data)
@@ -393,25 +398,76 @@ class InteractiveAgentRunner:
 
                     return dc_replace(state, actor=new_actor)
 
-                run_config = RunConfig(
-                    on_chunk=self._handle_stream_event,
-                    on_input=self._tui_input_handler,
-                    confirm_tool=auto_confirm_tool,
-                    handle_stop=self._handle_stop,
-                    handle_no_tool=handle_no_tool_interactive,
-                    session_store=self.session_store,
-                    session_id=self.session_id,
-                )
-
                 # Store agent result
                 agent_states = []
+                current_state = initial_state
 
-                # Run agent in foreground
-                try:
-                    agent_states = await run_agent(initial_state, run_config)
-                except trio.Cancelled:
-                    # Agent was cancelled - this is expected
-                    agent_states = []
+                # Main agent loop - handles interrupts and continues
+                while True:
+                    # Create a new cancel scope for this agent run
+                    self.agent_cancel_scope = trio.CancelScope()
+
+                    run_config = RunConfig(
+                        on_chunk=self._handle_stream_event,
+                        on_input=self._tui_input_handler,
+                        confirm_tool=auto_confirm_tool,
+                        handle_stop=self._handle_stop,
+                        handle_no_tool=handle_no_tool_interactive,
+                        session_store=self.session_store,
+                        session_id=self.session_id,
+                        cancel_scope=self.agent_cancel_scope,
+                    )
+
+                    # Run agent with cancellation support
+                    with self.agent_cancel_scope:
+                        agent_states = await run_agent(current_state, run_config)
+
+                    # Check if agent was cancelled
+                    if self.agent_cancel_scope.cancelled_caught:
+                        # Agent was interrupted - hide loader and show message
+                        if self.tui:
+                            self.tui.hide_loader()
+
+                        # Get any partial response that was being streamed
+                        partial_response = None
+                        if self.renderer:
+                            partial_response = self.renderer.get_partial_response()
+                            self.renderer.finalize_partial_response()
+                            self.renderer.add_system_message("Interrupted")
+
+                        # Build new messages list
+                        new_messages = list(current_state.actor.trajectory.messages)
+
+                        # If there was a partial response, add it with [interrupted] marker
+                        # TODO: Consider whether to include partial response in trajectory.
+                        # Pros: Agent knows what it said before being cut off
+                        # Cons: Partial text may be confusing, user might not want to see it,
+                        #       could be mid-word/mid-thought garbage
+                        # Maybe add a flag to control this behavior?
+                        if partial_response:
+                            new_messages.append(Message(
+                                role="assistant",
+                                content=partial_response + "\n\n[interrupted]"
+                            ))
+
+                        # Wait for new user input
+                        user_input = await self._tui_input_handler("Enter your message: ")
+                        new_messages.append(Message(role="user", content=user_input))
+
+                        # Update state with new trajectory
+                        from dataclasses import replace as dc_replace
+                        new_trajectory = Trajectory(messages=new_messages)
+                        current_state = dc_replace(
+                            current_state,
+                            actor=dc_replace(current_state.actor, trajectory=new_trajectory),
+                            stop=None,  # Clear any stop reason
+                        )
+                        # Loop continues with new state
+                    else:
+                        # Agent completed normally - exit loop
+                        break
+
+                    self.agent_cancel_scope = None
 
             return agent_states
 
