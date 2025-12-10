@@ -20,6 +20,7 @@ def sample_with_logprobs(
     Returns:
         tokens: Sampled token IDs [batch]
         logprobs: Log probability of each sampled token [batch]
+                  (always from unscaled logits - the true model distribution)
     """
     assert logits.dim() == 2, f"Expected 2D logits, got {logits.dim()}D"
     assert temperatures.dim() == 1, f"Expected 1D temperatures, got {temperatures.dim()}D"
@@ -27,27 +28,28 @@ def sample_with_logprobs(
 
     batch_size = logits.size(0)
 
+    # Compute TRUE log probabilities from unscaled logits
+    # This is the actual model distribution, independent of sampling temperature
+    log_probs = F.log_softmax(logits, dim=-1)
+
     # Handle temperature=0 (greedy) separately
     greedy_mask = temperatures == 0
     temps_safe = temperatures.clone()
     temps_safe[greedy_mask] = 1.0  # Avoid division by zero
 
-    # Scale by temperature
+    # Scale by temperature for sampling only
     scaled_logits = logits / temps_safe.unsqueeze(-1)
+    scaled_probs = F.softmax(scaled_logits, dim=-1)
 
-    # Compute log probabilities (more numerically stable than softmax -> log)
-    log_probs = F.log_softmax(scaled_logits, dim=-1)
-
-    # Sample from distribution
-    probs = log_probs.exp()
-    sampled_tokens = torch.multinomial(probs, num_samples=1).squeeze(-1)
+    # Sample from temperature-scaled distribution
+    sampled_tokens = torch.multinomial(scaled_probs, num_samples=1).squeeze(-1)
 
     # For greedy, override with argmax
     if greedy_mask.any():
         greedy_tokens = logits.argmax(dim=-1)
         sampled_tokens = torch.where(greedy_mask, greedy_tokens, sampled_tokens)
 
-    # Get logprob of sampled token
+    # Get logprob from UNSCALED distribution (true model probability)
     sampled_logprobs = log_probs.gather(-1, sampled_tokens.unsqueeze(-1)).squeeze(-1)
 
     assert sampled_tokens.shape == (batch_size,)
