@@ -117,6 +117,28 @@ class InteractiveAgentRunner:
                 # Could show a "queue full" indicator in the future
                 pass
 
+    def _handle_open_editor(self, current_text: str) -> None:
+        """Handle Ctrl+G to open external editor for message composition."""
+        if not self.terminal:
+            return
+
+        # Run editor (this temporarily exits raw mode)
+        edited_content = self.terminal.run_external_editor(current_text)
+
+        # If user saved content, update input and optionally submit
+        if edited_content:
+            if self.input_component:
+                self.input_component.set_text(edited_content)
+            # Auto-submit the edited content
+            self._handle_input_submit(edited_content)
+            # Clear input after submit
+            if self.input_component:
+                self.input_component.set_text("")
+
+        # Force full redraw
+        if self.tui:
+            self.tui.request_render()
+
     async def _handle_slash_command(self, command: str) -> bool:
         """Handle slash commands.
 
@@ -259,6 +281,7 @@ class InteractiveAgentRunner:
         # Create input component with theme
         self.input_component = Input(theme=self.tui.theme)
         self.input_component.set_on_submit(self._handle_input_submit)
+        self.input_component.set_on_editor(self._handle_open_editor)
         self.tui.add_child(self.input_component)
 
         # Add spacer after input box to keep it 6 lines from bottom
