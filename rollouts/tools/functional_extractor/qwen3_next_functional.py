@@ -272,7 +272,9 @@ def gated_delta_net(
     qkvz_size = in_proj_qkvz.shape[0]  # 12288 = 3 * expand_size (q, k, v, z packed differently)
 
     # Compute A from A_log (negative to ensure stability)
+    # Keep in float32 for stability but will convert decay to input dtype
     A = -torch.exp(A_log.float())  # [num_heads]
+    input_dtype = hidden_states.dtype
 
     # Project input to qkvz space
     qkvz = F.linear(hidden_states, in_proj_qkvz)  # [batch, seq_len, qkvz_size]
@@ -324,9 +326,9 @@ def gated_delta_net(
     # In practice, this should use parallel scan or chunked computation
     head_dim_half = q.shape[-1]
 
-    # Initialize hidden state
+    # Initialize hidden state (use input dtype for consistency)
     h = torch.zeros(batch_size, num_heads, head_dim_half, head_dim_half,
-                    device=hidden_states.device, dtype=hidden_states.dtype)
+                    device=hidden_states.device, dtype=input_dtype)
 
     outputs = []
     for t in range(seq_len):
@@ -337,8 +339,8 @@ def gated_delta_net(
         dt_t = dt[:, t]  # [batch, num_heads]
         beta_t = torch.sigmoid(beta[:, t])  # [batch, num_heads]
 
-        # Compute decay factor
-        decay = torch.exp(A * dt_t)  # [batch, num_heads]
+        # Compute decay factor (compute in float32, convert to input dtype)
+        decay = torch.exp(A * dt_t).to(input_dtype)  # [batch, num_heads]
 
         # Outer product: k^T @ v -> [batch, num_heads, head_dim_half, head_dim_half]
         kv = torch.einsum('bhi,bhj->bhij', k_t, v_t)
