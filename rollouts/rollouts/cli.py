@@ -562,12 +562,42 @@ def main() -> int:
                     print("No previous session found, starting new session")
 
         # Build trajectory: either from resumed session or fresh
+        # Track forking info if config differs from parent
+        parent_session_id: str | None = None
+        branch_point: int | None = None
+
         if session_id:
             try:
                 state = await resume_session(session_id, session_store, endpoint, environment)
                 trajectory = state.actor.trajectory
-                print(f"Resuming session: {session_id}")
-                print(f"  {len(trajectory.messages)} messages")
+
+                # Check if config differs from parent - if so, fork instead of continue
+                parent_session, _ = await session_store.get(session_id)
+                if parent_session:
+                    # Compare endpoint config
+                    current_env_type = type(environment).__name__ if environment else "none"
+                    parent_env_type = parent_session.environment.type if parent_session.environment else "none"
+
+                    config_differs = (
+                        endpoint.model != parent_session.endpoint.model or
+                        endpoint.provider != parent_session.endpoint.provider or
+                        current_env_type != parent_env_type
+                    )
+
+                    if config_differs:
+                        # Fork: create child session instead of continuing parent
+                        parent_session_id = session_id
+                        branch_point = len(trajectory.messages)
+                        session_id = None  # Will create new session in run_agent
+                        print(f"Forking from session: {parent_session_id}")
+                        print(f"  Config changed: model={endpoint.model}, env={current_env_type}")
+                        print(f"  Branch point: {branch_point} messages")
+                    else:
+                        print(f"Resuming session: {parent_session.session_id}")
+                        print(f"  {len(trajectory.messages)} messages")
+                else:
+                    print(f"Resuming session: {session_id}")
+                    print(f"  {len(trajectory.messages)} messages")
             except ValueError as e:
                 print(f"Error: {e}", file=sys.stderr)
                 return 1
@@ -601,6 +631,8 @@ def main() -> int:
                 args.theme,
                 args.debug,
                 args.debug_layout,
+                parent_session_id,
+                branch_point,
             )
             return 0
         except KeyboardInterrupt:

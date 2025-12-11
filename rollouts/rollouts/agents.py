@@ -845,9 +845,14 @@ async def run_agent(
         session = await session_store.create(
             endpoint=_endpoint_to_config(current_state.actor.endpoint),
             environment=_environment_to_config(current_state.environment),
+            parent_id=current_state.parent_session_id,
+            branch_point=current_state.branch_point,
         )
         current_state = replace(current_state, session_id=session.session_id)
-        logger.info(f"Created session: {session.session_id}")
+        if current_state.parent_session_id:
+            logger.info(f"Created child session: {session.session_id} (forked from {current_state.parent_session_id} at message {current_state.branch_point})")
+        else:
+            logger.info(f"Created session: {session.session_id}")
 
         # Persist initial messages (system prompt, user message, etc.)
         for msg in current_state.actor.trajectory.messages:

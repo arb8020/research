@@ -923,6 +923,9 @@ class AgentState:
     next_tool_idx: int = 0  # Which tool we're about to process
     timestamp: str = datetime.now(timezone.utc).isoformat() + 'Z'
     session_id: str | None = None  # Session ID for persistence (set by run_agent)
+    # For forking: when resuming with different config, create child session
+    parent_session_id: str | None = None  # Parent session to branch from
+    branch_point: int | None = None  # Message index where branching from parent
 
 
 # Forward declarations for RunConfig (needs to be after AgentState but before default handlers)
