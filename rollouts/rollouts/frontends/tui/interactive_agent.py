@@ -59,6 +59,7 @@ class InteractiveAgentRunner:
         parent_session_id: str | None = None,
         branch_point: int | None = None,
         confirm_tools: bool = False,
+        initial_prompt: str | None = None,
     ) -> None:
         """Initialize interactive agent runner.
 
@@ -75,6 +76,7 @@ class InteractiveAgentRunner:
             parent_session_id: Parent session ID when forking
             branch_point: Message index where forking from parent
             confirm_tools: Require confirmation before executing tools
+            initial_prompt: Optional initial prompt to send immediately
         """
         self.initial_trajectory = initial_trajectory
         self.endpoint = endpoint
@@ -88,6 +90,7 @@ class InteractiveAgentRunner:
         self.parent_session_id = parent_session_id
         self.branch_point = branch_point
         self.confirm_tools = confirm_tools
+        self.initial_prompt = initial_prompt
 
         # TUI components
         self.terminal: ProcessTerminal | None = None
@@ -360,6 +363,10 @@ class InteractiveAgentRunner:
             # pending user input while generating a response, rather than only
             # processing them after the current turn completes.
             self.input_send, self.input_receive = trio.open_memory_channel[str](10)
+
+            # Queue initial prompt if provided (e.g., from stdin)
+            if self.initial_prompt:
+                self.input_send.send_nowait(self.initial_prompt)
 
             # Set up terminal input reading loop
             # Terminal is in raw mode, so we need to poll for input
@@ -693,6 +700,7 @@ async def run_interactive_agent(
     parent_session_id: str | None = None,
     branch_point: int | None = None,
     confirm_tools: bool = False,
+    initial_prompt: str | None = None,
 ) -> list[AgentState]:
     """Run an interactive agent with TUI.
 
@@ -709,6 +717,7 @@ async def run_interactive_agent(
         parent_session_id: Parent session ID when forking
         branch_point: Message index where forking from parent
         confirm_tools: Require confirmation before executing tools
+        initial_prompt: Optional initial prompt to send immediately
 
     Returns:
         List of agent states from the run
@@ -726,6 +735,7 @@ async def run_interactive_agent(
         parent_session_id=parent_session_id,
         branch_point=branch_point,
         confirm_tools=confirm_tools,
+        initial_prompt=initial_prompt,
     )
     return await runner.run()
 

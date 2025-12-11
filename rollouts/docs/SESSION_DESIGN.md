@@ -43,8 +43,8 @@ rollouts -c
 rollouts --session
 rollouts -s
 
-# Resume specific session file
-rollouts -s ~/.rollouts/sessions/.../session.jsonl
+# Resume specific session by ID
+rollouts -s <session_id>
 
 # Don't persist session
 rollouts --no-session
@@ -55,12 +55,40 @@ rollouts --no-session
 # Non-interactive, print result
 rollouts -p "query"
 
+# Read query from stdin
+rollouts -p -
+rollouts -p < prompt.txt
+echo "explain this code" | rollouts -p
+
 # With session continuation
 rollouts -c -p "follow up question"
 
 # No session persistence
 rollouts -p "quick question" --no-session
 ```
+
+### Handoff (Extract Context for New Session)
+```bash
+# Extract goal-directed context to stdout
+rollouts --handoff "implement the API endpoints" -s <session_id>
+
+# Save to file, edit, then use
+rollouts --handoff "fix the tests" -s abc123 > handoff.md
+vim handoff.md
+rollouts --env coding < handoff.md
+
+# One-liner: pipe directly to new interactive session
+rollouts --handoff "continue this work" -s abc123 | rollouts --env coding
+
+# Or non-interactive
+rollouts --handoff "continue this work" -s abc123 | rollouts -p
+```
+
+Handoff replaces the old `--summarize` and `--compact` commands. Instead of creating
+a child session with a baked-in summary, it outputs markdown that you can review,
+edit, and pipe into a new session. This is more Unix-like: tools do one thing well.
+
+Stdin input works for both interactive TUI and non-interactive print mode.
 
 ## API (sessions.py)
 
@@ -93,14 +121,13 @@ compact_session(source, summarize_fn, keep_last_n, ...) -> Session
 - [x] Message append (user, assistant, tool results)
 - [x] Session continuation (`-c`)
 - [x] Session picker (`-s`)
-- [x] Unix utility mode (`-p`)
+- [x] Unix utility mode (`-p`) with stdin support
+- [x] Handoff (`--handoff GOAL`) - extract goal-directed context to stdout
 - [x] `branch_session()` function
-- [x] `compact_session()` function
 
 ## Not Yet Implemented
 
 - [ ] CLI commands for branching (`--branch`)
-- [ ] CLI commands for compaction (`--compact`)
 - [ ] Render previous messages on session resume (currently loads context but doesn't display)
 - [ ] `--output-format json/stream-json` for print mode
 

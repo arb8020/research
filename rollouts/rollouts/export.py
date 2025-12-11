@@ -278,204 +278,75 @@ def format_content_html(content: str | list[dict[str, Any]]) -> str:
     return "\n".join(parts)
 
 
-# --- Session Transformations ---
+# --- Handoff ---
 
 
-def compact_content_block(block: dict[str, Any], max_length: int = 500) -> dict[str, Any]:
-    """Compact a single content block by truncating verbose content."""
-    block_type = block.get("type", "")
-
-    if block_type == "text":
-        text = block.get("text", "")
-        if len(text) > max_length:
-            return {**block, "text": text[:max_length] + f"\n... [truncated {len(text) - max_length} chars]"}
-        return block
-
-    elif block_type == "toolResult":
-        # Tool results are often verbose - truncate aggressively
-        content = block.get("content", "")
-        if isinstance(content, str) and len(content) > max_length:
-            return {**block, "content": content[:max_length] + f"\n... [truncated {len(content) - max_length} chars]"}
-        elif isinstance(content, list):
-            # Content blocks in tool result
-            compacted = [compact_content_block(b, max_length) for b in content]
-            return {**block, "content": compacted}
-        return block
-
-    # Other types pass through unchanged
-    return block
-
-
-def compact_message_content(
-    content: str | list[dict[str, Any]],
-    max_length: int = 500,
-) -> str | list[dict[str, Any]]:
-    """Compact message content by truncating verbose parts."""
-    if isinstance(content, str):
-        if len(content) > max_length:
-            return content[:max_length] + f"\n... [truncated {len(content) - max_length} chars]"
-        return content
-
-    # Content blocks
-    return [compact_content_block(block, max_length) for block in content]
-
-
-def compact_session(
-    session: AgentSession,
-    max_content_length: int = 500,
-) -> AgentSession:
-    """Create a compacted child session with truncated tool results.
-
-    Args:
-        session: Parent session to compact
-        max_content_length: Max chars before truncation (default 500)
-
-    Returns:
-        New child session with compacted messages
-    """
-    # Generate new session ID
-    now = datetime.now()
-    session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:5]}"
-
-    # Compact each message
-    compacted_messages: list[SessionMessage] = []
-    for msg in session.messages:
-        compacted_content = compact_message_content(msg.content, max_content_length)
-        compacted_msg = SessionMessage(
-            role=msg.role,
-            content=compacted_content,
-            tool_call_id=msg.tool_call_id,
-        )
-        compacted_messages.append(compacted_msg)
-
-    # Create child session
-    return AgentSession(
-        session_id=session_id,
-        created_at=now.isoformat(),
-        endpoint=session.endpoint,
-        environment=session.environment,
-        messages=compacted_messages,
-        status=SessionStatus.PENDING,
-        parent_id=session.session_id,
-        branch_point=len(session.messages),
-    )
-
-
-def summarize_session(
-    session: AgentSession,
-    summary: str,
-) -> AgentSession:
-    """Create a summarized child session with LLM-generated summary as first message.
-
-    Args:
-        session: Parent session to summarize
-        summary: LLM-generated summary text
-
-    Returns:
-        New child session with summary as system/user message
-    """
-    # Generate new session ID
-    now = datetime.now()
-    session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:5]}"
-
-    # Create summary message as user message (context for next assistant turn)
-    summary_msg = SessionMessage(
-        role="user",
-        content=f"[Session Summary from {session.session_id}]\n\n{summary}\n\nPlease continue from here.",
-    )
-
-    # Create child session with just the summary
-    return AgentSession(
-        session_id=session_id,
-        created_at=now.isoformat(),
-        endpoint=session.endpoint,
-        environment=session.environment,
-        messages=[summary_msg],
-        status=SessionStatus.PENDING,
-        parent_id=session.session_id,
-        branch_point=len(session.messages),
-    )
-
-
-# --- CLI Command Runners ---
-
-
-async def run_compact_command(
-    session_store: "SessionStore",
-    session: AgentSession,
-) -> tuple[AgentSession, None] | tuple[None, str]:
-    """Run the compact command on a session.
-
-    Args:
-        session_store: Store to save the compacted session
-        session: Session to compact
-
-    Returns:
-        (child_session, None) on success, (None, error) on failure
-    """
-    child_session = compact_session(session)
-    await session_store.save(child_session)
-    return child_session, None
-
-
-async def run_summarize_command(
-    session_store: "SessionStore",
+async def run_handoff_command(
     session: AgentSession,
     endpoint: "Endpoint",
-) -> tuple[AgentSession, None] | tuple[None, str]:
-    """Run the summarize command on a session.
+    goal: str,
+) -> tuple[str, None] | tuple[None, str]:
+    """Extract goal-directed context from a session.
+
+    Outputs markdown to stdout - does not create a new session.
+    The user can edit the output and pipe it to a new session.
 
     Args:
-        session_store: Store to save the summarized session
-        session: Session to summarize
-        endpoint: LLM endpoint for generating summary
+        session: Session to extract context from
+        endpoint: LLM endpoint for generating handoff
+        goal: The goal/task for the new session
 
     Returns:
-        (child_session, None) on success, (None, error) on failure
+        (markdown, None) on success, (None, error) on failure
     """
-    from rollouts.dtypes import Actor, Endpoint, Message, Trajectory, TextDelta, StreamEvent
+    import sys
+    from rollouts.dtypes import Actor, Message, Trajectory, TextDelta, StreamEvent
     from rollouts.providers import get_provider_function
 
-    print(f"Summarizing session {session.session_id} ({len(session.messages)} messages)...")
+    print(f"Extracting context for: {goal}", file=sys.stderr)
+    print(f"From session: {session.session_id} ({len(session.messages)} messages)", file=sys.stderr)
+    print(file=sys.stderr)
 
     # Convert session to markdown for LLM
     session_md = session_to_markdown(session, include_metadata=False)
-    summary_prompt = f"""Summarize this conversation session concisely. Focus on:
-1. What was the main task/goal
-2. Key decisions made
-3. What was accomplished
-4. Any open items or next steps
 
-Session content:
+    handoff_prompt = f"""Extract context from this session relevant to the following goal:
+
+GOAL: {goal}
+
+SESSION:
 {session_md}
 
-Provide a clear, actionable summary that would help someone continue this work."""
+---
 
-    # Create actor with summary prompt
+Generate a markdown prompt that someone could use to continue this work. Include:
+
+1. **Context**: Key background info needed for the goal (decisions made, constraints, etc.)
+2. **Files**: List relevant file paths that were discussed or modified
+3. **Task**: Clear description of what to do next
+
+Output ONLY the markdown prompt - no preamble or explanation. The output will be used directly as input to a new session."""
+
+    # Create actor with handoff prompt
     actor = Actor(
-        trajectory=Trajectory(messages=[Message(role="user", content=summary_prompt)]),
+        trajectory=Trajectory(messages=[Message(role="user", content=handoff_prompt)]),
         endpoint=endpoint,
         tools=[],
     )
 
-    # Stream response
-    summary_parts: list[str] = []
+    # Stream response (to stderr for progress, collect for return)
+    result_parts: list[str] = []
 
     async def collect_text(event: StreamEvent) -> None:
         if isinstance(event, TextDelta):
-            summary_parts.append(event.delta)
-            print(event.delta, end="", flush=True)
+            result_parts.append(event.delta)
+            print(event.delta, end="", file=sys.stderr, flush=True)
 
     provider_fn = get_provider_function(endpoint.provider, endpoint.model)
     await provider_fn(actor, collect_text)
-    print()  # newline after streaming
+    print(file=sys.stderr)  # newline after streaming
 
-    summary = "".join(summary_parts)
-
-    # Create and save summarized child
-    child_session = summarize_session(session, summary)
-    await session_store.save(child_session)
-    return child_session, None
+    return "".join(result_parts), None
 
 
 # Type hint for SessionStore (avoid circular import)
