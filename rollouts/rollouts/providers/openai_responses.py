@@ -39,7 +39,7 @@ from rollouts.dtypes import (
     Usage,
 )
 
-from .base import _prepare_messages_for_llm
+from .base import _prepare_messages_for_llm, calculate_cost_from_usage
 
 
 async def aggregate_openai_responses_stream(
@@ -646,6 +646,14 @@ async def rollout_openai_responses(
         api="openai-responses",
         model=actor.endpoint.model,
     )
+
+    # Calculate cost if model pricing is available
+    from rollouts.models import get_model
+
+    model_meta = get_model(actor.endpoint.provider, actor.endpoint.model)
+    if model_meta and model_meta.cost:
+        cost = calculate_cost_from_usage(usage, model_meta.cost)
+        usage = replace(usage, cost=cost)
 
     completion = ChatCompletion(
         id="responses-" + str(int(time.time())),

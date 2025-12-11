@@ -38,7 +38,7 @@ from rollouts.dtypes import (
     Usage,
 )
 
-from .base import _prepare_messages_for_llm, sanitize_request_for_logging
+from .base import _prepare_messages_for_llm, calculate_cost_from_usage, sanitize_request_for_logging
 
 logger = logging.getLogger(__name__)
 
@@ -595,6 +595,16 @@ async def rollout_openai(
 
     assert completion is not None
     completion = replace(completion, model=actor.endpoint.model)
+
+    # Calculate cost if model pricing is available
+    from rollouts.models import get_model
+
+    model_meta = get_model(actor.endpoint.provider, actor.endpoint.model)
+    if model_meta and model_meta.cost:
+        cost = calculate_cost_from_usage(completion.usage, model_meta.cost)
+        usage_with_cost = replace(completion.usage, cost=cost)
+        completion = replace(completion, usage=usage_with_cost)
+
     assert completion.choices is not None
     assert len(completion.choices) > 0
     final_message = completion.choices[0].message

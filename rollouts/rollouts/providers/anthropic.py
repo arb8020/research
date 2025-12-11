@@ -44,6 +44,7 @@ from rollouts.dtypes import (
 from .base import (
     _prepare_messages_for_llm,
     add_cache_control_to_last_content,
+    calculate_cost_from_usage,
     sanitize_request_for_logging,
 )
 
@@ -611,6 +612,16 @@ async def rollout_anthropic(
         raise Exception("Failed to get completion after all retries")
 
     completion = replace(completion, model=actor.endpoint.model)
+
+    # Calculate cost if model pricing is available
+    from rollouts.models import get_model
+
+    model_meta = get_model(actor.endpoint.provider, actor.endpoint.model)
+    if model_meta and model_meta.cost:
+        cost = calculate_cost_from_usage(completion.usage, model_meta.cost)
+        usage_with_cost = replace(completion.usage, cost=cost)
+        completion = replace(completion, usage=usage_with_cost)
+
     final_message = completion.choices[0].message
 
     # Enrich message with provider/api/model metadata for cross-provider handoff
