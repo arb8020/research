@@ -212,6 +212,9 @@ class AgentRenderer:
             self.current_message = None
             self.current_text_index = None
             self.current_thinking_index = None
+        else:
+            # Add spacer between consecutive tool calls
+            self.chat_container.add_child(Spacer(1, debug_label="between-tools", debug_layout=self.debug_layout))
 
         # Create tool execution component
         if tool_call_id not in self.pending_tools:

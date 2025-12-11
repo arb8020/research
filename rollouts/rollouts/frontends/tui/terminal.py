@@ -195,12 +195,27 @@ class ProcessTerminal:
     def read_input(self) -> Optional[str]:
         """Read available input (non-blocking style for use with async).
 
-        Returns None if no input available.
+        Returns None if no input available. Reads all available bytes
+        to keep escape sequences together.
         """
         import select
-        if select.select([sys.stdin], [], [], 0)[0]:
-            return sys.stdin.read(1)
-        return None
+        if not select.select([sys.stdin], [], [], 0)[0]:
+            return None
+
+        # Read first byte
+        result = sys.stdin.read(1)
+
+        # If it's an escape, try to read the rest of the sequence
+        if result == '\x1b':
+            # Give a tiny bit of time for the rest of the sequence to arrive
+            import time
+            time.sleep(0.001)  # 1ms
+
+            # Read all available bytes
+            while select.select([sys.stdin], [], [], 0)[0]:
+                result += sys.stdin.read(1)
+
+        return result
 
     def run_external_editor(self, initial_content: str = "") -> Optional[str]:
         """Temporarily exit raw mode, run $EDITOR, and return edited content.
