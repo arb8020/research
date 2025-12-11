@@ -401,9 +401,11 @@ def main() -> int:
         "-p", "--print",
         dest="print_mode",
         type=str,
+        nargs="?",
+        const="-",
         default=None,
         metavar="QUERY",
-        help="Non-interactive mode: run query and print result",
+        help="Non-interactive mode: run query and print result. Use '-p -' or just '-p' to read from stdin.",
     )
 
     # TUI options
@@ -475,16 +477,12 @@ def main() -> int:
         help="Export session to HTML (stdout if no FILE)",
     )
 
-    # Session transformations (create child sessions)
+    # Session transformations
     parser.add_argument(
-        "--compact",
-        action="store_true",
-        help="Create compacted child session (truncate tool results)",
-    )
-    parser.add_argument(
-        "--summarize",
-        action="store_true",
-        help="Create summarized child session (LLM-generated summary)",
+        "--handoff",
+        type=str,
+        metavar="GOAL",
+        help="Extract goal-directed context from session to stdout (markdown)",
     )
 
     args = parser.parse_args()
@@ -570,41 +568,6 @@ def main() -> int:
 
         return trio.run(export_action)
 
-    # Compact - create child session with truncated tool results
-    if args.compact:
-        from rollouts.export import run_compact_command
-        session_store = FileSessionStore()
-
-        async def compact_action() -> int:
-            # Require session ID
-            if args.session is None:
-                print("Error: --compact requires -s <session_id>", file=sys.stderr)
-                return 1
-
-            if args.session == "":
-                session = await pick_session_async(session_store)
-                if session is None:
-                    return 0
-            else:
-                session, err = await session_store.get(args.session)
-                if err or session is None:
-                    print(f"Error loading session: {err}", file=sys.stderr)
-                    return 1
-
-            child_session, err = await run_compact_command(session_store, session)
-            if err:
-                print(f"Error: {err}", file=sys.stderr)
-                return 1
-            print(f"Created compacted session: {child_session.session_id}")
-            print(f"  Parent: {child_session.parent_id}")
-            print(f"  Messages: {len(child_session.messages)}")
-            return 0
-
-        return trio.run(compact_action)
-
-    # Summarize - create child session with LLM-generated summary (requires endpoint)
-    # Handled below after endpoint creation since it needs LLM
-
     # --- Commands requiring endpoint ---
 
     # Create endpoint
@@ -622,15 +585,15 @@ def main() -> int:
         print(f"❌ No API key found. Set {env_var}, use --api-key, or --login-claude", file=sys.stderr)
         return 1
 
-    # Summarize - create child session with LLM-generated summary
-    if args.summarize:
-        from rollouts.export import run_summarize_command
+    # Handoff - extract goal-directed context to stdout
+    if args.handoff:
+        from rollouts.export import run_handoff_command
         session_store = FileSessionStore()
 
-        async def summarize_action() -> int:
+        async def handoff_action() -> int:
             # Require session ID
             if args.session is None:
-                print("Error: --summarize requires -s <session_id>", file=sys.stderr)
+                print("Error: --handoff requires -s <session_id>", file=sys.stderr)
                 return 1
 
             if args.session == "":
@@ -643,15 +606,14 @@ def main() -> int:
                     print(f"Error loading session: {err}", file=sys.stderr)
                     return 1
 
-            child_session, err = await run_summarize_command(session_store, session, endpoint)
+            handoff_md, err = await run_handoff_command(session, endpoint, args.handoff)
             if err:
                 print(f"Error: {err}", file=sys.stderr)
                 return 1
-            print(f"\nCreated summarized session: {child_session.session_id}")
-            print(f"  Parent: {child_session.parent_id}")
+            print(handoff_md)
             return 0
 
-        return trio.run(summarize_action)
+        return trio.run(handoff_action)
 
     # Load preset if specified (apply before individual args)
     if args.preset:
@@ -787,11 +749,23 @@ def main() -> int:
             # Fresh session - just system prompt, run_agent will create session
             trajectory = Trajectory(messages=[Message(role="system", content=system_prompt)])
 
+        # Check for stdin input (piped or redirected)
+        initial_prompt: str | None = None
+        if not sys.stdin.isatty():
+            initial_prompt = sys.stdin.read().strip() or None
+
         # Non-interactive print mode
-        if args.print_mode:
+        if args.print_mode is not None:
+            query = args.print_mode
+            if query == "-":
+                # Read from stdin (already read above if piped)
+                query = initial_prompt or ""
+                if not query:
+                    print("Error: no input from stdin", file=sys.stderr)
+                    return 1
             return await run_print_mode(
                 trajectory, endpoint, environment,
-                args.print_mode, session_store, session_id
+                query, session_store, session_id
             )
 
         # Interactive TUI mode
@@ -810,6 +784,7 @@ def main() -> int:
                 parent_session_id,
                 branch_point,
                 args.confirm_tools,
+                initial_prompt,
             )
             return 0
         except KeyboardInterrupt:
