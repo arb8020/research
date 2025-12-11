@@ -275,6 +275,61 @@ class Input(Component):
             self._handle_backspace()
             return
 
+        # Ctrl+A - move to start of line
+        if len(data) == 1 and ord(data[0]) == 1:
+            self._cursor_col = 0
+            return
+
+        # Ctrl+E - move to end of line
+        if len(data) == 1 and ord(data[0]) == 5:
+            self._cursor_col = len(self._lines[self._cursor_line])
+            return
+
+        # Ctrl+K - delete to end of line
+        if len(data) == 1 and ord(data[0]) == 11:
+            self._delete_to_end_of_line()
+            return
+
+        # Ctrl+U - delete to start of line
+        if len(data) == 1 and ord(data[0]) == 21:
+            self._delete_to_start_of_line()
+            return
+
+        # Ctrl+W - delete word backwards
+        if len(data) == 1 and ord(data[0]) == 23:
+            self._delete_word_backwards()
+            return
+
+        # Option/Alt+Backspace - delete word backwards
+        if data == "\x1b\x7f":
+            self._delete_word_backwards()
+            return
+
+        # Delete key - forward delete
+        if data == "\x1b[3~":
+            self._handle_forward_delete()
+            return
+
+        # Home key variants - move to start of line
+        if data in ("\x1b[H", "\x1b[1~", "\x1b[7~"):
+            self._cursor_col = 0
+            return
+
+        # End key variants - move to end of line
+        if data in ("\x1b[F", "\x1b[4~", "\x1b[8~"):
+            self._cursor_col = len(self._lines[self._cursor_line])
+            return
+
+        # Word navigation: Option/Alt+Left or Ctrl+Left
+        if data in ("\x1b[1;3D", "\x1bb", "\x1b[1;5D"):
+            self._move_word_backwards()
+            return
+
+        # Word navigation: Option/Alt+Right or Ctrl+Right
+        if data in ("\x1b[1;3C", "\x1bf", "\x1b[1;5C"):
+            self._move_word_forwards()
+            return
+
         # Arrow keys
         if data == "\x1b[A":  # Up
             self._move_cursor(-1, 0)
@@ -395,4 +450,160 @@ class Input(Component):
 
         if self._on_change:
             self._on_change(self.get_text())
+
+    def _delete_to_end_of_line(self) -> None:
+        """Delete from cursor to end of line (Ctrl+K)."""
+        current_line = self._lines[self._cursor_line]
+
+        if self._cursor_col < len(current_line):
+            # Delete from cursor to end
+            self._lines[self._cursor_line] = current_line[: self._cursor_col]
+        elif self._cursor_line < len(self._lines) - 1:
+            # At end of line - merge with next line
+            next_line = self._lines[self._cursor_line + 1]
+            self._lines[self._cursor_line] = current_line + next_line
+            self._lines.pop(self._cursor_line + 1)
+
+        if self._on_change:
+            self._on_change(self.get_text())
+
+    def _delete_to_start_of_line(self) -> None:
+        """Delete from cursor to start of line (Ctrl+U)."""
+        current_line = self._lines[self._cursor_line]
+
+        if self._cursor_col > 0:
+            # Delete from start to cursor
+            self._lines[self._cursor_line] = current_line[self._cursor_col :]
+            self._cursor_col = 0
+        elif self._cursor_line > 0:
+            # At start of line - merge with previous line
+            previous_line = self._lines[self._cursor_line - 1]
+            self._lines[self._cursor_line - 1] = previous_line + current_line
+            self._lines.pop(self._cursor_line)
+            self._cursor_line -= 1
+            self._cursor_col = len(previous_line)
+
+        if self._on_change:
+            self._on_change(self.get_text())
+
+    def _delete_word_backwards(self) -> None:
+        """Delete word backwards (Ctrl+W, Option+Backspace)."""
+        current_line = self._lines[self._cursor_line]
+
+        if self._cursor_col == 0:
+            # At start of line - merge with previous line (like backspace)
+            if self._cursor_line > 0:
+                previous_line = self._lines[self._cursor_line - 1]
+                self._lines[self._cursor_line - 1] = previous_line + current_line
+                self._lines.pop(self._cursor_line)
+                self._cursor_line -= 1
+                self._cursor_col = len(previous_line)
+        else:
+            text_before = current_line[: self._cursor_col]
+            delete_from = self._cursor_col
+            last_char = text_before[delete_from - 1] if delete_from > 0 else ""
+
+            # If on whitespace or punctuation, delete just that
+            if self._is_word_boundary(last_char):
+                delete_from -= 1
+            else:
+                # Delete run of non-boundary characters (the "word")
+                while delete_from > 0:
+                    ch = text_before[delete_from - 1]
+                    if self._is_word_boundary(ch):
+                        break
+                    delete_from -= 1
+
+            self._lines[self._cursor_line] = (
+                current_line[:delete_from] + current_line[self._cursor_col :]
+            )
+            self._cursor_col = delete_from
+
+        if self._on_change:
+            self._on_change(self.get_text())
+
+    def _handle_forward_delete(self) -> None:
+        """Handle forward delete (Delete key)."""
+        current_line = self._lines[self._cursor_line]
+
+        if self._cursor_col < len(current_line):
+            # Delete character at cursor
+            before = current_line[: self._cursor_col]
+            after = current_line[self._cursor_col + 1 :]
+            self._lines[self._cursor_line] = before + after
+        elif self._cursor_line < len(self._lines) - 1:
+            # At end of line - merge with next line
+            next_line = self._lines[self._cursor_line + 1]
+            self._lines[self._cursor_line] = current_line + next_line
+            self._lines.pop(self._cursor_line + 1)
+
+        if self._on_change:
+            self._on_change(self.get_text())
+
+    def _is_word_boundary(self, char: str) -> bool:
+        """Check if character is a word boundary."""
+        if not char:
+            return True
+        # Whitespace
+        if char in " \t\n\r":
+            return True
+        # Punctuation
+        if char in "(){}[]<>.,;:'\"!?+-=*/\\|&%^$#@~`":
+            return True
+        return False
+
+    def _move_word_backwards(self) -> None:
+        """Move cursor one word backwards."""
+        current_line = self._lines[self._cursor_line]
+
+        if self._cursor_col == 0:
+            # At start of line - move to end of previous line
+            if self._cursor_line > 0:
+                self._cursor_line -= 1
+                self._cursor_col = len(self._lines[self._cursor_line])
+            return
+
+        text_before = current_line[: self._cursor_col]
+        new_col = self._cursor_col
+        last_char = text_before[new_col - 1] if new_col > 0 else ""
+
+        # If on boundary, skip it
+        if self._is_word_boundary(last_char):
+            new_col -= 1
+
+        # Skip the word (non-boundary characters)
+        while new_col > 0:
+            ch = text_before[new_col - 1]
+            if self._is_word_boundary(ch):
+                break
+            new_col -= 1
+
+        self._cursor_col = new_col
+
+    def _move_word_forwards(self) -> None:
+        """Move cursor one word forwards."""
+        current_line = self._lines[self._cursor_line]
+
+        if self._cursor_col >= len(current_line):
+            # At end of line - move to start of next line
+            if self._cursor_line < len(self._lines) - 1:
+                self._cursor_line += 1
+                self._cursor_col = 0
+            return
+
+        new_col = self._cursor_col
+        char_at_cursor = current_line[new_col] if new_col < len(current_line) else ""
+
+        # If on boundary, skip it
+        if self._is_word_boundary(char_at_cursor):
+            new_col += 1
+
+        # Skip the word (non-boundary characters)
+        while new_col < len(current_line):
+            ch = current_line[new_col]
+            if self._is_word_boundary(ch):
+                break
+            new_col += 1
+
+        self._cursor_col = new_col
 
