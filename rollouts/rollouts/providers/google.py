@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import replace
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from rollouts.dtypes import (
     Actor,
@@ -327,7 +330,7 @@ async def rollout_google(
             )
 
     # Transform messages for cross-provider compatibility (like pi-ai does)
-    from .transform_messages import transform_messages
+    from rollouts.transform_messages import transform_messages
     transformed_messages = transform_messages(
         actor.trajectory.messages,
         target_provider=actor.endpoint.provider,
