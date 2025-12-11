@@ -32,7 +32,7 @@ from rollouts.dtypes import (
     StopReason,
     ToolCall,
 )
-from rollouts.environments import CalculatorEnvironment, LocalFilesystemEnvironment
+from rollouts.environments import CalculatorEnvironment, GitWorktreeEnvironment, LocalFilesystemEnvironment
 from rollouts.store import FileSessionStore
 from rollouts import AgentSession
 
@@ -51,6 +51,22 @@ For calculations:
 
 Example: For "(5 + 3) * 2", first add(5), then add(3), then multiply(2).""",
     "coding": """You are a coding assistant with access to file and shell tools.
+
+Available tools:
+- read: Read file contents (supports offset/limit for large files)
+- write: Write content to a file (creates directories automatically)
+- edit: Replace exact text in a file (must be unique match)
+- bash: Execute shell commands
+
+When working on code:
+1. First read relevant files to understand context
+2. Make precise edits using the edit tool
+3. Use bash to run tests, linting, etc.
+4. Prefer small, focused changes over large rewrites""",
+    "git": """You are a coding assistant with access to file and shell tools.
+
+All file changes are automatically tracked in an isolated git history.
+This gives you full undo capability - every write/edit/bash creates a commit.
 
 Available tools:
 - read: Read file contents (supports offset/limit for large files)
@@ -328,9 +344,9 @@ def main() -> int:
     parser.add_argument(
         "--env",
         type=str,
-        choices=["none", "calculator", "coding"],
+        choices=["none", "calculator", "coding", "git"],
         default="none",
-        help="Environment with tools (default: none)",
+        help="Environment with tools: none, calculator, coding, git (default: none)",
     )
     parser.add_argument(
         "--cwd",
@@ -530,10 +546,14 @@ def main() -> int:
 
     # Create environment
     environment = None
+    git_env_needs_setup = False
     if args.env == "calculator":
         environment = CalculatorEnvironment()
     elif args.env == "coding":
         environment = LocalFilesystemEnvironment(working_dir=working_dir)
+    elif args.env == "git":
+        environment = GitWorktreeEnvironment(working_dir=working_dir)
+        git_env_needs_setup = True  # Will call setup() after we have session_id
 
     session_store = FileSessionStore() if not args.no_session else None
     system_prompt = args.system_prompt or SYSTEM_PROMPTS.get(args.env, SYSTEM_PROMPTS["none"])

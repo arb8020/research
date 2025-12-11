@@ -270,6 +270,19 @@ class InteractiveAgentRunner:
         logger.debug(f"_update_token_counts: setting tokens {total_input}/{total_output} cost={total_cost}")
         self.status_line.set_tokens(total_input, total_output, total_cost)
 
+    async def _setup_git_env_if_needed(self, session_id: str) -> None:
+        """Setup GitWorktreeEnvironment with session_id if applicable."""
+        from rollouts.environments.git_worktree import GitWorktreeEnvironment
+
+        if self.environment and isinstance(self.environment, GitWorktreeEnvironment):
+            if not self.environment.session_id:
+                await self.environment.setup(session_id)
+                # Update status line with git info
+                if self.status_line:
+                    env_info = self.environment.get_status_info()
+                    if env_info:
+                        self.status_line.set_env_info(env_info)
+
     async def run(self) -> list[AgentState]:
         """Run interactive agent loop.
 
@@ -541,6 +554,8 @@ class InteractiveAgentRunner:
                             self.session_id = latest_state.session_id
                             if self.status_line:
                                 self.status_line.set_session_id(self.session_id)
+                            # Setup GitWorktreeEnvironment if needed
+                            await self._setup_git_env_if_needed(self.session_id)
 
                         # Update token counts from completions
                         if self.status_line:
@@ -584,6 +599,8 @@ class InteractiveAgentRunner:
                                 self.session_id = final_state.session_id
                                 if self.status_line:
                                     self.status_line.set_session_id(self.session_id)
+                                # Setup GitWorktreeEnvironment if needed
+                                await self._setup_git_env_if_needed(self.session_id)
                             # Update token counts
                             if self.status_line:
                                 self._update_token_counts(final_state)
