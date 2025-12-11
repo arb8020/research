@@ -63,8 +63,19 @@ class StatusLine(Component):
             parts.append(f"session:{short_id}")
 
         if self._model:
-            # Truncate model name if needed
-            short_model = self._model[-20:] if len(self._model) > 20 else self._model
+            # Show provider/model - truncate model portion if too long
+            # e.g., "anthropic/claude-sonnet-4-5-20250929" -> "anthropic/..net-4-5-20250929"
+            if "/" in self._model and len(self._model) > 30:
+                provider, model = self._model.split("/", 1)
+                # Keep provider, truncate model from the start
+                max_model_len = 30 - len(provider) - 1  # -1 for "/"
+                if len(model) > max_model_len:
+                    model = ".." + model[-(max_model_len - 2):]
+                short_model = f"{provider}/{model}"
+            elif len(self._model) > 30:
+                short_model = ".." + self._model[-28:]
+            else:
+                short_model = self._model
             parts.append(f"model:{short_model}")
 
         if self._input_tokens > 0 or self._output_tokens > 0:
