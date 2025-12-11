@@ -873,6 +873,11 @@ async def run_agent(
                     session_msg = _message_to_session_message(msg)
                     await session_store.append_message(current_state.session_id, session_msg)
 
+    # Notify environment of session start (for setup like git worktrees)
+    if current_state.environment and current_state.session_id:
+        if hasattr(current_state.environment, 'on_session_start'):
+            await current_state.environment.on_session_start(current_state.session_id)
+
     states = [current_state]
 
     # Initialize inner progress bar for turn-level tracking

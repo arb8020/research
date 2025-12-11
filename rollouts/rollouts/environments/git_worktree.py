@@ -93,10 +93,10 @@ class GitWorktreeEnvironment:
             info["commits"] = str(self._commit_count)
         return info
 
-    async def setup(self, session_id: str) -> None:
+    async def on_session_start(self, session_id: str) -> None:
         """Initialize git repo and create worktree for this session.
 
-        Call this before using the environment.
+        Called automatically by run_agent before any tools execute.
         """
         self.session_id = session_id
         self._rollouts_dir = self.working_dir / ".rollouts"
@@ -257,7 +257,7 @@ class GitWorktreeEnvironment:
 
         session_id = data.get("session_id")
         if session_id:
-            await env.setup(session_id)
+            await env.on_session_start(session_id)
 
             # Checkout specific commit if provided
             head_commit = data.get("head_commit")

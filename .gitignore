@@ -61,3 +61,4 @@ references/
 dev/integration-evaluation/.chroma_db/
 dev/integration-evaluation/eval_results/
 worktrees/
+.rollouts/
