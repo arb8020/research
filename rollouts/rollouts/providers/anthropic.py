@@ -451,7 +451,7 @@ async def rollout_anthropic(
     client = AsyncAnthropic(**client_kwargs)
 
     # Transform messages for cross-provider compatibility (like pi-ai does)
-    from .transform_messages import transform_messages
+    from rollouts.transform_messages import transform_messages
     transformed_messages = transform_messages(
         actor.trajectory.messages,
         target_provider=actor.endpoint.provider,
