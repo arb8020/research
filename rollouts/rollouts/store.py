@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -182,6 +182,24 @@ class FileSessionStore:
 
         return session
 
+    async def save(self, session: AgentSession) -> None:
+        """Save a complete session (including messages).
+
+        Used for saving transformed sessions (compact, summarize).
+        """
+        self._ensure_base_dir()
+        session_dir = self._session_dir(session.session_id)
+        session_dir.mkdir(exist_ok=True)
+
+        # Write session.json
+        await self._write_json(session_dir / "session.json", session.to_dict())
+
+        # Write messages.jsonl
+        messages_file = session_dir / "messages.jsonl"
+        async with await trio.open_file(messages_file, "w") as f:
+            for msg in session.messages:
+                await f.write(json.dumps(msg.to_dict()) + "\n")
+
     async def get(self, session_id: str) -> tuple[AgentSession | None, str | None]:
         """Load session by ID. Returns (session, None) or (None, error)."""
         session_dir = self._session_dir(session_id)
@@ -294,8 +312,18 @@ class FileSessionStore:
                 if not all(session_tags.get(k) == v for k, v in filter_tags.items()):
                     continue
 
+            # Count messages without loading them
+            messages_file = session_dir / "messages.jsonl"
+            message_count = 0
+            if messages_file.exists():
+                async with await trio.open_file(messages_file, "r") as f:
+                    async for line in f:
+                        if line.strip():
+                            message_count += 1
+
             # Create session without loading messages
             session = AgentSession.from_dict(session_data, messages=[])
+            session = replace(session, message_count=message_count)
             sessions.append(session)
 
             if len(sessions) >= limit:
