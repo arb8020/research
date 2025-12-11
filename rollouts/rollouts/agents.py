@@ -718,17 +718,57 @@ async def resume_session(
         state = await resume_session("20241205_143052_a1b2c3", store, endpoint, env)
         states = await run_agent(state, RunConfig(session_store=store))
     """
-    from .dtypes import Trajectory
+    from .dtypes import Trajectory, TextContent, ThinkingContent, ToolCallContent, ImageContent, ContentBlock
 
     session, err = await session_store.get(session_id)
     if err or session is None:
         raise ValueError(f"Session not found: {session_id}" + (f" ({err})" if err else ""))
 
+    def deserialize_content(content: str | list[dict] | None) -> str | list[ContentBlock] | None:
+        """Convert serialized content back to ContentBlock objects."""
+        if content is None or isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            return content
+
+        blocks: list[ContentBlock] = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            block_type = item.get("type")
+            if block_type == "text":
+                blocks.append(TextContent(
+                    type="text",
+                    text=item.get("text", ""),
+                    text_signature=item.get("text_signature"),
+                ))
+            elif block_type == "thinking":
+                blocks.append(ThinkingContent(
+                    type="thinking",
+                    thinking=item.get("thinking", ""),
+                    thinking_signature=item.get("thinking_signature"),
+                ))
+            elif block_type == "toolCall":
+                blocks.append(ToolCallContent(
+                    type="toolCall",
+                    id=item.get("id", ""),
+                    name=item.get("name", ""),
+                    arguments=item.get("arguments", {}),
+                    thought_signature=item.get("thought_signature"),
+                ))
+            elif block_type == "image":
+                blocks.append(ImageContent(
+                    type="image",
+                    image_url=item.get("image_url", ""),
+                    detail=item.get("detail"),
+                ))
+        return blocks if blocks else None
+
     # Convert SessionMessage -> Message
     messages = [
         Message(
             role=m.role,
-            content=m.content,
+            content=deserialize_content(m.content),
             tool_call_id=m.tool_call_id,
         )
         for m in session.messages

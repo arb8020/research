@@ -57,10 +57,6 @@ class StatusLine(Component):
         # Build status parts
         parts: list[str] = []
 
-        if self._session_id:
-            # Truncate session ID if needed (show last 6 chars)
-            short_id = self._session_id[-15:] if len(self._session_id) > 15 else self._session_id
-            parts.append(f"session:{short_id}")
 
         if self._model:
             parts.append(f"model:{self._model}")
@@ -75,8 +71,17 @@ class StatusLine(Component):
         gray = "\x1b[38;5;245m"
         reset = "\x1b[0m"
 
-        # Pad to width
+        # Available width for content (2 for left margin "  ")
+        available_width = width - 2
         visible_len = visible_width(content)
-        padding = " " * max(0, width - visible_len - 4)  # 4 for left margin
+
+        # Truncate content if it exceeds available width
+        if visible_len > available_width:
+            # Truncate and add ellipsis
+            truncated = content[:available_width - 1] + "…"
+            return [f"  {gray}{truncated}{reset}"]
+
+        # Pad to width
+        padding = " " * max(0, available_width - visible_len)
 
         return [f"  {gray}{content}{padding}{reset}"]

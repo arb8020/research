@@ -252,7 +252,10 @@ class TUI(Container):
         """Request a render on the next tick.
 
         Multiple requests are coalesced into a single render.
+        No-op if TUI hasn't started yet (avoids partial renders during setup).
         """
+        if not self._running:
+            return
         if self._render_requested:
             return
         self._render_requested = True
