@@ -33,7 +33,7 @@ from rollouts.dtypes import (
     Usage,
 )
 
-from .base import _prepare_messages_for_llm
+from .base import _prepare_messages_for_llm, calculate_cost_from_usage
 
 
 async def aggregate_google_stream(
@@ -458,6 +458,14 @@ async def rollout_google(
         cache_read_tokens=usage_data.get("cache_read_tokens", 0),
         cache_write_tokens=usage_data.get("cache_write_tokens", 0),
     )
+
+    # Calculate cost if model pricing is available
+    from rollouts.models import get_model
+
+    model_meta = get_model(actor.endpoint.provider, actor.endpoint.model)
+    if model_meta and model_meta.cost:
+        cost = calculate_cost_from_usage(usage, model_meta.cost)
+        usage = replace(usage, cost=cost)
 
     # Enrich message with provider/api/model metadata for cross-provider handoff
     final_message = replace(
