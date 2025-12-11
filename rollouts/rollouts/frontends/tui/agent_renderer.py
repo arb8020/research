@@ -401,7 +401,9 @@ class AgentRenderer:
                 # Convert tool result to event and replay through handler
                 self._replay_tool_result_as_event(msg)
 
-        self.tui.request_render()
+        # Note: Don't call request_render() here - caller handles rendering
+        # after all components are set up. Rendering early causes issues with
+        # differential rendering when more components are added later.
 
     def _render_user_message(self, msg) -> None:
         """Render a user message from history."""
