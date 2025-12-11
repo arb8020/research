@@ -109,6 +109,7 @@ class InteractiveAgentRunner:
         # Cancellation - separate scope for agent vs entire TUI
         self.cancel_scope: trio.CancelScope | None = None  # Outer nursery scope
         self.agent_cancel_scope: trio.CancelScope | None = None  # Inner agent scope
+        self.escape_pressed: bool = False  # Track if Escape (not Ctrl+C) triggered cancel
 
         # Store for passing multiple messages from input handler to no_tool handler
         self._pending_user_messages: list[str] = []
@@ -400,8 +401,9 @@ class InteractiveAgentRunner:
                                     # It's an escape sequence - pass the whole thing to input handler
                                     input_data = input_data + more_data
                                 else:
-                                    # Standalone escape - cancel agent run
+                                    # Standalone escape - cancel agent run (not exit TUI)
                                     if self.agent_cancel_scope:
+                                        self.escape_pressed = True
                                         self.agent_cancel_scope.cancel()
                                     continue
 
@@ -546,15 +548,19 @@ class InteractiveAgentRunner:
                     with self.agent_cancel_scope:
                         agent_states = await run_agent(current_state, run_config)
 
-                    # Check if Ctrl+C was pressed (agent returned with ABORTED status)
+                    # Check if agent was aborted
                     if agent_states and agent_states[-1].stop == StopReason.ABORTED:
-                        # Extract session_id before exiting
+                        # Extract session_id before handling
                         if agent_states[-1].session_id:
                             self.session_id = agent_states[-1].session_id
-                        break  # Exit the while loop
 
-                    # Check if agent was cancelled via Escape key
-                    if self.agent_cancel_scope.cancelled_caught:
+                        # Check if this was Escape (interrupt) vs Ctrl+C (exit)
+                        if not self.escape_pressed:
+                            # Ctrl+C - exit the TUI
+                            break
+
+                        # Escape key - interrupt but continue
+                        self.escape_pressed = False  # Reset for next time
                         # Agent was interrupted - hide loader and show message
                         if self.tui:
                             self.tui.hide_loader()
