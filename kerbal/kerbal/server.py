@@ -201,11 +201,17 @@ def serve(
     # Setup log file
     log_file = f"{workspace}/{server_name}.log"
 
+    # If deps were installed, activate the venv before running command
+    final_command = command
+    if deps is not None:
+        # Prefix command with venv activation
+        final_command = f"source {workspace}/.venv/bin/activate && {command}"
+
     # Start server in tmux
     session_name, err = start_tmux_session(
         client,
         session_name=server_name,
-        command=command,
+        command=final_command,
         workspace=workspace,
         log_file=log_file,
         env_vars=final_env_vars if final_env_vars else None,

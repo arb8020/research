@@ -155,14 +155,20 @@ def acquire_node(
         query = broker.gpu_type.contains(gpu_query_str)
 
         # broker.create() raises ProvisionError with details on failure
-        instance = broker.create(query, gpu_count=gpu_count)
+        instance = broker.create(
+            query,
+            gpu_count=gpu_count,
+            cloud_type="secure",
+            container_disk_gb=150,
+            sort=lambda x: x.price_per_hour,
+        )
 
         print(f"  Instance ID: {instance.provider}:{instance.id}")
         print(f"  GPU: {instance.gpu_count}x {instance.gpu_type}")
         print(f"  Waiting for SSH...")
 
-        if not instance.wait_until_ssh_ready(timeout=300):
-            raise AssertionError(f"SSH not ready after 5 min - instance: {instance.provider}:{instance.id}")
+        if not instance.wait_until_ssh_ready(timeout=600):
+            raise AssertionError(f"SSH not ready after 10 min - instance: {instance.provider}:{instance.id}")
 
         key_path = broker.get_ssh_key_path(instance.provider)
         assert key_path, f"No SSH key configured for {instance.provider}"
@@ -202,6 +208,7 @@ def test_sglang(client: BifrostClient, workspace: str, gpu_id: int = 0) -> bool:
             port=30000,
             gpu_ids=[gpu_id],
             env_vars=env_vars,
+            deps=sglang.get_deps(),
             health_timeout=600,  # 10 min for model download
             server_name="test-sglang",
         )
@@ -285,6 +292,7 @@ def test_vllm(client: BifrostClient, workspace: str, gpu_id: int = 0) -> bool:
             port=30001,
             gpu_ids=[gpu_id],
             env_vars=env_vars,
+            deps=vllm.get_deps(),
             health_timeout=600,  # 10 min for model download
             server_name="test-vllm",
         )
@@ -372,6 +380,7 @@ def test_logprob_comparison(client: BifrostClient, workspace: str) -> bool:
             port=30000,
             gpu_ids=[0],
             env_vars=sglang_env,
+            deps=sglang.get_deps(),
             health_timeout=600,
             server_name="test-sglang-compare",
         )
@@ -390,6 +399,7 @@ def test_logprob_comparison(client: BifrostClient, workspace: str) -> bool:
             port=30001,
             gpu_ids=[1],
             env_vars=vllm_env,
+            deps=vllm.get_deps(),
             health_timeout=600,
             server_name="test-vllm-compare",
         )
