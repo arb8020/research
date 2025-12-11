@@ -1211,6 +1211,7 @@ class AgentSession:
 
     # Trajectory
     messages: list[SessionMessage] = field(default_factory=list)
+    message_count: int | None = None  # Set when listing (without loading messages)
 
     # Environment state (opaque, env-specific)
     environment_state: dict[str, Any] | None = None

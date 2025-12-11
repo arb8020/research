@@ -1,5 +1,5 @@
 """
-Session export to Markdown and HTML.
+Session export to Markdown and HTML, plus session transformations.
 
 Usage:
     from rollouts import session_to_markdown, session_to_html
@@ -7,15 +7,21 @@ Usage:
 
     md = session_to_markdown(session)
     html = session_to_html(session)
+
+    # Create compacted child session
+    child = compact_session(parent)
 """
 
 from __future__ import annotations
 
 import html
 import json
+from dataclasses import replace
+from datetime import datetime
 from typing import Any
+import uuid
 
-from rollouts.dtypes import AgentSession, SessionMessage
+from rollouts.dtypes import AgentSession, SessionMessage, SessionStatus
 
 
 def format_content_block(block: dict[str, Any]) -> str:
@@ -270,3 +276,122 @@ def format_content_html(content: str | list[dict[str, Any]]) -> str:
             parts.append(f"<pre><code>{html.escape(json.dumps(block, indent=2))}</code></pre>")
 
     return "\n".join(parts)
+
+
+# --- Session Transformations ---
+
+
+def compact_content_block(block: dict[str, Any], max_length: int = 500) -> dict[str, Any]:
+    """Compact a single content block by truncating verbose content."""
+    block_type = block.get("type", "")
+
+    if block_type == "text":
+        text = block.get("text", "")
+        if len(text) > max_length:
+            return {**block, "text": text[:max_length] + f"\n... [truncated {len(text) - max_length} chars]"}
+        return block
+
+    elif block_type == "toolResult":
+        # Tool results are often verbose - truncate aggressively
+        content = block.get("content", "")
+        if isinstance(content, str) and len(content) > max_length:
+            return {**block, "content": content[:max_length] + f"\n... [truncated {len(content) - max_length} chars]"}
+        elif isinstance(content, list):
+            # Content blocks in tool result
+            compacted = [compact_content_block(b, max_length) for b in content]
+            return {**block, "content": compacted}
+        return block
+
+    # Other types pass through unchanged
+    return block
+
+
+def compact_message_content(
+    content: str | list[dict[str, Any]],
+    max_length: int = 500,
+) -> str | list[dict[str, Any]]:
+    """Compact message content by truncating verbose parts."""
+    if isinstance(content, str):
+        if len(content) > max_length:
+            return content[:max_length] + f"\n... [truncated {len(content) - max_length} chars]"
+        return content
+
+    # Content blocks
+    return [compact_content_block(block, max_length) for block in content]
+
+
+def compact_session(
+    session: AgentSession,
+    max_content_length: int = 500,
+) -> AgentSession:
+    """Create a compacted child session with truncated tool results.
+
+    Args:
+        session: Parent session to compact
+        max_content_length: Max chars before truncation (default 500)
+
+    Returns:
+        New child session with compacted messages
+    """
+    # Generate new session ID
+    now = datetime.now()
+    session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:5]}"
+
+    # Compact each message
+    compacted_messages: list[SessionMessage] = []
+    for msg in session.messages:
+        compacted_content = compact_message_content(msg.content, max_content_length)
+        compacted_msg = SessionMessage(
+            role=msg.role,
+            content=compacted_content,
+            tool_call_id=msg.tool_call_id,
+        )
+        compacted_messages.append(compacted_msg)
+
+    # Create child session
+    return AgentSession(
+        session_id=session_id,
+        created_at=now.isoformat(),
+        endpoint=session.endpoint,
+        environment=session.environment,
+        messages=compacted_messages,
+        status=SessionStatus.PENDING,
+        parent_id=session.session_id,
+        branch_point=len(session.messages),
+    )
+
+
+def summarize_session(
+    session: AgentSession,
+    summary: str,
+) -> AgentSession:
+    """Create a summarized child session with LLM-generated summary as first message.
+
+    Args:
+        session: Parent session to summarize
+        summary: LLM-generated summary text
+
+    Returns:
+        New child session with summary as system/user message
+    """
+    # Generate new session ID
+    now = datetime.now()
+    session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:5]}"
+
+    # Create summary message as user message (context for next assistant turn)
+    summary_msg = SessionMessage(
+        role="user",
+        content=f"[Session Summary from {session.session_id}]\n\n{summary}\n\nPlease continue from here.",
+    )
+
+    # Create child session with just the summary
+    return AgentSession(
+        session_id=session_id,
+        created_at=now.isoformat(),
+        endpoint=session.endpoint,
+        environment=session.environment,
+        messages=[summary_msg],
+        status=SessionStatus.PENDING,
+        parent_id=session.session_id,
+        branch_point=len(session.messages),
+    )

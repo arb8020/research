@@ -118,7 +118,7 @@ async def pick_session_async(session_store: FileSessionStore) -> AgentSession | 
     print("\nRecent sessions:\n")
     for i, session in enumerate(sessions):
         time_ago = format_time_ago(session.created_at)
-        msg_count = len(session.messages) if session.messages else "?"
+        msg_count = session.message_count if session.message_count is not None else len(session.messages) if session.messages else "?"
         status = session.status.value if session.status else "?"
         print(f"  [{i + 1}] {time_ago:>10}  {msg_count:>3} msgs  [{status}]  {session.session_id}")
 
@@ -459,6 +459,18 @@ def main() -> int:
         help="Export session to HTML (stdout if no FILE)",
     )
 
+    # Session transformations (create child sessions)
+    parser.add_argument(
+        "--compact",
+        action="store_true",
+        help="Create compacted child session (truncate tool results)",
+    )
+    parser.add_argument(
+        "--summarize",
+        action="store_true",
+        help="Create summarized child session (LLM-generated summary)",
+    )
+
     args = parser.parse_args()
 
     # --- Non-interactive commands (no endpoint needed) ---
@@ -525,6 +537,41 @@ def main() -> int:
 
         return trio.run(export_action)
 
+    # Compact - create child session with truncated tool results
+    if args.compact:
+        from rollouts.export import compact_session
+        session_store = FileSessionStore()
+
+        async def compact_action() -> int:
+            # Require session ID
+            if args.session is None:
+                print("Error: --compact requires -s <session_id>", file=sys.stderr)
+                return 1
+
+            if args.session == "":
+                # Interactive picker
+                session = await pick_session_async(session_store)
+                if session is None:
+                    return 0
+            else:
+                session, err = await session_store.get(args.session)
+                if err or session is None:
+                    print(f"Error loading session: {err}", file=sys.stderr)
+                    return 1
+
+            # Create compacted child
+            child_session = compact_session(session)
+            await session_store.save(child_session)
+            print(f"Created compacted session: {child_session.session_id}")
+            print(f"  Parent: {child_session.parent_id}")
+            print(f"  Messages: {len(child_session.messages)}")
+            return 0
+
+        return trio.run(compact_action)
+
+    # Summarize - create child session with LLM-generated summary (requires endpoint)
+    # Handled below after endpoint creation since it needs LLM
+
     # --- Commands requiring endpoint ---
 
     # Create endpoint
@@ -541,6 +588,75 @@ def main() -> int:
         env_var = "OPENAI_API_KEY" if endpoint.provider == "openai" else "ANTHROPIC_API_KEY"
         print(f"❌ No API key found. Set {env_var}, use --api-key, or --login-claude", file=sys.stderr)
         return 1
+
+    # Summarize - create child session with LLM-generated summary
+    if args.summarize:
+        from rollouts.export import summarize_session, session_to_markdown
+        session_store = FileSessionStore()
+
+        async def summarize_action() -> int:
+            # Require session ID
+            if args.session is None:
+                print("Error: --summarize requires -s <session_id>", file=sys.stderr)
+                return 1
+
+            if args.session == "":
+                # Interactive picker
+                session = await pick_session_async(session_store)
+                if session is None:
+                    return 0
+            else:
+                session, err = await session_store.get(args.session)
+                if err or session is None:
+                    print(f"Error loading session: {err}", file=sys.stderr)
+                    return 1
+
+            print(f"Summarizing session {session.session_id} ({len(session.messages)} messages)...")
+
+            # Generate summary using LLM
+            from rollouts.providers import get_provider_function
+            from rollouts.dtypes import Actor, Trajectory, TextContent
+            session_md = session_to_markdown(session, include_metadata=False)
+            summary_prompt = f"""Summarize this conversation session concisely. Focus on:
+1. What was the main task/goal
+2. Key decisions made
+3. What was accomplished
+4. Any open items or next steps
+
+Session content:
+{session_md}
+
+Provide a clear, actionable summary that would help someone continue this work."""
+
+            # Create actor with summary prompt
+            actor = Actor(
+                trajectory=Trajectory(messages=[Message(role="user", content=summary_prompt)]),
+                endpoint=endpoint,
+                tools=[],
+            )
+
+            # Stream response
+            summary_parts: list[str] = []
+            async def collect_text(event: StreamEvent) -> None:
+                if isinstance(event, TextDelta):
+                    summary_parts.append(event.delta)
+                    print(event.delta, end="", flush=True)
+
+            provider_fn = get_provider_function(endpoint.provider, endpoint.model)
+            await provider_fn(actor, collect_text)
+            print()  # newline after streaming
+
+            summary = "".join(summary_parts)
+
+            # Create summarized child
+            child_session = summarize_session(session, summary)
+            await session_store.save(child_session)
+            print(f"\nCreated summarized session: {child_session.session_id}")
+            print(f"  Parent: {child_session.parent_id}")
+            print(f"\nSummary:\n{summary}")
+            return 0
+
+        return trio.run(summarize_action)
 
     working_dir = Path(args.cwd) if args.cwd else Path.cwd()
 
