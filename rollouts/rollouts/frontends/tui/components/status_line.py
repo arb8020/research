@@ -56,38 +56,39 @@ class StatusLine(Component):
         self._cost += cost
 
     def render(self, width: int) -> List[str]:
-        """Render the status line."""
-        # Build status parts
-        parts: list[str] = []
-
-
-        if self._model:
-            parts.append(f"model:{self._model}")
-
-        if self._input_tokens > 0 or self._output_tokens > 0:
-            parts.append(f"tokens:{self._input_tokens}↓/{self._output_tokens}↑")
-
-        if self._cost > 0:
-            parts.append(f"cost:${self._cost:.4f}")
-
-        # Join with separators
-        content = "  │  ".join(parts) if parts else ""
-
-        # Apply muted color
+        """Render the status line as two lines: model on first, tokens/cost on second."""
         gray = "\x1b[38;5;245m"
         reset = "\x1b[0m"
+        available_width = width - 2  # 2 for left margin "  "
 
-        # Available width for content (2 for left margin "  ")
-        available_width = width - 2
-        visible_len = visible_width(content)
+        lines: list[str] = []
 
-        # Truncate content if it exceeds available width
-        if visible_len > available_width:
-            # Truncate and add ellipsis
-            truncated = content[:available_width - 1] + "…"
-            return [f"  {gray}{truncated}{reset}"]
+        # Line 1: model
+        if self._model:
+            model_content = f"model:{self._model}"
+            model_len = visible_width(model_content)
+            if model_len > available_width:
+                model_content = model_content[:available_width - 1] + "…"
+            padding = " " * max(0, available_width - visible_width(model_content))
+            lines.append(f"  {gray}{model_content}{padding}{reset}")
 
-        # Pad to width
-        padding = " " * max(0, available_width - visible_len)
+        # Line 2: tokens and cost
+        usage_parts: list[str] = []
+        if self._input_tokens > 0 or self._output_tokens > 0:
+            usage_parts.append(f"tokens:{self._input_tokens}↓/{self._output_tokens}↑")
+        if self._cost > 0:
+            usage_parts.append(f"cost:${self._cost:.4f}")
 
-        return [f"  {gray}{content}{padding}{reset}"]
+        if usage_parts:
+            usage_content = "  │  ".join(usage_parts)
+            usage_len = visible_width(usage_content)
+            if usage_len > available_width:
+                usage_content = usage_content[:available_width - 1] + "…"
+            padding = " " * max(0, available_width - visible_width(usage_content))
+            lines.append(f"  {gray}{usage_content}{padding}{reset}")
+
+        # If nothing to show, return empty line
+        if not lines:
+            return [f"  {' ' * available_width}"]
+
+        return lines

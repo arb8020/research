@@ -159,15 +159,10 @@ def acquire_node(
 
         print(f"  Instance ID: {instance.provider}:{instance.id}")
         print(f"  GPU: {instance.gpu_count}x {instance.gpu_type}")
-        print(f"  Waiting for SSH (may take 5-15 min for direct SSH on RunPod)...")
+        print(f"  Waiting for SSH...")
 
-        # Enable debug logging to see progress
-        import logging
-        logging.getLogger("broker").setLevel(logging.DEBUG)
-        logging.basicConfig(level=logging.DEBUG, format="  %(message)s")
-
-        if not instance.wait_until_ssh_ready(timeout=900):  # 15 min timeout
-            raise AssertionError(f"SSH not ready after 15 min - instance may need manual cleanup: {instance.provider}:{instance.id}")
+        if not instance.wait_until_ssh_ready(timeout=300):
+            raise AssertionError(f"SSH not ready after 5 min - instance: {instance.provider}:{instance.id}")
 
         key_path = broker.get_ssh_key_path(instance.provider)
         assert key_path, f"No SSH key configured for {instance.provider}"

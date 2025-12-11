@@ -248,18 +248,26 @@ class InteractiveAgentRunner:
 
     def _update_token_counts(self, state: AgentState) -> None:
         """Update status line with cumulative token counts and cost from trajectory."""
+        import logging
+        logger = logging.getLogger(__name__)
+
         if not self.status_line:
+            logger.debug("_update_token_counts: no status_line")
             return
 
         total_input = 0
         total_output = 0
         total_cost = 0.0
-        for completion in state.actor.trajectory.completions:
+        completions = state.actor.trajectory.completions
+        logger.debug(f"_update_token_counts: {len(completions)} completions")
+        for completion in completions:
             if completion.usage:
+                logger.debug(f"  usage: in={completion.usage.input_tokens} out={completion.usage.output_tokens} cost={completion.usage.cost.total}")
                 total_input += completion.usage.input_tokens + completion.usage.cache_read_tokens
                 total_output += completion.usage.output_tokens + completion.usage.reasoning_tokens
                 total_cost += completion.usage.cost.total
 
+        logger.debug(f"_update_token_counts: setting tokens {total_input}/{total_output} cost={total_cost}")
         self.status_line.set_tokens(total_input, total_output, total_cost)
 
     async def run(self) -> list[AgentState]:
@@ -448,6 +456,11 @@ class InteractiveAgentRunner:
                 async def handle_no_tool_interactive(state: AgentState, rcfg: RunConfig) -> AgentState:
                     """Wait for user input when LLM responds without tool calls."""
                     from dataclasses import replace as dc_replace
+
+                    # Update token counts after LLM response
+                    self._update_token_counts(state)
+                    if self.tui:
+                        self.tui.request_render()
 
                     # Get user input via the TUI (may drain multiple queued messages)
                     user_input = await rcfg.on_input("Enter your message: ")
