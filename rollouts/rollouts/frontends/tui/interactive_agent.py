@@ -55,6 +55,8 @@ class InteractiveAgentRunner:
         theme_name: str = "dark",
         debug: bool = False,
         debug_layout: bool = False,
+        parent_session_id: str | None = None,
+        branch_point: int | None = None,
     ) -> None:
         """Initialize interactive agent runner.
 
@@ -68,6 +70,8 @@ class InteractiveAgentRunner:
             theme_name: Theme name (dark or rounded)
             debug: Enable debug logging and chat state dumps
             debug_layout: Show component boundaries and spacing
+            parent_session_id: Parent session ID when forking
+            branch_point: Message index where forking from parent
         """
         self.initial_trajectory = initial_trajectory
         self.endpoint = endpoint
@@ -78,6 +82,8 @@ class InteractiveAgentRunner:
         self.session_id = session_id
         self.debug = debug
         self.debug_layout = debug_layout
+        self.parent_session_id = parent_session_id
+        self.branch_point = branch_point
 
         # TUI components
         self.terminal: ProcessTerminal | None = None
@@ -373,6 +379,8 @@ class InteractiveAgentRunner:
                     ),
                     environment=self.environment,
                     session_id=self.session_id,  # Set for resumption, None for new session
+                    parent_session_id=self.parent_session_id,  # For forking
+                    branch_point=self.branch_point,  # For forking
                 )
 
                 # Create run config
@@ -544,6 +552,8 @@ async def run_interactive_agent(
     theme_name: str = "dark",
     debug: bool = False,
     debug_layout: bool = False,
+    parent_session_id: str | None = None,
+    branch_point: int | None = None,
 ) -> list[AgentState]:
     """Run an interactive agent with TUI.
 
@@ -557,6 +567,8 @@ async def run_interactive_agent(
         theme_name: Theme name (dark or rounded)
         debug: Enable debug logging and chat state dumps
         debug_layout: Show component boundaries and spacing
+        parent_session_id: Parent session ID when forking
+        branch_point: Message index where forking from parent
 
     Returns:
         List of agent states from the run
@@ -571,6 +583,8 @@ async def run_interactive_agent(
         theme_name=theme_name,
         debug=debug,
         debug_layout=debug_layout,
+        parent_session_id=parent_session_id,
+        branch_point=branch_point,
     )
     return await runner.run()
 
