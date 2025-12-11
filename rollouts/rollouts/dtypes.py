@@ -981,6 +981,7 @@ class AgentState:
     # For forking: when resuming with different config, create child session
     parent_session_id: str | None = None  # Parent session to branch from
     branch_point: int | None = None  # Message index where branching from parent
+    confirm_tools: bool = False  # Whether tool confirmation is required
 
 
 # Forward declarations for RunConfig (needs to be after AgentState but before default handlers)

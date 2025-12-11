@@ -103,3 +103,51 @@ compact_session(source, summarize_fn, keep_last_n, ...) -> Session
 - [ ] CLI commands for compaction (`--compact`)
 - [ ] Render previous messages on session resume (currently loads context but doesn't display)
 - [ ] `--output-format json/stream-json` for print mode
+
+## Future: Tree Explorer & Content-Addressable Storage
+
+### Tree Explorer (`rollouts tree`)
+
+Git branchless-style visualization of session DAG:
+
+```
+○ 20251211_121000 - 3 messages
+│
+○ 20251211_120456 - model=opus, 8 messages
+│
+│ ○ 20251211_120123 - env=coding, 12 messages
+├─╯
+○ 20251211_115811 (root) - 5 messages
+```
+
+Current primitives exist:
+- `parent_id` and `branch_point` on AgentSession
+- `list_children(parent_id)` in SessionStore
+- Forking happens automatically when resuming with different config
+
+TODO:
+- [ ] `rollouts tree` command - static DAG visualization
+- [ ] Interactive tree browser (arrow keys, enter to resume)
+- [ ] Show diff between branches (config changes, divergent messages)
+
+### Content-Addressable Storage (Future)
+
+Currently messages are duplicated on fork. For true git semantics:
+
+```
+~/.rollouts/
+  objects/
+    <hash>.json  # Immutable message objects
+  sessions/
+    <session_id>/
+      messages: [hash1, hash2, ...]  # References only
+```
+
+Benefits:
+- Deduplication (shared history stored once)
+- Immutability guarantees
+- Easy diffing between sessions
+- Enables efficient tree operations
+
+This would make sessions lightweight pointers (like git branches) rather than
+containers (like git clones). Low priority - current model works fine.

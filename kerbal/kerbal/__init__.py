@@ -83,8 +83,22 @@ from kerbal.python_env import (
 from kerbal.tmux import start_tmux_session
 from kerbal.transfer import push_code, sync_results
 
+# High-level job/server API
+from kerbal.job import JobHandle, submit
+from kerbal.server import ServerHandle, serve
+
+# Inference engine presets
+from kerbal import inference
+
 __all__ = [
-    # New API (preferred)
+    # High-level API (job/server)
+    "JobHandle",
+    "submit",
+    "ServerHandle",
+    "serve",
+    # Inference engine presets
+    "inference",
+    # Python environment API
     "PythonEnvState",
     "setup_python_env",
     "create_venv",

@@ -33,6 +33,7 @@ class StatusLine(Component):
         self._model: str | None = None
         self._input_tokens: int = 0
         self._output_tokens: int = 0
+        self._cost: float = 0.0
 
     def set_session_id(self, session_id: str | None) -> None:
         """Set the session ID to display."""
@@ -42,15 +43,17 @@ class StatusLine(Component):
         """Set the model name to display."""
         self._model = model
 
-    def set_tokens(self, input_tokens: int, output_tokens: int) -> None:
-        """Set token counts."""
+    def set_tokens(self, input_tokens: int, output_tokens: int, cost: float = 0.0) -> None:
+        """Set token counts and cost."""
         self._input_tokens = input_tokens
         self._output_tokens = output_tokens
+        self._cost = cost
 
-    def add_tokens(self, input_tokens: int, output_tokens: int) -> None:
-        """Add to token counts."""
+    def add_tokens(self, input_tokens: int, output_tokens: int, cost: float = 0.0) -> None:
+        """Add to token counts and cost."""
         self._input_tokens += input_tokens
         self._output_tokens += output_tokens
+        self._cost += cost
 
     def render(self, width: int) -> List[str]:
         """Render the status line."""
@@ -63,6 +66,9 @@ class StatusLine(Component):
 
         if self._input_tokens > 0 or self._output_tokens > 0:
             parts.append(f"tokens:{self._input_tokens}↓/{self._output_tokens}↑")
+
+        if self._cost > 0:
+            parts.append(f"cost:${self._cost:.4f}")
 
         # Join with separators
         content = "  │  ".join(parts) if parts else ""

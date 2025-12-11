@@ -800,15 +800,16 @@ def _endpoint_to_config(endpoint: 'Endpoint') -> 'EndpointConfig':
     )
 
 
-def _environment_to_config(environment: 'Environment | None') -> 'EnvironmentConfig':
+def _environment_to_config(environment: 'Environment | None', confirm_tools: bool = False) -> 'EnvironmentConfig':
     """Convert Environment to serializable EnvironmentConfig."""
     from .dtypes import EnvironmentConfig
+    config = {"confirm_tools": confirm_tools}
     if environment is None:
-        return EnvironmentConfig(type="none", config={})
+        return EnvironmentConfig(type="none", config=config)
     # Use class name as type, environment should provide its own config via serialize()
     return EnvironmentConfig(
         type=type(environment).__name__,
-        config={},  # Config details stored in environment_state
+        config=config,  # Config details stored in environment_state
     )
 
 
@@ -844,7 +845,7 @@ async def run_agent(
         from .dtypes import EndpointConfig, EnvironmentConfig
         session = await session_store.create(
             endpoint=_endpoint_to_config(current_state.actor.endpoint),
-            environment=_environment_to_config(current_state.environment),
+            environment=_environment_to_config(current_state.environment, current_state.confirm_tools),
             parent_id=current_state.parent_session_id,
             branch_point=current_state.branch_point,
         )
