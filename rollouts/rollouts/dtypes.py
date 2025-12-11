@@ -489,11 +489,66 @@ class Message(JsonSerializable):
 
 
 @dataclass(frozen=True)
+class Cost(JsonSerializable):
+    """Cost breakdown in USD. Immutable.
+
+    Following IMMUTABILITY_AND_FP: frozen dataclass for data that doesn't change.
+    """
+
+    input: float = 0.0
+    output: float = 0.0
+    cache_read: float = 0.0
+    cache_write: float = 0.0
+
+    @property
+    def total(self) -> float:
+        return self.input + self.output + self.cache_read + self.cache_write
+
+
+@dataclass(frozen=True)
 class Usage(JsonSerializable):
-    prompt_tokens: int
-    completion_tokens: int
-    total_tokens: int
-    prompt_tokens_details: Any | None = None
+    """Token usage with cost tracking. Immutable.
+
+    Following IMMUTABILITY_AND_FP: state changes are explicit via replace().
+    Following SSA: each transformation creates a new binding.
+
+    Example:
+        # SSA style - named intermediate values
+        raw_usage = Usage(input_tokens=100, output_tokens=50)
+        usage_with_cost = replace(raw_usage, cost=calculated_cost)
+    """
+
+    # Token counts (primary fields)
+    input_tokens: int = 0  # Non-cached input tokens
+    output_tokens: int = 0  # Output/completion tokens (excludes reasoning)
+    reasoning_tokens: int = 0  # Reasoning/thinking tokens (OpenAI o1/o3, Anthropic thinking)
+    cache_read_tokens: int = 0  # Tokens read from cache (Anthropic/OpenAI)
+    cache_write_tokens: int = 0  # Tokens written to cache (Anthropic)
+
+    # Cost breakdown (computed by provider after API response)
+    cost: Cost = field(default_factory=Cost)
+
+    # Computed properties
+    @property
+    def total_tokens(self) -> int:
+        return (
+            self.input_tokens
+            + self.output_tokens
+            + self.reasoning_tokens
+            + self.cache_read_tokens
+            + self.cache_write_tokens
+        )
+
+    # Legacy aliases for backwards compatibility (don't break userspace)
+    @property
+    def prompt_tokens(self) -> int:
+        """Legacy alias: input_tokens + cache_read_tokens"""
+        return self.input_tokens + self.cache_read_tokens
+
+    @property
+    def completion_tokens(self) -> int:
+        """Legacy alias: output_tokens + reasoning_tokens (rolled together for compat)"""
+        return self.output_tokens + self.reasoning_tokens
 
 
 @dataclass(frozen=True)
