@@ -9,10 +9,21 @@ from typing import Any, Optional, cast
 from shared.validation import validate_ssh_key_path
 
 from .query import GPUQuery, QueryType
-from .types import CloudType, GPUInstance, GPUOffer, InstanceStatus, ProviderCredentials
+from .types import CloudType, GPUInstance, GPUOffer, InstanceStatus, ProviderCredentials, ProvisionResult
 from .validation import validate_credentials
 
 logger = logging.getLogger(__name__)
+
+
+class ProvisionError(Exception):
+    """Raised when GPU provisioning fails.
+
+    Attributes:
+        result: The ProvisionResult with detailed error info and attempt history
+    """
+    def __init__(self, message: str, result: ProvisionResult):
+        super().__init__(message)
+        self.result = result
 
 
 class GPUClient:
@@ -255,8 +266,18 @@ class GPUClient:
                 "ProvisionResult.success=True but instance is None"
             return ClientGPUInstance(result.instance, self)
 
-        # Provisioning failed - return None (caller checks for None)
-        return None
+        # Provisioning failed - raise with details
+        error_msg = result.error_summary or "Unknown error"
+        if result.no_offers_found:
+            raise ProvisionError(f"No offers found: {error_msg}", result)
+        elif result.credential_error:
+            raise ProvisionError(f"Credential error: {error_msg}", result)
+        elif result.network_error:
+            raise ProvisionError(f"Network error: {error_msg}", result)
+        elif result.all_unavailable:
+            raise ProvisionError(f"All offers unavailable: {error_msg}", result)
+        else:
+            raise ProvisionError(f"Provisioning failed: {error_msg}", result)
 
     def get_instance(self, instance_id: str, provider: str) -> Optional['ClientGPUInstance']:
         """Get instance details

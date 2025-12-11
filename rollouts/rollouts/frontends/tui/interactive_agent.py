@@ -27,6 +27,7 @@ from rollouts.dtypes import (
     Trajectory,
     ToolCall,
     ToolConfirmResult,
+    ToolResult,
     StopReason,
 )
 
@@ -57,6 +58,7 @@ class InteractiveAgentRunner:
         debug_layout: bool = False,
         parent_session_id: str | None = None,
         branch_point: int | None = None,
+        confirm_tools: bool = False,
     ) -> None:
         """Initialize interactive agent runner.
 
@@ -72,6 +74,7 @@ class InteractiveAgentRunner:
             debug_layout: Show component boundaries and spacing
             parent_session_id: Parent session ID when forking
             branch_point: Message index where forking from parent
+            confirm_tools: Require confirmation before executing tools
         """
         self.initial_trajectory = initial_trajectory
         self.endpoint = endpoint
@@ -84,6 +87,7 @@ class InteractiveAgentRunner:
         self.debug_layout = debug_layout
         self.parent_session_id = parent_session_id
         self.branch_point = branch_point
+        self.confirm_tools = confirm_tools
 
         # TUI components
         self.terminal: ProcessTerminal | None = None
@@ -242,6 +246,22 @@ class InteractiveAgentRunner:
         if self.cancel_scope:
             self.cancel_scope.cancel()
 
+    def _update_token_counts(self, state: AgentState) -> None:
+        """Update status line with cumulative token counts and cost from trajectory."""
+        if not self.status_line:
+            return
+
+        total_input = 0
+        total_output = 0
+        total_cost = 0.0
+        for completion in state.actor.trajectory.completions:
+            if completion.usage:
+                total_input += completion.usage.input_tokens + completion.usage.cache_read_tokens
+                total_output += completion.usage.output_tokens + completion.usage.reasoning_tokens
+                total_cost += completion.usage.cost.total
+
+        self.status_line.set_tokens(total_input, total_output, total_cost)
+
     async def run(self) -> list[AgentState]:
         """Run interactive agent loop.
 
@@ -381,12 +401,48 @@ class InteractiveAgentRunner:
                     session_id=self.session_id,  # Set for resumption, None for new session
                     parent_session_id=self.parent_session_id,  # For forking
                     branch_point=self.branch_point,  # For forking
+                    confirm_tools=self.confirm_tools,  # Tool confirmation setting
                 )
 
                 # Create run config
-                # Auto-confirm all tools (no interactive confirmation in TUI for now)
+                # Tool confirmation handlers
                 async def auto_confirm_tool(tc: ToolCall, state: AgentState, rcfg: RunConfig) -> tuple[AgentState, ToolConfirmResult]:
                     return state, ToolConfirmResult(proceed=True)
+
+                async def confirm_tool_tui(tc: ToolCall, state: AgentState, rcfg: RunConfig) -> tuple[AgentState, ToolConfirmResult]:
+                    """Interactive tool confirmation in TUI."""
+                    # Show confirmation prompt
+                    if self.renderer:
+                        self.renderer.add_system_message(f"⚠️  Tool: {tc.name}({tc.args})\n   [y] execute  [n] reject  [s] skip")
+
+                    resp = await rcfg.on_input("Confirm tool? ")
+                    resp = resp.strip().lower()
+
+                    if resp in ('y', 'yes', ''):
+                        return state, ToolConfirmResult(proceed=True)
+                    elif resp in ('n', 'no'):
+                        # Get feedback
+                        feedback = await rcfg.on_input("Feedback for LLM: ")
+                        return state, ToolConfirmResult(
+                            proceed=False,
+                            tool_result=ToolResult(
+                                tool_call_id=tc.id,
+                                is_error=True,
+                                error="Rejected by user"
+                            ),
+                            user_message=feedback.strip() if feedback.strip() else None
+                        )
+                    else:  # skip
+                        return state, ToolConfirmResult(
+                            proceed=False,
+                            tool_result=ToolResult(
+                                tool_call_id=tc.id,
+                                is_error=True,
+                                error="Skipped by user"
+                            )
+                        )
+
+                confirm_handler = confirm_tool_tui if self.confirm_tools else auto_confirm_tool
 
                 # Handle no-tool response: wait for user input before continuing
                 async def handle_no_tool_interactive(state: AgentState, rcfg: RunConfig) -> AgentState:
@@ -428,7 +484,7 @@ class InteractiveAgentRunner:
                     run_config = RunConfig(
                         on_chunk=self._handle_stream_event,
                         on_input=self._tui_input_handler,
-                        confirm_tool=auto_confirm_tool,
+                        confirm_tool=confirm_handler,
                         handle_stop=self._handle_stop,
                         handle_no_tool=handle_no_tool_interactive,
                         session_store=self.session_store,
@@ -467,7 +523,11 @@ class InteractiveAgentRunner:
                             self.session_id = latest_state.session_id
                             if self.status_line:
                                 self.status_line.set_session_id(self.session_id)
-                                self.tui.request_render()
+
+                        # Update token counts from completions
+                        if self.status_line:
+                            self._update_token_counts(latest_state)
+                            self.tui.request_render()
 
                         # Build new messages list from latest state
                         new_messages = list(latest_state.actor.trajectory.messages)
@@ -499,15 +559,17 @@ class InteractiveAgentRunner:
                         # Loop continues with new state
                     else:
                         # Agent completed normally - exit loop
-                        # Update session_id from final state (may have been created by run_agent)
+                        # Update session_id and token counts from final state
                         if agent_states:
-                            final_session_id = agent_states[-1].session_id
-                            if final_session_id and final_session_id != self.session_id:
-                                self.session_id = final_session_id
-                                # Update status line with new session ID
+                            final_state = agent_states[-1]
+                            if final_state.session_id and final_state.session_id != self.session_id:
+                                self.session_id = final_state.session_id
                                 if self.status_line:
                                     self.status_line.set_session_id(self.session_id)
-                                    self.tui.request_render()
+                            # Update token counts
+                            if self.status_line:
+                                self._update_token_counts(final_state)
+                                self.tui.request_render()
                         break
 
                     self.agent_cancel_scope = None
@@ -554,6 +616,7 @@ async def run_interactive_agent(
     debug_layout: bool = False,
     parent_session_id: str | None = None,
     branch_point: int | None = None,
+    confirm_tools: bool = False,
 ) -> list[AgentState]:
     """Run an interactive agent with TUI.
 
@@ -569,6 +632,7 @@ async def run_interactive_agent(
         debug_layout: Show component boundaries and spacing
         parent_session_id: Parent session ID when forking
         branch_point: Message index where forking from parent
+        confirm_tools: Require confirmation before executing tools
 
     Returns:
         List of agent states from the run
@@ -585,6 +649,7 @@ async def run_interactive_agent(
         debug_layout=debug_layout,
         parent_session_id=parent_session_id,
         branch_point=branch_point,
+        confirm_tools=confirm_tools,
     )
     return await runner.run()
 

@@ -344,6 +344,11 @@ def main() -> int:
         default=50,
         help="Maximum number of turns (default: 50)",
     )
+    parser.add_argument(
+        "--confirm-tools",
+        action="store_true",
+        help="Require confirmation before executing tools",
+    )
 
     # Session management
     parser.add_argument(
@@ -577,11 +582,13 @@ def main() -> int:
                     # Compare endpoint config
                     current_env_type = type(environment).__name__ if environment else "none"
                     parent_env_type = parent_session.environment.type if parent_session.environment else "none"
+                    parent_confirm_tools = parent_session.environment.config.get("confirm_tools", False) if parent_session.environment else False
 
                     config_differs = (
                         endpoint.model != parent_session.endpoint.model or
                         endpoint.provider != parent_session.endpoint.provider or
-                        current_env_type != parent_env_type
+                        current_env_type != parent_env_type or
+                        args.confirm_tools != parent_confirm_tools
                     )
 
                     if config_differs:
@@ -633,6 +640,7 @@ def main() -> int:
                 args.debug_layout,
                 parent_session_id,
                 branch_point,
+                args.confirm_tools,
             )
             return 0
         except KeyboardInterrupt:
