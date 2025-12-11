@@ -61,8 +61,14 @@ class ServerHandle:
     port: int
 
     def stop(self) -> None:
-        """Stop the server."""
+        """Stop the server and release GPU memory."""
+        # First, kill any process using the port (the actual server)
+        self.client.exec(f"fuser -k {self.port}/tcp 2>/dev/null || true")
+        # Then kill the tmux session
         self.client.exec(f"tmux kill-session -t {self.session_name} 2>/dev/null || true")
+        # Give GPU memory time to release
+        import time
+        time.sleep(2)
         logger.info(f"Stopped server: {self.session_name}")
 
     def is_alive(self) -> bool:
