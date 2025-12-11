@@ -451,6 +451,7 @@ class InteractiveAgentRunner:
                             self.session_id = latest_state.session_id
                             if self.status_line:
                                 self.status_line.set_session_id(self.session_id)
+                                self.tui.request_render()
 
                         # Build new messages list from latest state
                         new_messages = list(latest_state.actor.trajectory.messages)
@@ -490,6 +491,7 @@ class InteractiveAgentRunner:
                                 # Update status line with new session ID
                                 if self.status_line:
                                     self.status_line.set_session_id(self.session_id)
+                                    self.tui.request_render()
                         break
 
                     self.agent_cancel_scope = None
