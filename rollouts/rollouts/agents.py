@@ -870,20 +870,24 @@ async def run_agent(
         aborted_state = replace(current_state, stop=StopReason.ABORTED)
         states.append(aborted_state)
         current_state = aborted_state
-        await handle_checkpoint_event(current_state, "final", run_config, current_state.session_id)
 
-        # Save session with aborted status
-        if session_store and current_state.session_id:
-            env_state = None
-            if current_state.environment is not None:
-                env_state = await current_state.environment.serialize()
-            await session_store.update(
-                current_state.session_id,
-                status=SessionStatus.ABORTED,
-                environment_state=env_state,
-            )
+        # Shield cleanup operations from further cancellation
+        with trio.CancelScope(shield=True):
+            await handle_checkpoint_event(current_state, "final", run_config, current_state.session_id)
 
-        raise
+            # Save session with aborted status
+            if session_store and current_state.session_id:
+                env_state = None
+                if current_state.environment is not None:
+                    env_state = await current_state.environment.serialize()
+                await session_store.update(
+                    current_state.session_id,
+                    status=SessionStatus.ABORTED,
+                    environment_state=env_state,
+                )
+
+        # Return states instead of re-raising - caller can check stop reason
+        return states
 
     # Save final state
     await handle_checkpoint_event(current_state, "final", run_config, current_state.session_id)

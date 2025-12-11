@@ -302,6 +302,9 @@ class InteractiveAgentRunner:
         # Start TUI
         self.tui.start()
 
+        # Track agent states across the run (for session_id extraction on Ctrl+C)
+        agent_states: list[AgentState] = []
+
         try:
             # Create Trio memory channel for input coordination
             # Buffered channel allows queuing messages while agent is working
@@ -407,8 +410,6 @@ class InteractiveAgentRunner:
 
                     return dc_replace(state, actor=new_actor)
 
-                # Store agent result
-                agent_states = []
                 current_state = initial_state
 
                 # Main agent loop - handles interrupts and continues
@@ -430,7 +431,14 @@ class InteractiveAgentRunner:
                     with self.agent_cancel_scope:
                         agent_states = await run_agent(current_state, run_config)
 
-                    # Check if agent was cancelled
+                    # Check if Ctrl+C was pressed (agent returned with ABORTED status)
+                    if agent_states and agent_states[-1].stop == StopReason.ABORTED:
+                        # Extract session_id before exiting
+                        if agent_states[-1].session_id:
+                            self.session_id = agent_states[-1].session_id
+                        break  # Exit the while loop
+
+                    # Check if agent was cancelled via Escape key
                     if self.agent_cancel_scope.cancelled_caught:
                         # Agent was interrupted - hide loader and show message
                         if self.tui:
@@ -495,6 +503,10 @@ class InteractiveAgentRunner:
                         break
 
                     self.agent_cancel_scope = None
+
+            # After nursery exits (normal or cancelled), extract session_id from agent states
+            if agent_states and agent_states[-1].session_id:
+                self.session_id = agent_states[-1].session_id
 
             return agent_states
 
