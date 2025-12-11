@@ -263,15 +263,25 @@ async def aggregate_openai_responses_stream(
         elif event_type == "response.completed":
             response = event.response
             if hasattr(response, "usage") and response.usage:
+                # Extract cache tokens from input_tokens_details
                 cached_tokens = 0
                 if hasattr(response.usage, "input_tokens_details"):
                     details = response.usage.input_tokens_details
                     if hasattr(details, "cached_tokens"):
                         cached_tokens = details.cached_tokens or 0
 
+                # Extract reasoning tokens from output_tokens_details
+                reasoning_tokens = 0
+                if hasattr(response.usage, "output_tokens_details"):
+                    details = response.usage.output_tokens_details
+                    if hasattr(details, "reasoning_tokens"):
+                        reasoning_tokens = details.reasoning_tokens or 0
+
+                output_tokens = getattr(response.usage, "output_tokens", 0) or 0
                 usage_data = {
                     "input_tokens": (getattr(response.usage, "input_tokens", 0) or 0) - cached_tokens,
-                    "output_tokens": getattr(response.usage, "output_tokens", 0) or 0,
+                    "output_tokens": output_tokens - reasoning_tokens,
+                    "reasoning_tokens": reasoning_tokens,
                     "cache_read_tokens": cached_tokens,
                     "cache_write_tokens": 0,
                 }
@@ -620,11 +630,13 @@ async def rollout_openai_responses(
         )
         raise
 
-    # Build completion object
+    # Build completion object with granular token breakdown
     usage = Usage(
-        prompt_tokens=usage_data.get("input_tokens", 0),
-        completion_tokens=usage_data.get("output_tokens", 0),
-        total_tokens=usage_data.get("input_tokens", 0) + usage_data.get("output_tokens", 0),
+        input_tokens=usage_data.get("input_tokens", 0),
+        output_tokens=usage_data.get("output_tokens", 0),
+        reasoning_tokens=usage_data.get("reasoning_tokens", 0),
+        cache_read_tokens=usage_data.get("cache_read_tokens", 0),
+        cache_write_tokens=usage_data.get("cache_write_tokens", 0),
     )
 
     # Enrich message with provider/api/model metadata for cross-provider handoff
