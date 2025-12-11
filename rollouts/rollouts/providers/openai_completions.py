@@ -185,15 +185,33 @@ def _tool_to_openai(tool: Tool) -> dict[str, Any]:
 
 
 def _parse_usage(u: CompletionUsage) -> Usage:
+    """Parse OpenAI CompletionUsage into our Usage dataclass with cache/reasoning tokens."""
     assert u is not None
-    assert hasattr(u, 'prompt_tokens')
-    assert hasattr(u, 'completion_tokens')
-    assert hasattr(u, 'total_tokens')
-    result = Usage(u.prompt_tokens, u.completion_tokens, u.total_tokens)
-    assert result is not None
+    assert hasattr(u, "prompt_tokens")
+    assert hasattr(u, "completion_tokens")
+
+    # Extract cache tokens from prompt_tokens_details
+    cached_tokens = 0
+    if hasattr(u, "prompt_tokens_details") and u.prompt_tokens_details:
+        cached_tokens = getattr(u.prompt_tokens_details, "cached_tokens", 0) or 0
+
+    # Extract reasoning tokens from completion_tokens_details
+    reasoning_tokens = 0
+    if hasattr(u, "completion_tokens_details") and u.completion_tokens_details:
+        reasoning_tokens = getattr(u.completion_tokens_details, "reasoning_tokens", 0) or 0
+
+    # Build Usage with granular token breakdown
+    # input_tokens = prompt tokens minus cached (non-cached input)
+    # output_tokens = completion tokens minus reasoning
+    result = Usage(
+        input_tokens=(u.prompt_tokens or 0) - cached_tokens,
+        output_tokens=(u.completion_tokens or 0) - reasoning_tokens,
+        reasoning_tokens=reasoning_tokens,
+        cache_read_tokens=cached_tokens,
+    )
+
     assert result.prompt_tokens >= 0
     assert result.completion_tokens >= 0
-    assert result.total_tokens >= 0
     return result
 
 
@@ -430,7 +448,7 @@ async def aggregate_stream(
         object="chat.completion",
         created=created or 0,
         model="",
-        usage=Usage(0, 0, 0),
+        usage=Usage(),  # Will be populated from stream or final response
         choices=[Choice(0, final_message, finish_reason or "stop")],
     )
 

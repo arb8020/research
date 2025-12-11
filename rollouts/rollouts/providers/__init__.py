@@ -18,6 +18,7 @@ from .base import (
     NonRetryableError,
     VLLMErrorType,
     add_cache_control_to_last_content,
+    calculate_cost_from_usage,
     sanitize_request_for_logging,
 )
 from .google import aggregate_google_stream, rollout_google
@@ -79,5 +80,6 @@ __all__ = [
     "NonRetryableError",
     "VLLMErrorType",
     "add_cache_control_to_last_content",
+    "calculate_cost_from_usage",
     "sanitize_request_for_logging",
 ]

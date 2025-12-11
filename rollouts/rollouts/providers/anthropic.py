@@ -391,11 +391,18 @@ async def aggregate_anthropic_stream(
 
     final_anthropic_message = await stream.get_final_message()
 
-    # Map Anthropic's field names to Usage dataclass
+    # Extract cache token counts from Anthropic's usage
+    anthropic_usage = final_anthropic_message.usage
+    cache_read = getattr(anthropic_usage, "cache_read_input_tokens", 0) or 0
+    cache_write = getattr(anthropic_usage, "cache_creation_input_tokens", 0) or 0
+
+    # Build Usage with cache tokens
+    # input_tokens = non-cached input (total input minus cache read)
     usage = Usage(
-        prompt_tokens=final_anthropic_message.usage.input_tokens,
-        completion_tokens=final_anthropic_message.usage.output_tokens,
-        total_tokens=final_anthropic_message.usage.input_tokens + final_anthropic_message.usage.output_tokens,
+        input_tokens=anthropic_usage.input_tokens - cache_read,
+        output_tokens=anthropic_usage.output_tokens,
+        cache_read_tokens=cache_read,
+        cache_write_tokens=cache_write,
     )
 
     completion = ChatCompletion(

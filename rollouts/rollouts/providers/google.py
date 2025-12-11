@@ -224,13 +224,13 @@ async def aggregate_google_stream(
         # Handle usage metadata
         if hasattr(chunk, "usageMetadata") and chunk.usageMetadata:
             metadata = chunk.usageMetadata
+            cached_tokens = getattr(metadata, "cachedContentTokenCount", 0) or 0
+            prompt_tokens = getattr(metadata, "promptTokenCount", 0) or 0
             usage_data = {
-                "input_tokens": getattr(metadata, "promptTokenCount", 0) or 0,
-                "output_tokens": (
-                    (getattr(metadata, "candidatesTokenCount", 0) or 0) +
-                    (getattr(metadata, "thoughtsTokenCount", 0) or 0)
-                ),
-                "cache_read_tokens": getattr(metadata, "cachedContentTokenCount", 0) or 0,
+                "input_tokens": prompt_tokens - cached_tokens,  # Non-cached input
+                "output_tokens": getattr(metadata, "candidatesTokenCount", 0) or 0,
+                "reasoning_tokens": getattr(metadata, "thoughtsTokenCount", 0) or 0,
+                "cache_read_tokens": cached_tokens,
                 "cache_write_tokens": 0,
             }
 
@@ -450,12 +450,13 @@ async def rollout_google(
     async with trio_asyncio.open_loop() as loop:
         final_message, usage_data = await trio_asyncio.aio_as_trio(_call_google_in_asyncio)()
 
-    # Build completion object
-    # Map Google's field names to Usage dataclass
+    # Build completion object with granular token breakdown
     usage = Usage(
-        prompt_tokens=usage_data.get("input_tokens", 0),
-        completion_tokens=usage_data.get("output_tokens", 0),
-        total_tokens=usage_data.get("input_tokens", 0) + usage_data.get("output_tokens", 0),
+        input_tokens=usage_data.get("input_tokens", 0),
+        output_tokens=usage_data.get("output_tokens", 0),
+        reasoning_tokens=usage_data.get("reasoning_tokens", 0),
+        cache_read_tokens=usage_data.get("cache_read_tokens", 0),
+        cache_write_tokens=usage_data.get("cache_write_tokens", 0),
     )
 
     # Enrich message with provider/api/model metadata for cross-provider handoff

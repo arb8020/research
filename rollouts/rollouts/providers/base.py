@@ -6,7 +6,8 @@ import copy
 from dataclasses import replace
 from enum import Enum
 
-from rollouts.dtypes import Message
+from rollouts.dtypes import Cost, Message, Usage
+from rollouts.models import ModelCost
 
 
 class NonRetryableError(Exception):
@@ -186,3 +187,27 @@ def _prepare_messages_for_llm(messages: list[Message]) -> list[Message]:
 def verbose(level: int) -> bool:
     """Simple verbose checker - just return True for now."""
     return True
+
+
+def calculate_cost_from_usage(usage: Usage, model_cost: ModelCost | None) -> Cost:
+    """Pure function: Usage + ModelCost -> Cost.
+
+    Following CLASSES_VS_FUNCTIONAL: pure math, no class needed.
+    Following FAVORITES: explicit inputs/outputs, no hidden state.
+
+    Args:
+        usage: Token usage from API response
+        model_cost: Pricing info from models.py (per million tokens)
+
+    Returns:
+        Cost breakdown in USD
+    """
+    if model_cost is None:
+        return Cost()
+
+    return Cost(
+        input=(usage.input_tokens / 1_000_000) * model_cost.input,
+        output=(usage.output_tokens / 1_000_000) * model_cost.output,
+        cache_read=(usage.cache_read_tokens / 1_000_000) * model_cost.cache_read,
+        cache_write=(usage.cache_write_tokens / 1_000_000) * model_cost.cache_write,
+    )
