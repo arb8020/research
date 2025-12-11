@@ -13,6 +13,11 @@ Layout:
             repo.git/              # bare repo (our isolated git)
             worktrees/
                 <session_id>/      # worktree for each session
+
+TODO: Add CLI commands for applying changes from worktree:
+  - `rollouts diff <session-id>` - generate unified diff between worktree and working dir
+  - `rollouts apply <session-id>` - apply changes via patch (reversible with patch -R)
+  - Consider: detect if user's dir is a git repo and offer git-native workflow
 """
 
 from dataclasses import dataclass, field
