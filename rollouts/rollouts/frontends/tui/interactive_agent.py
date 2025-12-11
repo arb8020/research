@@ -369,6 +369,7 @@ class InteractiveAgentRunner:
                         tools=self.environment.get_tools() if self.environment else [],
                     ),
                     environment=self.environment,
+                    session_id=self.session_id,  # Set for resumption, None for new session
                 )
 
                 # Create run config
@@ -422,7 +423,6 @@ class InteractiveAgentRunner:
                         handle_stop=self._handle_stop,
                         handle_no_tool=handle_no_tool_interactive,
                         session_store=self.session_store,
-                        session_id=self.session_id,
                         cancel_scope=self.agent_cancel_scope,
                     )
 
@@ -443,8 +443,17 @@ class InteractiveAgentRunner:
                             self.renderer.finalize_partial_response()
                             self.renderer.add_system_message("Interrupted")
 
-                        # Build new messages list
-                        new_messages = list(current_state.actor.trajectory.messages)
+                        # Use latest state from agent (has session_id, latest trajectory)
+                        latest_state = agent_states[-1] if agent_states else current_state
+
+                        # Update session_id if it was created during this run
+                        if latest_state.session_id and latest_state.session_id != self.session_id:
+                            self.session_id = latest_state.session_id
+                            if self.status_line:
+                                self.status_line.set_session_id(self.session_id)
+
+                        # Build new messages list from latest state
+                        new_messages = list(latest_state.actor.trajectory.messages)
 
                         # If there was a partial response, add it with [interrupted] marker
                         # TODO: Consider whether to include partial response in trajectory.
@@ -462,17 +471,25 @@ class InteractiveAgentRunner:
                         user_input = await self._tui_input_handler("Enter your message: ")
                         new_messages.append(Message(role="user", content=user_input))
 
-                        # Update state with new trajectory
+                        # Update state with new trajectory, preserving session_id
                         from dataclasses import replace as dc_replace
                         new_trajectory = Trajectory(messages=new_messages)
                         current_state = dc_replace(
-                            current_state,
-                            actor=dc_replace(current_state.actor, trajectory=new_trajectory),
+                            latest_state,
+                            actor=dc_replace(latest_state.actor, trajectory=new_trajectory),
                             stop=None,  # Clear any stop reason
                         )
                         # Loop continues with new state
                     else:
                         # Agent completed normally - exit loop
+                        # Update session_id from final state (may have been created by run_agent)
+                        if agent_states:
+                            final_session_id = agent_states[-1].session_id
+                            if final_session_id and final_session_id != self.session_id:
+                                self.session_id = final_session_id
+                                # Update status line with new session ID
+                                if self.status_line:
+                                    self.status_line.set_session_id(self.session_id)
                         break
 
                     self.agent_cancel_scope = None
