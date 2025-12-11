@@ -380,11 +380,29 @@ class InteractiveAgentRunner:
                                 if self.cancel_scope:
                                     self.cancel_scope.cancel()
                                 return
-                            # Check for Escape (ASCII 27) - interrupt current agent run
+
+                            # Handle escape - could be standalone ESC or start of escape sequence
                             if len(input_data) == 1 and ord(input_data[0]) == 27:
-                                if self.agent_cancel_scope:
-                                    self.agent_cancel_scope.cancel()
-                                continue
+                                # Wait briefly for more bytes (escape sequences come fast)
+                                await trio.sleep(0.05)
+                                # Read any additional bytes
+                                more_data = ""
+                                while True:
+                                    next_byte = self.terminal.read_input()
+                                    if next_byte:
+                                        more_data += next_byte
+                                    else:
+                                        break
+
+                                if more_data:
+                                    # It's an escape sequence - pass the whole thing to input handler
+                                    input_data = input_data + more_data
+                                else:
+                                    # Standalone escape - cancel agent run
+                                    if self.agent_cancel_scope:
+                                        self.agent_cancel_scope.cancel()
+                                    continue
+
                             # Route to TUI's input handler
                             if self.tui:
                                 self.tui._handle_input(input_data)
