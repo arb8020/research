@@ -317,6 +317,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Rollouts - chat with an LLM agent in your terminal"
     )
+    # Preset configuration
+    parser.add_argument(
+        "--preset",
+        type=str,
+        default=None,
+        help="Agent preset name (e.g., 'fast_coder', 'careful_coder') or path to preset file",
+    )
+    
+    # Individual overrides (can override preset values)
     parser.add_argument(
         "--model",
         type=str,
@@ -339,7 +348,7 @@ def main() -> int:
         "--system-prompt",
         type=str,
         default=None,
-        help="System prompt (default: depends on --env)",
+        help="System prompt (default: depends on --env or preset)",
     )
     parser.add_argument(
         "--env",
@@ -415,6 +424,13 @@ def main() -> int:
         help="Extended thinking for Anthropic models (default: enabled)",
     )
 
+    # Preset listing
+    parser.add_argument(
+        "--list-presets",
+        action="store_true",
+        help="List available agent presets and exit",
+    )
+
     # Debug
     parser.add_argument(
         "--debug",
@@ -474,6 +490,23 @@ def main() -> int:
     args = parser.parse_args()
 
     # --- Non-interactive commands (no endpoint needed) ---
+
+    # List presets
+    if args.list_presets:
+        from rollouts.agent_presets import list_presets
+        
+        presets = list_presets()
+        if not presets:
+            print("No presets found in rollouts/agent_presets/")
+            return 0
+        
+        print("Available agent presets:")
+        for preset_name in presets:
+            print(f"  - {preset_name}")
+        
+        print(f"\nUsage: rollouts --preset <name>")
+        print(f"Example: rollouts --preset fast_coder")
+        return 0
 
     # OAuth login/logout
     if args.login_claude or args.logout_claude:
@@ -619,6 +652,44 @@ def main() -> int:
             return 0
 
         return trio.run(summarize_action)
+
+    # Load preset if specified (apply before individual args)
+    if args.preset:
+        from rollouts.agent_presets import load_preset
+        
+        try:
+            preset = load_preset(args.preset)
+            
+            # Apply preset values if individual args not explicitly set
+            # Check if arg is still at default value (wasn't overridden by user)
+            parser_defaults = {
+                'model': 'anthropic/claude-sonnet-4-5-20250929',
+                'env': 'none',
+            }
+            
+            # Model: only override if still at default
+            if args.model == parser_defaults['model']:
+                args.model = preset.model
+            
+            # Env: only override if still at default
+            if args.env == parser_defaults['env']:
+                args.env = preset.env
+            
+            # System prompt: only override if not explicitly set
+            if args.system_prompt is None:
+                args.system_prompt = preset.system_prompt
+            
+            # Thinking: apply preset value if not explicitly set
+            if args.thinking is None:
+                args.thinking = preset.thinking
+            
+            # Working dir: apply preset if available and not set
+            if preset.working_dir and args.cwd is None:
+                args.cwd = str(preset.working_dir)
+                
+        except Exception as e:
+            print(f"Error loading preset '{args.preset}': {e}", file=sys.stderr)
+            return 1
 
     working_dir = Path(args.cwd) if args.cwd else Path.cwd()
 

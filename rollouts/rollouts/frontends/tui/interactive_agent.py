@@ -270,18 +270,13 @@ class InteractiveAgentRunner:
         logger.debug(f"_update_token_counts: setting tokens {total_input}/{total_output} cost={total_cost}")
         self.status_line.set_tokens(total_input, total_output, total_cost)
 
-    async def _setup_git_env_if_needed(self, session_id: str) -> None:
-        """Setup GitWorktreeEnvironment with session_id if applicable."""
-        from rollouts.environments.git_worktree import GitWorktreeEnvironment
-
-        if self.environment and isinstance(self.environment, GitWorktreeEnvironment):
-            if not self.environment.session_id:
-                await self.environment.setup(session_id)
-                # Update status line with git info
-                if self.status_line:
-                    env_info = self.environment.get_status_info()
-                    if env_info:
-                        self.status_line.set_env_info(env_info)
+    def _update_env_status_info(self) -> None:
+        """Update status line with environment info."""
+        if self.status_line and self.environment:
+            if hasattr(self.environment, 'get_status_info'):
+                env_info = self.environment.get_status_info()
+                if env_info:
+                    self.status_line.set_env_info(env_info)
 
     async def run(self) -> list[AgentState]:
         """Run interactive agent loop.
@@ -573,7 +568,7 @@ class InteractiveAgentRunner:
                             if self.status_line:
                                 self.status_line.set_session_id(self.session_id)
                             # Setup GitWorktreeEnvironment if needed
-                            await self._setup_git_env_if_needed(self.session_id)
+                            self._update_env_status_info()
 
                         # Update token counts from completions
                         if self.status_line:
@@ -618,7 +613,7 @@ class InteractiveAgentRunner:
                                 if self.status_line:
                                     self.status_line.set_session_id(self.session_id)
                                 # Setup GitWorktreeEnvironment if needed
-                                await self._setup_git_env_if_needed(self.session_id)
+                                self._update_env_status_info()
                             # Update token counts
                             if self.status_line:
                                 self._update_token_counts(final_state)
@@ -640,12 +635,40 @@ class InteractiveAgentRunner:
             if self.terminal:
                 self.terminal.stop()
 
-            # Print session ID for easy resume
+            # Print session info for easy resume
             if self.session_id:
                 # Use \r\n for proper newlines after raw terminal mode
                 import sys
                 sys.stdout.write(f"\r\nSession: {self.session_id}\r\n")
                 sys.stdout.write(f"Resume with: --session {self.session_id}\r\n")
+
+                # Show git worktree info if applicable
+                from rollouts.environments.git_worktree import GitWorktreeEnvironment
+                if isinstance(self.environment, GitWorktreeEnvironment) and self.environment._worktree_path:
+                    env = self.environment
+                    worktree = env._worktree_path
+
+                    # Get actual commit count from git
+                    import subprocess
+                    try:
+                        result = subprocess.run(
+                            ["git", "rev-list", "--count", "HEAD"],
+                            cwd=str(worktree),
+                            capture_output=True,
+                            text=True,
+                            timeout=5,
+                        )
+                        commit_count = int(result.stdout.strip()) if result.returncode == 0 else 0
+                    except Exception:
+                        commit_count = env._commit_count
+
+                    sys.stdout.write(f"\r\nChanges in: {worktree}\r\n")
+                    if commit_count > 1:  # >1 because initial snapshot is always there
+                        sys.stdout.write(f"  {commit_count - 1} file operations committed\r\n")
+                    sys.stdout.write(f"\r\nTo view:  cd {worktree} && git log --oneline\r\n")
+                    sys.stdout.write(f"To diff:  diff -r {worktree} . --exclude=.rollouts\r\n")
+                    sys.stdout.write(f"To apply: cp -r {worktree}/* .\r\n")
+
                 sys.stdout.flush()
 
     def _handle_stop(self, state: AgentState) -> AgentState:
