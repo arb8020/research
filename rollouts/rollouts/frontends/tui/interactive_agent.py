@@ -325,6 +325,11 @@ class InteractiveAgentRunner:
         self.status_line = StatusLine(theme=self.tui.theme)
         self.status_line.set_session_id(self.session_id)
         self.status_line.set_model(f"{self.endpoint.provider}/{self.endpoint.model}")
+        # Set environment info if available
+        if self.environment and hasattr(self.environment, 'get_status_info'):
+            env_info = self.environment.get_status_info()
+            if env_info:
+                self.status_line.set_env_info(env_info)
         self.tui.add_child(self.status_line)
 
         # Add spacer after status line to keep it from bottom

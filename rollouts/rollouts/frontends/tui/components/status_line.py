@@ -34,6 +34,7 @@ class StatusLine(Component):
         self._input_tokens: int = 0
         self._output_tokens: int = 0
         self._cost: float = 0.0
+        self._env_info: dict[str, str] | None = None
 
     def set_session_id(self, session_id: str | None) -> None:
         """Set the session ID to display."""
@@ -55,22 +56,32 @@ class StatusLine(Component):
         self._output_tokens += output_tokens
         self._cost += cost
 
+    def set_env_info(self, env_info: dict[str, str] | None) -> None:
+        """Set environment info to display."""
+        self._env_info = env_info
+
     def render(self, width: int) -> List[str]:
-        """Render the status line as two lines: model on first, tokens/cost on second."""
+        """Render the status line as two lines: model/env on first, tokens/cost on second."""
         gray = "\x1b[38;5;245m"
         reset = "\x1b[0m"
         available_width = width - 2  # 2 for left margin "  "
 
         lines: list[str] = []
 
-        # Line 1: model
+        # Line 1: model and env info
+        line1_parts: list[str] = []
         if self._model:
-            model_content = f"model:{self._model}"
-            model_len = visible_width(model_content)
-            if model_len > available_width:
-                model_content = model_content[:available_width - 1] + "…"
-            padding = " " * max(0, available_width - visible_width(model_content))
-            lines.append(f"  {gray}{model_content}{padding}{reset}")
+            line1_parts.append(f"model:{self._model}")
+        if self._env_info:
+            for key, value in self._env_info.items():
+                line1_parts.append(f"{key}:{value}")
+
+        if line1_parts:
+            line1_content = "  │  ".join(line1_parts)
+            if visible_width(line1_content) > available_width:
+                line1_content = line1_content[:available_width - 1] + "…"
+            padding = " " * max(0, available_width - visible_width(line1_content))
+            lines.append(f"  {gray}{line1_content}{padding}{reset}")
 
         # Line 2: tokens and cost
         usage_parts: list[str] = []

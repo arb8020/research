@@ -872,6 +872,14 @@ class Environment(Protocol):
         """
         ...
 
+    def get_status_info(self) -> dict[str, str] | None:
+        """Return key-value pairs to display in TUI status line.
+
+        Optional method - environments can return None or not implement this.
+        Example: {"cwd": "~/research", "branch": "main"}
+        """
+        ...
+
     async def on_assistant_message(self, message: 'Message', state: 'AgentState') -> 'AgentState':
         """Called after each assistant message, before tool processing.
 

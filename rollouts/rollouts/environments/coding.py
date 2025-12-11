@@ -310,6 +310,15 @@ class LocalFilesystemEnvironment:
         """Return environment name identifier."""
         return "coding"
 
+    def get_status_info(self) -> dict[str, str] | None:
+        """Return cwd for status line display."""
+        cwd = str(self.working_dir)
+        # Shorten home directory to ~
+        home = os.path.expanduser("~")
+        if cwd.startswith(home):
+            cwd = "~" + cwd[len(home):]
+        return {"cwd": cwd}
+
     async def serialize(self) -> dict:
         return {"working_dir": str(self.working_dir)}
 
