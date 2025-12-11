@@ -384,10 +384,10 @@ class InteractiveAgentRunner:
                                     self.cancel_scope.cancel()
                                 return
 
-                            # Check for Escape (ASCII 27) - interrupt current agent run
-                            # Note: This means arrow keys during agent execution get swallowed,
-                            # but that's fine since you can't edit input while agent is running.
-                            if len(input_data) == 1 and ord(input_data[0]) == 27:
+                            # Check for standalone Escape (ASCII 27) - interrupt current agent run
+                            # Multi-byte sequences starting with escape (like \x1b[A for arrows)
+                            # are passed through to the input handler.
+                            if input_data == '\x1b':
                                 if self.agent_cancel_scope:
                                     self.escape_pressed = True
                                     self.agent_cancel_scope.cancel()
@@ -634,12 +634,14 @@ class InteractiveAgentRunner:
             if self.terminal:
                 self.terminal.stop()
 
+            # Ensure output buffer is clean before printing session info
+            sys.stdout.flush()
+
             # Print session info for easy resume
             if self.session_id:
-                # Use \r\n for proper newlines after raw terminal mode
-                import sys
-                sys.stdout.write(f"\r\nSession: {self.session_id}\r\n")
-                sys.stdout.write(f"Resume with: --session {self.session_id}\r\n")
+                # Terminal is now restored, use regular print() for clean output
+                print(f"\nSession: {self.session_id}")
+                print(f"Resume with: --session {self.session_id}")
 
                 # Show git worktree info if applicable
                 from rollouts.environments.git_worktree import GitWorktreeEnvironment
@@ -661,14 +663,12 @@ class InteractiveAgentRunner:
                     except Exception:
                         commit_count = env._commit_count
 
-                    sys.stdout.write(f"\r\nChanges in: {worktree}\r\n")
+                    print(f"\nChanges in: {worktree}")
                     if commit_count > 1:  # >1 because initial snapshot is always there
-                        sys.stdout.write(f"  {commit_count - 1} file operations committed\r\n")
-                    sys.stdout.write(f"\r\nTo view:  cd {worktree} && git log --oneline\r\n")
-                    sys.stdout.write(f"To diff:  diff -r {worktree} . --exclude=.rollouts\r\n")
-                    sys.stdout.write(f"To apply: cp -r {worktree}/* .\r\n")
-
-                sys.stdout.flush()
+                        print(f"  {commit_count - 1} file operations committed")
+                    print(f"\nTo view:  cd {worktree} && git log --oneline")
+                    print(f"To diff:  diff -r {worktree} . --exclude=.rollouts")
+                    print(f"To apply: cp -r {worktree}/* .")
 
     def _handle_stop(self, state: AgentState) -> AgentState:
         """Handle stop condition - check max turns."""
