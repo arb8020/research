@@ -37,6 +37,7 @@ from rollouts.dtypes import (
     ToolCallError,
     ToolCallStart,
     Usage,
+    parse_streaming_json,
 )
 
 from .base import _prepare_messages_for_llm, calculate_cost_from_usage

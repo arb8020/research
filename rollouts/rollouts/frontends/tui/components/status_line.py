@@ -60,8 +60,54 @@ class StatusLine(Component):
         """Set environment info to display."""
         self._env_info = env_info
 
+    def _wrap_parts(self, parts: list[str], available_width: int, separator: str = "  │  ") -> list[str]:
+        """Wrap parts across multiple lines at part boundaries.
+
+        Args:
+            parts: List of content parts to join
+            available_width: Max width per line
+            separator: String to join parts with
+
+        Returns:
+            List of wrapped lines (without styling/padding)
+        """
+        if not parts:
+            return []
+
+        lines: list[str] = []
+        current_line = ""
+        sep_width = visible_width(separator)
+
+        for part in parts:
+            part_width = visible_width(part)
+
+            if not current_line:
+                # First part on this line
+                if part_width <= available_width:
+                    current_line = part
+                else:
+                    # Single part too wide - truncate it
+                    current_line = part[:available_width - 1] + "…"
+            else:
+                # Check if adding this part fits
+                new_width = visible_width(current_line) + sep_width + part_width
+                if new_width <= available_width:
+                    current_line = current_line + separator + part
+                else:
+                    # Wrap to new line
+                    lines.append(current_line)
+                    if part_width <= available_width:
+                        current_line = part
+                    else:
+                        current_line = part[:available_width - 1] + "…"
+
+        if current_line:
+            lines.append(current_line)
+
+        return lines
+
     def render(self, width: int) -> List[str]:
-        """Render the status line as two lines: model/env on first, tokens/cost on second."""
+        """Render the status line, wrapping at part boundaries if needed."""
         gray = "\x1b[38;5;245m"
         reset = "\x1b[0m"
         available_width = width - 2  # 2 for left margin "  "
@@ -76,12 +122,9 @@ class StatusLine(Component):
             for key, value in self._env_info.items():
                 line1_parts.append(f"{key}:{value}")
 
-        if line1_parts:
-            line1_content = "  │  ".join(line1_parts)
-            if visible_width(line1_content) > available_width:
-                line1_content = line1_content[:available_width - 1] + "…"
-            padding = " " * max(0, available_width - visible_width(line1_content))
-            lines.append(f"  {gray}{line1_content}{padding}{reset}")
+        for line_content in self._wrap_parts(line1_parts, available_width):
+            padding = " " * max(0, available_width - visible_width(line_content))
+            lines.append(f"  {gray}{line_content}{padding}{reset}")
 
         # Line 2: tokens and cost
         usage_parts: list[str] = []
@@ -90,13 +133,9 @@ class StatusLine(Component):
         if self._cost > 0:
             usage_parts.append(f"cost:${self._cost:.4f}")
 
-        if usage_parts:
-            usage_content = "  │  ".join(usage_parts)
-            usage_len = visible_width(usage_content)
-            if usage_len > available_width:
-                usage_content = usage_content[:available_width - 1] + "…"
-            padding = " " * max(0, available_width - visible_width(usage_content))
-            lines.append(f"  {gray}{usage_content}{padding}{reset}")
+        for line_content in self._wrap_parts(usage_parts, available_width):
+            padding = " " * max(0, available_width - visible_width(line_content))
+            lines.append(f"  {gray}{line_content}{padding}{reset}")
 
         # If nothing to show, return empty line
         if not lines:
