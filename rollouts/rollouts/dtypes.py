@@ -922,6 +922,7 @@ class AgentState:
     pending_tool_calls: list[ToolCall] = field(default_factory=list)
     next_tool_idx: int = 0  # Which tool we're about to process
     timestamp: str = datetime.now(timezone.utc).isoformat() + 'Z'
+    session_id: str | None = None  # Session ID for persistence (set by run_agent)
 
 
 # Forward declarations for RunConfig (needs to be after AgentState but before default handlers)
@@ -958,8 +959,7 @@ class RunConfig:
     show_progress: bool = False  # Enable turn-level progress tracking
     cancel_scope: trio.CancelScope | None = None  # Optional Trio cancel scope for graceful cancellation. When cancel_scope.cancel() is called, any in-flight HTTP request is immediately cancelled and trio.Cancelled is raised. The agent loop catches this and sets stop=StopReason.ABORTED.
     # Session persistence
-    session_store: Any | None = None  # SessionStore instance for persistence
-    session_id: str | None = None  # Session ID for this run
+    session_store: Any | None = None  # SessionStore instance for persistence (session_id is on AgentState)
 
 
 # ── Evaluation Types ──────────────────────────────────────────────────────────

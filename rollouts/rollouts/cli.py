@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-CLI entry point for interactive TUI agent.
+Rollouts CLI - chat with an LLM agent.
 
 Usage:
-    python -m rollouts.frontends.tui.cli
-    python -m rollouts.frontends.tui.cli --model openai/gpt-4o-mini
-    python -m rollouts.frontends.tui.cli --model anthropic/claude-sonnet-4-5 --thinking disabled
-    python -m rollouts.frontends.tui.cli --login-claude  # Login with Claude Pro/Max account
+    python -m rollouts                    # Interactive TUI
+    python -m rollouts -p "query"         # Non-interactive, print result
+    python -m rollouts --export-md        # Export session to markdown
+    python -m rollouts --login-claude     # Login with Claude Pro/Max
 
-Model format is "provider/model" (explicit, no inference).
+Model format is "provider/model" (e.g., "anthropic/claude-sonnet-4-5-20250929").
 For Anthropic: auto-uses OAuth if logged in, otherwise ANTHROPIC_API_KEY.
 """
 
@@ -33,9 +33,8 @@ from rollouts.dtypes import (
     ToolCall,
 )
 from rollouts.environments import CalculatorEnvironment, LocalFilesystemEnvironment
-from rollouts.frontends.tui.interactive_agent import run_interactive_agent
 from rollouts.store import FileSessionStore
-from rollouts import AgentSession, EndpointConfig, EnvironmentConfig
+from rollouts import AgentSession
 
 
 SYSTEM_PROMPTS = {
@@ -137,15 +136,6 @@ def parse_model_string(model_str: str) -> tuple[str, str]:
     """Parse model string into (provider, model_name).
 
     Requires explicit "provider/model" format (e.g., "anthropic/claude-3-5-haiku-20241022").
-
-    Args:
-        model_str: Model string in "provider/model" format
-
-    Returns:
-        Tuple of (provider, model_name)
-
-    Raises:
-        ValueError: If model_str doesn't contain "/"
     """
     if "/" not in model_str:
         raise ValueError(
@@ -157,20 +147,19 @@ def parse_model_string(model_str: str) -> tuple[str, str]:
     return provider, model
 
 
+def get_oauth_client():
+    """Get OAuth client for Anthropic. Lazy import to avoid TUI dependencies."""
+    from rollouts.frontends.tui.oauth import get_oauth_client as _get_oauth_client
+    return _get_oauth_client()
+
+
 def create_endpoint(
     model_str: str,
     api_base: str | None = None,
     api_key: str | None = None,
     thinking: str = "enabled",
 ) -> Endpoint:
-    """Create endpoint from CLI arguments.
-
-    Args:
-        model_str: Model string in "provider/model" format (e.g., "anthropic/claude-sonnet-4-5")
-        api_base: Optional API base URL
-        api_key: Optional API key (otherwise from env, or OAuth for Anthropic)
-        thinking: Extended thinking setting ("enabled" or "disabled")
-    """
+    """Create endpoint from CLI arguments."""
     import os
     from rollouts.models import get_model
 
@@ -179,7 +168,7 @@ def create_endpoint(
 
     # Check model capabilities if thinking is enabled
     if thinking == "enabled":
-        model_metadata = get_model(provider, model)  # type: ignore
+        model_metadata = get_model(provider, model)
         if model_metadata is not None:
             if not model_metadata.reasoning:
                 raise ValueError(
@@ -188,7 +177,6 @@ def create_endpoint(
                     f"  1. Use a model that supports reasoning (e.g., anthropic/claude-3-5-sonnet-20241022)\n"
                     f"  2. Disable thinking with --thinking disabled"
                 )
-        # If model not in registry, fail fast
         else:
             raise ValueError(
                 f"Model '{model}' not found in registry.\n"
@@ -201,25 +189,20 @@ def create_endpoint(
         elif provider == "anthropic":
             api_base = "https://api.anthropic.com"
         else:
-            api_base = "https://api.openai.com/v1"  # Default
+            api_base = "https://api.openai.com/v1"
 
     # For Anthropic: auto-detect OAuth if no API key provided
     oauth_token = ""
     if api_key is None and provider == "anthropic":
-        # Check for OAuth token first
-        from .oauth import get_oauth_client
         client = get_oauth_client()
         tokens = client.tokens
         if tokens:
             if tokens.is_expired():
-                # Token expired - try to refresh
-                import trio
                 try:
                     tokens = trio.run(client.refresh_tokens)
                     oauth_token = tokens.access_token
                     print(f"🔐 OAuth token refreshed")
                 except Exception as e:
-                    # Refresh failed, fall back to API key
                     print(f"⚠️  OAuth token expired and refresh failed: {e}")
                     oauth_token = ""
             else:
@@ -227,10 +210,8 @@ def create_endpoint(
             if oauth_token:
                 print(f"🔐 Using OAuth authentication (Claude Pro/Max)")
         if not oauth_token:
-            # Fall back to environment variable
             api_key = os.environ.get("ANTHROPIC_API_KEY", "")
 
-    # Get API key from environment if not provided (non-Anthropic or no OAuth)
     if api_key is None:
         if provider == "openai":
             api_key = os.environ.get("OPENAI_API_KEY", "")
@@ -243,8 +224,6 @@ def create_endpoint(
     if provider == "anthropic" and thinking == "enabled":
         thinking_config = {"type": "enabled", "budget_tokens": thinking_budget}
 
-    # max_tokens must be greater than thinking budget
-    # Set to a reasonable value that accommodates both thinking and response
     max_tokens = 16384 if thinking_config else 8192
 
     return Endpoint(
@@ -258,16 +237,75 @@ def create_endpoint(
     )
 
 
+async def run_print_mode(
+    trajectory: Trajectory,
+    endpoint: Endpoint,
+    environment,
+    query: str,
+    session_store: FileSessionStore | None,
+    session_id: str | None,
+) -> int:
+    """Run in non-interactive print mode - execute query and print result."""
+
+    trajectory = Trajectory(
+        messages=trajectory.messages + [Message(role="user", content=query)]
+    )
+
+    initial_state = AgentState(
+        actor=Actor(
+            trajectory=trajectory,
+            endpoint=endpoint,
+            tools=environment.get_tools() if environment else [],
+        ),
+        environment=environment,
+    )
+
+    async def print_handler(event: StreamEvent) -> None:
+        if isinstance(event, TextDelta):
+            print(event.delta, end="", flush=True)
+
+    async def auto_confirm(tc: ToolCall, state: AgentState, rcfg: RunConfig) -> tuple[AgentState, ToolConfirmResult]:
+        return state, ToolConfirmResult(proceed=True)
+
+    def handle_stop(state: AgentState) -> AgentState:
+        from dataclasses import replace
+        if state.turn_idx > 0:
+            return replace(state, stop=StopReason.TASK_COMPLETED)
+        return state
+
+    run_config = RunConfig(
+        on_chunk=print_handler,
+        confirm_tool=auto_confirm,
+        handle_stop=handle_stop,
+        session_store=session_store,
+        session_id=session_id,
+    )
+
+    error_occurred = False
+    try:
+        await run_agent(initial_state, run_config)
+    except ValueError as e:
+        if "empty message" not in str(e):
+            print(f"\nError: {e}", file=sys.stderr)
+            error_occurred = True
+    except Exception as e:
+        print(f"\nError: {e}", file=sys.stderr)
+        error_occurred = True
+
+    print()
+    return 1 if error_occurred else 0
+
+
 def main() -> int:
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
-        description="Interactive TUI agent - chat with an LLM agent in your terminal"
+        description="Rollouts - chat with an LLM agent in your terminal"
     )
     parser.add_argument(
         "--model",
         type=str,
         default="anthropic/claude-sonnet-4-5-20250929",
-        help='Model in "provider/model" format (e.g., "anthropic/claude-sonnet-4-5-20250929", "openai/gpt-5.1-codex"). Default: anthropic/claude-sonnet-4-5-20250929',
+        help='Model in "provider/model" format. Default: anthropic/claude-sonnet-4-5-20250929',
     )
     parser.add_argument(
         "--api-base",
@@ -279,7 +317,7 @@ def main() -> int:
         "--api-key",
         type=str,
         default=None,
-        help="API key (default: from environment OPENAI_API_KEY or ANTHROPIC_API_KEY)",
+        help="API key (default: from environment)",
     )
     parser.add_argument(
         "--system-prompt",
@@ -292,13 +330,13 @@ def main() -> int:
         type=str,
         choices=["none", "calculator", "coding"],
         default="none",
-        help="Environment with tools: none, calculator, coding (default: none)",
+        help="Environment with tools (default: none)",
     )
     parser.add_argument(
         "--cwd",
         type=str,
         default=None,
-        help="Working directory for coding environment (default: current directory)",
+        help="Working directory for coding environment",
     )
     parser.add_argument(
         "--max-turns",
@@ -318,9 +356,9 @@ def main() -> int:
         "--session", "-s",
         type=str,
         nargs="?",
-        const="",  # Empty string when flag used without value
+        const="",
         default=None,
-        help="Resume session: -s to list/pick, -s PATH to resume specific file",
+        help="Resume session: -s to list/pick, -s ID to resume specific",
     )
     parser.add_argument(
         "--no-session",
@@ -328,7 +366,7 @@ def main() -> int:
         help="Don't persist session to disk",
     )
 
-    # Unix utility mode
+    # Non-interactive mode
     parser.add_argument(
         "-p", "--print",
         dest="print_mode",
@@ -338,13 +376,13 @@ def main() -> int:
         help="Non-interactive mode: run query and print result",
     )
 
-    # Theme selection
+    # TUI options
     parser.add_argument(
         "--theme",
         type=str,
         choices=["dark", "rounded", "minimal"],
         default="minimal",
-        help="UI theme (default: minimal)",
+        help="TUI theme (default: minimal)",
     )
 
     # Extended thinking (Anthropic)
@@ -353,24 +391,22 @@ def main() -> int:
         type=str,
         choices=["enabled", "disabled"],
         default="enabled",
-        help="Enable extended thinking for Anthropic models (default: enabled)",
+        help="Extended thinking for Anthropic models (default: enabled)",
     )
 
-    # Debug mode
+    # Debug
     parser.add_argument(
         "--debug",
         action="store_true",
-        help="Enable debug logging and chat state dumps",
+        help="Enable debug logging",
     )
-
-    # Visual debug mode
     parser.add_argument(
         "--debug-layout",
         action="store_true",
-        help="Show component boundaries and spacing in the UI",
+        help="Show TUI component boundaries",
     )
 
-    # OAuth authentication (Claude Pro/Max)
+    # OAuth (Claude Pro/Max)
     parser.add_argument(
         "--login-claude",
         action="store_true",
@@ -382,11 +418,33 @@ def main() -> int:
         help="Logout and revoke Claude OAuth tokens",
     )
 
+    # Export
+    parser.add_argument(
+        "--export-md",
+        type=str,
+        nargs="?",
+        const="",
+        default=None,
+        metavar="FILE",
+        help="Export session to Markdown (stdout if no FILE)",
+    )
+    parser.add_argument(
+        "--export-html",
+        type=str,
+        nargs="?",
+        const="",
+        default=None,
+        metavar="FILE",
+        help="Export session to HTML (stdout if no FILE)",
+    )
+
     args = parser.parse_args()
 
-    # Handle Claude OAuth login/logout commands
+    # --- Non-interactive commands (no endpoint needed) ---
+
+    # OAuth login/logout
     if args.login_claude or args.logout_claude:
-        from .oauth import login, logout, OAuthError
+        from rollouts.frontends.tui.oauth import login, logout, OAuthError
         if args.logout_claude:
             logout()
             return 0
@@ -402,18 +460,67 @@ def main() -> int:
                 return 1
         return trio.run(oauth_action)
 
-    # Create endpoint (auto-detect OAuth for Anthropic if logged in)
-    endpoint = create_endpoint(
-        args.model, args.api_base, args.api_key, args.thinking
-    )
+    # Export
+    if args.export_md is not None or args.export_html is not None:
+        from rollouts.export import session_to_markdown, session_to_html
+        session_store = FileSessionStore()
 
-    # Validate authentication is available
-    if not endpoint.api_key and not endpoint.oauth_token:
-        env_var = "OPENAI_API_KEY" if endpoint.provider == "openai" else "ANTHROPIC_API_KEY"
-        print(f"\n❌ Error: No API key found. Please set {env_var} environment variable, use --api-key flag, or login with --login.", file=sys.stderr)
+        async def export_action() -> int:
+            if args.session is not None and args.session != "":
+                session, err = await session_store.get(args.session)
+                if err or session is None:
+                    print(f"Error loading session: {err}", file=sys.stderr)
+                    return 1
+            elif args.session == "" or args.continue_session:
+                if args.continue_session:
+                    session, err = await session_store.get_latest()
+                    if err or session is None:
+                        print("No sessions found", file=sys.stderr)
+                        return 1
+                else:
+                    session = await pick_session_async(session_store)
+                    if session is None:
+                        return 0
+            else:
+                session, err = await session_store.get_latest()
+                if err or session is None:
+                    print("No sessions found. Use -s to select a session.", file=sys.stderr)
+                    return 1
+
+            if args.export_md is not None:
+                output = session_to_markdown(session)
+                export_path = args.export_md
+            else:
+                output = session_to_html(session)
+                export_path = args.export_html
+
+            if export_path == "":
+                print(output)
+            else:
+                Path(export_path).write_text(output)
+                print(f"Exported to {export_path}")
+
+            return 0
+
+        return trio.run(export_action)
+
+    # --- Commands requiring endpoint ---
+
+    # Create endpoint
+    try:
+        endpoint = create_endpoint(
+            args.model, args.api_base, args.api_key, args.thinking
+        )
+    except ValueError as e:
+        print(f"❌ {e}", file=sys.stderr)
         return 1
 
-    # Determine working directory
+    # Validate authentication
+    if not endpoint.api_key and not endpoint.oauth_token:
+        env_var = "OPENAI_API_KEY" if endpoint.provider == "openai" else "ANTHROPIC_API_KEY"
+        print(f"❌ No API key found. Set {env_var}, use --api-key, or --login-claude", file=sys.stderr)
+        return 1
+
     working_dir = Path(args.cwd) if args.cwd else Path.cwd()
 
     # Create environment
@@ -423,104 +530,77 @@ def main() -> int:
     elif args.env == "coding":
         environment = LocalFilesystemEnvironment(working_dir=working_dir)
 
-    # Session store
     session_store = FileSessionStore() if not args.no_session else None
-
-    # Get system prompt (user-provided or default for env)
     system_prompt = args.system_prompt or SYSTEM_PROMPTS.get(args.env, SYSTEM_PROMPTS["none"])
 
-    # Run async main to handle session operations
     async def async_main() -> int:
+        from rollouts.agents import resume_session
+
+        # Resolve session: resume existing or create new (handled by run_agent)
         session_id: str | None = None
-        messages: list[Message] = []
+        trajectory: Trajectory
 
         if session_store is not None:
-            # Handle session resumption
+            # Resume specific session
             if args.session is not None:
                 if args.session == "":
-                    # --session without path: show picker
+                    # Interactive picker
                     session = await pick_session_async(session_store)
                     if session is None:
-                        return 0  # User cancelled or no sessions
+                        return 0
                     session_id = session.session_id
-                    # Convert SessionMessage to Message
-                    messages = [
-                        Message(role=m.role, content=m.content, tool_call_id=m.tool_call_id)
-                        for m in session.messages
-                    ]
-                    print(f"Resuming session: {session_id}")
-                    print(f"  {len(messages)} messages from {session.created_at}")
                 else:
-                    # Resume specific session by ID
-                    session, err = await session_store.get(args.session)
-                    if err or session is None:
-                        print(f"Error loading session: {err}", file=sys.stderr)
-                        return 1
-                    session_id = session.session_id
-                    messages = [
-                        Message(role=m.role, content=m.content, tool_call_id=m.tool_call_id)
-                        for m in session.messages
-                    ]
-                    print(f"Resuming session: {session_id}")
-                    print(f"  {len(messages)} messages from {session.created_at}")
+                    # Direct session ID
+                    session_id = args.session
+
+            # Continue latest session
             elif args.continue_session:
-                # Continue most recent session
                 session, err = await session_store.get_latest()
                 if session:
                     session_id = session.session_id
-                    messages = [
-                        Message(role=m.role, content=m.content, tool_call_id=m.tool_call_id)
-                        for m in session.messages
-                    ]
-                    print(f"Continuing session: {session_id}")
-                    print(f"  {len(messages)} messages from {session.created_at}")
                 else:
                     print("No previous session found, starting new session")
 
-            # Create new session if needed
-            if session_id is None:
-                endpoint_config = EndpointConfig(
-                    model=endpoint.model,
-                    provider=endpoint.provider,
-                    temperature=endpoint.temperature,
-                )
-                env_config = EnvironmentConfig(
-                    type=args.env,
-                    config={"cwd": str(working_dir)},
-                )
-                session = await session_store.create(
-                    endpoint=endpoint_config,
-                    environment=env_config,
-                )
-                session_id = session.session_id
-                print(f"New session: {session_id}")
+        # Build trajectory: either from resumed session or fresh
+        if session_id:
+            try:
+                state = await resume_session(session_id, session_store, endpoint, environment)
+                trajectory = state.actor.trajectory
+                print(f"Resuming session: {session_id}")
+                print(f"  {len(trajectory.messages)} messages")
+            except ValueError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                return 1
 
-        # Build trajectory from messages or start fresh
-        if messages:
-            # Check if first message is system prompt, if not prepend one
-            if not messages or messages[0].role != "system":
-                messages.insert(0, Message(role="system", content=system_prompt))
-            trajectory = Trajectory(messages=messages)
+            # Ensure system prompt is present
+            if not trajectory.messages or trajectory.messages[0].role != "system":
+                trajectory = Trajectory(
+                    messages=[Message(role="system", content=system_prompt)] + list(trajectory.messages)
+                )
         else:
-            system_msg = Message(role="system", content=system_prompt)
-            trajectory = Trajectory(messages=[system_msg])
+            # Fresh session - just system prompt, run_agent will create session
+            trajectory = Trajectory(messages=[Message(role="system", content=system_prompt)])
 
         # Non-interactive print mode
         if args.print_mode:
-            return await run_print_mode(trajectory, endpoint, environment, args.print_mode, session_store, session_id)
+            return await run_print_mode(
+                trajectory, endpoint, environment,
+                args.print_mode, session_store, session_id
+            )
 
-        # Run interactive agent
+        # Interactive TUI mode
+        from rollouts.frontends.tui.interactive_agent import run_interactive_agent
         try:
-            states = await run_interactive_agent(
+            await run_interactive_agent(
                 trajectory,
                 endpoint,
                 environment,
                 args.max_turns,
-                session_store,  # Pass session store for persistence
-                session_id,  # Pass session ID
-                args.theme,  # Pass theme selection
-                args.debug,  # Pass debug flag
-                args.debug_layout,  # Pass layout debug flag
+                session_store,
+                session_id,
+                args.theme,
+                args.debug,
+                args.debug_layout,
             )
             return 0
         except KeyboardInterrupt:
@@ -532,81 +612,9 @@ def main() -> int:
     except Exception as e:
         print(f"\n\n❌ Error: {e}", file=sys.stderr)
         import traceback
-
         traceback.print_exc()
         return 1
 
 
-async def run_print_mode(
-    trajectory: Trajectory,
-    endpoint: Endpoint,
-    environment,
-    query: str,
-    session_store: FileSessionStore | None,
-    session_id: str | None,
-) -> int:
-    """Run in non-interactive print mode - execute query and print result.
-
-    Session persistence is handled by run_agent() via RunConfig.session_store.
-    """
-
-    # Add user query to trajectory
-    trajectory = Trajectory(
-        messages=trajectory.messages + [Message(role="user", content=query)]
-    )
-
-    # Create initial state
-    initial_state = AgentState(
-        actor=Actor(
-            trajectory=trajectory,
-            endpoint=endpoint,
-            tools=environment.get_tools() if environment else [],
-        ),
-        environment=environment,
-    )
-
-    # Simple streaming handler - just print text
-    async def print_handler(event: StreamEvent) -> None:
-        if isinstance(event, TextDelta):
-            print(event.delta, end="", flush=True)
-
-    # Auto-confirm tools
-    async def auto_confirm(tc: ToolCall, state: AgentState, rcfg: RunConfig) -> tuple[AgentState, ToolConfirmResult]:
-        return state, ToolConfirmResult(proceed=True)
-
-    # Stop after one turn (no tool handling for now in print mode)
-    def handle_stop(state: AgentState) -> AgentState:
-        from dataclasses import replace
-        # Stop after first turn completes (turn_idx > 0 means we completed a turn)
-        if state.turn_idx > 0:
-            return replace(state, stop=StopReason.TASK_COMPLETED)
-        return state
-
-    run_config = RunConfig(
-        on_chunk=print_handler,
-        confirm_tool=auto_confirm,
-        handle_stop=handle_stop,
-        session_store=session_store,
-        session_id=session_id,
-    )
-
-    error_occurred = False
-    try:
-        await run_agent(initial_state, run_config)
-    except ValueError as e:
-        # Ignore aggregation errors - text was already printed
-        if "empty message" not in str(e):
-            print(f"\nError: {e}", file=sys.stderr)
-            error_occurred = True
-    except Exception as e:
-        print(f"\nError: {e}", file=sys.stderr)
-        error_occurred = True
-
-    print()  # Final newline
-
-    return 1 if error_occurred else 0
-
-
 if __name__ == "__main__":
     sys.exit(main())
-

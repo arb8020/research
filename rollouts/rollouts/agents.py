@@ -521,6 +521,11 @@ async def run_agent_step(
         next_tool_idx=0
     )
 
+    # Persist assistant message immediately after rollout
+    if rcfg.session_store and state.session_id and last_message:
+        session_msg = _message_to_session_message(last_message)
+        await rcfg.session_store.append_message(state.session_id, session_msg)
+
     # Let environment respond to assistant message (e.g., execute code, provide feedback)
     # This happens AFTER updating state but BEFORE tool processing
     # Only call if we actually have an assistant message
@@ -659,7 +664,13 @@ async def process_pending_tools(
             current_state,
             actor=replace(current_state.actor, trajectory=updated_trajectory)
         )
-        
+
+        # Persist each message after tool execution
+        if rcfg.session_store and state.session_id:
+            for msg in messages_to_add:
+                session_msg = _message_to_session_message(msg)
+                await rcfg.session_store.append_message(state.session_id, session_msg)
+
         # Handle tool errors
         current_state = rcfg.handle_tool_error(tool_result, current_state)
 
@@ -680,10 +691,90 @@ async def process_pending_tools(
     )
 
 
+async def resume_session(
+    session_id: str,
+    session_store: Any,
+    endpoint: 'Endpoint',
+    environment: 'Environment | None' = None,
+) -> AgentState:
+    """Load a session and construct an AgentState ready for run_agent().
+
+    This is a helper for resuming sessions. It loads the session from the store,
+    converts messages to the runtime format, and builds an AgentState.
+
+    Args:
+        session_id: Session ID to resume
+        session_store: SessionStore instance
+        endpoint: Endpoint to use (may differ from original session)
+        environment: Environment to use (may differ from original session)
+
+    Returns:
+        AgentState with session_id set, ready to pass to run_agent()
+
+    Raises:
+        ValueError: If session not found
+
+    Example:
+        state = await resume_session("20241205_143052_a1b2c3", store, endpoint, env)
+        states = await run_agent(state, RunConfig(session_store=store))
+    """
+    from .dtypes import Trajectory
+
+    session, err = await session_store.get(session_id)
+    if err or session is None:
+        raise ValueError(f"Session not found: {session_id}" + (f" ({err})" if err else ""))
+
+    # Convert SessionMessage -> Message
+    messages = [
+        Message(
+            role=m.role,
+            content=m.content,
+            tool_call_id=m.tool_call_id,
+        )
+        for m in session.messages
+    ]
+
+    trajectory = Trajectory(messages=messages)
+
+    return AgentState(
+        actor=Actor(
+            trajectory=trajectory,
+            endpoint=endpoint,
+            tools=environment.get_tools() if environment else [],
+        ),
+        environment=environment,
+        session_id=session_id,
+    )
+
+
+def _endpoint_to_config(endpoint: 'Endpoint') -> 'EndpointConfig':
+    """Convert Endpoint to serializable EndpointConfig."""
+    from .dtypes import EndpointConfig
+    return EndpointConfig(
+        model=endpoint.model,
+        provider=endpoint.provider,
+        temperature=endpoint.temperature,
+        max_tokens=endpoint.max_tokens,
+        thinking=endpoint.thinking is not None and endpoint.thinking.get("type") == "enabled",
+        thinking_budget=endpoint.thinking.get("budget_tokens") if endpoint.thinking else None,
+    )
+
+
+def _environment_to_config(environment: 'Environment | None') -> 'EnvironmentConfig':
+    """Convert Environment to serializable EnvironmentConfig."""
+    from .dtypes import EnvironmentConfig
+    if environment is None:
+        return EnvironmentConfig(type="none", config={})
+    # Use class name as type, environment should provide its own config via serialize()
+    return EnvironmentConfig(
+        type=type(environment).__name__,
+        config={},  # Config details stored in environment_state
+    )
+
+
 async def run_agent(
     state: AgentState,
     run_config: RunConfig,
-    session_id: str | None = None,
 ) -> list[AgentState]:
     """Run agent until stop condition, checkpointing each state.
 
@@ -691,25 +782,52 @@ async def run_agent(
     Caller is responsible for handling cancellation at their boundary.
 
     Session persistence:
-    - If run_config.session_store and run_config.session_id are set, messages are
-      persisted to the session store after each turn
-    - Caller is responsible for creating the session via session_store.create()
+    - If run_config.session_store is set, session lifecycle is managed automatically:
+      - If state.session_id is None, a new session is created
+      - If state.session_id is set, that session is resumed
+    - Messages are persisted after each turn
     - Final status and environment state are saved when agent stops
+    - The session_id is set on state and available via returned states
 
     Args:
-        state: Initial agent state
-        run_config: Run configuration (contains cancel_scope for cancellation)
-        session_id: Optional session ID for checkpointing (DEPRECATED: use run_config.session_id)
-    """
-    # Session persistence setup
-    session_store = run_config.session_store
-    effective_session_id = run_config.session_id or session_id
+        state: Initial agent state (set session_id to resume existing session)
+        run_config: Run configuration (set session_store for persistence)
 
-    states = [state]
+    Returns:
+        List of agent states. Access session_id via states[-1].session_id
+    """
+    session_store = run_config.session_store
     current_state = state
 
-    # Track message count for incremental persistence
-    last_persisted_message_count = len(state.actor.trajectory.messages)
+    # Session creation: if session_store but no session_id, create one
+    if session_store and not current_state.session_id:
+        from .dtypes import EndpointConfig, EnvironmentConfig
+        session = await session_store.create(
+            endpoint=_endpoint_to_config(current_state.actor.endpoint),
+            environment=_environment_to_config(current_state.environment),
+        )
+        current_state = replace(current_state, session_id=session.session_id)
+        logger.info(f"Created session: {session.session_id}")
+
+        # Persist initial messages (system prompt, user message, etc.)
+        for msg in current_state.actor.trajectory.messages:
+            session_msg = _message_to_session_message(msg)
+            await session_store.append_message(session.session_id, session_msg)
+
+    elif session_store and current_state.session_id:
+        # Resuming existing session - check for messages added since last persist
+        # (e.g., user added a new message before calling run_agent)
+        session, _ = await session_store.get(current_state.session_id)
+        if session:
+            persisted_count = len(session.messages)
+            current_count = len(current_state.actor.trajectory.messages)
+            if current_count > persisted_count:
+                # Persist the gap messages
+                for msg in current_state.actor.trajectory.messages[persisted_count:]:
+                    session_msg = _message_to_session_message(msg)
+                    await session_store.append_message(current_state.session_id, session_msg)
+
+    states = [current_state]
 
     # Initialize inner progress bar for turn-level tracking
     turn_pbar = None
@@ -728,22 +846,13 @@ async def run_agent(
                 break
 
             # Tiger Style: Centralize control flow - emit start/end in same scope for clarity
-            # Casey: Semantic compression - consistent pattern (start→step→end) repeated each iteration
-            await handle_checkpoint_event(current_state, "turn_start", run_config, session_id)
+            await handle_checkpoint_event(current_state, "turn_start", run_config, current_state.session_id)
 
             # Run one step - this is where HTTP calls happen
             # Trio will raise Cancelled if cancel_scope.cancel() was called
             next_state = await run_agent_step(current_state, run_config)
             current_state = next_state
             states.append(current_state)
-
-            # Persist new messages to session store
-            if session_store and effective_session_id:
-                current_messages = current_state.actor.trajectory.messages
-                for msg in current_messages[last_persisted_message_count:]:
-                    session_msg = _message_to_session_message(msg)
-                    await session_store.append_message(effective_session_id, session_msg)
-                last_persisted_message_count = len(current_messages)
 
             # Update inner progress bar
             if turn_pbar:
@@ -754,37 +863,33 @@ async def run_agent(
                 turn_pbar.set_postfix(postfix)
 
             # Checkpoint after each turn completes
-            await handle_checkpoint_event(current_state, "turn_end", run_config, session_id)
+            await handle_checkpoint_event(current_state, "turn_end", run_config, current_state.session_id)
 
     except trio.Cancelled:
         # Convert Trio's cancellation to our domain
-        # This is the boundary where we translate external signals to internal state
         aborted_state = replace(current_state, stop=StopReason.ABORTED)
         states.append(aborted_state)
         current_state = aborted_state
-        # Checkpoint the aborted state
-        await handle_checkpoint_event(current_state, "final", run_config, session_id)
+        await handle_checkpoint_event(current_state, "final", run_config, current_state.session_id)
 
         # Save session with aborted status
-        if session_store and effective_session_id:
+        if session_store and current_state.session_id:
             env_state = None
             if current_state.environment is not None:
                 env_state = await current_state.environment.serialize()
             await session_store.update(
-                effective_session_id,
+                current_state.session_id,
                 status=SessionStatus.ABORTED,
                 environment_state=env_state,
             )
 
-        # Re-raise to let Trio handle cleanup properly
         raise
 
     # Save final state
-    await handle_checkpoint_event(current_state, "final", run_config, session_id)
+    await handle_checkpoint_event(current_state, "final", run_config, current_state.session_id)
 
     # Save final session status and environment state
-    if session_store and effective_session_id:
-        # Determine final status
+    if session_store and current_state.session_id:
         if current_state.stop == StopReason.TASK_COMPLETED:
             status = SessionStatus.COMPLETED
         elif current_state.stop == StopReason.ABORTED:
@@ -794,18 +899,16 @@ async def run_agent(
         else:
             status = SessionStatus.PENDING
 
-        # Save environment state
         env_state = None
         if current_state.environment is not None:
             env_state = await current_state.environment.serialize()
 
         await session_store.update(
-            effective_session_id,
+            current_state.session_id,
             status=status,
             environment_state=env_state,
         )
 
-    # Close progress bar on normal completion
     if turn_pbar:
         turn_pbar.close()
 

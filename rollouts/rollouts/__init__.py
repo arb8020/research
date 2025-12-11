@@ -18,6 +18,7 @@ if TYPE_CHECKING:
         handle_tool_error,
         inject_tool_reminder,
         inject_turn_warning,
+        resume_session,
         rollout,
         run_agent,
         stdout_handler,
@@ -91,6 +92,7 @@ if TYPE_CHECKING:
     )
     from .store import FileSessionStore, SessionStore, generate_session_id
     from .transform_messages import transform_messages
+    from .export import session_to_markdown, session_to_html
 
 
 # Lazy import mappings: attribute -> (module, name)
@@ -101,6 +103,7 @@ _LAZY_IMPORTS = {
     'handle_tool_error': ('.agents', 'handle_tool_error'),
     'inject_tool_reminder': ('.agents', 'inject_tool_reminder'),
     'inject_turn_warning': ('.agents', 'inject_turn_warning'),
+    'resume_session': ('.agents', 'resume_session'),
     'rollout': ('.agents', 'rollout'),
     'run_agent': ('.agents', 'run_agent'),
     'stdout_handler': ('.agents', 'stdout_handler'),
@@ -178,6 +181,9 @@ _LAZY_IMPORTS = {
     'rollout_sglang': ('.providers', 'rollout_sglang'),
     # transform_messages
     'transform_messages': ('.transform_messages', 'transform_messages'),
+    # export
+    'session_to_markdown': ('.export', 'session_to_markdown'),
+    'session_to_html': ('.export', 'session_to_html'),
 }
 
 
@@ -202,7 +208,7 @@ __all__ = [
     # Stream handling
     'StreamChunk', 'stdout_handler',
     # Agent execution
-    'run_agent', 'rollout',
+    'run_agent', 'rollout', 'resume_session',
     # Tool handlers
     'confirm_tool_with_feedback', 'handle_tool_error', 'inject_turn_warning',
     'handle_stop_max_turns', 'inject_tool_reminder', 'default_confirm_tool',
@@ -226,6 +232,8 @@ __all__ = [
     'HasModelConfig', 'HasEnvironmentConfig', 'HasEvaluationConfig', 'HasOutputConfig',
     'BaseModelConfig', 'BaseEnvironmentConfig', 'BaseEvaluationConfig', 'BaseOutputConfig',
     'load_config_from_file',
+    # Export
+    'session_to_markdown', 'session_to_html',
 ]
 
 __version__ = "0.3.0"  # Added configuration protocols and base configs
