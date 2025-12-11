@@ -39,6 +39,7 @@ from rollouts.dtypes import (
     ToolCallError,
     ToolCallStart,
     Usage,
+    parse_streaming_json,
 )
 
 from .base import (

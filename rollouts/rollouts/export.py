@@ -18,7 +18,7 @@ import html
 import json
 from dataclasses import replace
 from datetime import datetime
-from typing import Any
+from typing import Any, TYPE_CHECKING
 import uuid
 
 from rollouts.dtypes import AgentSession, SessionMessage, SessionStatus
@@ -395,3 +395,90 @@ def summarize_session(
         parent_id=session.session_id,
         branch_point=len(session.messages),
     )
+
+
+# --- CLI Command Runners ---
+
+
+async def run_compact_command(
+    session_store: "SessionStore",
+    session: AgentSession,
+) -> tuple[AgentSession, None] | tuple[None, str]:
+    """Run the compact command on a session.
+
+    Args:
+        session_store: Store to save the compacted session
+        session: Session to compact
+
+    Returns:
+        (child_session, None) on success, (None, error) on failure
+    """
+    child_session = compact_session(session)
+    await session_store.save(child_session)
+    return child_session, None
+
+
+async def run_summarize_command(
+    session_store: "SessionStore",
+    session: AgentSession,
+    endpoint: "Endpoint",
+) -> tuple[AgentSession, None] | tuple[None, str]:
+    """Run the summarize command on a session.
+
+    Args:
+        session_store: Store to save the summarized session
+        session: Session to summarize
+        endpoint: LLM endpoint for generating summary
+
+    Returns:
+        (child_session, None) on success, (None, error) on failure
+    """
+    from rollouts.dtypes import Actor, Endpoint, Message, Trajectory, TextDelta, StreamEvent
+    from rollouts.providers import get_provider_function
+
+    print(f"Summarizing session {session.session_id} ({len(session.messages)} messages)...")
+
+    # Convert session to markdown for LLM
+    session_md = session_to_markdown(session, include_metadata=False)
+    summary_prompt = f"""Summarize this conversation session concisely. Focus on:
+1. What was the main task/goal
+2. Key decisions made
+3. What was accomplished
+4. Any open items or next steps
+
+Session content:
+{session_md}
+
+Provide a clear, actionable summary that would help someone continue this work."""
+
+    # Create actor with summary prompt
+    actor = Actor(
+        trajectory=Trajectory(messages=[Message(role="user", content=summary_prompt)]),
+        endpoint=endpoint,
+        tools=[],
+    )
+
+    # Stream response
+    summary_parts: list[str] = []
+
+    async def collect_text(event: StreamEvent) -> None:
+        if isinstance(event, TextDelta):
+            summary_parts.append(event.delta)
+            print(event.delta, end="", flush=True)
+
+    provider_fn = get_provider_function(endpoint.provider, endpoint.model)
+    await provider_fn(actor, collect_text)
+    print()  # newline after streaming
+
+    summary = "".join(summary_parts)
+
+    # Create and save summarized child
+    child_session = summarize_session(session, summary)
+    await session_store.save(child_session)
+    return child_session, None
+
+
+# Type hint for SessionStore (avoid circular import)
+if TYPE_CHECKING:
+    from rollouts.store import SessionStore
+    from rollouts.dtypes import Endpoint

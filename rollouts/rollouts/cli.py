@@ -539,7 +539,7 @@ def main() -> int:
 
     # Compact - create child session with truncated tool results
     if args.compact:
-        from rollouts.export import compact_session
+        from rollouts.export import run_compact_command
         session_store = FileSessionStore()
 
         async def compact_action() -> int:
@@ -549,7 +549,6 @@ def main() -> int:
                 return 1
 
             if args.session == "":
-                # Interactive picker
                 session = await pick_session_async(session_store)
                 if session is None:
                     return 0
@@ -559,9 +558,10 @@ def main() -> int:
                     print(f"Error loading session: {err}", file=sys.stderr)
                     return 1
 
-            # Create compacted child
-            child_session = compact_session(session)
-            await session_store.save(child_session)
+            child_session, err = await run_compact_command(session_store, session)
+            if err:
+                print(f"Error: {err}", file=sys.stderr)
+                return 1
             print(f"Created compacted session: {child_session.session_id}")
             print(f"  Parent: {child_session.parent_id}")
             print(f"  Messages: {len(child_session.messages)}")
@@ -591,7 +591,7 @@ def main() -> int:
 
     # Summarize - create child session with LLM-generated summary
     if args.summarize:
-        from rollouts.export import summarize_session, session_to_markdown
+        from rollouts.export import run_summarize_command
         session_store = FileSessionStore()
 
         async def summarize_action() -> int:
@@ -601,7 +601,6 @@ def main() -> int:
                 return 1
 
             if args.session == "":
-                # Interactive picker
                 session = await pick_session_async(session_store)
                 if session is None:
                     return 0
@@ -611,49 +610,12 @@ def main() -> int:
                     print(f"Error loading session: {err}", file=sys.stderr)
                     return 1
 
-            print(f"Summarizing session {session.session_id} ({len(session.messages)} messages)...")
-
-            # Generate summary using LLM
-            from rollouts.providers import get_provider_function
-            from rollouts.dtypes import Actor, Trajectory, TextContent
-            session_md = session_to_markdown(session, include_metadata=False)
-            summary_prompt = f"""Summarize this conversation session concisely. Focus on:
-1. What was the main task/goal
-2. Key decisions made
-3. What was accomplished
-4. Any open items or next steps
-
-Session content:
-{session_md}
-
-Provide a clear, actionable summary that would help someone continue this work."""
-
-            # Create actor with summary prompt
-            actor = Actor(
-                trajectory=Trajectory(messages=[Message(role="user", content=summary_prompt)]),
-                endpoint=endpoint,
-                tools=[],
-            )
-
-            # Stream response
-            summary_parts: list[str] = []
-            async def collect_text(event: StreamEvent) -> None:
-                if isinstance(event, TextDelta):
-                    summary_parts.append(event.delta)
-                    print(event.delta, end="", flush=True)
-
-            provider_fn = get_provider_function(endpoint.provider, endpoint.model)
-            await provider_fn(actor, collect_text)
-            print()  # newline after streaming
-
-            summary = "".join(summary_parts)
-
-            # Create summarized child
-            child_session = summarize_session(session, summary)
-            await session_store.save(child_session)
+            child_session, err = await run_summarize_command(session_store, session, endpoint)
+            if err:
+                print(f"Error: {err}", file=sys.stderr)
+                return 1
             print(f"\nCreated summarized session: {child_session.session_id}")
             print(f"  Parent: {child_session.parent_id}")
-            print(f"\nSummary:\n{summary}")
             return 0
 
         return trio.run(summarize_action)
