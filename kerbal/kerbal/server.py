@@ -62,10 +62,13 @@ class ServerHandle:
 
     def stop(self) -> None:
         """Stop the server and release GPU memory."""
-        # First, kill any process using the port (the actual server)
-        self.client.exec(f"fuser -k {self.port}/tcp 2>/dev/null || true")
-        # Then kill the tmux session
+        # Kill the tmux session first
         self.client.exec(f"tmux kill-session -t {self.session_name} 2>/dev/null || true")
+        # Then kill any remaining process using the port
+        # Use lsof (more commonly available than fuser) to find and kill
+        self.client.exec(
+            f"lsof -ti tcp:{self.port} | xargs -r kill -9 2>/dev/null || true"
+        )
         # Give GPU memory time to release
         import time
         time.sleep(2)
