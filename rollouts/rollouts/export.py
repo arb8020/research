@@ -2,7 +2,8 @@
 Session export to Markdown and HTML.
 
 Usage:
-    from rollouts.frontends.tui.export import session_to_markdown, session_to_html
+    from rollouts import session_to_markdown, session_to_html
+    # or: from rollouts.export import session_to_markdown, session_to_html
 
     md = session_to_markdown(session)
     html = session_to_html(session)
