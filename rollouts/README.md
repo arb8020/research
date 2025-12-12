@@ -46,9 +46,14 @@ export OPENAI_API_KEY=sk-...
 # Login once
 rollouts --login-claude
 
-# Then use without API key
+# Then use without API key (no invoices!)
 rollouts --env coding
+
+# Verify OAuth is being used
+python check_auth.py
 ```
+
+**Important:** When using OAuth, you should see `🔐 Using OAuth authentication (Claude Pro/Max)` in the output. If you don't see this message, you're using an API key and will get invoiced. See [docs/OAUTH.md](docs/OAUTH.md) for details.
 
 ## Environments
 

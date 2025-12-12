@@ -49,7 +49,11 @@ if TYPE_CHECKING:
         Logprob,
         Logprobs,
         Message,
+        Metric,
         RunConfig,
+        Sample,
+        Score,
+        ScoreFn,
         SessionMessage,
         SessionStatus,
         StopReason,
@@ -69,7 +73,7 @@ if TYPE_CHECKING:
         default_confirm_tool,
     )
     from .environments import BasicEnvironment, CalculatorEnvironment, NoToolsEnvironment
-    from .evaluate import evaluate_dataset, evaluate_sample
+    from .evaluation import EvalReport, EvalSample, evaluate, group_by, summarize
     from .models import (
         ApiType,
         ModelCost,
@@ -154,13 +158,21 @@ _LAZY_IMPORTS = {
     'Trajectory': ('.dtypes', 'Trajectory'),
     'Usage': ('.dtypes', 'Usage'),
     'default_confirm_tool': ('.dtypes', 'default_confirm_tool'),
+    # Evaluation types
+    'Metric': ('.dtypes', 'Metric'),
+    'Score': ('.dtypes', 'Score'),
+    'Sample': ('.dtypes', 'Sample'),
+    'ScoreFn': ('.dtypes', 'ScoreFn'),
     # environments
     'BasicEnvironment': ('.environments', 'BasicEnvironment'),
     'CalculatorEnvironment': ('.environments', 'CalculatorEnvironment'),
     'NoToolsEnvironment': ('.environments', 'NoToolsEnvironment'),
-    # evaluate
-    'evaluate_dataset': ('.evaluate', 'evaluate_dataset'),
-    'evaluate_sample': ('.evaluate', 'evaluate_sample'),
+    # evaluation
+    'evaluate': ('.evaluation', 'evaluate'),
+    'EvalSample': ('.evaluation', 'EvalSample'),
+    'EvalReport': ('.evaluation', 'EvalReport'),
+    'group_by': ('.evaluation', 'group_by'),
+    'summarize': ('.evaluation', 'summarize'),
     # models
     'ApiType': ('.models', 'ApiType'),
     'ModelCost': ('.models', 'ModelCost'),
@@ -227,7 +239,8 @@ __all__ = [
     'get_providers', 'get_models', 'get_model', 'register_model', 'get_api_type', 'calculate_cost',
     'Provider', 'ApiType', 'ModelMetadata', 'ModelCost',
     # Evaluation
-    'evaluate_dataset', 'evaluate_sample',
+    'evaluate', 'EvalSample', 'EvalReport', 'group_by', 'summarize',
+    'Metric', 'Score', 'Sample', 'ScoreFn',
     # Configuration
     'HasModelConfig', 'HasEnvironmentConfig', 'HasEvaluationConfig', 'HasOutputConfig',
     'BaseModelConfig', 'BaseEnvironmentConfig', 'BaseEvaluationConfig', 'BaseOutputConfig',
