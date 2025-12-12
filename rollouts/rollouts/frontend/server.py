@@ -1347,9 +1347,9 @@ class Config:
         """Convert to rollouts Endpoint (delegates to model config)."""
         return self.model.to_endpoint()
 
-    def to_eval_config(self, reward_fn):
+    def to_eval_config(self, score_fn):
         """Convert to rollouts EvalConfig (delegates to evaluation config)."""
-        return self.evaluation.to_eval_config(reward_fn)
+        return self.evaluation.to_eval_config(score_fn)
 
     @property
     def dataset_path(self):
