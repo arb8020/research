@@ -5,7 +5,7 @@ CLI agent for coding tasks with session persistence.
 ## Install
 
 ```bash
-pip install -e .
+uv pip install -e .
 ```
 
 ## Quick Start

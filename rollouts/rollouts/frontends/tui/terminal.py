@@ -81,6 +81,7 @@ class ProcessTerminal:
         self._resize_handler: Optional[Callable[[], None]] = None
         self._old_sigwinch = None
         self._running = False
+        self._tty_fd: Optional[int] = None  # File descriptor for /dev/tty
 
     def start(self, on_input: Callable[[str], None], on_resize: Callable[[], None]) -> None:
         """Start terminal in raw mode with input/resize handlers."""
@@ -93,11 +94,21 @@ class ProcessTerminal:
         _active_terminal = self
         atexit.register(_cleanup_terminal)
 
-        # Save current terminal settings
-        if sys.stdin.isatty():
-            self._old_settings = termios.tcgetattr(sys.stdin.fileno())
-            # Enable raw mode
-            tty.setraw(sys.stdin.fileno())
+        # Always try to open /dev/tty for terminal control
+        # This allows keyboard input even when stdin is piped
+        try:
+            self._tty_fd = os.open('/dev/tty', os.O_RDONLY | os.O_NONBLOCK)
+            # Save terminal settings from /dev/tty
+            self._old_settings = termios.tcgetattr(self._tty_fd)
+            # Enable raw mode on /dev/tty
+            tty.setraw(self._tty_fd)
+        except (OSError, termios.error):
+            # Fall back to sys.stdin if /dev/tty unavailable (e.g., no controlling terminal)
+            self._tty_fd = None
+            if sys.stdin.isatty():
+                self._old_settings = termios.tcgetattr(sys.stdin.fileno())
+                # Enable raw mode
+                tty.setraw(sys.stdin.fileno())
 
         # Enable bracketed paste mode
         sys.stdout.write("\x1b[?2004h")
@@ -131,8 +142,15 @@ class ProcessTerminal:
         sys.stdout.flush()
 
         # Restore terminal settings
-        if self._old_settings is not None and sys.stdin.isatty():
-            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, self._old_settings)
+        if self._old_settings is not None:
+            if self._tty_fd is not None:
+                # Restore /dev/tty settings
+                termios.tcsetattr(self._tty_fd, termios.TCSADRAIN, self._old_settings)
+                os.close(self._tty_fd)
+                self._tty_fd = None
+            elif sys.stdin.isatty():
+                # Restore stdin settings
+                termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, self._old_settings)
             self._old_settings = None
 
         # Restore SIGWINCH handler
@@ -199,23 +217,45 @@ class ProcessTerminal:
         to keep escape sequences together.
         """
         import select
-        if not select.select([sys.stdin], [], [], 0)[0]:
-            return None
+        
+        # Read from /dev/tty if available, otherwise fall back to stdin
+        if self._tty_fd is not None:
+            # Check if /dev/tty has data
+            if not select.select([self._tty_fd], [], [], 0)[0]:
+                return None
+            
+            # Read first byte
+            result = os.read(self._tty_fd, 1).decode('utf-8', errors='replace')
+            
+            # If it's an escape, try to read the rest of the sequence
+            if result == '\x1b':
+                import time
+                time.sleep(0.001)  # 1ms
+                
+                # Read all available bytes
+                while select.select([self._tty_fd], [], [], 0)[0]:
+                    result += os.read(self._tty_fd, 1).decode('utf-8', errors='replace')
+            
+            return result
+        else:
+            # Fall back to stdin
+            if not select.select([sys.stdin], [], [], 0)[0]:
+                return None
 
-        # Read first byte
-        result = sys.stdin.read(1)
+            # Read first byte
+            result = sys.stdin.read(1)
 
-        # If it's an escape, try to read the rest of the sequence
-        if result == '\x1b':
-            # Give a tiny bit of time for the rest of the sequence to arrive
-            import time
-            time.sleep(0.001)  # 1ms
+            # If it's an escape, try to read the rest of the sequence
+            if result == '\x1b':
+                # Give a tiny bit of time for the rest of the sequence to arrive
+                import time
+                time.sleep(0.001)  # 1ms
 
-            # Read all available bytes
-            while select.select([sys.stdin], [], [], 0)[0]:
-                result += sys.stdin.read(1)
+                # Read all available bytes
+                while select.select([sys.stdin], [], [], 0)[0]:
+                    result += sys.stdin.read(1)
 
-        return result
+            return result
 
     def run_external_editor(self, initial_content: str = "") -> Optional[str]:
         """Temporarily exit raw mode, run $EDITOR, and return edited content.

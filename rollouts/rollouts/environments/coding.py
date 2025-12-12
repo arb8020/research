@@ -7,10 +7,13 @@ Inspired by pi-mono's minimalist approach.
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 import os
 import subprocess
 import shlex
 
+import httpx
+import markdownify
 import trio
 
 from ..dtypes import (
@@ -28,6 +31,15 @@ from ..dtypes import (
 MAX_LINES = 2000
 MAX_LINE_LENGTH = 2000
 MAX_OUTPUT_SIZE = 10 * 1024 * 1024  # 10MB
+
+# Web fetch constants
+WEB_FETCH_MAX_SIZE = 10 * 1024 * 1024  # 10MB max download
+WEB_FETCH_MAX_CONTENT = 100_000  # 100KB max content after conversion
+WEB_FETCH_CACHE_TTL = 900  # 15 minutes
+WEB_FETCH_TIMEOUT = 30  # seconds
+
+# Simple in-memory cache for web fetches
+_web_fetch_cache: dict[str, tuple[float, dict]] = {}
 
 
 def expand_path(file_path: str) -> Path:
@@ -232,6 +244,44 @@ def format_edit(tool_name: str, args: dict, result: dict | None, expanded: bool,
     return text
 
 
+def format_web_fetch(tool_name: str, args: dict, result: dict | None, expanded: bool, theme=None) -> str:
+    """Format web_fetch tool execution."""
+    url = args.get("url", "")
+    prompt = args.get("prompt", "")
+
+    # Shorten URL for display
+    try:
+        parsed = urlparse(url)
+        display_url = f"{parsed.netloc}{parsed.path[:30]}..." if len(parsed.path) > 30 else f"{parsed.netloc}{parsed.path}"
+    except Exception:
+        display_url = url[:50] + "..." if len(url) > 50 else url
+
+    text = f"web_fetch(url={repr(display_url)})"
+
+    if result:
+        output = _get_text_output(result).strip()
+        is_error = result.get("isError", False)
+
+        if is_error:
+            text += f"\n⎿ Fetch failed"
+            if output:
+                text += f": {output[:100]}"
+        else:
+            # Show truncated response
+            lines = output.split("\n") if output else []
+            max_lines = len(lines) if expanded else 8
+            display_lines = lines[:max_lines]
+            remaining = len(lines) - max_lines
+
+            text += f"\n⎿ Fetched and processed"
+            for line in display_lines:
+                text += "\n  " + line[:120]
+            if remaining > 0:
+                text += f"\n  ... ({remaining} more lines)"
+
+    return text
+
+
 def generate_diff(old_content: str, new_content: str, context_lines: int = 3) -> str:
     """Generate unified diff string with line numbers in gutter.
 
@@ -343,6 +393,7 @@ class LocalFilesystemEnvironment:
             "read": format_read,
             "write": format_write,
             "edit": format_edit,
+            "web_fetch": format_web_fetch,
         }
         return formatters.get(tool_name)
 
@@ -414,6 +465,22 @@ class LocalFilesystemEnvironment:
                     required=["command"]
                 )
             ),
+            # web_fetch tool
+            Tool(
+                type="function",
+                function=ToolFunction(
+                    name="web_fetch",
+                    description="Fetch content from a URL and extract information. Converts HTML to markdown. Use this to read documentation, articles, or any web content.",
+                    parameters=ToolFunctionParameter(
+                        type="object",
+                        properties={
+                            "url": {"type": "string", "description": "The URL to fetch (must be valid http/https URL)"},
+                            "prompt": {"type": "string", "description": "What information to extract from the page (e.g., 'summarize this article', 'find the API endpoints')"},
+                        }
+                    ),
+                    required=["url", "prompt"]
+                )
+            ),
         ]
 
     async def on_assistant_message(self, message: Message, state: AgentState) -> AgentState:
@@ -437,6 +504,8 @@ class LocalFilesystemEnvironment:
                 return await self._exec_edit(tool_call)
             elif tool_call.name == "bash":
                 return await self._exec_bash(tool_call, cancel_scope)
+            elif tool_call.name == "web_fetch":
+                return await self._exec_web_fetch(tool_call)
             else:
                 return ToolResult(
                     tool_call_id=tool_call.id,
@@ -677,3 +746,135 @@ class LocalFilesystemEnvironment:
                 content="",
                 error="Command aborted"
             )
+
+    async def _exec_web_fetch(self, tool_call: ToolCall) -> ToolResult:
+        """Fetch content from URL, convert to markdown, return with context."""
+        import time
+
+        url = tool_call.args["url"]
+        prompt = tool_call.args["prompt"]
+
+        # Validate URL
+        try:
+            parsed = urlparse(url)
+            if parsed.scheme not in ("http", "https"):
+                return ToolResult(
+                    tool_call_id=tool_call.id,
+                    is_error=True,
+                    content="",
+                    error=f"Invalid URL scheme: {parsed.scheme}. Must be http or https."
+                )
+            if not parsed.netloc:
+                return ToolResult(
+                    tool_call_id=tool_call.id,
+                    is_error=True,
+                    content="",
+                    error="Invalid URL: missing hostname"
+                )
+        except Exception as e:
+            return ToolResult(
+                tool_call_id=tool_call.id,
+                is_error=True,
+                content="",
+                error=f"Invalid URL: {e}"
+            )
+
+        # Upgrade http to https
+        if parsed.scheme == "http":
+            url = url.replace("http://", "https://", 1)
+
+        # Check cache
+        now = time.time()
+        if url in _web_fetch_cache:
+            cached_time, cached_result = _web_fetch_cache[url]
+            if now - cached_time < WEB_FETCH_CACHE_TTL:
+                # Return cached content with the new prompt context
+                return ToolResult(
+                    tool_call_id=tool_call.id,
+                    is_error=False,
+                    content=f"[Cached] URL: {url}\nPrompt: {prompt}\n\n---\n\n{cached_result['content']}"
+                )
+
+        # Fetch the URL
+        try:
+            async with httpx.AsyncClient(
+                timeout=WEB_FETCH_TIMEOUT,
+                follow_redirects=True,
+                max_redirects=5,
+            ) as client:
+                response = await client.get(url, headers={
+                    "User-Agent": "Mozilla/5.0 (compatible; rollouts/1.0)",
+                    "Accept": "text/html, text/markdown, */*",
+                })
+                response.raise_for_status()
+
+        except httpx.TimeoutException:
+            return ToolResult(
+                tool_call_id=tool_call.id,
+                is_error=True,
+                content="",
+                error=f"Request timed out after {WEB_FETCH_TIMEOUT} seconds"
+            )
+        except httpx.HTTPStatusError as e:
+            return ToolResult(
+                tool_call_id=tool_call.id,
+                is_error=True,
+                content="",
+                error=f"HTTP {e.response.status_code}: {e.response.reason_phrase}"
+            )
+        except httpx.RequestError as e:
+            return ToolResult(
+                tool_call_id=tool_call.id,
+                is_error=True,
+                content="",
+                error=f"Request failed: {e}"
+            )
+
+        # Check content size
+        content_length = len(response.content)
+        if content_length > WEB_FETCH_MAX_SIZE:
+            return ToolResult(
+                tool_call_id=tool_call.id,
+                is_error=True,
+                content="",
+                error=f"Content too large: {content_length} bytes (max {WEB_FETCH_MAX_SIZE})"
+            )
+
+        # Decode content
+        try:
+            text = response.text
+        except Exception as e:
+            return ToolResult(
+                tool_call_id=tool_call.id,
+                is_error=True,
+                content="",
+                error=f"Failed to decode response: {e}"
+            )
+
+        # Convert HTML to markdown if needed
+        content_type = response.headers.get("content-type", "")
+        if "text/html" in content_type:
+            try:
+                text = markdownify.markdownify(text, heading_style="ATX", strip=["script", "style"])
+            except Exception as e:
+                # Fall back to raw text if conversion fails
+                pass
+
+        # Truncate if too large
+        if len(text) > WEB_FETCH_MAX_CONTENT:
+            text = text[:WEB_FETCH_MAX_CONTENT] + "\n\n...[content truncated]"
+
+        # Cache the result
+        _web_fetch_cache[url] = (now, {"content": text, "status": response.status_code})
+
+        # Clean old cache entries
+        for cached_url in list(_web_fetch_cache.keys()):
+            cached_time, _ = _web_fetch_cache[cached_url]
+            if now - cached_time > WEB_FETCH_CACHE_TTL:
+                del _web_fetch_cache[cached_url]
+
+        return ToolResult(
+            tool_call_id=tool_call.id,
+            is_error=False,
+            content=f"URL: {url}\nPrompt: {prompt}\n\n---\n\n{text}"
+        )
