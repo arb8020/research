@@ -199,7 +199,7 @@ class BaseEvaluationConfig:
     verbose: bool = True
     show_progress: bool = True
 
-    def to_eval_config(self, reward_fn: Callable) -> EvalConfig: ...
+    def to_eval_config(self, score_fn: Callable) -> EvalConfig: ...
 ```
 
 ### BaseOutputConfig
@@ -316,7 +316,7 @@ config = load_config_from_file(sys.argv[1])
 # Use config
 endpoint = config.model.to_endpoint()
 messages = config.environment.prepare_messages(sample_data)
-eval_config = config.evaluation.to_eval_config(reward_fn)
+eval_config = config.evaluation.to_eval_config(score_fn)
 
 # Run evaluation
 from rollouts import evaluate

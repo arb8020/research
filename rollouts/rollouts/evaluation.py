@@ -272,10 +272,10 @@ async def evaluate_sample(
     # Prepare initial state
     initial_messages = prepare_messages(sample_data)
 
-    # Inject sample_data into trajectory metadata for reward function access
+    # Inject sample_data into trajectory metadata for score function access
     initial_trajectory = Trajectory(
         messages=initial_messages,
-        metadata={"sample_data": sample_data}  # Ground truth available to reward_fn
+        metadata={"sample_data": sample_data}  # Ground truth available to score_fn
     )
 
     actor = Actor(
