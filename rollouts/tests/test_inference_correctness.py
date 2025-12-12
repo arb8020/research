@@ -97,6 +97,8 @@ def get_transformers_reference(model_name: str, prompts: list[str], max_tokens: 
                 **inputs,
                 max_new_tokens=max_tokens,
                 do_sample=False,  # Greedy
+                top_k=None,  # Disable top_k filtering
+                top_p=1.0,   # Disable top_p filtering
                 return_dict_in_generate=True,
                 output_scores=True,
             )

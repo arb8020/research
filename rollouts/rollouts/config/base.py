@@ -242,7 +242,7 @@ class BaseEvaluationConfig:
         messages = eval_cfg.environment.prepare_messages(sample_data)
 
         # Convert to EvalConfig
-        eval_config = eval_cfg.to_eval_config(reward_fn=my_reward)
+        eval_config = eval_cfg.to_eval_config(score_fn=my_score_fn)
     """
 
     # Environment injection (domain-specific task setup)
@@ -266,17 +266,17 @@ class BaseEvaluationConfig:
     stream_tokens: bool = False  # Whether to stream LLM tokens to stdout
     run_config: RunConfig | None = None  # Optional custom RunConfig
 
-    def to_eval_config(self, reward_fn: Callable) -> EvalConfig:
+    def to_eval_config(self, score_fn: Callable) -> EvalConfig:
         """Convert to rollouts EvalConfig.
 
         Args:
-            reward_fn: Reward function (Trajectory -> Trajectory with rewards)
+            score_fn: Score function (Trajectory, Sample) -> Score
 
         Returns:
             EvalConfig ready for rollouts.evaluate()
         """
         return EvalConfig(
-            reward_fn=reward_fn,
+            score_fn=score_fn,
             max_samples=self.num_samples,
             max_concurrent=self.max_concurrent,
             output_dir=self.output_dir,

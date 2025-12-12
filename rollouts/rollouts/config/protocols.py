@@ -85,7 +85,7 @@ class HasEvaluationConfig(Protocol):
     Evaluation configs manage:
     - Number of turns/samples
     - Concurrency settings
-    - Reward computation
+    - Score computation
 
     Example:
         @dataclass(frozen=True)
@@ -93,19 +93,19 @@ class HasEvaluationConfig(Protocol):
             max_turns: int = 5
             num_samples: int = 100
 
-            def to_eval_config(self, reward_fn: Callable) -> EvalConfig:
+            def to_eval_config(self, score_fn: Callable) -> EvalConfig:
                 return EvalConfig(
-                    reward_fn=reward_fn,
+                    score_fn=score_fn,
                     max_turns=self.max_turns,
                     max_samples=self.num_samples,
                 )
     """
 
-    def to_eval_config(self, reward_fn: Callable) -> EvalConfig:
+    def to_eval_config(self, score_fn: Callable) -> EvalConfig:
         """Convert to rollouts EvalConfig.
 
         Args:
-            reward_fn: Reward function that computes rewards from trajectories
+            score_fn: Score function (Trajectory, Sample) -> Score
 
         Returns:
             EvalConfig ready for evaluation

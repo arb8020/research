@@ -515,7 +515,8 @@ async def evaluate(
             # Update outer progress bar with reward
             if sample_pbar:
                 sample_pbar.update(1)
-                postfix = {'reward': f"{result.metrics.get('reward', 0):.3f}"}
+                reward = result.score.reward if result.score else 0.0
+                postfix = {'reward': f"{reward:.3f}"}
                 if 'turns_used' in result.metadata:
                     postfix['turns'] = result.metadata['turns_used']
                 sample_pbar.set_postfix(postfix)
@@ -538,7 +539,8 @@ async def evaluate(
             # Update outer progress bar for parallel execution
             if sample_pbar:
                 sample_pbar.update(1)
-                postfix = {'reward': f"{result.metrics.get('reward', 0):.3f}"}
+                reward = result.score.reward if result.score else 0.0
+                postfix = {'reward': f"{reward:.3f}"}
                 if 'turns_used' in result.metadata:
                     postfix['turns'] = result.metadata['turns_used']
                 sample_pbar.set_postfix(postfix)
@@ -599,20 +601,31 @@ async def evaluate(
 
 
 def compute_summary_metrics(results: list[EvalSample]) -> dict[str, float]:
-    """Compute summary statistics from results."""
+    """Compute summary statistics from results using Score.
+
+    Aggregates metrics from Score objects across all results.
+    """
     if not results:
         return {}
 
-    summary = {}
+    summary: dict[str, Any] = {}
 
-    # Get all unique metric names from results
-    all_metric_names = set()
+    # Get all unique metric names from Score objects
+    all_metric_names: set[str] = set()
     for r in results:
-        all_metric_names.update(r.metrics.keys())
+        if r.score:
+            for m in r.score.metrics:
+                all_metric_names.add(m.name)
 
     # Compute mean, min, max, std for each metric
     for metric_name in all_metric_names:
-        values = [r.metrics.get(metric_name, 0.0) for r in results]
+        values = []
+        for r in results:
+            if r.score:
+                for m in r.score.metrics:
+                    if m.name == metric_name:
+                        values.append(m.value)
+                        break
         if values:
             mean_val = sum(values) / len(values)
             summary[f"mean_{metric_name}"] = mean_val
@@ -621,6 +634,15 @@ def compute_summary_metrics(results: list[EvalSample]) -> dict[str, float]:
             summary[f"std_{metric_name}"] = (
                 sum((v - mean_val) ** 2 for v in values) / len(values)
             ) ** 0.5
+
+    # Compute reward summary (the weighted score)
+    rewards = [r.score.reward if r.score else 0.0 for r in results]
+    if rewards:
+        mean_reward = sum(rewards) / len(rewards)
+        summary["mean_reward"] = mean_reward
+        summary["min_reward"] = min(rewards)
+        summary["max_reward"] = max(rewards)
+        summary["std_reward"] = (sum((r - mean_reward) ** 2 for r in rewards) / len(rewards)) ** 0.5
 
     # Add metadata summaries
     summary["total_samples"] = len(results)
@@ -633,7 +655,7 @@ def compute_summary_metrics(results: list[EvalSample]) -> dict[str, float]:
     summary["success_rate"] = (len(results) - len(failed_samples)) / len(results) if results else 0.0
 
     # Breakdown errors by type
-    error_types = {}
+    error_types: dict[str, int] = {}
     for r in failed_samples:
         error = r.metadata.get("error", "Unknown error")
         # Extract error type (e.g., "RateLimitError" from "RateLimitError: ...")

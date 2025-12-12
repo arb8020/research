@@ -129,7 +129,7 @@ class HasEnvironmentConfig(Protocol):
 ```python
 @runtime_checkable
 class HasEvaluationConfig(Protocol):
-    def to_eval_config(self, reward_fn: Callable) -> EvalConfig:
+    def to_eval_config(self, score_fn: Callable) -> EvalConfig:
         """Convert to rollouts EvalConfig."""
         ...
 ```
