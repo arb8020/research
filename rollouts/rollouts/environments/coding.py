@@ -173,7 +173,7 @@ def format_read(tool_name: str, args: dict, result: dict | None, expanded: bool,
 
 
 def format_write(tool_name: str, args: dict, result: dict | None, expanded: bool, theme=None) -> str:
-    """Format write tool execution."""
+    """Format write tool execution with line numbers and gray styling (like edit)."""
     path = _shorten_path(args.get("file_path") or args.get("path") or "")
     file_content = args.get("content", "")
     lines = file_content.split("\n") if file_content else []
@@ -188,8 +188,19 @@ def format_write(tool_name: str, args: dict, result: dict | None, expanded: bool
 
         summary = f"Wrote {total_lines} line{'s' if total_lines != 1 else ''} to {path or '...'}"
         text += f"\n⎿ {summary}"
-        for line in display_lines:
-            text += "\n  " + _replace_tabs(line)
+        
+        # Calculate line number width for alignment
+        line_num_width = len(str(total_lines))
+        
+        for i, line in enumerate(display_lines, start=1):
+            line_num = str(i).rjust(line_num_width)
+            formatted_line = f"{line_num}   {_replace_tabs(line)}"
+            # Use gray color (like diff context) for consistent styling
+            if theme:
+                text += "\n  " + theme.diff_context_fg(formatted_line)
+            else:
+                text += "\n  " + formatted_line
+        
         if remaining > 0:
             text += f"\n  ... ({remaining} more lines)"
 
