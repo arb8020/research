@@ -1123,27 +1123,8 @@ class Score:
         return sum(v * w for v, w in weighted) / total_weight
 
 
-@dataclass(frozen=True)
-class Sample:
-    """Single evaluation input unit.
-
-    Tiger Style: Immutable, all fields explicit.
-
-    Note: This is for evaluation inputs. Distinct from training Sample in
-    rollouts/training/types.py which includes response, tokens, loss_mask, etc.
-
-    Examples:
-        >>> sample = Sample(
-        ...     id="math_001",
-        ...     input={"question": "What is 2+2?"},
-        ...     ground_truth="4",
-        ...     metadata={"difficulty": "easy", "category": "arithmetic"},
-        ... )
-    """
-    id: str
-    input: dict[str, Any]
-    ground_truth: Any | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
+# Sample is unified in training.types - import here for backward compatibility
+from rollouts.training.types import Sample, Status
 
 
 # Score function: pure transform from (Trajectory, Sample) -> Score

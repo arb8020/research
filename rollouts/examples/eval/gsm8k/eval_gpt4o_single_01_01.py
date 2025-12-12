@@ -19,13 +19,13 @@ Requires:
 from base_config import (
     DatasetConfig,
     EndpointConfig,
-    EvalConfig,
     EvalRunConfig,
+    GSM8KConfig,
     OutputConfig,
     evaluate_gsm8k,
 )
 
-config = EvalConfig(
+config = GSM8KConfig(
     endpoint=EndpointConfig(
         provider="openai",
         model="gpt-4o-mini",

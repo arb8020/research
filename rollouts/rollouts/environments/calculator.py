@@ -32,12 +32,13 @@ class CalculatorEnvironment:
         return False
     
     def get_tools(self) -> list[Tool]:
+        # Calculator is accumulator-style: starts at 0, operations modify current value
         return [
             Tool(
                 type="function",
                 function=ToolFunction(
                     name="add",
-                    description="Add a number to the current value",
+                    description="Add a number to the current value. The calculator starts at 0, so use add(x) to set an initial value.",
                     parameters=ToolFunctionParameter(
                         type="object",
                         properties={"value": {"type": "number", "description": "Number to add"}}
@@ -49,7 +50,7 @@ class CalculatorEnvironment:
                 type="function",
                 function=ToolFunction(
                     name="subtract",
-                    description="Subtract a number from the current value",
+                    description="Subtract a number from the current value.",
                     parameters=ToolFunctionParameter(
                         type="object",
                         properties={"value": {"type": "number", "description": "Number to subtract"}}
@@ -61,7 +62,7 @@ class CalculatorEnvironment:
                 type="function",
                 function=ToolFunction(
                     name="multiply",
-                    description="Multiply the current value by a number",
+                    description="Multiply the current value by a number. Note: if current value is 0, result will be 0.",
                     parameters=ToolFunctionParameter(
                         type="object",
                         properties={"value": {"type": "number", "description": "Number to multiply by"}}
@@ -73,7 +74,7 @@ class CalculatorEnvironment:
                 type="function",
                 function=ToolFunction(
                     name="divide",
-                    description="Divide the current value by a number",
+                    description="Divide the current value by a number.",
                     parameters=ToolFunctionParameter(
                         type="object",
                         properties={"value": {"type": "number", "description": "Number to divide by"}}
@@ -85,7 +86,7 @@ class CalculatorEnvironment:
                 type="function",
                 function=ToolFunction(
                     name="clear",
-                    description="Reset the current value to zero",
+                    description="Reset the current value to zero.",
                     parameters=ToolFunctionParameter(
                         type="object",
                         properties={}
@@ -97,15 +98,15 @@ class CalculatorEnvironment:
                 type="function",
                 function=ToolFunction(
                     name="complete_task",
-                    description="Signal that the calculation task is complete",
+                    description="Submit your final answer when the calculation is complete.",
                     parameters=ToolFunctionParameter(
                         type="object",
                         properties={
                             "summary": {"type": "string", "description": "Summary of calculations performed"},
-                            "final_result": {"type": "number", "description": "Final calculation result"}
+                            "final_result": {"type": "number", "description": "The final numerical answer"}
                         }
                     ),
-                    required=["summary"]
+                    required=["summary", "final_result"]
                 )
             ),
         ]
