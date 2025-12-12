@@ -320,17 +320,27 @@ class Markdown(Component):
             result,
         )
 
-        # Bold: **text** or __text__
+        # Bold: **text** or __text__ (__ requires word boundaries to avoid matching in snake_case)
         result = re.sub(
-            r"\*\*(.+?)\*\*|__(.+?)__",
-            lambda m: self._theme.bold(m.group(1) or m.group(2)),
+            r"\*\*(.+?)\*\*",
+            lambda m: self._theme.bold(m.group(1)),
+            result,
+        )
+        result = re.sub(
+            r"\b__(.+?)__\b",
+            lambda m: self._theme.bold(m.group(1)),
             result,
         )
 
-        # Italic: *text* or _text_
+        # Italic: *text* or _text_ (_ requires word boundaries to avoid matching in snake_case)
         result = re.sub(
-            r"\*(.+?)\*|_(.+?)_",
-            lambda m: self._theme.italic(m.group(1) or m.group(2)),
+            r"\*(.+?)\*",
+            lambda m: self._theme.italic(m.group(1)),
+            result,
+        )
+        result = re.sub(
+            r"\b_(.+?)_\b",
+            lambda m: self._theme.italic(m.group(1)),
             result,
         )
 
