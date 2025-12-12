@@ -684,11 +684,16 @@ class InferenceEngine(Protocol):
 ## Implementation Plan
 
 ### Phase 1: Minimal Working Engine (~500 LOC)
-- [ ] Frozen dataclasses for config/output
-- [ ] Sequence mutable state
-- [ ] Simple scheduler (pure function)
-- [ ] Sampling with logprobs (pure function)
-- [ ] No KV cache (recompute everything)
+- [x] Frozen dataclasses for config/output
+- [x] Sequence mutable state
+- [x] Simple scheduler (pure function)
+- [x] Sampling with logprobs (pure function)
+- [x] No KV cache (recompute everything)
+- [ ] **FIX: Correctness bug** - greedy decode diverges from Transformers
+  - Test: `rollouts/tests/test_inference_correctness.py`
+  - 2/3 prompts match text, 1/3 diverges after "Paris."
+  - All prompts have logprob diffs 0.18-0.91 (should be <0.01)
+  - Possible causes: attention mask, forward pass vs generate(), numerical precision
 
 ### Phase 2: PagedAttention (~300 LOC)
 - [ ] Block allocator class
