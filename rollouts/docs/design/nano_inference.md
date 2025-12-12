@@ -708,11 +708,15 @@ class InferenceEngine(Protocol):
 - [ ] Tensor parallelism
 - [ ] Distributed cache
 
+### Phase 6: HTTP API (~300 LOC)
+- [ ] OpenAI-compatible `/v1/completions`, `/v1/chat/completions`
+- [ ] Async request handling
+- [ ] Goal: vLLM/SGLang parity with cleaner code
+
 ---
 
 ## Non-Goals
 
-- HTTP API (use SGLang/vLLM for serving)
 - Speculative decoding
 - Quantization/LoRA (can add later)
 - Multi-modal
