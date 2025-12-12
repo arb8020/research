@@ -146,7 +146,7 @@ class RolloutConfig:
         n_samples_per_prompt: Samples to generate per prompt (for GRPO)
         over_sampling_factor: Dynamic sampling multiplier (SLIME-style)
         generate_fn: User-provided generation function
-        reward_fn: Optional reward function (sample -> float)
+        score_fn: Optional score function (Sample -> Score), reward = score.reward
         filter_fn: Optional filter (samples -> bool)
 
     Example:
@@ -165,13 +165,13 @@ class RolloutConfig:
 
     # User-provided functions (SLIME-style!)
     generate_fn: Callable | None = None
-    reward_fn: Callable | None = None
+    score_fn: Callable | None = None  # (Sample) -> Score, use score.reward for training
     filter_fn: Callable | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict for serialization.
 
-        Note: Functions (generate_fn, reward_fn, filter_fn) are not serialized.
+        Note: Functions (generate_fn, score_fn, filter_fn) are not serialized.
         They must be re-provided when using from_dict().
 
         Returns:
@@ -186,7 +186,7 @@ class RolloutConfig:
         data = asdict(self)
         # Remove non-serializable functions
         data.pop("generate_fn", None)
-        data.pop("reward_fn", None)
+        data.pop("score_fn", None)
         data.pop("filter_fn", None)
         return data
 
@@ -194,7 +194,7 @@ class RolloutConfig:
     def from_dict(
         data: dict[str, Any],
         generate_fn: Callable | None = None,
-        reward_fn: Callable | None = None,
+        score_fn: Callable | None = None,
         filter_fn: Callable | None = None,
     ) -> "RolloutConfig":
         """Create RolloutConfig from dict.
@@ -202,7 +202,7 @@ class RolloutConfig:
         Args:
             data: Dict from to_dict()
             generate_fn: User-provided generation function (not serializable)
-            reward_fn: User-provided reward function (not serializable)
+            score_fn: User-provided score function (not serializable)
             filter_fn: User-provided filter function (not serializable)
 
         Returns:
@@ -216,7 +216,7 @@ class RolloutConfig:
         return RolloutConfig(
             **data,
             generate_fn=generate_fn,
-            reward_fn=reward_fn,
+            score_fn=score_fn,
             filter_fn=filter_fn,
         )
 

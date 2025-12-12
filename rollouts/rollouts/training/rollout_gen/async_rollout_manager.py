@@ -75,7 +75,7 @@ class AsyncRolloutManager:
 
     async def generate_batch(
         self,
-        reward_fn: Callable[[Sample], float] | None = None,
+        score_fn: Callable[[Sample], Any] | None = None,
     ) -> RolloutBatch:
         """Generate one batch with dynamic over-sampling.
 
@@ -88,7 +88,7 @@ class AsyncRolloutManager:
         6. Cache remaining samples for next batch
 
         Args:
-            reward_fn: Optional reward function to compute rewards
+            score_fn: Optional score function (Sample -> Score), reward = score.reward
 
         Returns:
             RolloutBatch ready for training
@@ -140,10 +140,11 @@ class AsyncRolloutManager:
             if len(samples) > take_count:
                 self.partial_samples.extend(samples[take_count:])
 
-        # Step 4: Compute rewards if provided
-        if reward_fn is not None:
+        # Step 4: Compute rewards from score_fn if provided
+        if score_fn is not None:
             for sample in collected_samples:
-                sample.reward = reward_fn(sample)
+                score = score_fn(sample)
+                sample.reward = score.reward
 
         # Step 5: Convert to batch
         batch = convert_to_batch(
@@ -297,7 +298,7 @@ class AsyncRolloutManager:
 async def generate_rollout_batch(
     buffer: DataBuffer,
     config: RolloutConfig,
-    reward_fn: Callable[[Sample], float] | None = None,
+    score_fn: Callable[[Sample], Any] | None = None,
     **rollout_kwargs: Any,
 ) -> RolloutBatch:
     """Generate a single batch with dynamic sampling (convenience function).
@@ -305,17 +306,18 @@ async def generate_rollout_batch(
     Args:
         buffer: DataBuffer for prompts
         config: RolloutConfig with generation settings
-        reward_fn: Optional reward function
+        score_fn: Optional score function (Sample -> Score), reward = score.reward
         **rollout_kwargs: Kwargs passed to generate_fn
 
     Returns:
         RolloutBatch ready for training
 
     Example:
+        >>> from rollouts import Score, Metric
         >>> batch = await generate_rollout_batch(
         ...     buffer=buffer,
         ...     config=config,
-        ...     reward_fn=lambda s: 1.0 if "correct" in s.response else 0.0,
+        ...     score_fn=lambda s: Score(metrics=(Metric("correct", 1.0 if "correct" in s.response else 0.0, weight=1.0),)),
         ...     tokenizer=tokenizer,
         ... )
     """
@@ -326,4 +328,4 @@ async def generate_rollout_batch(
     )
 
     async with manager:
-        return await manager.generate_batch(reward_fn=reward_fn)
+        return await manager.generate_batch(score_fn=score_fn)

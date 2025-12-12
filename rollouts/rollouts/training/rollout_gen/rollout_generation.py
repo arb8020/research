@@ -78,24 +78,26 @@ def generate_rollout_batches(
 
 
 def apply_sample_transforms(samples: list[Sample], config: RolloutConfig) -> list[Sample]:
-    """Apply optional filter and reward functions to samples.
+    """Apply optional filter and score functions to samples.
 
     Pure function - no side effects.
 
     Args:
         samples: List of Sample objects
-        config: RolloutConfig with optional filter_fn and reward_fn
+        config: RolloutConfig with optional filter_fn and score_fn
 
     Returns:
-        Transformed samples
+        Transformed samples (with reward populated from score_fn)
     """
     if config.filter_fn is not None:
         samples = config.filter_fn(samples)
         assert len(samples) > 0, "filter_fn must not filter out all samples"
 
-    if config.reward_fn is not None:
-        samples = config.reward_fn(samples)
-        assert len(samples) > 0, "reward_fn must not remove all samples"
+    if config.score_fn is not None:
+        # score_fn returns Score object, extract .reward for training
+        for sample in samples:
+            score = config.score_fn(sample)
+            sample.reward = score.reward
 
     return samples
 

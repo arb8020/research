@@ -250,7 +250,7 @@ def trajectory_to_sample(
         response=response,
         tokens=tokens,
         loss_mask=loss_mask,
-        reward=0.0,  # Will be computed by reward_fn later
+        reward=0.0,  # Will be computed by score_fn later
         metadata=metadata or {},
         status=Sample.Status.COMPLETED,
     )
