@@ -319,8 +319,8 @@ messages = config.environment.prepare_messages(sample_data)
 eval_config = config.evaluation.to_eval_config(reward_fn)
 
 # Run evaluation
-from rollouts import evaluate_dataset
-results = evaluate_dataset(endpoint, dataset, eval_config)
+from rollouts import evaluate
+results = await evaluate(dataset, prepare_messages, endpoint, eval_config)
 ```
 
 ## Migration from Old Configs

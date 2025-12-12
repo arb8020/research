@@ -23,7 +23,9 @@ from .dtypes import (
     Environment,
     EvalConfig,
     Message,
+    Metric,
     RunConfig,
+    Score,
     StreamChunk,
     Trajectory,
 )
@@ -34,23 +36,48 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class EvalSample:
-    """A single evaluation sample with its result."""
+    """A single evaluation sample with its result.
+
+    Attributes:
+        sample_id: Unique identifier for this sample
+        input_data: Raw input data from dataset
+        trajectory: Full agent execution trace
+        agent_states: List of agent states from run_agent
+        score: Structured score with metrics breakdown (new)
+        metrics: Flat dict of metric values for backward compatibility
+        metadata: Execution metadata (turns, tokens, status, etc.)
+        timestamp: When this sample was evaluated
+    """
     sample_id: str
     input_data: dict[str, Any]
     trajectory: Trajectory
-    agent_states: list[AgentState]  # Full list of agent states from run_agent
-    metrics: dict[str, float]  # All metrics are floats for RL compatibility
+    agent_states: list[AgentState]
+    score: Score | None = None  # New: structured score with weights
+    metrics: dict[str, float] = field(default_factory=dict)  # Backward compat: flat metrics
     metadata: dict[str, Any] = field(default_factory=dict)
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
     def to_json(self) -> str:
         """Serialize to JSON."""
         # Manually construct dict to avoid deep copying unpicklable objects (e.g., RLocks in environments)
+
+        # Serialize Score if present
+        score_data = None
+        if self.score is not None:
+            score_data = {
+                'metrics': [
+                    {'name': m.name, 'value': m.value, 'weight': m.weight, 'metadata': m.metadata}
+                    for m in self.score.metrics
+                ],
+                'reward': self.score.reward,
+            }
+
         data = {
             'sample_id': self.sample_id,
             'input_data': self.input_data,
             'trajectory': json.loads(self.trajectory.to_json()),
             'agent_states': [],
+            'score': score_data,
             'metrics': self.metrics,
             'metadata': self.metadata,
             'timestamp': self.timestamp,
@@ -78,6 +105,21 @@ class EvalSample:
         """Deserialize from JSON."""
         data = json.loads(json_str)
         data['trajectory'] = Trajectory.from_json(json.dumps(data['trajectory']))
+
+        # Deserialize Score if present
+        score_data = data.pop('score', None)
+        if score_data is not None:
+            metrics = tuple(
+                Metric(
+                    name=m['name'],
+                    value=m['value'],
+                    weight=m.get('weight', 0.0),
+                    metadata=m.get('metadata', {}),
+                )
+                for m in score_data['metrics']
+            )
+            data['score'] = Score(metrics=metrics)
+
         # Note: Full AgentState deserialization would require complex reconstruction
         # For now, store as simplified data for analysis
         data['agent_states'] = data.get('agent_states', [])
@@ -670,3 +712,76 @@ async def simple_evaluate(
         config=config,
         dataset_path=str(dataset_path),
     )
+
+
+# ── Analysis Helpers ──────────────────────────────────────────────────────────
+
+
+def group_by(
+    results: list[EvalSample],
+    key: Callable[[EvalSample], str],
+) -> dict[str, list[EvalSample]]:
+    """Group evaluation results by a key function.
+
+    Pure function for slicing results by metadata.
+
+    Examples:
+        >>> by_difficulty = group_by(results, key=lambda r: r.metadata["difficulty"])
+        >>> by_category = group_by(results, key=lambda r: r.input_data.get("category", "unknown"))
+
+    Args:
+        results: List of evaluation samples
+        key: Function to extract grouping key from each sample
+
+    Returns:
+        Dict mapping group keys to lists of samples
+    """
+    groups: dict[str, list[EvalSample]] = {}
+    for result in results:
+        k = key(result)
+        if k not in groups:
+            groups[k] = []
+        groups[k].append(result)
+    return groups
+
+
+def summarize(results: list[EvalSample]) -> dict[str, float]:
+    """Compute summary statistics for a list of evaluation results.
+
+    Pure function for aggregating metrics.
+
+    Examples:
+        >>> stats = summarize(results)
+        >>> print(f"Mean reward: {stats['mean']:.2%}, n={stats['n']}")
+
+    Args:
+        results: List of evaluation samples
+
+    Returns:
+        Dict with mean, std, min, max, n for the reward signal
+    """
+    if not results:
+        return {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "n": 0}
+
+    # Extract rewards - prefer Score.reward, fall back to metrics["reward"]
+    rewards = []
+    for r in results:
+        if r.score is not None:
+            rewards.append(r.score.reward)
+        elif "reward" in r.metrics:
+            rewards.append(r.metrics["reward"])
+        else:
+            rewards.append(0.0)
+
+    n = len(rewards)
+    mean = sum(rewards) / n
+    variance = sum((r - mean) ** 2 for r in rewards) / n
+    std = variance ** 0.5
+
+    return {
+        "mean": mean,
+        "std": std,
+        "min": min(rewards),
+        "max": max(rewards),
+        "n": n,
+    }

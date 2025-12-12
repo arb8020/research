@@ -66,10 +66,17 @@ class ToolExecution(Container):
         """Update tool result.
 
         Args:
-            result: Result data (may contain 'content' list or 'text' string)
+            result: Result data (may contain 'content' list, 'details' dict, or 'text' string)
             is_error: Whether this is an error result
         """
-        self._result = {"content": result, "isError": is_error}
+        # Don't double-wrap if result already has expected structure
+        # Expected structure: {"content": [...], "details": {...}}
+        # We add isError at top level
+        if "content" in result or "details" in result:
+            self._result = {**result, "isError": is_error}
+        else:
+            # Legacy: wrap in content
+            self._result = {"content": result, "isError": is_error}
         self._rebuild_display()
 
     def set_expanded(self, expanded: bool) -> None:

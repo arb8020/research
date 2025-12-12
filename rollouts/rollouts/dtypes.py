@@ -923,12 +923,43 @@ class Environment(Protocol):
         ...
 
     async def serialize(self) -> dict:
-        """Serialize environment state to dictionary."""
+        """Serialize environment state to dictionary.
+
+        Must include:
+            - env_kind: str (e.g., "calculator", "code_exec", "browser")
+            - version: str (e.g., "1.0.0", "2.0.0")
+            - ...rest of environment-specific state
+
+        The env_kind and version enable safe restore validation:
+        - Prevents restoring snapshots into wrong environment types
+        - Prevents restoring incompatible versions (schema changes)
+
+        Example:
+            >>> async def serialize(self) -> dict:
+            ...     return {
+            ...         "env_kind": self.ENV_KIND,  # Class constant
+            ...         "version": self.VERSION,    # Class constant
+            ...         "history": self._history,
+            ...         "state": self._state,
+            ...     }
+        """
         ...
 
     @staticmethod
     async def deserialize(data: dict) -> 'Environment':
-        """Deserialize environment from dictionary."""
+        """Deserialize environment from dictionary.
+
+        Should validate env_kind and version before restoring state.
+
+        Example:
+            >>> @staticmethod
+            ... async def deserialize(data: dict) -> 'MyEnvironment':
+            ...     assert data["env_kind"] == MyEnvironment.ENV_KIND
+            ...     assert data["version"].startswith("1.")  # compatible versions
+            ...     env = MyEnvironment()
+            ...     env._history = data["history"]
+            ...     return env
+        """
         ...
 
 
@@ -1042,8 +1073,85 @@ class RunConfig:
 
 # ── Evaluation Types ──────────────────────────────────────────────────────────
 
-# Reward function: pure transform from Trajectory -> Trajectory with rewards populated
+
+@dataclass(frozen=True)
+class Metric:
+    """A measured dimension. Weight=0 means track-only, weight>0 means contributes to reward.
+
+    Tiger Style: Immutable, explicit, composable.
+
+    Examples:
+        >>> # Reward component (contributes to training signal)
+        >>> Metric("correct", 1.0, weight=1.0)
+
+        >>> # Tracking-only metric (logged but not used for optimization)
+        >>> Metric("latency_ms", 145.2, weight=0)
+
+        >>> # With metadata for debugging
+        >>> Metric("format_valid", 0.0, weight=0.2, metadata={"error": "missing closing tag"})
+    """
+    name: str
+    value: float
+    weight: float = 0.0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Score:
+    """Collection of metrics, some of which are rewards (weight > 0).
+
+    Tiger Style: Immutable, explicit breakdown, single reward property for training.
+
+    Examples:
+        >>> score = Score(metrics=(
+        ...     Metric("correct", 1.0, weight=1.0),
+        ...     Metric("format", 0.5, weight=0.2),
+        ...     Metric("tokens", 150, weight=0),  # tracked only
+        ... ))
+        >>> score.reward  # Weighted average: (1.0*1.0 + 0.5*0.2) / (1.0 + 0.2) = 0.917
+        0.9166666666666666
+    """
+    metrics: tuple[Metric, ...]
+
+    @property
+    def reward(self) -> float:
+        """Weighted average of metrics with weight > 0."""
+        weighted = [(m.value, m.weight) for m in self.metrics if m.weight > 0]
+        if not weighted:
+            return 0.0
+        total_weight = sum(w for _, w in weighted)
+        return sum(v * w for v, w in weighted) / total_weight
+
+
+@dataclass(frozen=True)
+class Sample:
+    """Single evaluation input unit.
+
+    Tiger Style: Immutable, all fields explicit.
+
+    Note: This is for evaluation inputs. Distinct from training Sample in
+    rollouts/training/types.py which includes response, tokens, loss_mask, etc.
+
+    Examples:
+        >>> sample = Sample(
+        ...     id="math_001",
+        ...     input={"question": "What is 2+2?"},
+        ...     ground_truth="4",
+        ...     metadata={"difficulty": "easy", "category": "arithmetic"},
+        ... )
+    """
+    id: str
+    input: dict[str, Any]
+    ground_truth: Any | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+# Score function: pure transform from (Trajectory, Sample) -> Score
 # Supports both sync and async (for integrations like Prime that need async scoring)
+ScoreFn = Callable[['Trajectory', Sample], Score] | Callable[['Trajectory', Sample], Awaitable[Score]]
+
+# Legacy reward function: pure transform from Trajectory -> Trajectory with rewards populated
+# Kept for backward compatibility with existing code
 RewardFunction = Callable[[Trajectory], Trajectory] | Callable[[Trajectory], Awaitable[Trajectory]]
 
 

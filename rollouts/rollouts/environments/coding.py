@@ -69,7 +69,8 @@ def _replace_tabs(text: str) -> str:
 def _get_text_output(result: dict | None) -> str:
     """Extract text output from tool result.
 
-    Result structure: {"content": {"content": [{"type": "text", "text": "..."}], ...}, "isError": bool}
+    Result structure (after fix): {"content": [{"type": "text", "text": "..."}], "details": {...}, "isError": bool}
+    Legacy structure: {"content": {"content": [...]}, "isError": bool}
     """
     if not result:
         return ""
@@ -80,7 +81,18 @@ def _get_text_output(result: dict | None) -> str:
     if isinstance(content, str):
         return content
 
-    # If content is a dict with a "content" key, extract from that
+    # If content is a list, extract text blocks directly
+    if isinstance(content, list):
+        text_blocks = [c for c in content if isinstance(c, dict) and c.get("type") == "text"]
+        text_output = "\n".join(c.get("text", "") for c in text_blocks if c.get("text"))
+
+        # Strip ANSI codes and carriage returns
+        import re
+        text_output = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", text_output)
+        text_output = text_output.replace("\r", "")
+        return text_output
+
+    # Legacy: If content is a dict with a "content" key, extract from that
     if isinstance(content, dict):
         content_list = content.get("content", [])
         if isinstance(content_list, list):
@@ -117,7 +129,11 @@ def format_bash(tool_name: str, args: dict, result: dict | None, expanded: bool,
             summary = "Command failed" if is_error else "Command completed"
             text += f"\n⎿ {summary}"
             for line in display_lines:
-                text += "\n  " + line
+                # Use base gray color (like diff context) for bash output
+                if theme:
+                    text += "\n  " + theme.diff_context_fg(line)
+                else:
+                    text += "\n  " + line
             if remaining > 0:
                 text += f"\n  ... ({remaining} more lines)"
 
@@ -141,17 +157,17 @@ def format_read(tool_name: str, args: dict, result: dict | None, expanded: bool,
     if result:
         output = _get_text_output(result)
         lines = output.split("\n")
-        max_lines = len(lines) if expanded else 10
-        display_lines = lines[:max_lines]
-        remaining = len(lines) - max_lines
-
         total_lines = len(lines)
         summary = f"Read {total_lines} line{'s' if total_lines != 1 else ''}"
         text += f"\n⎿ {summary}"
-        for line in display_lines:
-            text += "\n  " + _replace_tabs(line)
-        if remaining > 0:
-            text += f"\n  ... ({remaining} more lines)"
+        # Lines commented out - just show summary for now
+        # max_lines = len(lines) if expanded else 10
+        # display_lines = lines[:max_lines]
+        # remaining = len(lines) - max_lines
+        # for line in display_lines:
+        #     text += "\n  " + _replace_tabs(line)
+        # if remaining > 0:
+        #     text += f"\n  ... ({remaining} more lines)"
 
     return text
 
@@ -187,18 +203,24 @@ def format_edit(tool_name: str, args: dict, result: dict | None, expanded: bool,
     text = f"edit(file_path={repr(path if path else '...')}, old_string=..., new_string=...)"
 
     if result:
-        # Check for diff in details (result is wrapped in {"content": ..., "isError": ...})
-        content = result.get("content", {})
-        details = content.get("details", {}) if isinstance(content, dict) else {}
+        # Check for diff in details
+        # New structure: {"content": [...], "details": {...}, "isError": bool}
+        # Legacy structure: {"content": {"content": [...], "details": {...}}, "isError": bool}
+        details = result.get("details", {})
+        if not details:
+            # Try legacy structure
+            content = result.get("content", {})
+            details = content.get("details", {}) if isinstance(content, dict) else {}
         diff_str = details.get("diff") if details else None
 
         is_error = result.get("isError", False)
 
         if diff_str and theme:
-            # Count additions and removals
+            # Count additions and removals using regex to avoid false matches
+            import re
             diff_lines = diff_str.split("\n")
-            additions = sum(1 for line in diff_lines if " + " in line)
-            removals = sum(1 for line in diff_lines if " - " in line)
+            additions = sum(1 for line in diff_lines if re.match(r'^\s*\d+\s+\+\s', line))
+            removals = sum(1 for line in diff_lines if re.match(r'^\s*\d+\s+-\s', line))
 
             # Build summary like "Updated file.py with 2 additions and 1 removal"
             if is_error:
@@ -218,11 +240,15 @@ def format_edit(tool_name: str, args: dict, result: dict | None, expanded: bool,
             text += f"\n⎿ {summary}"
 
             for line in diff_lines:
-                # New format: "  607 - content" or "  607 + content" or "  607   content"
-                # Find the marker position (after line number, before content)
-                if " - " in line:
+                # Format: "  607 - content" or "  607 + content" or "  607   content"
+                # The marker (-, +, or space) is right after the line number
+                # We need to check character positions, not just substring match
+                import re
+                # Match line number followed by marker (-, +, or spaces)
+                match = re.match(r'^(\s*\d+)\s+([-+])\s', line)
+                if match and match.group(2) == '-':
                     text += "\n  " + theme.diff_removed_fg(line)
-                elif " + " in line:
+                elif match and match.group(2) == '+':
                     text += "\n  " + theme.diff_added_fg(line)
                 else:
                     text += "\n  " + theme.diff_context_fg(line)
