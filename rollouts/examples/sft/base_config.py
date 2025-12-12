@@ -5,12 +5,45 @@ Experiment files import from here and override config values.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     import torch
+
+
+@dataclass(frozen=True)
+class DatasetConfig:
+    """Dataset configuration for loading training data.
+
+    Supports multiple sources via the `source` field:
+    - "hf": HuggingFace datasets (default)
+    - "jsonl": Local JSONL file
+    - "parquet": Local Parquet file
+    - "list": In-memory list (for testing)
+    """
+
+    source: Literal["hf", "jsonl", "parquet", "list"] = "hf"
+
+    # For HuggingFace datasets
+    hf_dataset: str = "PrimeIntellect/Reverse-Text-SFT"
+    hf_subset: str | None = None
+    hf_split: str = "train"
+
+    # For local files
+    path: str | None = None
+
+    # Field mapping
+    prompt_key: str = "prompt"
+    label_key: str | None = None
+
+    # Limits
+    max_samples: int | None = None
+    max_seq_len: int = 512
+
+    # Shuffling
+    seed: int = 42
 
 
 @dataclass(frozen=True)
@@ -21,9 +54,7 @@ class BaseConfig:
     model_name: str = "Qwen/Qwen2.5-0.5B"
 
     # Data
-    data_path: str = "PrimeIntellect/Reverse-Text-SFT"
-    max_seq_len: int = 512
-    max_samples: int | None = None
+    dataset: DatasetConfig = field(default_factory=DatasetConfig)
 
     # Training
     num_steps: int = 100
@@ -37,6 +68,50 @@ class BaseConfig:
 
     # Output
     output_dir: str = "/tmp/rollouts_sft"
+
+
+def load_samples_from_config(config: DatasetConfig) -> list:
+    """Load samples based on DatasetConfig.
+
+    Returns list of Sample objects from rollouts.training.types.
+    """
+    from rollouts.training.datasets.data_buffer import (
+        load_samples_from_hf,
+        load_samples_from_jsonl,
+        load_samples_from_parquet,
+        load_samples_from_list,
+    )
+
+    if config.source == "hf":
+        return load_samples_from_hf(
+            dataset_name=config.hf_dataset,
+            subset=config.hf_subset,
+            split=config.hf_split,
+            prompt_key=config.prompt_key,
+            label_key=config.label_key,
+            limit=config.max_samples,
+        )
+    elif config.source == "jsonl":
+        assert config.path, "path required for jsonl source"
+        return load_samples_from_jsonl(
+            path=Path(config.path),
+            prompt_key=config.prompt_key,
+            label_key=config.label_key,
+            limit=config.max_samples,
+        )
+    elif config.source == "parquet":
+        assert config.path, "path required for parquet source"
+        return load_samples_from_parquet(
+            path=config.path,
+            prompt_key=config.prompt_key,
+            label_key=config.label_key,
+            limit=config.max_samples,
+        )
+    elif config.source == "list":
+        # For testing - expects path to be a module path or uses empty list
+        return load_samples_from_list([])
+    else:
+        raise ValueError(f"Unknown source: {config.source}")
 
 
 def load_tokenizer(model_name: str):
@@ -102,7 +177,7 @@ async def _train_async(config: BaseConfig) -> list[dict]:
     logger = logging.getLogger(__name__)
 
     logger.info(f"Model: {config.model_name}")
-    logger.info(f"Data: {config.data_path}")
+    logger.info(f"Dataset: {config.dataset.source} - {config.dataset.hf_dataset or config.dataset.path}")
     logger.info(f"Device: {config.device}")
 
     # Load tokenizer and data
@@ -110,11 +185,14 @@ async def _train_async(config: BaseConfig) -> list[dict]:
     tokenizer = load_tokenizer(config.model_name)
 
     logger.info("Loading data...")
+    # Load raw samples from config, then convert to SFT format
+    raw_samples = load_samples_from_config(config.dataset)
+    # Convert to SFT dataset format (tokenized with loss masks)
     samples = load_sft_dataset(
-        config.data_path,
+        config.dataset.hf_dataset if config.dataset.source == "hf" else config.dataset.path,
         tokenizer=tokenizer,
-        max_samples=config.max_samples,
-        max_length=config.max_seq_len,
+        max_samples=config.dataset.max_samples,
+        max_length=config.dataset.max_seq_len,
     )
     logger.info(f"Loaded {len(samples)} samples")
 

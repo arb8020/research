@@ -1,180 +1,370 @@
-"""Data buffer for managing prompt datasets.
+"""Data buffer for managing training datasets.
 
-SLIME-inspired stateful data source with minimal state:
-- Tracks position in dataset (epoch_id, sample_offset)
-- Handles epoch boundaries with deterministic shuffling
-- Provides next batch of prompts
+Pure functional API with frozen state dataclass.
+Follows CLASSES_VS_FUNCTIONAL.md: state is just data, operations are pure functions.
 
-This is the ONLY stateful component in the training system.
-Everything else is pure functions.
+Pattern:
+    samples, new_state = get_samples(samples, state, n=32)
+
+This replaces the previous class-based DataBuffer.
 """
 
 import json
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+# Import Sample directly to avoid pulling in torch via training/__init__.py
+from rollouts.training.types import Sample
 
-@dataclass
-class DataBuffer:
-    """Stateful data source for training prompts.
 
-    This is the only component with mutable state in the training system.
-    Inspired by SLIME's RolloutDataSource.
+@dataclass(frozen=True)
+class BufferState:
+    """Immutable state for data buffer iteration.
+
+    Frozen dataclass - state is just data, not behavior.
+    All operations return new state instead of mutating.
 
     Attributes:
-        prompts: List of prompt strings or dicts (chat messages)
         epoch_id: Current epoch number (increments on wraparound)
         sample_offset: Current position in dataset
         seed: Random seed for deterministic shuffling
-        _rng: Internal random number generator (lazily initialized)
 
     Example:
-        >>> buffer = DataBuffer(prompts=["What is 2+2?", "Calculate 5*7"])
-        >>> batch = buffer.get_prompts(1)
-        >>> assert batch == ["What is 2+2?"]
-        >>> batch = buffer.get_prompts(2)  # Wraps to next epoch
-        >>> assert len(batch) == 2
-        >>> assert buffer.epoch_id == 1
+        >>> state = BufferState(seed=42)
+        >>> samples, new_state = get_samples(data, state, n=32)
+        >>> assert new_state.sample_offset == 32
     """
 
-    prompts: list[str | dict[str, Any]]
     epoch_id: int = 0
     sample_offset: int = 0
     seed: int = 42
-    _rng: random.Random = field(default=None, init=False, repr=False)
 
-    def __post_init__(self):
-        """Initialize RNG with seed."""
-        if self._rng is None:
-            self._rng = random.Random(self.seed + self.epoch_id)
 
-    def get_prompts(self, n: int) -> list[str | dict[str, Any]]:
-        """Get next batch of prompts, handling epoch wraparound.
+def get_samples(
+    samples: list[Sample],
+    state: BufferState,
+    n: int,
+    n_samples_per_prompt: int = 1,
+) -> tuple[list[list[Sample]], BufferState]:
+    """Get next batch of samples with GRPO grouping.
 
-        SLIME-style API: Returns next n prompts from dataset.
-        When reaching end of dataset:
-        - Increments epoch_id
-        - Shuffles with new seed (deterministic based on epoch_id)
-        - Continues from beginning
+    Pure function: returns (sample_groups, new_state).
+    Does not mutate inputs.
 
-        Args:
-            n: Number of prompts to return
+    Args:
+        samples: Source dataset (list of Sample objects)
+        state: Current buffer state
+        n: Number of unique prompts to return
+        n_samples_per_prompt: Copies per prompt for GRPO (default 1)
 
-        Returns:
-            List of prompts (may be strings or chat message dicts)
+    Returns:
+        Tuple of:
+        - List of sample groups (each group has n_samples_per_prompt copies)
+        - New buffer state
 
-        Example:
-            >>> buffer = DataBuffer(prompts=["a", "b", "c"])
-            >>> buffer.get_prompts(2)
-            ['a', 'b']
-            >>> buffer.get_prompts(2)  # Wraps
-            ['c', 'a']  # New epoch, shuffled
-        """
-        # Preconditions
-        assert n > 0, "Must request at least 1 prompt"
-        assert len(self.prompts) > 0, "Dataset is empty"
+    Example:
+        >>> samples = [Sample(prompt="Q1"), Sample(prompt="Q2")]
+        >>> state = BufferState(seed=42)
+        >>> groups, new_state = get_samples(samples, state, n=1, n_samples_per_prompt=4)
+        >>> assert len(groups) == 1
+        >>> assert len(groups[0]) == 4  # 4 copies of same prompt
+        >>> assert new_state.sample_offset == 1
+    """
+    assert n > 0, "Must request at least 1 sample"
+    assert len(samples) > 0, "Dataset is empty"
+    assert n_samples_per_prompt >= 1, "n_samples_per_prompt must be >= 1"
 
-        result = []
+    # Work with a shuffled copy based on current epoch
+    shuffled = _shuffle_for_epoch(samples, state.seed, state.epoch_id)
 
-        while len(result) < n:
-            # How many we can get from current epoch
-            remaining_in_epoch = len(self.prompts) - self.sample_offset
-            needed = n - len(result)
-            take = min(remaining_in_epoch, needed)
+    result_groups: list[list[Sample]] = []
+    epoch_id = state.epoch_id
+    sample_offset = state.sample_offset
+    global_index = epoch_id * len(samples) + sample_offset
 
-            # Take from current position
-            result.extend(
-                self.prompts[self.sample_offset : self.sample_offset + take]
+    while len(result_groups) < n:
+        # Check if we need to advance epoch
+        if sample_offset >= len(shuffled):
+            epoch_id += 1
+            sample_offset = 0
+            shuffled = _shuffle_for_epoch(samples, state.seed, epoch_id)
+
+        # Get the base sample
+        base_sample = shuffled[sample_offset]
+
+        # Create group with n_samples_per_prompt copies
+        group: list[Sample] = []
+        for i in range(n_samples_per_prompt):
+            # Create copy with group_index and index set
+            sample_copy = Sample(
+                prompt=base_sample.prompt,
+                response=base_sample.response,
+                tokens=list(base_sample.tokens),
+                loss_mask=list(base_sample.loss_mask),
+                reward=base_sample.reward,
+                group_index=len(result_groups),
+                index=global_index * n_samples_per_prompt + i,
+                metadata=dict(base_sample.metadata),
+                rollout_log_probs=base_sample.rollout_log_probs,
+                status=base_sample.status,
             )
-            self.sample_offset += take
+            group.append(sample_copy)
 
-            # Wraparound if needed
-            if self.sample_offset >= len(self.prompts):
-                self._advance_epoch()
+        result_groups.append(group)
+        sample_offset += 1
+        global_index += 1
 
-        # Postcondition
-        assert len(result) == n, "Must return exact number of prompts requested"
+    new_state = BufferState(
+        epoch_id=epoch_id,
+        sample_offset=sample_offset,
+        seed=state.seed,
+    )
 
-        return result
-
-    def _advance_epoch(self):
-        """Advance to next epoch with deterministic shuffle."""
-        self.epoch_id += 1
-        self.sample_offset = 0
-
-        # Shuffle with deterministic seed based on epoch
-        self._rng = random.Random(self.seed + self.epoch_id)
-        self._rng.shuffle(self.prompts)
-
-    def save_state(self) -> dict[str, Any]:
-        """Save buffer state for checkpointing.
-
-        Returns:
-            Dict with epoch_id, sample_offset, seed
-
-        Example:
-            >>> buffer = DataBuffer(prompts=["a", "b"])
-            >>> buffer.get_prompts(1)
-            >>> state = buffer.save_state()
-            >>> assert state["sample_offset"] == 1
-        """
-        return {
-            "epoch_id": self.epoch_id,
-            "sample_offset": self.sample_offset,
-            "seed": self.seed,
-        }
-
-    def load_state(self, state: dict[str, Any]):
-        """Restore buffer state from checkpoint.
-
-        Args:
-            state: Dict from save_state()
-
-        Example:
-            >>> buffer = DataBuffer(prompts=["a", "b"])
-            >>> buffer.load_state({"epoch_id": 5, "sample_offset": 1, "seed": 42})
-            >>> assert buffer.epoch_id == 5
-        """
-        self.epoch_id = state["epoch_id"]
-        self.sample_offset = state["sample_offset"]
-        self.seed = state["seed"]
-        self._rng = random.Random(self.seed + self.epoch_id)
-
-        # Re-shuffle to correct epoch state
-        for _ in range(self.epoch_id):
-            temp_rng = random.Random(self.seed + _)
-            temp_rng.shuffle(self.prompts)
+    return result_groups, new_state
 
 
-def load_prompts_from_jsonl(
+def get_samples_flat(
+    samples: list[Sample],
+    state: BufferState,
+    n: int,
+) -> tuple[list[Sample], BufferState]:
+    """Get next batch of samples without grouping.
+
+    Convenience wrapper for get_samples with n_samples_per_prompt=1.
+    Returns flat list instead of nested groups.
+
+    Args:
+        samples: Source dataset
+        state: Current buffer state
+        n: Number of samples to return
+
+    Returns:
+        Tuple of (samples, new_state)
+
+    Example:
+        >>> samples = [Sample(prompt="Q1"), Sample(prompt="Q2")]
+        >>> state = BufferState(seed=42)
+        >>> batch, new_state = get_samples_flat(samples, state, n=2)
+        >>> assert len(batch) == 2
+    """
+    groups, new_state = get_samples(samples, state, n, n_samples_per_prompt=1)
+    return [group[0] for group in groups], new_state
+
+
+def _shuffle_for_epoch(
+    samples: list[Sample],
+    seed: int,
+    epoch_id: int,
+) -> list[Sample]:
+    """Create shuffled copy of samples for given epoch.
+
+    Pure function - does not mutate input.
+
+    Args:
+        samples: Source samples
+        seed: Base random seed
+        epoch_id: Epoch number (combined with seed for determinism)
+
+    Returns:
+        New list with samples in shuffled order
+    """
+    rng = random.Random(seed + epoch_id)
+    shuffled = list(samples)
+    rng.shuffle(shuffled)
+    return shuffled
+
+
+def state_to_dict(state: BufferState) -> dict[str, Any]:
+    """Serialize buffer state for checkpointing.
+
+    Args:
+        state: Buffer state to serialize
+
+    Returns:
+        Dict representation
+
+    Example:
+        >>> state = BufferState(epoch_id=5, sample_offset=10, seed=42)
+        >>> d = state_to_dict(state)
+        >>> assert d["epoch_id"] == 5
+    """
+    return {
+        "epoch_id": state.epoch_id,
+        "sample_offset": state.sample_offset,
+        "seed": state.seed,
+    }
+
+
+def state_from_dict(data: dict[str, Any]) -> BufferState:
+    """Deserialize buffer state from checkpoint.
+
+    Args:
+        data: Dict from state_to_dict()
+
+    Returns:
+        BufferState instance
+
+    Example:
+        >>> d = {"epoch_id": 5, "sample_offset": 10, "seed": 42}
+        >>> state = state_from_dict(d)
+        >>> assert state.epoch_id == 5
+    """
+    return BufferState(
+        epoch_id=data["epoch_id"],
+        sample_offset=data["sample_offset"],
+        seed=data["seed"],
+    )
+
+
+# ────────────────────── Dataset Loading ──────────────────────
+
+
+def load_samples_from_parquet(
+    path: Path | str,
+    prompt_key: str = "prompt",
+    label_key: str | None = None,
+    limit: int | None = None,
+) -> list[Sample]:
+    """Load samples from Parquet file.
+
+    Args:
+        path: Path to parquet file (supports @[start:end] slice syntax)
+        prompt_key: Column name for prompts
+        label_key: Optional column name for ground truth labels
+        limit: Optional limit on number of samples
+
+    Returns:
+        List of Sample objects
+
+    Example:
+        >>> samples = load_samples_from_parquet("data.parquet", label_key="answer")
+        >>> samples = load_samples_from_parquet("data.parquet@[0:100]")  # first 100
+    """
+    import pandas as pd
+
+    path_str = str(path)
+
+    # Parse optional slice syntax: path@[start:end]
+    slice_start, slice_end = None, None
+    if "@[" in path_str and path_str.endswith("]"):
+        path_str, slice_part = path_str.rsplit("@[", 1)
+        slice_part = slice_part[:-1]  # Remove ]
+        if ":" in slice_part:
+            parts = slice_part.split(":")
+            slice_start = int(parts[0]) if parts[0] else None
+            slice_end = int(parts[1]) if parts[1] else None
+
+    df = pd.read_parquet(path_str)
+
+    # Apply slice
+    if slice_start is not None or slice_end is not None:
+        df = df.iloc[slice_start:slice_end]
+
+    # Apply limit
+    if limit is not None:
+        df = df.head(limit)
+
+    samples = []
+    for i, row in df.iterrows():
+        prompt = row.get(prompt_key, row.to_dict())
+
+        metadata: dict[str, Any] = {}
+        if label_key and label_key in row:
+            metadata["label"] = row[label_key]
+        metadata["_raw"] = row.to_dict()
+
+        samples.append(Sample(
+            prompt=prompt,
+            metadata=metadata,
+            index=len(samples),
+        ))
+
+    return samples
+
+
+def load_samples_from_hf(
+    dataset_name: str,
+    split: str = "train",
+    subset: str | None = None,
+    prompt_key: str = "prompt",
+    label_key: str | None = None,
+    limit: int | None = None,
+) -> list[Sample]:
+    """Load samples from HuggingFace datasets.
+
+    Args:
+        dataset_name: HuggingFace dataset name (e.g., "openai/gsm8k")
+        split: Dataset split (e.g., "train", "test")
+        subset: Dataset subset/config (e.g., "main" for gsm8k)
+        prompt_key: Field name for prompts
+        label_key: Optional field name for ground truth labels
+        limit: Optional limit on number of samples
+
+    Returns:
+        List of Sample objects
+
+    Example:
+        >>> samples = load_samples_from_hf(
+        ...     "openai/gsm8k",
+        ...     subset="main",
+        ...     split="test",
+        ...     prompt_key="question",
+        ...     label_key="answer",
+        ...     limit=100,
+        ... )
+    """
+    from datasets import load_dataset
+
+    ds = load_dataset(dataset_name, subset, split=split)
+
+    samples = []
+    for i, row in enumerate(ds):
+        if limit is not None and i >= limit:
+            break
+
+        prompt = row.get(prompt_key, dict(row))
+
+        metadata: dict[str, Any] = {}
+        if label_key and label_key in row:
+            metadata["label"] = row[label_key]
+        metadata["_raw"] = dict(row)
+
+        samples.append(Sample(
+            prompt=prompt,
+            metadata=metadata,
+            index=i,
+        ))
+
+    return samples
+
+
+def load_samples_from_jsonl(
     path: Path,
     prompt_key: str = "prompt",
+    label_key: str | None = None,
     limit: int | None = None,
-) -> list[str | dict[str, Any]]:
-    """Load prompts from JSONL file.
+) -> list[Sample]:
+    """Load samples from JSONL file.
 
     Pure function - no side effects, just loads and returns.
 
     Args:
         path: Path to JSONL file
         prompt_key: Key to extract prompt from each line
-        limit: Optional limit on number of prompts to load
+        label_key: Optional key for ground truth label (stored in metadata)
+        limit: Optional limit on number of samples to load
 
     Returns:
-        List of prompts (strings or dicts)
+        List of Sample objects
 
     Example:
-        >>> # If file contains: {"prompt": "Q1"}\\n{"prompt": "Q2"}
-        >>> prompts = load_prompts_from_jsonl("data.jsonl")
-        >>> assert len(prompts) == 2
-
-    Note:
-        If prompt_key is "messages", returns the raw dict (for chat messages).
-        Otherwise extracts the specific key value.
+        >>> # If file contains: {"prompt": "Q1", "answer": "A1"}
+        >>> samples = load_samples_from_jsonl("data.jsonl", label_key="answer")
+        >>> assert samples[0].metadata["label"] == "A1"
     """
-    prompts = []
+    samples = []
 
     with open(path) as f:
         for line_num, line in enumerate(f, start=1):
@@ -187,36 +377,133 @@ def load_prompts_from_jsonl(
 
             data = json.loads(line)
 
-            # Extract prompt based on key
+            # Extract prompt
             if prompt_key == "messages":
-                # Keep full dict for chat messages
-                prompts.append(data[prompt_key])
+                prompt = data[prompt_key]
             elif prompt_key in data:
-                prompts.append(data[prompt_key])
+                prompt = data[prompt_key]
             else:
-                # Fallback: use the whole dict
-                prompts.append(data)
+                prompt = data
 
-    return prompts
+            # Build metadata
+            metadata: dict[str, Any] = {}
+            if label_key and label_key in data:
+                metadata["label"] = data[label_key]
+
+            # Store full original data in metadata
+            metadata["_raw"] = data
+
+            samples.append(Sample(
+                prompt=prompt,
+                metadata=metadata,
+                index=line_num - 1,
+            ))
+
+    return samples
 
 
-def load_prompts_from_list(
-    prompts: list[str],
-) -> list[str]:
-    """Load prompts from Python list.
-
-    Pure function - just returns the input for consistency with other loaders.
+def load_samples_from_list(
+    prompts: list[str | dict[str, Any]],
+    labels: list[Any] | None = None,
+) -> list[Sample]:
+    """Create samples from Python lists.
 
     Args:
-        prompts: List of prompt strings
+        prompts: List of prompts (strings or chat message dicts)
+        labels: Optional list of ground truth labels
 
     Returns:
-        Same list (for API consistency)
+        List of Sample objects
 
     Example:
-        >>> prompts = load_prompts_from_list(["Q1", "Q2"])
-        >>> assert len(prompts) == 2
+        >>> samples = load_samples_from_list(
+        ...     prompts=["Q1", "Q2"],
+        ...     labels=["A1", "A2"],
+        ... )
+        >>> assert samples[0].metadata["label"] == "A1"
     """
+    samples = []
+
+    for i, prompt in enumerate(prompts):
+        metadata: dict[str, Any] = {}
+        if labels is not None:
+            metadata["label"] = labels[i]
+
+        samples.append(Sample(
+            prompt=prompt,
+            metadata=metadata,
+            index=i,
+        ))
+
+    return samples
+
+
+# ────────────────────── Backwards Compatibility ──────────────────────
+# TODO: Remove after migration
+
+
+@dataclass
+class DataBuffer:
+    """DEPRECATED: Use BufferState + get_samples() instead.
+
+    This class wrapper exists for backwards compatibility.
+    Will be removed in a future version.
+
+    Example migration:
+        # Old:
+        buffer = DataBuffer(prompts=["Q1", "Q2"])
+        batch = buffer.get_prompts(2)
+
+        # New:
+        samples = load_samples_from_list(["Q1", "Q2"])
+        state = BufferState(seed=42)
+        batch, state = get_samples_flat(samples, state, n=2)
+    """
+
+    prompts: list[str | dict[str, Any]]
+    epoch_id: int = 0
+    sample_offset: int = 0
+    seed: int = 42
+
+    def __post_init__(self):
+        """Convert prompts to samples internally."""
+        self._samples = load_samples_from_list(self.prompts)
+        self._state = BufferState(
+            epoch_id=self.epoch_id,
+            sample_offset=self.sample_offset,
+            seed=self.seed,
+        )
+
+    def get_prompts(self, n: int) -> list[str | dict[str, Any]]:
+        """Get next batch of prompts."""
+        samples, self._state = get_samples_flat(self._samples, self._state, n)
+        self.epoch_id = self._state.epoch_id
+        self.sample_offset = self._state.sample_offset
+        return [s.prompt for s in samples]
+
+    def save_state(self) -> dict[str, Any]:
+        """Save buffer state for checkpointing."""
+        return state_to_dict(self._state)
+
+    def load_state(self, state: dict[str, Any]):
+        """Restore buffer state from checkpoint."""
+        self._state = state_from_dict(state)
+        self.epoch_id = self._state.epoch_id
+        self.sample_offset = self._state.sample_offset
+
+
+def load_prompts_from_jsonl(
+    path: Path,
+    prompt_key: str = "prompt",
+    limit: int | None = None,
+) -> list[str | dict[str, Any]]:
+    """DEPRECATED: Use load_samples_from_jsonl instead."""
+    samples = load_samples_from_jsonl(path, prompt_key, limit=limit)
+    return [s.prompt for s in samples]
+
+
+def load_prompts_from_list(prompts: list[str]) -> list[str]:
+    """DEPRECATED: Use load_samples_from_list instead."""
     return prompts
 
 
@@ -226,22 +513,6 @@ def create_buffer_from_jsonl(
     limit: int | None = None,
     seed: int = 42,
 ) -> DataBuffer:
-    """Create DataBuffer from JSONL file.
-
-    Convenience function combining load + buffer creation.
-
-    Args:
-        path: Path to JSONL file
-        prompt_key: Key to extract prompt from each line
-        limit: Optional limit on number of prompts
-        seed: Random seed for shuffling
-
-    Returns:
-        DataBuffer initialized with prompts
-
-    Example:
-        >>> buffer = create_buffer_from_jsonl("prompts.jsonl", limit=100)
-        >>> batch = buffer.get_prompts(32)
-    """
+    """DEPRECATED: Use load_samples_from_jsonl + BufferState instead."""
     prompts = load_prompts_from_jsonl(path, prompt_key, limit)
     return DataBuffer(prompts=prompts, seed=seed)
