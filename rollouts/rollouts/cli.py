@@ -503,7 +503,7 @@ def main() -> int:
             print(f"  - {preset_name}")
         
         print(f"\nUsage: rollouts --preset <name>")
-        print(f"Example: rollouts --preset fast_coder")
+        print(f"Example: rollouts --preset sonnet_4")
         return 0
 
     # OAuth login/logout

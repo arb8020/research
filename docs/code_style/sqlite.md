@@ -1,0 +1,6 @@
+- switch to sqlite
+- use sqlite_lint and fix everything it complains about
+- use sqlite_expert and index some of what it complains about (use judgement)
+- keep N+1 queries (completely performant with sqlite)
+- 0.5 ms query time
+- $0 / month sqlite

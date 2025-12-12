@@ -1,0 +1,18 @@
+# ~/.config/rollouts/presets.yaml
+
+fast-coder:
+  model: anthropic/claude-3-5-haiku-20241022
+  env: coding
+  system_prompt: |
+    Claude is collaborating with someone who has different capabilities.
+    Claude generates code quickly and recognizes patterns.
+    ...
+
+careful-coder:
+  model: anthropic/claude-sonnet-4-5-20250929
+  env: coding
+  system_prompt: |
+    ...
+
+# Then: rollouts --preset fast-coder
+# Or even: rollouts --config-file my-custom-preset.yaml
