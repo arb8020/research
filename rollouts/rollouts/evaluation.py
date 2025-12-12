@@ -77,7 +77,6 @@ class EvalSample:
             'trajectory': json.loads(self.trajectory.to_json()),
             'agent_states': [],
             'score': score_data,
-            'metrics': self.metrics,
             'metadata': self.metadata,
             'timestamp': self.timestamp,
         }
@@ -122,7 +121,17 @@ class EvalSample:
         # Note: Full AgentState deserialization would require complex reconstruction
         # For now, store as simplified data for analysis
         data['agent_states'] = data.get('agent_states', [])
-        return EvalSample(**data)
+
+        # Only keep expected fields
+        return EvalSample(
+            sample_id=data['sample_id'],
+            input_data=data['input_data'],
+            trajectory=data['trajectory'],
+            agent_states=data['agent_states'],
+            score=data.get('score'),
+            metadata=data.get('metadata', {}),
+            timestamp=data.get('timestamp', datetime.now().isoformat()),
+        )
 
 
 @dataclass
@@ -343,43 +352,37 @@ async def evaluate_sample(
             metadata={**final_trajectory.metadata, "error": error_message}
         )
 
-    # Compute reward (Trajectory -> Trajectory with rewards populated)
-    # Support both sync and async reward functions
+    # Build Sample for score function
+    sample = Sample(
+        id=sample_id,
+        input=sample_data,
+        ground_truth=sample_data.get("ground_truth") or sample_data.get("answer"),
+        metadata=sample_data.get("metadata", {}),
+    )
+
+    # Compute score (Trajectory, Sample) -> Score
+    # Support both sync and async score functions
+    score: Score | None = None
     try:
-        reward_result = config.reward_fn(final_trajectory)
-        # Check if result is a coroutine (async function)
         import inspect
-        if inspect.iscoroutine(reward_result):
-            scored_trajectory = await reward_result
+        score_result = config.score_fn(final_trajectory, sample)
+        if inspect.iscoroutine(score_result):
+            score = await score_result
         else:
-            scored_trajectory = reward_result
+            score = score_result
     except Exception as e:
-        # Always log reward computation errors loudly - these are critical issues
-        logger.error(f"❌ REWARD COMPUTATION FAILED: {e}")
+        logger.error(f"❌ SCORE COMPUTATION FAILED: {e}")
         if config.verbose:
             import traceback
             logger.error(f"Full traceback:\n{traceback.format_exc()}")
-        # Return trajectory with 0 reward on error
-        scored_trajectory = replace(final_trajectory, rewards=0.0)
-
-    # Extract metrics
-    metrics = {"reward": scored_trajectory.rewards}
-
-    # If user stored breakdown in metadata, extract it
-    if "reward_breakdown" in scored_trajectory.metadata:
-        breakdown = scored_trajectory.metadata["reward_breakdown"]
-        if isinstance(breakdown, dict):
-            for name, value in breakdown.items():
-                if isinstance(value, (int, float)):
-                    metrics[name] = float(value)
-                elif isinstance(value, dict) and "raw" in value:
-                    metrics[name] = float(value["raw"])
+        # Return zero score on error
+        score = Score(metrics=(Metric("error", 0.0, weight=1.0, metadata={"error": str(e)}),))
 
     # Add execution metadata
     metadata = {
         "turns_used": states[-1].turn_idx,
         "stop_reason": str(states[-1].stop) if states[-1].stop else None,
-        "total_tokens": sum(len(m.content or "") for m in scored_trajectory.messages),
+        "total_tokens": sum(len(m.content or "") for m in final_trajectory.messages),
     }
 
     # Include error if agent execution failed
@@ -394,14 +397,14 @@ async def evaluate_sample(
     metadata["duration_seconds"] = duration_seconds
 
     # Structured logging for sample completion (always logged at INFO level)
-    # This provides clean, parseable logs for monitoring progress
+    reward = score.reward if score else 0.0
     logger.info(
-        f"Sample {sample_id} completed: reward={metrics.get('reward', 0.0):.3f}, "
+        f"Sample {sample_id} completed: reward={reward:.3f}, "
         f"turns={metadata['turns_used']}, duration={duration_seconds:.2f}s, "
         f"status={metadata['status']}",
         extra={
             "sample_id": sample_id,
-            "reward": metrics.get("reward", 0.0),
+            "reward": reward,
             "turns": metadata["turns_used"],
             "duration_seconds": duration_seconds,
             "status": metadata["status"],
@@ -409,25 +412,10 @@ async def evaluate_sample(
         }
     )
 
-    if config.verbose and metrics:
-        # Print key metrics inline
-        metric_str = ", ".join(f"{k}={v:.3f}" for k, v in list(metrics.items())[:3])
+    if config.verbose and score:
+        # Print metrics from Score
+        metric_str = ", ".join(f"{m.name}={m.value:.3f}" for m in score.metrics[:3])
         logger.info(f"  {metric_str}")
-
-        # Also log detailed metrics from metadata if available
-        # Look for any dict in metadata with rich metric information
-        # (useful for environments that provide detailed feedback beyond just reward)
-        for key, value in scored_trajectory.metadata.items():
-            if isinstance(value, dict) and any(isinstance(v, (int, float)) for v in value.values()):
-                # Found a dict with numeric values - likely detailed metrics
-                detail_items = [(k, v) for k, v in value.items()
-                               if isinstance(v, (int, float))][:3]
-                if detail_items:
-                    detail_str = ", ".join(f"{k}={v:.3f}" for k, v in detail_items)
-                    # Use the metadata key name (e.g., "prime_metrics" -> "prime")
-                    label = key.replace('_metrics', '').replace('_', ' ')
-                    logger.info(f"  {label}: {detail_str}")
-                break  # Only show first metrics dict to avoid spam
 
     # Cleanup environment if it has a cleanup method
     if environment and hasattr(environment, 'cleanup'):
@@ -439,16 +427,16 @@ async def evaluate_sample(
     eval_sample = EvalSample(
         sample_id=sample_id,
         input_data=sample_data,
-        trajectory=scored_trajectory,
+        trajectory=final_trajectory,
         agent_states=states,
-        metrics=metrics,
+        score=score,
         metadata=metadata
     )
 
     # Emit sample_end event for frontend live streaming
     await run_config.on_chunk(StreamChunk(
         "sample_end",
-        {"sample_id": sample_id, "reward": metrics.get("reward", 0.0), "metadata": metadata},
+        {"sample_id": sample_id, "reward": reward, "metadata": metadata},
     ))
 
     return eval_sample
