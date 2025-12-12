@@ -1147,12 +1147,8 @@ class Sample:
 
 
 # Score function: pure transform from (Trajectory, Sample) -> Score
-# Supports both sync and async (for integrations like Prime that need async scoring)
+# Supports both sync and async (for external verifiers that need network calls)
 ScoreFn = Callable[['Trajectory', Sample], Score] | Callable[['Trajectory', Sample], Awaitable[Score]]
-
-# Legacy reward function: pure transform from Trajectory -> Trajectory with rewards populated
-# Kept for backward compatibility with existing code
-RewardFunction = Callable[[Trajectory], Trajectory] | Callable[[Trajectory], Awaitable[Trajectory]]
 
 
 @dataclass(frozen=True)
@@ -1162,18 +1158,21 @@ class EvalConfig:
     Tiger Style: All configuration explicit, immutable, composable.
 
     Example:
-        >>> def my_reward(traj: Trajectory) -> Trajectory:
-        ...     score = 1.0 if check_correctness(traj) else 0.0
-        ...     return replace(traj, rewards=score)
+        >>> def my_score_fn(traj: Trajectory, sample: Sample) -> Score:
+        ...     correct = check_correctness(traj, sample.ground_truth)
+        ...     return Score(metrics=(
+        ...         Metric("correct", 1.0 if correct else 0.0, weight=1.0),
+        ...         Metric("turns", len(traj.messages), weight=0),
+        ...     ))
         >>>
         >>> config = EvalConfig(
-        ...     reward_fn=my_reward,
+        ...     score_fn=my_score_fn,
         ...     run_config=RunConfig(handle_stop=handle_stop_max_turns(10)),
         ...     max_concurrent=4,
         ... )
     """
-    # Required: how to compute rewards
-    reward_fn: RewardFunction
+    # Required: how to compute score (Trajectory, Sample) -> Score
+    score_fn: ScoreFn
 
     # Agent execution
     run_config: RunConfig | None = None  # If None, use silent default

@@ -326,7 +326,7 @@ def test_correctness(client: BifrostClient, workspace: str) -> bool:
     print("\n1. Submitting correctness test job...")
     job = submit(
         client,
-        command=f"pip install -e {workspace}/rollouts && python {script_path}",
+        command=f"PYTHONPATH={workspace}/rollouts:$PYTHONPATH python {script_path}",
         workspace=workspace,
         gpu_ids=[0],
         deps=DependencyConfig(
