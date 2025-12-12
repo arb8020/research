@@ -335,6 +335,7 @@ def test_correctness(client: BifrostClient, workspace: str) -> bool:
                 "torch>=2.0",
                 "transformers",
                 "accelerate",
+                "xxhash",
             ],
         ),
         job_name="test-correctness",
