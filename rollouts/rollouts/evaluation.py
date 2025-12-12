@@ -25,6 +25,7 @@ from .dtypes import (
     Message,
     Metric,
     RunConfig,
+    Sample,
     Score,
     StreamChunk,
     Trajectory,
@@ -43,8 +44,7 @@ class EvalSample:
         input_data: Raw input data from dataset
         trajectory: Full agent execution trace
         agent_states: List of agent states from run_agent
-        score: Structured score with metrics breakdown (new)
-        metrics: Flat dict of metric values for backward compatibility
+        score: Structured score with metrics breakdown
         metadata: Execution metadata (turns, tokens, status, etc.)
         timestamp: When this sample was evaluated
     """
@@ -52,8 +52,7 @@ class EvalSample:
     input_data: dict[str, Any]
     trajectory: Trajectory
     agent_states: list[AgentState]
-    score: Score | None = None  # New: structured score with weights
-    metrics: dict[str, float] = field(default_factory=dict)  # Backward compat: flat metrics
+    score: Score | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
