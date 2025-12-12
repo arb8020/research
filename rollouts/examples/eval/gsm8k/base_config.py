@@ -112,8 +112,8 @@ class OutputConfig:
 
 
 @dataclass(frozen=True)
-class EvalConfig:
-    """Top-level GSM8K evaluation config."""
+class GSM8KConfig:
+    """Top-level GSM8K experiment config."""
     endpoint: EndpointConfig = field(default_factory=EndpointConfig)
     inference_server: InferenceServerConfig = field(default_factory=InferenceServerConfig)
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
@@ -457,7 +457,7 @@ def gsm8k_tool_score_fn(trajectory: Any, sample: Any) -> "Score":
 # ──────────────────────── Evaluation Logic ──────────────────────────────────
 
 
-def _get_endpoint(config: EvalConfig) -> "Endpoint":
+def _get_endpoint(config: GSM8KConfig) -> "Endpoint":
     """Create Endpoint from config, loading API key from env if needed."""
     from rollouts.dtypes import Endpoint
 
@@ -519,11 +519,11 @@ def _single_turn_score_fn(trajectory: "Trajectory", sample: "Sample") -> "Score"
     ))
 
 
-async def _eval_single_turn(config: EvalConfig) -> dict[str, Any]:
+async def _eval_single_turn(config: GSM8KConfig) -> dict[str, Any]:
     """Single-turn evaluation using rollouts.evaluation framework."""
     from rollouts._logging import setup_logging
     from rollouts.agents import handle_stop_max_turns
-    from rollouts.dtypes import EvalConfig as RolloutsEvalConfig, Message, RunConfig
+    from rollouts.dtypes import EvalConfig, Message, RunConfig
     from rollouts.evaluation import evaluate
 
     setup_logging(level="INFO", use_color=True)
@@ -555,7 +555,7 @@ async def _eval_single_turn(config: EvalConfig) -> dict[str, Any]:
     )
 
     # Use rollouts evaluation framework
-    eval_config = RolloutsEvalConfig(
+    eval_config = EvalConfig(
         eval_name=config.output.experiment_name,
         score_fn=_single_turn_score_fn,
         max_samples=config.dataset.max_samples,
@@ -587,11 +587,11 @@ async def _eval_single_turn(config: EvalConfig) -> dict[str, Any]:
     return {"accuracy": accuracy, "total": total, **report.summary_metrics}
 
 
-async def _eval_multi_turn(config: EvalConfig) -> dict[str, Any]:
+async def _eval_multi_turn(config: GSM8KConfig) -> dict[str, Any]:
     """Multi-turn evaluation: model uses calculator tools."""
     from rollouts._logging import setup_logging
     from rollouts.agents import handle_stop_max_turns
-    from rollouts.dtypes import EvalConfig as RolloutsEvalConfig, Message, RunConfig
+    from rollouts.dtypes import EvalConfig, Message, RunConfig
     from rollouts.environments.calculator import CalculatorEnvironment
     from rollouts.evaluation import evaluate
 
@@ -625,7 +625,7 @@ async def _eval_multi_turn(config: EvalConfig) -> dict[str, Any]:
         handle_stop=handle_stop_max_turns(config.run.max_turns),
     )
 
-    eval_config = RolloutsEvalConfig(
+    eval_config = EvalConfig(
         eval_name=config.output.experiment_name,
         score_fn=gsm8k_tool_score_fn,
         max_samples=config.dataset.max_samples,
@@ -654,7 +654,7 @@ async def _eval_multi_turn(config: EvalConfig) -> dict[str, Any]:
     return report.summary_metrics
 
 
-def evaluate_gsm8k(config: EvalConfig) -> dict[str, Any]:
+def evaluate_gsm8k(config: GSM8KConfig) -> dict[str, Any]:
     """Run GSM8K evaluation."""
     if config.run.use_tools:
         return trio.run(_eval_multi_turn, config)

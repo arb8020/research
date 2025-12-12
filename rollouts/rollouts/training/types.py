@@ -1,7 +1,7 @@
 """Training data types.
 
 Pure dataclasses - transparent, no hidden state (Casey Muratori's principle).
-Inspired by SLIME's Sample dataclass + Tinker's loss weights.
+Inspired by SLIME's Sample dataclass + Tinker's loss weights + Miles unified Sample.
 """
 
 from collections.abc import Callable
@@ -12,66 +12,93 @@ from typing import Any
 import trio
 
 
+class Status(Enum):
+    """Sample status (SLIME-compatible)."""
+
+    PENDING = "pending"
+    COMPLETED = "completed"
+    TRUNCATED = "truncated"
+    ABORTED = "aborted"
+
+
 @dataclass
 class Sample:
-    """Training sample - the universal currency.
+    """Unified sample type for evaluation, rollouts, and training.
+
+    One Sample type for the entire pipeline (Miles pattern):
+    - Evaluation: id, input, ground_truth
+    - Rollouts: prompt, response, reward
+    - Training: tokens, loss_mask
 
     Transparent @dataclass (Casey Muratori: no opacity).
-    Inspired by SLIME's Sample type.
-
     All fields are public and accessible. No getters/setters.
-    User can read/modify any field directly.
 
     Attributes:
-        prompt: Input prompt (str or chat messages)
-        response: Generated response
-        tokens: Tokenized representation
-        loss_mask: Per-token loss weights (0.0 = no loss, 1.0 = compute loss)
-        reward: Reward for RL (0.0 for SFT)
-        metadata: Arbitrary metadata (tool usage, etc.)
+        # Identity
+        id: Unique identifier for this sample
+        index: Global sample index (position in dataset)
         group_index: Group ID for GRPO (n samples per prompt)
-        index: Global sample index
 
-    Example:
+        # Input (evaluation/rollouts)
+        input: Raw input data dict (evaluation datasets)
+        prompt: Input prompt (str or chat messages) for generation
+        ground_truth: Expected answer for evaluation
+
+        # Generated (rollouts)
+        response: Generated response text
+        tokens: Tokenized representation
+        response_length: Length of response in tokens
+
+        # Training
+        loss_mask: Per-token loss weights (0.0 = no loss, 1.0 = compute loss)
+        reward: Reward signal for RL
+        rollout_log_probs: Logprobs from rollout model (off-policy correction)
+
+        # Status and metadata
+        status: Sample processing status
+        metadata: Arbitrary metadata (tool usage, difficulty, etc.)
+
+    Example (evaluation):
         >>> sample = Sample(
+        ...     id="math_001",
+        ...     input={"question": "What is 2+2?"},
+        ...     ground_truth="4",
+        ... )
+
+    Example (training):
+        >>> sample = Sample(
+        ...     id="train_001",
         ...     prompt="What is 2+2?",
         ...     response="4",
         ...     tokens=[1, 2, 3, 4],
-        ...     loss_mask=[0.0, 0.0, 1.0, 1.0],  # Don't compute loss on prompt
+        ...     loss_mask=[0.0, 0.0, 1.0, 1.0],
+        ...     reward=1.0,
         ... )
-        >>> sample.metadata["used_tools"] = ["calculator"]
     """
 
-    # Input
-    prompt: str | list[dict[str, str]]
+    # Identity
+    id: str = ""
+    index: int | None = None
+    group_index: int | None = None
+
+    # Input (evaluation uses input dict, rollouts use prompt)
+    input: dict[str, Any] = field(default_factory=dict)
+    prompt: str | list[dict[str, str]] = ""
+    ground_truth: Any | None = None
 
     # Generated (may be empty before generation)
     response: str = ""
     tokens: list[int] = field(default_factory=list)
+    response_length: int = 0
 
     # Training
     loss_mask: list[float] = field(default_factory=list)
     reward: float = 0.0
-
-    # Grouping (for GRPO)
-    group_index: int | None = None
-    index: int | None = None
-
-    # Metadata
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-    # Optional: logprobs for off-policy correction
     rollout_log_probs: list[float] | None = None
 
-    class Status(Enum):
-        """Sample status (SLIME-compatible)."""
-
-        PENDING = "pending"
-        COMPLETED = "completed"
-        TRUNCATED = "truncated"
-        ABORTED = "aborted"
-
+    # Status and metadata
     status: Status = Status.PENDING
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict for serialization.
@@ -80,7 +107,7 @@ class Sample:
             Dict representation
 
         Example:
-            >>> sample = Sample(prompt="Q", response="A")
+            >>> sample = Sample(id="001", prompt="Q", response="A")
             >>> d = sample.to_dict()
             >>> assert "prompt" in d
         """
@@ -99,10 +126,12 @@ class Sample:
             Sample instance
 
         Example:
-            >>> d = {"prompt": "Q", "response": "A", "status": "completed"}
+            >>> d = {"id": "001", "prompt": "Q", "response": "A", "status": "completed"}
             >>> sample = Sample.from_dict(d)
         """
-        data["status"] = Sample.Status(data["status"])
+        data = data.copy()
+        if "status" in data:
+            data["status"] = Status(data["status"])
         return Sample(**data)
 
 

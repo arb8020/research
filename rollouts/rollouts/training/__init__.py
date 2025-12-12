@@ -18,6 +18,7 @@ from rollouts.training.types import (
     RolloutConfig,
     Sample,
     SFTTrainingConfig,
+    Status,
 )
 
 
@@ -103,6 +104,7 @@ __all__ = [
     "JSONLLogger",
     # Types
     "Sample",
+    "Status",
     "SFTTrainingConfig",
     "RLTrainingConfig",
     "RolloutConfig",
