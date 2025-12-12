@@ -740,3 +740,33 @@ class InferenceEngine(Protocol):
 
 3. **Preemption strategy?**
    - Start with recompute (simpler than swap)
+
+---
+
+## Verified Components
+
+### Sliding Window Attention (SWA)
+- FlexAttention implementation with BlockMask
+- Tested against reference explicit-mask implementation
+- Max diff: 8.34e-07 (within fp tolerance)
+- Full causal mode also verified (diff: 1.19e-06)
+
+Key files:
+- `rollouts/inference/attention/mask.py` - `create_sliding_window_causal_mask()`, `create_attention_mask()`
+- `rollouts/inference/attention/flex_backend.py` - FlexAttentionBackend
+- `rollouts/tools/functional_extractor/debug_swa.py` - Test script
+
+---
+
+## Running Tests
+
+```bash
+# Correctness test vs Transformers (provisions GPU)
+uv run python rollouts/tests/test_inference_correctness.py --provision --keep-alive
+
+# Reuse existing instance
+uv run python rollouts/tests/test_inference_correctness.py --node-id runpod:abc123
+
+# SWA test
+uv run python -m rollouts.tools.functional_extractor.debug_swa
+```

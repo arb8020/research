@@ -11,7 +11,7 @@ from rollouts.training.backends import PyTorchTrainingBackend
 from rollouts.training.datasets.data_buffer import DataBuffer
 from rollouts.training.metrics import MetricsLogger
 from rollouts.training.rollout_gen.async_rollout_manager import AsyncRolloutManager
-from rollouts.training.types import RLTrainingConfig, RolloutBatch, Sample
+from rollouts.training.types import RLTrainingConfig, RolloutBatch
 from rollouts.training.weight_sync import InferenceEngine, sync_weights_to_engines
 
 logger = logging.getLogger(__name__)
@@ -68,11 +68,11 @@ async def run_rl_training(
 
     async with rollout_manager:  # Context manager for cleanup
         for step in range(config.num_steps):
-            # SLIME Step 1: Generate rollouts
+            # SLIME Step 1: Generate rollouts (rewards computed during generation)
             batch = await rollout_manager.generate_batch()
 
-            # SLIME Step 2: Compute rewards (pure function)
-            rewards = [compute_reward(s) for s in batch.samples]
+            # SLIME Step 2: Use pre-computed rewards from batch
+            rewards = batch.rewards
 
             # SLIME Step 3: Prepare RL batch (pure function)
             rl_batch = prepare_grpo_batch(batch, rewards, config)
@@ -127,23 +127,6 @@ async def run_rl_training(
         metrics_logger.finish()
 
     return metrics_history
-
-
-def compute_reward(sample: Sample) -> float:
-    """Pure function: Compute reward from sample.
-
-    Uses environment grading (for now, reward model later).
-
-    Args:
-        sample: Sample with metadata containing grading result
-
-    Returns:
-        Reward (1.0 if correct, 0.0 otherwise)
-    """
-    # Simple environment-based grading
-    if sample.metadata.get("correct", False):
-        return 1.0
-    return 0.0
 
 
 def prepare_grpo_batch(
