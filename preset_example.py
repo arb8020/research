@@ -15,18 +15,18 @@ Preferences worth naming:
 - Summarize actions in plain text, don't cat or bash to display results
 - I don't know enough yet beats plausible code
 
-Different modes make sense: some interactions are exploratory, some are execution-focused."""
+Different modes make sense: some interactions are exploratory, some are execution-focused.""",
     },
     "careful-coder": {
         "model": "anthropic/claude-sonnet-4-5-20250929",
         "env": "coding",
-        "system_prompt": """<same prompt or variant>"""
+        "system_prompt": """<same prompt or variant>""",
     },
     "git-explorer": {
         "model": "anthropic/claude-sonnet-4-5-20250929",
         "env": "git",
-        "system_prompt": """<git-specific variant>"""
-    }
+        "system_prompt": """<git-specific variant>""",
+    },
 }
 
 # In argument parser setup (around line 320):

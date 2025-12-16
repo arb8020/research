@@ -69,6 +69,11 @@ The coding environment provides: `read`, `write`, `edit`, `bash`
 ```bash
 # Specify working directory
 rollouts --env coding --cwd /path/to/project
+
+# Restrict tools (useful for read-only exploration or sub-agents)
+rollouts --env coding --tools readonly    # Just read
+rollouts --env coding --tools no-write    # read, edit, bash (no write)
+rollouts --env coding --tools full        # All tools (default)
 ```
 
 ## Session Management
@@ -89,6 +94,38 @@ rollouts -s 20241210_143052_a1b2c3
 rollouts --no-session
 ```
 
+### Session Config Inheritance
+
+When resuming a session (`-s` or `-c`), the original session's configuration is inherited automatically. CLI flags act as overrides:
+
+```bash
+# Original session used haiku + coding env
+rollouts --model anthropic/claude-3-haiku-20240307 --env coding
+
+# Resume inherits config - no need to re-specify flags
+rollouts -s 20241210_143052_a1b2c3
+
+# Override to fork with different model
+rollouts -s 20241210_143052_a1b2c3 --model anthropic/claude-sonnet-4-5-20250929
+# Prints: "Forking from session: 20241210_143052_a1b2c3"
+```
+
+Inherited settings: model, environment, thinking mode, confirm_tools.
+
+### Diagnostics
+
+Crash info and agent feedback are stored in `~/.rollouts/`:
+
+```bash
+# Crash logs (400 errors, etc)
+ls ~/.rollouts/crashes/
+
+# Agent exit surveys (task success, harness feedback)
+cat ~/.rollouts/feedback/all.jsonl | jq .
+```
+
+The exit survey runs automatically when the agent pauses or exits, collecting self-reported task progress and tooling feedback.
+
 ## Stdin Input
 
 Piped input works in both interactive and non-interactive modes:
@@ -103,6 +140,29 @@ echo "explain this" | rollouts -p
 
 # Combine with session
 rollouts -c -p "what was the last thing we did"
+```
+
+## Stream JSON Output
+
+For scripting and pipelines, use `--stream-json` to get NDJSON output:
+
+```bash
+rollouts -p "calculate 5+3" --env calculator --stream-json
+```
+
+Each line is a JSON object:
+
+```json
+{"type":"system","subtype":"init","session_id":"","tools":["add","subtract",...]}
+{"type":"assistant","message":{"content":[{"type":"text","text":"I'll help..."},{"type":"tool_use","id":"...","name":"add","input":{"value":5}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"...","content":"Added 5...","is_error":false}]}}
+{"type":"result","subtype":"success","session_id":"","num_turns":2,"duration_ms":1234}
+```
+
+Process with jq:
+
+```bash
+rollouts -p "task" --stream-json 2>/dev/null | jq '.message.content[]?'
 ```
 
 ## Handoff (Context Transfer)
@@ -175,6 +235,7 @@ rollouts --preset fast_coder
 --api-key KEY           API key
 --system-prompt TEXT    Custom system prompt
 --env ENV               Environment: none, coding, git, calculator
+--tools PRESET          Tool preset: full, readonly, no-write (coding env only)
 --cwd PATH              Working directory
 --max-turns N           Max agent turns (default: 50)
 --confirm-tools         Require confirmation before tool execution
@@ -184,6 +245,7 @@ rollouts --preset fast_coder
 --no-session            Don't persist session
 
 -p, --print [QUERY]     Non-interactive mode (stdin if no QUERY)
+--stream-json           Output NDJSON per turn (for -p mode)
 --handoff GOAL          Extract context for goal to stdout
 
 --export-md [FILE]      Export to markdown

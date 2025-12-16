@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Test preset loading functionality."""
 
-from rollouts.agent_presets import load_preset, list_presets
+from rollouts.agent_presets import list_presets, load_preset
 
 
 def test_list_presets():
@@ -50,12 +50,12 @@ def test_to_cli_args():
     print("Testing preset.to_cli_args()...")
     preset = load_preset("sonnet_4")
     args = preset.to_cli_args()
-    
-    assert 'model' in args
-    assert 'env' in args
-    assert 'system_prompt' in args
-    assert 'thinking' in args
-    
+
+    assert "model" in args
+    assert "env" in args
+    assert "system_prompt" in args
+    assert "thinking" in args
+
     print(f"✓ Generated CLI args: {list(args.keys())}\n")
 
 
@@ -63,20 +63,21 @@ if __name__ == "__main__":
     print("=" * 60)
     print("Agent Preset Tests")
     print("=" * 60 + "\n")
-    
+
     try:
         test_list_presets()
         test_load_opus()
         test_load_fuzzy()
         test_load_openai()
         test_to_cli_args()
-        
+
         print("=" * 60)
         print("✓ All tests passed!")
         print("=" * 60)
-        
+
     except Exception as e:
         print(f"\n✗ Test failed: {e}")
         import traceback
+
         traceback.print_exc()
         exit(1)
