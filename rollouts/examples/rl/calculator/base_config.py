@@ -324,44 +324,62 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
     logger.info(f"Output: {output_dir}")
 
     # ─────────────────────────────────────────────────────────────────────────
-    # 1. Launch inference server (SGLang)
+    # 1. Launch inference server (SGLang) in tmux for debugging
+    # Pattern from ~/wafer_stuff/clicker - launch in tmux with log file
     # ─────────────────────────────────────────────────────────────────────────
     inference_gpu_ids = config.inference.gpu_ids
     inference_port = config.inference.port
+    tmux_session = "sglang-rl"
+    sglang_log = output_dir / "sglang_server.log"
 
     logger.info(f"Launching SGLang on GPUs {inference_gpu_ids}, port {inference_port}...")
+    logger.info(f"  Log file: {sglang_log}")
+    logger.info(f"  Tmux session: {tmux_session}")
 
-    sglang_cmd = [
-        "python",
-        "-m",
-        "sglang.launch_server",
-        "--model",
-        config.model.name,
-        "--host",
-        "0.0.0.0",
-        "--port",
-        str(inference_port),
+    # Build SGLang command
+    sglang_cmd_parts = [
+        "python", "-m", "sglang.launch_server",
+        "--model", config.model.name,
+        "--host", "0.0.0.0",
+        "--port", str(inference_port),
         "--trust-remote-code",
     ]
 
     # Multi-GPU: add tensor parallel size if more than 1 GPU
     if len(inference_gpu_ids) > 1:
-        sglang_cmd.extend(["--tp-size", str(len(inference_gpu_ids))])
+        sglang_cmd_parts.extend(["--tp-size", str(len(inference_gpu_ids))])
 
-    sglang_env = os.environ.copy()
-    sglang_env["CUDA_VISIBLE_DEVICES"] = ",".join(str(g) for g in inference_gpu_ids)
+    sglang_cmd = " ".join(sglang_cmd_parts)
 
-    sglang_process = subprocess.Popen(
-        sglang_cmd,
-        env=sglang_env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+    # Kill existing tmux session if present
+    subprocess.run(["tmux", "kill-session", "-t", tmux_session], capture_output=True)
+
+    # Build full command with environment and logging
+    cuda_devices = ",".join(str(g) for g in inference_gpu_ids)
+    full_cmd = f"CUDA_VISIBLE_DEVICES={cuda_devices} {sglang_cmd} 2>&1 | tee {sglang_log}"
+
+    # Launch in tmux (allows inspection if something goes wrong)
+    subprocess.run(
+        ["tmux", "new-session", "-d", "-s", tmux_session, full_cmd],
+        check=True,
     )
+    logger.info(f"  Started SGLang in tmux session '{tmux_session}'")
+    logger.info(f"  To attach: tmux attach -t {tmux_session}")
 
     # Wait for server to be ready
     health_url = f"http://localhost:{inference_port}/health"
     server_ready = False
     for attempt in range(120):  # 2 minutes timeout
+        # Check if tmux session is still alive
+        result = subprocess.run(
+            ["tmux", "has-session", "-t", tmux_session],
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            logger.error("SGLang server crashed during startup!")
+            logger.error(f"Check logs: tail -50 {sglang_log}")
+            raise RuntimeError("SGLang server crashed - check logs")
+
         try:
             resp = requests.get(health_url, timeout=1)
             if resp.status_code == 200:
@@ -374,7 +392,8 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
             logger.info(f"  Waiting for SGLang... ({attempt}s)")
 
     if not server_ready:
-        sglang_process.terminate()
+        subprocess.run(["tmux", "kill-session", "-t", tmux_session], capture_output=True)
+        logger.error(f"SGLang failed to start. Check logs: {sglang_log}")
         raise RuntimeError("SGLang server failed to start within 2 minutes")
 
     logger.info(f"SGLang ready at http://localhost:{inference_port}")
@@ -608,10 +627,10 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
         return metrics_history
 
     finally:
-        # Shutdown SGLang server
+        # Shutdown SGLang server (kill tmux session)
         logger.info("Shutting down SGLang server...")
-        sglang_process.terminate()
-        sglang_process.wait(timeout=10)
+        subprocess.run(["tmux", "kill-session", "-t", tmux_session], capture_output=True)
+        logger.info(f"SGLang logs saved to: {sglang_log}")
 
 
 def train(config: RLConfig) -> list[dict[str, Any]]:
@@ -695,7 +714,7 @@ def run_remote(
         print(f"Running: {cmd}")
         print("-" * 50)
         for line in bifrost.exec_stream(cmd):
-            print(line, end="", flush=True)
+            print(line, flush=True)
         print("-" * 50)
 
     finally:
