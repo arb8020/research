@@ -140,6 +140,7 @@ class TrainingMonitor:
         # Metrics tracking (for sparklines)
         self._metrics: dict[str, deque[float]] = {}
         self._current_step = 0
+        self._selected_metric = 0  # Index of currently viewed metric chart
 
     def route_log_line(self, line: LogLine) -> str:
         """Route log line to appropriate pane based on logger name."""
@@ -287,12 +288,22 @@ class TrainingMonitor:
             self.active_pane = "metrics"
             self._needs_redraw = True
 
-        # Scrolling
+        # Scrolling - metrics pane scrolls through charts, others scroll logs
         elif data in ("j", "\x1b[B"):  # Down
-            pane.scroll_down(1, content_height)
+            if self.active_pane == "metrics" and self._metrics:
+                # Scroll to next metric chart
+                self._selected_metric = min(
+                    self._selected_metric + 1, len(self._metrics) - 1
+                )
+            else:
+                pane.scroll_down(1, content_height)
             self._needs_redraw = True
         elif data in ("k", "\x1b[A"):  # Up
-            pane.scroll_up(1)
+            if self.active_pane == "metrics" and self._metrics:
+                # Scroll to previous metric chart
+                self._selected_metric = max(self._selected_metric - 1, 0)
+            else:
+                pane.scroll_up(1)
             self._needs_redraw = True
         elif data == "\x04":  # Ctrl+D - half page down
             pane.scroll_down(content_height // 2, content_height)
@@ -397,7 +408,10 @@ class TrainingMonitor:
         return lines
 
     def _render_plotext_chart(self, width: int, height: int) -> list[str]:
-        """Render metrics chart using plotext braille charts."""
+        """Render single metric chart using plotext braille charts.
+
+        Shows one metric at a time. Use j/k to scroll through metrics.
+        """
         try:
             import plotext as plt
         except ImportError:
@@ -406,16 +420,30 @@ class TrainingMonitor:
         if not self._metrics:
             return []
 
+        # Get sorted metric names for consistent ordering
+        metric_names = sorted(self._metrics.keys())
+        total_metrics = len(metric_names)
+
+        # Clamp selected index
+        self._selected_metric = max(0, min(self._selected_metric, total_metrics - 1))
+
+        # Get the selected metric
+        metric_name = metric_names[self._selected_metric]
+        values = list(self._metrics[metric_name])
+
+        if not values:
+            return []
+
         # Clear previous plot
         plt.clf()
 
-        # Plot each metric
-        for name, values in sorted(self._metrics.items()):
-            if values:
-                plt.plot(list(values), label=name, marker="braille")
+        # Plot the selected metric
+        plt.plot(values, marker="braille")
 
-        plt.title(f"Training (step {self._current_step})")
-        plt.xlabel("Step")
+        # Title shows metric name and navigation hint
+        current_val = values[-1] if values else 0
+        plt.title(f"{metric_name}: {current_val:.4f}  ({self._selected_metric + 1}/{total_metrics})")
+        plt.xlabel(f"Step (latest: {self._current_step})")
         plt.plotsize(width - 2, height)
         plt.theme("dark")
 
@@ -463,11 +491,19 @@ class TrainingMonitor:
         pane = self.panes[self.active_pane]
         content_height = self.terminal.rows - 3
 
-        hints = "1/2/3:pane  j/k:scroll  gg/G:top/end  q:quit"
+        # Different hints for metrics pane (j/k scrolls charts, not logs)
+        if self.active_pane == "metrics" and self._metrics:
+            hints = "1/2/3:pane  j/k:chart  q:quit"
+        else:
+            hints = "1/2/3:pane  j/k:scroll  gg/G:top/end  q:quit"
 
-        # Scroll position
-        total = len(pane.lines)
-        if total > 0:
+        # Scroll position (or metric position for metrics pane)
+        if self.active_pane == "metrics" and self._metrics:
+            metric_names = sorted(self._metrics.keys())
+            total_metrics = len(metric_names)
+            pos = f"chart {self._selected_metric + 1}/{total_metrics}"
+        elif len(pane.lines) > 0:
+            total = len(pane.lines)
             pos = f"{pane.scroll + 1}-{min(pane.scroll + content_height, total)}/{total}"
             if pane.auto_scroll:
                 pos += " [FOLLOW]"
