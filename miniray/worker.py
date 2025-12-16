@@ -11,21 +11,144 @@ References:
 - /Users/chiraagbalu/research/docs/code_style/multiprocessing_heinrich.md
 
 TODO (Heinrich parity):
-- [ ] memfd_create + mmap for shared memory (large tensor passing without copies)
-      See: os.memfd_create(name), os.ftruncate(fd, size), mmap.mmap(fd, size)
-      Kernel refcounts the fd. For locking, see facebookresearch/moolib.
-- [ ] PDEATHSIG - child dies when parent dies (prctl(PR_SET_PDEATHSIG, SIGTERM))
-      Set in child after fork to ensure cleanup on parent crash.
+- [x] memfd_create + mmap for shared memory (large tensor passing without copies)
+- [x] PDEATHSIG - child dies when parent dies
 - [x] select.select() for multiplexing - wait_any() function and fileno() method
-- [ ] marshal as alternative to JSON (faster for simple Python types)
+- [x] marshal as alternative to JSON (faster for simple Python types)
 """
 
+from __future__ import annotations
+
+import base64
+import ctypes
 import json
+import marshal
+import mmap
 import os
+import signal
 import socket
+import sys
+import tempfile
 from collections.abc import Callable
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Literal
+
+
+# ============================================================================
+# PDEATHSIG - Child dies when parent dies (Linux only)
+# ============================================================================
+
+
+def _set_pdeathsig() -> None:
+    """Set PDEATHSIG so child dies when parent dies (Linux only).
+
+    Called in child process after fork. On non-Linux, this is a no-op.
+    """
+    if sys.platform != "linux":
+        return
+
+    try:
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        PR_SET_PDEATHSIG = 1
+        result = libc.prctl(PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0)
+        if result != 0:
+            errno = ctypes.get_errno()
+            print(f"Warning: prctl(PR_SET_PDEATHSIG) failed with errno {errno}", flush=True)
+    except OSError as e:
+        print(f"Warning: Could not set PDEATHSIG: {e}", flush=True)
+
+
+# ============================================================================
+# Serialization - JSON (default) or marshal (faster)
+# ============================================================================
+
+SerializationFormat = Literal["json", "marshal"]
+
+
+def _serialize(msg: Any, fmt: SerializationFormat) -> str:
+    """Serialize message to text (newline-safe)."""
+    if fmt == "json":
+        return json.dumps(msg)
+    else:
+        # marshal -> bytes -> base64 -> text (keeps newline protocol!)
+        return base64.b64encode(marshal.dumps(msg)).decode("ascii")
+
+
+def _deserialize(text: str, fmt: SerializationFormat) -> Any:
+    """Deserialize text to message."""
+    if fmt == "json":
+        return json.loads(text)
+    else:
+        return marshal.loads(base64.b64decode(text))
+
+
+# ============================================================================
+# SharedMemory - memfd (Linux) or tempfile (macOS)
+# ============================================================================
+
+
+@dataclass
+class SharedMemory:
+    """Shared memory region using memfd (Linux) or tempfile fallback (macOS).
+
+    Use for passing large data (tensors) between processes without copying.
+    The fd can be passed to child processes via fork.
+
+    Example:
+        >>> shm = SharedMemory.create("weights", 1024 * 1024)  # 1MB
+        >>> buf = shm.map()
+        >>> buf[:4] = b"test"
+        >>> # Child can mmap same fd after fork
+        >>> shm.close()
+    """
+
+    fd: int
+    size: int
+    _mmap: mmap.mmap | None = field(default=None, repr=False)
+
+    @classmethod
+    def create(cls, name: str, size: int) -> SharedMemory:
+        """Create shared memory region.
+
+        Args:
+            name: Name for the region (used in memfd_create)
+            size: Size in bytes
+
+        Returns:
+            SharedMemory instance with allocated region
+        """
+        assert size > 0, f"size must be > 0, got {size}"
+        assert size <= 1024 * 1024 * 1024, f"size too large: {size} (max 1GB)"
+
+        if sys.platform == "linux":
+            fd = os.memfd_create(name)
+        else:
+            # macOS fallback - use anonymous tempfile
+            f = tempfile.NamedTemporaryFile(delete=False, prefix=f"miniray_{name}_")
+            fd = os.dup(f.fileno())  # Dup fd so it survives file close
+            fname = f.name
+            f.close()
+            os.unlink(fname)  # Unlink file, but fd keeps data alive
+
+        os.ftruncate(fd, size)
+        return cls(fd=fd, size=size)
+
+    def map(self) -> mmap.mmap:
+        """Memory-map the region.
+
+        Returns:
+            mmap object that can be used like a bytearray
+        """
+        if self._mmap is None:
+            self._mmap = mmap.mmap(self.fd, self.size)
+        return self._mmap
+
+    def close(self) -> None:
+        """Close the shared memory region."""
+        if self._mmap is not None:
+            self._mmap.close()
+            self._mmap = None
+        os.close(self.fd)
 
 
 @dataclass
@@ -51,25 +174,35 @@ class Worker:
         pid: Child process ID
         r: Read file handle (for receiving messages)
         w: Write file handle (for sending messages)
+        _format: Serialization format ("json" or "marshal")
     """
 
     pid: int
     _sock: socket.socket
     r: Any  # file-like object
     w: Any  # file-like object
+    _format: SerializationFormat = "json"
 
-    def __init__(self, work_fn: Callable[[Any], None]):
+    def __init__(
+        self,
+        work_fn: Callable[[Any], None],
+        format: SerializationFormat = "json",
+    ):
         """Spawn worker process.
 
         Args:
             work_fn: Function to execute in child process.
                      Takes a handle (self) as argument for communication.
+            format: Serialization format - "json" (default, readable) or
+                    "marshal" (faster, ~5-10x for large messages)
 
         Side effects:
             - Forks process
             - Creates socketpair for IPC
             - Child process executes work_fn and exits
         """
+        self._format = format
+
         # Create bidirectional socket pair
         sock, sock0 = socket.socketpair()
 
@@ -78,10 +211,12 @@ class Worker:
 
         if not pid:
             # === Child process ===
+            _set_pdeathsig()  # Die when parent dies (Linux only)
+
             sock0, sock = sock, sock0  # Swap sockets
             sock0.close()
 
-            # Create file handles for JSON communication
+            # Create file handles for communication
             r = sock.makefile("r")
             w = sock.makefile("w")
 
@@ -91,6 +226,7 @@ class Worker:
             child_handle.r = r
             child_handle.w = w
             child_handle.pid = os.getpid()
+            child_handle._format = format
 
             # Execute work function
             try:
@@ -148,16 +284,16 @@ class Worker:
         if not line:
             raise EOFError(f"Worker {self.pid} closed connection")
 
-        return json.loads(line)
+        return _deserialize(line.rstrip("\n"), self._format)
 
     def send(self, msg: Any) -> None:
         """Send message to worker (non-blocking).
 
         Args:
-            msg: Message to send (must be JSON-serializable)
+            msg: Message to send (must be serializable)
 
         Side effects:
-            - Writes JSON to socket
+            - Writes serialized message to socket
             - Flushes immediately
 
         Example:
@@ -166,7 +302,8 @@ class Worker:
         # Tiger Style: Assert we have a valid handle
         assert self.w is not None, "Worker not initialized properly"
 
-        json.dump(msg, self.w)
+        text = _serialize(msg, self._format)
+        self.w.write(text)
         self.w.write("\n")
         self.w.flush()
 
