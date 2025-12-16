@@ -90,11 +90,16 @@ class Cluster:
         total_workers = 0
         for node in self.nodes:
             assert node.num_workers > 0, f"num_workers must be > 0 for {node.host}"
-            assert node.num_workers <= 16, f"num_workers too large for {node.host}: {node.num_workers} (max 16)"
+            assert node.num_workers <= 16, (
+                f"num_workers too large for {node.host}: {node.num_workers} (max 16)"
+            )
             assert node.base_port > 0, f"base_port must be > 0 for {node.host}"
-            assert node.base_port <= 65535, f"base_port out of range for {node.host}: {node.base_port}"
-            assert node.base_port + node.num_workers <= 65536, \
+            assert node.base_port <= 65535, (
+                f"base_port out of range for {node.host}: {node.base_port}"
+            )
+            assert node.base_port + node.num_workers <= 65536, (
                 f"Port range exceeds 65535 for {node.host}: {node.base_port}+{node.num_workers}"
+            )
             total_workers += node.num_workers
 
         assert total_workers > 0, "Total workers must be > 0"
@@ -427,6 +432,10 @@ if __name__ == "__main__":
     )
 
     print("\nTo test, first launch worker servers:")
-    print("  Terminal 1: python -m rollouts.training.miniray.worker_server --port 10000 --work-fn __main__.echo_worker_fn")
-    print("  Terminal 2: python -m rollouts.training.miniray.worker_server --port 10001 --work-fn __main__.echo_worker_fn")
+    print(
+        "  Terminal 1: python -m rollouts.training.miniray.worker_server --port 10000 --work-fn __main__.echo_worker_fn"
+    )
+    print(
+        "  Terminal 2: python -m rollouts.training.miniray.worker_server --port 10001 --work-fn __main__.echo_worker_fn"
+    )
     print("\nThen run: python -m rollouts.training.miniray.cluster")

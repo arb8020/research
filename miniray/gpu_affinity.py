@@ -49,6 +49,7 @@ def set_gpu_affinity(local_rank: int = None, verbose: bool = True) -> bool:
     try:
         # Check for ROCm/HIP (AMD GPUs)
         import torch
+
         if torch.version.hip is not None:
             if verbose:
                 print("[MiniRay] ROCm/HIP detected, skipping NUMA affinity")

@@ -27,14 +27,15 @@ Usage:
 
 from typing import Any
 
-
 # Known-good dependencies for SGLang
 # From clicker/pyproject.toml - these versions work together
 DEPS = DependencyConfig = None  # Set below after import
 
+
 def get_deps():
     """Get SGLang dependencies as DependencyConfig."""
     from kerbal.protocol import DependencyConfig
+
     return DependencyConfig(
         project_name="sglang-server",
         dependencies=[
@@ -111,8 +112,9 @@ def build_command(
     """
     # Validate attention backend
     if attention_backend is not None:
-        assert attention_backend in VALID_ATTENTION_BACKENDS, \
+        assert attention_backend in VALID_ATTENTION_BACKENDS, (
             f"Invalid attention_backend: {attention_backend}. Valid: {VALID_ATTENTION_BACKENDS}"
+        )
 
     # Build command parts
     cmd_parts = [

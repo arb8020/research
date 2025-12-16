@@ -48,6 +48,7 @@ class DeploymentPaths:
             venv_python=paths.venv_python
         )
     """
+
     workspace_root: str
     project_dir: str
     venv_python: str

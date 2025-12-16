@@ -62,8 +62,7 @@ def check_gpus_available(
 
     # Query GPU memory used + utilization
     query_cmd = (
-        "nvidia-smi --query-gpu=index,memory.used,utilization.gpu "
-        "--format=csv,noheader,nounits"
+        "nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader,nounits"
     )
 
     result = client.exec(query_cmd)
@@ -159,5 +158,7 @@ def wait_for_gpus(
 
         # Log status and wait
         remaining = timeout_sec - elapsed
-        logger.debug(f"gpus not ready ({err}). retrying in {poll_interval_sec}s (timeout in {remaining:.0f}s)...")
+        logger.debug(
+            f"gpus not ready ({err}). retrying in {poll_interval_sec}s (timeout in {remaining:.0f}s)..."
+        )
         time.sleep(poll_interval_sec)

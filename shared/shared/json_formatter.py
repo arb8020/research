@@ -6,16 +6,33 @@ from typing import Any
 # Built-in log record attributes that shouldn't be included in extras
 # Tiger Style: Use frozenset (immutable) for module-level constants
 LOG_RECORD_BUILTIN_ATTRS = frozenset({
-    'name', 'msg', 'args', 'levelname', 'levelno', 'pathname', 'filename',
-    'module', 'exc_info', 'exc_text', 'stack_info', 'lineno', 'funcName',
-    'created', 'msecs', 'relativeCreated', 'thread', 'threadName',
-    'processName', 'process', 'getMessage'
+    "name",
+    "msg",
+    "args",
+    "levelname",
+    "levelno",
+    "pathname",
+    "filename",
+    "module",
+    "exc_info",
+    "exc_text",
+    "stack_info",
+    "lineno",
+    "funcName",
+    "created",
+    "msecs",
+    "relativeCreated",
+    "thread",
+    "threadName",
+    "processName",
+    "process",
+    "getMessage",
 })
 
 
 class JSONFormatter(logging.Formatter):
     """JSON formatter for structured logging."""
-    
+
     def __init__(self, *, fmt_keys: dict[str, str] | None = None):
         super().__init__()
         self.fmt_keys = fmt_keys if fmt_keys is not None else {}
@@ -27,11 +44,9 @@ class JSONFormatter(logging.Formatter):
     def _prepare_log_dict(self, record: logging.LogRecord) -> dict[str, Any]:
         always_fields = {
             "message": record.getMessage(),
-            "timestamp": dt.datetime.fromtimestamp(
-                record.created, tz=dt.timezone.utc
-            ).isoformat(),
+            "timestamp": dt.datetime.fromtimestamp(record.created, tz=dt.timezone.utc).isoformat(),
         }
-        
+
         if record.exc_info is not None:
             always_fields["exc_info"] = self.formatException(record.exc_info)
 

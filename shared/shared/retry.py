@@ -21,12 +21,13 @@ from dataclasses import dataclass
 from typing import Any, TypeVar, cast
 
 # Type variable for the decorated function
-F = TypeVar('F', bound=Callable)
+F = TypeVar("F", bound=Callable)
 
 
 @dataclass
 class RetryState:
     """State passed to callbacks during retry attempts."""
+
     attempt: int
     delay: float
     exception: Exception | None = None
@@ -64,13 +65,15 @@ def _log_retry_attempt(
     max_attempts: int,
     sleep_time: float,
     exception: Exception | None,
-    has_result_predicate: bool
+    has_result_predicate: bool,
 ) -> None:
     """Log retry attempt. Leaf function with no control flow."""
     assert isinstance(func_name, str), f"func_name must be str, got {type(func_name)}"
     assert isinstance(module_name, str), f"module_name must be str, got {type(module_name)}"
     assert attempt > 0, f"attempt must be > 0, got {attempt}"
-    assert attempt <= max_attempts, f"attempt must be <= max_attempts, got {attempt} > {max_attempts}"
+    assert attempt <= max_attempts, (
+        f"attempt must be <= max_attempts, got {attempt} > {max_attempts}"
+    )
     assert sleep_time > 0, f"sleep_time must be > 0, got {sleep_time}"
 
     logger = logging.getLogger(module_name)
@@ -90,7 +93,7 @@ def retry(
     max_attempts: int = 3,
     delay: float = 1,
     backoff: float = 2,
-    exceptions: tuple[type[Exception], ...] = (Exception,)
+    exceptions: tuple[type[Exception], ...] = (Exception,),
 ) -> Callable[[F], F]:
     """Retry decorator with exponential backoff.
 
@@ -131,7 +134,7 @@ def retry(
                         raise
 
                     # Log the retry for debugging
-                    logger = logging.getLogger(getattr(func, '__module__', 'unknown'))
+                    logger = logging.getLogger(getattr(func, "__module__", "unknown"))
                     logger.warning(
                         f"{getattr(func, '__name__', '<function>')}() attempt {attempt}/{max_attempts} failed: {e}. "
                         f"Retrying in {current_delay}s..."
@@ -144,6 +147,7 @@ def retry(
             assert False, "Retry loop exited without return or raise"
 
         return cast(F, wrapper)
+
     return decorator
 
 
@@ -220,7 +224,9 @@ def retry_v2(
 
                 # Tiger Style: Centralize control flow (push ifs up)
                 # Check if we should retry
-                should_retry = exception_to_retry is not None or _should_retry_on_result(result, retry_on_result)
+                should_retry = exception_to_retry is not None or _should_retry_on_result(
+                    result, retry_on_result
+                )
 
                 if not should_retry:
                     # Success - return result
@@ -245,19 +251,19 @@ def retry_v2(
                         attempt=attempt,
                         delay=sleep_time,
                         exception=exception_to_retry,
-                        result=result
+                        result=result,
                     )
                     on_retry(state)
                 else:
                     # Use leaf logging function
                     _log_retry_attempt(
-                        func_name=getattr(func, '__name__', '<function>'),
-                        module_name=getattr(func, '__module__', 'unknown'),
+                        func_name=getattr(func, "__name__", "<function>"),
+                        module_name=getattr(func, "__module__", "unknown"),
                         attempt=attempt,
                         max_attempts=max_attempts,
                         sleep_time=sleep_time,
                         exception=exception_to_retry,
-                        has_result_predicate=retry_on_result is not None
+                        has_result_predicate=retry_on_result is not None,
                     )
 
                 time.sleep(sleep_time)
@@ -267,6 +273,7 @@ def retry_v2(
             assert False, "Retry loop exited without return or raise"
 
         return cast(F, wrapper)
+
     return decorator
 
 
@@ -338,7 +345,9 @@ def async_retry(
 
                 # Tiger Style: Centralize control flow (push ifs up)
                 # Check if we should retry
-                should_retry = exception_to_retry is not None or _should_retry_on_result(result, retry_on_result)
+                should_retry = exception_to_retry is not None or _should_retry_on_result(
+                    result, retry_on_result
+                )
 
                 if not should_retry:
                     # Success - return result
@@ -363,19 +372,19 @@ def async_retry(
                         attempt=attempt,
                         delay=sleep_time,
                         exception=exception_to_retry,
-                        result=result
+                        result=result,
                     )
                     on_retry(state)
                 else:
                     # Use leaf logging function
                     _log_retry_attempt(
-                        func_name=getattr(func, '__name__', '<function>'),
-                        module_name=getattr(func, '__module__', 'unknown'),
+                        func_name=getattr(func, "__name__", "<function>"),
+                        module_name=getattr(func, "__module__", "unknown"),
                         attempt=attempt,
                         max_attempts=max_attempts,
                         sleep_time=sleep_time,
                         exception=exception_to_retry,
-                        has_result_predicate=retry_on_result is not None
+                        has_result_predicate=retry_on_result is not None,
                     )
 
                 await trio.sleep(sleep_time)
@@ -385,4 +394,5 @@ def async_retry(
             assert False, "Retry loop exited without return or raise"
 
         return cast(F, wrapper)
+
     return decorator

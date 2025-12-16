@@ -89,8 +89,8 @@ class RemoteWorker:
             self._sock.settimeout(None)
 
             # Create file handles for JSON I/O (same as Heinrich)
-            self.r = self._sock.makefile('r')
-            self.w = self._sock.makefile('w')
+            self.r = self._sock.makefile("r")
+            self.w = self._sock.makefile("w")
 
             # Tiger Style: Assert postconditions
             assert self.r is not None, "Failed to create read handle"
@@ -105,8 +105,7 @@ class RemoteWorker:
             )
         except TimeoutError:
             raise TimeoutError(
-                f"Timeout connecting to {self.host}:{self.port}. "
-                "Check network connectivity."
+                f"Timeout connecting to {self.host}:{self.port}. Check network connectivity."
             )
 
     def recv(self, max_size: int, timeout: float | None = None) -> Any:
@@ -149,16 +148,12 @@ class RemoteWorker:
             assert len(line) <= max_size, f"Message too large: {len(line)} > {max_size}"
 
             if not line:
-                raise EOFError(
-                    f"Remote worker {self.host}:{self.port} closed connection"
-                )
+                raise EOFError(f"Remote worker {self.host}:{self.port} closed connection")
 
             return json.loads(line)
 
         except TimeoutError:
-            raise TimeoutError(
-                f"Timeout waiting for response from {self.host}:{self.port}"
-            )
+            raise TimeoutError(f"Timeout waiting for response from {self.host}:{self.port}")
         finally:
             # Restore no timeout
             if timeout is not None:
@@ -191,8 +186,7 @@ class RemoteWorker:
 
         except BrokenPipeError:
             raise BrokenPipeError(
-                f"Connection to {self.host}:{self.port} is broken. "
-                "Remote worker may have crashed."
+                f"Connection to {self.host}:{self.port} is broken. Remote worker may have crashed."
             )
 
     def is_alive(self) -> bool:

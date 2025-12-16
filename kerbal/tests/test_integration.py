@@ -43,13 +43,15 @@ from typing import TYPE_CHECKING
 
 # Load .env file if present
 from dotenv import load_dotenv
+
 load_dotenv()
 
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from bifrost import BifrostClient
-from kerbal import serve, submit
+
+from kerbal import serve
 from kerbal.inference import sglang, vllm
 
 if TYPE_CHECKING:
@@ -83,7 +85,7 @@ def acquire_node(
     ssh_key_path: str = "~/.ssh/id_ed25519",
     provider: str | None = None,
     gpu_count: int = 2,
-) -> tuple[BifrostClient, "ClientGPUInstance | None"]:
+) -> tuple[BifrostClient, ClientGPUInstance | None]:
     """Acquire a node for testing.
 
     Args:
@@ -117,7 +119,7 @@ def acquire_node(
         assert instance, f"Instance not found: {node_id}"
 
         print(f"  GPU: {instance.gpu_count}x {instance.gpu_type}")
-        print(f"  Waiting for SSH...")
+        print("  Waiting for SSH...")
         instance.wait_until_ssh_ready(timeout=300)
 
         key_path = broker.get_ssh_key_path(provider)
@@ -165,10 +167,12 @@ def acquire_node(
 
         print(f"  Instance ID: {instance.provider}:{instance.id}")
         print(f"  GPU: {instance.gpu_count}x {instance.gpu_type}")
-        print(f"  Waiting for SSH...")
+        print("  Waiting for SSH...")
 
         if not instance.wait_until_ssh_ready(timeout=600):
-            raise AssertionError(f"SSH not ready after 10 min - instance: {instance.provider}:{instance.id}")
+            raise AssertionError(
+                f"SSH not ready after 10 min - instance: {instance.provider}:{instance.id}"
+            )
 
         key_path = broker.get_ssh_key_path(instance.provider)
         assert key_path, f"No SSH key configured for {instance.provider}"
@@ -387,7 +391,9 @@ curl -s -X POST http://localhost:30001/v1/completions \
 ''')
 
         if sglang_result.exit_code != 0 or vllm_result.exit_code != 0:
-            print(f"\n✗ Query failed - SGLang: {sglang_result.exit_code}, vLLM: {vllm_result.exit_code}")
+            print(
+                f"\n✗ Query failed - SGLang: {sglang_result.exit_code}, vLLM: {vllm_result.exit_code}"
+            )
             return False
 
         print(f"   SGLang: {sglang_result.stdout[:100]}...")
@@ -395,6 +401,7 @@ curl -s -X POST http://localhost:30001/v1/completions \
 
         # Parse responses
         import json
+
         try:
             sglang_resp = json.loads(sglang_result.stdout)
             vllm_resp = json.loads(vllm_result.stdout)
@@ -409,7 +416,9 @@ curl -s -X POST http://localhost:30001/v1/completions \
                 print("\n✓ Logprob comparison test PASSED - outputs match!")
                 return True
             else:
-                print("\n⚠ Logprob comparison test PASSED with differences - outputs differ but both valid")
+                print(
+                    "\n⚠ Logprob comparison test PASSED with differences - outputs differ but both valid"
+                )
                 return True
 
         except (json.JSONDecodeError, KeyError) as e:
@@ -437,21 +446,33 @@ def main():
     node_group = parser.add_mutually_exclusive_group(required=True)
     node_group.add_argument("--ssh", help="Static SSH connection (e.g., root@gpu:22)")
     node_group.add_argument("--node-id", help="Existing instance ID (e.g., runpod:abc123)")
-    node_group.add_argument("--provision", action="store_true", help="Provision new instance via broker")
+    node_group.add_argument(
+        "--provision", action="store_true", help="Provision new instance via broker"
+    )
 
     # Options
     parser.add_argument("--ssh-key", default="~/.ssh/id_ed25519", help="Path to SSH key")
-    parser.add_argument("--keep-alive", action="store_true", help="Don't terminate provisioned instance")
-    parser.add_argument("--gpu-type", default="A100", help="GPU type for provisioning (default: A100)")
-    parser.add_argument("--provider", help="Provider to use (runpod, lambdalabs, vast, primeintellect)")
-    parser.add_argument("--gpu-count", type=int, default=2, help="Number of GPUs to provision (default: 2)")
+    parser.add_argument(
+        "--keep-alive", action="store_true", help="Don't terminate provisioned instance"
+    )
+    parser.add_argument(
+        "--gpu-type", default="A100", help="GPU type for provisioning (default: A100)"
+    )
+    parser.add_argument(
+        "--provider", help="Provider to use (runpod, lambdalabs, vast, primeintellect)"
+    )
+    parser.add_argument(
+        "--gpu-count", type=int, default=2, help="Number of GPUs to provision (default: 2)"
+    )
     parser.add_argument(
         "--test",
         choices=["sglang", "vllm", "compare", "all"],
         default="all",
         help="Which test to run (default: all)",
     )
-    parser.add_argument("--gpu", type=int, default=0, help="GPU ID for single-server tests (default: 0)")
+    parser.add_argument(
+        "--gpu", type=int, default=0, help="GPU ID for single-server tests (default: 0)"
+    )
 
     args = parser.parse_args()
 

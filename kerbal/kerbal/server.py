@@ -66,11 +66,10 @@ class ServerHandle:
         self.client.exec(f"tmux kill-session -t {self.session_name} 2>/dev/null || true")
         # Then kill any remaining process using the port
         # Use lsof (more commonly available than fuser) to find and kill
-        self.client.exec(
-            f"lsof -ti tcp:{self.port} | xargs -r kill -9 2>/dev/null || true"
-        )
+        self.client.exec(f"lsof -ti tcp:{self.port} | xargs -r kill -9 2>/dev/null || true")
         # Give GPU memory time to release
         import time
+
         time.sleep(2)
         logger.info(f"Stopped server: {self.session_name}")
 
@@ -199,6 +198,7 @@ def serve(
     if deps is not None:
         logger.info("  Installing dependencies...")
         from kerbal.python_env import setup_script_deps
+
         setup_script_deps(client, workspace, deps)
         logger.info("  Dependencies installed")
 

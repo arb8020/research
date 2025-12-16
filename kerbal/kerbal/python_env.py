@@ -44,6 +44,7 @@ class PythonEnvState:
         # Or use with env vars (includes PATH, PYTHONPATH automatically)
         result = client.exec("python -m my_module", env=state.env_vars)
     """
+
     venv_python: str
     venv_bin: str
     workspace: str
@@ -182,7 +183,7 @@ def setup_python_env(
     # Build environment variables dict
     env_vars = {
         "PATH": f"{venv_bin}:$PATH",  # Include venv bin for executables like ninja
-        "PYTHONUNBUFFERED": "1",       # Always flush Python output immediately
+        "PYTHONUNBUFFERED": "1",  # Always flush Python output immediately
     }
 
     # Return immutable state
@@ -488,7 +489,7 @@ def _install_pip_packages(
                     exit_code = int(exit_code_str)
             else:
                 # Print output in real-time
-                print(line, end='', flush=True)
+                print(line, end="", flush=True)
     except Exception as e:
         raise RuntimeError(f"pip install execution failed: {e}")
 
@@ -541,8 +542,7 @@ def _install_git_packages(
         result = client.exec(cmd)
 
         assert result.exit_code == 0, (
-            f"Git package install failed: {pkg_url}\n"
-            f"Error: {result.stderr}"
+            f"Git package install failed: {pkg_url}\nError: {result.stderr}"
         )
 
         logger.debug("installed with --no-deps")
@@ -648,7 +648,7 @@ def _verify_imports(
 
         if list_result.exit_code == 0 and list_result.stdout:
             logger.error("      Found installed packages:")
-            for line in list_result.stdout.strip().split('\n'):
+            for line in list_result.stdout.strip().split("\n"):
                 logger.error(f"        {line}")
             logger.error("      The package may be installed with a different name.")
             logger.error("      Check the actual import name and update verify_imports.")

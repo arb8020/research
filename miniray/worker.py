@@ -89,6 +89,7 @@ class Worker:
             except Exception as e:
                 # Log error and exit with failure code
                 import traceback
+
                 print(f"Worker {os.getpid()} failed: {e}", flush=True)
                 traceback.print_exc()
                 os._exit(1)

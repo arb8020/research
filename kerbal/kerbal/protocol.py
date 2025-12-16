@@ -12,6 +12,7 @@ class CommandResult:
 
     Transparent data structure (Casey: never use opaque types).
     """
+
     exit_code: int
     stdout: str
     stderr: str
@@ -46,6 +47,7 @@ class DependencyConfig:
             }
         )
     """
+
     project_name: str  # Name for generated pyproject.toml
     dependencies: list[str] = field(default_factory=list)  # Core dependencies
     extras: dict[str, list[str]] = field(default_factory=dict)  # Optional dependency groups
