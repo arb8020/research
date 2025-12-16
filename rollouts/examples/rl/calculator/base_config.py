@@ -664,10 +664,10 @@ def run_remote(
         instance = client_gpu.get_instance(instance_id, provider)
         assert instance, f"Instance not found: {gpu_id}"
     else:
-        print("Provisioning GPU...")
+        print("Provisioning 2x GPU...")
         instance = client_gpu.create(
             client_gpu.gpu_type.contains("A100") | client_gpu.gpu_type.contains("4090"),
-            gpu_count=1,
+            gpu_count=2,
             cloud_type="secure",
             container_disk_gb=100,
             sort=lambda x: x.price_per_hour,

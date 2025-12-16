@@ -19,10 +19,13 @@ Usage:
     python examples/rl/calculator/grpo_01_01.py --gpu-id runpod:abc123
 """
 
-from base_config import RLConfig, run_remote, train
+from base_config import InferenceConfig, RLConfig, TrainerConfig, run_remote, train
 
-# Base config - all defaults
-config = RLConfig()
+# 2-GPU config: GPU 0 for inference, GPU 1 for training
+config = RLConfig(
+    inference=InferenceConfig(gpu_ids=(0,)),
+    trainer=TrainerConfig(gpu_ids=(1,)),
+)
 
 if __name__ == "__main__":
     import argparse
