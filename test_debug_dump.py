@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Test script to demonstrate debug_dump_chat functionality."""
 
-from rollouts.frontends.tui.agent_renderer import AgentRenderer
-from rollouts.frontends.tui.tui import TUI, Container
-from rollouts.frontends.tui.theme import DARK_THEME
-from rollouts.frontends.tui.terminal import Terminal
 from rollouts.dtypes import Message, TextContent, ThinkingContent
+from rollouts.frontends.tui.agent_renderer import AgentRenderer
+from rollouts.frontends.tui.theme import DARK_THEME
+
 
 # Create a mock TUI with minimal setup
 class MockTUI:
@@ -25,6 +24,7 @@ class MockTUI:
     def request_render(self):
         pass
 
+
 tui = MockTUI()
 
 # Create renderer
@@ -36,12 +36,10 @@ test_message = Message(
     content=[
         ThinkingContent(
             thinking="Let me think about this problem. I need to analyze the requirements carefully.",
-            thinking_signature=None  # Simulating aborted stream or missing signature
+            thinking_signature=None,  # Simulating aborted stream or missing signature
         ),
-        TextContent(
-            text="Here's my solution to the problem you asked about."
-        )
-    ]
+        TextContent(text="Here's my solution to the problem you asked about."),
+    ],
 )
 
 print("Simulating history replay with thinking + text message...\n")

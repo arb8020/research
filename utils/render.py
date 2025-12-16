@@ -30,9 +30,7 @@ def render(tensor, cell_width=None):
         # Matrix - print rows
         lines = []
         for row in tensor:
-            formatted_row = "  ".join(
-                str(x.item()).rjust(cell_width) for x in row
-            )
+            formatted_row = "  ".join(str(x.item()).rjust(cell_width) for x in row)
             lines.append(formatted_row)
         return "\n".join(lines)
     else:
@@ -43,7 +41,7 @@ def render(tensor, cell_width=None):
         # 3D, 5D, 7D... -> horizontal (odd offset from 2D)
         # 4D, 6D, 8D... -> vertical (even offset from 2D)
         dim_offset = ndim - 2
-        stack_horizontally = (dim_offset % 2 == 1)
+        stack_horizontally = dim_offset % 2 == 1
 
         if stack_horizontally:
             # Stack horizontally
@@ -51,7 +49,7 @@ def render(tensor, cell_width=None):
                 # Use ':' separator for 5D+
                 # Calculate number of colons: 5D -> 1 colon, 7D -> 2 colons, etc.
                 num_colons = (ndim - 3) // 2
-                separator = ':' * num_colons
+                separator = ":" * num_colons
                 return join_horizontal_with_separator(sub_prints, separator)
             else:
                 # 3D case - simple horizontal join
@@ -90,61 +88,59 @@ def join_horizontal(blocks):
         return ""
 
     # Split each block into lines
-    block_lines = [block.split('\n') for block in blocks]
+    block_lines = [block.split("\n") for block in blocks]
 
     # Find the height of each block
     heights = [len(lines) for lines in block_lines]
     max_height = max(heights)
 
     # Find the width of each block
-    widths = [max(len(line) for line in lines) if lines else 0
-              for lines in block_lines]
+    widths = [max(len(line) for line in lines) if lines else 0 for lines in block_lines]
 
     # Pad all blocks to the same height and width
     padded_blocks = []
-    for lines, width in zip(block_lines, widths):
+    for lines, width in zip(block_lines, widths, strict=False):
         padded = []
         for i in range(max_height):
             if i < len(lines):
                 padded.append(lines[i].ljust(width))
             else:
-                padded.append(' ' * width)
+                padded.append(" " * width)
         padded_blocks.append(padded)
 
     # Join horizontally with 4 spaces between blocks
     result_lines = []
     for i in range(max_height):
-        line = '    '.join(block[i] for block in padded_blocks)
+        line = "    ".join(block[i] for block in padded_blocks)
         result_lines.append(line)
 
-    return '\n'.join(result_lines)
+    return "\n".join(result_lines)
 
 
-def join_horizontal_with_separator(blocks, separator=':'):
+def join_horizontal_with_separator(blocks, separator=":"):
     """Join multiple text blocks horizontally with separator."""
     if not blocks:
         return ""
 
     # Split each block into lines
-    block_lines = [block.split('\n') for block in blocks]
+    block_lines = [block.split("\n") for block in blocks]
 
     # Find the height of each block
     heights = [len(lines) for lines in block_lines]
     max_height = max(heights)
 
     # Find the width of each block
-    widths = [max(len(line) for line in lines) if lines else 0
-              for lines in block_lines]
+    widths = [max(len(line) for line in lines) if lines else 0 for lines in block_lines]
 
     # Pad all blocks to the same height and width
     padded_blocks = []
-    for lines, width in zip(block_lines, widths):
+    for lines, width in zip(block_lines, widths, strict=False):
         padded = []
         for i in range(max_height):
             if i < len(lines):
                 padded.append(lines[i].ljust(width))
             else:
-                padded.append(' ' * width)
+                padded.append(" " * width)
         padded_blocks.append(padded)
 
     # Join horizontally with separator
@@ -156,10 +152,10 @@ def join_horizontal_with_separator(blocks, separator=':'):
             if j < len(padded_blocks) - 1:
                 # Add separator between blocks (not after the last one)
                 parts.append(separator)
-        line = '  '.join(parts)
+        line = "  ".join(parts)
         result_lines.append(line)
 
-    return '\n'.join(result_lines)
+    return "\n".join(result_lines)
 
 
 def join_vertical(blocks, num_separator_lines=0):
@@ -174,22 +170,20 @@ def join_vertical(blocks, num_separator_lines=0):
 
     if num_separator_lines == 0:
         # No separator, just a blank line
-        return '\n\n'.join(blocks)
+        return "\n\n".join(blocks)
 
     # Calculate the width of the blocks for the separator
     all_lines = []
     for block in blocks:
-        all_lines.extend(block.split('\n'))
+        all_lines.extend(block.split("\n"))
 
     # Find the maximum line width
     max_width = max(len(line) for line in all_lines) if all_lines else 0
 
     # Create separator: multiple lines of '--' repeated to fill width
-    separator_line = '--' * ((max_width + 1) // 2)  # Repeat '--' to fill width
+    separator_line = "--" * ((max_width + 1) // 2)  # Repeat '--' to fill width
     separator_lines = [separator_line] * num_separator_lines
-    separator = '\n'.join(separator_lines)
+    separator = "\n".join(separator_lines)
 
     # Join blocks with separator
-    return ('\n' + separator + '\n').join(blocks)
-
-
+    return ("\n" + separator + "\n").join(blocks)
