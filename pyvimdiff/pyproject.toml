@@ -1,0 +1,14 @@
+[project]
+name = "pyvimdiff"
+version = "0.1.0"
+description = "Vim-native git diff viewer with syntax highlighting"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+pyvimdiff = "pyvimdiff.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

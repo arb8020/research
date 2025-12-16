@@ -210,14 +210,18 @@ class AsyncRolloutManager:
         """
         import inspect
 
+        # Validate generate_fn is provided
+        assert self.config.generate_fn is not None, "generate_fn must be provided"
+        generate_fn = self.config.generate_fn
+
         # Check if user function is async
-        if inspect.iscoroutinefunction(self.config.generate_fn):
+        if inspect.iscoroutinefunction(generate_fn):
             # Async user function
-            samples = await self.config.generate_fn(prompts, **self.rollout_kwargs)
+            samples = await generate_fn(prompts, **self.rollout_kwargs)
         else:
             # Sync user function - run in thread to avoid blocking
             samples = await trio.to_thread.run_sync(
-                lambda: self.config.generate_fn(prompts, **self.rollout_kwargs)
+                lambda: generate_fn(prompts, **self.rollout_kwargs)
             )
 
         # Validate return type

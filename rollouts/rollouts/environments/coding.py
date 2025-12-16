@@ -428,7 +428,9 @@ class LocalFilesystemEnvironment:
             if self.tools in TOOL_PRESETS:
                 self._tool_filter = TOOL_PRESETS[self.tools]
             else:
-                raise ValueError(f"Unknown tool preset: {self.tools}. Available: {list(TOOL_PRESETS.keys())}")
+                raise ValueError(
+                    f"Unknown tool preset: {self.tools}. Available: {list(TOOL_PRESETS.keys())}"
+                )
         else:
             self._tool_filter = self.tools
 

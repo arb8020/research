@@ -9,9 +9,11 @@ Tiger Style: Pure functions, explicit criteria.
 SLIME: Dynamic sampling with quality control.
 """
 
+from collections.abc import Callable
+
 import torch
 
-from rollouts.training.types import Sample
+from rollouts.training.types import Sample, Status
 
 # ────────────────────── SLIME's Default Filter ──────────────────────
 
@@ -192,7 +194,7 @@ def check_any_success(samples: list[Sample]) -> bool:
     """
     assert len(samples) > 0, "samples required"
 
-    return any(sample.status == Sample.Status.COMPLETED for sample in samples)
+    return any(sample.status == Status.COMPLETED for sample in samples)
 
 
 # ────────────────────── Composite Filters ──────────────────────
@@ -228,7 +230,7 @@ def check_quality_and_diversity(samples: list[Sample]) -> bool:
 # ────────────────────── Filter Utilities ──────────────────────
 
 
-def make_threshold_filter(threshold: float) -> callable:
+def make_threshold_filter(threshold: float) -> Callable[[list[Sample]], bool]:
     """Create a filter with custom threshold (Casey: redundancy).
 
     Args:
@@ -248,7 +250,7 @@ def make_threshold_filter(threshold: float) -> callable:
     return filter_fn
 
 
-def make_length_filter(min_tokens: int, max_tokens: int) -> callable:
+def make_length_filter(min_tokens: int, max_tokens: int) -> Callable[[list[Sample]], bool]:
     """Create a length filter with custom bounds (Casey: redundancy).
 
     Args:

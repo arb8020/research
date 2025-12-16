@@ -67,9 +67,11 @@ Reply with just "yes" or "no"."""
 
     from .dtypes import Actor, Message, Trajectory
 
-    check_trajectory = Trajectory(messages=[
-        Message(role="user", content=check_prompt),
-    ])
+    check_trajectory = Trajectory(
+        messages=[
+            Message(role="user", content=check_prompt),
+        ]
+    )
     check_actor = Actor(endpoint=light_endpoint, trajectory=check_trajectory)
 
     try:
@@ -94,9 +96,13 @@ async def collect_exit_survey(
     from .providers.anthropic import anthropic_completion
 
     # Get recent context (last few messages)
-    recent_messages = state.actor.trajectory.messages[-5:] if state.actor.trajectory.messages else []
+    recent_messages = (
+        state.actor.trajectory.messages[-5:] if state.actor.trajectory.messages else []
+    )
     context_summary = "\n".join([
-        f"{m.role}: {str(m.content)[:200]}..." if len(str(m.content)) > 200 else f"{m.role}: {m.content}"
+        f"{m.role}: {str(m.content)[:200]}..."
+        if len(str(m.content)) > 200
+        else f"{m.role}: {m.content}"
         for m in recent_messages
     ])
 
@@ -127,9 +133,11 @@ HARNESS_FEEDBACK: <feedback>"""
 
     from .dtypes import Actor, Message, Trajectory
 
-    survey_trajectory = Trajectory(messages=[
-        Message(role="user", content=survey_prompt),
-    ])
+    survey_trajectory = Trajectory(
+        messages=[
+            Message(role="user", content=survey_prompt),
+        ]
+    )
     survey_actor = Actor(endpoint=survey_endpoint, trajectory=survey_trajectory)
 
     task_success = None

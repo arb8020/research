@@ -17,7 +17,14 @@ from typing import Any
 import trio
 
 from rollouts.agents import Actor, AgentState, RunConfig, handle_stop_max_turns, run_agent
-from rollouts.dtypes import Endpoint, Message, TextContent, ThinkingContent, ToolCallContent, Trajectory
+from rollouts.dtypes import (
+    Endpoint,
+    Message,
+    TextContent,
+    ThinkingContent,
+    ToolCallContent,
+    Trajectory,
+)
 from rollouts.training.types import Sample, Status
 
 

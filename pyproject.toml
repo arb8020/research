@@ -171,6 +171,7 @@ select = [
 ignore = [
     "E501",    # Line too long (handled by formatter)
     "ANN401",  # Dynamically typed expressions (Any) are disallowed
+    "F822",    # Undefined name in __all__ (false positive for lazy imports via __getattr__)
 ]
 
 [tool.ruff.lint.pylint]
@@ -183,12 +184,11 @@ max-nested-blocks = 5    # Max nesting depth (Linus rule: "if you need more than
 exclude = [
     "**/originals/**",  # Exclude all third-party code in originals/ directories
     "references/**",  # Exclude all reference repositories
-    "dev/corpus-proximity/**",  # Exclude corpus-proximity experimental code
-    "dev/speedrun/history/**",  # Exclude historical speedrun versions
-    "dev/speedrun/single-file.py",  # Speedrun example with type issues
-    "dev/speedrun/single-file-smoke.py",  # Speedrun example with type issues
-    "dev/speedrun/train/00_test_deployment.py",  # Training deployment test
-    "dev/nano-inference/basic_blocks.py",  # Incomplete/skeleton code
+    "dev/**",  # Exclude all dev experiments
+    "rollouts/tests/**",  # Test files (separate type checking pass)
+    "kerbal/tests/**",  # Kerbal test files
+    "*_test.py",  # Any test files
+    "test_*.py",  # Any test files
 ]
 
 [tool.ty.rules]

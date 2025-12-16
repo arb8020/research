@@ -10,12 +10,13 @@ To use this:
 """
 
 # Uncomment when CUTLASS is installed:
-import cutlass
 import torch
-from cutlass.backend import cute
-from cutlass.backend.blockscaled_utils import blockscaled_utils
 from kernel_utils.backends import BACKENDS
 from kernel_utils.task import input_t, output_t
+
+import cutlass
+from cutlass.backend import cute
+from cutlass.backend.blockscaled_utils import blockscaled_utils
 
 # Configuration
 mma_tiler_mnk = (128, 1, 64)
