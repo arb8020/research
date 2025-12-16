@@ -293,8 +293,6 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
 
     import requests
     import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-
     from rollouts._logging import setup_logging
     from rollouts.dtypes import Endpoint
     from rollouts.environments.calculator import CalculatorEnvironment
@@ -304,6 +302,7 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
     from rollouts.training.rollout_gen.async_rollout_manager import AsyncRolloutManager
     from rollouts.training.types import RolloutConfig
     from rollouts.training.weight_sync import SGLangEngine, sync_weights_to_engines
+    from transformers import AutoModelForCausalLM, AutoTokenizer
 
     # Setup logging
     setup_logging(level="INFO", use_color=True)
@@ -658,10 +657,9 @@ def run_remote(
 
     Same pattern as examples/sft/base_config.py.
     """
-    from dotenv import load_dotenv
-
     from bifrost.client import BifrostClient
     from broker.client import GPUClient
+    from dotenv import load_dotenv
 
     load_dotenv()
 
@@ -718,25 +716,31 @@ def run_remote(
             print(line, flush=True)
         print("-" * 50)
 
-        # Sync results back to local
+    except KeyboardInterrupt:
+        print("\n\nInterrupted! Syncing logs before exit...")
+
+    finally:
+        # Always sync results/logs (even on ctrl+c)
         print("\nSyncing results...")
         local_results = Path("results/rl")
         local_results.mkdir(parents=True, exist_ok=True)
 
         # Sync training outputs (config, metrics, logs)
         remote_output_dir = "/tmp/rollouts_rl/calculator_grpo"
-        result = bifrost.download_files(
-            remote_path=remote_output_dir,
-            local_path=str(local_results),
-        )
-        if result and result.success:
-            print(f"Results synced to: {local_results}")
-            print(f"  - SGLang logs: {local_results}/sglang_server.log")
-            print(f"  - Config: {local_results}/config.json")
-        else:
-            print(f"Warning: Failed to sync results from {remote_output_dir}")
+        try:
+            result = bifrost.download_files(
+                remote_path=remote_output_dir,
+                local_path=str(local_results),
+            )
+            if result and result.success:
+                print(f"Results synced to: {local_results}")
+                print(f"  - SGLang logs: {local_results}/sglang_server.log")
+                print(f"  - Config: {local_results}/config.json")
+            else:
+                print(f"Warning: Failed to sync results from {remote_output_dir}")
+        except Exception as e:
+            print(f"Warning: Could not sync results: {e}")
 
-    finally:
         if not keep_alive:
             print(f"\nTerminating instance {instance.provider}:{instance.id}...")
             instance.terminate()
