@@ -35,10 +35,17 @@ if __name__ == "__main__":
     parser.add_argument("--keep-alive", action="store_true", help="Keep GPU after completion")
     parser.add_argument("--gpu-id", type=str, help="Reuse existing GPU instance ID")
     parser.add_argument("--tui", action="store_true", help="Show TUI monitor for logs")
+    parser.add_argument("--tui-debug", action="store_true", help="Print raw JSONL (debug TUI input)")
     args = parser.parse_args()
 
     if args.remote or args.gpu_id:
-        run_remote(__file__, keep_alive=args.keep_alive, gpu_id=args.gpu_id, use_tui=args.tui)
+        run_remote(
+            __file__,
+            keep_alive=args.keep_alive,
+            gpu_id=args.gpu_id,
+            use_tui=args.tui,
+            tui_debug=args.tui_debug,
+        )
     else:
         metrics = train(config)
         if metrics:
