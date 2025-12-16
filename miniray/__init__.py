@@ -29,7 +29,7 @@ from miniray.cluster import Cluster, NodeConfig
 from miniray.gpu_affinity import get_gpu_numa_node, set_gpu_affinity
 from miniray.nccl import NCCLConfig, create_nccl_configs, restore_nccl_env, setup_nccl_env
 from miniray.remote_worker import RemoteWorker
-from miniray.worker import Worker
+from miniray.worker import Worker, wait_any
 
 __all__ = [
     "Worker",
@@ -37,6 +37,7 @@ __all__ = [
     "NodeConfig",
     "NCCLConfig",
     "RemoteWorker",
+    "wait_any",
     "setup_nccl_env",
     "restore_nccl_env",
     "create_nccl_configs",

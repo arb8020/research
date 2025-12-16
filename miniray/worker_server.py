@@ -202,7 +202,7 @@ class WorkerServer:
         w = client_sock.makefile("w")
 
         # Create handle for work function (same API as Worker)
-        from rollouts.training.worker import Worker
+        from miniray.worker import Worker
 
         handle = Worker.__new__(Worker)
         handle._sock = client_sock

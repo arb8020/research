@@ -189,6 +189,22 @@ class RemoteWorker:
                 f"Connection to {self.host}:{self.port} is broken. Remote worker may have crashed."
             )
 
+    def fileno(self) -> int:
+        """Return socket file descriptor for use with select().
+
+        This allows RemoteWorker to be used with wait_any():
+            ready = wait_any(workers, timeout=1.0)
+
+        Returns:
+            Socket file descriptor
+
+        Raises:
+            AssertionError: If not connected
+        """
+        assert self._connected, "Not connected - call connect() first"
+        assert self._sock is not None, "Socket is None"
+        return self._sock.fileno()
+
     def is_alive(self) -> bool:
         """Check if remote worker connection is alive.
 

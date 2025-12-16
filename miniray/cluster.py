@@ -262,7 +262,7 @@ class Cluster:
                 remote_cmd = [
                     node.python_bin,
                     "-m",
-                    "rollouts.training.miniray.worker_server",
+                    "miniray.worker_server",
                     "--port",
                     str(port),
                     "--workers",
