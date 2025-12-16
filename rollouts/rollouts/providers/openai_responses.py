@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import replace
@@ -37,7 +38,13 @@ from rollouts.dtypes import (
     parse_streaming_json,
 )
 
-from .base import _prepare_messages_for_llm, calculate_cost_from_usage
+from .base import (
+    _prepare_messages_for_llm,
+    calculate_cost_from_usage,
+    sanitize_request_for_logging,
+)
+
+logger = logging.getLogger(__name__)
 
 
 async def aggregate_openai_responses_stream(
@@ -379,6 +386,8 @@ async def aggregate_openai_responses_stream(
         elif block["type"] == "toolCall":
             try:
                 args = json.loads(block["arguments"]) if block["arguments"] else {}
+                if not isinstance(args, dict):
+                    raise ValueError(f"Tool args must be object, got {type(args).__name__}")
                 final_content_blocks.append(
                     ToolCallContent(
                         id=block["id"],
@@ -386,8 +395,17 @@ async def aggregate_openai_responses_stream(
                         arguments=args,
                     )
                 )
-            except json.JSONDecodeError:
-                pass
+            except (json.JSONDecodeError, ValueError) as e:
+                # Include failed tool call with parse error so agent loop can return error to model
+                final_content_blocks.append(
+                    ToolCallContent(
+                        id=block["id"],
+                        name=block["name"],
+                        arguments={},
+                        parse_error=f"Invalid tool arguments: {str(e)}",
+                        raw_arguments=block["arguments"],
+                    )
+                )
 
     final_message = Message(
         role="assistant",

@@ -162,6 +162,8 @@ class ToolCall(JsonSerializable):
     id: str
     name: str
     args: Mapping[str, Any]
+    # Parse error info - set when tool call JSON was malformed
+    parse_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -429,6 +431,9 @@ class ToolCallContent(JsonSerializable):
     name: str = ""
     arguments: dict[str, Any] = field(default_factory=dict)
     thought_signature: str | None = None  # Google-specific opaque context
+    # Parse error info - set when tool call JSON was malformed
+    parse_error: str | None = None
+    raw_arguments: str | None = None  # Original malformed JSON string
 
 
 @dataclass(frozen=True)
@@ -480,7 +485,14 @@ class Message(JsonSerializable):
         tool_calls = []
         for block in self.content:
             if isinstance(block, ToolCallContent):
-                tool_calls.append(ToolCall(id=block.id, name=block.name, args=block.arguments))
+                tool_calls.append(
+                    ToolCall(
+                        id=block.id,
+                        name=block.name,
+                        args=block.arguments,
+                        parse_error=block.parse_error,
+                    )
+                )
         return tool_calls
 
     def __repr__(self) -> str:
