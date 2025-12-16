@@ -361,6 +361,15 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
     # Kill existing tmux session if present
     subprocess.run(["tmux", "kill-session", "-t", tmux_session], capture_output=True)
 
+    # Kill any orphaned processes using our GPUs
+    all_gpu_ids = set(inference_gpu_ids) | set(config.trainer.gpu_ids)
+    for gpu_id in all_gpu_ids:
+        subprocess.run(
+            f"nvidia-smi --id={gpu_id} --query-compute-apps=pid --format=csv,noheader | xargs -r kill -9",
+            shell=True,
+            capture_output=True,
+        )
+
     # Build full command with environment and logging
     cuda_devices = ",".join(str(g) for g in inference_gpu_ids)
     full_cmd = f"CUDA_VISIBLE_DEVICES={cuda_devices} {sglang_cmd} 2>&1 | tee {sglang_log}"
