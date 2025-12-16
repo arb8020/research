@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 import httpx
@@ -18,7 +18,7 @@ from dacite import from_dict
 from openai import AsyncOpenAI
 
 from rollouts._retry import async_retry
-from rollouts.dtypes import Actor, ChatCompletion, StreamEvent
+from rollouts.dtypes import Actor, ChatCompletion, StreamEvent, ToolCallError
 
 from .base import (
     NonRetryableError,
@@ -87,23 +87,59 @@ def _build_vllm_params(actor: Actor) -> dict:
     return params
 
 
-def _conform_tool_calls(raw_tool_calls: list) -> list:
-    """Convert raw OpenAI tool calls to conformed format. Pure function."""
+@dataclass
+class ConformResult:
+    """Result of conforming tool calls - includes both successes and errors."""
+    tool_calls: list[dict]
+    errors: list[dict]  # [{id, name, error, raw_arguments}, ...]
+
+
+def _conform_tool_calls(raw_tool_calls: list) -> ConformResult:
+    """Convert raw OpenAI tool calls to conformed format with error handling.
+
+    Instead of crashing on invalid JSON, captures errors and returns them
+    alongside successfully parsed tool calls.
+
+    Returns:
+        ConformResult with tool_calls (successful) and errors (failed parses)
+    """
     assert isinstance(raw_tool_calls, list), (
         f"raw_tool_calls must be list, got {type(raw_tool_calls)}"
     )
     assert len(raw_tool_calls) > 0, "raw_tool_calls cannot be empty"
 
     conformed = []
-    for tc in raw_tool_calls:
-        conformed.append({
-            "id": tc["id"],
-            "name": tc["function"]["name"],
-            "args": json.loads(tc["function"]["arguments"]) if tc["function"]["arguments"] else {},
-        })
+    errors = []
 
-    assert len(conformed) == len(raw_tool_calls), "conformed length must match input length"
-    return conformed
+    for tc in raw_tool_calls:
+        tool_id = tc["id"]
+        tool_name = tc["function"]["name"]
+        raw_args = tc["function"]["arguments"]
+
+        try:
+            if raw_args:
+                args = json.loads(raw_args)
+                # Verify it's a dict (object), not a primitive
+                if not isinstance(args, dict):
+                    raise ValueError(f"Tool args must be object, got {type(args).__name__}")
+            else:
+                args = {}
+
+            conformed.append({
+                "id": tool_id,
+                "name": tool_name,
+                "args": args,
+            })
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning(f"Failed to parse tool call args for {tool_name}: {e}")
+            errors.append({
+                "id": tool_id,
+                "name": tool_name,
+                "error": str(e),
+                "raw_arguments": raw_args,
+            })
+
+    return ConformResult(tool_calls=conformed, errors=errors)
 
 
 async def _execute_vllm_request(
@@ -190,10 +226,27 @@ async def rollout_sglang(
     )
     assert completion
 
-    # Process tool calls
+    # Process tool calls with error handling
     message = completion["choices"][0]["message"]
     raw_tool_calls = message.get("tool_calls")
-    message["tool_calls"] = _conform_tool_calls(raw_tool_calls) if raw_tool_calls else []
+
+    if raw_tool_calls:
+        conform_result = _conform_tool_calls(raw_tool_calls)
+        message["tool_calls"] = conform_result.tool_calls
+
+        # Emit ToolCallError events for any parse failures
+        for i, error in enumerate(conform_result.errors):
+            await on_chunk(
+                ToolCallError(
+                    content_index=i,
+                    tool_call_id=error["id"],
+                    tool_name=error["name"],
+                    error=error["error"],
+                    raw_arguments=error["raw_arguments"],
+                )
+            )
+    else:
+        message["tool_calls"] = []
 
     # Parse and validate
     completion = from_dict(ChatCompletion, completion)
