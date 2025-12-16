@@ -38,6 +38,43 @@ BOLD = "\x1b[1m"
 RESET = "\x1b[0m"
 BG_HEADER = "\x1b[48;2;40;44;52m"  # Dark background for header/footer
 
+# Sparkline characters (8 levels)
+SPARK_CHARS = "▁▂▃▄▅▆▇█"
+
+
+def sparkline(values: list[float], width: int = 20) -> str:
+    """Render a sparkline from values.
+
+    Args:
+        values: List of numeric values
+        width: Max width of sparkline
+
+    Returns:
+        String of unicode block characters
+    """
+    if not values:
+        return ""
+
+    # Take last `width` values
+    values = values[-width:]
+
+    # Normalize to 0-7 range
+    min_val = min(values)
+    max_val = max(values)
+    range_val = max_val - min_val
+
+    if range_val == 0:
+        # All same value - show middle
+        return SPARK_CHARS[4] * len(values)
+
+    result = []
+    for v in values:
+        normalized = (v - min_val) / range_val  # 0.0 to 1.0
+        idx = min(7, int(normalized * 8))  # 0 to 7
+        result.append(SPARK_CHARS[idx])
+
+    return "".join(result)
+
 
 @dataclass
 class LogLine:
@@ -100,6 +137,10 @@ class TrainingMonitor:
         self._needs_redraw = True
         self._stdin_buffer = ""
 
+        # Metrics tracking (for sparklines)
+        self._metrics: dict[str, deque[float]] = {}
+        self._current_step = 0
+
     def route_log_line(self, line: LogLine) -> str:
         """Route log line to appropriate pane based on logger name."""
         logger = line.logger.lower()
@@ -115,6 +156,39 @@ class TrainingMonitor:
         """Parse a JSONL line into LogLine."""
         try:
             data = json.loads(raw)
+
+            # Check if this is a metrics entry (has step + numeric values)
+            if "step" in data and any(
+                isinstance(v, (int, float)) and k not in ("step", "timestamp")
+                for k, v in data.items()
+            ):
+                # Extract and store metrics for sparklines
+                step = data.get("step", 0)
+                self._current_step = max(self._current_step, step)
+
+                for key, value in data.items():
+                    if key in ("step", "timestamp", "logger", "message", "level"):
+                        continue
+                    if isinstance(value, (int, float)):
+                        if key not in self._metrics:
+                            self._metrics[key] = deque(maxlen=100)
+                        self._metrics[key].append(value)
+
+                # Create a message summarizing the metrics
+                metric_parts = []
+                for key, value in data.items():
+                    if key in ("step", "timestamp"):
+                        continue
+                    if isinstance(value, (int, float)):
+                        metric_parts.append(f"{key}={value:.4f}")
+
+                return LogLine(
+                    logger="metrics",
+                    message=f"[step {step}] " + "  ".join(metric_parts),
+                    level="INFO",
+                    extra=data,
+                )
+
             return LogLine(
                 logger=data.get("logger", "unknown"),
                 message=data.get("message", raw),
@@ -138,7 +212,7 @@ class TrainingMonitor:
                 if not chunk:
                     break
                 self._stdin_buffer += chunk
-            except (IOError, BlockingIOError):
+            except (OSError, BlockingIOError):
                 break
 
         # Extract complete lines
@@ -257,12 +331,26 @@ class TrainingMonitor:
         # Tab bar
         output.append(self._render_tab_bar(width))
 
-        # Content
-        pane = self.panes[self.active_pane]
-        visible_lines = list(pane.lines)[pane.scroll : pane.scroll + content_height]
+        # Content - special handling for metrics pane
+        if self.active_pane == "metrics" and self._metrics:
+            # Show sparklines header
+            sparkline_lines = self._render_sparklines(width)
+            output.extend(sparkline_lines)
 
-        for log_line in visible_lines:
-            output.append(self._render_log_line(log_line, width))
+            # Show log lines below sparklines
+            pane = self.panes[self.active_pane]
+            remaining_height = content_height - len(sparkline_lines)
+            visible_lines = list(pane.lines)[pane.scroll : pane.scroll + remaining_height]
+
+            for log_line in visible_lines:
+                output.append(self._render_log_line(log_line, width))
+        else:
+            # Normal pane rendering
+            pane = self.panes[self.active_pane]
+            visible_lines = list(pane.lines)[pane.scroll : pane.scroll + content_height]
+
+            for log_line in visible_lines:
+                output.append(self._render_log_line(log_line, width))
 
         # Pad with empty lines
         while len(output) < height - 1:
@@ -274,6 +362,38 @@ class TrainingMonitor:
         # Write to terminal
         for i, line in enumerate(output):
             self.terminal.write(f"\x1b[{i + 1};1H{line}")
+
+    def _render_sparklines(self, width: int) -> list[str]:
+        """Render sparkline header for metrics pane."""
+        lines = []
+
+        # Header
+        lines.append(
+            f"{BG_HEADER}{BOLD} Metrics (step {self._current_step}){RESET}{BG_HEADER}{' ' * (width - 20)}{RESET}"
+        )
+
+        # Sparkline width (leave room for label and current value)
+        spark_width = min(40, width - 30)
+
+        for name, values in sorted(self._metrics.items()):
+            if not values:
+                continue
+
+            # Get current value and sparkline
+            current = values[-1]
+            spark = sparkline(list(values), width=spark_width)
+
+            # Format: "  loss: 0.1234 ▁▂▃▄▅▆▇█"
+            label = f"{name}:"
+            value_str = f"{current:.4f}"
+
+            line = f"  {CYAN}{label:>12}{RESET} {GREEN}{value_str:>10}{RESET} {spark}"
+            lines.append(line[:width])
+
+        # Add separator
+        lines.append(f"{DIM}{'─' * width}{RESET}")
+
+        return lines
 
     def _render_tab_bar(self, width: int) -> str:
         """Render tab bar showing all panes."""
@@ -289,7 +409,7 @@ class TrainingMonitor:
                 tabs.append(f"{DIM}[{num}] {pane.name} ({count}){RESET}")
 
         tab_str = "  ".join(tabs)
-        padding = width - len(f"[1] Training (0)  [2] SGLang (0)  [3] Metrics (0)")
+        padding = width - len("[1] Training (0)  [2] SGLang (0)  [3] Metrics (0)")
         return f"{BG_HEADER} {tab_str}{' ' * max(0, padding)}{RESET}"
 
     def _render_log_line(self, line: LogLine, width: int) -> str:
@@ -330,7 +450,9 @@ class TrainingMonitor:
         visible_pos = len(pos) + 2
         padding = width - visible_hints - visible_pos - 2
 
-        return f"{BG_HEADER} {DIM}{hints}{RESET}{BG_HEADER}{' ' * max(0, padding)}{WHITE}{pos} {RESET}"
+        return (
+            f"{BG_HEADER} {DIM}{hints}{RESET}{BG_HEADER}{' ' * max(0, padding)}{WHITE}{pos} {RESET}"
+        )
 
 
 def main() -> None:

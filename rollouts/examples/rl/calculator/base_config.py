@@ -310,9 +310,12 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
     from rollouts.training.weight_sync import SGLangEngine, sync_weights_to_engines
 
     # Setup logging (suppress noisy HTTP client logs)
+    # Use JSON format for TUI parsing, fall back to color for direct terminal use
+    use_json_logs = os.getenv("ROLLOUTS_JSON_LOGS", "").lower() == "true"
     setup_logging(
         level="INFO",
-        use_color=True,
+        use_json=use_json_logs,
+        use_color=not use_json_logs,
         logger_levels={
             "httpx": "WARNING",
             "httpcore": "WARNING",
@@ -424,6 +427,29 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
         raise RuntimeError("SGLang server failed to start within 2 minutes")
 
     logger.info(f"SGLang ready at http://localhost:{inference_port}")
+
+    # Start tailing SGLang log in background (emits JSONL for TUI)
+    import threading
+
+    def tail_sglang_log():
+        """Tail SGLang log and emit as JSONL."""
+        try:
+            with open(sglang_log) as f:
+                # Start from end of file (don't replay startup logs)
+                f.seek(0, 2)
+                while True:
+                    line = f.readline()
+                    if line:
+                        line = line.strip()
+                        if line:
+                            print(json.dumps({"logger": "sglang", "message": line}), flush=True)
+                    else:
+                        time.sleep(0.1)
+        except Exception:
+            pass  # File closed or thread killed
+
+    sglang_tailer = threading.Thread(target=tail_sglang_log, daemon=True)
+    sglang_tailer.start()
 
     try:
         # ─────────────────────────────────────────────────────────────────────
@@ -544,7 +570,9 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
 
                 mean_reward = sum(rewards) / len(rewards) if rewards else 0.0
                 num_groups = len(set(group_indices)) if group_indices else len(rewards)
-                logger.info(f"Mean reward: {mean_reward:.3f} ({len(rewards)} samples, {num_groups} groups)")
+                logger.info(
+                    f"Mean reward: {mean_reward:.3f} ({len(rewards)} samples, {num_groups} groups)"
+                )
 
                 # 3. Compute advantages (GRPO: group-normalized)
                 # Each sample's advantage = reward - mean(rewards in same group)
@@ -730,10 +758,17 @@ def run_remote(
     script_path: str,
     keep_alive: bool = False,
     gpu_id: str | None = None,
+    use_tui: bool = False,
 ) -> None:
     """Run training script on remote GPU via broker/bifrost.
 
     Same pattern as examples/sft/base_config.py.
+
+    Args:
+        script_path: Path to the training script
+        keep_alive: Keep GPU after completion
+        gpu_id: Reuse existing GPU instance
+        use_tui: Show TUI monitor for logs (sparklines, multi-pane)
     """
     from dotenv import load_dotenv
 
@@ -788,12 +823,71 @@ def run_remote(
         # Run training (PYTHONUNBUFFERED=1 for real-time output)
         print("Running training...")
         script_name = Path(script_path).name
-        cmd = f"cd {workspace}/rollouts && PYTHONUNBUFFERED=1 uv run python examples/rl/calculator/{script_name}"
+        env_vars = "PYTHONUNBUFFERED=1"
+        if use_tui:
+            env_vars += " ROLLOUTS_JSON_LOGS=true"
+        cmd = f"cd {workspace}/rollouts && {env_vars} uv run python examples/rl/calculator/{script_name}"
         print(f"Running: {cmd}")
-        print("-" * 50)
-        for line in bifrost.exec_stream(cmd):
-            print(line, flush=True)
-        print("-" * 50)
+
+        if use_tui:
+            # Route output through TUI monitor
+            from rollouts.tui.monitor import TrainingMonitor
+
+            monitor = TrainingMonitor()
+
+            def feed_monitor():
+                """Feed lines to monitor in background."""
+                import threading
+                import time
+
+                lines_queue = []
+                done = threading.Event()
+
+                def collect_lines():
+                    try:
+                        for line in bifrost.exec_stream(cmd):
+                            lines_queue.append(line)
+                    finally:
+                        done.set()
+
+                collector = threading.Thread(target=collect_lines, daemon=True)
+                collector.start()
+
+                # Run TUI with line feeding
+                monitor._running = True
+                monitor.terminal.start(on_input=lambda x: None, on_resize=monitor._on_resize)
+
+                try:
+                    while monitor._running and not done.is_set():
+                        # Feed queued lines
+                        while lines_queue:
+                            raw_line = lines_queue.pop(0)
+                            log_line = monitor.parse_jsonl_line(raw_line)
+                            if log_line:
+                                pane_name = monitor.route_log_line(log_line)
+                                monitor.panes[pane_name].add_line(log_line)
+                                monitor._needs_redraw = True
+
+                        # Handle keyboard input
+                        data = monitor.terminal.read_input()
+                        if data:
+                            monitor._handle_input(data)
+
+                        # Render if needed
+                        if monitor._needs_redraw:
+                            monitor._render()
+                            monitor._needs_redraw = False
+
+                        time.sleep(0.05)
+                finally:
+                    monitor.terminal.stop()
+
+            feed_monitor()
+        else:
+            print("-" * 50)
+            for line in bifrost.exec_stream(cmd):
+                print(line, flush=True)
+            print("-" * 50)
 
     except KeyboardInterrupt:
         print("\n\nInterrupted! Syncing logs before exit...")
