@@ -327,10 +327,10 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
     # ─────────────────────────────────────────────────────────────────────────
     # 1. Launch inference server (SGLang)
     # ─────────────────────────────────────────────────────────────────────────
-    inference_gpu = config.inference.gpu_ids[0]
+    inference_gpu_ids = config.inference.gpu_ids
     inference_port = config.inference.port
 
-    logger.info(f"Launching SGLang on GPU {inference_gpu}, port {inference_port}...")
+    logger.info(f"Launching SGLang on GPUs {inference_gpu_ids}, port {inference_port}...")
 
     sglang_cmd = [
         "python",
@@ -345,8 +345,12 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
         "--trust-remote-code",
     ]
 
+    # Multi-GPU: add tensor parallel size if more than 1 GPU
+    if len(inference_gpu_ids) > 1:
+        sglang_cmd.extend(["--tp-size", str(len(inference_gpu_ids))])
+
     sglang_env = os.environ.copy()
-    sglang_env["CUDA_VISIBLE_DEVICES"] = str(inference_gpu)
+    sglang_env["CUDA_VISIBLE_DEVICES"] = ",".join(str(g) for g in inference_gpu_ids)
 
     sglang_process = subprocess.Popen(
         sglang_cmd,
@@ -386,8 +390,14 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
             tokenizer.pad_token = tokenizer.eos_token
 
         logger.info("Loading training model...")
-        train_gpu = config.trainer.gpu_ids[0]
-        device = f"cuda:{train_gpu}"
+        trainer_gpu_ids = config.trainer.gpu_ids
+        # TODO: For multi-GPU training, use FSDP. For now, use first GPU.
+        if len(trainer_gpu_ids) > 1:
+            logger.warning(
+                f"Multi-GPU training ({trainer_gpu_ids}) requested but FSDP not implemented. "
+                f"Using single GPU: {trainer_gpu_ids[0]}"
+            )
+        device = f"cuda:{trainer_gpu_ids[0]}"
         model = AutoModelForCausalLM.from_pretrained(
             config.model.name,
             torch_dtype=getattr(torch, config.model.dtype),
