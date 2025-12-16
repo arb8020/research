@@ -309,13 +309,23 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
     from rollouts.training.types import RolloutConfig
     from rollouts.training.weight_sync import SGLangEngine, sync_weights_to_engines
 
+    # Output directory with timestamp (like wafer_stuff/clicker pattern)
+    # Must be created before setup_logging so we can write logs to file
+    from datetime import datetime
+
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    output_dir = Path(config.output_dir) / f"{config.experiment_name}_{timestamp}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     # Setup logging (suppress noisy HTTP client logs)
     # Use JSON format for TUI parsing, fall back to color for direct terminal use
+    # Always write JSONL to file for later viewing via TUI --replay
     use_json_logs = os.getenv("ROLLOUTS_JSON_LOGS", "").lower() == "true"
     setup_logging(
         level="INFO",
         use_json=use_json_logs,
         use_color=not use_json_logs,
+        log_file=str(output_dir / "training.jsonl"),
         logger_levels={
             "httpx": "WARNING",
             "httpcore": "WARNING",
@@ -330,12 +340,9 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
     logger.info(f"Steps: {config.num_steps}")
     logger.info(f"Batch size: {config.orchestrator.batch_size}")
     logger.info(f"Rollouts per example: {config.orchestrator.rollouts_per_example}")
-
-    # Output directory
-    output_dir = Path(config.output_dir) / config.experiment_name
-    output_dir.mkdir(parents=True, exist_ok=True)
-    config.save(output_dir / "config.json")
     logger.info(f"Output: {output_dir}")
+
+    config.save(output_dir / "config.json")
 
     # ─────────────────────────────────────────────────────────────────────────
     # 1. Launch inference server (SGLang) in tmux for debugging
@@ -915,22 +922,38 @@ def run_remote(
         local_results = Path("results/rl")
         local_results.mkdir(parents=True, exist_ok=True)
 
-        # Sync only logs and config (NOT checkpoints/optimizer state - those are huge)
-        remote_output_dir = "/tmp/rollouts_rl/calculator_grpo"
-        files_to_sync = ["sglang_server.log", "config.json", "metrics.json", "training.log"]
+        # Sync all timestamped run directories (logs + config, NOT checkpoints)
+        # Remote structure: /tmp/rollouts_rl/calculator_grpo_20251216-143022/
+        remote_base = "/tmp/rollouts_rl"
+        files_to_sync = [
+            "config.json",
+            "training.jsonl",  # All logs in JSONL format (for TUI replay)
+            "sglang_server.log",  # Raw SGLang output
+        ]
 
-        for filename in files_to_sync:
-            try:
-                result = bifrost.download_files(
-                    remote_path=f"{remote_output_dir}/{filename}",
-                    local_path=str(local_results / filename),
-                    recursive=False,
-                )
-                if result and result.success:
-                    print(f"  Synced: {filename}")
-            except Exception:
-                # File might not exist yet, that's ok
-                pass
+        # List remote directories to find timestamped runs
+        try:
+            ls_output = bifrost.exec(f"ls -1 {remote_base}")
+            remote_dirs = [d.strip() for d in ls_output.split("\n") if d.strip()]
+        except Exception:
+            remote_dirs = []
+
+        for remote_dir in remote_dirs:
+            local_run_dir = local_results / remote_dir
+            local_run_dir.mkdir(parents=True, exist_ok=True)
+
+            for filename in files_to_sync:
+                try:
+                    result = bifrost.download_files(
+                        remote_path=f"{remote_base}/{remote_dir}/{filename}",
+                        local_path=str(local_run_dir / filename),
+                        recursive=False,
+                    )
+                    if result and result.success:
+                        print(f"  Synced: {remote_dir}/{filename}")
+                except Exception:
+                    # File might not exist yet, that's ok
+                    pass
 
         if not keep_alive:
             print(f"\nTerminating instance {instance.provider}:{instance.id}...")
