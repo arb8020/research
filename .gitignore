@@ -62,3 +62,12 @@ dev/integration-evaluation/.chroma_db/
 dev/integration-evaluation/eval_results/
 worktrees/
 .rollouts/
+
+# External repos/tools (should be in /tmp or separate)
+cutlass/
+cutlass_repo/
+refactoring.nvim/
+tmp/
+
+# Eval results
+rollouts/results/
