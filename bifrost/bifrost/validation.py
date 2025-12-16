@@ -41,8 +41,9 @@ def validate_job_id(job_id: str, session_name: str | None = None) -> str:
 
     # Assert no dangerous characters (shell injection protection)
     dangerous_chars = set(";&|`$(){}[]<>\"'\\")
-    assert not any(c in dangerous_chars for c in job_id), \
+    assert not any(c in dangerous_chars for c in job_id), (
         f"job_id contains dangerous shell characters: {job_id}"
+    )
 
     # Assert output invariant
     assert len(job_id) > 0, "Validated job_id"
@@ -67,18 +68,19 @@ def validate_bootstrap_cmd(bootstrap_cmd: str | list[str]) -> str | list[str]:
         - No obvious command injection patterns
     """
     # Assert input type
-    assert isinstance(bootstrap_cmd, (str, list)), \
-        "bootstrap_cmd must be string or list of strings"
+    assert isinstance(bootstrap_cmd, (str, list)), "bootstrap_cmd must be string or list of strings"
 
     if isinstance(bootstrap_cmd, str):
         assert len(bootstrap_cmd) > 0, "bootstrap_cmd cannot be empty string"
         _check_command_safety(bootstrap_cmd)
     else:
         assert len(bootstrap_cmd) > 0, "bootstrap_cmd list cannot be empty"
-        assert all(isinstance(cmd, str) for cmd in bootstrap_cmd), \
+        assert all(isinstance(cmd, str) for cmd in bootstrap_cmd), (
             "All bootstrap commands must be strings"
-        assert all(len(cmd) > 0 for cmd in bootstrap_cmd), \
+        )
+        assert all(len(cmd) > 0 for cmd in bootstrap_cmd), (
             "All bootstrap commands must be non-empty"
+        )
         for cmd in bootstrap_cmd:
             _check_command_safety(cmd)
 
@@ -122,8 +124,7 @@ def validate_session_name(session_name: str) -> str:
     assert len(session_name) < 100, f"session_name too long: {len(session_name)}"
 
     # Sanitize: keep only alphanumeric and hyphens
-    safe_name = "".join(c if c.isalnum() or c == "-" else "_"
-                       for c in session_name)
+    safe_name = "".join(c if c.isalnum() or c == "-" else "_" for c in session_name)
     assert len(safe_name) > 0, "Sanitized session_name is empty"
 
     # Assert output invariant
@@ -187,14 +188,13 @@ def validate_environment_variables(env: dict[str, str]) -> dict[str, str]:
         # Assert key is valid shell variable name
         assert isinstance(key, str), f"env key must be string, got {type(key)}"
         assert len(key) > 0, "env key cannot be empty"
-        assert key[0].isalpha() or key[0] == "_", \
+        assert key[0].isalpha() or key[0] == "_", (
             f"env key must start with letter or underscore: {key}"
-        assert key.replace("_", "").isalnum(), \
-            f"env key must be alphanumeric or underscore: {key}"
+        )
+        assert key.replace("_", "").isalnum(), f"env key must be alphanumeric or underscore: {key}"
 
         # Assert value is string
-        assert isinstance(value, str), \
-            f"env value for {key} must be string, got {type(value)}"
+        assert isinstance(value, str), f"env value for {key} must be string, got {type(value)}"
 
     # Assert output invariant
     assert isinstance(env, dict), "Validated environment variables"
@@ -222,8 +222,9 @@ def validate_working_directory(working_dir: str) -> str:
 
     # Assert no dangerous characters
     dangerous_chars = set(";|&`$(){}[]<>\"'\\")
-    assert not any(c in dangerous_chars for c in working_dir), \
+    assert not any(c in dangerous_chars for c in working_dir), (
         f"working_dir contains dangerous characters: {working_dir}"
+    )
 
     # Warn about relative paths
     if not working_dir.startswith("/") and not working_dir.startswith("~"):
@@ -272,15 +273,13 @@ def validate_poll_interval(interval: float) -> float:
         AssertionError: If validation fails
     """
     # Assert input type
-    assert isinstance(interval, (int, float)), \
-        f"interval must be numeric, got {type(interval)}"
+    assert isinstance(interval, (int, float)), f"interval must be numeric, got {type(interval)}"
 
     # Convert to float
     interval = float(interval)
 
     # Assert reasonable range
-    assert 0.1 <= interval <= 3600, \
-        f"interval must be 0.1-3600 seconds, got {interval}"
+    assert 0.1 <= interval <= 3600, f"interval must be 0.1-3600 seconds, got {interval}"
 
     # Warn about very frequent polling
     if interval < 1.0:

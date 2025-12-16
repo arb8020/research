@@ -36,9 +36,7 @@ def main(
         "--credentials",
         help="Credentials file or inline 'runpod:key,primeintellect:key'",
     ),
-    ssh_key: str | None = typer.Option(
-        None, "--ssh-key", help="Path to SSH private key"
-    ),
+    ssh_key: str | None = typer.Option(None, "--ssh-key", help="Path to SSH private key"),
     quiet: bool = typer.Option(False, "-q", "--quiet", help="Show only warnings and errors"),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
     debug: bool = typer.Option(False, "--debug", help="Show debug logs"),
@@ -132,9 +130,7 @@ def resolve_credentials(ctx) -> ProviderCredentials:
 
     if runpod_key or prime_key or lambda_key:
         return ProviderCredentials(
-            runpod=runpod_key or "",
-            primeintellect=prime_key or "",
-            lambdalabs=lambda_key or ""
+            runpod=runpod_key or "", primeintellect=prime_key or "", lambdalabs=lambda_key or ""
         )
 
     # Priority 4: Error with helpful message
@@ -208,10 +204,14 @@ def search(
         None, "--provider", help="Filter by provider (runpod|primeintellect)"
     ),
     cloud_type: str | None = typer.Option(
-        "secure", "--cloud-type", help="Cloud type: secure (default, guaranteed) or community (spot, cheaper but can be interrupted)"
+        "secure",
+        "--cloud-type",
+        help="Cloud type: secure (default, guaranteed) or community (spot, cheaper but can be interrupted)",
     ),
     underlying_provider: str | None = typer.Option(
-        None, "--underlying-provider", help="Filter by underlying provider (e.g., massedcompute, hyperstack) for aggregators like PrimeIntellect"
+        None,
+        "--underlying-provider",
+        help="Filter by underlying provider (e.g., massedcompute, hyperstack) for aggregators like PrimeIntellect",
     ),
     limit: int = typer.Option(10, "--limit", help="Maximum number of results"),
 ):
@@ -256,6 +256,7 @@ def search(
         query = provider_filter if query is None else query & provider_filter
     if cloud_type:
         from broker.types import CloudType
+
         if cloud_type.lower() == "secure":
             cloud_filter = client.cloud_type == CloudType.SECURE
         elif cloud_type.lower() == "community":
@@ -276,7 +277,10 @@ def search(
 
     # Import api to call search with gpu_count
     from broker import api
-    offers = api.search(query, gpu_count=gpu_count, sort=lambda x: x.price_per_hour, credentials=creds.to_dict())
+
+    offers = api.search(
+        query, gpu_count=gpu_count, sort=lambda x: x.price_per_hour, credentials=creds.to_dict()
+    )
 
     # Limit results
     offers = offers[:limit]
@@ -313,6 +317,7 @@ def search(
 
             for offer in offers:
                 from broker.types import CloudType
+
                 # Use offer.gpu_count (which reflects the actual search result) rather than parameter gpu_count
                 total_price = offer.price_per_hour * offer.gpu_count
 
@@ -371,7 +376,9 @@ def create(
         None, "--max-price", help="(Deprecated) Use --max-price-per-gpu instead"
     ),
     cloud_type: str | None = typer.Option(
-        "secure", "--cloud-type", help="Cloud type: secure (default, guaranteed) or community (spot, cheaper but can be interrupted)"
+        "secure",
+        "--cloud-type",
+        help="Cloud type: secure (default, guaranteed) or community (spot, cheaper but can be interrupted)",
     ),
     image: str = typer.Option(
         "runpod/pytorch:1.0.0-cu1281-torch280-ubuntu2204", "--image", help="Docker image to use"
@@ -380,9 +387,7 @@ def create(
     wait_ssh: bool = typer.Option(
         False, "--wait-ssh", help="Wait for SSH to be ready before returning"
     ),
-    output: str = typer.Option(
-        "summary", "--output", help="Output format: summary|ssh|json"
-    ),
+    output: str = typer.Option("summary", "--output", help="Output format: summary|ssh|json"),
 ):
     """Provision a new GPU instance
 
@@ -425,6 +430,7 @@ def create(
         query = price_filter if query is None else query & price_filter
     if cloud_type:
         from broker.types import CloudType
+
         if cloud_type.lower() == "secure":
             cloud_filter = client.cloud_type == CloudType.SECURE
         elif cloud_type.lower() == "community":
@@ -479,19 +485,31 @@ def create(
             raise typer.Exit(1)
     else:  # summary
         if wait_ssh:
-            gpu_info = f"{instance.gpu_count}x {instance.gpu_type}" if instance.gpu_count > 1 else instance.gpu_type
+            gpu_info = (
+                f"{instance.gpu_count}x {instance.gpu_type}"
+                if instance.gpu_count > 1
+                else instance.gpu_type
+            )
             logger.info(f"instance {instance.id} ready: {instance.ssh_connection_string()}")
             logger.info(f"  gpu: {gpu_info}")
             if instance.gpu_count > 1:
-                logger.info(f"  price: ${instance.price_per_hour:.2f}/gpu/hr (${instance.price_per_hour * instance.gpu_count:.2f}/hr total)")
+                logger.info(
+                    f"  price: ${instance.price_per_hour:.2f}/gpu/hr (${instance.price_per_hour * instance.gpu_count:.2f}/hr total)"
+                )
             else:
                 logger.info(f"  price: ${instance.price_per_hour:.2f}/hr")
         else:
-            gpu_info = f"{instance.gpu_count}x {instance.gpu_type}" if instance.gpu_count > 1 else instance.gpu_type
+            gpu_info = (
+                f"{instance.gpu_count}x {instance.gpu_type}"
+                if instance.gpu_count > 1
+                else instance.gpu_type
+            )
             logger.info(f"instance {instance.id} provisioning started")
             logger.info(f"  gpu: {gpu_info}")
             if instance.gpu_count > 1:
-                logger.info(f"  price: ${instance.price_per_hour:.2f}/gpu/hr (${instance.price_per_hour * instance.gpu_count:.2f}/hr total)")
+                logger.info(
+                    f"  price: ${instance.price_per_hour:.2f}/gpu/hr (${instance.price_per_hour * instance.gpu_count:.2f}/hr total)"
+                )
             else:
                 logger.info(f"  price: ${instance.price_per_hour:.2f}/hr")
             logger.info(f"use 'broker status {instance.id}' to check progress")
@@ -606,9 +624,7 @@ def status(
                     "provider": instance.provider,
                     "status": instance.status.value,
                     "gpu_type": instance.gpu_type,
-                    "ssh": (
-                        instance.ssh_connection_string() if instance.public_ip else None
-                    ),
+                    "ssh": (instance.ssh_connection_string() if instance.public_ip else None),
                 },
                 indent=2,
             )
@@ -754,9 +770,9 @@ def info(
     if ctx.obj["json"]:
         # Parse GPU info
         gpus = []
-        for line in gpu_result.stdout.strip().split('\n'):
+        for line in gpu_result.stdout.strip().split("\n"):
             if line.strip():
-                parts = [p.strip() for p in line.split(',')]
+                parts = [p.strip() for p in line.split(",")]
                 if len(parts) >= 5:
                     gpus.append({
                         "index": int(parts[0]),
@@ -771,29 +787,34 @@ def info(
         cpu_util = float(cpu_result.stdout.strip()) if cpu_result.stdout.strip() else 0.0
 
         # Parse memory info
-        mem_parts = mem_result.stdout.strip().split(',')
+        mem_parts = mem_result.stdout.strip().split(",")
         mem_used_mb = int(mem_parts[0]) if len(mem_parts) > 0 else 0
         mem_total_mb = int(mem_parts[1]) if len(mem_parts) > 1 else 0
         mem_percent = float(mem_parts[2]) if len(mem_parts) > 2 else 0.0
 
         # Parse disk info
-        disk_parts = disk_result.stdout.strip().split(',')
+        disk_parts = disk_result.stdout.strip().split(",")
         disk_used = disk_parts[0] if len(disk_parts) > 0 else "0"
         disk_total = disk_parts[1] if len(disk_parts) > 1 else "0"
         disk_percent = disk_parts[2] if len(disk_parts) > 2 else "0%"
 
-        print(json.dumps({
-            "instance_id": instance_id,
-            "provider": instance.provider,
-            "gpus": gpus,
-            "cpu_utilization_percent": cpu_util,
-            "memory_used_mb": mem_used_mb,
-            "memory_total_mb": mem_total_mb,
-            "memory_percent": mem_percent,
-            "disk_used": disk_used,
-            "disk_total": disk_total,
-            "disk_percent": disk_percent,
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "instance_id": instance_id,
+                    "provider": instance.provider,
+                    "gpus": gpus,
+                    "cpu_utilization_percent": cpu_util,
+                    "memory_used_mb": mem_used_mb,
+                    "memory_total_mb": mem_total_mb,
+                    "memory_percent": mem_percent,
+                    "disk_used": disk_used,
+                    "disk_total": disk_total,
+                    "disk_percent": disk_percent,
+                },
+                indent=2,
+            )
+        )
     else:
         # Display with Rich tables
         console.print(f"\n[bold]Instance: {instance_id}[/bold] ({instance.provider})\n")
@@ -807,9 +828,9 @@ def info(
         gpu_table.add_column("VRAM Total", justify="right")
         gpu_table.add_column("VRAM %", justify="right")
 
-        for line in gpu_result.stdout.strip().split('\n'):
+        for line in gpu_result.stdout.strip().split("\n"):
             if line.strip():
-                parts = [p.strip() for p in line.split(',')]
+                parts = [p.strip() for p in line.split(",")]
                 if len(parts) >= 5:
                     gpu_idx = parts[0]
                     gpu_name = parts[1]
@@ -867,7 +888,7 @@ def info(
             sys_table.add_row("CPU", "-", "-", cpu_display)
 
         # Memory row
-        mem_parts = mem_result.stdout.strip().split(',')
+        mem_parts = mem_result.stdout.strip().split(",")
         if len(mem_parts) >= 3:
             mem_used = int(mem_parts[0])
             mem_total = int(mem_parts[1])
@@ -889,11 +910,11 @@ def info(
             )
 
         # Disk row
-        disk_parts = disk_result.stdout.strip().split(',')
+        disk_parts = disk_result.stdout.strip().split(",")
         if len(disk_parts) >= 3:
             disk_used = disk_parts[0]
             disk_total = disk_parts[1]
-            disk_percent_raw = disk_parts[2].rstrip('%')
+            disk_percent_raw = disk_parts[2].rstrip("%")
 
             try:
                 disk_pct = float(disk_percent_raw)
@@ -984,7 +1005,9 @@ def cleanup(
         None, "--provider", help="Only terminate instances from this provider"
     ),
     exclude: builtins.list[str] | None = typer.Option(
-        None, "--exclude", help="Instance IDs to exclude from cleanup (can be specified multiple times)"
+        None,
+        "--exclude",
+        help="Instance IDs to exclude from cleanup (can be specified multiple times)",
     ),
 ):
     """Terminate all running GPU instances
@@ -1055,9 +1078,7 @@ def cleanup(
     # Confirmation prompt
     if not yes:
         if provider:
-            confirm = typer.confirm(
-                f"Terminate all {len(instances)} instance(s) in {provider}?"
-            )
+            confirm = typer.confirm(f"Terminate all {len(instances)} instance(s) in {provider}?")
         else:
             confirm = typer.confirm(
                 f"Terminate all {len(instances)} instance(s) across all providers?"

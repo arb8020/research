@@ -9,7 +9,14 @@ from typing import Any, Optional, cast
 from shared.validation import validate_ssh_key_path
 
 from .query import GPUQuery, QueryType
-from .types import CloudType, GPUInstance, GPUOffer, InstanceStatus, ProviderCredentials, ProvisionResult
+from .types import (
+    CloudType,
+    GPUInstance,
+    GPUOffer,
+    InstanceStatus,
+    ProviderCredentials,
+    ProvisionResult,
+)
 from .validation import validate_credentials
 
 logger = logging.getLogger(__name__)
@@ -21,6 +28,7 @@ class ProvisionError(Exception):
     Attributes:
         result: The ProvisionResult with detailed error info and attempt history
     """
+
     def __init__(self, message: str, result: ProvisionResult):
         super().__init__(message)
         self.result = result
@@ -48,7 +56,7 @@ class GPUClient:
         self,
         credentials: ProviderCredentials | dict[str, str],
         ssh_key_path: str | None = None,
-        ssh_key_paths: dict[str, str] | None = None
+        ssh_key_paths: dict[str, str] | None = None,
     ):
         """Initialize GPU broker client
 
@@ -71,8 +79,9 @@ class GPUClient:
             credentials = ProviderCredentials.from_dict(credentials_dict)
 
         # Assert credentials type after conversion
-        assert isinstance(credentials, ProviderCredentials), \
+        assert isinstance(credentials, ProviderCredentials), (
             "credentials must be ProviderCredentials or dict"
+        )
 
         # Validate and store credentials (validation helper contains all assertions)
         self._credentials = credentials.to_dict()
@@ -167,7 +176,7 @@ class GPUClient:
         self,
         query: QueryType | None = None,
         sort: Callable[[Any], Any] | None = None,
-        reverse: bool = False
+        reverse: bool = False,
     ) -> list[GPUOffer]:
         """Search for GPU offers
 
@@ -182,12 +191,7 @@ class GPUClient:
         # Import here to avoid circular dependency
         from . import api
 
-        return api.search(
-            query=query,
-            sort=sort,
-            reverse=reverse,
-            credentials=self._credentials
-        )
+        return api.search(query=query, sort=sort, reverse=reverse, credentials=self._credentials)
 
     def create(
         self,
@@ -201,8 +205,8 @@ class GPUClient:
         cloud_type: str | CloudType | None = None,
         sort: Callable[[Any], Any] | None = None,
         reverse: bool = False,
-        **kwargs
-    ) -> Optional['ClientGPUInstance']:
+        **kwargs,
+    ) -> Optional["ClientGPUInstance"]:
         """Create GPU instance
 
         Args:
@@ -231,13 +235,15 @@ class GPUClient:
         if cloud_type is not None and not isinstance(query, (list, GPUOffer)):
             # Convert string to enum if needed
             if isinstance(cloud_type, str):
-                cloud_enum = CloudType.SECURE if cloud_type.lower() == "secure" else CloudType.COMMUNITY
+                cloud_enum = (
+                    CloudType.SECURE if cloud_type.lower() == "secure" else CloudType.COMMUNITY
+                )
             else:
                 cloud_enum = cloud_type
 
             # Add cloud_type to query
             if query is None:
-                query = (self.cloud_type == cloud_enum)
+                query = self.cloud_type == cloud_enum
             else:
                 query = query & (self.cloud_type == cloud_enum)
 
@@ -252,34 +258,34 @@ class GPUClient:
             sort=sort,
             reverse=reverse,
             credentials=self._credentials,
-            **kwargs
+            **kwargs,
         )
 
         # Tiger Style: Assert postconditions - create() now returns ProvisionResult
         from .types import ProvisionResult
-        assert isinstance(result, ProvisionResult), \
+
+        assert isinstance(result, ProvisionResult), (
             f"create() must return ProvisionResult, got {type(result)}"
+        )
 
         if result.success:
             # Tiger Style: Assert invariant - success implies instance exists
-            assert result.instance is not None, \
-                "ProvisionResult.success=True but instance is None"
+            assert result.instance is not None, "ProvisionResult.success=True but instance is None"
             return ClientGPUInstance(result.instance, self)
 
         # Provisioning failed - raise with details
         error_msg = result.error_summary or "Unknown error"
         if result.no_offers_found:
             raise ProvisionError(f"No offers found: {error_msg}", result)
-        elif result.credential_error:
+        if result.credential_error:
             raise ProvisionError(f"Credential error: {error_msg}", result)
-        elif result.network_error:
+        if result.network_error:
             raise ProvisionError(f"Network error: {error_msg}", result)
-        elif result.all_unavailable:
+        if result.all_unavailable:
             raise ProvisionError(f"All offers unavailable: {error_msg}", result)
-        else:
-            raise ProvisionError(f"Provisioning failed: {error_msg}", result)
+        raise ProvisionError(f"Provisioning failed: {error_msg}", result)
 
-    def get_instance(self, instance_id: str, provider: str) -> Optional['ClientGPUInstance']:
+    def get_instance(self, instance_id: str, provider: str) -> Optional["ClientGPUInstance"]:
         """Get instance details
 
         Args:
@@ -304,7 +310,7 @@ class GPUClient:
 
         return api.terminate_instance(instance_id, provider, credentials=self._credentials)
 
-    def list_instances(self, provider: str | None = None) -> list['ClientGPUInstance']:
+    def list_instances(self, provider: str | None = None) -> list["ClientGPUInstance"]:
         """List all user's instances
 
         Args:
@@ -410,7 +416,7 @@ class ClientGPUInstance:
         """Wait until SSH is ready"""
         return self._instance.wait_until_ssh_ready(timeout)
 
-    def refresh(self) -> 'ClientGPUInstance':
+    def refresh(self) -> "ClientGPUInstance":
         """Refresh the wrapped instance with latest data"""
         updated_instance = self._client.get_instance(self._instance.id, self._instance.provider)
         if updated_instance:

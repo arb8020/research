@@ -14,10 +14,7 @@ async def test_async_client_context_manager():
     # This test doesn't actually connect, just tests the interface
     # Real connection tests would require a live SSH server
 
-    client = AsyncBifrostClient(
-        ssh_connection="user@example.com:22",
-        ssh_key_path="~/.ssh/id_rsa"
-    )
+    client = AsyncBifrostClient(ssh_connection="user@example.com:22", ssh_key_path="~/.ssh/id_rsa")
 
     # Verify client was created
     assert client is not None
@@ -28,14 +25,11 @@ async def test_async_client_context_manager():
 
 async def test_exec_stream_interface():
     """Test that exec_stream returns an async iterator."""
-    client = AsyncBifrostClient(
-        ssh_connection="user@example.com:22",
-        ssh_key_path="~/.ssh/id_rsa"
-    )
+    client = AsyncBifrostClient(ssh_connection="user@example.com:22", ssh_key_path="~/.ssh/id_rsa")
 
     # Verify the method exists and has correct signature
-    assert hasattr(client, 'exec_stream')
-    assert hasattr(client.exec_stream, '__call__')
+    assert hasattr(client, "exec_stream")
+    assert callable(client.exec_stream)
 
 
 async def test_parallel_operations_with_nursery():

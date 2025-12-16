@@ -7,7 +7,7 @@ without modification while using the shared implementation.
 
 All advanced features from the deprecated ssh_clients.py are now available:
 - Streaming execution with callbacks
-- Interactive SSH sessions  
+- Interactive SSH sessions
 - Connection testing utilities
 """
 
@@ -29,48 +29,54 @@ from shared.ssh_foundation import test_ssh_connection as _test_ssh_connection
 
 class SSHMethod(Enum):
     """SSH connection methods - only direct SSH supported"""
+
     DIRECT = "direct"
 
 
 class SSHClient(Enum):
     """SSH client types"""
+
     PARAMIKO = "paramiko"
     ASYNCSSH = "asyncssh"
 
 
 # Broker-specific conversion utilities
-def _create_connection_info_from_gpu_instance(instance, private_key: str | None = None, timeout: int = 30) -> SSHConnectionInfo:
+def _create_connection_info_from_gpu_instance(
+    instance, private_key: str | None = None, timeout: int = 30
+) -> SSHConnectionInfo:
     """Create SSHConnectionInfo from broker GPUInstance
-    
+
     Args:
         instance: GPUInstance with SSH connection details
         private_key: Optional SSH private key content
         timeout: Connection timeout
-        
+
     Returns:
         SSHConnectionInfo for the instance
-        
+
     Raises:
         ValueError: If proxy SSH detected or SSH details unavailable
     """
     # Reject proxy SSH - only direct SSH supported
     if instance.public_ip == "ssh.runpod.io":
         raise ValueError("Direct SSH not available - only proxy SSH found")
-        
+
     if not instance.public_ip or not instance.ssh_port or not instance.ssh_username:
         raise ValueError("Instance SSH details not available")
-        
+
     return SSHConnectionInfo(
         hostname=instance.public_ip,
         port=instance.ssh_port,
         username=instance.ssh_username,
         key_content=private_key,
-        timeout=timeout
+        timeout=timeout,
     )
 
 
 # Broker-compatible wrapper functions
-def execute_command_sync(instance, private_key: str | None, command: str, timeout: int = 30) -> tuple[int, str, str]:
+def execute_command_sync(
+    instance, private_key: str | None, command: str, timeout: int = 30
+) -> tuple[int, str, str]:
     """Execute command synchronously using broker GPUInstance"""
     try:
         conn_info = _create_connection_info_from_gpu_instance(instance, private_key, timeout)
@@ -79,7 +85,9 @@ def execute_command_sync(instance, private_key: str | None, command: str, timeou
         return -1, "", f"Broker sync execution failed: {e}"
 
 
-async def execute_command_async(instance, private_key: str | None, command: str, timeout: int = 30) -> tuple[int, str, str]:
+async def execute_command_async(
+    instance, private_key: str | None, command: str, timeout: int = 30
+) -> tuple[int, str, str]:
     """Execute command asynchronously using broker GPUInstance"""
     try:
         conn_info = _create_connection_info_from_gpu_instance(instance, private_key, timeout)
@@ -88,8 +96,13 @@ async def execute_command_async(instance, private_key: str | None, command: str,
         return -1, "", f"Broker async execution failed: {e}"
 
 
-def execute_command_streaming(instance, command: str, private_key: str | None = None, timeout: int = 30,
-                             output_callback: Callable[[str, bool], None] | None = None) -> tuple[int, str, str]:
+def execute_command_streaming(
+    instance,
+    command: str,
+    private_key: str | None = None,
+    timeout: int = 30,
+    output_callback: Callable[[str, bool], None] | None = None,
+) -> tuple[int, str, str]:
     """Execute command with streaming output using broker GPUInstance"""
     try:
         conn_info = _create_connection_info_from_gpu_instance(instance, private_key, timeout)
@@ -100,7 +113,7 @@ def execute_command_streaming(instance, command: str, private_key: str | None = 
 
 def start_interactive_ssh_session(instance, private_key_path: str | None = None):
     """Start an interactive SSH session using broker GPUInstance
-    
+
     Args:
         instance: GPU instance to connect to
         private_key_path: Optional private key path (if None, uses SSH agent/default keys)
@@ -110,19 +123,22 @@ def start_interactive_ssh_session(instance, private_key_path: str | None = None)
         _start_interactive_ssh_session(conn_info, private_key_path)
     except Exception as e:
         import logging
+
         logger = logging.getLogger(__name__)
         logger.error(f"❌ Interactive SSH session failed: {e}")
         raise
 
 
-def test_ssh_connection(instance, private_key: str | None = None, test_both_clients: bool = True) -> tuple[bool, str]:
+def test_ssh_connection(
+    instance, private_key: str | None = None, test_both_clients: bool = True
+) -> tuple[bool, str]:
     """Test SSH connection using broker GPUInstance
-    
+
     Args:
         instance: GPU instance to test
         private_key: Optional private key content
         test_both_clients: Whether to test both sync and async clients
-        
+
     Returns:
         Tuple of (success, message)
     """
@@ -135,20 +151,17 @@ def test_ssh_connection(instance, private_key: str | None = None, test_both_clie
 
 __all__ = [
     # Core execution functions
-    'execute_command_sync',
-    'execute_command_async',
-    
+    "execute_command_sync",
+    "execute_command_async",
     # Advanced features
-    'execute_command_streaming', 
-    'start_interactive_ssh_session',
-    'test_ssh_connection',
-    
+    "execute_command_streaming",
+    "start_interactive_ssh_session",
+    "test_ssh_connection",
     # Core utilities
-    'SSHConnectionInfo',
-    'UniversalSSHClient', 
-    'secure_temp_ssh_key',
-    
+    "SSHConnectionInfo",
+    "UniversalSSHClient",
+    "secure_temp_ssh_key",
     # Enums for compatibility
-    'SSHMethod',
-    'SSHClient'
+    "SSHMethod",
+    "SSHClient",
 ]

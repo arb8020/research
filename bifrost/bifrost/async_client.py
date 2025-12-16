@@ -64,7 +64,7 @@ class AsyncBifrostClient:
         ssh_connection: str,
         ssh_key_path: str,
         timeout: int = 30,
-        progress_callback: Callable[[str, int, int], None] | None = None
+        progress_callback: Callable[[str, int, int], None] | None = None,
     ):
         """
         Initialize Async Bifrost client.
@@ -87,7 +87,7 @@ class AsyncBifrostClient:
             host=self.ssh.host,
             port=self.ssh.port,
             user=self.ssh.user,
-            key_path=validated_ssh_key_path
+            key_path=validated_ssh_key_path,
         )
 
         self.timeout = validated_timeout
@@ -139,11 +139,15 @@ class AsyncBifrostClient:
 
             except Exception as e:
                 if attempt < max_attempts - 1:
-                    wait_time = delay * (backoff ** attempt)
-                    self.logger.debug(f"Connection attempt {attempt + 1} failed, retrying in {wait_time}s...")
+                    wait_time = delay * (backoff**attempt)
+                    self.logger.debug(
+                        f"Connection attempt {attempt + 1} failed, retrying in {wait_time}s..."
+                    )
                     await trio.sleep(wait_time)
                 else:
-                    raise ConnectionError(f"Failed to connect to {self.ssh} after {max_attempts} attempts: {e}")
+                    raise ConnectionError(
+                        f"Failed to connect to {self.ssh} after {max_attempts} attempts: {e}"
+                    )
 
         raise ConnectionError(f"Failed to connect to {self.ssh}")
 
@@ -169,8 +173,9 @@ class AsyncBifrostClient:
         assert self._ssh_conn is not None, "SSH connection must be initialized"
         return self._ssh_conn
 
-    def _build_command_with_env(self, command: str, working_dir: str,
-                                env: EnvironmentVariables | None) -> str:
+    def _build_command_with_env(
+        self, command: str, working_dir: str, env: EnvironmentVariables | None
+    ) -> str:
         """Build command with environment variables and working directory.
 
         Args:
@@ -204,7 +209,7 @@ class AsyncBifrostClient:
         self,
         command: str,
         env: EnvironmentVariables | dict[str, str] | None = None,
-        working_dir: str | None = None
+        working_dir: str | None = None,
     ) -> ExecResult:
         """
         Execute command in remote environment.
@@ -237,7 +242,9 @@ class AsyncBifrostClient:
                 if self._last_workspace:
                     self.logger.debug(f"Using workspace from last push(): {working_dir}")
                 else:
-                    self.logger.debug(f"No workspace deployed yet, using home directory: {working_dir}")
+                    self.logger.debug(
+                        f"No workspace deployed yet, using home directory: {working_dir}"
+                    )
 
             # Convert dict to EnvironmentVariables if needed
             if env is None:
@@ -256,9 +263,7 @@ class AsyncBifrostClient:
             result = await _trio_wrap(conn.run)(full_command, check=False)
 
             return ExecResult(
-                stdout=result.stdout,
-                stderr=result.stderr,
-                exit_code=result.exit_status or 0
+                stdout=result.stdout, stderr=result.stderr, exit_code=result.exit_status or 0
             )
 
         except Exception as e:
@@ -270,7 +275,7 @@ class AsyncBifrostClient:
         self,
         command: str,
         env: EnvironmentVariables | dict[str, str] | None = None,
-        working_dir: str | None = None
+        working_dir: str | None = None,
     ) -> AsyncIterator[str]:
         """
         Execute command and stream output line-by-line in real-time.
@@ -298,7 +303,9 @@ class AsyncBifrostClient:
                 if self._last_workspace:
                     self.logger.debug(f"Using workspace from last push(): {working_dir}")
                 else:
-                    self.logger.debug(f"No workspace deployed yet, using home directory: {working_dir}")
+                    self.logger.debug(
+                        f"No workspace deployed yet, using home directory: {working_dir}"
+                    )
 
             # Convert dict to EnvironmentVariables if needed
             if env is None:
@@ -315,7 +322,7 @@ class AsyncBifrostClient:
 
             # Create async process - asyncssh returns AsyncIterator for stdout
             # Using term_type='ansi' to get a PTY which combines stdout/stderr
-            process = await _trio_wrap(conn.create_process)(full_command, term_type='ansi')
+            process = await _trio_wrap(conn.create_process)(full_command, term_type="ansi")
             try:
                 # Stream output line by line
                 # Can't use 'async for' because asyncssh's async iterator doesn't work with
@@ -325,7 +332,7 @@ class AsyncBifrostClient:
                         line = await _trio_wrap(process.stdout.readline)()
                         if not line:
                             break
-                        yield line.rstrip('\r\n')
+                        yield line.rstrip("\r\n")
                     except EOFError:
                         break
             finally:
@@ -336,11 +343,7 @@ class AsyncBifrostClient:
                 raise
             raise ConnectionError(f"Streaming execution failed: {e}")
 
-    async def push(
-        self,
-        workspace_path: str,
-        bootstrap_cmd: str | list[str] | None = None
-    ) -> str:
+    async def push(self, workspace_path: str, bootstrap_cmd: str | list[str] | None = None) -> str:
         """Deploy code to remote workspace.
 
         Args:
@@ -397,7 +400,9 @@ class AsyncBifrostClient:
             commands = [bootstrap_cmd] if isinstance(bootstrap_cmd, str) else bootstrap_cmd
             for cmd in commands:
                 self.logger.debug(f"Running bootstrap: {cmd}")
-                result = await _trio_wrap(conn.run)(f"cd {expanded_workspace_path} && {cmd}", check=False)
+                result = await _trio_wrap(conn.run)(
+                    f"cd {expanded_workspace_path} && {cmd}", check=False
+                )
                 if result.exit_status != 0:
                     raise RuntimeError(f"Bootstrap command failed: {cmd}\n{result.stderr}")
 
@@ -413,7 +418,7 @@ class AsyncBifrostClient:
         self,
         command: str,
         bootstrap_cmd: str | list[str] | None = None,
-        env: EnvironmentVariables | dict[str, str] | None = None
+        env: EnvironmentVariables | dict[str, str] | None = None,
     ) -> ExecResult:
         """Deploy code and execute command.
 
@@ -431,7 +436,9 @@ class AsyncBifrostClient:
             ConnectionError: SSH connection failed
             RuntimeError: Deployment failed
         """
-        workspace_path = await self.push(workspace_path="~/.bifrost/workspace", bootstrap_cmd=bootstrap_cmd)
+        workspace_path = await self.push(
+            workspace_path="~/.bifrost/workspace", bootstrap_cmd=bootstrap_cmd
+        )
         return await self.exec(command, env=env, working_dir=workspace_path)
 
     async def expand_path(self, path: str) -> str:
@@ -476,8 +483,10 @@ class AsyncBifrostClient:
             conn = await self._get_connection()
 
             # Get list of job directories
-            result = await _trio_wrap(conn.run)("ls -1 ~/.bifrost/jobs/ 2>/dev/null || echo ''", check=False)
-            job_dirs = [d.strip() for d in result.stdout.split('\n') if d.strip()]
+            result = await _trio_wrap(conn.run)(
+                "ls -1 ~/.bifrost/jobs/ 2>/dev/null || echo ''", check=False
+            )
+            job_dirs = [d.strip() for d in result.stdout.split("\n") if d.strip()]
 
             jobs = []
             for job_id in job_dirs:
@@ -514,8 +523,7 @@ class AsyncBifrostClient:
 
             # Get job metadata
             metadata_result = await _trio_wrap(conn.run)(
-                f"cat ~/.bifrost/jobs/{job_id}/metadata.json 2>/dev/null",
-                check=False
+                f"cat ~/.bifrost/jobs/{job_id}/metadata.json 2>/dev/null", check=False
             )
 
             if metadata_result.exit_status != 0:
@@ -527,16 +535,15 @@ class AsyncBifrostClient:
 
             # Get current status (may be updated from metadata)
             status_result = await _trio_wrap(conn.run)(
-                f"cat ~/.bifrost/jobs/{job_id}/status 2>/dev/null",
-                check=False
+                f"cat ~/.bifrost/jobs/{job_id}/status 2>/dev/null", check=False
             )
             status_str = status_result.stdout.strip()
 
             # Parse times from metadata
-            start_time = datetime.fromisoformat(metadata.start_time.replace('Z', '+00:00'))
+            start_time = datetime.fromisoformat(metadata.start_time.replace("Z", "+00:00"))
             end_time = None
             if metadata.end_time:
-                end_time = datetime.fromisoformat(metadata.end_time.replace('Z', '+00:00'))
+                end_time = datetime.fromisoformat(metadata.end_time.replace("Z", "+00:00"))
 
             # Calculate runtime
             runtime_seconds = None
@@ -552,7 +559,7 @@ class AsyncBifrostClient:
                 start_time=start_time,
                 end_time=end_time,
                 exit_code=metadata.exit_code,
-                runtime_seconds=runtime_seconds
+                runtime_seconds=runtime_seconds,
             )
 
         except json.JSONDecodeError as e:
@@ -630,7 +637,7 @@ class AsyncBifrostClient:
                         line = await _trio_wrap(process.stdout.readline)()
                         if not line:
                             break
-                        yield line.rstrip('\n')
+                        yield line.rstrip("\n")
                     except EOFError:
                         break
             finally:
@@ -649,13 +656,15 @@ class AsyncBifrostClient:
         """
         conn = await self._get_connection()
 
-        result = await _trio_wrap(conn.run)("tmux list-sessions -F '#{session_name}' 2>/dev/null || echo ''", check=False)
+        result = await _trio_wrap(conn.run)(
+            "tmux list-sessions -F '#{session_name}' 2>/dev/null || echo ''", check=False
+        )
         if result.exit_status != 0:
             return []
 
-        sessions = result.stdout.strip().split('\n')
+        sessions = result.stdout.strip().split("\n")
         # Filter to bifrost sessions only
-        return [s for s in sessions if s.startswith('bifrost-') and s]
+        return [s for s in sessions if s.startswith("bifrost-") and s]
 
     async def get_session_info(self, job_id: str) -> SessionInfo:
         """Get tmux session information for a job.
@@ -676,20 +685,13 @@ class AsyncBifrostClient:
                 main_session=main_session,
                 attach_main=attach_main,
                 bootstrap_session=bootstrap_session,
-                attach_bootstrap=attach_bootstrap
+                attach_bootstrap=attach_bootstrap,
             )
         else:
-            return SessionInfo(
-                job_id=job_id,
-                main_session=main_session,
-                attach_main=attach_main
-            )
+            return SessionInfo(job_id=job_id, main_session=main_session, attach_main=attach_main)
 
     async def wait_for_completion(
-        self,
-        job_id: str,
-        poll_interval: float = 5.0,
-        timeout: float | None = None
+        self, job_id: str, poll_interval: float = 5.0, timeout: float | None = None
     ) -> JobInfo:
         """
         Wait for a job to complete.
@@ -734,10 +736,7 @@ class AsyncBifrostClient:
             return await _wait_loop()
 
     async def copy_files(
-        self,
-        remote_path: str,
-        local_path: str,
-        recursive: bool = False
+        self, remote_path: str, local_path: str, recursive: bool = False
     ) -> CopyResult:
         """
         Copy files from remote to local machine.
@@ -793,7 +792,7 @@ class AsyncBifrostClient:
                     success=True,
                     files_copied=files_copied,
                     total_bytes=total_bytes,
-                    duration_seconds=duration
+                    duration_seconds=duration,
                 )
             finally:
                 sftp.close()
@@ -807,7 +806,7 @@ class AsyncBifrostClient:
                 files_copied=0,
                 total_bytes=0,
                 duration_seconds=duration,
-                error_message=str(e)
+                error_message=str(e),
             )
 
     async def _copy_file(self, sftp, remote_path: str, local_path: str) -> int:
@@ -825,14 +824,16 @@ class AsyncBifrostClient:
 
         return file_size
 
-    async def _copy_directory(self, sftp, conn, remote_path: str, local_path: str) -> tuple[int, int]:
+    async def _copy_directory(
+        self, sftp, conn, remote_path: str, local_path: str
+    ) -> tuple[int, int]:
         """Copy directory recursively and return (files_copied, total_bytes).
 
         Uses Trio's structured concurrency to copy files in parallel.
         """
         # Get directory listing
         result = await _trio_wrap(conn.run)(f"find {remote_path} -type f", check=True)
-        file_list = [f.strip() for f in result.stdout.split('\n') if f.strip()]
+        file_list = [f.strip() for f in result.stdout.split("\n") if f.strip()]
 
         files_copied = 0
         total_bytes = 0
@@ -861,10 +862,7 @@ class AsyncBifrostClient:
         return files_copied, total_bytes
 
     async def upload_files(
-        self,
-        local_path: str,
-        remote_path: str,
-        recursive: bool = False
+        self, local_path: str, remote_path: str, recursive: bool = False
     ) -> CopyResult:
         """
         Upload files from local to remote machine.
@@ -918,7 +916,7 @@ class AsyncBifrostClient:
                     success=True,
                     files_copied=files_uploaded,
                     total_bytes=total_bytes,
-                    duration_seconds=duration
+                    duration_seconds=duration,
                 )
             finally:
                 sftp.close()
@@ -932,14 +930,14 @@ class AsyncBifrostClient:
                 files_copied=0,
                 total_bytes=0,
                 duration_seconds=duration,
-                error_message=str(e)
+                error_message=str(e),
             )
 
     async def _upload_file(self, sftp, local_path: str, remote_path: str) -> int:
         """Upload single file and return bytes transferred."""
         # Create remote directory if needed
         remote_dir = os.path.dirname(remote_path)
-        if remote_dir and remote_dir != '.':
+        if remote_dir and remote_dir != ".":
             await self._create_remote_dir(sftp, remote_dir)
 
         # Get file size
@@ -976,7 +974,7 @@ class AsyncBifrostClient:
         total_bytes = 0
 
         # Collect all files first
-        all_files = [f for f in local_path_obj.rglob('*') if f.is_file()]
+        all_files = [f for f in local_path_obj.rglob("*") if f.is_file()]
 
         # Use Trio nursery for parallel file uploads
         async def upload_one_file(local_file: Path):
@@ -984,7 +982,7 @@ class AsyncBifrostClient:
 
             # Calculate relative path and remote destination
             rel_path = local_file.relative_to(local_path_obj)
-            remote_file = f"{remote_path}/{rel_path}".replace('\\', '/')
+            remote_file = f"{remote_path}/{rel_path}".replace("\\", "/")
 
             # Upload file
             try:
@@ -1002,10 +1000,7 @@ class AsyncBifrostClient:
         return files_uploaded, total_bytes
 
     async def download_files(
-        self,
-        remote_path: str,
-        local_path: str,
-        recursive: bool = False
+        self, remote_path: str, local_path: str, recursive: bool = False
     ) -> CopyResult:
         """
         Download files from remote to local machine.

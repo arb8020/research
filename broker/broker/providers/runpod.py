@@ -208,7 +208,7 @@ def _map_status(desired_status: str) -> InstanceStatus:
         "PENDING": InstanceStatus.PENDING,
         "STOPPED": InstanceStatus.STOPPED,
         "TERMINATED": InstanceStatus.TERMINATED,
-        "FAILED": InstanceStatus.FAILED
+        "FAILED": InstanceStatus.FAILED,
     }
     # Default to PENDING for unknown statuses
     return status_map.get(desired_status, InstanceStatus.PENDING)
@@ -216,16 +216,16 @@ def _map_status(desired_status: str) -> InstanceStatus:
 
 def _build_ports_string(exposed_ports: list[int] | None, enable_http_proxy: bool) -> str:
     """Build ports string for RunPod instance configuration.
-    
+
     Args:
         exposed_ports: List of ports to expose (e.g., [8000] for vLLM)
         enable_http_proxy: Whether to enable HTTP proxy for exposed ports
-        
+
     Returns:
         Ports string in RunPod format (e.g., "22/tcp,8000/http")
     """
     ports = ["22/tcp"]  # Always include SSH
-    
+
     if exposed_ports and enable_http_proxy:
         for port in exposed_ports:
             ports.append(f"{port}/http")
@@ -233,12 +233,14 @@ def _build_ports_string(exposed_ports: list[int] | None, enable_http_proxy: bool
         # TCP only if HTTP proxy disabled
         for port in exposed_ports:
             ports.append(f"{port}/tcp")
-            
+
     return ",".join(ports)
 
 
 @retry(max_attempts=3, delay=1, backoff=2, exceptions=(requests.RequestException, requests.Timeout))
-def _make_graphql_request(query: str, variables: dict | None = None, api_key: str | None = None) -> dict[str, Any]:
+def _make_graphql_request(
+    query: str, variables: dict | None = None, api_key: str | None = None
+) -> dict[str, Any]:
     """Make a GraphQL request to RunPod API with automatic retries.
 
     Retries up to 3 times with exponential backoff (1s, 2s, 4s) on network errors.
@@ -251,11 +253,12 @@ def _make_graphql_request(query: str, variables: dict | None = None, api_key: st
     if not api_key:
         raise ValueError("RunPod API key is required but was not provided")
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-    logger.debug("RunPod GraphQL request %s (api key ...%s)", query.split("\n")[0][:60], api_key[-4:] if api_key else "none")
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    logger.debug(
+        "RunPod GraphQL request %s (api key ...%s)",
+        query.split("\n")[0][:60],
+        api_key[-4:] if api_key else "none",
+    )
 
     payload = {"query": query}
     if variables:
@@ -283,9 +286,14 @@ def _make_graphql_request(query: str, variables: dict | None = None, api_key: st
     return data["data"]
 
 
-def search_gpu_offers(cuda_version: str | None = None, manufacturer: str | None = None,
-                      memory_gb: int | None = None, container_disk_gb: int | None = None,
-                      gpu_count: int = 1, api_key: str | None = None) -> list[GPUOffer]:
+def search_gpu_offers(
+    cuda_version: str | None = None,
+    manufacturer: str | None = None,
+    memory_gb: int | None = None,
+    container_disk_gb: int | None = None,
+    gpu_count: int = 1,
+    api_key: str | None = None,
+) -> list[GPUOffer]:
     """Search for available GPU offers on RunPod with optional CUDA version and manufacturer filtering
 
     Note: Queries secure and community clouds separately to get accurate stock availability
@@ -298,7 +306,10 @@ def search_gpu_offers(cuda_version: str | None = None, manufacturer: str | None 
         cloud_name = "secure" if cloud_type_filter else "community"
 
         # Build lowestPrice input with cloud type filter
-        lowest_price_params = [f"gpuCount: {gpu_count}", f"secureCloud: {str(cloud_type_filter).lower()}"]
+        lowest_price_params = [
+            f"gpuCount: {gpu_count}",
+            f"secureCloud: {str(cloud_type_filter).lower()}",
+        ]
         if cuda_version:
             lowest_price_params.append(f'cudaVersion: "{cuda_version}"')
         lowest_price_input = f"{{ {', '.join(lowest_price_params)} }}"
@@ -341,7 +352,9 @@ def search_gpu_offers(cuda_version: str | None = None, manufacturer: str | None 
 
                 # Check if this cloud type is available and has pricing
                 if cloud_type_filter:  # Secure cloud
-                    if not gpu_type.get("secureCloud") or not price_info.get("uninterruptablePrice"):
+                    if not gpu_type.get("secureCloud") or not price_info.get(
+                        "uninterruptablePrice"
+                    ):
                         continue
                     total_price = price_info["uninterruptablePrice"]
                     cloud_type = CloudType.SECURE
@@ -363,26 +376,28 @@ def search_gpu_offers(cuda_version: str | None = None, manufacturer: str | None 
                 available_counts = price_info.get("availableGpuCounts", [])
                 stock_status = price_info.get("stockStatus")
 
-                offers.append(GPUOffer(
-                    id=offer_id,
-                    provider="runpod",
-                    gpu_type=gpu_type["displayName"],
-                    gpu_count=gpu_count,
-                    vcpu=0,  # Not specified in this query
-                    memory_gb=gpu_vram,  # For backward compatibility - this is actually GPU VRAM
-                    vram_gb=gpu_vram,    # Properly populate VRAM field
-                    storage_gb=0,  # Not specified in this query
-                    price_per_hour=per_gpu_price,  # Normalized per-GPU price
-                    availability_zone=f"{cloud_name}-cloud",
-                    cloud_type=cloud_type,
-                    spot=spot,
-                    cuda_version=cuda_version,
-                    manufacturer=gpu_type.get("manufacturer"),
-                    max_gpu_count=max_gpu_count,
-                    available_gpu_counts=available_counts,
-                    stock_status=stock_status,
-                    raw_data=gpu_type
-                ))
+                offers.append(
+                    GPUOffer(
+                        id=offer_id,
+                        provider="runpod",
+                        gpu_type=gpu_type["displayName"],
+                        gpu_count=gpu_count,
+                        vcpu=0,  # Not specified in this query
+                        memory_gb=gpu_vram,  # For backward compatibility - this is actually GPU VRAM
+                        vram_gb=gpu_vram,  # Properly populate VRAM field
+                        storage_gb=0,  # Not specified in this query
+                        price_per_hour=per_gpu_price,  # Normalized per-GPU price
+                        availability_zone=f"{cloud_name}-cloud",
+                        cloud_type=cloud_type,
+                        spot=spot,
+                        cuda_version=cuda_version,
+                        manufacturer=gpu_type.get("manufacturer"),
+                        max_gpu_count=max_gpu_count,
+                        available_gpu_counts=available_counts,
+                        stock_status=stock_status,
+                        raw_data=gpu_type,
+                    )
+                )
 
         except Exception as e:
             logger.error(f"Failed to query RunPod {cloud_name} cloud: {e}")
@@ -391,11 +406,13 @@ def search_gpu_offers(cuda_version: str | None = None, manufacturer: str | None 
     return offers
 
 
-def provision_instance(request: ProvisionRequest, ssh_startup_script: str | None = None, api_key: str | None = None) -> GPUInstance | None:
+def provision_instance(
+    request: ProvisionRequest, ssh_startup_script: str | None = None, api_key: str | None = None
+) -> GPUInstance | None:
     """Provision a GPU instance on RunPod"""
     # First, we need to find a suitable GPU type
     # For now, let's implement a simple approach using podFindAndDeployOnDemand
-    
+
     mutation = """
     mutation podFindAndDeployOnDemand($input: PodFindAndDeployOnDemandInput!) {
         podFindAndDeployOnDemand(input: $input) {
@@ -407,36 +424,31 @@ def provision_instance(request: ProvisionRequest, ssh_startup_script: str | None
         }
     }
     """
-    
+
     # Build input for the mutation
     env_vars = []
-    
+
     # Add SSH startup script if provided
     if ssh_startup_script:
-        env_vars.append({
-            "key": "RUNPOD_STARTUP_SCRIPT",
-            "value": ssh_startup_script
-        })
-    
+        env_vars.append({"key": "RUNPOD_STARTUP_SCRIPT", "value": ssh_startup_script})
+
     # Add Jupyter password if provided
     if request.jupyter_password:
-        env_vars.append({
-            "key": "JUPYTER_PASSWORD",
-            "value": request.jupyter_password
-        })
-    
+        env_vars.append({"key": "JUPYTER_PASSWORD", "value": request.jupyter_password})
+
     pod_input = {
         "gpuCount": request.gpu_count,
         "cloudType": "SECURE" if not request.spot_instance else "COMMUNITY",
         "name": request.name or f"gpus-{request.gpu_type or 'auto'}-{int(time.time())}",
         "supportPublicIp": True,  # Required for SSH access
-        "containerDiskInGb": request.container_disk_gb or 50,  # Default 50GB for ML workloads, configurable
+        "containerDiskInGb": request.container_disk_gb
+        or 50,  # Default 50GB for ML workloads, configurable
         "minVcpuCount": 1,  # Required minimum CPU
         "minMemoryInGb": request.memory_gb or 4,  # Use requested memory or default 4GB minimum
         "ports": _build_ports_string(request.exposed_ports, request.enable_http_proxy),
         "startSsh": True,  # This enables SSH daemon
         "startJupyter": request.start_jupyter,  # Auto-start Jupyter Lab
-        "env": env_vars
+        "env": env_vars,
     }
 
     # Add template ID if specified (takes precedence over imageName)
@@ -457,17 +469,17 @@ def provision_instance(request: ProvisionRequest, ssh_startup_script: str | None
     if request.gpu_type:
         # Use the GPU type ID directly - it should already be the full RunPod ID
         pod_input["gpuTypeId"] = request.gpu_type
-    
+
     variables = {"input": pod_input}
-    
+
     try:
         data = _make_graphql_request(mutation, variables, api_key=api_key)
         pod_data = data.get("podFindAndDeployOnDemand")
-        
+
         if not pod_data:
             logger.error("No pod returned from deployment")
             return None
-        
+
         # Return basic instance info - we'll need another query to get full details
         return GPUInstance(
             id=pod_data["id"],
@@ -478,9 +490,9 @@ def provision_instance(request: ProvisionRequest, ssh_startup_script: str | None
             name=request.name,  # Fix: Use name from request
             price_per_hour=0.0,  # We'll get this from a separate query
             raw_data=pod_data,
-            api_key=api_key  # Store API key for instance methods
+            api_key=api_key,  # Store API key for instance methods
         )
-        
+
     except Exception as e:
         logger.error(f"Failed to provision RunPod instance: {e}")
         return None
@@ -531,18 +543,18 @@ def get_instance_details_enhanced(instance_id: str, api_key: str | None = None) 
         }
     }
     """
-    
+
     variables = {"input": {"podId": instance_id}}
-    
+
     try:
         response = _make_graphql_request(query, variables, api_key=api_key)
         pod_data = response.get("pod")
-        
+
         if not pod_data:
             return None
-        
+
         return pod_data
-        
+
     except Exception as e:
         logger.error(f"Failed to get RunPod instance details: {e}")
         return None
@@ -599,7 +611,7 @@ def get_instance_details(instance_id: str, api_key: str | None = None) -> GPUIns
             ssh_port=ssh_port,
             ssh_username=ssh_username,
             raw_data=pod,
-            api_key=api_key
+            api_key=api_key,
         )
 
     except Exception as e:
@@ -643,7 +655,7 @@ def _parse_pod_to_instance(pod: dict[str, Any], api_key: str | None = None) -> G
         ssh_port=ssh_port,
         ssh_username=ssh_username,
         raw_data=pod,
-        api_key=api_key
+        api_key=api_key,
     )
 
 
@@ -695,11 +707,11 @@ def list_instances(api_key: str | None = None) -> list[GPUInstance]:
         }
     }
     """
-    
+
     try:
         data = _make_graphql_request(query, api_key=api_key)
         pods = data.get("myself", {}).get("pods", [])
-        
+
         instances = []
         for pod in pods:
             try:
@@ -709,9 +721,9 @@ def list_instances(api_key: str | None = None) -> list[GPUInstance]:
             except Exception as e:
                 logger.warning(f"Failed to parse pod {pod.get('id', 'unknown')}: {e}")
                 continue
-        
+
         return instances
-        
+
     except Exception as e:
         logger.error(f"Failed to list RunPod instances: {e}")
         return []
@@ -731,14 +743,14 @@ def get_user_balance(api_key: str | None = None) -> dict[str, Any] | None:
         }
     }
     """
-    
+
     try:
         data = _make_graphql_request(query, api_key=api_key)
         user_data = data.get("myself")
-        
+
         if not user_data:
             return None
-        
+
         # Convert to more readable format
         balance_info = {
             "provider": "runpod",
@@ -748,11 +760,11 @@ def get_user_balance(api_key: str | None = None) -> dict[str, Any] | None:
             "spend_limit": user_data.get("spendLimit"),
             "credit_alert_threshold": user_data.get("creditAlertThreshold"),
             "referral_earnings": user_data.get("referralEarnings", 0),
-            "raw_data": user_data
+            "raw_data": user_data,
         }
-        
+
         return balance_info
-        
+
     except Exception as e:
         logger.error(f"Failed to get RunPod user balance: {e}")
         return None
@@ -766,15 +778,15 @@ def terminate_instance(instance_id: str, api_key: str | None = None) -> bool:
         podTerminate(input: $input)
     }
     """
-    
+
     variables = {"input": {"podId": instance_id}}
-    
+
     try:
         data = _make_graphql_request(mutation, variables, api_key=api_key)
         result = data.get("podTerminate")
         logger.debug(f"runpod terminate response: {result} (type: {type(result)})")
         logger.debug(f"expected instance_id: {instance_id}")
-        
+
         # RunPod's podTerminate API behavior:
         # - Returns null/None on SUCCESSFUL termination
         # - Would throw exception on failure (handled in except block)
@@ -786,7 +798,7 @@ def terminate_instance(instance_id: str, api_key: str | None = None) -> bool:
             logger.debug(f"unexpected terminate response: {result}")
             # Non-null response might still indicate success
             return True
-        
+
     except Exception as e:
         logger.error(f"Failed to terminate RunPod instance: {e}")
         return False
@@ -814,6 +826,7 @@ def wait_for_ssh_ready(instance, timeout: int = 900) -> bool:
 def _wait_until_running(instance, timeout: int) -> bool:
     """Wait for instance to reach RUNNING status (≤70 lines)"""
     import time
+
     start_time = time.time()
 
     logger.debug(f"waiting for instance {instance.id} to reach running...")
@@ -876,9 +889,9 @@ def _wait_for_direct_ssh_assignment(instance, start_time: float, timeout: int) -
 def _has_direct_ssh(instance) -> bool:
     """Check if instance has direct SSH (not proxy)"""
     return (
-        instance.public_ip and
-        instance.ssh_port and
-        instance.public_ip != "ssh.runpod.io"  # RunPod proxy hostname
+        instance.public_ip
+        and instance.ssh_port
+        and instance.public_ip != "ssh.runpod.io"  # RunPod proxy hostname
     )
 
 

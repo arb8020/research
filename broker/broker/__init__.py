@@ -12,11 +12,11 @@ from .types import (
 )
 
 __all__ = [
-    'GPUClient',
-    'ProvisionError',
-    'GPUInstance',
-    'GPUOffer',
-    'CloudType',
-    'InstanceStatus',
-    'ProviderCredentials',
+    "GPUClient",
+    "ProvisionError",
+    "GPUInstance",
+    "GPUOffer",
+    "CloudType",
+    "InstanceStatus",
+    "ProviderCredentials",
 ]

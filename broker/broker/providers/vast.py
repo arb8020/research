@@ -26,15 +26,20 @@ def _map_status(actual_status: str) -> InstanceStatus:
         "running": InstanceStatus.RUNNING,
         "loading": InstanceStatus.PENDING,
         "exited": InstanceStatus.STOPPED,
-        "offline": InstanceStatus.FAILED
+        "offline": InstanceStatus.FAILED,
     }
     # Default to PENDING for unknown statuses
     return status_map.get(actual_status, InstanceStatus.PENDING)
 
 
 @retry(max_attempts=3, delay=1, backoff=2, exceptions=(requests.RequestException, requests.Timeout))
-def _make_api_request(method: str, endpoint: str, data: dict | None = None,
-                     params: dict | None = None, api_key: str | None = None) -> dict[str, Any]:
+def _make_api_request(
+    method: str,
+    endpoint: str,
+    data: dict | None = None,
+    params: dict | None = None,
+    api_key: str | None = None,
+) -> dict[str, Any]:
     """Make a REST API request to Vast.ai with automatic retries.
 
     Retries up to 3 times with exponential backoff (1s, 2s, 4s) on network errors.
@@ -44,14 +49,15 @@ def _make_api_request(method: str, endpoint: str, data: dict | None = None,
     if not api_key:
         raise ValueError("Vast.ai API key is required but was not provided")
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
     url = f"{VAST_API_BASE_URL}{endpoint}"
-    logger.debug("Vast.ai API request %s %s (api key ...%s)",
-                 method, url, api_key[-4:] if api_key else "none")
+    logger.debug(
+        "Vast.ai API request %s %s (api key ...%s)",
+        method,
+        url,
+        api_key[-4:] if api_key else "none",
+    )
 
     try:
         response = requests.request(
@@ -68,7 +74,7 @@ def _make_api_request(method: str, endpoint: str, data: dict | None = None,
         raise
     except requests.RequestException as exc:
         # Log response body for debugging 400 errors
-        if hasattr(exc, 'response') and exc.response is not None:
+        if hasattr(exc, "response") and exc.response is not None:
             try:
                 error_detail = exc.response.json()
                 logger.error(f"Vast.ai API error: {error_detail}")
@@ -84,10 +90,15 @@ def _make_api_request(method: str, endpoint: str, data: dict | None = None,
     return response.json()
 
 
-def search_gpu_offers(cuda_version: str | None = None, manufacturer: str | None = None,
-                      memory_gb: int | None = None, container_disk_gb: int | None = None,
-                      gpu_count: int = 1, min_reliability: float = 0.95,
-                      api_key: str | None = None) -> list[GPUOffer]:
+def search_gpu_offers(
+    cuda_version: str | None = None,
+    manufacturer: str | None = None,
+    memory_gb: int | None = None,
+    container_disk_gb: int | None = None,
+    gpu_count: int = 1,
+    min_reliability: float = 0.95,
+    api_key: str | None = None,
+) -> list[GPUOffer]:
     """Search for available GPU offers on Vast.ai
 
     Args:
@@ -111,18 +122,20 @@ def search_gpu_offers(cuda_version: str | None = None, manufacturer: str | None 
 
     # Warn if reliability filtering is low
     if min_reliability > 0 and min_reliability < 0.9:
-        logger.warning(f"Low reliability threshold {min_reliability} may result in unreliable hosts")
+        logger.warning(
+            f"Low reliability threshold {min_reliability} may result in unreliable hosts"
+        )
 
     # Build base query with sensible defaults (explicit, not implicit)
     # Use on-demand type for SECURE cloud (more reliable than bid/community)
     query = {
-        "verified": {"eq": True},      # Only verified hosts
-        "external": {"eq": False},     # Exclude external hosts
-        "rentable": {"eq": True},      # Only rentable machines
-        "rented": {"eq": False},       # Only available machines
+        "verified": {"eq": True},  # Only verified hosts
+        "external": {"eq": False},  # Exclude external hosts
+        "rentable": {"eq": True},  # Only rentable machines
+        "rented": {"eq": False},  # Only available machines
         "order": [["dph_total", "asc"]],  # Sort by price ascending
-        "type": "on-demand",           # On-demand only (SECURE cloud)
-        "allocated_storage": 10,       # Minimum storage allocation
+        "type": "on-demand",  # On-demand only (SECURE cloud)
+        "allocated_storage": 10,  # Minimum storage allocation
     }
 
     # Add GPU count filter
@@ -160,15 +173,31 @@ def search_gpu_offers(cuda_version: str | None = None, manufacturer: str | None 
 
             # Vast.ai supports NVIDIA and AMD (as of May 2024)
             # NVIDIA: Most GPUs (RTX, GTX, A100, H100, V100, etc.)
-            is_nvidia = any(x in gpu_name_lower for x in [
-                "rtx", "gtx", "quadro", "tesla", "a100", "h100", "v100",
-                "a6000", "a5000", "l40", "l4", "a10", "a30", "a40"
-            ])
+            is_nvidia = any(
+                x in gpu_name_lower
+                for x in [
+                    "rtx",
+                    "gtx",
+                    "quadro",
+                    "tesla",
+                    "a100",
+                    "h100",
+                    "v100",
+                    "a6000",
+                    "a5000",
+                    "l40",
+                    "l4",
+                    "a10",
+                    "a30",
+                    "a40",
+                ]
+            )
 
             # AMD: Radeon and Instinct lines
-            is_amd = any(x in gpu_name_lower for x in [
-                "radeon", "instinct", "rx ", "mi100", "mi200", "mi300"
-            ])
+            is_amd = any(
+                x in gpu_name_lower
+                for x in ["radeon", "instinct", "rx ", "mi100", "mi200", "mi300"]
+            )
 
             # Filter based on manufacturer
             if mfr_lower == "nvidia" and not is_nvidia:
@@ -200,9 +229,29 @@ def search_gpu_offers(cuda_version: str | None = None, manufacturer: str | None 
 
         # Determine manufacturer from GPU name
         gpu_name_lower = gpu_name.lower()
-        if any(x in gpu_name_lower for x in ["rtx", "gtx", "quadro", "tesla", "a100", "h100", "v100", "a6000", "a5000", "l40", "l4", "a10", "a30", "a40"]):
+        if any(
+            x in gpu_name_lower
+            for x in [
+                "rtx",
+                "gtx",
+                "quadro",
+                "tesla",
+                "a100",
+                "h100",
+                "v100",
+                "a6000",
+                "a5000",
+                "l40",
+                "l4",
+                "a10",
+                "a30",
+                "a40",
+            ]
+        ):
             gpu_manufacturer = "NVIDIA"
-        elif any(x in gpu_name_lower for x in ["radeon", "instinct", "rx ", "mi100", "mi200", "mi300"]):
+        elif any(
+            x in gpu_name_lower for x in ["radeon", "instinct", "rx ", "mi100", "mi200", "mi300"]
+        ):
             gpu_manufacturer = "AMD"
         else:
             gpu_manufacturer = "unknown"
@@ -218,12 +267,16 @@ def search_gpu_offers(cuda_version: str | None = None, manufacturer: str | None 
             storage_gb=offer_data.get("disk_space", 0),
             price_per_hour=price_per_gpu,
             availability_zone=offer_data.get("geolocation"),
-            vram_gb=offer_data.get("gpu_ram", 0) / 1000 if offer_data.get("gpu_ram") else None,  # MB to GB
+            vram_gb=offer_data.get("gpu_ram", 0) / 1000
+            if offer_data.get("gpu_ram")
+            else None,  # MB to GB
             cloud_type=cloud_type,
             manufacturer=gpu_manufacturer,
-            cuda_version=str(offer_data.get("cuda_max_good")) if offer_data.get("cuda_max_good") else None,
+            cuda_version=str(offer_data.get("cuda_max_good"))
+            if offer_data.get("cuda_max_good")
+            else None,
             driver_version=offer_data.get("driver_version"),
-            raw_data=offer_data  # Store full offer data for provisioning
+            raw_data=offer_data,  # Store full offer data for provisioning
         )
 
         offers.append(offer)
@@ -231,8 +284,9 @@ def search_gpu_offers(cuda_version: str | None = None, manufacturer: str | None 
     return offers
 
 
-def provision_instance(request: ProvisionRequest, ssh_startup_script: str | None = None,
-                      api_key: str | None = None) -> GPUInstance | None:
+def provision_instance(
+    request: ProvisionRequest, ssh_startup_script: str | None = None, api_key: str | None = None
+) -> GPUInstance | None:
     """Provision a GPU instance on Vast.ai
 
     Args:
@@ -273,7 +327,9 @@ def provision_instance(request: ProvisionRequest, ssh_startup_script: str | None
         if dph_total is not None:
             price = float(dph_total)
         else:
-            logger.warning(f"No dph_total in raw_data for offer {offer_id}, using default price ${price}")
+            logger.warning(
+                f"No dph_total in raw_data for offer {offer_id}, using default price ${price}"
+            )
 
     # Build request body
     request_body = {
@@ -290,7 +346,7 @@ def provision_instance(request: ProvisionRequest, ssh_startup_script: str | None
         "use_jupyter_lab": False,
         "jupyter_dir": "/",
         "force": False,
-        "cancel_unavail": False
+        "cancel_unavail": False,
     }
 
     try:
@@ -323,7 +379,7 @@ def provision_instance(request: ProvisionRequest, ssh_startup_script: str | None
             price_per_hour=price / (request.gpu_count or 1),  # Convert to per-GPU price
             name=request.name,
             api_key=api_key,  # Store for future API calls
-            raw_data={"offer_id": offer_id, "provisioning_response": data}
+            raw_data={"offer_id": offer_id, "provisioning_response": data},
         )
 
     except ValueError as e:
@@ -403,7 +459,7 @@ def _parse_instance(inst: dict[str, Any], api_key: str) -> GPUInstance:
         ssh_port=ssh_port,
         ssh_username=ssh_username,
         api_key=api_key,
-        raw_data=inst
+        raw_data=inst,
     )
 
 
@@ -501,7 +557,11 @@ def wait_for_ssh_ready(instance, timeout: int = 300) -> bool:
             instance.ssh_port = fresh_instance.ssh_port
             instance.ssh_username = fresh_instance.ssh_username
             break
-        elif fresh_instance.status in [InstanceStatus.FAILED, InstanceStatus.STOPPED, InstanceStatus.TERMINATED]:
+        elif fresh_instance.status in [
+            InstanceStatus.FAILED,
+            InstanceStatus.STOPPED,
+            InstanceStatus.TERMINATED,
+        ]:
             logger.error(f"Instance {instance.id} entered terminal state: {fresh_instance.status}")
             return False
 

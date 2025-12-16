@@ -105,9 +105,7 @@ def parse_env_vars(env_list: list[str]) -> dict[str, str]:
 @app.callback()
 def main(
     ctx: typer.Context,
-    ssh_key: str | None = typer.Option(
-        None, "--ssh-key", help="Path to SSH private key"
-    ),
+    ssh_key: str | None = typer.Option(None, "--ssh-key", help="Path to SSH private key"),
     quiet: bool = typer.Option(False, "-q", "--quiet"),
     json_output: bool = typer.Option(False, "--json"),
     debug: bool = typer.Option(False, "--debug"),
@@ -397,9 +395,7 @@ def run(
         )
     else:
         logger.info(f"job {job_info.job_id} started")
-        logger.info(
-            f"monitor: bifrost logs {ssh_connection} {job_info.job_id} --follow"
-        )
+        logger.info(f"monitor: bifrost logs {ssh_connection} {job_info.job_id} --follow")
 
 
 @app.command()
@@ -428,9 +424,7 @@ def jobs(
                         "job_id": j.job_id,
                         "status": j.status.value,
                         "command": j.command,
-                        "start_time": (
-                            j.start_time.isoformat() if j.start_time else None
-                        ),
+                        "start_time": (j.start_time.isoformat() if j.start_time else None),
                     }
                     for j in jobs_list
                 ],
@@ -450,18 +444,12 @@ def jobs(
 
         for job in jobs_list:
             status_style = "green" if job.status == JobStatus.COMPLETED else "yellow"
-            runtime = (
-                f"{int(job.runtime_seconds)}s" if job.runtime_seconds else "N/A"
-            )
+            runtime = f"{int(job.runtime_seconds)}s" if job.runtime_seconds else "N/A"
 
             table.add_row(
                 job.job_id,
                 f"[{status_style}]{job.status.value}[/{status_style}]",
-                (
-                    job.command[:40] + "..."
-                    if len(job.command) > 40
-                    else job.command
-                ),
+                (job.command[:40] + "..." if len(job.command) > 40 else job.command),
                 runtime,
             )
 
@@ -526,9 +514,7 @@ def download(
     result = client.download_files(remote_path, local_path, recursive=recursive)
 
     if result.success:
-        logger.info(
-            f"downloaded {result.files_copied} files ({result.total_bytes} bytes)"
-        )
+        logger.info(f"downloaded {result.files_copied} files ({result.total_bytes} bytes)")
     else:
         logger.error(f"✗ Download failed: {result.error_message}")
         raise typer.Exit(1)
@@ -558,9 +544,7 @@ def upload(
     result = client.upload_files(local_path, remote_path, recursive=recursive)
 
     if result.success:
-        logger.info(
-            f"uploaded {result.files_copied} files ({result.total_bytes} bytes)"
-        )
+        logger.info(f"uploaded {result.files_copied} files ({result.total_bytes} bytes)")
     else:
         logger.error(f"✗ Upload failed: {result.error_message}")
         raise typer.Exit(1)

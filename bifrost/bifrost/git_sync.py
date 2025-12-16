@@ -34,8 +34,9 @@ def _upload_bundle_with_retry(sftp, local_bundle_path: str, remote_bundle_path: 
     # Tiger Style: Assert inputs
     assert sftp is not None, "sftp client cannot be None"
     assert os.path.exists(local_bundle_path), f"Local bundle not found: {local_bundle_path}"
-    assert isinstance(remote_bundle_path, str) and len(remote_bundle_path) > 0, \
+    assert isinstance(remote_bundle_path, str) and len(remote_bundle_path) > 0, (
         "remote_bundle_path must be non-empty string"
+    )
 
     # Upload the bundle
     sftp.put(local_bundle_path, remote_bundle_path)
@@ -53,10 +54,7 @@ def _check_untracked_files() -> list[str] | None:
 
     try:
         result = subprocess.run(
-            ['git', 'status', '--porcelain'],
-            capture_output=True,
-            text=True,
-            check=False
+            ["git", "status", "--porcelain"], capture_output=True, text=True, check=False
         )
 
         if result.returncode != 0:
@@ -66,7 +64,7 @@ def _check_untracked_files() -> list[str] | None:
         # Untracked files start with '??'
         untracked = []
         for line in result.stdout.splitlines():
-            if line.startswith('??'):
+            if line.startswith("??"):
                 # Extract filename (remove '?? ' prefix)
                 filename = line[3:].strip()
                 untracked.append(filename)
@@ -87,10 +85,7 @@ def _check_uncommitted_changes() -> list[str] | None:
 
     try:
         result = subprocess.run(
-            ['git', 'status', '--porcelain'],
-            capture_output=True,
-            text=True,
-            check=False
+            ["git", "status", "--porcelain"], capture_output=True, text=True, check=False
         )
 
         if result.returncode != 0:
@@ -101,7 +96,7 @@ def _check_uncommitted_changes() -> list[str] | None:
         # Examples: ' M' (modified), 'M ' (staged), 'MM' (staged + modified)
         uncommitted = []
         for line in result.stdout.splitlines():
-            if line and not line.startswith('??'):
+            if line and not line.startswith("??"):
                 # Extract filename (skip first 3 chars: status codes + space)
                 filename = line[3:].strip()
                 uncommitted.append(filename)
@@ -112,9 +107,7 @@ def _check_uncommitted_changes() -> list[str] | None:
         return None  # Git command failed
 
 
-def deploy_code(ssh_client: paramiko.SSHClient,
-                config: RemoteConfig,
-                workspace_path: str) -> str:
+def deploy_code(ssh_client: paramiko.SSHClient, config: RemoteConfig, workspace_path: str) -> str:
     """Deploy code via git to remote workspace.
 
     Args:
@@ -131,8 +124,9 @@ def deploy_code(ssh_client: paramiko.SSHClient,
     # Assert inputs (Tiger Style)
     assert ssh_client is not None, "ssh_client cannot be None"
     assert isinstance(config, RemoteConfig), "config must be RemoteConfig"
-    assert isinstance(workspace_path, str) and len(workspace_path) > 0, \
+    assert isinstance(workspace_path, str) and len(workspace_path) > 0, (
         "workspace_path must be non-empty string"
+    )
 
     logger.debug(f"Deploying code to {workspace_path}")
 
@@ -155,10 +149,12 @@ def deploy_code(ssh_client: paramiko.SSHClient,
     return workspace_path
 
 
-def run_bootstrap(ssh_client: paramiko.SSHClient,
-                  config: RemoteConfig,
-                  workspace_path: str,
-                  bootstrap_cmd: str | list[str]) -> None:
+def run_bootstrap(
+    ssh_client: paramiko.SSHClient,
+    config: RemoteConfig,
+    workspace_path: str,
+    bootstrap_cmd: str | list[str],
+) -> None:
     """Run bootstrap command(s) to prepare environment.
 
     Args:
@@ -174,10 +170,10 @@ def run_bootstrap(ssh_client: paramiko.SSHClient,
     # Assert inputs (Tiger Style)
     assert ssh_client is not None, "ssh_client cannot be None"
     assert isinstance(config, RemoteConfig), "config must be RemoteConfig"
-    assert isinstance(workspace_path, str) and len(workspace_path) > 0, \
+    assert isinstance(workspace_path, str) and len(workspace_path) > 0, (
         "workspace_path must be non-empty string"
-    assert isinstance(bootstrap_cmd, (str, list)), \
-        "bootstrap_cmd must be string or list of strings"
+    )
+    assert isinstance(bootstrap_cmd, (str, list)), "bootstrap_cmd must be string or list of strings"
 
     # Normalize to list for uniform processing
     if isinstance(bootstrap_cmd, str):
@@ -185,8 +181,9 @@ def run_bootstrap(ssh_client: paramiko.SSHClient,
     else:
         commands = bootstrap_cmd
         # Assert all items are strings
-        assert all(isinstance(cmd, str) and len(cmd) > 0 for cmd in commands), \
+        assert all(isinstance(cmd, str) and len(cmd) > 0 for cmd in commands), (
             "All bootstrap commands must be non-empty strings"
+        )
 
     logger.info(f"running {len(commands)} bootstrap step(s)...")
 
@@ -234,7 +231,9 @@ def _create_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> No
     # Check for uncommitted changes and warn user
     uncommitted = _check_uncommitted_changes()
     if uncommitted:
-        logger.warning(f"⚠️  Found {len(uncommitted)} uncommitted change(s) that will NOT be deployed:")
+        logger.warning(
+            f"⚠️  Found {len(uncommitted)} uncommitted change(s) that will NOT be deployed:"
+        )
         for file in uncommitted[:5]:  # Show first 5
             logger.warning(f"  - {file}")
         if len(uncommitted) > 5:
@@ -242,28 +241,24 @@ def _create_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> No
         logger.warning("💡 Tip: Use 'git commit' to include these changes in deployment")
 
     # Get current HEAD commit hash for logging
-    hash_result = subprocess.run(
-        ['git', 'rev-parse', 'HEAD'],
-        capture_output=True,
-        text=True
-    )
+    hash_result = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True)
     commit_hash = hash_result.stdout.strip() if hash_result.returncode == 0 else "unknown"
     short_hash = commit_hash[:7] if commit_hash != "unknown" else "unknown"
 
     logger.debug(f"📦 Creating git bundle from HEAD: {short_hash} ({commit_hash})")
 
     # Create git bundle locally
-    with tempfile.NamedTemporaryFile(suffix='.bundle', delete=False) as bundle_file:
+    with tempfile.NamedTemporaryFile(suffix=".bundle", delete=False) as bundle_file:
         bundle_path = bundle_file.name
 
     try:
         # Create bundle from current HEAD
         result = subprocess.run(
-            ['git', 'bundle', 'create', bundle_path, 'HEAD'],
-            capture_output=True,
-            text=True
+            ["git", "bundle", "create", bundle_path, "HEAD"], capture_output=True, text=True
         )
-        assert result.returncode == 0, f"Git bundle create failed: {result.stderr}\n\nNot in a git repository. Run 'git init' first."
+        assert result.returncode == 0, (
+            f"Git bundle create failed: {result.stderr}\n\nNot in a git repository. Run 'git init' first."
+        )
 
         logger.debug("Uploading bundle to remote...")
 
@@ -327,7 +322,9 @@ def _update_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> No
     # Check for uncommitted changes and warn user
     uncommitted = _check_uncommitted_changes()
     if uncommitted:
-        logger.warning(f"⚠️  Found {len(uncommitted)} uncommitted change(s) that will NOT be deployed:")
+        logger.warning(
+            f"⚠️  Found {len(uncommitted)} uncommitted change(s) that will NOT be deployed:"
+        )
         for file in uncommitted[:5]:  # Show first 5
             logger.warning(f"  - {file}")
         if len(uncommitted) > 5:
@@ -335,28 +332,24 @@ def _update_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> No
         logger.warning("💡 Tip: Use 'git commit' to include these changes in deployment")
 
     # Get current HEAD commit hash for logging
-    hash_result = subprocess.run(
-        ['git', 'rev-parse', 'HEAD'],
-        capture_output=True,
-        text=True
-    )
+    hash_result = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True)
     commit_hash = hash_result.stdout.strip() if hash_result.returncode == 0 else "unknown"
     short_hash = commit_hash[:7] if commit_hash != "unknown" else "unknown"
 
     logger.debug(f"📦 Creating git bundle from HEAD: {short_hash} ({commit_hash})")
 
     # Create git bundle locally
-    with tempfile.NamedTemporaryFile(suffix='.bundle', delete=False) as bundle_file:
+    with tempfile.NamedTemporaryFile(suffix=".bundle", delete=False) as bundle_file:
         bundle_path = bundle_file.name
 
     try:
         # Create bundle from current HEAD
         result = subprocess.run(
-            ['git', 'bundle', 'create', bundle_path, 'HEAD'],
-            capture_output=True,
-            text=True
+            ["git", "bundle", "create", bundle_path, "HEAD"], capture_output=True, text=True
         )
-        assert result.returncode == 0, f"Git bundle create failed: {result.stderr}\n\nNot in a git repository. Run 'git init' first."
+        assert result.returncode == 0, (
+            f"Git bundle create failed: {result.stderr}\n\nNot in a git repository. Run 'git init' first."
+        )
 
         logger.debug("Uploading bundle to remote...")
 
