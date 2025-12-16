@@ -293,6 +293,8 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
 
     import requests
     import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
     from rollouts._logging import setup_logging
     from rollouts.dtypes import Endpoint
     from rollouts.environments.calculator import CalculatorEnvironment
@@ -302,7 +304,6 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
     from rollouts.training.rollout_gen.async_rollout_manager import AsyncRolloutManager
     from rollouts.training.types import RolloutConfig
     from rollouts.training.weight_sync import SGLangEngine, sync_weights_to_engines
-    from transformers import AutoModelForCausalLM, AutoTokenizer
 
     # Setup logging
     setup_logging(level="INFO", use_color=True)
@@ -337,12 +338,18 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
 
     # Build SGLang command
     sglang_cmd_parts = [
-        "python", "-m", "sglang.launch_server",
-        "--model", config.model.name,
-        "--host", "0.0.0.0",
-        "--port", str(inference_port),
+        "python",
+        "-m",
+        "sglang.launch_server",
+        "--model",
+        config.model.name,
+        "--host",
+        "0.0.0.0",
+        "--port",
+        str(inference_port),
         "--trust-remote-code",
-        "--tool-call-parser", "qwen25",  # Enable function calling for Qwen2.5
+        "--tool-call-parser",
+        "qwen25",  # Enable function calling for Qwen2.5
     ]
 
     # Multi-GPU: add tensor parallel size if more than 1 GPU
@@ -469,7 +476,7 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
                     )
                     results.append(sample)
                 except Exception as e:
-                    logger.warning(f"Rollout failed for prompt '{prompt[:50]}...': {e}")
+                    logger.warning(f"Rollout failed for prompt '{prompt[:50]}...': {e}", exc_info=True)
 
             return results
 
@@ -657,9 +664,10 @@ def run_remote(
 
     Same pattern as examples/sft/base_config.py.
     """
+    from dotenv import load_dotenv
+
     from bifrost.client import BifrostClient
     from broker.client import GPUClient
-    from dotenv import load_dotenv
 
     load_dotenv()
 
