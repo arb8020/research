@@ -415,7 +415,7 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
         endpoint = Endpoint(
             provider="openai",  # SGLang exposes OpenAI-compatible API
             model=config.model.name,
-            base_url=f"http://localhost:{inference_port}/v1",
+            api_base=f"http://localhost:{inference_port}/v1",
         )
 
         # Load dataset
