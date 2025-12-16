@@ -70,6 +70,7 @@ class InteractiveRunner:
         branch_point: int | None = None,
         confirm_tools: bool = False,
         initial_prompt: str | None = None,
+        single_turn: bool = False,
     ) -> None:
         """Initialize runner.
 
@@ -85,6 +86,7 @@ class InteractiveRunner:
             branch_point: Message index where forking from parent
             confirm_tools: Require confirmation before executing tools
             initial_prompt: Optional initial prompt to send immediately
+            single_turn: If True, exit after agent responds (no interactive loop)
         """
         self.trajectory = trajectory
         self.endpoint = endpoint
@@ -97,6 +99,7 @@ class InteractiveRunner:
         self.branch_point = branch_point
         self.confirm_tools = confirm_tools
         self.initial_prompt = initial_prompt
+        self.single_turn = single_turn
 
         # Cancellation scopes
         self._cancel_scope: trio.CancelScope | None = None
@@ -273,9 +276,13 @@ class InteractiveRunner:
             )
 
     async def _handle_no_tool(self, state: AgentState, config: RunConfig) -> AgentState:
-        """Handle response without tool calls - get next user input."""
+        """Handle response without tool calls - get next user input or stop."""
         # Update status
         self._update_frontend_status(state)
+
+        # In single_turn mode, stop after first response without tools
+        if self.single_turn:
+            return dc_replace(state, stop=StopReason.NO_TOOL)
 
         # Get next input
         user_input = await config.on_input("Enter your message: ")
@@ -348,6 +355,7 @@ async def run_interactive(
     branch_point: int | None = None,
     confirm_tools: bool = False,
     initial_prompt: str | None = None,
+    single_turn: bool = False,
 ) -> list[AgentState]:
     """Run an interactive agent with any frontend.
 
@@ -363,6 +371,7 @@ async def run_interactive(
         branch_point: Message index where forking from parent
         confirm_tools: Require confirmation before executing tools
         initial_prompt: Optional initial prompt to send immediately
+        single_turn: If True, exit after agent responds (no interactive loop)
 
     Returns:
         List of agent states from the run
@@ -379,5 +388,6 @@ async def run_interactive(
         branch_point=branch_point,
         confirm_tools=confirm_tools,
         initial_prompt=initial_prompt,
+        single_turn=single_turn,
     )
     return await runner.run()

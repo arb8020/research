@@ -66,35 +66,31 @@ class NoneFrontend:
             ToolResultReceived,
         )
 
-        match event:
-            case TextDelta(delta=text):
-                print(text, end="", flush=True)
+        if isinstance(event, TextDelta):
+            print(event.delta, end="", flush=True)
 
-            case ThinkingDelta(delta=text) if self.show_thinking:
-                # Print thinking in a distinct style
-                print(f"\033[2m{text}\033[0m", end="", flush=True)
+        elif isinstance(event, ThinkingDelta) and self.show_thinking:
+            print(f"\033[2m{event.delta}\033[0m", end="", flush=True)
 
-            case ToolCallStart(tool_name=name) if self.show_tool_calls:
-                print(f"\n\033[1m[Tool: {name}]\033[0m", flush=True)
+        elif isinstance(event, ToolCallStart) and self.show_tool_calls:
+            print(f"\n\033[1m[Tool: {event.tool_name}]\033[0m", flush=True)
 
-            case ToolCallEnd(tool_call=tc) if self.show_tool_calls:
-                # Print args on completion
-                args_str = ", ".join(f"{k}={v!r}" for k, v in tc.args.items())
-                if len(args_str) > 100:
-                    args_str = args_str[:97] + "..."
-                print(f"  Args: {args_str}", flush=True)
+        elif isinstance(event, ToolCallEnd) and self.show_tool_calls:
+            args_str = ", ".join(f"{k}={v!r}" for k, v in event.tool_call.args.items())
+            if len(args_str) > 100:
+                args_str = args_str[:97] + "..."
+            print(f"  Args: {args_str}", flush=True)
 
-            case ToolResultReceived(content=content, is_error=is_error) if self.show_tool_calls:
-                # Truncate long results
-                preview = content[:200] + "..." if len(content) > 200 else content
-                prefix = "\033[31mError:\033[0m" if is_error else "Result:"
-                print(f"  {prefix} {preview}", flush=True)
+        elif isinstance(event, ToolResultReceived) and self.show_tool_calls:
+            preview = event.content[:200] + "..." if len(event.content) > 200 else event.content
+            prefix = "\033[31mError:\033[0m" if event.is_error else "Result:"
+            print(f"  {prefix} {preview}", flush=True)
 
-            case StreamDone():
-                print(flush=True)  # Final newline
+        elif isinstance(event, StreamDone):
+            print(flush=True)
 
-            case StreamError(error=error):
-                print(f"\n\033[31mStream error: {error}\033[0m", file=sys.stderr)
+        elif isinstance(event, StreamError):
+            print(f"\n\033[31mStream error: {event.error}\033[0m", file=sys.stderr)
 
     async def get_input(self, prompt: str = "") -> str:
         """Get user input via stdin.
