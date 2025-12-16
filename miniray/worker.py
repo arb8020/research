@@ -9,6 +9,15 @@ Heinrich Kuttler: os.fork() + socketpair > multiprocessing.
 
 References:
 - /Users/chiraagbalu/research/docs/code_style/multiprocessing_heinrich.md
+
+TODO (Heinrich parity):
+- [ ] memfd_create + mmap for shared memory (large tensor passing without copies)
+      See: os.memfd_create(name), os.ftruncate(fd, size), mmap.mmap(fd, size)
+      Kernel refcounts the fd. For locking, see facebookresearch/moolib.
+- [ ] PDEATHSIG - child dies when parent dies (prctl(PR_SET_PDEATHSIG, SIGTERM))
+      Set in child after fork to ensure cleanup on parent crash.
+- [x] select.select() for multiplexing - wait_any() function and fileno() method
+- [ ] marshal as alternative to JSON (faster for simple Python types)
 """
 
 import json
@@ -161,6 +170,17 @@ class Worker:
         self.w.write("\n")
         self.w.flush()
 
+    def fileno(self) -> int:
+        """Return socket file descriptor for use with select().
+
+        This allows Worker to be used directly with select.select():
+            ready, _, _ = select.select(workers, [], [], timeout)
+
+        Returns:
+            Socket file descriptor
+        """
+        return self._sock.fileno()
+
     def is_alive(self) -> bool:
         """Check if worker process is still alive.
 
@@ -202,6 +222,53 @@ class Worker:
 
         # Tiger Style: Assert clean exit
         assert rc == 0, f"Worker {self.pid} exited with code {rc}"
+
+
+def wait_any(
+    workers: list[Worker],
+    timeout: float | None = None,
+) -> list[Worker]:
+    """Wait for any workers to have data ready for recv().
+
+    Uses select() to efficiently wait on multiple workers.
+    This enables async-style coordination without threads:
+
+        # Fire off work to multiple workers
+        for worker in workers:
+            worker.send({"cmd": "train", "batch": batch})
+
+        # Wait for any to complete
+        pending = list(workers)
+        while pending:
+            ready = wait_any(pending, timeout=1.0)
+            for worker in ready:
+                result = worker.recv()
+                handle(result)
+                pending.remove(worker)
+
+    Args:
+        workers: List of workers to wait on
+        timeout: Max seconds to wait
+            - None = block forever until at least one ready
+            - 0 = poll (return immediately)
+            - >0 = wait up to timeout seconds
+
+    Returns:
+        List of workers that have data ready (may be empty if timeout)
+
+    Example:
+        >>> ready = wait_any(workers, timeout=1.0)
+        >>> for worker in ready:
+        ...     msg = worker.recv()  # Won't block - data is ready
+    """
+    import select
+
+    # Tiger Style: Assert preconditions
+    assert len(workers) > 0, "workers list cannot be empty"
+    assert timeout is None or timeout >= 0, f"timeout must be >= 0, got {timeout}"
+
+    readable, _, _ = select.select(workers, [], [], timeout)
+    return readable
 
 
 def spawn_training_workers(
@@ -300,7 +367,7 @@ if __name__ == "__main__":
 
     def example_work(handle):
         """Example work function"""
-        rank, world_size = handle.recv()
+        rank, world_size = handle.recv(max_size=1024)
         print(f"Hello from worker {rank}/{world_size}!", flush=True)
 
         # Simulate some work
@@ -317,7 +384,7 @@ if __name__ == "__main__":
 
     # Receive results
     for i, worker in enumerate(workers):
-        result = worker.recv()
+        result = worker.recv(max_size=1024)
         print(f"Worker {i} returned: {result}")
 
     # Wait for completion
