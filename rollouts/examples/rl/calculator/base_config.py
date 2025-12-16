@@ -685,7 +685,7 @@ def run_remote(
         print("Deploying code...")
         bootstrap = [
             "cd rollouts && uv python install 3.12 && uv sync --python 3.12",
-            "uv pip install torch 'transformers<4.52' datasets accelerate sglang[all]",
+            "uv pip install torch 'transformers<4.52' datasets accelerate sglang[all] curl_cffi",
         ]
         workspace = bifrost.push("~/.bifrost/workspaces/rollouts-rl", bootstrap_cmd=bootstrap)
         print("Code deployed")
