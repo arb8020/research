@@ -18,7 +18,7 @@ import trio
 
 from rollouts.agents import Actor, AgentState, RunConfig, handle_stop_max_turns, run_agent
 from rollouts.dtypes import Endpoint, Message, Trajectory
-from rollouts.training.types import Sample
+from rollouts.training.types import Sample, Status
 
 # ──────────────────────── High-Level API (Coarse-Grained) ────────────────────
 
@@ -154,8 +154,11 @@ async def generate_rollout_batch(
     )
 
     # Generate all rollouts in parallel (trio structured concurrency)
-    async def gen_one(prompt: str, metadata: dict) -> Sample:
-        return await agent_rollout_to_sample(
+    # Use list to collect results from concurrent tasks
+    samples: list[Sample] = [None] * len(prompts)  # type: ignore[list-item]
+
+    async def gen_one(index: int, prompt: str, metadata: dict) -> None:
+        sample = await agent_rollout_to_sample(
             prompt=prompt,
             environment_cls=environment_cls,
             endpoint=endpoint,
@@ -163,14 +166,14 @@ async def generate_rollout_batch(
             max_turns=max_turns,
             metadata=metadata,
         )
+        samples[index] = sample
 
-    samples = []
     async with trio.open_nursery() as nursery:
-        for prompt, metadata in zip(prompts, metadata_list, strict=False):
-            samples.append(await nursery.start_soon(gen_one, prompt, metadata))
+        for i, (prompt, metadata) in enumerate(zip(prompts, metadata_list, strict=False)):
+            nursery.start_soon(gen_one, i, prompt, metadata)
 
     # Tiger Style: Assert postconditions
-    assert len(samples) == len(prompts), "should generate one sample per prompt"
+    assert all(s is not None for s in samples), "all samples should be generated"
     for sample in samples:
         assert sample.loss_mask, "all samples should have loss_mask"
 
@@ -217,7 +220,19 @@ def trajectory_to_sample(
     # Extract prompt (first user message)
     prompt_msg = trajectory.messages[0]
     assert prompt_msg.role == "user", f"first message should be user, got {prompt_msg.role}"
-    prompt = prompt_msg.content or ""
+    # Convert content to string (Sample.prompt expects str | list[dict])
+    if isinstance(prompt_msg.content, str):
+        prompt = prompt_msg.content
+    elif isinstance(prompt_msg.content, list):
+        # Extract text from content blocks (TextContent has .text attribute)
+        from rollouts.dtypes import TextContent
+        text_parts: list[str] = []
+        for block in prompt_msg.content:
+            if isinstance(block, TextContent):
+                text_parts.append(block.text)
+        prompt = " ".join(text_parts)
+    else:
+        prompt = ""
 
     # Apply chat template to full trajectory (HuggingFace format)
     full_text = tokenizer.apply_chat_template(
@@ -256,7 +271,7 @@ def trajectory_to_sample(
         loss_mask=loss_mask,
         reward=0.0,  # Will be computed by score_fn later
         metadata=metadata or {},
-        status=Sample.Status.COMPLETED,
+        status=Status.COMPLETED,
     )
 
     # Tiger Style: Assert postconditions
