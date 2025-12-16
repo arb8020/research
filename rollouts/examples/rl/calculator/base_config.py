@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import random
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -429,7 +428,6 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
         # Create generate_fn that wraps agent_rollout_to_sample
         async def generate_fn(prompts: list[str | dict]) -> list:
             """Generate samples for a batch of prompts."""
-            from rollouts.training.types import Sample as TrainingSample
 
             results = []
             for prompt_data in prompts:
@@ -690,14 +688,14 @@ def run_remote(
         workspace = bifrost.push("~/.bifrost/workspaces/rollouts-rl", bootstrap_cmd=bootstrap)
         print("Code deployed")
 
-        # Run training
+        # Run training (PYTHONUNBUFFERED=1 for real-time output)
         print("Running training...")
         script_name = Path(script_path).name
-        cmd = f"cd {workspace}/rollouts && uv run python examples/rl/calculator/{script_name}"
+        cmd = f"cd {workspace}/rollouts && PYTHONUNBUFFERED=1 uv run python examples/rl/calculator/{script_name}"
         print(f"Running: {cmd}")
         print("-" * 50)
         for line in bifrost.exec_stream(cmd):
-            print(line, end="")
+            print(line, end="", flush=True)
         print("-" * 50)
 
     finally:
