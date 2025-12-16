@@ -718,6 +718,24 @@ def run_remote(
             print(line, flush=True)
         print("-" * 50)
 
+        # Sync results back to local
+        print("\nSyncing results...")
+        local_results = Path("results/rl")
+        local_results.mkdir(parents=True, exist_ok=True)
+
+        # Sync training outputs (config, metrics, logs)
+        remote_output_dir = "/tmp/rollouts_rl/calculator_grpo"
+        result = bifrost.download_files(
+            remote_path=remote_output_dir,
+            local_path=str(local_results),
+        )
+        if result and result.success:
+            print(f"Results synced to: {local_results}")
+            print(f"  - SGLang logs: {local_results}/sglang_server.log")
+            print(f"  - Config: {local_results}/config.json")
+        else:
+            print(f"Warning: Failed to sync results from {remote_output_dir}")
+
     finally:
         if not keep_alive:
             print(f"\nTerminating instance {instance.provider}:{instance.id}...")
