@@ -168,8 +168,9 @@ class PyTorchTrainingBackend:
             num_minibatches = self.trainer_config.get_num_minibatches(batch_size)
             micro_batch_size = batch_size // num_minibatches
 
-            # Accumulate loss and process micro-batches
+            # Accumulate loss and metrics across micro-batches
             total_loss = 0.0
+            accumulated_metrics: dict[str, float] = {}
 
             for i in range(num_minibatches):
                 start_idx = i * micro_batch_size
@@ -191,8 +192,14 @@ class PyTorchTrainingBackend:
                 else:
                     logits = output
 
-                # Compute loss (SLIME pattern: pass logits and batch dict)
-                loss = self.loss_fn(logits=logits, batch=micro_batch)
+                # Compute loss (loss_fn returns (loss, metrics) or just loss)
+                loss_result = self.loss_fn(logits=logits, batch=micro_batch)
+
+                # Handle both (loss, metrics) tuple and bare loss tensor
+                if isinstance(loss_result, tuple):
+                    loss, metrics = loss_result
+                else:
+                    loss, metrics = loss_result, {}
 
                 # Scale loss for gradient accumulation (SLIME pattern)
                 # This ensures the total gradient is averaged correctly
@@ -204,8 +211,14 @@ class PyTorchTrainingBackend:
                 # Track total loss for logging
                 total_loss += loss.item()
 
-            # Average loss for logging
+                # Accumulate metrics (average across micro-batches)
+                for k, v in metrics.items():
+                    accumulated_metrics[k] = accumulated_metrics.get(k, 0.0) + v
+
+            # Average loss and metrics
             avg_loss = total_loss / num_minibatches
+            for k in accumulated_metrics:
+                accumulated_metrics[k] /= num_minibatches
 
             # Compute grad norm (after accumulation, before clipping)
             grad_norm = (
@@ -216,13 +229,16 @@ class PyTorchTrainingBackend:
             )
 
             # Create future with immediate result
-            future: TrainFuture[dict[str, float]] = TrainFuture(operation="forward_backward")
-            future.set_result({
+            # Merge accumulated metrics with standard metrics
+            result = {
                 "loss": avg_loss,
                 "grad_norm": grad_norm,
                 "num_minibatches": num_minibatches,
                 "micro_batch_size": micro_batch_size,
-            })
+                **accumulated_metrics,  # Include metrics from loss_fn
+            }
+            future: TrainFuture[dict[str, float]] = TrainFuture(operation="forward_backward")
+            future.set_result(result)
             return future
 
         except Exception as e:
