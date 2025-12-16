@@ -113,6 +113,7 @@ def __getattr__(name: str):
         "grpo_loss_masked",
         "ppo_loss",
         "LossOutput",
+        "compute_group_advantages",
     ):
         from rollouts.training import losses
 
@@ -166,4 +167,5 @@ __all__ = [
     "grpo_loss_masked",
     "ppo_loss",
     "LossOutput",
+    "compute_group_advantages",
 ]

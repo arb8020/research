@@ -533,13 +533,24 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
 
                 # 2. Extract rewards (already computed by score_fn in generate_batch)
                 rewards = batch.rewards
+                group_indices = batch.group_indices
 
                 mean_reward = sum(rewards) / len(rewards) if rewards else 0.0
-                logger.info(f"Mean reward: {mean_reward:.3f}")
+                num_groups = len(set(group_indices)) if group_indices else len(rewards)
+                logger.info(f"Mean reward: {mean_reward:.3f} ({len(rewards)} samples, {num_groups} groups)")
 
-                # 3. Compute advantages (GRPO: reward - mean)
-                baseline = mean_reward
-                advantages = torch.tensor([r - baseline for r in rewards], device=device)
+                # 3. Compute advantages (GRPO: group-normalized)
+                # Each sample's advantage = reward - mean(rewards in same group)
+                # This is the "G" (Group) in GRPO
+                from rollouts.training.losses import compute_group_advantages
+
+                if group_indices and len(set(group_indices)) > 1:
+                    # Use group-wise normalization (proper GRPO)
+                    advantages = compute_group_advantages(rewards, group_indices).to(device)
+                else:
+                    # Fallback to batch-wise normalization (single group or no groups)
+                    baseline = mean_reward
+                    advantages = torch.tensor([r - baseline for r in rewards], device=device)
 
                 # 4. Prepare batch for training
                 # Pad sequences to same length

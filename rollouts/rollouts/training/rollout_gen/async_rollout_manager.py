@@ -172,25 +172,30 @@ class AsyncRolloutManager:
         """
 
         # Create tasks for parallel generation
-        async def generate_for_prompt(prompt: str | dict[str, Any]) -> list[Sample]:
-            """Generate n samples for a single prompt."""
+        async def generate_for_prompt(prompt: str | dict[str, Any], group_idx: int) -> list[Sample]:
+            """Generate sample for a single prompt with group index."""
             # Call user's generate function
             # Note: User function should return list[Sample]
             samples = await self._call_user_generate_fn([prompt])
+            # Set group_index on all returned samples
+            for sample in samples:
+                sample.group_index = group_idx
             return samples
 
         # Launch all tasks in parallel with trio
         async with trio.open_nursery() as nursery:
-            results = []
+            results: list[Sample] = []
+            results_lock = trio.Lock()
 
-            async def run_task(prompt):
-                samples = await generate_for_prompt(prompt)
-                results.extend(samples)
+            async def run_task(prompt: str | dict[str, Any], group_idx: int):
+                samples = await generate_for_prompt(prompt, group_idx)
+                async with results_lock:
+                    results.extend(samples)
 
-            for prompt in prompts:
-                # Generate n_samples_per_prompt times
+            for prompt_idx, prompt in enumerate(prompts):
+                # Generate n_samples_per_prompt times, all with same group_index
                 for _ in range(self.config.n_samples_per_prompt):
-                    nursery.start_soon(run_task, prompt)
+                    nursery.start_soon(run_task, prompt, prompt_idx)
 
         return results
 
