@@ -733,23 +733,22 @@ def run_remote(
         local_results = Path("results/rl")
         local_results.mkdir(parents=True, exist_ok=True)
 
-        # Sync training outputs (config, metrics, logs)
-        # Tiger Style: recursive=True to capture nested artifacts (checkpoints, profiler traces)
+        # Sync only logs and config (NOT checkpoints/optimizer state - those are huge)
         remote_output_dir = "/tmp/rollouts_rl/calculator_grpo"
-        try:
-            result = bifrost.download_files(
-                remote_path=remote_output_dir,
-                local_path=str(local_results),
-                recursive=True,
-            )
-            if result and result.success:
-                print(f"Results synced to: {local_results}")
-                if result.files_copied:
-                    print(f"  - {result.files_copied} files synced")
-            else:
-                print(f"Warning: Failed to sync results from {remote_output_dir}")
-        except Exception as e:
-            print(f"Warning: Could not sync results: {e}")
+        files_to_sync = ["sglang_server.log", "config.json", "metrics.json", "training.log"]
+
+        for filename in files_to_sync:
+            try:
+                result = bifrost.download_files(
+                    remote_path=f"{remote_output_dir}/{filename}",
+                    local_path=str(local_results / filename),
+                    recursive=False,
+                )
+                if result and result.success:
+                    print(f"  Synced: {filename}")
+            except Exception as e:
+                # File might not exist yet, that's ok
+                pass
 
         if not keep_alive:
             print(f"\nTerminating instance {instance.provider}:{instance.id}...")
