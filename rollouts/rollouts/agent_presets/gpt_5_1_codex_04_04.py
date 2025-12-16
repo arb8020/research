@@ -11,7 +11,6 @@ GPT-5.1 Codex features:
 
 from rollouts.agent_presets.base_preset import AgentPresetConfig
 
-
 config = AgentPresetConfig(
     name="gpt_5_1_codex",
     model="openai/gpt-5.1-codex",

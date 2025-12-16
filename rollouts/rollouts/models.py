@@ -9,13 +9,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-
 # API type categorization - maps providers to their API interface types
 ApiType = Literal[
-    "openai-completions",      # OpenAI chat completions, Groq, Cerebras, xAI, vLLM/sglang
-    "openai-responses",        # OpenAI responses API (o1, o3 reasoning models)
-    "anthropic-messages",      # Anthropic Claude messages API
-    "google-generative-ai",    # Google Gemini API
+    "openai-completions",  # OpenAI chat completions, Groq, Cerebras, xAI, vLLM/sglang
+    "openai-responses",  # OpenAI responses API (o1, o3 reasoning models)
+    "anthropic-messages",  # Anthropic Claude messages API
+    "google-generative-ai",  # Google Gemini API
 ]
 
 # Known provider types
@@ -35,25 +34,27 @@ Provider = Literal[
 @dataclass(frozen=True)
 class ModelCost:
     """Pricing per million tokens"""
-    input: float          # Per million input tokens
-    output: float         # Per million output tokens
-    cache_read: float     # Per million cache read tokens (if supported)
-    cache_write: float    # Per million cache write tokens (if supported)
+
+    input: float  # Per million input tokens
+    output: float  # Per million output tokens
+    cache_read: float  # Per million cache read tokens (if supported)
+    cache_write: float  # Per million cache write tokens (if supported)
 
 
 @dataclass(frozen=True)
 class ModelMetadata:
     """Complete model metadata for provider abstraction"""
-    id: str                              # Model identifier (e.g., "gpt-4", "claude-3-5-sonnet-20241022")
-    name: str                            # Human-readable name
-    provider: Provider                   # Provider hosting the model
-    api: ApiType                         # API interface type
-    base_url: str                        # Default API base URL
-    reasoning: bool                      # Supports extended thinking/reasoning
+
+    id: str  # Model identifier (e.g., "gpt-4", "claude-3-5-sonnet-20241022")
+    name: str  # Human-readable name
+    provider: Provider  # Provider hosting the model
+    api: ApiType  # API interface type
+    base_url: str  # Default API base URL
+    reasoning: bool  # Supports extended thinking/reasoning
     input_types: list[Literal["text", "image"]]  # Supported input modalities
-    cost: ModelCost                      # Pricing information
-    context_window: int                  # Maximum context length in tokens
-    max_tokens: int                      # Maximum output tokens
+    cost: ModelCost  # Pricing information
+    context_window: int  # Maximum context length in tokens
+    max_tokens: int  # Maximum output tokens
 
 
 # Model registry - organized by provider then model_id
@@ -309,7 +310,9 @@ MODELS: dict[Provider, dict[str, ModelMetadata]] = {
             base_url="https://generativelanguage.googleapis.com",
             reasoning=True,  # Supports thinking
             input_types=["text", "image"],
-            cost=ModelCost(input=0.0, output=0.0, cache_read=0.0, cache_write=0.0),  # Free during preview
+            cost=ModelCost(
+                input=0.0, output=0.0, cache_read=0.0, cache_write=0.0
+            ),  # Free during preview
             context_window=1000000,
             max_tokens=8192,
         ),
@@ -339,7 +342,7 @@ MODELS: dict[Provider, dict[str, ModelMetadata]] = {
         ),
     },
     "sglang": {},  # vLLM/sglang uses custom endpoints, populated at runtime
-    "vllm": {},    # Same as sglang
+    "vllm": {},  # Same as sglang
 }
 
 
@@ -347,17 +350,15 @@ MODELS: dict[Provider, dict[str, ModelMetadata]] = {
 # Maps provider strings to their API interface type
 PROVIDER_API_MAP: dict[str, ApiType] = {
     # OpenAI completions API (chat/completions endpoint)
-    "openai": "openai-completions",      # Default for non-reasoning models
+    "openai": "openai-completions",  # Default for non-reasoning models
     "groq": "openai-completions",
     "cerebras": "openai-completions",
     "xai": "openai-completions",
     "openrouter": "openai-completions",
     "sglang": "openai-completions",
     "vllm": "openai-completions",
-
     # Anthropic messages API
     "anthropic": "anthropic-messages",
-
     # Google generative AI
     "google": "google-generative-ai",
 }
@@ -469,10 +470,10 @@ def calculate_cost(
         return 0.0
 
     total = (
-        (input_tokens / 1_000_000) * cost.input +
-        (output_tokens / 1_000_000) * cost.output +
-        (cache_read_tokens / 1_000_000) * cost.cache_read +
-        (cache_write_tokens / 1_000_000) * cost.cache_write
+        (input_tokens / 1_000_000) * cost.input
+        + (output_tokens / 1_000_000) * cost.output
+        + (cache_read_tokens / 1_000_000) * cost.cache_read
+        + (cache_write_tokens / 1_000_000) * cost.cache_write
     )
 
     return total

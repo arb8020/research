@@ -105,7 +105,7 @@ def screenspot_to_trajectory(row: dict[str, Any]) -> Trajectory:
 
     # Encode image to base64
     with open(image_path, "rb") as f:
-        base64_image = base64.b64encode(f.read()).decode('utf-8')
+        base64_image = base64.b64encode(f.read()).decode("utf-8")
 
     # Determine image format
     image_format = Path(image_path).suffix[1:].lower()
@@ -115,7 +115,7 @@ def screenspot_to_trajectory(row: dict[str, Any]) -> Trajectory:
     # Create system message (matches official ScreenSpot-Pro evaluation)
     system_msg = Message(
         role="system",
-        content="You are an expert in using electronic devices and interacting with graphic interfaces. You should not call any external tools."
+        content="You are an expert in using electronic devices and interacting with graphic interfaces. You should not call any external tools.",
     )
 
     # Create user message with vision content
@@ -125,11 +125,9 @@ def screenspot_to_trajectory(row: dict[str, Any]) -> Trajectory:
             {"type": "text", "text": prompt_text},
             {
                 "type": "image_url",
-                "image_url": {
-                    "url": f"data:image/{image_format};base64,{base64_image}"
-                }
-            }
-        ]
+                "image_url": {"url": f"data:image/{image_format};base64,{base64_image}"},
+            },
+        ],
     )
 
     # Create trajectory with ground truth metadata for environment
@@ -143,7 +141,7 @@ def screenspot_to_trajectory(row: dict[str, Any]) -> Trajectory:
             "platform": row.get("platform", ""),
             "application": row.get("application", ""),
             "ui_type": row.get("ui_type", ""),
-        }
+        },
     )
     assert trajectory is not None
     assert len(trajectory.messages) == 2  # system + user

@@ -4,7 +4,7 @@ Status line component - displays session info, model, tokens below input.
 
 from __future__ import annotations
 
-from typing import Callable, Optional, List, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from ..tui import Component
 from ..utils import visible_width
@@ -18,7 +18,7 @@ class StatusLine(Component):
 
     def __init__(
         self,
-        theme: Optional["Theme"] = None,
+        theme: Theme | None = None,
     ) -> None:
         """Initialize status line.
 
@@ -26,6 +26,7 @@ class StatusLine(Component):
             theme: Theme for styling
         """
         from ..theme import DARK_THEME
+
         self._theme = theme or DARK_THEME
 
         # Status fields
@@ -34,15 +35,17 @@ class StatusLine(Component):
         self._input_tokens: int = 0
         self._output_tokens: int = 0
         self._cost: float = 0.0
+        self._context_window: int | None = None  # Model's max context window
         self._env_info: dict[str, str] | None = None
 
     def set_session_id(self, session_id: str | None) -> None:
         """Set the session ID to display."""
         self._session_id = session_id
 
-    def set_model(self, model: str | None) -> None:
-        """Set the model name to display."""
+    def set_model(self, model: str | None, context_window: int | None = None) -> None:
+        """Set the model name and context window to display."""
         self._model = model
+        self._context_window = context_window
 
     def set_tokens(self, input_tokens: int, output_tokens: int, cost: float = 0.0) -> None:
         """Set token counts and cost."""
@@ -60,7 +63,9 @@ class StatusLine(Component):
         """Set environment info to display."""
         self._env_info = env_info
 
-    def _wrap_parts(self, parts: list[str], available_width: int, separator: str = "  │  ") -> list[str]:
+    def _wrap_parts(
+        self, parts: list[str], available_width: int, separator: str = "  │  "
+    ) -> list[str]:
         """Wrap parts across multiple lines at part boundaries.
 
         Args:
@@ -87,7 +92,7 @@ class StatusLine(Component):
                     current_line = part
                 else:
                     # Single part too wide - truncate it
-                    current_line = part[:available_width - 1] + "…"
+                    current_line = part[: available_width - 1] + "…"
             else:
                 # Check if adding this part fits
                 new_width = visible_width(current_line) + sep_width + part_width
@@ -99,14 +104,14 @@ class StatusLine(Component):
                     if part_width <= available_width:
                         current_line = part
                     else:
-                        current_line = part[:available_width - 1] + "…"
+                        current_line = part[: available_width - 1] + "…"
 
         if current_line:
             lines.append(current_line)
 
         return lines
 
-    def render(self, width: int) -> List[str]:
+    def render(self, width: int) -> list[str]:
         """Render the status line, wrapping at part boundaries if needed."""
         gray = "\x1b[38;5;245m"
         reset = "\x1b[0m"
@@ -126,10 +131,16 @@ class StatusLine(Component):
             padding = " " * max(0, available_width - visible_width(line_content))
             lines.append(f"  {gray}{line_content}{padding}{reset}")
 
-        # Line 2: tokens and cost
+        # Line 2: tokens, context %, and cost
         usage_parts: list[str] = []
         if self._input_tokens > 0 or self._output_tokens > 0:
-            usage_parts.append(f"tokens:{self._input_tokens}↓/{self._output_tokens}↑")
+            token_str = f"tokens:{self._input_tokens}↓/{self._output_tokens}↑"
+            # Add context window percentage if available
+            if self._context_window and self._context_window > 0:
+                total_tokens = self._input_tokens + self._output_tokens
+                pct = (total_tokens / self._context_window) * 100
+                token_str += f" ({pct:.0f}%)"
+            usage_parts.append(token_str)
         if self._cost > 0:
             usage_parts.append(f"cost:${self._cost:.4f}")
 

@@ -74,6 +74,7 @@ def trace_model():
     print("\n### torch.export ###")
     try:
         from torch.export import export
+
         exported = export(model, (input_ids,), kwargs={"attention_mask": attention_mask})
         print(f"Exported graph: {len(list(exported.graph.nodes))} nodes")
 
@@ -85,7 +86,11 @@ def trace_model():
             # Only look at call_function nodes, not placeholders
             if node.op == "call_function":
                 call_nodes.append(node)
-                if "sdpa" in target_str.lower() or "scaled_dot" in target_str.lower() or "scaled_dot_product" in target_str:
+                if (
+                    "sdpa" in target_str.lower()
+                    or "scaled_dot" in target_str.lower()
+                    or "scaled_dot_product" in target_str
+                ):
                     sdpa_nodes.append(node)
 
         print(f"Total call_function nodes: {len(call_nodes)}")
@@ -96,8 +101,9 @@ def trace_model():
 
         # Show unique call_function targets
         from collections import Counter
+
         targets = Counter(str(n.target) for n in call_nodes)
-        print(f"\nMost common ops:")
+        print("\nMost common ops:")
         for target, count in targets.most_common(15):
             print(f"  {target}: {count}")
     except Exception as e:
@@ -123,6 +129,7 @@ def trace_model():
     print(f"Modules called: {len(ops_called)}")
     # Group by type
     from collections import Counter
+
     type_counts = Counter(op[0] for op in ops_called)
     for op_type, count in type_counts.most_common(20):
         print(f"  {op_type}: {count}")
@@ -145,7 +152,7 @@ def trace_model():
     past_key_values = None
 
     # Get the mask that the model actually uses
-    if hasattr(model.model, '_update_causal_mask'):
+    if hasattr(model.model, "_update_causal_mask"):
         causal_mask = model.model._update_causal_mask(
             attention_mask=attention_mask,
             input_tensor=model.model.embed_tokens(input_ids),
@@ -156,13 +163,16 @@ def trace_model():
         if causal_mask is None:
             print("_update_causal_mask returned None (using is_causal=True path)")
         else:
-            print(f"_update_causal_mask returned mask: shape={causal_mask.shape}, dtype={causal_mask.dtype}")
+            print(
+                f"_update_causal_mask returned mask: shape={causal_mask.shape}, dtype={causal_mask.dtype}"
+            )
             for i in range(4):
                 print(f"  HF mask at pos {i}: {causal_mask[0, 0, i, :].tolist()}")
 
     # Compare with my mask
     print("\n### My mask construction ###")
     from qwen_functional import create_causal_mask
+
     my_mask = create_causal_mask(4, input_ids.device, torch.bfloat16, attention_mask)
     if my_mask is None:
         print("My mask is None (using is_causal=True)")
@@ -181,12 +191,15 @@ def trace_model():
 
 if __name__ == "__main__":
     import torch
+
     if torch.cuda.is_available():
         trace_model()
     else:
         print("No GPU available. Run on remote GPU.")
-        from verify import run_on_gpu
         import argparse
+
+        from verify import run_on_gpu
+
         parser = argparse.ArgumentParser()
         parser.add_argument("--gpu-id", type=str)
         args = parser.parse_args()

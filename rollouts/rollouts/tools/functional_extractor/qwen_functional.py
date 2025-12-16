@@ -130,7 +130,9 @@ def compute_rope_embeddings(
     assert positions.ndim == 2, f"Expected 2D positions, got {positions.ndim}D"
 
     # inv_freq: (head_dim // 2,)
-    inv_freq = 1.0 / (theta ** (torch.arange(0, head_dim, 2, device=positions.device).float() / head_dim))
+    inv_freq = 1.0 / (
+        theta ** (torch.arange(0, head_dim, 2, device=positions.device).float() / head_dim)
+    )
 
     # positions: (batch, seq_len) -> (batch, 1, seq_len)
     # inv_freq: (head_dim // 2,) -> (1, head_dim // 2, 1)
@@ -162,7 +164,9 @@ def repeat_kv(hidden_states: Tensor, n_rep: int) -> Tensor:
         return hidden_states
 
     batch, num_kv_heads, seq_len, head_dim = hidden_states.shape
-    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_kv_heads, n_rep, seq_len, head_dim)
+    hidden_states = hidden_states[:, :, None, :, :].expand(
+        batch, num_kv_heads, n_rep, seq_len, head_dim
+    )
     return hidden_states.reshape(batch, num_kv_heads * n_rep, seq_len, head_dim)
 
 
@@ -205,7 +209,7 @@ def attention(
     num_kv_groups = num_heads // num_kv_heads
 
     assert hidden_states.ndim == 3, f"Expected 3D hidden_states, got {hidden_states.ndim}D"
-    assert q_weight.shape[0] == num_heads * head_dim, f"Q weight shape mismatch"
+    assert q_weight.shape[0] == num_heads * head_dim, "Q weight shape mismatch"
 
     # Project Q, K, V
     q = F.linear(hidden_states, q_weight, q_bias)
@@ -228,7 +232,9 @@ def attention(
     # (HF uses SDPA by default which has different numerical behavior than manual attention)
     # When attention_mask is provided, we can't use is_causal=True, so the mask must include causal masking
     attn_output = F.scaled_dot_product_attention(
-        q, k, v,
+        q,
+        k,
+        v,
         attn_mask=attention_mask,
         dropout_p=0.0,
         is_causal=(attention_mask is None),
@@ -312,7 +318,9 @@ def transformer_layer(
 
     # Pre-MLP norm + MLP + residual
     residual = hidden_states
-    hidden_states = rms_norm(hidden_states, layer_weights[f"{prefix}.post_attention_layernorm.weight"])
+    hidden_states = rms_norm(
+        hidden_states, layer_weights[f"{prefix}.post_attention_layernorm.weight"]
+    )
 
     hidden_states = mlp(
         hidden_states,
@@ -421,9 +429,7 @@ def qwen_forward(
 
     # Transformer layers
     for layer_idx in range(num_layers):
-        hidden_states = transformer_layer(
-            hidden_states, weights, layer_idx, cos, sin, attn_mask_4d
-        )
+        hidden_states = transformer_layer(hidden_states, weights, layer_idx, cos, sin, attn_mask_4d)
 
     # Final norm
     hidden_states = rms_norm(hidden_states, weights["model.norm.weight"])
@@ -455,13 +461,21 @@ if __name__ == "__main__":
             prefix = f"model.layers.{i}"
             weights[f"{prefix}.input_layernorm.weight"] = torch.randn(HIDDEN_SIZE)
             weights[f"{prefix}.post_attention_layernorm.weight"] = torch.randn(HIDDEN_SIZE)
-            weights[f"{prefix}.self_attn.q_proj.weight"] = torch.randn(NUM_HEADS * HEAD_DIM, HIDDEN_SIZE)
+            weights[f"{prefix}.self_attn.q_proj.weight"] = torch.randn(
+                NUM_HEADS * HEAD_DIM, HIDDEN_SIZE
+            )
             weights[f"{prefix}.self_attn.q_proj.bias"] = torch.randn(NUM_HEADS * HEAD_DIM)
-            weights[f"{prefix}.self_attn.k_proj.weight"] = torch.randn(NUM_KV_HEADS * HEAD_DIM, HIDDEN_SIZE)
+            weights[f"{prefix}.self_attn.k_proj.weight"] = torch.randn(
+                NUM_KV_HEADS * HEAD_DIM, HIDDEN_SIZE
+            )
             weights[f"{prefix}.self_attn.k_proj.bias"] = torch.randn(NUM_KV_HEADS * HEAD_DIM)
-            weights[f"{prefix}.self_attn.v_proj.weight"] = torch.randn(NUM_KV_HEADS * HEAD_DIM, HIDDEN_SIZE)
+            weights[f"{prefix}.self_attn.v_proj.weight"] = torch.randn(
+                NUM_KV_HEADS * HEAD_DIM, HIDDEN_SIZE
+            )
             weights[f"{prefix}.self_attn.v_proj.bias"] = torch.randn(NUM_KV_HEADS * HEAD_DIM)
-            weights[f"{prefix}.self_attn.o_proj.weight"] = torch.randn(HIDDEN_SIZE, NUM_HEADS * HEAD_DIM)
+            weights[f"{prefix}.self_attn.o_proj.weight"] = torch.randn(
+                HIDDEN_SIZE, NUM_HEADS * HEAD_DIM
+            )
             weights[f"{prefix}.mlp.gate_proj.weight"] = torch.randn(INTERMEDIATE_SIZE, HIDDEN_SIZE)
             weights[f"{prefix}.mlp.up_proj.weight"] = torch.randn(INTERMEDIATE_SIZE, HIDDEN_SIZE)
             weights[f"{prefix}.mlp.down_proj.weight"] = torch.randn(HIDDEN_SIZE, INTERMEDIATE_SIZE)
@@ -470,7 +484,7 @@ if __name__ == "__main__":
         logits = qwen_forward(input_ids, weights)
         print(f"Output shape: {logits.shape}")
         print(f"Expected shape: (1, 4, {VOCAB_SIZE})")
-        assert logits.shape == (1, 4, VOCAB_SIZE), f"Shape mismatch!"
+        assert logits.shape == (1, 4, VOCAB_SIZE), "Shape mismatch!"
         print("Shape test passed!")
         sys.exit(0)
 

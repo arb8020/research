@@ -5,10 +5,10 @@ No state, no side effects.
 """
 
 from rollouts.inference.types import (
-    Sequence,
-    SequenceStatus,
     SchedulerConfig,
     SchedulerOutput,
+    Sequence,
+    SequenceStatus,
 )
 
 

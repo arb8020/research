@@ -8,14 +8,12 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import replace
 from typing import Any
 
-import trio
 from openai import AsyncOpenAI
 
 from rollouts.dtypes import (
     Actor,
     ChatCompletion,
     Choice,
-    ImageContent,
     Message,
     StreamDone,
     StreamError,
@@ -29,7 +27,6 @@ from rollouts.dtypes import (
     ThinkingDelta,
     ThinkingEnd,
     ThinkingStart,
-    Tool,
     ToolCall,
     ToolCallContent,
     ToolCallDelta,
@@ -102,7 +99,12 @@ async def aggregate_openai_responses_stream(
                 # Start tool call block
                 call_id = getattr(item, "call_id", "") + "|" + getattr(item, "id", "")
                 name = getattr(item, "name", "")
-                current_item = {"type": "function_call", "call_id": call_id, "name": name, "arguments": ""}
+                current_item = {
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": name,
+                    "arguments": "",
+                }
                 current_block_index = len(content_blocks)
                 content_blocks.append({
                     "type": "toolCall",
@@ -110,11 +112,13 @@ async def aggregate_openai_responses_stream(
                     "name": name,
                     "arguments": "",
                 })
-                await on_chunk(ToolCallStart(
-                    content_index=current_block_index,
-                    tool_call_id=call_id,
-                    tool_name=name,
-                ))
+                await on_chunk(
+                    ToolCallStart(
+                        content_index=current_block_index,
+                        tool_call_id=call_id,
+                        tool_name=name,
+                    )
+                )
 
         # Handle reasoning summary deltas
         elif event_type == "response.reasoning_summary_part.added":
@@ -126,25 +130,37 @@ async def aggregate_openai_responses_stream(
                 logger.debug(f"Added new summary part, total parts: {len(current_item['summary'])}")
 
         elif event_type == "response.reasoning_summary_text.delta":
-            if current_item and current_item.get("type") == "reasoning" and current_block_index >= 0:
+            if (
+                current_item
+                and current_item.get("type") == "reasoning"
+                and current_block_index >= 0
+            ):
                 delta = event.delta
                 current_item.setdefault("summary", [])
                 if current_item["summary"]:
                     current_item["summary"][-1]["text"] += delta
                 content_blocks[current_block_index]["thinking"] += delta
-                await on_chunk(ThinkingDelta(
-                    content_index=current_block_index,
-                    delta=delta,
-                ))
+                await on_chunk(
+                    ThinkingDelta(
+                        content_index=current_block_index,
+                        delta=delta,
+                    )
+                )
 
         elif event_type == "response.reasoning_summary_part.done":
             # Add newlines between summary parts
-            if current_item and current_item.get("type") == "reasoning" and current_block_index >= 0:
+            if (
+                current_item
+                and current_item.get("type") == "reasoning"
+                and current_block_index >= 0
+            ):
                 content_blocks[current_block_index]["thinking"] += "\n\n"
-                await on_chunk(ThinkingDelta(
-                    content_index=current_block_index,
-                    delta="\n\n",
-                ))
+                await on_chunk(
+                    ThinkingDelta(
+                        content_index=current_block_index,
+                        delta="\n\n",
+                    )
+                )
 
         # Handle text output deltas
         elif event_type == "response.content_part.added":
@@ -155,33 +171,45 @@ async def aggregate_openai_responses_stream(
             if current_item and current_item.get("type") == "message" and current_block_index >= 0:
                 delta = event.delta
                 content_blocks[current_block_index]["text"] += delta
-                await on_chunk(TextDelta(
-                    content_index=current_block_index,
-                    delta=delta,
-                ))
+                await on_chunk(
+                    TextDelta(
+                        content_index=current_block_index,
+                        delta=delta,
+                    )
+                )
 
         elif event_type == "response.refusal.delta":
             if current_item and current_item.get("type") == "message" and current_block_index >= 0:
                 delta = event.delta
                 content_blocks[current_block_index]["text"] += delta
-                await on_chunk(TextDelta(
-                    content_index=current_block_index,
-                    delta=delta,
-                ))
+                await on_chunk(
+                    TextDelta(
+                        content_index=current_block_index,
+                        delta=delta,
+                    )
+                )
 
         # Handle function call argument deltas
         elif event_type == "response.function_call_arguments.delta":
-            if current_item and current_item.get("type") == "function_call" and current_block_index >= 0:
+            if (
+                current_item
+                and current_item.get("type") == "function_call"
+                and current_block_index >= 0
+            ):
                 delta = event.delta
                 current_item["arguments"] += delta
                 content_blocks[current_block_index]["arguments"] += delta
-                partial_args = parse_streaming_json(content_blocks[current_block_index]["arguments"])
-                await on_chunk(ToolCallDelta(
-                    content_index=current_block_index,
-                    tool_call_id=content_blocks[current_block_index]["id"],
-                    delta=delta,
-                    partial_args=partial_args,
-                ))
+                partial_args = parse_streaming_json(
+                    content_blocks[current_block_index]["arguments"]
+                )
+                await on_chunk(
+                    ToolCallDelta(
+                        content_index=current_block_index,
+                        tool_call_id=content_blocks[current_block_index]["id"],
+                        delta=delta,
+                        partial_args=partial_args,
+                    )
+                )
 
         # Handle output item completion
         elif event_type == "response.output_item.done":
@@ -216,25 +244,33 @@ async def aggregate_openai_responses_stream(
                 if status is not None:
                     item_dict["status"] = status
 
-                logger.debug(f"Storing reasoning item with {len(summary)} summary parts, fields: {list(item_dict.keys())}")
+                logger.debug(
+                    f"Storing reasoning item with {len(summary)} summary parts, fields: {list(item_dict.keys())}"
+                )
 
                 # Store the serialized item
-                content_blocks[current_block_index]["thinkingSignature"] = json_module.dumps(item_dict)
+                content_blocks[current_block_index]["thinkingSignature"] = json_module.dumps(
+                    item_dict
+                )
 
-                await on_chunk(ThinkingEnd(
-                    content_index=current_block_index,
-                    content=thinking_content,
-                ))
+                await on_chunk(
+                    ThinkingEnd(
+                        content_index=current_block_index,
+                        content=thinking_content,
+                    )
+                )
                 current_item = None
 
             elif item_type == "message" and current_block_index >= 0:
                 # Finalize text block - save message ID for re-submission
                 text_content = content_blocks[current_block_index]["text"]
                 content_blocks[current_block_index]["textSignature"] = getattr(item, "id", None)
-                await on_chunk(TextEnd(
-                    content_index=current_block_index,
-                    content=text_content,
-                ))
+                await on_chunk(
+                    TextEnd(
+                        content_index=current_block_index,
+                        content=text_content,
+                    )
+                )
                 current_item = None
 
             elif item_type == "function_call" and current_block_index >= 0:
@@ -246,18 +282,22 @@ async def aggregate_openai_responses_stream(
                         name=content_blocks[current_block_index]["name"],
                         args=args,
                     )
-                    await on_chunk(ToolCallEnd(
-                        content_index=current_block_index,
-                        tool_call=tool_call,
-                    ))
+                    await on_chunk(
+                        ToolCallEnd(
+                            content_index=current_block_index,
+                            tool_call=tool_call,
+                        )
+                    )
                 except json.JSONDecodeError as e:
-                    await on_chunk(ToolCallError(
-                        content_index=current_block_index,
-                        tool_call_id=content_blocks[current_block_index]["id"],
-                        tool_name=content_blocks[current_block_index]["name"],
-                        error=f"Invalid JSON arguments: {str(e)}",
-                        raw_arguments=content_blocks[current_block_index]["arguments"],
-                    ))
+                    await on_chunk(
+                        ToolCallError(
+                            content_index=current_block_index,
+                            tool_call_id=content_blocks[current_block_index]["id"],
+                            tool_name=content_blocks[current_block_index]["name"],
+                            error=f"Invalid JSON arguments: {str(e)}",
+                            raw_arguments=content_blocks[current_block_index]["arguments"],
+                        )
+                    )
                 current_item = None
 
         # Handle completion
@@ -280,7 +320,8 @@ async def aggregate_openai_responses_stream(
 
                 output_tokens = getattr(response.usage, "output_tokens", 0) or 0
                 usage_data = {
-                    "input_tokens": (getattr(response.usage, "input_tokens", 0) or 0) - cached_tokens,
+                    "input_tokens": (getattr(response.usage, "input_tokens", 0) or 0)
+                    - cached_tokens,
                     "output_tokens": output_tokens - reasoning_tokens,
                     "reasoning_tokens": reasoning_tokens,
                     "cache_read_tokens": cached_tokens,
@@ -321,10 +362,12 @@ async def aggregate_openai_responses_stream(
 
     for block in content_blocks:
         if block["type"] == "text":
-            final_content_blocks.append(TextContent(
-                text=block["text"],
-                text_signature=block.get("textSignature"),  # Message ID for re-submission
-            ))
+            final_content_blocks.append(
+                TextContent(
+                    text=block["text"],
+                    text_signature=block.get("textSignature"),  # Message ID for re-submission
+                )
+            )
         elif block["type"] == "thinking":
             thinking_sig = block.get("thinkingSignature")
             final_content_blocks.append(
@@ -384,12 +427,11 @@ def _messages_to_openai_responses(messages: list[Message]) -> list[dict[str, Any
                 text_blocks = [b for b in msg.content if isinstance(b, TextContent)]
                 user_text = "\n".join(b.text for b in text_blocks) if text_blocks else ""
             else:
-                assert False, f"User message content must be str or list[ContentBlock], got {type(msg.content)}"
+                assert False, (
+                    f"User message content must be str or list[ContentBlock], got {type(msg.content)}"
+                )
 
-            result.append({
-                "role": "user",
-                "content": [{"type": "input_text", "text": user_text}]
-            })
+            result.append({"role": "user", "content": [{"type": "input_text", "text": user_text}]})
 
         elif msg.role == "assistant":
             # Assistant messages become separate objects
@@ -417,9 +459,13 @@ def _messages_to_openai_responses(messages: list[Message]) -> list[dict[str, Any
                             reasoning_item = json.loads(block.thinking_signature)
                             if reasoning_item.get("encrypted_content"):
                                 output.append(reasoning_item)
-                                logger.debug(f"Added reasoning item with encrypted_content: id={reasoning_item.get('id', 'unknown')}")
+                                logger.debug(
+                                    f"Added reasoning item with encrypted_content: id={reasoning_item.get('id', 'unknown')}"
+                                )
                             else:
-                                logger.debug(f"Skipping reasoning item without encrypted_content: id={reasoning_item.get('id', 'unknown')}")
+                                logger.debug(
+                                    f"Skipping reasoning item without encrypted_content: id={reasoning_item.get('id', 'unknown')}"
+                                )
                         except json.JSONDecodeError as e:
                             logger.error(f"Failed to parse thinking_signature: {e}")
                             pass
@@ -430,7 +476,9 @@ def _messages_to_openai_responses(messages: list[Message]) -> list[dict[str, Any
                         output.append({
                             "type": "message",
                             "role": "assistant",
-                            "content": [{"type": "output_text", "text": block.text, "annotations": []}],
+                            "content": [
+                                {"type": "output_text", "text": block.text, "annotations": []}
+                            ],
                             "status": "completed",
                             "id": msg_id,
                         })
@@ -511,10 +559,11 @@ async def rollout_openai_responses(
 
     # Transform messages for cross-provider compatibility (like pi-ai does)
     from rollouts.transform_messages import transform_messages
+
     transformed_messages = transform_messages(
         actor.trajectory.messages,
         target_provider=actor.endpoint.provider,
-        target_api="openai-responses"
+        target_api="openai-responses",
     )
 
     # Strip details before sending to LLM
@@ -546,6 +595,7 @@ async def rollout_openai_responses(
     # Add reasoning config for reasoning models
     # Check if model supports reasoning
     from rollouts.models import get_model
+
     try:
         model_metadata = get_model(actor.endpoint.provider, actor.endpoint.model)
         is_reasoning_model = model_metadata and model_metadata.reasoning
@@ -604,30 +654,29 @@ async def rollout_openai_responses(
         final_message, usage_data = await aggregate_openai_responses_stream(stream, on_chunk)
 
     except Exception as e:
-        import json
         from openai import BadRequestError, RateLimitError
+
+        from rollouts.store import log_crash
 
         sanitized = sanitize_request_for_logging(params)
 
         if isinstance(e, BadRequestError):
-            logger.error(
-                f"OpenAI Responses API 400 Bad Request - Invalid argument in request\n"
-                f"Full sanitized request:\n{json.dumps(sanitized, indent=2)}"
+            crash_file = log_crash(e, "openai_responses", actor.endpoint.model)
+            assert False, (
+                f"API returned 400 Bad Request: {e}\nCrash details written to: {crash_file}"
             )
-            assert False, f"API returned 400 Bad Request: {e}\nThis indicates a bug in request construction. See logs above for full request."
 
         if isinstance(e, RateLimitError):
             logger.warning(f"Rate limit exceeded for {actor.endpoint.model}")
             raise
 
         logger.error(
-            f"OpenAI Responses API call failed: {e}\n"
-            f"  Model: {actor.endpoint.model}",
+            f"OpenAI Responses API call failed: {e}\n  Model: {actor.endpoint.model}",
             extra={
                 "exception": str(e),
                 "request_params": sanitized,
                 "model": actor.endpoint.model,
-            }
+            },
         )
         raise
 

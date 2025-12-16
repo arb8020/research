@@ -78,8 +78,8 @@ def load_samples_from_config(config: DatasetConfig) -> list:
     from rollouts.training.datasets.data_buffer import (
         load_samples_from_hf,
         load_samples_from_jsonl,
-        load_samples_from_parquet,
         load_samples_from_list,
+        load_samples_from_parquet,
     )
 
     if config.source == "hf":
@@ -163,7 +163,9 @@ def cross_entropy_loss(logits: torch.Tensor, batch: dict) -> torch.Tensor:
 async def _train_async(config: BaseConfig) -> list[dict]:
     """Async training implementation."""
     import logging
+
     import torch
+
     from rollouts._logging import setup_logging
     from rollouts.training import (
         PyTorchTrainingBackend,
@@ -177,7 +179,9 @@ async def _train_async(config: BaseConfig) -> list[dict]:
     logger = logging.getLogger(__name__)
 
     logger.info(f"Model: {config.model_name}")
-    logger.info(f"Dataset: {config.dataset.source} - {config.dataset.hf_dataset or config.dataset.path}")
+    logger.info(
+        f"Dataset: {config.dataset.source} - {config.dataset.hf_dataset or config.dataset.path}"
+    )
     logger.info(f"Device: {config.device}")
 
     # Load tokenizer and data
@@ -271,19 +275,20 @@ def run_remote(script_path: str, keep_alive: bool = False, gpu_id: str | None = 
     import os
     from pathlib import Path
 
-    from broker.client import GPUClient
-    from bifrost.client import BifrostClient
     from dotenv import load_dotenv
+
+    from bifrost.client import BifrostClient
+    from broker.client import GPUClient
 
     load_dotenv()
 
     # Get script path relative to git root
     import subprocess
+
     script = Path(script_path).resolve()
-    git_root = Path(subprocess.check_output(
-        ['git', 'rev-parse', '--show-toplevel'],
-        text=True
-    ).strip())
+    git_root = Path(
+        subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip()
+    )
     rel_path = script.relative_to(git_root)
 
     # Provision or reuse GPU

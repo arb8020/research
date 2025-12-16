@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Literal
 
-
 # ═══════════════════════════════════════════════════
 # CONFIG: Immutable, serializable
 # ═══════════════════════════════════════════════════
@@ -168,7 +167,5 @@ class Sequence:
             logprobs=tuple(self.output_logprobs),
             ref_logprobs=None,  # TODO: support reference logprobs
             weight_version=weight_version,
-            finish_reason="stop"
-            if self.token_ids[-1] in self.stop_token_ids
-            else "length",
+            finish_reason="stop" if self.token_ids[-1] in self.stop_token_ids else "length",
         )

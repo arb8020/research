@@ -5,39 +5,40 @@ Agent renderer - connects StreamEvents to TUI components.
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+from typing import Any
 
 from rollouts.dtypes import (
     LLMCallStart,
+    StreamDone,
+    StreamError,
     StreamEvent,
     StreamStart,
-    TextStart,
     TextDelta,
     TextEnd,
-    ThinkingStart,
+    TextStart,
     ThinkingDelta,
     ThinkingEnd,
-    ToolCallStart,
+    ThinkingStart,
     ToolCallDelta,
     ToolCallEnd,
     ToolCallError,
+    ToolCallStart,
     ToolResultReceived,
-    StreamDone,
-    StreamError,
 )
 
-from .tui import TUI, Container
-from .theme import Theme
 from .components.assistant_message import AssistantMessage
+from .components.spacer import Spacer
 from .components.tool_execution import ToolExecution
 from .components.user_message import UserMessage
-from .components.spacer import Spacer
+from .tui import TUI, Container
 
 
 class AgentRenderer:
     """Renders agent StreamEvents to TUI."""
 
-    def __init__(self, tui: TUI, environment: Optional[Any] = None, debug_layout: bool = False) -> None:
+    def __init__(
+        self, tui: TUI, environment: Any | None = None, debug_layout: bool = False
+    ) -> None:
         """Initialize agent renderer.
 
         Args:
@@ -53,9 +54,9 @@ class AgentRenderer:
         self.tui.add_child(self.chat_container)
 
         # Current streaming state
-        self.current_message: Optional[AssistantMessage] = None
-        self.current_thinking_index: Optional[int] = None
-        self.current_text_index: Optional[int] = None
+        self.current_message: AssistantMessage | None = None
+        self.current_thinking_index: int | None = None
+        self.current_text_index: int | None = None
 
         # Tool tracking: tool_call_id -> ToolExecution component
         self.pending_tools: dict[str, ToolExecution] = {}
@@ -106,7 +107,9 @@ class AgentRenderer:
             case ToolCallError(content_index=idx, tool_call_id=tool_id, tool_name=name, error=err):
                 self._handle_tool_call_error(idx, tool_id, name, err)
 
-            case ToolResultReceived(tool_call_id=tool_id, content=content, is_error=is_err, error=err, details=details):
+            case ToolResultReceived(
+                tool_call_id=tool_id, content=content, is_error=is_err, error=err, details=details
+            ):
                 self._handle_tool_result(tool_id, content, is_err, err, details)
 
             case StreamDone():
@@ -137,8 +140,12 @@ class AgentRenderer:
         """Handle text block start."""
         # Create assistant message if needed
         if self.current_message is None:
-            self.chat_container.add_child(Spacer(1, debug_label="before-assistant", debug_layout=self.debug_layout))
-            self.current_message = AssistantMessage(theme=self.theme, debug_layout=self.debug_layout)
+            self.chat_container.add_child(
+                Spacer(1, debug_label="before-assistant", debug_layout=self.debug_layout)
+            )
+            self.current_message = AssistantMessage(
+                theme=self.theme, debug_layout=self.debug_layout
+            )
             self.chat_container.add_child(self.current_message)
 
         self.current_text_index = content_index
@@ -148,8 +155,12 @@ class AgentRenderer:
         """Handle text delta - append to current message."""
         if self.current_message is None:
             # Start new message if we don't have one
-            self.chat_container.add_child(Spacer(1, debug_label="before-assistant", debug_layout=self.debug_layout))
-            self.current_message = AssistantMessage(theme=self.theme, debug_layout=self.debug_layout)
+            self.chat_container.add_child(
+                Spacer(1, debug_label="before-assistant", debug_layout=self.debug_layout)
+            )
+            self.current_message = AssistantMessage(
+                theme=self.theme, debug_layout=self.debug_layout
+            )
             self.chat_container.add_child(self.current_message)
             self.current_text_index = content_index
 
@@ -170,8 +181,12 @@ class AgentRenderer:
         """Handle thinking block start."""
         # Create assistant message if needed
         if self.current_message is None:
-            self.chat_container.add_child(Spacer(1, debug_label="before-assistant", debug_layout=self.debug_layout))
-            self.current_message = AssistantMessage(theme=self.theme, debug_layout=self.debug_layout)
+            self.chat_container.add_child(
+                Spacer(1, debug_label="before-assistant", debug_layout=self.debug_layout)
+            )
+            self.current_message = AssistantMessage(
+                theme=self.theme, debug_layout=self.debug_layout
+            )
             self.chat_container.add_child(self.current_message)
 
         self.current_thinking_index = content_index
@@ -181,8 +196,12 @@ class AgentRenderer:
         """Handle thinking delta - append to current message."""
         if self.current_message is None:
             # Start new message if we don't have one
-            self.chat_container.add_child(Spacer(1, debug_label="before-assistant", debug_layout=self.debug_layout))
-            self.current_message = AssistantMessage(theme=self.theme, debug_layout=self.debug_layout)
+            self.chat_container.add_child(
+                Spacer(1, debug_label="before-assistant", debug_layout=self.debug_layout)
+            )
+            self.current_message = AssistantMessage(
+                theme=self.theme, debug_layout=self.debug_layout
+            )
             self.chat_container.add_child(self.current_message)
             self.current_thinking_index = content_index
 
@@ -199,7 +218,9 @@ class AgentRenderer:
             self.current_message.set_thinking(content)
             self.current_thinking_index = None
 
-    def _handle_tool_call_start(self, content_index: int, tool_call_id: str, tool_name: str) -> None:
+    def _handle_tool_call_start(
+        self, content_index: int, tool_call_id: str, tool_name: str
+    ) -> None:
         """Handle tool call start - create tool component."""
         # Hide loader - we're now showing tool UI instead
         self.tui.hide_loader()
@@ -207,20 +228,24 @@ class AgentRenderer:
         # Finalize current message if we have one
         if self.current_message:
             # Add spacer after thinking/text before first tool
-            self.chat_container.add_child(Spacer(1, debug_label="before-tool", debug_layout=self.debug_layout))
+            self.chat_container.add_child(
+                Spacer(1, debug_label="before-tool", debug_layout=self.debug_layout)
+            )
             # Message is complete, clear reference
             self.current_message = None
             self.current_text_index = None
             self.current_thinking_index = None
         else:
             # Add spacer between consecutive tool calls
-            self.chat_container.add_child(Spacer(1, debug_label="between-tools", debug_layout=self.debug_layout))
+            self.chat_container.add_child(
+                Spacer(1, debug_label="between-tools", debug_layout=self.debug_layout)
+            )
 
         # Create tool execution component
         if tool_call_id not in self.pending_tools:
             # Get formatter from environment if available
             formatter = None
-            if self.environment and hasattr(self.environment, 'get_tool_formatter'):
+            if self.environment and hasattr(self.environment, "get_tool_formatter"):
                 formatter = self.environment.get_tool_formatter(tool_name)
 
             tool_component = ToolExecution(
@@ -242,7 +267,9 @@ class AgentRenderer:
             "args": {},
         }
 
-    def _handle_tool_call_delta(self, content_index: int, tool_call_id: str, partial_args: dict) -> None:
+    def _handle_tool_call_delta(
+        self, content_index: int, tool_call_id: str, partial_args: dict
+    ) -> None:
         """Handle tool call delta - update tool args."""
         if tool_call_id in self.pending_tools:
             self.pending_tools[tool_call_id].update_args(partial_args)
@@ -263,7 +290,9 @@ class AgentRenderer:
                 args_dict = tool_call.args
             self.pending_tools[tool_id].update_args(args_dict)
 
-    def _handle_tool_call_error(self, content_index: int, tool_call_id: str, tool_name: str, error: str) -> None:
+    def _handle_tool_call_error(
+        self, content_index: int, tool_call_id: str, tool_name: str, error: str
+    ) -> None:
         """Handle tool call error."""
         if tool_call_id in self.pending_tools:
             self.pending_tools[tool_call_id].update_result(
@@ -273,7 +302,14 @@ class AgentRenderer:
             # Remove from pending (error is final)
             del self.pending_tools[tool_call_id]
 
-    def _handle_tool_result(self, tool_call_id: str, content: str, is_error: bool, error: Optional[str], details: Optional[dict] = None) -> None:
+    def _handle_tool_result(
+        self,
+        tool_call_id: str,
+        content: str,
+        is_error: bool,
+        error: str | None,
+        details: dict | None = None,
+    ) -> None:
         """Handle tool execution result - update tool component from pending to success/error."""
         if tool_call_id in self.pending_tools:
             result_text = error if is_error and error else content
@@ -314,7 +350,9 @@ class AgentRenderer:
             is_first: Whether this is the first user message
         """
         if not is_first:
-            self.chat_container.add_child(Spacer(1, debug_label="before-user", debug_layout=self.debug_layout))
+            self.chat_container.add_child(
+                Spacer(1, debug_label="before-user", debug_layout=self.debug_layout)
+            )
         user_component = UserMessage(text, is_first=is_first, theme=self.theme)
         self.chat_container.add_child(user_component)
         self.tui.request_render()
@@ -327,7 +365,9 @@ class AgentRenderer:
         """
         from .components.text import Text
 
-        self.chat_container.add_child(Spacer(1, debug_label="before-system", debug_layout=self.debug_layout))
+        self.chat_container.add_child(
+            Spacer(1, debug_label="before-system", debug_layout=self.debug_layout)
+        )
         system_text = Text(
             text,
             padding_x=2,
@@ -345,7 +385,7 @@ class AgentRenderer:
         Returns:
             Partial text content, or None if no streaming was in progress
         """
-        if self.current_message and hasattr(self.current_message, '_text_content'):
+        if self.current_message and hasattr(self.current_message, "_text_content"):
             text = self.current_message._text_content
             if text and text.strip():
                 return text.strip()
@@ -385,7 +425,7 @@ class AgentRenderer:
             messages: List of Message objects to render
             skip_system: Whether to skip system messages (default True)
         """
-        from rollouts.dtypes import Message, TextContent, ThinkingContent, ToolCallContent
+        from rollouts.dtypes import Message
 
         for msg in messages:
             if not isinstance(msg, Message):
@@ -426,7 +466,9 @@ class AgentRenderer:
         if text:
             is_first = len(self.chat_container.children) == 0
             if not is_first:
-                self.chat_container.add_child(Spacer(1, debug_label="before-user", debug_layout=self.debug_layout))
+                self.chat_container.add_child(
+                    Spacer(1, debug_label="before-user", debug_layout=self.debug_layout)
+                )
             user_component = UserMessage(text, is_first=is_first, theme=self.theme)
             self.chat_container.add_child(user_component)
 
@@ -473,11 +515,8 @@ class AgentRenderer:
                 # Simulate tool call: start -> end
                 # Create a minimal ToolCall object for the handler
                 from rollouts.dtypes import ToolCall
-                tool_call = ToolCall(
-                    id=block.id,
-                    name=block.name,
-                    args=dict(block.arguments)
-                )
+
+                tool_call = ToolCall(id=block.id, name=block.name, args=dict(block.arguments))
                 self._handle_tool_call_start(content_index, block.id, block.name)
                 self._handle_tool_call_end(content_index, tool_call)
                 content_index += 1
@@ -507,11 +546,8 @@ class AgentRenderer:
                     tool_args = block.get("input", block.get("arguments", {}))
 
                     from rollouts.dtypes import ToolCall
-                    tool_call = ToolCall(
-                        id=tool_id,
-                        name=tool_name,
-                        args=tool_args
-                    )
+
+                    tool_call = ToolCall(id=tool_id, name=tool_name, args=tool_args)
                     self._handle_tool_call_start(content_index, tool_id, tool_name)
                     self._handle_tool_call_end(content_index, tool_call)
                     content_index += 1
@@ -540,7 +576,9 @@ class AgentRenderer:
 
         # Replay through the same handler used for live tool results
         # Pass details from message to ensure diffs render on resume
-        self._handle_tool_result(tool_call_id, result_text, is_error=False, error=None, details=msg.details)
+        self._handle_tool_result(
+            tool_call_id, result_text, is_error=False, error=None, details=msg.details
+        )
 
     def debug_dump_chat(self) -> None:
         """Dump chat container state as JSONL for debugging."""
@@ -554,4 +592,3 @@ class AgentRenderer:
                 state.update(child.debug_state())
             print(json.dumps(state))
         print(f"=== TOTAL: {len(self.chat_container.children)} components ===\n")
-

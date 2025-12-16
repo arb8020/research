@@ -37,7 +37,9 @@ def _normalize_vllm_api_base(api_base: str) -> str:
     else:
         result = api_base.rstrip("/") + "/v1/chat/completions"
 
-    assert result.endswith("/chat/completions"), f"result must end with /chat/completions, got {result}"
+    assert result.endswith("/chat/completions"), (
+        f"result must end with /chat/completions, got {result}"
+    )
     return result
 
 
@@ -78,30 +80,25 @@ def _build_vllm_params(actor: Actor) -> dict:
 
 def _conform_tool_calls(raw_tool_calls: list) -> list:
     """Convert raw OpenAI tool calls to conformed format. Pure function."""
-    assert isinstance(raw_tool_calls, list), f"raw_tool_calls must be list, got {type(raw_tool_calls)}"
+    assert isinstance(raw_tool_calls, list), (
+        f"raw_tool_calls must be list, got {type(raw_tool_calls)}"
+    )
     assert len(raw_tool_calls) > 0, "raw_tool_calls cannot be empty"
 
     conformed = []
     for tc in raw_tool_calls:
-        conformed.append(
-            {
-                "id": tc["id"],
-                "name": tc["function"]["name"],
-                "args": json.loads(tc["function"]["arguments"]) if tc["function"]["arguments"] else {},
-            }
-        )
+        conformed.append({
+            "id": tc["id"],
+            "name": tc["function"]["name"],
+            "args": json.loads(tc["function"]["arguments"]) if tc["function"]["arguments"] else {},
+        })
 
     assert len(conformed) == len(raw_tool_calls), "conformed length must match input length"
     return conformed
 
 
 async def _execute_vllm_request(
-    api_base: str,
-    params: dict,
-    headers: dict,
-    max_retries: int,
-    backoff_base: int,
-    timeout: float
+    api_base: str, params: dict, headers: dict, max_retries: int, backoff_base: int, timeout: float
 ) -> dict:
     """Execute vLLM API request with retry logic. Returns completion dict."""
     assert isinstance(api_base, str)
@@ -131,7 +128,7 @@ async def _execute_vllm_request(
             print(f"❌ Server returned {response.status_code}: {response.text}")
 
             if error_type == VLLMErrorType.CONTEXT_LENGTH:
-                print(_format_context_length_error(params.get('max_tokens', 8192)))
+                print(_format_context_length_error(params.get("max_tokens", 8192)))
                 raise NonRetryableError(f"Context length exceeded: {response.text}")
 
             if error_type == VLLMErrorType.INVALID_PARAM:
@@ -179,7 +176,9 @@ async def rollout_sglang(
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
 
     # Execute API call
-    completion = await _execute_vllm_request(api_base, params, headers, max_api_retries, backoff_base, timeout)
+    completion = await _execute_vllm_request(
+        api_base, params, headers, max_api_retries, backoff_base, timeout
+    )
     assert completion
 
     # Process tool calls

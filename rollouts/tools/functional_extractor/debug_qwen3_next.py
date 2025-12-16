@@ -23,22 +23,17 @@ if str(_rollouts_dir) not in sys.path:
 def setup_environment():
     """Install required packages with correct versions."""
     import subprocess
+
     print("Setting up environment...")
 
-    subprocess.run([
-        "uv", "pip", "install", "-q",
-        "huggingface_hub>=0.26.0"
-    ], check=True)
+    subprocess.run(["uv", "pip", "install", "-q", "huggingface_hub>=0.26.0"], check=True)
 
-    subprocess.run([
-        "uv", "pip", "install", "-q",
-        "git+https://github.com/huggingface/transformers.git"
-    ], check=True)
+    subprocess.run(
+        ["uv", "pip", "install", "-q", "git+https://github.com/huggingface/transformers.git"],
+        check=True,
+    )
 
-    subprocess.run([
-        "uv", "pip", "install", "-q",
-        "accelerate", "safetensors"
-    ], check=True)
+    subprocess.run(["uv", "pip", "install", "-q", "accelerate", "safetensors"], check=True)
 
     print("Environment setup complete!")
 
@@ -55,16 +50,16 @@ def debug():
         print_comparison_report,
     )
     from tools.functional_extractor.qwen3_next_functional import (
-        qwen3_next_forward,
-        transformer_layer,
-        rms_norm,
-        compute_rope_embeddings,
-        self_attention,
-        gated_delta_net,
         HEAD_DIM,
-        PARTIAL_ROTARY_FACTOR,
         NUM_LAYERS,
+        PARTIAL_ROTARY_FACTOR,
         SELF_ATTN_LAYERS,
+        compute_rope_embeddings,
+        gated_delta_net,
+        qwen3_next_forward,
+        rms_norm,
+        self_attention,
+        transformer_layer,
     )
 
     # FP8 has a bug with num_local_experts, use bfloat16 instead
@@ -114,10 +109,14 @@ def debug():
         print("\n### Test 3: Layer-by-Layer Analysis ###")
 
         # Capture HF internals for all layers
-        captured = capture_hf_internals(model, input_ids, capture_layers=list(range(min(10, NUM_LAYERS))))
+        captured = capture_hf_internals(
+            model, input_ids, capture_layers=list(range(min(10, NUM_LAYERS)))
+        )
 
         if captured.position_embeddings:
-            print(f"  HF position embeddings: cos {captured.position_embeddings[0].shape}, sin {captured.position_embeddings[1].shape}")
+            print(
+                f"  HF position embeddings: cos {captured.position_embeddings[0].shape}, sin {captured.position_embeddings[1].shape}"
+            )
 
         # Run layer by layer manually
         print("\n  Running layer-by-layer comparison...")
@@ -131,7 +130,11 @@ def debug():
 
         # Compute RoPE for functional
         seq_len = input_ids.shape[1]
-        positions = torch.arange(seq_len, device=input_ids.device).unsqueeze(0).expand(input_ids.shape[0], -1)
+        positions = (
+            torch.arange(seq_len, device=input_ids.device)
+            .unsqueeze(0)
+            .expand(input_ids.shape[0], -1)
+        )
         rotary_dim = int(HEAD_DIM * PARTIAL_ROTARY_FACTOR)
         cos, sin = compute_rope_embeddings(positions, rotary_dim, dtype=hidden_func.dtype)
 
@@ -163,14 +166,18 @@ def debug():
                     hf_layer_in.clone(),  # Use HF input to isolate layer
                     weights,
                     layer_idx,
-                    cos, sin, rotary_dim,
+                    cos,
+                    sin,
+                    rotary_dim,
                     None,  # attention_mask
                 )
 
             layer_diff = compare_tensors(hf_layer_out, func_layer_out, name=f"layer_{layer_idx}")
             attn_type = "self_attn" if layer_idx in SELF_ATTN_LAYERS else "linear_attn"
             status = "PASS" if layer_diff["matches"] else "FAIL"
-            print(f"  Layer {layer_idx:2d} ({attn_type:10s}): max_diff={layer_diff['max_diff']:.6e} [{status}]")
+            print(
+                f"  Layer {layer_idx:2d} ({attn_type:10s}): max_diff={layer_diff['max_diff']:.6e} [{status}]"
+            )
 
             if not layer_diff["matches"]:
                 print(f"\n  ### FIRST DIVERGENCE AT LAYER {layer_idx} ({attn_type}) ###")
@@ -195,6 +202,7 @@ def debug():
 
                         # Get HF attention output (need to capture via hook)
                         attn_output_hf = None
+
                         def capture_attn(module, input, output):
                             nonlocal attn_output_hf
                             attn_output_hf = output[0] if isinstance(output, tuple) else output
@@ -205,12 +213,13 @@ def debug():
 
                         # Run functional attention
                         attn_output_func = self_attention(
-                            normed_func, weights, f"{prefix}.self_attn",
-                            cos, sin, rotary_dim, None
+                            normed_func, weights, f"{prefix}.self_attn", cos, sin, rotary_dim, None
                         )
 
                         if attn_output_hf is not None:
-                            attn_diff = compare_tensors(attn_output_hf, attn_output_func, name="self_attn")
+                            attn_diff = compare_tensors(
+                                attn_output_hf, attn_output_func, name="self_attn"
+                            )
                             print(f"    self_attn: max_diff={attn_diff['max_diff']:.6e}")
 
                 else:
@@ -220,6 +229,7 @@ def debug():
 
                         # Capture HF output
                         attn_output_hf = None
+
                         def capture_attn(module, input, output):
                             nonlocal attn_output_hf
                             attn_output_hf = output[0] if isinstance(output, tuple) else output
@@ -234,7 +244,9 @@ def debug():
                         )
 
                         if attn_output_hf is not None:
-                            attn_diff = compare_tensors(attn_output_hf, attn_output_func, name="linear_attn")
+                            attn_diff = compare_tensors(
+                                attn_output_hf, attn_output_func, name="linear_attn"
+                            )
                             print(f"    linear_attn: max_diff={attn_diff['max_diff']:.6e}")
 
                 break  # Stop at first divergence

@@ -24,18 +24,18 @@ def test_on_gpu():
     # Script is at: <repo>/tools/functional_extractor/test_qwen.py
     # We need <repo> in sys.path so "from tools.functional_extractor import ..." works
     script_dir = os.path.dirname(os.path.abspath(__file__))  # functional_extractor/
-    tools_dir = os.path.dirname(script_dir)                   # tools/
-    repo_dir = os.path.dirname(tools_dir)                     # <repo> (rollouts/)
+    tools_dir = os.path.dirname(script_dir)  # tools/
+    repo_dir = os.path.dirname(tools_dir)  # <repo> (rollouts/)
 
     # Add the functional_extractor dir itself to path for direct import
     if script_dir not in sys.path:
         sys.path.insert(0, script_dir)
 
     import torch
-    from transformers import AutoModelForCausalLM
 
     # Import functional implementation (direct import from same directory)
     from qwen_functional import qwen_forward
+    from transformers import AutoModelForCausalLM
 
     print("=" * 60)
     print("Qwen2.5-0.5B Functional Implementation Test")
@@ -160,7 +160,11 @@ def test_on_gpu():
 
         return matches
 
-    for dtype_name, dtype in [("bf16", torch.bfloat16), ("fp16", torch.float16), ("fp32", torch.float32)]:
+    for dtype_name, dtype in [
+        ("bf16", torch.bfloat16),
+        ("fp16", torch.float16),
+        ("fp32", torch.float32),
+    ]:
         if not run_dtype_test(dtype_name, dtype):
             all_passed = False
 
@@ -189,7 +193,9 @@ def test_on_gpu():
         matches = max_diff_real < 1e-4
 
         status = "PASS" if matches else "FAIL"
-        print(f"  {name}: batch={batch_size}, seq={seq_len}, max_diff={max_diff_real:.2e} [{status}]")
+        print(
+            f"  {name}: batch={batch_size}, seq={seq_len}, max_diff={max_diff_real:.2e} [{status}]"
+        )
 
         if not matches:
             # Show where the largest diff is
@@ -215,10 +221,10 @@ def test_on_gpu():
     # Variable length sequences
     input_ids = torch.randint(1, 1000, (4, 32), device="cuda:0")
     attention_mask = torch.ones_like(input_ids)
-    attention_mask[0, :8] = 0   # 24 real tokens
+    attention_mask[0, :8] = 0  # 24 real tokens
     attention_mask[1, :16] = 0  # 16 real tokens
     attention_mask[2, :24] = 0  # 8 real tokens
-    attention_mask[3, :4] = 0   # 28 real tokens
+    attention_mask[3, :4] = 0  # 28 real tokens
     if not run_mask_test("variable_length", input_ids, attention_mask):
         all_passed = False
 

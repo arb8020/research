@@ -46,15 +46,13 @@ class CacheConfig:
 
     def __hash__(self) -> int:
         # dtype isn't hashable by default, convert to string
-        return hash(
-            (
-                self.num_layers,
-                self.num_kv_heads,
-                self.head_dim,
-                self.num_blocks,
-                self.block_size,
-                self.sliding_window,
-                str(self.dtype),
-                self.device,
-            )
-        )
+        return hash((
+            self.num_layers,
+            self.num_kv_heads,
+            self.head_dim,
+            self.num_blocks,
+            self.block_size,
+            self.sliding_window,
+            str(self.dtype),
+            self.device,
+        ))

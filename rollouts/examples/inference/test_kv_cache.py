@@ -81,6 +81,7 @@ def test_context_builder():
 def test_flex_attention_backend():
     """Test attention backend with GPU."""
     import torch
+
     from rollouts.inference.attention import CacheConfig, FlexAttentionBackend
 
     print("Testing FlexAttentionBackend...")
@@ -116,8 +117,9 @@ def test_flex_attention_backend():
 def test_end_to_end():
     """End-to-end integration test."""
     import torch
-    from rollouts.inference.cache import PagedKVCache
+
     from rollouts.inference.attention import CacheConfig, FlexAttentionBackend
+    from rollouts.inference.cache import PagedKVCache
     from rollouts.inference.context import (
         allocate_and_build_context,
         extend_and_build_context,
@@ -208,18 +210,19 @@ def run_remote():
     import os
     from pathlib import Path
 
-    from broker.client import GPUClient
-    from bifrost.client import BifrostClient
     from dotenv import load_dotenv
+
+    from bifrost.client import BifrostClient
+    from broker.client import GPUClient
 
     load_dotenv()
 
     script = Path(__file__).resolve()
     import subprocess
-    git_root = Path(subprocess.check_output(
-        ['git', 'rev-parse', '--show-toplevel'],
-        text=True
-    ).strip())
+
+    git_root = Path(
+        subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip()
+    )
     rel_path = script.relative_to(git_root)
 
     runpod_key = os.getenv("RUNPOD_API_KEY")
@@ -274,6 +277,7 @@ def test_attention_correctness():
     """Verify our attention matches PyTorch reference implementation."""
     import torch
     import torch.nn.functional as F
+
     from rollouts.inference.attention import CacheConfig, FlexAttentionBackend
     from rollouts.inference.types import InferenceContext
 
@@ -343,6 +347,7 @@ def test_attention_correctness():
 
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--remote", action="store_true", help="Run on remote GPU")
     args = parser.parse_args()

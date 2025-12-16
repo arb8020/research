@@ -138,26 +138,22 @@ class ExampleModel(nn.Module):
         self.embed_tokens = nn.Embedding(vocab_size, hidden_size)
 
         # 3. Create layers, each gets reference to shared backend
-        self.layers = nn.ModuleList(
-            [
-                ExampleTransformerBlock(
-                    layer_idx=i,
-                    hidden_size=hidden_size,
-                    num_heads=num_heads,
-                    num_kv_heads=num_kv_heads,
-                    head_dim=head_dim,
-                    backend=self.backend,
-                )
-                for i in range(num_layers)
-            ]
-        )
+        self.layers = nn.ModuleList([
+            ExampleTransformerBlock(
+                layer_idx=i,
+                hidden_size=hidden_size,
+                num_heads=num_heads,
+                num_kv_heads=num_kv_heads,
+                head_dim=head_dim,
+                backend=self.backend,
+            )
+            for i in range(num_layers)
+        ])
 
         self.norm = nn.RMSNorm(hidden_size)
         self.lm_head = nn.Linear(hidden_size, vocab_size, bias=False)
 
-    def forward(
-        self, input_ids: Tensor, ctx: InferenceContext
-    ) -> Tensor:
+    def forward(self, input_ids: Tensor, ctx: InferenceContext) -> Tensor:
         """Forward pass with explicit context threading.
 
         Args:

@@ -8,8 +8,6 @@ Import from rollouts.providers instead:
 
 from __future__ import annotations
 
-import warnings
-
 # Re-export everything from the new providers package
 from rollouts.providers import (
     NonRetryableError,

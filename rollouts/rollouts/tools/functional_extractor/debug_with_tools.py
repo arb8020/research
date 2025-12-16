@@ -13,13 +13,10 @@ if script_dir not in sys.path:
 
 def debug_with_tools():
     import torch
-    from transformers import AutoModelForCausalLM
-
     from analysis_tools import (
         capture_intermediates,
-        compare_intermediates,
-        print_comparison_results,
     )
+    from transformers import AutoModelForCausalLM
 
     print("=" * 60)
     print("Debug with Analysis Tools")
@@ -61,11 +58,11 @@ def debug_with_tools():
 
     print("\n### Manual layer-by-layer comparison ###")
     from qwen_functional import (
-        rms_norm,
         attention,
-        mlp,
         compute_rope_embeddings,
         create_causal_mask,
+        mlp,
+        rms_norm,
     )
 
     # Step 1: Embeddings
@@ -163,12 +160,21 @@ def debug_with_tools():
         hf_k = model.model.layers[0].self_attn.k_proj(hf_norm)
         hf_v = model.model.layers[0].self_attn.v_proj(hf_norm)
 
-        my_q = F.linear(my_norm, weights["model.layers.0.self_attn.q_proj.weight"],
-                        weights["model.layers.0.self_attn.q_proj.bias"])
-        my_k = F.linear(my_norm, weights["model.layers.0.self_attn.k_proj.weight"],
-                        weights["model.layers.0.self_attn.k_proj.bias"])
-        my_v = F.linear(my_norm, weights["model.layers.0.self_attn.v_proj.weight"],
-                        weights["model.layers.0.self_attn.v_proj.bias"])
+        my_q = F.linear(
+            my_norm,
+            weights["model.layers.0.self_attn.q_proj.weight"],
+            weights["model.layers.0.self_attn.q_proj.bias"],
+        )
+        my_k = F.linear(
+            my_norm,
+            weights["model.layers.0.self_attn.k_proj.weight"],
+            weights["model.layers.0.self_attn.k_proj.bias"],
+        )
+        my_v = F.linear(
+            my_norm,
+            weights["model.layers.0.self_attn.v_proj.weight"],
+            weights["model.layers.0.self_attn.v_proj.bias"],
+        )
 
         q_diff = (hf_q - my_q).abs().max().item()
         k_diff = (hf_k - my_k).abs().max().item()
@@ -262,9 +268,7 @@ def debug_with_tools():
                 position_embeddings=(hf_cos, hf_sin),
             )[0]
 
-            my_h = transformer_layer(
-                my_h, weights, layer_idx, my_cos, my_sin, my_attn_mask
-            )
+            my_h = transformer_layer(my_h, weights, layer_idx, my_cos, my_sin, my_attn_mask)
 
         layer_diff = (hf_h - my_h).abs().max().item()
         # Only print if diff > threshold or every 4 layers
@@ -286,6 +290,7 @@ def debug_with_tools():
     # HF ties weights: model.lm_head.weight === model.model.embed_tokens.weight
     hf_logits_check = model.lm_head(hf_normed)
     import torch.nn.functional as F
+
     my_logits_check = F.linear(my_normed, weights["model.embed_tokens.weight"])
     lm_head_diff = (hf_logits_check - my_logits_check).abs().max().item()
     print(f"After LM head: diff={lm_head_diff:.2e}")
@@ -302,8 +307,8 @@ def debug_with_tools():
 
     # Check each layer's attention_type
     for i, layer in enumerate(model.model.layers):
-        attn_type = getattr(layer.self_attn, 'attention_type', 'unknown')
-        if i < 4 or i > 20 or attn_type != 'unknown':
+        attn_type = getattr(layer.self_attn, "attention_type", "unknown")
+        if i < 4 or i > 20 or attn_type != "unknown":
             print(f"Layer {i}: attention_type={attn_type}")
 
     # Check what mask model.model._update_causal_mask returns for full forward
@@ -315,14 +320,14 @@ def debug_with_tools():
     masks_captured = []
 
     def capture_mask_hook(module, args, kwargs):
-        if 'attention_mask' in kwargs:
-            mask = kwargs['attention_mask']
+        if "attention_mask" in kwargs:
+            mask = kwargs["attention_mask"]
             if isinstance(mask, dict):
-                masks_captured.append(('dict', list(mask.keys())))
+                masks_captured.append(("dict", list(mask.keys())))
             elif mask is not None:
-                masks_captured.append(('tensor', mask.shape, mask.dtype, mask.clone()))
+                masks_captured.append(("tensor", mask.shape, mask.dtype, mask.clone()))
             else:
-                masks_captured.append(('None',))
+                masks_captured.append(("None",))
         return None
 
     # Hook the first layer to see what mask it receives
@@ -337,8 +342,8 @@ def debug_with_tools():
     position_embeddings_captured = []
 
     def capture_pos_hook(module, args, kwargs):
-        if 'position_embeddings' in kwargs:
-            pos_emb = kwargs['position_embeddings']
+        if "position_embeddings" in kwargs:
+            pos_emb = kwargs["position_embeddings"]
             if pos_emb is not None:
                 position_embeddings_captured.append((pos_emb[0].clone(), pos_emb[1].clone()))
         return None
@@ -352,7 +357,7 @@ def debug_with_tools():
 
     if position_embeddings_captured:
         captured_cos, captured_sin = position_embeddings_captured[0]
-        print(f"\nPosition embeddings from full forward:")
+        print("\nPosition embeddings from full forward:")
         print(f"  cos shape: {captured_cos.shape}, sin shape: {captured_sin.shape}")
 
         cos_diff = (captured_cos - my_cos).abs().max().item()
@@ -383,12 +388,15 @@ def debug_with_tools():
 
 if __name__ == "__main__":
     import torch
+
     if torch.cuda.is_available():
         debug_with_tools()
     else:
         print("No GPU available. Run on remote GPU.")
-        from verify import run_on_gpu
         import argparse
+
+        from verify import run_on_gpu
+
         parser = argparse.ArgumentParser()
         parser.add_argument("--gpu-id", type=str)
         args = parser.parse_args()

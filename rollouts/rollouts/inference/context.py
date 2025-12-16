@@ -30,7 +30,7 @@ def build_prefill_context(
     # For prefill, we map each token position to its cache slot
     slot_mapping: list[int] = []
 
-    for seq_idx, (seq_len, blocks) in enumerate(zip(seq_lens, block_tables)):
+    for seq_idx, (seq_len, blocks) in enumerate(zip(seq_lens, block_tables, strict=False)):
         for pos in range(seq_len):
             block_idx = pos // block_size
             offset = pos % block_size
@@ -73,7 +73,7 @@ def build_decode_context(
     # slot_mapping has 1 entry per sequence (where to store the new K/V)
     slot_mapping: list[int] = []
 
-    for seq_len, blocks in zip(seq_lens, block_tables):
+    for seq_len, blocks in zip(seq_lens, block_tables, strict=False):
         # New token goes at position seq_len - 1 (0-indexed)
         pos = seq_len - 1
         block_idx = pos // block_size

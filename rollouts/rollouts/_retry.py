@@ -71,7 +71,9 @@ def _log_retry_attempt(
     assert isinstance(func_name, str), f"func_name must be str, got {type(func_name)}"
     assert isinstance(module_name, str), f"module_name must be str, got {type(module_name)}"
     assert attempt > 0, f"attempt must be > 0, got {attempt}"
-    assert attempt <= max_attempts, f"attempt must be <= max_attempts, got {attempt} > {max_attempts}"
+    assert attempt <= max_attempts, (
+        f"attempt must be <= max_attempts, got {attempt} > {max_attempts}"
+    )
     assert sleep_time > 0, f"sleep_time must be > 0, got {sleep_time}"
 
     logger = logging.getLogger(module_name)

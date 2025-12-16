@@ -84,7 +84,7 @@ def transform_messages(
     # Infer source provider/api from first message with metadata
     if from_provider is None or from_api is None:
         for msg in messages:
-            if hasattr(msg, 'provider') and msg.provider:
+            if hasattr(msg, "provider") and msg.provider:
                 from_provider = msg.provider
                 from_api = msg.api or from_api
                 break
@@ -99,7 +99,9 @@ def transform_messages(
     assert to_api is not None, "Must specify to_api or target_api"
 
     # Pass 1: Convert thinking blocks when switching providers
-    transformed_messages = _transform_thinking_blocks(messages, from_provider, from_api, to_provider, to_api)
+    transformed_messages = _transform_thinking_blocks(
+        messages, from_provider, from_api, to_provider, to_api
+    )
     assert transformed_messages is not None
     assert isinstance(transformed_messages, list)
     assert len(transformed_messages) == len(messages)
@@ -164,10 +166,13 @@ def _transform_thinking_blocks(
                 continue
 
             # Different provider - transform thinking blocks
-            transformed_content = _transform_content_blocks(msg.content, msg_provider, msg_api, to_provider, to_api)
+            transformed_content = _transform_content_blocks(
+                msg.content, msg_provider, msg_api, to_provider, to_api
+            )
 
             # Build new message with transformed content
             from dataclasses import replace
+
             transformed_msg = replace(
                 msg,
                 content=transformed_content,
@@ -275,7 +280,7 @@ def _filter_orphaned_tool_calls(messages: list[Message]) -> list[Message]:
             continue
 
         # Last message - keep all tool calls (may be ongoing)
-        is_last_message = (index == len(messages) - 1)
+        is_last_message = index == len(messages) - 1
         if is_last_message:
             result.append(msg)
             continue
@@ -296,13 +301,16 @@ def _filter_orphaned_tool_calls(messages: list[Message]) -> list[Message]:
 
         # Build new message with filtered content
         from dataclasses import replace
+
         filtered_msg = replace(msg, content=filtered_content)
         result.append(filtered_msg)
 
     return result
 
 
-def _extract_tool_call_ids(content: str | list[dict[str, Any]] | list[ContentBlock] | None) -> list[str]:
+def _extract_tool_call_ids(
+    content: str | list[dict[str, Any]] | list[ContentBlock] | None,
+) -> list[str]:
     """Extract tool call IDs from message content.
 
     Tiger Style: Pure function, explicit return type.

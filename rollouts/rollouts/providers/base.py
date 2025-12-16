@@ -12,11 +12,13 @@ from rollouts.models import ModelCost
 
 class NonRetryableError(Exception):
     """Exception for errors that should not be retried."""
+
     pass
 
 
 class VLLMErrorType(Enum):
     """Classification of vLLM server errors."""
+
     SUCCESS = "success"
     CONTEXT_LENGTH = "context_length"
     INVALID_PARAM = "invalid_param"
@@ -92,7 +94,7 @@ def sanitize_request_for_logging(params: dict) -> dict:
                                     url_preview = url_str
                                 sanitized_parts.append({
                                     "type": "image_url",
-                                    "image_url": {"url": url_preview}
+                                    "image_url": {"url": url_preview},
                                 })
                             else:
                                 # Keep text parts
@@ -127,9 +129,7 @@ def add_cache_control_to_last_content(
         1
         for msg in new_messages
         for content in (
-            msg["content"]
-            if isinstance(msg.get("content"), list)
-            else [msg.get("content")]
+            msg["content"] if isinstance(msg.get("content"), list) else [msg.get("content")]
         )
         if isinstance(content, dict) and "cache_control" in content
     )
@@ -156,20 +156,20 @@ def add_cache_control_to_last_content(
 
 def _prepare_messages_for_llm(messages: list[Message]) -> list[Message]:
     """Strip tool result details before sending to LLM.
-    
+
     Tiger Style: Explicit filtering, no magic.
     Tools return both `content` (for LLM) and `details` (for UI).
     This function removes `details` to reduce token usage.
-    
+
     Args:
         messages: List of messages, some may have details field
-        
+
     Returns:
         New list with details stripped from tool messages
     """
     assert messages is not None
     assert isinstance(messages, list)
-    
+
     filtered = []
     for msg in messages:
         if msg.role == "tool":
@@ -179,7 +179,7 @@ def _prepare_messages_for_llm(messages: list[Message]) -> list[Message]:
             filtered.append(filtered_msg)
         else:
             filtered.append(msg)
-    
+
     assert len(filtered) == len(messages)  # No messages dropped
     return filtered
 

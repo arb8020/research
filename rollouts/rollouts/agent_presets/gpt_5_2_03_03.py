@@ -10,7 +10,6 @@ GPT-5.2 features:
 
 from rollouts.agent_presets.base_preset import AgentPresetConfig
 
-
 config = AgentPresetConfig(
     name="gpt_5_2",
     model="openai/gpt-5.2",

@@ -37,12 +37,8 @@ class FlexAttentionBackend:
 
         # KV cache: [num_layers, total_slots, num_kv_heads, head_dim]
         # All layers share one allocation (indexed by layer_idx)
-        self.k_cache = torch.zeros(
-            config.cache_shape, dtype=config.dtype, device=config.device
-        )
-        self.v_cache = torch.zeros(
-            config.cache_shape, dtype=config.dtype, device=config.device
-        )
+        self.k_cache = torch.zeros(config.cache_shape, dtype=config.dtype, device=config.device)
+        self.v_cache = torch.zeros(config.cache_shape, dtype=config.dtype, device=config.device)
 
     def set_num_heads(self, num_heads: int) -> None:
         """Set number of query heads (for GQA expansion)."""
@@ -271,7 +267,7 @@ class FlexAttentionBackend:
         # TODO: Replace with FlexAttention block_mask approach or FlashInfer
         block_size = self.config.block_size
 
-        for seq_idx, (blocks, seq_len) in enumerate(zip(block_tables, seq_lens)):
+        for seq_idx, (blocks, seq_len) in enumerate(zip(block_tables, seq_lens, strict=False)):
             for pos in range(seq_len):
                 block_idx = pos // block_size
                 offset = pos % block_size

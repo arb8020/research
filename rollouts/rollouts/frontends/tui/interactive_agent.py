@@ -13,30 +13,27 @@ from typing import TYPE_CHECKING
 
 import trio
 
-from rollouts.agents import AgentState, Actor, run_agent
+from rollouts.agents import Actor, AgentState, run_agent
 from rollouts.dtypes import (
     Endpoint,
     Environment,
     Message,
     RunConfig,
+    StopReason,
     StreamEvent,
-    TextDelta,
-    ThinkingDelta,
-    ToolCallEnd,
-    ToolResultReceived,
-    Trajectory,
     ToolCall,
     ToolConfirmResult,
     ToolResult,
-    StopReason,
+    Trajectory,
 )
+from rollouts.models import get_model
 
-from .terminal import ProcessTerminal
-from .tui import TUI
 from .agent_renderer import AgentRenderer
 from .components.input import Input
-from .components.spacer import Spacer
 from .components.loader_container import LoaderContainer
+from .components.spacer import Spacer
+from .terminal import ProcessTerminal
+from .tui import TUI
 
 if TYPE_CHECKING:
     from rollouts.store import SessionStore
@@ -98,7 +95,7 @@ class InteractiveAgentRunner:
         self.renderer: AgentRenderer | None = None
         self.input_component: Input | None = None
         self.loader_container: LoaderContainer | None = None
-        self.status_line: "StatusLine | None" = None
+        self.status_line: StatusLine | None = None
 
         # Input coordination - use Trio memory channels instead of asyncio.Queue
         self.input_send: trio.MemorySendChannel[str] | None = None
@@ -253,6 +250,7 @@ class InteractiveAgentRunner:
     def _update_token_counts(self, state: AgentState) -> None:
         """Update status line with cumulative token counts and cost from trajectory."""
         import logging
+
         logger = logging.getLogger(__name__)
 
         if not self.status_line:
@@ -266,18 +264,22 @@ class InteractiveAgentRunner:
         logger.debug(f"_update_token_counts: {len(completions)} completions")
         for completion in completions:
             if completion.usage:
-                logger.debug(f"  usage: in={completion.usage.input_tokens} out={completion.usage.output_tokens} cost={completion.usage.cost.total}")
+                logger.debug(
+                    f"  usage: in={completion.usage.input_tokens} out={completion.usage.output_tokens} cost={completion.usage.cost.total}"
+                )
                 total_input += completion.usage.input_tokens + completion.usage.cache_read_tokens
                 total_output += completion.usage.output_tokens + completion.usage.reasoning_tokens
                 total_cost += completion.usage.cost.total
 
-        logger.debug(f"_update_token_counts: setting tokens {total_input}/{total_output} cost={total_cost}")
+        logger.debug(
+            f"_update_token_counts: setting tokens {total_input}/{total_output} cost={total_cost}"
+        )
         self.status_line.set_tokens(total_input, total_output, total_cost)
 
     def _update_env_status_info(self) -> None:
         """Update status line with environment info."""
         if self.status_line and self.environment:
-            if hasattr(self.environment, 'get_status_info'):
+            if hasattr(self.environment, "get_status_info"):
                 env_info = self.environment.get_status_info()
                 if env_info:
                     self.status_line.set_env_info(env_info)
@@ -289,7 +291,8 @@ class InteractiveAgentRunner:
             List of agent states from the run
         """
         # Create terminal and TUI with selected theme
-        from .theme import DARK_THEME, ROUNDED_THEME, MINIMAL_THEME
+        from .theme import DARK_THEME, MINIMAL_THEME, ROUNDED_THEME
+
         if self.theme_name == "rounded":
             theme = ROUNDED_THEME
         elif self.theme_name == "minimal":
@@ -301,7 +304,9 @@ class InteractiveAgentRunner:
         self.tui = TUI(self.terminal, theme=theme, debug=self.debug, debug_layout=self.debug_layout)
 
         # Create renderer with environment for custom tool formatters
-        self.renderer = AgentRenderer(self.tui, environment=self.environment, debug_layout=self.debug_layout)
+        self.renderer = AgentRenderer(
+            self.tui, environment=self.environment, debug_layout=self.debug_layout
+        )
 
         # Render history from initial trajectory (for resumed sessions)
         # Render all messages including system messages
@@ -334,11 +339,17 @@ class InteractiveAgentRunner:
 
         # Create status line below input
         from .components.status_line import StatusLine
+
         self.status_line = StatusLine(theme=self.tui.theme)
         self.status_line.set_session_id(self.session_id)
-        self.status_line.set_model(f"{self.endpoint.provider}/{self.endpoint.model}")
+        # Look up context window from model registry
+        model_meta = get_model(self.endpoint.provider, self.endpoint.model)  # type: ignore[arg-type]
+        context_window = model_meta.context_window if model_meta else None
+        self.status_line.set_model(
+            f"{self.endpoint.provider}/{self.endpoint.model}", context_window=context_window
+        )
         # Set environment info if available
-        if self.environment and hasattr(self.environment, 'get_status_info'):
+        if self.environment and hasattr(self.environment, "get_status_info"):
             env_info = self.environment.get_status_info()
             if env_info:
                 self.status_line.set_env_info(env_info)
@@ -387,7 +398,7 @@ class InteractiveAgentRunner:
                             # Check for standalone Escape (ASCII 27) - interrupt current agent run
                             # Multi-byte sequences starting with escape (like \x1b[A for arrows)
                             # are passed through to the input handler.
-                            if input_data == '\x1b':
+                            if input_data == "\x1b":
                                 if self.agent_cancel_scope:
                                     self.escape_pressed = True
                                     self.agent_cancel_scope.cancel()
@@ -420,9 +431,8 @@ class InteractiveAgentRunner:
 
                 # Now create initial state with user message in trajectory
                 initial_trajectory_with_user = Trajectory(
-                    messages=self.initial_trajectory.messages + [
-                        Message(role="user", content=first_message)
-                    ]
+                    messages=self.initial_trajectory.messages
+                    + [Message(role="user", content=first_message)]
                 )
 
                 initial_state = AgentState(
@@ -440,46 +450,50 @@ class InteractiveAgentRunner:
 
                 # Create run config
                 # Tool confirmation handlers
-                async def auto_confirm_tool(tc: ToolCall, state: AgentState, rcfg: RunConfig) -> tuple[AgentState, ToolConfirmResult]:
+                async def auto_confirm_tool(
+                    tc: ToolCall, state: AgentState, rcfg: RunConfig
+                ) -> tuple[AgentState, ToolConfirmResult]:
                     return state, ToolConfirmResult(proceed=True)
 
-                async def confirm_tool_tui(tc: ToolCall, state: AgentState, rcfg: RunConfig) -> tuple[AgentState, ToolConfirmResult]:
+                async def confirm_tool_tui(
+                    tc: ToolCall, state: AgentState, rcfg: RunConfig
+                ) -> tuple[AgentState, ToolConfirmResult]:
                     """Interactive tool confirmation in TUI."""
                     # Show confirmation prompt
                     if self.renderer:
-                        self.renderer.add_system_message(f"⚠️  Tool: {tc.name}({tc.args})\n   [y] execute  [n] reject  [s] skip")
+                        self.renderer.add_system_message(
+                            f"⚠️  Tool: {tc.name}({tc.args})\n   [y] execute  [n] reject  [s] skip"
+                        )
 
                     resp = await rcfg.on_input("Confirm tool? ")
                     resp = resp.strip().lower()
 
-                    if resp in ('y', 'yes', ''):
+                    if resp in ("y", "yes", ""):
                         return state, ToolConfirmResult(proceed=True)
-                    elif resp in ('n', 'no'):
+                    elif resp in ("n", "no"):
                         # Get feedback
                         feedback = await rcfg.on_input("Feedback for LLM: ")
                         return state, ToolConfirmResult(
                             proceed=False,
                             tool_result=ToolResult(
-                                tool_call_id=tc.id,
-                                is_error=True,
-                                error="Rejected by user"
+                                tool_call_id=tc.id, is_error=True, error="Rejected by user"
                             ),
-                            user_message=feedback.strip() if feedback.strip() else None
+                            user_message=feedback.strip() if feedback.strip() else None,
                         )
                     else:  # skip
                         return state, ToolConfirmResult(
                             proceed=False,
                             tool_result=ToolResult(
-                                tool_call_id=tc.id,
-                                is_error=True,
-                                error="Skipped by user"
-                            )
+                                tool_call_id=tc.id, is_error=True, error="Skipped by user"
+                            ),
                         )
 
                 confirm_handler = confirm_tool_tui if self.confirm_tools else auto_confirm_tool
 
                 # Handle no-tool response: wait for user input before continuing
-                async def handle_no_tool_interactive(state: AgentState, rcfg: RunConfig) -> AgentState:
+                async def handle_no_tool_interactive(
+                    state: AgentState, rcfg: RunConfig
+                ) -> AgentState:
                     """Wait for user input when LLM responds without tool calls."""
                     from dataclasses import replace as dc_replace
 
@@ -584,10 +598,24 @@ class InteractiveAgentRunner:
                         #       could be mid-word/mid-thought garbage
                         # Maybe add a flag to control this behavior?
                         if partial_response:
-                            new_messages.append(Message(
-                                role="assistant",
-                                content=partial_response + "\n\n[interrupted]"
-                            ))
+                            new_messages.append(
+                                Message(
+                                    role="assistant", content=partial_response + "\n\n[interrupted]"
+                                )
+                            )
+
+                        # Run exit survey on yield (agent paused, waiting for user)
+                        try:
+                            from rollouts.feedback import run_exit_survey
+
+                            await run_exit_survey(
+                                latest_state,
+                                self.endpoint,
+                                "yield",
+                                session_id=self.session_id,
+                            )
+                        except Exception:
+                            pass  # Survey failure shouldn't affect main flow
 
                         # Wait for new user input
                         user_input = await self._tui_input_handler("Enter your message: ")
@@ -595,6 +623,7 @@ class InteractiveAgentRunner:
 
                         # Update state with new trajectory, preserving session_id
                         from dataclasses import replace as dc_replace
+
                         new_trajectory = Trajectory(messages=new_messages)
                         current_state = dc_replace(
                             latest_state,
@@ -637,6 +666,25 @@ class InteractiveAgentRunner:
             # Ensure output buffer is clean before printing session info
             sys.stdout.flush()
 
+            # Run exit survey if we have agent states
+            if agent_states:
+                final_state = agent_states[-1]
+                exit_reason = "unknown"
+                if final_state.stop:
+                    exit_reason = str(final_state.stop).split(".")[-1].lower()
+
+                try:
+                    from rollouts.feedback import run_exit_survey
+
+                    await run_exit_survey(
+                        final_state,
+                        self.endpoint,
+                        exit_reason,
+                        session_id=self.session_id,
+                    )
+                except Exception:
+                    pass  # Survey failure shouldn't affect main flow
+
             # Print session info for easy resume
             if self.session_id:
                 # Terminal is now restored, use regular print() for clean output
@@ -645,12 +693,17 @@ class InteractiveAgentRunner:
 
                 # Show git worktree info if applicable
                 from rollouts.environments.git_worktree import GitWorktreeEnvironment
-                if isinstance(self.environment, GitWorktreeEnvironment) and self.environment._worktree_path:
+
+                if (
+                    isinstance(self.environment, GitWorktreeEnvironment)
+                    and self.environment._worktree_path
+                ):
                     env = self.environment
                     worktree = env._worktree_path
 
                     # Get actual commit count from git
                     import subprocess
+
                     try:
                         result = subprocess.run(
                             ["git", "rev-list", "--count", "HEAD"],
@@ -730,4 +783,3 @@ async def run_interactive_agent(
         initial_prompt=initial_prompt,
     )
     return await runner.run()
-

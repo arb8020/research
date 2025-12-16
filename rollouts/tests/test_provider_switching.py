@@ -21,7 +21,6 @@ import trio
 
 from rollouts import (
     Actor,
-    ContentBlock,
     Endpoint,
     Message,
     TextContent,
@@ -51,18 +50,18 @@ async def test_provider_switching_basic():
         model="claude-3-7-sonnet-20250219",  # Sonnet supports thinking; Haiku does not
         api_key=os.getenv("ANTHROPIC_API_KEY", ""),
         temperature=1.0,  # Must be 1.0 when thinking is enabled
-        thinking={"type": "enabled", "budget_tokens": 2000},  # Enable thinking for Claude (min 1024)
+        thinking={
+            "type": "enabled",
+            "budget_tokens": 2000,
+        },  # Enable thinking for Claude (min 1024)
     )
 
     initial_message = Message(
-        role="user",
-        content="What is 25 * 18? Think through it step by step."
+        role="user", content="What is 25 * 18? Think through it step by step."
     )
 
     claude_actor = Actor(
-        trajectory=Trajectory(messages=[initial_message]),
-        endpoint=claude_endpoint,
-        tools=[]
+        trajectory=Trajectory(messages=[initial_message]), endpoint=claude_endpoint, tools=[]
     )
 
     # Get Claude's response (with thinking)
@@ -71,12 +70,14 @@ async def test_provider_switching_basic():
         on_chunk=stdout_handler,
     )
 
-    print(f"\n✓ Claude responded")
+    print("\n✓ Claude responded")
 
     # Extract Claude's message
     claude_message = claude_response.trajectory.messages[-1]
     assert claude_message.role == "assistant"
-    print(f"  Claude's message has {len(claude_message.content) if isinstance(claude_message.content, list) else 1} content blocks")
+    print(
+        f"  Claude's message has {len(claude_message.content) if isinstance(claude_message.content, list) else 1} content blocks"
+    )
 
     # Build context with Claude's response
     context_messages = [initial_message, claude_message]
@@ -135,18 +136,18 @@ async def test_provider_switching_basic():
 
     # Continue with GPT
     gpt_actor = Actor(
-        trajectory=Trajectory(messages=transformed_messages),
-        endpoint=gpt_endpoint,
-        tools=[]
+        trajectory=Trajectory(messages=transformed_messages), endpoint=gpt_endpoint, tools=[]
     )
 
     gpt_response = await rollout(gpt_actor, on_chunk=stdout_handler)
 
-    print(f"\n✓ GPT-4o responded")
+    print("\n✓ GPT-4o responded")
 
     gpt_message = gpt_response.trajectory.messages[-1]
     assert gpt_message.role == "assistant"
-    print(f"  GPT's message: {gpt_message.content[:100] if isinstance(gpt_message.content, str) else '[content blocks]'}...")
+    print(
+        f"  GPT's message: {gpt_message.content[:100] if isinstance(gpt_message.content, str) else '[content blocks]'}..."
+    )
 
     print("\n=== Provider Switching Test PASSED ===\n")
 
@@ -202,6 +203,7 @@ async def test_context_serialization():
     print("\n2. Deserializing context from JSON...")
     # Use dacite for proper Message reconstruction
     import dacite
+
     data = json.loads(serialized)
     restored = dacite.from_dict(data_class=Trajectory, data=data)
     assert restored is not None
@@ -216,7 +218,7 @@ async def test_context_serialization():
         assert second_message["role"] == "assistant"
         assert second_message.get("provider") == "anthropic"
         print("  ✓ Message data preserved (as dict)")
-    elif hasattr(second_message, 'role'):
+    elif hasattr(second_message, "role"):
         assert second_message.role == "assistant"
         assert second_message.provider == "anthropic"
         assert second_message.api == "anthropic-messages"
@@ -297,10 +299,11 @@ async def test_tool_call_filtering():
 
 
 if __name__ == "__main__":
+
     async def main():
-        print("\n" + "="*70)
+        print("\n" + "=" * 70)
         print("INTEGRATION TEST: Cross-Provider Message Transformation")
-        print("="*70)
+        print("=" * 70)
 
         # Test 1: Serialization (always works)
         try:
@@ -308,6 +311,7 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"❌ Serialization test failed: {e}")
             import traceback
+
             traceback.print_exc()
 
         # Test 2: Tool call filtering (always works)
@@ -316,6 +320,7 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"❌ Tool call filtering test failed: {e}")
             import traceback
+
             traceback.print_exc()
 
         # Test 3: Provider switching (requires API keys)
@@ -325,12 +330,15 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"❌ Provider switching test failed: {e}")
                 import traceback
+
                 traceback.print_exc()
         else:
-            print("\n⏭️  Skipping provider switching test (need ANTHROPIC_API_KEY and OPENAI_API_KEY)")
+            print(
+                "\n⏭️  Skipping provider switching test (need ANTHROPIC_API_KEY and OPENAI_API_KEY)"
+            )
 
-        print("\n" + "="*70)
+        print("\n" + "=" * 70)
         print("Integration tests complete!")
-        print("="*70 + "\n")
+        print("=" * 70 + "\n")
 
     trio.run(main)

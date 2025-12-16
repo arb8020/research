@@ -4,8 +4,8 @@ Theme system for TUI - pi-mono inspired colors with true-color ANSI support.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 
 def hex_to_rgb(hex_color: str) -> tuple[int, int, int]:

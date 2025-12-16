@@ -10,7 +10,7 @@ Usage:
 
 from dataclasses import replace
 
-from base_config import BaseConfig, train, run_remote
+from base_config import BaseConfig, run_remote, train
 
 config = replace(
     BaseConfig(),
@@ -22,6 +22,7 @@ config = replace(
 
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--remote", action="store_true", help="Run on remote GPU")
     parser.add_argument("--keep-alive", action="store_true", help="Keep GPU after completion")

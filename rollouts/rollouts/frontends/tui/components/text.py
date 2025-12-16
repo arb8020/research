@@ -4,7 +4,8 @@ Text component - displays multi-line text with word wrapping.
 
 from __future__ import annotations
 
-from typing import Callable, Optional, List, TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from ..tui import Component
 from ..utils import apply_background_to_line, visible_width, wrap_text_with_ansi
@@ -13,7 +14,9 @@ if TYPE_CHECKING:
     from ..theme import Theme
 
 
-def _render_line_with_margins(line: str, width: int, padding_x: int, bg_fn: Optional[Callable[[str], str]]) -> str:
+def _render_line_with_margins(
+    line: str, width: int, padding_x: int, bg_fn: Callable[[str], str] | None
+) -> str:
     """Render a single line with left/right margins and optional background.
 
     Background is applied only to content, not margins.
@@ -33,7 +36,14 @@ def _render_line_with_margins(line: str, width: int, padding_x: int, bg_fn: Opti
     return line_with_margins + " " * padding_needed
 
 
-def _render_empty_lines(count: int, width: int, padding_x: int, bg_fn: Optional[Callable[[str], str]], use_compact: bool = False, is_top: bool = True) -> List[str]:
+def _render_empty_lines(
+    count: int,
+    width: int,
+    padding_x: int,
+    bg_fn: Callable[[str], str] | None,
+    use_compact: bool = False,
+    is_top: bool = True,
+) -> list[str]:
     """Render N empty lines with optional background, respecting left/right margins.
 
     Args:
@@ -56,11 +66,13 @@ def _render_empty_lines(count: int, width: int, padding_x: int, bg_fn: Optional[
             # Use colored half-block characters with NO background
             # Top padding: ▄ (lower half) - sits at bottom of line, separates from content above
             # Bottom padding: ▀ (upper half) - sits at top of line, separates from content below
-            from ..theme import RESET
             import re
+
+            from ..theme import RESET
+
             test_output = bg_fn(" ")
             # Extract the background color code from ANSI (format: \x1b[48;2;R;G;Bm)
-            bg_match = re.search(r'\x1b\[48;2;(\d+);(\d+);(\d+)m', test_output)
+            bg_match = re.search(r"\x1b\[48;2;(\d+);(\d+);(\d+)m", test_output)
             if bg_match:
                 r, g, b = bg_match.groups()
                 # Create foreground color from the same RGB
@@ -76,7 +88,11 @@ def _render_empty_lines(count: int, width: int, padding_x: int, bg_fn: Optional[
         else:
             # Full background color on empty space
             empty_content = " " * content_width
-            colored_line = left_margin + apply_background_to_line(empty_content, content_width, bg_fn) + right_margin
+            colored_line = (
+                left_margin
+                + apply_background_to_line(empty_content, content_width, bg_fn)
+                + right_margin
+            )
 
         return [colored_line] * count
 
@@ -93,11 +109,11 @@ class Text(Component):
         text: str = "",
         padding_x: int = 1,
         padding_y: int = 1,
-        padding_top: Optional[int] = None,
-        padding_bottom: Optional[int] = None,
-        custom_bg_fn: Optional[Callable[[str], str]] = None,
-        theme: Optional["Theme"] = None,
-        gutter_prefix: Optional[str] = None,
+        padding_top: int | None = None,
+        padding_bottom: int | None = None,
+        custom_bg_fn: Callable[[str], str] | None = None,
+        theme: Theme | None = None,
+        gutter_prefix: str | None = None,
     ) -> None:
         self._text = text
         self._padding_x = padding_x
@@ -108,17 +124,17 @@ class Text(Component):
         self._gutter_prefix = gutter_prefix
 
         # Cache for rendered output
-        self._cached_text: Optional[str] = None
-        self._cached_width: Optional[int] = None
-        self._cached_lines: Optional[List[str]] = None
-        self._cached_gutter_prefix: Optional[str] = None
+        self._cached_text: str | None = None
+        self._cached_width: int | None = None
+        self._cached_lines: list[str] | None = None
+        self._cached_gutter_prefix: str | None = None
 
     def set_text(self, text: str) -> None:
         """Update the text content."""
         self._text = text
         self.invalidate()
 
-    def set_custom_bg_fn(self, custom_bg_fn: Optional[Callable[[str], str]]) -> None:
+    def set_custom_bg_fn(self, custom_bg_fn: Callable[[str], str] | None) -> None:
         """Update the background function."""
         self._custom_bg_fn = custom_bg_fn
         self.invalidate()
@@ -130,7 +146,7 @@ class Text(Component):
         self._cached_lines = None
         self._cached_gutter_prefix = None
 
-    def render(self, width: int) -> List[str]:
+    def render(self, width: int) -> list[str]:
         """Render text with word wrapping and padding."""
         # Check cache
         if (
@@ -170,43 +186,68 @@ class Text(Component):
 
         # Add rounded corners if enabled
         if use_rounded and self._custom_bg_fn and content_lines:
-            from ..theme import hex_to_fg, RESET
+            from ..theme import RESET, hex_to_fg
+
             corner_color = hex_to_fg(self._theme.border)
 
             # Add corners to first line
             first_line = content_lines[0]
             left_margin = " " * (self._padding_x - 1)
-            content_lines[0] = left_margin + corner_color + self._theme.corner_tl + RESET + first_line[self._padding_x:]
+            content_lines[0] = (
+                left_margin
+                + corner_color
+                + self._theme.corner_tl
+                + RESET
+                + first_line[self._padding_x :]
+            )
 
             # Add corner to last line
             last_line = content_lines[-1]
             # Find where the colored content ends (before right margin)
             content_end = width - self._padding_x
             content_lines[-1] = (
-                last_line[:content_end] +
-                corner_color + self._theme.corner_bl + RESET +
-                " " * (self._padding_x - 1)
+                last_line[:content_end]
+                + corner_color
+                + self._theme.corner_bl
+                + RESET
+                + " " * (self._padding_x - 1)
             )
 
         # Add vertical padding (use render_width if we have a gutter)
         use_compact = self._theme and getattr(self._theme, "use_compact_padding", False)
-        top_lines = _render_empty_lines(self._padding_top, render_width, self._padding_x, self._custom_bg_fn, use_compact, is_top=True)
-        bottom_lines = _render_empty_lines(self._padding_bottom, render_width, self._padding_x, self._custom_bg_fn, use_compact, is_top=False)
+        top_lines = _render_empty_lines(
+            self._padding_top,
+            render_width,
+            self._padding_x,
+            self._custom_bg_fn,
+            use_compact,
+            is_top=True,
+        )
+        bottom_lines = _render_empty_lines(
+            self._padding_bottom,
+            render_width,
+            self._padding_x,
+            self._custom_bg_fn,
+            use_compact,
+            is_top=False,
+        )
 
         result = [*top_lines, *content_lines, *bottom_lines]
 
         # Add gutter prefix if specified
         if self._gutter_prefix:
             gutter_len = visible_width(self._gutter_prefix)
+
             # Find the position where visible characters start (skip ANSI codes)
+
             def skip_ansi_and_get_pos(line, visible_chars_to_skip):
                 """Find byte position after skipping N visible characters, preserving ANSI."""
                 pos = 0
                 visible_count = 0
                 while pos < len(line) and visible_count < visible_chars_to_skip:
-                    if line[pos:pos+2] == '\x1b[':
+                    if line[pos : pos + 2] == "\x1b[":
                         # Skip ANSI escape sequence
-                        end = line.find('m', pos)
+                        end = line.find("m", pos)
                         if end != -1:
                             pos = end + 1
                         else:

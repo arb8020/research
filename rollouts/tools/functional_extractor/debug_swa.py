@@ -34,7 +34,7 @@ def debug_swa():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.float32  # Use float32 for numerical accuracy comparison
 
-    print(f"\nTest config:")
+    print("\nTest config:")
     print(f"  batch_size: {batch_size}")
     print(f"  num_heads: {num_heads}")
     print(f"  seq_len: {seq_len}")
@@ -66,7 +66,7 @@ def debug_swa():
     combined_mask = causal_mask & window_mask
 
     print(f"Reference mask shape: {combined_mask.shape}")
-    print(f"Reference mask (first 8x8):")
+    print("Reference mask (first 8x8):")
     print(combined_mask[:8, :8].int())
 
     # Convert to attention mask format (-inf for masked positions)
@@ -79,9 +79,7 @@ def debug_swa():
 
     # Compute attention with explicit mask
     with torch.no_grad():
-        ref_output = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=attn_mask, is_causal=False
-        )
+        ref_output = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, is_causal=False)
     print(f"Reference output shape: {ref_output.shape}")
 
     # =====================================================
@@ -193,8 +191,9 @@ if __name__ == "__main__":
         debug_swa()
     else:
         print("No GPU available. Run on remote GPU.")
-        from verify import run_on_gpu
         import argparse
+
+        from verify import run_on_gpu
 
         parser = argparse.ArgumentParser()
         parser.add_argument("--gpu-id", type=str)

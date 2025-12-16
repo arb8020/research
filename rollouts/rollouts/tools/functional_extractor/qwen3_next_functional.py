@@ -144,7 +144,9 @@ def compute_rope_embeddings(
         Tuple of (cos, sin) each of shape (batch, seq_len, rotary_dim)
     """
     # inv_freq: (rotary_dim // 2,)
-    inv_freq = 1.0 / (theta ** (torch.arange(0, rotary_dim, 2, device=positions.device).float() / rotary_dim))
+    inv_freq = 1.0 / (
+        theta ** (torch.arange(0, rotary_dim, 2, device=positions.device).float() / rotary_dim)
+    )
 
     # positions: (batch, seq_len) -> (batch, 1, seq_len)
     # inv_freq: (rotary_dim // 2,) -> (1, rotary_dim // 2, 1)
@@ -168,7 +170,9 @@ def repeat_kv(hidden_states: Tensor, n_rep: int) -> Tensor:
         return hidden_states
 
     batch, num_kv_heads, seq_len, head_dim = hidden_states.shape
-    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_kv_heads, n_rep, seq_len, head_dim)
+    hidden_states = hidden_states[:, :, None, :, :].expand(
+        batch, num_kv_heads, n_rep, seq_len, head_dim
+    )
     return hidden_states.reshape(batch, num_kv_heads * n_rep, seq_len, head_dim)
 
 
@@ -219,13 +223,11 @@ def self_attention(
     if f"{prefix}.q_norm.weight" in weights:
         # Flatten for RMS norm, then reshape back
         query_states = rms_norm(
-            query_states.reshape(-1, HEAD_DIM),
-            weights[f"{prefix}.q_norm.weight"]
+            query_states.reshape(-1, HEAD_DIM), weights[f"{prefix}.q_norm.weight"]
         ).view(batch_size, seq_len, NUM_HEADS, HEAD_DIM)
-        k = rms_norm(
-            k.reshape(-1, HEAD_DIM),
-            weights[f"{prefix}.k_norm.weight"]
-        ).view(batch_size, seq_len, NUM_KV_HEADS, HEAD_DIM)
+        k = rms_norm(k.reshape(-1, HEAD_DIM), weights[f"{prefix}.k_norm.weight"]).view(
+            batch_size, seq_len, NUM_KV_HEADS, HEAD_DIM
+        )
 
     # Transpose to (batch, num_heads, seq_len, head_dim)
     q = query_states.transpose(1, 2)
@@ -241,7 +243,9 @@ def self_attention(
 
     # Scaled dot-product attention
     attn_output = F.scaled_dot_product_attention(
-        q, k, v,
+        q,
+        k,
+        v,
         attn_mask=attention_mask,
         dropout_p=0.0,
         is_causal=(attention_mask is None),
@@ -314,8 +318,8 @@ def gated_delta_net(
     # Actually from 12288: could be q(4096) + k(4096) + v(4096) = 12288
     third = qkvz_size // 3
     q = qkvz[..., :third]  # [batch, seq_len, 4096]
-    k = qkvz[..., third:2*third]  # [batch, seq_len, 4096]
-    v_and_z = qkvz[..., 2*third:]  # [batch, seq_len, 4096]
+    k = qkvz[..., third : 2 * third]  # [batch, seq_len, 4096]
+    v_and_z = qkvz[..., 2 * third :]  # [batch, seq_len, 4096]
 
     # Project for beta and alpha (dt)
     ba = F.linear(hidden_states, in_proj_ba)  # [batch, seq_len, ba_size=64]
@@ -353,8 +357,14 @@ def gated_delta_net(
     head_dim_half = q.shape[-1]
 
     # Initialize hidden state (use input dtype for consistency)
-    h = torch.zeros(batch_size, num_heads, head_dim_half, head_dim_half,
-                    device=hidden_states.device, dtype=input_dtype)
+    h = torch.zeros(
+        batch_size,
+        num_heads,
+        head_dim_half,
+        head_dim_half,
+        device=hidden_states.device,
+        dtype=input_dtype,
+    )
 
     outputs = []
     for t in range(seq_len):
@@ -369,14 +379,14 @@ def gated_delta_net(
         decay = torch.exp(A * dt_t).to(input_dtype)  # [batch, num_heads]
 
         # Outer product: k^T @ v -> [batch, num_heads, head_dim_half, head_dim_half]
-        kv = torch.einsum('bhi,bhj->bhij', k_t, v_t)
+        kv = torch.einsum("bhi,bhj->bhij", k_t, v_t)
 
         # Update hidden state with decay and gated update
         # h = decay * h + beta * kv
         h = decay[:, :, None, None] * h + beta_t[:, :, None, None] * kv
 
         # Output: q @ h -> [batch, num_heads, head_dim_half]
-        o_t = torch.einsum('bhi,bhij->bhj', q_t, h)
+        o_t = torch.einsum("bhi,bhij->bhj", q_t, h)
         outputs.append(o_t)
 
     # Stack outputs: [seq_len, batch, num_heads, head_dim_half] -> [batch, seq_len, num_heads, head_dim_half]
@@ -386,8 +396,9 @@ def gated_delta_net(
     output = output.view(batch_size, seq_len, -1)  # [batch, seq_len, num_heads * head_dim_half]
 
     # Apply norm (simplified - actual uses group norm per head)
-    output_normed = rms_norm(output.view(batch_size * seq_len, num_heads, -1),
-                            norm_weight).view(batch_size, seq_len, -1)
+    output_normed = rms_norm(output.view(batch_size * seq_len, num_heads, -1), norm_weight).view(
+        batch_size, seq_len, -1
+    )
 
     # Output projection
     output = F.linear(output_normed, out_proj)
@@ -413,7 +424,9 @@ def moe_mlp(
     batch_size, seq_len, hidden_size = hidden_states.shape
 
     # Router
-    router_logits = F.linear(hidden_states, weights[f"{prefix}.gate.weight"])  # [batch, seq_len, num_experts]
+    router_logits = F.linear(
+        hidden_states, weights[f"{prefix}.gate.weight"]
+    )  # [batch, seq_len, num_experts]
 
     # Get top-k experts
     routing_weights, selected_experts = torch.topk(router_logits, NUM_EXPERTS_PER_TOK, dim=-1)
@@ -439,7 +452,9 @@ def moe_mlp(
         expert_input = hidden_flat[token_indices]
 
         # Get weight for this expert per token
-        expert_weights = torch.zeros(len(token_indices), device=hidden_states.device, dtype=hidden_states.dtype)
+        expert_weights = torch.zeros(
+            len(token_indices), device=hidden_states.device, dtype=hidden_states.dtype
+        )
         for k in range(NUM_EXPERTS_PER_TOK):
             k_mask = selected_experts_flat[token_indices, k] == expert_idx
             expert_weights[k_mask] = routing_weights_flat[token_indices[k_mask], k]
@@ -448,7 +463,9 @@ def moe_mlp(
         gate = F.linear(expert_input, weights[f"{prefix}.experts.{expert_idx}.gate_proj.weight"])
         up = F.linear(expert_input, weights[f"{prefix}.experts.{expert_idx}.up_proj.weight"])
         expert_hidden = F.silu(gate) * up
-        expert_out = F.linear(expert_hidden, weights[f"{prefix}.experts.{expert_idx}.down_proj.weight"])
+        expert_out = F.linear(
+            expert_hidden, weights[f"{prefix}.experts.{expert_idx}.down_proj.weight"]
+        )
 
         # Weighted contribution
         expert_output[token_indices] += expert_weights[:, None] * expert_out

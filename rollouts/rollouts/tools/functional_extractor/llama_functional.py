@@ -116,7 +116,9 @@ def compute_rope_embeddings(
         Tuple of (cos, sin) each of shape (batch, seq_len, head_dim)
     """
     # inv_freq: (head_dim // 2,)
-    inv_freq = 1.0 / (theta ** (torch.arange(0, head_dim, 2, device=positions.device).float() / head_dim))
+    inv_freq = 1.0 / (
+        theta ** (torch.arange(0, head_dim, 2, device=positions.device).float() / head_dim)
+    )
 
     # positions: (batch, seq_len) -> (batch, 1, seq_len)
     # inv_freq: (head_dim // 2,) -> (1, head_dim // 2, 1)
@@ -148,7 +150,9 @@ def repeat_kv(hidden_states: Tensor, n_rep: int) -> Tensor:
         return hidden_states
 
     batch, num_kv_heads, seq_len, head_dim = hidden_states.shape
-    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_kv_heads, n_rep, seq_len, head_dim)
+    hidden_states = hidden_states[:, :, None, :, :].expand(
+        batch, num_kv_heads, n_rep, seq_len, head_dim
+    )
     return hidden_states.reshape(batch, num_kv_heads * n_rep, seq_len, head_dim)
 
 
@@ -204,7 +208,9 @@ def attention(
 
     # Scaled dot-product attention
     attn_output = F.scaled_dot_product_attention(
-        q, k, v,
+        q,
+        k,
+        v,
         attn_mask=attention_mask,
         dropout_p=0.0,
         is_causal=(attention_mask is None),
@@ -283,7 +289,9 @@ def transformer_layer(
 
     # Pre-MLP norm + MLP + residual
     residual = hidden_states
-    hidden_states = rms_norm(hidden_states, layer_weights[f"{prefix}.post_attention_layernorm.weight"])
+    hidden_states = rms_norm(
+        hidden_states, layer_weights[f"{prefix}.post_attention_layernorm.weight"]
+    )
 
     hidden_states = mlp(
         hidden_states,
@@ -382,9 +390,7 @@ def smollm_forward(
 
     # Transformer layers
     for layer_idx in range(num_layers):
-        hidden_states = transformer_layer(
-            hidden_states, weights, layer_idx, cos, sin, attn_mask_4d
-        )
+        hidden_states = transformer_layer(hidden_states, weights, layer_idx, cos, sin, attn_mask_4d)
 
     # Final norm
     hidden_states = rms_norm(hidden_states, weights["model.norm.weight"])

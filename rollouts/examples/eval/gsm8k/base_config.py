@@ -16,8 +16,6 @@ import json
 import logging
 import os
 import re
-import subprocess
-import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -31,6 +29,7 @@ import trio
 @dataclass(frozen=True)
 class EndpointConfig:
     """Endpoint configuration."""
+
     provider: str = "openai"
     model: str = "gpt-4o-mini"
     base_url: str | None = None
@@ -40,6 +39,7 @@ class EndpointConfig:
 @dataclass(frozen=True)
 class InferenceServerConfig:
     """Local inference server configuration."""
+
     enabled: bool = False
     backend: str = "sglang"
     model: str = "Qwen/Qwen2.5-0.5B-Instruct"
@@ -79,6 +79,7 @@ class DatasetConfig:
 @dataclass(frozen=True)
 class EvalRunConfig:
     """Evaluation run configuration."""
+
     max_concurrent: int = 4
     max_turns: int = 10  # For multi-turn mode
     use_tools: bool = False  # Single-turn by default
@@ -88,6 +89,7 @@ class EvalRunConfig:
 @dataclass(frozen=True)
 class OutputConfig:
     """Output configuration."""
+
     save_dir: Path = field(default_factory=lambda: Path("results"))
     experiment_name: str = "gsm8k_eval"
     run_id: str | None = None
@@ -114,6 +116,7 @@ class OutputConfig:
 @dataclass(frozen=True)
 class GSM8KConfig:
     """Top-level GSM8K experiment config."""
+
     endpoint: EndpointConfig = field(default_factory=EndpointConfig)
     inference_server: InferenceServerConfig = field(default_factory=InferenceServerConfig)
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
@@ -223,7 +226,7 @@ def load_gsm8k_dataset(config: DatasetConfig) -> list[dict[str, Any]]:
     return load_samples_from_config(config)
 
 
-def create_gsm8k_samples(config: DatasetConfig) -> list["Sample"]:
+def create_gsm8k_samples(config: DatasetConfig) -> list[Sample]:
     """Create Sample objects from GSM8K for RL training.
 
     Returns Sample objects with:
@@ -242,19 +245,21 @@ def create_gsm8k_samples(config: DatasetConfig) -> list["Sample"]:
 
     samples = []
     for i, row in enumerate(dataset):
-        samples.append(Sample(
-            prompt=row["prompt"],
-            metadata={
-                "answer": row["answer"],
-                "full_answer": row["full_answer"],
-            },
-            index=i,
-        ))
+        samples.append(
+            Sample(
+                prompt=row["prompt"],
+                metadata={
+                    "answer": row["answer"],
+                    "full_answer": row["full_answer"],
+                },
+                index=i,
+            )
+        )
 
     return samples
 
 
-def create_gsm8k_buffer(config: DatasetConfig) -> "DataBuffer":
+def create_gsm8k_buffer(config: DatasetConfig) -> DataBuffer:
     """DEPRECATED: Use create_gsm8k_samples + BufferState instead.
 
     Example migration:
@@ -324,7 +329,7 @@ def normalize_answer(answer: str) -> float | None:
         return None
 
 
-def gsm8k_score_fn(sample: Any) -> "Score":
+def gsm8k_score_fn(sample: Any) -> Score:
     """Score function for GSM8K (single-turn mode).
 
     Works with Sample type from rollouts.training.types.
@@ -341,37 +346,44 @@ def gsm8k_score_fn(sample: Any) -> "Score":
     predicted = extract_boxed_answer(response)
 
     if predicted is None:
-        return Score(metrics=(
-            Metric("correct", 0.0, weight=1.0),
-            Metric("parse_failed", 1.0, weight=0.0),
-        ))
+        return Score(
+            metrics=(
+                Metric("correct", 0.0, weight=1.0),
+                Metric("parse_failed", 1.0, weight=0.0),
+            )
+        )
 
     # Normalize and compare
     pred_val = normalize_answer(predicted)
     true_val = normalize_answer(ground_truth)
 
     if pred_val is None or true_val is None:
-        return Score(metrics=(
-            Metric("correct", 0.0, weight=1.0),
-            Metric("parse_failed", 1.0, weight=0.0),
-        ))
+        return Score(
+            metrics=(
+                Metric("correct", 0.0, weight=1.0),
+                Metric("parse_failed", 1.0, weight=0.0),
+            )
+        )
 
     is_correct = abs(pred_val - true_val) < 0.01
     reward = 1.0 if is_correct else 0.0
 
-    return Score(metrics=(
-        Metric("correct", reward, weight=1.0),
-        Metric("predicted", pred_val, weight=0.0),
-        Metric("ground_truth", true_val, weight=0.0),
-    ))
+    return Score(
+        metrics=(
+            Metric("correct", reward, weight=1.0),
+            Metric("predicted", pred_val, weight=0.0),
+            Metric("ground_truth", true_val, weight=0.0),
+        )
+    )
 
 
-def gsm8k_tool_score_fn(trajectory: Any, sample: Any) -> "Score":
+def gsm8k_tool_score_fn(trajectory: Any, sample: Any) -> Score:
     """Score function for GSM8K with calculator tools (multi-turn mode).
 
     Extracts answer from complete_task tool call or tool results.
     """
     import json
+
     from rollouts.dtypes import Metric, Score
 
     # Sample is a dataclass with .ground_truth and .input dict
@@ -383,7 +395,7 @@ def gsm8k_tool_score_fn(trajectory: Any, sample: Any) -> "Score":
 
     # Strategy 1: Look for complete_task tool call
     for msg in trajectory.messages:
-        tool_calls = msg.get_tool_calls() if hasattr(msg, 'get_tool_calls') else []
+        tool_calls = msg.get_tool_calls() if hasattr(msg, "get_tool_calls") else []
         if msg.role == "assistant" and tool_calls:
             for tool_call in tool_calls:
                 if tool_call.name == "complete_task":
@@ -432,32 +444,38 @@ def gsm8k_tool_score_fn(trajectory: Any, sample: Any) -> "Score":
                         break
 
     if final_answer is None:
-        return Score(metrics=(
-            Metric("correct", 0.0, weight=1.0),
-            Metric("parse_failed", 1.0, weight=0.0),
-        ))
+        return Score(
+            metrics=(
+                Metric("correct", 0.0, weight=1.0),
+                Metric("parse_failed", 1.0, weight=0.0),
+            )
+        )
 
     true_val = normalize_answer(str(ground_truth))
     if true_val is None:
-        return Score(metrics=(
-            Metric("correct", 0.0, weight=1.0),
-            Metric("ground_truth_invalid", 1.0, weight=0.0),
-        ))
+        return Score(
+            metrics=(
+                Metric("correct", 0.0, weight=1.0),
+                Metric("ground_truth_invalid", 1.0, weight=0.0),
+            )
+        )
 
     is_correct = abs(final_answer - true_val) < 0.01
     reward = 1.0 if is_correct else 0.0
 
-    return Score(metrics=(
-        Metric("correct", reward, weight=1.0),
-        Metric("predicted", final_answer, weight=0.0),
-        Metric("ground_truth", true_val, weight=0.0),
-    ))
+    return Score(
+        metrics=(
+            Metric("correct", reward, weight=1.0),
+            Metric("predicted", final_answer, weight=0.0),
+            Metric("ground_truth", true_val, weight=0.0),
+        )
+    )
 
 
 # ──────────────────────── Evaluation Logic ──────────────────────────────────
 
 
-def _get_endpoint(config: GSM8KConfig) -> "Endpoint":
+def _get_endpoint(config: GSM8KConfig) -> Endpoint:
     """Create Endpoint from config, loading API key from env if needed."""
     from rollouts.dtypes import Endpoint
 
@@ -478,7 +496,7 @@ def _get_endpoint(config: GSM8KConfig) -> "Endpoint":
     )
 
 
-def _single_turn_score_fn(trajectory: "Trajectory", sample: "Sample") -> "Score":
+def _single_turn_score_fn(trajectory: Trajectory, sample: Sample) -> Score:
     """Score function for single-turn GSM8K using rollouts evaluation types."""
     from rollouts.dtypes import Metric, Score
 
@@ -497,26 +515,32 @@ def _single_turn_score_fn(trajectory: "Trajectory", sample: "Sample") -> "Score"
     # Extract and compare
     predicted = extract_boxed_answer(response_text)
     if not predicted:
-        return Score(metrics=(
-            Metric("correct", 0.0, weight=1.0),
-            Metric("parse_failed", 1.0, weight=0.0),
-        ))
+        return Score(
+            metrics=(
+                Metric("correct", 0.0, weight=1.0),
+                Metric("parse_failed", 1.0, weight=0.0),
+            )
+        )
 
     pred_val = normalize_answer(predicted)
     true_val = normalize_answer(str(ground_truth))
 
     if pred_val is None or true_val is None:
-        return Score(metrics=(
-            Metric("correct", 0.0, weight=1.0),
-            Metric("parse_failed", 1.0, weight=0.0),
-        ))
+        return Score(
+            metrics=(
+                Metric("correct", 0.0, weight=1.0),
+                Metric("parse_failed", 1.0, weight=0.0),
+            )
+        )
 
     is_correct = abs(pred_val - true_val) < 0.01
-    return Score(metrics=(
-        Metric("correct", 1.0 if is_correct else 0.0, weight=1.0),
-        Metric("predicted", pred_val, weight=0.0),
-        Metric("ground_truth", true_val, weight=0.0),
-    ))
+    return Score(
+        metrics=(
+            Metric("correct", 1.0 if is_correct else 0.0, weight=1.0),
+            Metric("predicted", pred_val, weight=0.0),
+            Metric("ground_truth", true_val, weight=0.0),
+        )
+    )
 
 
 async def _eval_single_turn(config: GSM8KConfig) -> dict[str, Any]:

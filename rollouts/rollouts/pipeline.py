@@ -35,10 +35,9 @@ logger = logging.getLogger(__name__)
 # 1. Trajectory Transforms
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 def compact_trajectory(
-    trajectory: Trajectory,
-    keep_last_n: int = 5,
-    keep_system: bool = True
+    trajectory: Trajectory, keep_last_n: int = 5, keep_system: bool = True
 ) -> Trajectory:
     """Compact trajectory by keeping only recent messages.
 
@@ -68,8 +67,7 @@ def compact_trajectory(
 
 
 def summarize_trajectory(
-    trajectory: Trajectory,
-    summarizer: Callable[[list[Message]], str]
+    trajectory: Trajectory, summarizer: Callable[[list[Message]], str]
 ) -> Trajectory:
     """Summarize trajectory using custom summarizer function.
 
@@ -94,10 +92,7 @@ def summarize_trajectory(
     return replace(trajectory, messages=new_messages)
 
 
-def filter_trajectory(
-    trajectory: Trajectory,
-    predicate: Callable[[Message], bool]
-) -> Trajectory:
+def filter_trajectory(trajectory: Trajectory, predicate: Callable[[Message], bool]) -> Trajectory:
     """Filter messages by predicate.
 
     Example:
@@ -108,11 +103,7 @@ def filter_trajectory(
     return replace(trajectory, messages=filtered_messages)
 
 
-def inject_message(
-    trajectory: Trajectory,
-    message: Message,
-    position: int = -1
-) -> Trajectory:
+def inject_message(trajectory: Trajectory, message: Message, position: int = -1) -> Trajectory:
     """Inject a message at specified position.
 
     Args:
@@ -134,6 +125,7 @@ def inject_message(
 # 2. Parallel Execution + Reduction
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 async def run_parallel_agents(
     initial_state: AgentState,
     n: int,
@@ -152,10 +144,7 @@ async def run_parallel_agents(
         (trajectories, all_agent_states) - List of final trajectories and full state lists
     """
     if run_config is None:
-        run_config = RunConfig(
-            on_chunk=lambda _: trio.lowlevel.checkpoint(),
-            show_progress=False
-        )
+        run_config = RunConfig(on_chunk=lambda _: trio.lowlevel.checkpoint(), show_progress=False)
 
     trajectories = []
     all_states = []
@@ -167,18 +156,13 @@ async def run_parallel_agents(
 
         # Create state for this agent
         agent_state = replace(
-            initial_state,
-            environment=env,
-            turn_idx=0,
-            pending_tool_calls=[],
-            next_tool_idx=0
+            initial_state, environment=env, turn_idx=0, pending_tool_calls=[], next_tool_idx=0
         )
 
         # Update tools if environment changed
         if env:
             agent_state = replace(
-                agent_state,
-                actor=replace(agent_state.actor, tools=env.get_tools())
+                agent_state, actor=replace(agent_state.actor, tools=env.get_tools())
             )
 
         # Run agent
@@ -202,10 +186,9 @@ async def run_parallel_agents(
 # 3. Common Reduce Functions
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 def reduce_select_best(
-    trajectories: list[Trajectory],
-    metric: Callable[[Trajectory], float],
-    maximize: bool = True
+    trajectories: list[Trajectory], metric: Callable[[Trajectory], float], maximize: bool = True
 ) -> Trajectory:
     """Select best trajectory by metric.
 
@@ -223,8 +206,7 @@ def reduce_select_best(
 
 
 def reduce_majority_vote(
-    trajectories: list[Trajectory],
-    extract_answer: Callable[[Trajectory], Any]
+    trajectories: list[Trajectory], extract_answer: Callable[[Trajectory], Any]
 ) -> Trajectory:
     """Select trajectory with most common answer.
 
@@ -248,7 +230,7 @@ async def reduce_llm_judge(
     trajectories: list[Trajectory],
     judge_endpoint: Endpoint,
     judge_prompt_fn: Callable[[list[Trajectory]], list[Message]],
-    run_config: RunConfig | None = None
+    run_config: RunConfig | None = None,
 ) -> Trajectory:
     """Use an LLM to judge and synthesize multiple trajectories.
 
@@ -264,22 +246,11 @@ async def reduce_llm_judge(
     judge_messages = judge_prompt_fn(trajectories)
     judge_trajectory = Trajectory(messages=judge_messages)
 
-    judge_actor = Actor(
-        trajectory=judge_trajectory,
-        endpoint=judge_endpoint,
-        tools=[]
-    )
-    judge_state = AgentState(
-        actor=judge_actor,
-        environment=None,
-        max_turns=1
-    )
+    judge_actor = Actor(trajectory=judge_trajectory, endpoint=judge_endpoint, tools=[])
+    judge_state = AgentState(actor=judge_actor, environment=None, max_turns=1)
 
     if run_config is None:
-        run_config = RunConfig(
-            on_chunk=lambda _: trio.lowlevel.checkpoint(),
-            show_progress=False
-        )
+        run_config = RunConfig(on_chunk=lambda _: trio.lowlevel.checkpoint(), show_progress=False)
 
     states = await run_agent(judge_state, run_config)
     return states[-1].actor.trajectory
@@ -288,6 +259,7 @@ async def reduce_llm_judge(
 # ══════════════════════════════════════════════════════════════════════════════
 # 4. Pipeline Orchestration
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 @dataclass
 class AgentStage:
@@ -298,6 +270,7 @@ class AgentStage:
     - Run 1 or more agents in parallel with a given endpoint/environment
     - Reduce multiple trajectories to one (if n > 1)
     """
+
     # Agent execution (at least one of endpoint or environment_factory required)
     endpoint: Endpoint | None = None  # If None, reuse from previous stage
     environment_factory: Callable[[], Environment] | None = None  # If None, no environment
@@ -318,7 +291,7 @@ async def run_agent_pipeline(
     initial_trajectory: Trajectory,
     initial_endpoint: Endpoint,
     stages: list[AgentStage],
-    run_config: RunConfig | None = None
+    run_config: RunConfig | None = None,
 ) -> list[Trajectory]:
     """Run agents through pipeline stages.
 
@@ -345,7 +318,7 @@ async def run_agent_pipeline(
                 environment_factory=lambda: KernelEnvironmentSearch(),
                 max_turns=5,
                 n=3,
-                reduce_fn=lambda trajs: reduce_consolidate(trajs) 
+                reduce_fn=lambda trajs: reduce_consolidate(trajs)
             ),
             # Stage 2: Compact prev trajectory + Plan improvements with strong model
             AgentStage(
@@ -390,10 +363,10 @@ async def run_agent_pipeline(
             actor=Actor(
                 trajectory=current_traj,
                 endpoint=current_endpoint,
-                tools=env.get_tools() if env else []
+                tools=env.get_tools() if env else [],
             ),
             environment=env,
-            max_turns=stage.max_turns
+            max_turns=stage.max_turns,
         )
 
         # 4. Run agents (1 or more in parallel)
@@ -402,10 +375,11 @@ async def run_agent_pipeline(
         if stage.n == 1:
             # Single agent
             logger.info(f"  Running 1 agent (max_turns={stage.max_turns})")
-            states = await run_agent(initial_state, stage_run_config or RunConfig(
-                on_chunk=lambda _: trio.lowlevel.checkpoint(),
-                show_progress=False
-            ))
+            states = await run_agent(
+                initial_state,
+                stage_run_config
+                or RunConfig(on_chunk=lambda _: trio.lowlevel.checkpoint(), show_progress=False),
+            )
             current_traj = states[-1].actor.trajectory
         else:
             # Parallel agents
@@ -415,7 +389,7 @@ async def run_agent_pipeline(
                 initial_state,
                 n=stage.n,
                 environment_factory=stage.environment_factory,
-                run_config=stage_run_config
+                run_config=stage_run_config,
             )
             current_traj = stage.reduce_fn(trajs)
             logger.info(f"  Reduced {len(trajs)} trajectories to 1")

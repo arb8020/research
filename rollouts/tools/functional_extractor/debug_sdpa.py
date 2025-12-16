@@ -39,6 +39,7 @@ def debug_sdpa():
 
     # Build 4D mask (same way both HF and I do it)
     from qwen_functional import create_causal_mask
+
     mask_4d = create_causal_mask(seq, q.device, q.dtype, attention_mask_2d)
 
     print(f"\nMask shape: {mask_4d.shape}")
@@ -63,7 +64,9 @@ def debug_sdpa():
         min_dtype = torch.finfo(torch.bfloat16).min
         full_mask_float = torch.where(full_mask, 0.0, min_dtype).to(torch.bfloat16)
 
-        out_explicit = F.scaled_dot_product_attention(q, k, v, attn_mask=full_mask_float, is_causal=False)
+        out_explicit = F.scaled_dot_product_attention(
+            q, k, v, attn_mask=full_mask_float, is_causal=False
+        )
 
     diff_kernel = (out_causal - out_explicit).abs().max().item()
     print(f"is_causal=True vs explicit causal mask: max_diff = {diff_kernel:.2e}")
@@ -86,12 +89,13 @@ def debug_sdpa():
         hf_out = model(input_ids, attention_mask=attention_mask).logits
 
         from qwen_functional import qwen_forward
+
         my_out = qwen_forward(input_ids, weights, attention_mask=attention_mask)
 
     diff = (hf_out - my_out).abs()
 
     # Check diff at each position
-    print(f"\nPer-position max diff:")
+    print("\nPer-position max diff:")
     for b in range(2):
         for pos in range(16):
             if attention_mask[b, pos] == 1:  # Only real positions
@@ -102,12 +106,15 @@ def debug_sdpa():
 
 if __name__ == "__main__":
     import torch
+
     if torch.cuda.is_available():
         debug_sdpa()
     else:
         print("No GPU available. Run on remote GPU.")
-        from verify import run_on_gpu
         import argparse
+
+        from verify import run_on_gpu
+
         parser = argparse.ArgumentParser()
         parser.add_argument("--gpu-id", type=str)
         args = parser.parse_args()

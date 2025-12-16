@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 # GPU availability thresholds
 DEFAULT_MEMORY_THRESHOLD_MB = 1000  # Consider GPU busy if > 1GB used
-DEFAULT_UTIL_THRESHOLD_PCT = 5      # Consider GPU busy if > 5% utilized
+DEFAULT_UTIL_THRESHOLD_PCT = 5  # Consider GPU busy if > 5% utilized
 
 
 @dataclass(frozen=True)
@@ -40,6 +40,7 @@ class ServerConfig:
     Tiger Style: All parameters explicit with sensible defaults.
     Simplified from qwen3_next but still comprehensive.
     """
+
     # Model configuration
     model: str = "Qwen/Qwen2.5-VL-7B-Instruct"
     dtype: str = "auto"  # "auto", "float16", "bfloat16"
@@ -94,6 +95,7 @@ class ServerInfo:
 
     Tiger Style: Explicit return type for deployment results.
     """
+
     url: str  # Server URL (e.g., "http://localhost:30000")
     model: str  # Model name
     port: int  # Server port
@@ -136,25 +138,21 @@ def generate_bootstrap_command(config: ServerConfig) -> str:
     steps = [
         # Ensure uv is in PATH
         'export PATH="$HOME/.local/bin:$PATH"',
-
         # Create venv if doesn't exist (skip if exists to avoid reinstalling)
         f'[ -d {venv_name} ] && echo "Using existing venv: {venv_name}" || uv venv {venv_name} --python 3.10',
-
         # Activate venv
-        f'source {venv_name}/bin/activate',
-
+        f"source {venv_name}/bin/activate",
         # Install SGLang from git (latest main branch)
         # SGLang manages its own torch/flashinfer dependencies
         # --index-strategy unsafe-best-match: search all indexes for best CUDA-compatible torch
         'uv pip install "sglang[all] @ git+https://github.com/sgl-project/sglang.git@main#subdirectory=python" '
-        '--index-strategy unsafe-best-match',
-
+        "--index-strategy unsafe-best-match",
         # Show installed version for verification
         'echo "=== Installed SGLang version ===" && uv pip show sglang | grep Version || true',
     ]
 
     assert len(steps) > 0
-    result = ' && '.join(steps)
+    result = " && ".join(steps)
     assert len(result) > 0
     return result
 
@@ -190,6 +188,7 @@ def check_hf_token_and_model(model_name: str) -> tuple[bool, str | None]:
     # Try to validate token and model access via HF API
     try:
         import httpx
+
         headers = {"Authorization": f"Bearer {hf_token}"}
         url = f"https://huggingface.co/api/models/{model_name}"
 
@@ -318,8 +317,11 @@ def check_gpus_available_local(
 
     try:
         result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=index,memory.used,utilization.gpu",
-             "--format=csv,noheader,nounits"],
+            [
+                "nvidia-smi",
+                "--query-gpu=index,memory.used,utilization.gpu",
+                "--format=csv,noheader,nounits",
+            ],
             capture_output=True,
             text=True,
             timeout=5,
@@ -331,7 +333,7 @@ def check_gpus_available_local(
         # Parse nvidia-smi output
         gpu_stats = {}
         for line in result.stdout.strip().splitlines():
-            parts = [p.strip() for p in line.split(',')]
+            parts = [p.strip() for p in line.split(",")]
             if len(parts) != 3:
                 continue
 
@@ -339,7 +341,7 @@ def check_gpus_available_local(
                 gpu_id = int(parts[0])
                 memory_mb = int(parts[1])
                 util_pct = int(parts[2])
-                gpu_stats[gpu_id] = {'memory_mb': memory_mb, 'util_pct': util_pct}
+                gpu_stats[gpu_id] = {"memory_mb": memory_mb, "util_pct": util_pct}
             except ValueError:
                 continue
 
@@ -350,8 +352,8 @@ def check_gpus_available_local(
                 return False, f"GPU {gpu_id} not found (available GPUs: {available})"
 
             stats = gpu_stats[gpu_id]
-            mem_mb = stats['memory_mb']
-            util = stats['util_pct']
+            mem_mb = stats["memory_mb"]
+            util = stats["util_pct"]
 
             if mem_mb > memory_threshold_mb or util > util_threshold_pct:
                 return False, f"GPU {gpu_id} is busy ({mem_mb}MB used, {util}% util)"
@@ -421,17 +423,19 @@ def check_remote_prerequisites(ssh_connection: str, ssh_key: str) -> tuple[bool,
         'export PATH="$HOME/.local/bin:$PATH" && '
         'command -v uv >/dev/null 2>&1 && echo "OK" || echo "MISSING"'
     )
-    if result.stdout.strip() != 'OK':
+    if result.stdout.strip() != "OK":
         missing.append("uv (install: curl -LsSf https://astral.sh/uv/install.sh | sh)")
 
     # Check for tmux
     result = bifrost_client.exec('command -v tmux >/dev/null 2>&1 && echo "OK" || echo "MISSING"')
-    if result.stdout.strip() != 'OK':
+    if result.stdout.strip() != "OK":
         missing.append("tmux (install: apt install tmux or yum install tmux)")
 
     # Check for nvidia-smi
-    result = bifrost_client.exec('command -v nvidia-smi >/dev/null 2>&1 && echo "OK" || echo "MISSING"')
-    if result.stdout.strip() != 'OK':
+    result = bifrost_client.exec(
+        'command -v nvidia-smi >/dev/null 2>&1 && echo "OK" || echo "MISSING"'
+    )
+    if result.stdout.strip() != "OK":
         missing.append("nvidia-smi (NVIDIA drivers not installed)")
 
     if missing:
@@ -479,7 +483,7 @@ def check_gpus_available_remote(
         # Parse nvidia-smi output
         gpu_stats = {}
         for line in result.stdout.strip().splitlines():
-            parts = [p.strip() for p in line.split(',')]
+            parts = [p.strip() for p in line.split(",")]
             if len(parts) != 3:
                 continue
 
@@ -487,18 +491,21 @@ def check_gpus_available_remote(
                 gpu_id = int(parts[0])
                 memory_mb = int(parts[1])
                 util_pct = int(parts[2])
-                gpu_stats[gpu_id] = {'memory_mb': memory_mb, 'util_pct': util_pct}
+                gpu_stats[gpu_id] = {"memory_mb": memory_mb, "util_pct": util_pct}
             except ValueError:
                 continue
 
         # Check if requested GPUs are free
         for gpu_id in gpu_ids:
             if gpu_id not in gpu_stats:
-                return False, f"GPU {gpu_id} not found on remote (available: {list(gpu_stats.keys())})"
+                return (
+                    False,
+                    f"GPU {gpu_id} not found on remote (available: {list(gpu_stats.keys())})",
+                )
 
             stats = gpu_stats[gpu_id]
-            mem_mb = stats['memory_mb']
-            util = stats['util_pct']
+            mem_mb = stats["memory_mb"]
+            util = stats["util_pct"]
 
             if mem_mb > memory_threshold_mb or util > util_threshold_pct:
                 return False, f"GPU {gpu_id} is busy ({mem_mb}MB used, {util}% util)"
@@ -510,9 +517,7 @@ def check_gpus_available_remote(
 
 
 def check_port_available_remote(
-    ssh_connection: str,
-    ssh_key: str,
-    port: int
+    ssh_connection: str, ssh_key: str, port: int
 ) -> tuple[bool, str | None]:
     """Check if port is available on remote machine.
 
@@ -843,7 +848,9 @@ async def _deploy_remote(
 
     # Execute bootstrap with streaming output so we can see progress
     # Tiger Style: Explicit control flow - capture actual exit code
-    full_cmd = f"cd {workspace_path} && {bootstrap_cmd}; EXIT=$?; echo '::EXIT_CODE::'$EXIT; exit $EXIT"
+    full_cmd = (
+        f"cd {workspace_path} && {bootstrap_cmd}; EXIT=$?; echo '::EXIT_CODE::'$EXIT; exit $EXIT"
+    )
 
     exit_code = None
     output_lines = []
@@ -858,7 +865,7 @@ async def _deploy_remote(
                     logger.debug(f"📊 Bootstrap exit code: {exit_code}")
             else:
                 # Print output in real-time
-                print(line, end='', flush=True)
+                print(line, end="", flush=True)
                 output_lines.append(line)
     except Exception as e:
         logger.error(f"❌ Bootstrap streaming failed: {e}")
@@ -882,7 +889,7 @@ async def _deploy_remote(
         logger.error("📋 Error context (last 30 lines):")
         logger.error("=" * 60)
         for line in output_lines[-30:]:
-            if 'error:' in line.lower() or 'failed' in line.lower() or '×' in line:
+            if "error:" in line.lower() or "failed" in line.lower() or "×" in line:
                 logger.error(f">>> {line.rstrip()}")
             else:
                 logger.error(f"    {line.rstrip()}")
@@ -896,7 +903,7 @@ async def _deploy_remote(
     venv_activate_path = f"{workspace_path}/{venv_name}/bin/activate"
     verify_venv_cmd = f"test -f {venv_activate_path} && echo 'EXISTS' || echo 'MISSING'"
     verify_result = bifrost_client.exec(verify_venv_cmd)
-    venv_exists = verify_result.stdout.strip() == 'EXISTS' if verify_result.stdout else False
+    venv_exists = verify_result.stdout.strip() == "EXISTS" if verify_result.stdout else False
 
     if not venv_exists:
         error_msg = f"Bootstrap reported success but venv not found: {venv_name}"
@@ -1037,7 +1044,7 @@ async def _wait_for_health(
                         if log_result.returncode == 0 and log_result.stdout:
                             logger.error("📋 Last 50 lines of server log:")
                             logger.error("=" * 60)
-                            logger.error(log_result.stdout.decode('utf-8', errors='ignore'))
+                            logger.error(log_result.stdout.decode("utf-8", errors="ignore"))
                             logger.error("=" * 60)
                     except Exception:
                         pass

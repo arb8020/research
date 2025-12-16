@@ -9,9 +9,8 @@ from __future__ import annotations
 
 import asyncio
 
-from rollouts.frontends.tui import ProcessTerminal, TUI, AgentRenderer
-from rollouts.dtypes import RunConfig, StreamEvent
-from rollouts.agents import AgentState, Actor, run_agent
+from rollouts.dtypes import RunConfig
+from rollouts.frontends.tui import TUI, AgentRenderer, ProcessTerminal
 
 
 async def example_main():
@@ -42,4 +41,3 @@ async def example_main():
 
 if __name__ == "__main__":
     asyncio.run(example_main())
-

@@ -7,16 +7,16 @@ Provides a clean interface for terminal I/O, cursor control, and raw mode handli
 from __future__ import annotations
 
 import atexit
-import sys
-import tty
-import termios
-import signal
 import os
-from typing import Callable, Protocol, Optional, List
-
+import signal
+import sys
+import termios
+import tty
+from collections.abc import Callable
+from typing import Protocol
 
 # Global reference for atexit cleanup
-_active_terminal: Optional["ProcessTerminal"] = None
+_active_terminal: ProcessTerminal | None = None
 
 
 def _cleanup_terminal():
@@ -76,12 +76,12 @@ class ProcessTerminal:
     """Real terminal using sys.stdin/stdout with raw mode support."""
 
     def __init__(self) -> None:
-        self._old_settings: Optional[List] = None
-        self._input_handler: Optional[Callable[[str], None]] = None
-        self._resize_handler: Optional[Callable[[], None]] = None
+        self._old_settings: list | None = None
+        self._input_handler: Callable[[str], None] | None = None
+        self._resize_handler: Callable[[], None] | None = None
         self._old_sigwinch = None
         self._running = False
-        self._tty_fd: Optional[int] = None  # File descriptor for /dev/tty
+        self._tty_fd: int | None = None  # File descriptor for /dev/tty
 
     def start(self, on_input: Callable[[str], None], on_resize: Callable[[], None]) -> None:
         """Start terminal in raw mode with input/resize handlers."""
@@ -97,7 +97,7 @@ class ProcessTerminal:
         # Always try to open /dev/tty for terminal control
         # This allows keyboard input even when stdin is piped
         try:
-            self._tty_fd = os.open('/dev/tty', os.O_RDONLY | os.O_NONBLOCK)
+            self._tty_fd = os.open("/dev/tty", os.O_RDONLY | os.O_NONBLOCK)
             # Save terminal settings from /dev/tty
             self._old_settings = termios.tcgetattr(self._tty_fd)
             # Enable raw mode on /dev/tty
@@ -210,32 +210,33 @@ class ProcessTerminal:
         if self._resize_handler:
             self._resize_handler()
 
-    def read_input(self) -> Optional[str]:
+    def read_input(self) -> str | None:
         """Read available input (non-blocking style for use with async).
 
         Returns None if no input available. Reads all available bytes
         to keep escape sequences together.
         """
         import select
-        
+
         # Read from /dev/tty if available, otherwise fall back to stdin
         if self._tty_fd is not None:
             # Check if /dev/tty has data
             if not select.select([self._tty_fd], [], [], 0)[0]:
                 return None
-            
+
             # Read first byte
-            result = os.read(self._tty_fd, 1).decode('utf-8', errors='replace')
-            
+            result = os.read(self._tty_fd, 1).decode("utf-8", errors="replace")
+
             # If it's an escape, try to read the rest of the sequence
-            if result == '\x1b':
+            if result == "\x1b":
                 import time
+
                 time.sleep(0.001)  # 1ms
-                
+
                 # Read all available bytes
                 while select.select([self._tty_fd], [], [], 0)[0]:
-                    result += os.read(self._tty_fd, 1).decode('utf-8', errors='replace')
-            
+                    result += os.read(self._tty_fd, 1).decode("utf-8", errors="replace")
+
             return result
         else:
             # Fall back to stdin
@@ -246,9 +247,10 @@ class ProcessTerminal:
             result = sys.stdin.read(1)
 
             # If it's an escape, try to read the rest of the sequence
-            if result == '\x1b':
+            if result == "\x1b":
                 # Give a tiny bit of time for the rest of the sequence to arrive
                 import time
+
                 time.sleep(0.001)  # 1ms
 
                 # Read all available bytes
@@ -257,7 +259,7 @@ class ProcessTerminal:
 
             return result
 
-    def run_external_editor(self, initial_content: str = "") -> Optional[str]:
+    def run_external_editor(self, initial_content: str = "") -> str | None:
         """Temporarily exit raw mode, run $EDITOR, and return edited content.
 
         Args:
@@ -266,8 +268,8 @@ class ProcessTerminal:
         Returns:
             Edited content, or None if editor failed or user quit without saving
         """
-        import tempfile
         import subprocess
+        import tempfile
 
         # Get editor from environment, default to vim
         editor = os.environ.get("EDITOR", os.environ.get("VISUAL", "vim"))
@@ -295,7 +297,7 @@ class ProcessTerminal:
 
             # Read edited content
             if result.returncode == 0:
-                with open(temp_path, "r") as f:
+                with open(temp_path) as f:
                     content = f.read()
                 return content.strip() if content.strip() else None
             return None

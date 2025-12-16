@@ -284,12 +284,11 @@ def _build_verification_script(
 ) -> str:
     """Build the remote verification script."""
     # Strip __future__ imports from functional code - we'll add them at the top
-    functional_lines = functional_code.split('\n')
+    functional_lines = functional_code.split("\n")
     filtered_lines = [
-        line for line in functional_lines
-        if not line.strip().startswith('from __future__')
+        line for line in functional_lines if not line.strip().startswith("from __future__")
     ]
-    functional_code_clean = '\n'.join(filtered_lines)
+    functional_code_clean = "\n".join(filtered_lines)
 
     return f'''from __future__ import annotations
 
@@ -421,9 +420,7 @@ def verify_functional(
         # Write verification script to remote
         verify_script = _build_verification_script(functional_code, verification)
         script_path = f"{handle.workspace}/verify_functional.py"
-        handle.bifrost.exec(
-            f"cat > {script_path} << 'SCRIPT_EOF'\n{verify_script}\nSCRIPT_EOF"
-        )
+        handle.bifrost.exec(f"cat > {script_path} << 'SCRIPT_EOF'\n{verify_script}\nSCRIPT_EOF")
 
         # Run verification
         print("Running verification...")
@@ -434,7 +431,7 @@ def verify_functional(
         ):
             print(line)
             if line.startswith("RESULT_JSON:"):
-                result_json = json.loads(line[len("RESULT_JSON:"):])
+                result_json = json.loads(line[len("RESULT_JSON:") :])
         print("-" * 50)
 
         if result_json:
@@ -503,8 +500,12 @@ def load_config_from_file(config_path: str) -> tuple[DeploymentConfig, Verificat
     deployment: DeploymentConfig = module.deployment
     verification: VerificationConfig = module.verification
 
-    assert isinstance(deployment, DeploymentConfig), f"Expected DeploymentConfig, got {type(deployment)}"
-    assert isinstance(verification, VerificationConfig), f"Expected VerificationConfig, got {type(verification)}"
+    assert isinstance(deployment, DeploymentConfig), (
+        f"Expected DeploymentConfig, got {type(deployment)}"
+    )
+    assert isinstance(verification, VerificationConfig), (
+        f"Expected VerificationConfig, got {type(verification)}"
+    )
 
     return deployment, verification
 

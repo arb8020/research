@@ -14,7 +14,6 @@ Why this structure (following vLLM/SGLang patterns)?
 """
 
 from rollouts.inference.attention.config import CacheConfig
-from rollouts.inference.attention.protocol import AttentionBackend
 from rollouts.inference.attention.flex_backend import FlexAttentionBackend
 from rollouts.inference.attention.layer import Attention
 from rollouts.inference.attention.mask import (
@@ -22,6 +21,7 @@ from rollouts.inference.attention.mask import (
     create_causal_block_mask,
     create_sliding_window_causal_mask,
 )
+from rollouts.inference.attention.protocol import AttentionBackend
 
 __all__ = [
     "CacheConfig",

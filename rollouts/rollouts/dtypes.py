@@ -22,7 +22,7 @@ import trio
 # 2. Use torch-stubs package if available for lightweight type info
 # 3. Define proper Union types for tensor alternatives
 # 4. Previous approach used TYPE_CHECKING conditional imports but created dependency issues
-# 
+#
 # Current: Simple fallback for type hints - actual tensor handling is done at runtime via hasattr checks
 TorchTensor = Any
 
@@ -83,11 +83,11 @@ def parse_streaming_json(partial_json: str) -> dict[str, Any]:
 
     # Try adding closing braces/brackets progressively
     attempts = [
-        cleaned + '"}',      # Close incomplete string value
-        cleaned + ']',       # Close incomplete array
-        cleaned + '}',       # Close incomplete object
-        cleaned + '"}]',     # Close string in array
-        cleaned + '"}}'      # Close string in nested object
+        cleaned + '"}',  # Close incomplete string value
+        cleaned + "]",  # Close incomplete array
+        cleaned + "}",  # Close incomplete object
+        cleaned + '"}]',  # Close string in array
+        cleaned + '"}}',  # Close string in nested object
     ]
 
     # Also try removing trailing incomplete key/value
@@ -95,11 +95,7 @@ def parse_streaming_json(partial_json: str) -> dict[str, Any]:
         # Remove everything after the last comma (incomplete key-value pair)
         last_comma = cleaned.rfind(",")
         truncated = cleaned[:last_comma]
-        attempts.extend([
-            truncated + "}",
-            truncated + "]}",
-            truncated + "}}"
-        ])
+        attempts.extend([truncated + "}", truncated + "]}", truncated + "}}"])
 
     # If there's a colon without a value, remove the incomplete pair
     if ":" in cleaned:
@@ -109,11 +105,7 @@ def parse_streaming_json(partial_json: str) -> dict[str, Any]:
             # Check if this part has both key and value
             truncated = ",".join(parts[:i])
             if truncated:
-                attempts.extend([
-                    truncated + "}",
-                    truncated + "]}",
-                    truncated + "}}"
-                ])
+                attempts.extend([truncated + "}", truncated + "]}", truncated + "}}"])
 
     # Try each repair strategy
     for attempt in attempts:
@@ -176,6 +168,7 @@ class StreamChunk(JsonSerializable):
     This class is kept temporarily for backward compatibility during migration.
     Will be removed once all consumers switch to the new granular event types.
     """
+
     type: str  # "token", "tool_call_complete", "tool_result", etc.
     data: Mapping[str, Any]
     timestamp: float = field(default_factory=time.time)
@@ -188,6 +181,7 @@ class StreamChunk(JsonSerializable):
 @dataclass(frozen=True)
 class LLMCallStart(JsonSerializable):
     """Emitted before making the LLM API call (before connection established)"""
+
     type: Literal["llm_call_start"] = "llm_call_start"
     timestamp: float = field(default_factory=time.time)
 
@@ -195,6 +189,7 @@ class LLMCallStart(JsonSerializable):
 @dataclass(frozen=True)
 class StreamStart(JsonSerializable):
     """Emitted at the start of a streaming response (connection established, first event received)"""
+
     type: Literal["start"] = "start"
     timestamp: float = field(default_factory=time.time)
 
@@ -202,6 +197,7 @@ class StreamStart(JsonSerializable):
 @dataclass(frozen=True)
 class TextStart(JsonSerializable):
     """Emitted when a text content block begins"""
+
     content_index: int
     type: Literal["text_start"] = "text_start"
     timestamp: float = field(default_factory=time.time)
@@ -210,6 +206,7 @@ class TextStart(JsonSerializable):
 @dataclass(frozen=True)
 class TextDelta(JsonSerializable):
     """Emitted for each text token/chunk during streaming"""
+
     content_index: int
     delta: str
     type: Literal["text_delta"] = "text_delta"
@@ -219,6 +216,7 @@ class TextDelta(JsonSerializable):
 @dataclass(frozen=True)
 class TextEnd(JsonSerializable):
     """Emitted when a text content block completes"""
+
     content_index: int
     content: str  # Complete accumulated text
     type: Literal["text_end"] = "text_end"
@@ -228,6 +226,7 @@ class TextEnd(JsonSerializable):
 @dataclass(frozen=True)
 class ThinkingStart(JsonSerializable):
     """Emitted when a thinking/reasoning content block begins"""
+
     content_index: int
     type: Literal["thinking_start"] = "thinking_start"
     timestamp: float = field(default_factory=time.time)
@@ -236,6 +235,7 @@ class ThinkingStart(JsonSerializable):
 @dataclass(frozen=True)
 class ThinkingDelta(JsonSerializable):
     """Emitted for each thinking token/chunk during streaming"""
+
     content_index: int
     delta: str
     type: Literal["thinking_delta"] = "thinking_delta"
@@ -245,6 +245,7 @@ class ThinkingDelta(JsonSerializable):
 @dataclass(frozen=True)
 class ThinkingEnd(JsonSerializable):
     """Emitted when a thinking/reasoning content block completes"""
+
     content_index: int
     content: str  # Complete accumulated thinking
     type: Literal["thinking_end"] = "thinking_end"
@@ -254,6 +255,7 @@ class ThinkingEnd(JsonSerializable):
 @dataclass(frozen=True)
 class ToolCallStart(JsonSerializable):
     """Emitted when a tool call content block begins"""
+
     content_index: int
     tool_call_id: str
     tool_name: str
@@ -268,6 +270,7 @@ class ToolCallDelta(JsonSerializable):
     The partial_args field contains the best-effort parsed JSON from the
     accumulated argument string so far. May be incomplete objects/arrays.
     """
+
     content_index: int
     tool_call_id: str
     delta: str  # Raw JSON chunk
@@ -279,6 +282,7 @@ class ToolCallDelta(JsonSerializable):
 @dataclass(frozen=True)
 class ToolCallEnd(JsonSerializable):
     """Emitted when a tool call content block completes"""
+
     content_index: int
     tool_call: ToolCall  # Complete parsed tool call
     type: Literal["toolcall_end"] = "toolcall_end"
@@ -288,6 +292,7 @@ class ToolCallEnd(JsonSerializable):
 @dataclass(frozen=True)
 class ToolCallError(JsonSerializable):
     """Emitted when tool call argument parsing fails"""
+
     content_index: int
     tool_call_id: str
     tool_name: str
@@ -300,11 +305,12 @@ class ToolCallError(JsonSerializable):
 @dataclass(frozen=True)
 class ToolResultReceived(JsonSerializable):
     """Emitted when a tool execution result is received"""
+
     tool_call_id: str
     content: str
     is_error: bool = False
-    error: Optional[str] = None
-    details: Optional[dict[str, Any]] = None  # UI-only structured data (e.g., diff for edit tool)
+    error: str | None = None
+    details: dict[str, Any] | None = None  # UI-only structured data (e.g., diff for edit tool)
     type: Literal["tool_result"] = "tool_result"
     timestamp: float = field(default_factory=time.time)
 
@@ -312,6 +318,7 @@ class ToolResultReceived(JsonSerializable):
 @dataclass(frozen=True)
 class StreamDone(JsonSerializable):
     """Emitted when streaming completes successfully"""
+
     finish_reason: str  # "stop", "length", "tool_calls", etc.
     type: Literal["done"] = "done"
     timestamp: float = field(default_factory=time.time)
@@ -320,6 +327,7 @@ class StreamDone(JsonSerializable):
 @dataclass(frozen=True)
 class StreamError(JsonSerializable):
     """Emitted when streaming encounters an error"""
+
     error: str
     type: Literal["error"] = "error"
     timestamp: float = field(default_factory=time.time)
@@ -365,10 +373,10 @@ class ProviderStreamFunction(Protocol):
 
     async def __call__(
         self,
-        actor: 'Actor',
+        actor: "Actor",
         on_chunk: Callable[[StreamEvent], Awaitable[None]],
         **kwargs: Any,
-    ) -> 'Actor':
+    ) -> "Actor":
         """Stream LLM response and return updated Actor with new trajectory message.
 
         Args:
@@ -389,6 +397,7 @@ class ProviderStreamFunction(Protocol):
 @dataclass(frozen=True)
 class TextContent(JsonSerializable):
     """Text content block in a message."""
+
     type: Literal["text"] = "text"
     text: str = ""
     text_signature: str | None = None  # Provider-specific identifier
@@ -400,14 +409,18 @@ class ThinkingContent(JsonSerializable):
 
     Used by Anthropic (thinking blocks) and OpenAI o1/o3 (reasoning_content).
     """
+
     type: Literal["thinking"] = "thinking"
     thinking: str = ""
-    thinking_signature: str | None = None  # Provider-specific identifier (e.g., GPT-5 Codex reasoning item ID)
+    thinking_signature: str | None = (
+        None  # Provider-specific identifier (e.g., GPT-5 Codex reasoning item ID)
+    )
 
 
 @dataclass(frozen=True)
 class ToolCallContent(JsonSerializable):
     """Tool call content block in a message."""
+
     type: Literal["toolCall"] = "toolCall"
     id: str = ""
     name: str = ""
@@ -418,6 +431,7 @@ class ToolCallContent(JsonSerializable):
 @dataclass(frozen=True)
 class ImageContent(JsonSerializable):
     """Image content block in a message (for vision models)."""
+
     type: Literal["image"] = "image"
     image_url: str = ""  # base64 data URL or HTTP URL
     detail: str | None = None  # OpenAI detail parameter: "low", "high", "auto"
@@ -440,6 +454,7 @@ class Message(JsonSerializable):
     - "assistant": Model response
     - "tool": Tool execution result
     """
+
     role: str
     content: str | list[ContentBlock] | None
     # Provider metadata for message transformation
@@ -462,11 +477,7 @@ class Message(JsonSerializable):
         tool_calls = []
         for block in self.content:
             if isinstance(block, ToolCallContent):
-                tool_calls.append(ToolCall(
-                    id=block.id,
-                    name=block.name,
-                    args=block.arguments
-                ))
+                tool_calls.append(ToolCall(id=block.id, name=block.name, args=block.arguments))
         return tool_calls
 
     def __repr__(self) -> str:
@@ -477,10 +488,12 @@ class Message(JsonSerializable):
         """
         # Truncate content for display
         if isinstance(self.content, str):
-            content_preview = self.content[:100] + "..." if len(self.content) > 100 else self.content
+            content_preview = (
+                self.content[:100] + "..." if len(self.content) > 100 else self.content
+            )
         elif isinstance(self.content, list):
             # Show ContentBlock types
-            block_types = [b.type for b in self.content if hasattr(b, 'type')]
+            block_types = [b.type for b in self.content if hasattr(b, "type")]
             content_preview = f"[{len(self.content)} blocks: {', '.join(block_types)}]"
         else:
             content_preview = str(self.content)
@@ -607,12 +620,14 @@ class ChatCompletion(JsonSerializable):
 @dataclass
 class Trajectory(JsonSerializable):
     completions: list[ChatCompletion] = field(default_factory=list)
-    messages: list[Message] = field(default_factory=list)   # debugging only
+    messages: list[Message] = field(default_factory=list)  # debugging only
     rewards: float = 0.0
     group: int = 0
     replica: int = 0
-    advantages: float = 0.0     # scalar; broadcast later if needed
-    metadata: dict[str, Any] = field(default_factory=dict)  # For dataset-specific info (e.g., ground truth)
+    advantages: float = 0.0  # scalar; broadcast later if needed
+    metadata: dict[str, Any] = field(
+        default_factory=dict
+    )  # For dataset-specific info (e.g., ground truth)
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> "Trajectory":
@@ -635,16 +650,18 @@ class Trajectory(JsonSerializable):
             )
             assert usage is not None
             # Construct ChatCompletion with explicit parameters for type safety
-            comps.append(ChatCompletion(
-                id=comp.get("id", "unknown"),
-                object=comp.get("object", "chat.completion"),
-                created=comp.get("created", 0),
-                model=comp.get("model", "unknown"),
-                usage=usage,
-                kv_transfer_params=comp.get("kv_transfer_params"),
-                choices=comp.get("choices", []),
-                prompt_logprobs=comp.get("prompt_logprobs")
-            ))
+            comps.append(
+                ChatCompletion(
+                    id=comp.get("id", "unknown"),
+                    object=comp.get("object", "chat.completion"),
+                    created=comp.get("created", 0),
+                    model=comp.get("model", "unknown"),
+                    usage=usage,
+                    kv_transfer_params=comp.get("kv_transfer_params"),
+                    choices=comp.get("choices", []),
+                    prompt_logprobs=comp.get("prompt_logprobs"),
+                )
+            )
 
         result = Trajectory(
             completions=comps,
@@ -726,7 +743,7 @@ class Trajectory(JsonSerializable):
         assert path_obj.exists(), f"File not found: {filepath}"
         assert path_obj.is_file()
 
-        with open(filepath, encoding='utf-8') as f:
+        with open(filepath, encoding="utf-8") as f:
             for line in f:
                 line_stripped = line.strip()
                 if line_stripped:  # Skip empty lines
@@ -750,7 +767,9 @@ class Trajectory(JsonSerializable):
     def get_completion_tokens(traj: "Trajectory") -> int:
         assert traj is not None
         assert isinstance(traj, Trajectory)
-        result = sum(Trajectory._usage_total(c.usage, "completion_tokens") for c in traj.completions)
+        result = sum(
+            Trajectory._usage_total(c.usage, "completion_tokens") for c in traj.completions
+        )
         assert result >= 0
         return result
 
@@ -758,7 +777,9 @@ class Trajectory(JsonSerializable):
     def get_total_tokens(traj: "Trajectory") -> int:
         assert traj is not None
         assert isinstance(traj, Trajectory)
-        result = sum(Trajectory._usage_total(c.usage, "total_tokens") for c in traj.completions[-1:])
+        result = sum(
+            Trajectory._usage_total(c.usage, "total_tokens") for c in traj.completions[-1:]
+        )
         assert result >= 0
         return result
 
@@ -766,6 +787,7 @@ class Trajectory(JsonSerializable):
     def hash(trajectory: "Trajectory") -> str:
         """Generate a hash for a single trajectory."""
         import hashlib
+
         assert trajectory is not None
         assert isinstance(trajectory, Trajectory)
         traj_dict = asdict(trajectory)
@@ -823,9 +845,11 @@ class ToolResult(JsonSerializable):
 @dataclass(frozen=True)
 class ToolConfirmResult(JsonSerializable):
     """Result of tool confirmation"""
+
     proceed: bool
     tool_result: ToolResult | None = None
     user_message: str | None = None
+
 
 # ── Core Agent Framework Types ────────────────────────────────────────────────
 
@@ -841,8 +865,8 @@ class Environment(Protocol):
     async def exec_tool(
         self,
         tool_call: ToolCall,
-        current_state: 'AgentState',
-        run_config: 'RunConfig',
+        current_state: "AgentState",
+        run_config: "RunConfig",
         cancel_scope: trio.CancelScope | None = None,
     ) -> ToolResult:
         """Execute a tool call in this environment.
@@ -859,7 +883,7 @@ class Environment(Protocol):
         """Check if tool requires confirmation."""
         ...
 
-    def get_tool_formatter(self, tool_name: str) -> 'ToolFormatter | None':
+    def get_tool_formatter(self, tool_name: str) -> "ToolFormatter | None":
         """Return optional TUI formatter for this tool.
 
         Args:
@@ -891,7 +915,7 @@ class Environment(Protocol):
         """
         ...
 
-    async def on_assistant_message(self, message: 'Message', state: 'AgentState') -> 'AgentState':
+    async def on_assistant_message(self, message: "Message", state: "AgentState") -> "AgentState":
         """Called after each assistant message, before tool processing.
 
         Allows environment to respond to assistant messages with feedback, regardless
@@ -946,7 +970,7 @@ class Environment(Protocol):
         ...
 
     @staticmethod
-    async def deserialize(data: dict) -> 'Environment':
+    async def deserialize(data: dict) -> "Environment":
         """Deserialize environment from dictionary.
 
         Should validate env_kind and version before restoring state.
@@ -990,7 +1014,9 @@ class Endpoint(JsonSerializable):
         """
         # Validate Claude thinking budget (Anthropic requires >= 1024 tokens)
         if self.thinking is not None and self.provider == "anthropic":
-            assert isinstance(self.thinking, dict), f"thinking must be dict, got {type(self.thinking)}"
+            assert isinstance(self.thinking, dict), (
+                f"thinking must be dict, got {type(self.thinking)}"
+            )
             if self.thinking.get("type") == "enabled":
                 budget = self.thinking.get("budget_tokens", 0)
                 assert isinstance(budget, int), f"budget_tokens must be int, got {type(budget)}"
@@ -1026,7 +1052,7 @@ class AgentState:
     turn_idx: int = 0
     pending_tool_calls: list[ToolCall] = field(default_factory=list)
     next_tool_idx: int = 0  # Which tool we're about to process
-    timestamp: str = datetime.now(timezone.utc).isoformat() + 'Z'
+    timestamp: str = datetime.now(timezone.utc).isoformat() + "Z"
     session_id: str | None = None  # Session ID for persistence (set by run_agent)
     # For forking: when resuming with different config, create child session
     parent_session_id: str | None = None  # Parent session to branch from
@@ -1040,12 +1066,14 @@ async def default_stdin_handler(prompt: str) -> str:
     return await trio.to_thread.run_sync(input, prompt)
 
 
-async def default_confirm_tool(tc: ToolCall, state: 'AgentState', run_config: 'RunConfig') -> tuple['AgentState', ToolConfirmResult]:
+async def default_confirm_tool(
+    tc: ToolCall, state: "AgentState", run_config: "RunConfig"
+) -> tuple["AgentState", ToolConfirmResult]:
     """Default tool confirmation handler - auto-confirm all tools."""
     return state, ToolConfirmResult(proceed=True)
 
 
-async def default_no_tool_handler(state: 'AgentState', run_config: 'RunConfig') -> 'AgentState':
+async def default_no_tool_handler(state: "AgentState", run_config: "RunConfig") -> "AgentState":
     """Default no-tool handler - do nothing."""
     return state
 
@@ -1058,17 +1086,25 @@ class RunConfig:
     # that on_chunk is properly async and has correct signature at construction time.
     on_chunk: Callable[[StreamEvent], Awaitable[None]]
     on_input: Callable[[str], Awaitable[str]] = field(default_factory=lambda: default_stdin_handler)
-    confirm_tool: Callable[[ToolCall, 'AgentState', 'RunConfig'], Awaitable[tuple['AgentState', ToolConfirmResult]]] = field(default_factory=lambda: default_confirm_tool)
-    handle_tool_error: Callable[[ToolResult, 'AgentState'], 'AgentState'] = lambda tr, s: s
-    on_step_start: Callable[['AgentState'], 'AgentState'] = lambda s: s
-    handle_stop: Callable[['AgentState'], 'AgentState'] = lambda s: s
-    handle_no_tool: Callable[['AgentState', 'RunConfig'], Awaitable['AgentState']] = field(default_factory=lambda: default_no_tool_handler)
+    confirm_tool: Callable[
+        [ToolCall, "AgentState", "RunConfig"], Awaitable[tuple["AgentState", ToolConfirmResult]]
+    ] = field(default_factory=lambda: default_confirm_tool)
+    handle_tool_error: Callable[[ToolResult, "AgentState"], "AgentState"] = lambda tr, s: s
+    on_step_start: Callable[["AgentState"], "AgentState"] = lambda s: s
+    handle_stop: Callable[["AgentState"], "AgentState"] = lambda s: s
+    handle_no_tool: Callable[["AgentState", "RunConfig"], Awaitable["AgentState"]] = field(
+        default_factory=lambda: default_no_tool_handler
+    )
     user_message_for_thinking: str | None = None
     inline_thinking: str | None = None
     show_progress: bool = False  # Enable turn-level progress tracking
-    cancel_scope: trio.CancelScope | None = None  # Optional Trio cancel scope for graceful cancellation. When cancel_scope.cancel() is called, any in-flight HTTP request is immediately cancelled and trio.Cancelled is raised. The agent loop catches this and sets stop=StopReason.ABORTED.
+    cancel_scope: trio.CancelScope | None = (
+        None  # Optional Trio cancel scope for graceful cancellation. When cancel_scope.cancel() is called, any in-flight HTTP request is immediately cancelled and trio.Cancelled is raised. The agent loop catches this and sets stop=StopReason.ABORTED.
+    )
     # Session persistence
-    session_store: Any | None = None  # SessionStore instance for persistence (session_id is on AgentState)
+    session_store: Any | None = (
+        None  # SessionStore instance for persistence (session_id is on AgentState)
+    )
 
 
 # ── Evaluation Types ──────────────────────────────────────────────────────────
@@ -1090,6 +1126,7 @@ class Metric:
         >>> # With metadata for debugging
         >>> Metric("format_valid", 0.0, weight=0.2, metadata={"error": "missing closing tag"})
     """
+
     name: str
     value: float
     weight: float = 0.0
@@ -1111,6 +1148,7 @@ class Score:
         >>> score.reward  # Weighted average: (1.0*1.0 + 0.5*0.2) / (1.0 + 0.2) = 0.917
         0.9166666666666666
     """
+
     metrics: tuple[Metric, ...]
 
     @property
@@ -1124,12 +1162,13 @@ class Score:
 
 
 # Sample is unified in training.types - import here for backward compatibility
-from rollouts.training.types import Sample, Status
-
+from rollouts.training.types import Sample
 
 # Score function: pure transform from (Trajectory, Sample) -> Score
 # Supports both sync and async (for external verifiers that need network calls)
-ScoreFn = Callable[['Trajectory', Sample], Score] | Callable[['Trajectory', Sample], Awaitable[Score]]
+ScoreFn = (
+    Callable[["Trajectory", Sample], Score] | Callable[["Trajectory", Sample], Awaitable[Score]]
+)
 
 
 @dataclass(frozen=True)
@@ -1152,6 +1191,7 @@ class EvalConfig:
         ...     max_concurrent=4,
         ... )
     """
+
     # Required: how to compute score (Trajectory, Sample) -> Score
     score_fn: ScoreFn
 
@@ -1342,7 +1382,9 @@ class AgentSession:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any], messages: list[SessionMessage] | None = None) -> "AgentSession":
+    def from_dict(
+        cls, data: dict[str, Any], messages: list[SessionMessage] | None = None
+    ) -> "AgentSession":
         """Deserialize from dict."""
         return cls(
             session_id=data["session_id"],

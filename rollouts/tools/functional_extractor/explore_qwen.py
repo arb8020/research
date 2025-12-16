@@ -40,6 +40,7 @@ def explore_local():
     # Load model structure (meta device = no actual weights)
     print("\n### Module Structure ###")
     import torch
+
     with torch.device("meta"):
         model = AutoModelForCausalLM.from_config(config)
 
@@ -170,11 +171,13 @@ def main():
     else:
         # Check if we're already on GPU
         import torch
+
         if torch.cuda.is_available():
             explore_gpu()
         else:
             # Run on remote GPU
             from tools.functional_extractor.verify import run_on_gpu
+
             run_on_gpu(
                 script_path=__file__,
                 gpu_id=args.gpu_id,

@@ -12,6 +12,7 @@ Usage:
     python -m rollouts.frontend.server --port 8080
     python -m rollouts.frontend.server --project ~/wafer_stuff/kernels-gpumode-agent
 """
+
 import argparse
 import json
 import logging
@@ -29,9 +30,7 @@ from urllib.parse import urlparse
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='[%(asctime)s] %(levelname)s: %(message)s',
-    datefmt='%H:%M:%S'
+    level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s", datefmt="%H:%M:%S"
 )
 logger = logging.getLogger(__name__)
 
@@ -258,7 +257,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
                     "name": traj_file.stem,
                     "messages": messages,
                     "rewards": rewards[-1] if rewards else 0,
-                    "metadata": metadata
+                    "metadata": metadata,
                 })
 
         trace_data = {
@@ -298,21 +297,21 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             config_data["model"] = model_match.group(1)
 
         # Extract temperature
-        temp_match = re.search(r'temperature\s*[:=]\s*([0-9.]+)', config_source)
+        temp_match = re.search(r"temperature\s*[:=]\s*([0-9.]+)", config_source)
         if temp_match:
             config_data["temperature"] = float(temp_match.group(1))
 
         # Extract prepare_messages method (full function)
         prepare_msg_match = re.search(
-            r'(def prepare_messages\(self.*?^    def \w+|def prepare_messages\(self.*?^class \w+|def prepare_messages\(self.*?$)',
+            r"(def prepare_messages\(self.*?^    def \w+|def prepare_messages\(self.*?^class \w+|def prepare_messages\(self.*?$)",
             config_source,
-            re.DOTALL | re.MULTILINE
+            re.DOTALL | re.MULTILINE,
         )
         if prepare_msg_match:
             # Clean up and dedent the function
             func_text = prepare_msg_match.group(1)
             # Remove trailing class/def if captured
-            func_text = re.sub(r'\n    (def |class )\w+.*$', '', func_text, flags=re.DOTALL)
+            func_text = re.sub(r"\n    (def |class )\w+.*$", "", func_text, flags=re.DOTALL)
             config_data["prepareMessages"] = func_text.strip()
 
         # Also extract just system_prompt for backward compatibility
@@ -321,26 +320,26 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             config_data["systemPrompt"] = prompt_match.group(1).strip()
 
         # Extract max turns
-        turns_match = re.search(r'max_turns\s*[:=]\s*(\d+)', config_source)
+        turns_match = re.search(r"max_turns\s*[:=]\s*(\d+)", config_source)
         if turns_match:
             config_data["maxTurns"] = int(turns_match.group(1))
 
         # Extract num samples
-        samples_match = re.search(r'num_samples\s*[:=]\s*(\d+)', config_source)
+        samples_match = re.search(r"num_samples\s*[:=]\s*(\d+)", config_source)
         if samples_match:
             config_data["numSamples"] = int(samples_match.group(1))
 
         # Extract seed
-        seed_match = re.search(r'seed\s*[:=]\s*(\d+)', config_source)
+        seed_match = re.search(r"seed\s*[:=]\s*(\d+)", config_source)
         if seed_match:
             config_data["seed"] = int(seed_match.group(1))
 
         # Extract start_idx and end_idx
-        start_match = re.search(r'start_idx\s*[:=]\s*(\d+)', config_source)
+        start_match = re.search(r"start_idx\s*[:=]\s*(\d+)", config_source)
         if start_match:
             config_data["startIdx"] = int(start_match.group(1))
 
-        end_match = re.search(r'end_idx\s*[:=]\s*(\d+)', config_source)
+        end_match = re.search(r"end_idx\s*[:=]\s*(\d+)", config_source)
         if end_match:
             config_data["endIdx"] = int(end_match.group(1))
 
@@ -354,23 +353,29 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         # Try to match gpu_ids as a list first
         gpu_list_match = re.search(r'["\']gpu_ids["\']\s*:\s*\[([^\]]+)\]', config_source)
         if not gpu_list_match:
-            gpu_list_match = re.search(r'gpu_ids\s*[:=]\s*\[([^\]]+)\]', config_source)
+            gpu_list_match = re.search(r"gpu_ids\s*[:=]\s*\[([^\]]+)\]", config_source)
 
         if gpu_list_match:
             # Parse list of GPU IDs
             gpu_ids_str = gpu_list_match.group(1)
-            config_data["gpuIds"] = [int(x.strip()) for x in gpu_ids_str.split(',') if x.strip().isdigit()]
+            config_data["gpuIds"] = [
+                int(x.strip()) for x in gpu_ids_str.split(",") if x.strip().isdigit()
+            ]
         else:
             # Fallback to single gpu_id for backwards compatibility
             gpu_match = re.search(r'["\']gpu_id["\']\s*:\s*(\d+)', config_source)
             if not gpu_match:
-                gpu_match = re.search(r'gpu_id\s*[:=]\s*(\d+)', config_source)
+                gpu_match = re.search(r"gpu_id\s*[:=]\s*(\d+)", config_source)
             if gpu_match:
                 config_data["gpuIds"] = [int(gpu_match.group(1))]
 
-        dataset_match = re.search(r'["\']dataset_path["\']\s*:\s*Path\(["\']([^"\']+)["\']\)', config_source)
+        dataset_match = re.search(
+            r'["\']dataset_path["\']\s*:\s*Path\(["\']([^"\']+)["\']\)', config_source
+        )
         if not dataset_match:
-            dataset_match = re.search(r'dataset_path\s*[:=]\s*Path\(["\']([^"\']+)["\']\)', config_source)
+            dataset_match = re.search(
+                r'dataset_path\s*[:=]\s*Path\(["\']([^"\']+)["\']\)', config_source
+            )
         if dataset_match:
             config_data["datasetPath"] = dataset_match.group(1)
 
@@ -379,7 +384,9 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             config_data["envName"] = env_name_match.group(1)
 
         # Parse tools from get_tools() method
-        tools_section = re.search(r'def get_tools\(self\).*?return \[(.*?)\]', config_source, re.DOTALL)
+        tools_section = re.search(
+            r"def get_tools\(self\).*?return \[(.*?)\]", config_source, re.DOTALL
+        )
         if tools_section:
             # This is a simplified parser - just check if it returns empty list or has tools
             tools_content = tools_section.group(1).strip()
@@ -403,9 +410,13 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         config_source = config_path.read_text()
 
         # Try to find dataset_path in the source
-        dataset_match = re.search(r'["\']dataset_path["\']\s*:\s*Path\(["\']([^"\']+)["\']\)', config_source)
+        dataset_match = re.search(
+            r'["\']dataset_path["\']\s*:\s*Path\(["\']([^"\']+)["\']\)', config_source
+        )
         if not dataset_match:
-            dataset_match = re.search(r'dataset_path\s*[:=]\s*Path\(["\']([^"\']+)["\']\)', config_source)
+            dataset_match = re.search(
+                r'dataset_path\s*[:=]\s*Path\(["\']([^"\']+)["\']\)', config_source
+            )
 
         if not dataset_match:
             self._json_response({"error": "Could not find dataset_path in config"})
@@ -452,7 +463,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
                 "fields": fields,
                 "sample": preview_sample,
                 "datasetSize": dataset_size,
-                "error": None
+                "error": None,
             })
 
         except Exception as e:
@@ -472,9 +483,9 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
         # Find prepare_messages function (can be standalone or method)
         method_match = re.search(
-            r'def prepare_messages\(.*?\).*?:\s*\n(.*?)(?=\ndef |\nclass |\Z)',
+            r"def prepare_messages\(.*?\).*?:\s*\n(.*?)(?=\ndef |\nclass |\Z)",
             config_source,
-            re.DOTALL
+            re.DOTALL,
         )
 
         if not method_match:
@@ -505,7 +516,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         for match in re.finditer(sample_data_pattern, method_body):
             var_name = match.group(1)
             field_name = match.group(2)
-            variable_values[var_name] = f'{{{field_name}}}'
+            variable_values[var_name] = f"{{{field_name}}}"
 
         # Match simple string assignments
         simple_string_pattern = r'(\w+)\s*=\s*"([^"]+)"'
@@ -517,7 +528,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
                 variable_values[var_name] = var_value
 
         # Find return statement with Message list
-        return_match = re.search(r'return\s*\[(.*?)\]', method_body, re.DOTALL)
+        return_match = re.search(r"return\s*\[(.*?)\]", method_body, re.DOTALL)
 
         if not return_match:
             self._json_response({"error": "Could not parse messages from return statement"})
@@ -527,7 +538,9 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
         # Extract Message() calls
         messages = []
-        message_pattern = r'Message\(\s*role\s*=\s*["\'](\w+)["\']\s*,\s*content\s*=\s*(.*?)\s*\)(?=\s*(?:,|\]))'
+        message_pattern = (
+            r'Message\(\s*role\s*=\s*["\'](\w+)["\']\s*,\s*content\s*=\s*(.*?)\s*\)(?=\s*(?:,|\]))'
+        )
 
         for match in re.finditer(message_pattern, messages_str, re.DOTALL):
             role = match.group(1)
@@ -536,18 +549,26 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             # Handle different content formats
             if content_expr.startswith('f"""') or content_expr.startswith("f'''"):
                 # f-string with triple quotes
-                content = re.search(r'f["\']{{3}}(.*?)["\']{{3}}', content_expr, re.DOTALL).group(1).strip()
+                content = (
+                    re.search(r'f["\']{{3}}(.*?)["\']{{3}}', content_expr, re.DOTALL)
+                    .group(1)
+                    .strip()
+                )
             elif content_expr.startswith('"""') or content_expr.startswith("'''"):
                 # Regular triple-quoted string
-                content = re.search(r'["\']{{3}}(.*?)["\']{{3}}', content_expr, re.DOTALL).group(1).strip()
+                content = (
+                    re.search(r'["\']{{3}}(.*?)["\']{{3}}', content_expr, re.DOTALL)
+                    .group(1)
+                    .strip()
+                )
             elif content_expr.startswith('f"') or content_expr.startswith("f'"):
                 # f-string with single quotes
                 quote_char = content_expr[1]
-                content = content_expr[2:content_expr.rfind(quote_char)]
+                content = content_expr[2 : content_expr.rfind(quote_char)]
             elif content_expr.startswith('"') or content_expr.startswith("'"):
                 # Regular string
                 quote_char = content_expr[0]
-                content = content_expr[1:content_expr.rfind(quote_char)]
+                content = content_expr[1 : content_expr.rfind(quote_char)]
             elif content_expr in variable_values:
                 # Variable reference - look up the value
                 content = variable_values[content_expr]
@@ -573,9 +594,9 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
         # Find get_tools method
         method_match = re.search(
-            r'def get_tools\(self\).*?:\s*\n(.*?)(?=\n    def |\nclass |\Z)',
+            r"def get_tools\(self\).*?:\s*\n(.*?)(?=\n    def |\nclass |\Z)",
             config_source,
-            re.DOTALL
+            re.DOTALL,
         )
 
         if not method_match:
@@ -585,7 +606,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         method_body = method_match.group(1)
 
         # Find return statement
-        return_match = re.search(r'return\s*\[(.*?)\]', method_body, re.DOTALL)
+        return_match = re.search(r"return\s*\[(.*?)\]", method_body, re.DOTALL)
 
         if not return_match:
             self._json_response({"tools": [], "hasTools": False, "error": None})
@@ -620,14 +641,10 @@ class DevLoopServer(SimpleHTTPRequestHandler):
                     "name": param_name,
                     "type": param_type,
                     "description": param_desc,
-                    "required": param_required
+                    "required": param_required,
                 })
 
-            tools.append({
-                "name": tool_name,
-                "description": tool_desc,
-                "parameters": parameters
-            })
+            tools.append({"name": tool_name, "description": tool_desc, "parameters": parameters})
 
         self._json_response({"tools": tools, "hasTools": len(tools) > 0, "error": None})
 
@@ -644,7 +661,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         config_source = config_path.read_text()
 
         # Try to find environment class name or environment file
-        env_match = re.search(r'from\s+([\w.]+)\s+import\s+(\w+Environment)', config_source)
+        env_match = re.search(r"from\s+([\w.]+)\s+import\s+(\w+Environment)", config_source)
 
         if not env_match:
             self._json_response({"error": "Could not find environment import"})
@@ -654,7 +671,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         env_class = env_match.group(2)
 
         # Convert module path to file path
-        module_parts = env_module.split('.')
+        module_parts = env_module.split(".")
         env_file = self.project_root / Path(*module_parts[:-1]) / f"{module_parts[-1]}.py"
 
         if not env_file.exists():
@@ -669,9 +686,9 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
         # Find on_assistant_message method
         method_match = re.search(
-            r'(async def on_assistant_message\(.*?\).*?:\s*\n.*?)(?=\n    async def |\n    def |\nclass |\Z)',
+            r"(async def on_assistant_message\(.*?\).*?:\s*\n.*?)(?=\n    async def |\n    def |\nclass |\Z)",
             env_source,
-            re.DOTALL
+            re.DOTALL,
         )
 
         if not method_match:
@@ -695,7 +712,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         config_source = config_path.read_text()
 
         # Try to find environment class name or environment file
-        env_match = re.search(r'from\s+([\w.]+)\s+import\s+(\w+Environment)', config_source)
+        env_match = re.search(r"from\s+([\w.]+)\s+import\s+(\w+Environment)", config_source)
 
         if not env_match:
             self._json_response({"error": "Could not find environment import"})
@@ -705,7 +722,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         env_class = env_match.group(2)
 
         # Convert module path to file path
-        module_parts = env_module.split('.')
+        module_parts = env_module.split(".")
         env_file = self.project_root / Path(*module_parts[:-1]) / f"{module_parts[-1]}.py"
 
         if not env_file.exists():
@@ -723,7 +740,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             "source": env_source,
             "file_path": str(env_file.relative_to(self.project_root)),
             "class_name": env_class,
-            "error": None
+            "error": None,
         })
 
     def _list_models(self):
@@ -740,7 +757,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             try:
                 req = urllib.request.Request(
                     "https://api.openai.com/v1/models",
-                    headers={"Authorization": f"Bearer {openai_key}"}
+                    headers={"Authorization": f"Bearer {openai_key}"},
                 )
                 with urllib.request.urlopen(req, timeout=5) as response:
                     data = json.loads(response.read().decode())
@@ -748,11 +765,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
                     for model in data.get("data", []):
                         model_id = model.get("id", "")
                         if any(model_id.startswith(prefix) for prefix in ["gpt-4", "o1", "o3"]):
-                            models.append({
-                                "id": model_id,
-                                "provider": "openai",
-                                "name": model_id
-                            })
+                            models.append({"id": model_id, "provider": "openai", "name": model_id})
             except Exception as e:
                 errors.append(f"OpenAI: {str(e)}")
 
@@ -762,10 +775,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             try:
                 req = urllib.request.Request(
                     "https://api.anthropic.com/v1/models",
-                    headers={
-                        "x-api-key": anthropic_key,
-                        "anthropic-version": "2023-06-01"
-                    }
+                    headers={"x-api-key": anthropic_key, "anthropic-version": "2023-06-01"},
                 )
                 with urllib.request.urlopen(req, timeout=5) as response:
                     data = json.loads(response.read().decode())
@@ -774,15 +784,12 @@ class DevLoopServer(SimpleHTTPRequestHandler):
                         models.append({
                             "id": model_id,
                             "provider": "anthropic",
-                            "name": model.get("display_name", model_id)
+                            "name": model.get("display_name", model_id),
                         })
             except Exception as e:
                 errors.append(f"Anthropic: {str(e)}")
 
-        self._json_response({
-            "models": models,
-            "errors": errors if errors else None
-        })
+        self._json_response({"models": models, "errors": errors if errors else None})
 
     def _list_datasets(self):
         """List available dataset files in the datasets directory."""
@@ -802,7 +809,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
                     datasets.append({
                         "path": str(relative_path),
                         "name": file_path.name,
-                        "size": file_path.stat().st_size
+                        "size": file_path.stat().st_size,
                     })
 
             # Sort by name
@@ -871,7 +878,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
                 "datasetPath": dataset_path_str,
                 "fields": fields,
                 "sample": preview_sample,
-                "datasetSize": dataset_size
+                "datasetSize": dataset_size,
             })
 
         except json.JSONDecodeError as e:
@@ -907,7 +914,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         self._json_response({
             "success": True,
             "file_path": str(config_path.relative_to(self.project_root)),
-            "config_name": config_name
+            "config_name": config_name,
         })
 
     def _build_config_file(self, data: dict[str, Any]) -> str:
@@ -953,10 +960,15 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
         # Check what environment class is in the base config
         import re
-        env_import = re.search(r'from\s+([\w.]+)\s+import\s+(\w+Environment)', config_source)
-        env_class = re.search(r'environment_class:\s*type\s*=\s*(\w+)', config_source)
-        logger.debug(f"Base config has environment import: {env_import.group(0) if env_import else 'None'}")
-        logger.debug(f"Base config has environment_class: {env_class.group(1) if env_class else 'None'}")
+
+        env_import = re.search(r"from\s+([\w.]+)\s+import\s+(\w+Environment)", config_source)
+        env_class = re.search(r"environment_class:\s*type\s*=\s*(\w+)", config_source)
+        logger.debug(
+            f"Base config has environment import: {env_import.group(0) if env_import else 'None'}"
+        )
+        logger.debug(
+            f"Base config has environment_class: {env_class.group(1) if env_class else 'None'}"
+        )
 
         # Replace specific values
         import re
@@ -965,9 +977,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         if "model" in data:
             model_name = data["model"]
             config_source = re.sub(
-                r'(model_name\s*[:=]\s*)["\']([^"\']+)["\']',
-                f'\\1"{model_name}"',
-                config_source
+                r'(model_name\s*[:=]\s*)["\']([^"\']+)["\']', f'\\1"{model_name}"', config_source
             )
 
             # Also update provider and api_key_env_var based on new model
@@ -975,7 +985,11 @@ class DevLoopServer(SimpleHTTPRequestHandler):
                 provider = "anthropic"
                 api_key_env_var = "ANTHROPIC_API_KEY"
                 api_base = "https://api.anthropic.com"  # SDK adds /v1 automatically
-            elif "gpt" in model_name.lower() or "o1" in model_name.lower() or "o3" in model_name.lower():
+            elif (
+                "gpt" in model_name.lower()
+                or "o1" in model_name.lower()
+                or "o3" in model_name.lower()
+            ):
                 provider = "openai"
                 api_key_env_var = "OPENAI_API_KEY"
                 api_base = "https://api.openai.com/v1"
@@ -986,31 +1000,25 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
             # Update provider
             config_source = re.sub(
-                r'(provider\s*[:=]\s*)["\']([^"\']+)["\']',
-                f'\\1"{provider}"',
-                config_source
+                r'(provider\s*[:=]\s*)["\']([^"\']+)["\']', f'\\1"{provider}"', config_source
             )
 
             # Update api_key_env_var
             config_source = re.sub(
                 r'(api_key_env_var\s*[:=]\s*)["\']([^"\']+)["\']',
                 f'\\1"{api_key_env_var}"',
-                config_source
+                config_source,
             )
 
             # Update api_base
             config_source = re.sub(
-                r'(api_base\s*[:=]\s*)["\']([^"\']+)["\']',
-                f'\\1"{api_base}"',
-                config_source
+                r'(api_base\s*[:=]\s*)["\']([^"\']+)["\']', f'\\1"{api_base}"', config_source
             )
 
         # Update temperature if changed
         if "temperature" in data:
             config_source = re.sub(
-                r'(temperature\s*[:=]\s*)([0-9.]+)',
-                f'\\g<1>{data["temperature"]}',
-                config_source
+                r"(temperature\s*[:=]\s*)([0-9.]+)", f"\\g<1>{data['temperature']}", config_source
             )
 
         # Update system prompt if changed
@@ -1018,25 +1026,21 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             prompt = data["systemPrompt"]
             config_source = re.sub(
                 r'(system_prompt\s*=\s*""")([^"]+)(""")',
-                f'\\1{prompt}\\3',
+                f"\\1{prompt}\\3",
                 config_source,
-                flags=re.DOTALL
+                flags=re.DOTALL,
             )
 
         # Update max turns if changed
         if "maxTurns" in data:
             config_source = re.sub(
-                r'(max_turns\s*[:=]\s*)(\d+)',
-                f'\\g<1>{data["maxTurns"]}',
-                config_source
+                r"(max_turns\s*[:=]\s*)(\d+)", f"\\g<1>{data['maxTurns']}", config_source
             )
 
         # Update num samples if changed
         if "numSamples" in data:
             config_source = re.sub(
-                r'(num_samples\s*[:=]\s*)(\d+)',
-                f'\\g<1>{data["numSamples"]}',
-                config_source
+                r"(num_samples\s*[:=]\s*)(\d+)", f"\\g<1>{data['numSamples']}", config_source
             )
 
         # Update environment fields if present
@@ -1046,7 +1050,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             config_source = re.sub(
                 r'(ssh_target\s*[:=]\s*)["\']([^"\']+)["\']',
                 f'\\1"{env_fields["sshTarget"]}"',
-                config_source
+                config_source,
             )
 
         # Handle both gpu_ids (list) and gpuId (single, backwards compat)
@@ -1056,56 +1060,50 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
             # Try to replace gpu_ids list first
             config_source = re.sub(
-                r'(gpu_ids\s*[:=]\s*)\[[^\]]*\]',
-                f'\\g<1>{gpu_ids_str}',
-                config_source
+                r"(gpu_ids\s*[:=]\s*)\[[^\]]*\]", f"\\g<1>{gpu_ids_str}", config_source
             )
             # Also try in dict format
             config_source = re.sub(
-                r'(["\']gpu_ids["\']\s*:\s*)\[[^\]]*\]',
-                f'\\g<1>{gpu_ids_str}',
-                config_source
+                r'(["\']gpu_ids["\']\s*:\s*)\[[^\]]*\]', f"\\g<1>{gpu_ids_str}", config_source
             )
             # Fallback: replace old gpu_id with first GPU from list
             if gpu_ids:
                 config_source = re.sub(
-                    r'(gpu_id\s*[:=]\s*)(\d+)',
-                    f'\\g<1>{gpu_ids[0]}',
-                    config_source
+                    r"(gpu_id\s*[:=]\s*)(\d+)", f"\\g<1>{gpu_ids[0]}", config_source
                 )
                 config_source = re.sub(
-                    r'(["\']gpu_id["\']\s*:\s*)(\d+)',
-                    f'\\g<1>{gpu_ids[0]}',
-                    config_source
+                    r'(["\']gpu_id["\']\s*:\s*)(\d+)', f"\\g<1>{gpu_ids[0]}", config_source
                 )
 
         if "datasetPath" in env_fields:
             config_source = re.sub(
                 r'(dataset_path\s*[:=]\s*Path\()["\']([^"\']+)(["\'])',
                 f'\\1"{env_fields["datasetPath"]}"\\3',
-                config_source
+                config_source,
             )
 
         if "envName" in env_fields:
             config_source = re.sub(
                 r'(env_name\s*[:=]\s*)["\']([^"\']+)["\']',
                 f'\\1"{env_fields["envName"]}"',
-                config_source
+                config_source,
             )
 
         # Update messages if provided
         if "messages" in data and data["messages"]:
             # Detect if prepare_messages is standalone or a method
-            existing_match = re.search(r'def prepare_messages\((.*?)\)', config_source)
-            is_standalone = existing_match and 'self' not in existing_match.group(1)
+            existing_match = re.search(r"def prepare_messages\((.*?)\)", config_source)
+            is_standalone = existing_match and "self" not in existing_match.group(1)
 
-            messages_code = self._generate_prepare_messages_method(data["messages"], is_standalone=is_standalone)
+            messages_code = self._generate_prepare_messages_method(
+                data["messages"], is_standalone=is_standalone
+            )
             # Replace the existing prepare_messages method
             config_source = re.sub(
-                r'def prepare_messages\(.*?\).*?:\s*\n.*?(?=\ndef |\nclass |\Z)',
+                r"def prepare_messages\(.*?\).*?:\s*\n.*?(?=\ndef |\nclass |\Z)",
                 messages_code,
                 config_source,
-                flags=re.DOTALL
+                flags=re.DOTALL,
             )
 
         # Update tool descriptions if provided
@@ -1122,7 +1120,9 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
         return config_source
 
-    def _generate_prepare_messages_method(self, messages: list[dict], is_standalone: bool = True) -> str:
+    def _generate_prepare_messages_method(
+        self, messages: list[dict], is_standalone: bool = True
+    ) -> str:
         """Generate prepare_messages() code from message list.
 
         Args:
@@ -1135,7 +1135,9 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             lines.append('    """Prepare initial messages from dataset sample."""')
             indent = "    "
         else:
-            lines.append("    def prepare_messages(self, sample_data: dict[str, Any]) -> list[Message]:")
+            lines.append(
+                "    def prepare_messages(self, sample_data: dict[str, Any]) -> list[Message]:"
+            )
             lines.append('        """Prepare initial messages for the agent."""')
             indent = "        "
 
@@ -1147,7 +1149,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             has_placeholders = "{" in content and "}" in content
 
             # Escape any existing triple quotes in content
-            content_escaped = content.replace('"""', r'\"\"\"')
+            content_escaped = content.replace('"""', r"\"\"\"")
 
             if has_placeholders:
                 # Use f-string - convert {field} to {sample_data.get('field', '')}
@@ -1157,8 +1159,8 @@ class DevLoopServer(SimpleHTTPRequestHandler):
                     field = match.group(1)
                     return f"{{sample_data.get('{field}', '')}}"
 
-                content_escaped = re.sub(r'\{(\w+)\}', replace_placeholder, content_escaped)
-                lines.append(f"{indent}msg{i}_content = f\"\"\"")
+                content_escaped = re.sub(r"\{(\w+)\}", replace_placeholder, content_escaped)
+                lines.append(f'{indent}msg{i}_content = f"""')
                 lines.append(content_escaped)
                 lines.append(f'{indent}"""')
             else:
@@ -1186,7 +1188,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
             # Update tool description
             pattern = rf'(Tool\(\s*name\s*=\s*["\']){tool_name}(["\']\\s*,\s*description\s*=\s*["\']{{3}}).*?(["\']{{3}})'
-            replacement = rf'\1{tool_name}\2{tool_desc}\3'
+            replacement = rf"\1{tool_name}\2{tool_desc}\3"
             config_source = re.sub(pattern, replacement, config_source, flags=re.DOTALL)
 
             # Update parameter descriptions
@@ -1196,7 +1198,9 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
                 # Find and replace parameter description
                 param_pattern = rf'(["\']){param_name}\1\s*:\s*ToolParam\(\s*type\s*=\s*["\'](\w+)["\']\\s*,\s*description\s*=\s*["\']([^"\']*)["\']'
-                param_replacement = rf'\1{param_name}\1: ToolParam(type="\2", description="{param_desc}"'
+                param_replacement = (
+                    rf'\1{param_name}\1: ToolParam(type="\2", description="{param_desc}"'
+                )
                 config_source = re.sub(param_pattern, param_replacement, config_source)
 
         return config_source
@@ -1221,7 +1225,9 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             provider = "anthropic"
             api_key_env_var = "ANTHROPIC_API_KEY"
             api_base = "https://api.anthropic.com"  # SDK adds /v1 automatically
-        elif "gpt" in model_name.lower() or "o1" in model_name.lower() or "o3" in model_name.lower():
+        elif (
+            "gpt" in model_name.lower() or "o1" in model_name.lower() or "o3" in model_name.lower()
+        ):
             provider = "openai"
             api_key_env_var = "OPENAI_API_KEY"
             api_base = "https://api.openai.com/v1"
@@ -1441,17 +1447,17 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
             # Try to match gpu_ids as a list first
             gpu_list_match = re.search(r'["\']gpu_ids["\']\s*:\s*\[([^\]]+)\]', config_source)
             if not gpu_list_match:
-                gpu_list_match = re.search(r'gpu_ids\s*[:=]\s*\[([^\]]+)\]', config_source)
+                gpu_list_match = re.search(r"gpu_ids\s*[:=]\s*\[([^\]]+)\]", config_source)
 
             if gpu_list_match:
                 # Parse list of GPU IDs
                 gpu_ids_str = gpu_list_match.group(1)
-                gpu_ids = [int(x.strip()) for x in gpu_ids_str.split(',') if x.strip().isdigit()]
+                gpu_ids = [int(x.strip()) for x in gpu_ids_str.split(",") if x.strip().isdigit()]
             else:
                 # Fallback to single gpu_id
                 gpu_match = re.search(r'["\']gpu_id["\']\s*:\s*(\d+)', config_source)
                 if not gpu_match:
-                    gpu_match = re.search(r'gpu_id\s*[:=]\s*(\d+)', config_source)
+                    gpu_match = re.search(r"gpu_id\s*[:=]\s*(\d+)", config_source)
                 if gpu_match:
                     gpu_ids = [int(gpu_match.group(1))]
 
@@ -1459,23 +1465,30 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
             if gpu_ids:
                 try:
                     result = subprocess.run(
-                        ["nvidia-smi", "--query-gpu=index,memory.used,utilization.gpu", "--format=csv,noheader,nounits"],
+                        [
+                            "nvidia-smi",
+                            "--query-gpu=index,memory.used,utilization.gpu",
+                            "--format=csv,noheader,nounits",
+                        ],
                         capture_output=True,
                         text=True,
-                        timeout=5
+                        timeout=5,
                     )
 
                     if result.returncode == 0:
                         # Parse nvidia-smi output
                         gpu_stats = {}
                         for line in result.stdout.strip().splitlines():
-                            parts = [p.strip() for p in line.split(',')]
+                            parts = [p.strip() for p in line.split(",")]
                             if len(parts) == 3:
                                 try:
                                     gpu_id = int(parts[0])
                                     memory_mb = int(parts[1])
                                     util_pct = int(parts[2])
-                                    gpu_stats[gpu_id] = {'memory_mb': memory_mb, 'util_pct': util_pct}
+                                    gpu_stats[gpu_id] = {
+                                        "memory_mb": memory_mb,
+                                        "util_pct": util_pct,
+                                    }
                                 except ValueError:
                                     continue
 
@@ -1483,11 +1496,11 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                         for gpu_id in gpu_ids:
                             if gpu_id in gpu_stats:
                                 stats = gpu_stats[gpu_id]
-                                if stats['memory_mb'] > 1000 or stats['util_pct'] > 5:
+                                if stats["memory_mb"] > 1000 or stats["util_pct"] > 5:
                                     self._json_response({
                                         "success": False,
                                         "error": f"GPU {gpu_id} is busy ({stats['memory_mb']}MB used, {stats['util_pct']}% util)",
-                                        "preflight_failed": True
+                                        "preflight_failed": True,
                                     })
                                     return
                 except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -1499,7 +1512,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                 self._json_response({
                     "success": False,
                     "error": f"Maximum concurrent runs ({_max_concurrent_runs}) reached. Please wait for a run to complete.",
-                    "queue_full": True
+                    "queue_full": True,
                 })
                 return
 
@@ -1528,7 +1541,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                     text=True,
                     bufsize=0,  # Unbuffered - changed from 1 (line buffered) for token streaming
                     start_new_session=True,  # Detach from parent
-                    env=env
+                    env=env,
                 )
                 logger.debug(f"Process started with PID: {process.pid}")
             except Exception as e:
@@ -1536,7 +1549,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                 _run_semaphore.release()  # Release semaphore on failure
                 self._json_response({
                     "success": False,
-                    "error": f"Failed to start process: {str(e)}"
+                    "error": f"Failed to start process: {str(e)}",
                 })
                 return
 
@@ -1549,7 +1562,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                     "status": "running",
                     "output_lines": [],
                     "exit_code": None,
-                    "gpu_ids": gpu_ids
+                    "gpu_ids": gpu_ids,
                 }
 
             logger.debug(f"Run registered in _active_runs. Total active: {len(_active_runs)}")
@@ -1558,7 +1571,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                 "success": True,
                 "run_id": run_id,
                 "command": " ".join(command),
-                "config_name": config_name
+                "config_name": config_name,
             })
 
         except json.JSONDecodeError as e:
@@ -1625,12 +1638,12 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                 stdout_buffer += char
 
                 # When we hit newline, parse the line and check for events
-                if char == '\n':
+                if char == "\n":
                     line = stdout_buffer.rstrip()
 
                     # Parse stdout to find result_dir
                     if not result_dir_found:
-                        match = re.search(r'📂 Results directory: (.+)', line)
+                        match = re.search(r"📂 Results directory: (.+)", line)
                         if match:
                             result_dir = Path(match.group(1))
                             events_file = result_dir / "events.jsonl"
@@ -1668,9 +1681,13 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
 
                         # Parse JSONL event - crash loudly if malformed (programmer error, not operational error)
                         event_obj = json.loads(line)
-                        assert isinstance(event_obj, dict), f"Event must be dict, got {type(event_obj)}: {event_obj}"
+                        assert isinstance(event_obj, dict), (
+                            f"Event must be dict, got {type(event_obj)}: {event_obj}"
+                        )
                         assert "type" in event_obj, f"Event missing 'type' field: {event_obj}"
-                        assert "timestamp" in event_obj, f"Event missing 'timestamp' field: {event_obj}"
+                        assert "timestamp" in event_obj, (
+                            f"Event missing 'timestamp' field: {event_obj}"
+                        )
 
                         # Forward event as-is (already has type, timestamp, data)
                         self.wfile.write(f"data: {json.dumps(event_obj)}\n\n".encode())
@@ -1699,7 +1716,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
             completion_data = json.dumps({
                 "type": "complete",
                 "exit_code": exit_code,
-                "status": "success" if exit_code == 0 else "failed"
+                "status": "success" if exit_code == 0 else "failed",
             })
             self.wfile.write(f"data: {completion_data}\n\n".encode())
             self.wfile.flush()
@@ -1763,7 +1780,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                     "start_time": data["start_time"],
                     "status": data["status"],
                     "exit_code": data.get("exit_code"),
-                    "output_length": len(data.get("output_lines", []))
+                    "output_length": len(data.get("output_lines", [])),
                 })
 
         self._json_response({"runs": runs})
@@ -1789,7 +1806,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
             logger.warning(f"Cannot kill: Run is not running (status: {run_data['status']})")
             self._json_response({
                 "success": False,
-                "message": f"Run is not running (status: {run_data['status']})"
+                "message": f"Run is not running (status: {run_data['status']})",
             })
             return
 
@@ -1820,17 +1837,11 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                 run_data["exit_code"] = -1
 
             logger.info(f"successfully killed run {run_id}")
-            self._json_response({
-                "success": True,
-                "message": f"Killed run {run_id}"
-            })
+            self._json_response({"success": True, "message": f"Killed run {run_id}"})
 
         except Exception as e:
             logger.error(f"❌ Failed to kill run: {str(e)}", exc_info=True)
-            self._json_response({
-                "success": False,
-                "message": f"Failed to kill run: {str(e)}"
-            })
+            self._json_response({"success": False, "message": f"Failed to kill run: {str(e)}"})
 
     def _delete_run(self, run_id: str):
         """Delete a completed/failed run from registry."""
@@ -1846,7 +1857,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
         if run_data["status"] == "running":
             self._json_response({
                 "success": False,
-                "message": "Cannot delete running process. Kill it first."
+                "message": "Cannot delete running process. Kill it first.",
             })
             return
 
@@ -1854,10 +1865,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
         with _run_lock:
             del _active_runs[run_id]
 
-        self._json_response({
-            "success": True,
-            "message": f"Deleted run {run_id}"
-        })
+        self._json_response({"success": True, "message": f"Deleted run {run_id}"})
 
     def _json_response(self, data: Any):
         """Send JSON response."""
@@ -1880,21 +1888,16 @@ def main():
         description="Agent dev loop tool - config builder & trace viewer"
     )
     parser.add_argument(
-        "--port",
-        type=int,
-        default=8080,
-        help="Port to run server on (default: 8080)"
+        "--port", type=int, default=8080, help="Port to run server on (default: 8080)"
     )
     parser.add_argument(
         "--project",
         type=Path,
         default=Path.cwd(),
-        help="Project root directory (default: current directory)"
+        help="Project root directory (default: current directory)",
     )
     parser.add_argument(
-        "--no-browser",
-        action="store_true",
-        help="Don't automatically open browser"
+        "--no-browser", action="store_true", help="Don't automatically open browser"
     )
 
     args = parser.parse_args()

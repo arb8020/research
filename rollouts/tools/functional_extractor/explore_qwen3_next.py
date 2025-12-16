@@ -6,7 +6,6 @@ It handles its own environment setup to avoid venv caching issues.
 """
 
 import subprocess
-import sys
 
 
 def setup_environment():
@@ -14,27 +13,21 @@ def setup_environment():
     print("Setting up environment...")
 
     # Install packages using uv pip (pip not available in uv-managed venvs)
-    subprocess.run([
-        "uv", "pip", "install", "-q",
-        "huggingface_hub>=0.26.0"
-    ], check=True)
+    subprocess.run(["uv", "pip", "install", "-q", "huggingface_hub>=0.26.0"], check=True)
 
-    subprocess.run([
-        "uv", "pip", "install", "-q",
-        "git+https://github.com/huggingface/transformers.git"
-    ], check=True)
+    subprocess.run(
+        ["uv", "pip", "install", "-q", "git+https://github.com/huggingface/transformers.git"],
+        check=True,
+    )
 
-    subprocess.run([
-        "uv", "pip", "install", "-q",
-        "accelerate", "safetensors"
-    ], check=True)
+    subprocess.run(["uv", "pip", "install", "-q", "accelerate", "safetensors"], check=True)
 
     print("Environment setup complete!")
 
 
 def explore():
     import torch
-    from transformers import AutoModelForCausalLM, AutoConfig
+    from transformers import AutoConfig, AutoModelForCausalLM
 
     # Use non-FP8 version (bfloat16) - compatible with all GPUs
     MODEL_NAME = "Qwen/Qwen3-Next-80B-A3B-Instruct"
@@ -51,28 +44,46 @@ def explore():
     print(f"num_hidden_layers: {config.num_hidden_layers}")
     print(f"num_attention_heads: {config.num_attention_heads}")
     print(f"num_key_value_heads: {getattr(config, 'num_key_value_heads', 'N/A')}")
-    print(f"head_dim: {getattr(config, 'head_dim', config.hidden_size // config.num_attention_heads)}")
+    print(
+        f"head_dim: {getattr(config, 'head_dim', config.hidden_size // config.num_attention_heads)}"
+    )
     print(f"vocab_size: {config.vocab_size}")
     print(f"rope_theta: {getattr(config, 'rope_theta', 'N/A')}")
     print(f"rms_norm_eps: {getattr(config, 'rms_norm_eps', 'N/A')}")
 
     # MoE-specific attributes
-    print(f"\n### MoE Config ###")
-    for attr in ['num_experts', 'num_experts_per_tok', 'moe_intermediate_size',
-                 'shared_expert_intermediate_size', 'router_aux_loss_coef',
-                 'norm_topk_prob', 'first_k_dense_replace']:
-        val = getattr(config, attr, 'N/A')
-        if val != 'N/A':
+    print("\n### MoE Config ###")
+    for attr in [
+        "num_experts",
+        "num_experts_per_tok",
+        "moe_intermediate_size",
+        "shared_expert_intermediate_size",
+        "router_aux_loss_coef",
+        "norm_topk_prob",
+        "first_k_dense_replace",
+    ]:
+        val = getattr(config, attr, "N/A")
+        if val != "N/A":
             print(f"{attr}: {val}")
 
     # Model-specific attributes
-    print(f"\n### Model-specific ###")
-    for attr in ['attn_logit_softcapping', 'final_logit_softcapping', 'query_pre_attn_scalar',
-                 'sliding_window', 'attention_bias', 'mlp_bias', 'original_max_position_embeddings',
-                 'max_position_embeddings', 'rope_scaling', 'use_qkv_bias', 'partial_rotary_factor',
-                 'linear_attention_config']:
-        val = getattr(config, attr, 'N/A')
-        if val != 'N/A':
+    print("\n### Model-specific ###")
+    for attr in [
+        "attn_logit_softcapping",
+        "final_logit_softcapping",
+        "query_pre_attn_scalar",
+        "sliding_window",
+        "attention_bias",
+        "mlp_bias",
+        "original_max_position_embeddings",
+        "max_position_embeddings",
+        "rope_scaling",
+        "use_qkv_bias",
+        "partial_rotary_factor",
+        "linear_attention_config",
+    ]:
+        val = getattr(config, attr, "N/A")
+        if val != "N/A":
             print(f"{attr}: {val}")
 
     # Load the actual model for structure exploration
@@ -91,10 +102,10 @@ def explore():
 
     # Check attention module (may be self_attn or linear_attn)
     layer0 = model.model.layers[0]
-    if hasattr(layer0, 'self_attn'):
+    if hasattr(layer0, "self_attn"):
         attn = layer0.self_attn
         attn_name = "self_attn"
-    elif hasattr(layer0, 'linear_attn'):
+    elif hasattr(layer0, "linear_attn"):
         attn = layer0.linear_attn
         attn_name = "linear_attn"
     else:
@@ -111,20 +122,30 @@ def explore():
 
         # Check for special attributes
         print("\nSpecial attributes:")
-        for attr in ['scaling', 'softcap', 'is_causal', 'attention_dropout', 'q_norm', 'k_norm',
-                     'A_log', 'D', 'dt_bias', 'conv1d']:
+        for attr in [
+            "scaling",
+            "softcap",
+            "is_causal",
+            "attention_dropout",
+            "q_norm",
+            "k_norm",
+            "A_log",
+            "D",
+            "dt_bias",
+            "conv1d",
+        ]:
             if hasattr(attn, attr):
                 val = getattr(attn, attr)
-                if hasattr(val, 'weight'):
+                if hasattr(val, "weight"):
                     print(f"  {attr}: {type(val).__name__} (has weight)")
-                elif hasattr(val, 'shape'):
+                elif hasattr(val, "shape"):
                     print(f"  {attr}: Tensor{list(val.shape)}")
                 else:
                     print(f"  {attr}: {val}")
 
     # Check MLP / MoE block
     mlp = model.model.layers[0].mlp
-    print(f"\n### MLP/MoE module (layer 0) ###")
+    print("\n### MLP/MoE module (layer 0) ###")
     print(f"MLP type: {type(mlp).__name__}")
 
     # List submodules of MLP
@@ -141,10 +162,14 @@ def explore():
         print(f"  ... and {len(mlp_params) - 20} more parameters")
 
     # Check norms
-    print(f"\n### Norms ###")
+    print("\n### Norms ###")
     print(f"input_layernorm type: {type(model.model.layers[0].input_layernorm).__name__}")
-    print(f"pre_feedforward_layernorm: {hasattr(model.model.layers[0], 'pre_feedforward_layernorm')}")
-    print(f"post_feedforward_layernorm: {hasattr(model.model.layers[0], 'post_feedforward_layernorm')}")
+    print(
+        f"pre_feedforward_layernorm: {hasattr(model.model.layers[0], 'pre_feedforward_layernorm')}"
+    )
+    print(
+        f"post_feedforward_layernorm: {hasattr(model.model.layers[0], 'post_feedforward_layernorm')}"
+    )
     print(f"post_attention_layernorm: {hasattr(model.model.layers[0], 'post_attention_layernorm')}")
 
     # List all layer 0 submodules
@@ -155,7 +180,7 @@ def explore():
     # Weight keys
     print("\n### Weight keys (sample) ###")
     weights = dict(model.state_dict())
-    layer0_keys = [k for k in weights.keys() if 'layers.0.' in k]
+    layer0_keys = [k for k in weights.keys() if "layers.0." in k]
     for k in sorted(layer0_keys)[:30]:
         print(f"  {k}: {weights[k].shape}")
     if len(layer0_keys) > 30:
@@ -163,12 +188,16 @@ def explore():
 
     # Check if there's q_norm/k_norm
     print("\n### Q/K Norm check ###")
-    q_norm_keys = [k for k in weights.keys() if 'q_norm' in k.lower() or 'k_norm' in k.lower()]
+    q_norm_keys = [k for k in weights.keys() if "q_norm" in k.lower() or "k_norm" in k.lower()]
     print(f"Q/K norm keys found: {q_norm_keys[:10]}")
 
     # Check for MoE-specific keys
     print("\n### MoE-specific keys ###")
-    moe_keys = [k for k in weights.keys() if 'expert' in k.lower() or 'gate' in k.lower() or 'router' in k.lower()]
+    moe_keys = [
+        k
+        for k in weights.keys()
+        if "expert" in k.lower() or "gate" in k.lower() or "router" in k.lower()
+    ]
     print(f"Found {len(moe_keys)} MoE-related keys")
     for k in sorted(moe_keys)[:15]:
         print(f"  {k}: {weights[k].shape}")

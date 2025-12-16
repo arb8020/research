@@ -8,7 +8,7 @@ import importlib.util
 from pathlib import Path
 from typing import Any, TypeVar
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 def load_config_from_file(config_path: str | Path, config_name: str = "config") -> Any:
@@ -60,9 +60,7 @@ def load_config_from_file(config_path: str | Path, config_name: str = "config") 
 
     # Extract config variable
     if not hasattr(module, config_name):
-        raise ValueError(
-            f"Config file {config_path} must define '{config_name}' variable"
-        )
+        raise ValueError(f"Config file {config_path} must define '{config_name}' variable")
 
     return getattr(module, config_name)
 
@@ -93,13 +91,11 @@ def validate_config_protocol(config: Any, protocol_class: type) -> list[str]:
 
     # Check if config satisfies protocol
     if not isinstance(config, protocol_class):
-        errors.append(
-            f"Config does not satisfy {protocol_class.__name__} protocol"
-        )
+        errors.append(f"Config does not satisfy {protocol_class.__name__} protocol")
 
         # Try to provide helpful error messages
         # Check for required methods
-        if hasattr(protocol_class, '__annotations__'):
+        if hasattr(protocol_class, "__annotations__"):
             for attr_name, attr_type in protocol_class.__annotations__.items():
                 if not hasattr(config, attr_name):
                     errors.append(f"Missing required attribute: {attr_name}")

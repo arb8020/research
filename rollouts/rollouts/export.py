@@ -16,12 +16,9 @@ from __future__ import annotations
 
 import html
 import json
-from dataclasses import replace
-from datetime import datetime
-from typing import Any, TYPE_CHECKING
-import uuid
+from typing import TYPE_CHECKING, Any
 
-from rollouts.dtypes import AgentSession, SessionMessage, SessionStatus
+from rollouts.dtypes import AgentSession
 
 
 def format_content_block(block: dict[str, Any]) -> str:
@@ -81,7 +78,9 @@ def session_to_markdown(session: AgentSession, include_metadata: bool = True) ->
         lines.append(f"- **Model**: {session.endpoint.provider}/{session.endpoint.model}")
         lines.append(f"- **Status**: {session.status.value}")
         if session.parent_id:
-            lines.append(f"- **Branched from**: {session.parent_id} (at message {session.branch_point})")
+            lines.append(
+                f"- **Branched from**: {session.parent_id} (at message {session.branch_point})"
+            )
         lines.append("")
         lines.append("---")
         lines.append("")
@@ -125,7 +124,8 @@ def session_to_html(session: AgentSession) -> str:
     html_parts: list[str] = []
 
     # HTML header with dark theme styling
-    html_parts.append("""<!DOCTYPE html>
+    html_parts.append(
+        """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -208,13 +208,16 @@ def session_to_html(session: AgentSession) -> str:
     </div>
     <hr>
 """.format(
-        session_id=html.escape(session.session_id),
-        created_at=html.escape(session.created_at),
-        provider=html.escape(session.endpoint.provider),
-        model=html.escape(session.endpoint.model),
-        status=html.escape(session.status.value),
-        parent_info=f"<div>Branched from: {html.escape(session.parent_id or '')} (at message {session.branch_point})</div>" if session.parent_id else "",
-    ))
+            session_id=html.escape(session.session_id),
+            created_at=html.escape(session.created_at),
+            provider=html.escape(session.endpoint.provider),
+            model=html.escape(session.endpoint.model),
+            status=html.escape(session.status.value),
+            parent_info=f"<div>Branched from: {html.escape(session.parent_id or '')} (at message {session.branch_point})</div>"
+            if session.parent_id
+            else "",
+        )
+    )
 
     # Messages
     for msg in session.messages:
@@ -262,7 +265,9 @@ def format_content_html(content: str | list[dict[str, Any]]) -> str:
         elif block_type == "toolCall":
             name = html.escape(block.get("name", "unknown"))
             args = json.dumps(block.get("arguments", {}), indent=2)
-            parts.append(f"<strong>Tool Call: {name}</strong><pre><code>{html.escape(args)}</code></pre>")
+            parts.append(
+                f"<strong>Tool Call: {name}</strong><pre><code>{html.escape(args)}</code></pre>"
+            )
 
         elif block_type == "image":
             url = block.get("image_url", "")
@@ -283,7 +288,7 @@ def format_content_html(content: str | list[dict[str, Any]]) -> str:
 
 async def run_handoff_command(
     session: AgentSession,
-    endpoint: "Endpoint",
+    endpoint: Endpoint,
     goal: str,
 ) -> tuple[str, None] | tuple[None, str]:
     """Extract goal-directed context from a session.
@@ -300,7 +305,8 @@ async def run_handoff_command(
         (markdown, None) on success, (None, error) on failure
     """
     import sys
-    from rollouts.dtypes import Actor, Message, Trajectory, TextDelta, StreamEvent
+
+    from rollouts.dtypes import Actor, Message, StreamEvent, TextDelta, Trajectory
     from rollouts.providers import get_provider_function
 
     print(f"Extracting context for: {goal}", file=sys.stderr)
@@ -351,5 +357,4 @@ Output ONLY the markdown prompt - no preamble or explanation. The output will be
 
 # Type hint for SessionStore (avoid circular import)
 if TYPE_CHECKING:
-    from rollouts.store import SessionStore
     from rollouts.dtypes import Endpoint

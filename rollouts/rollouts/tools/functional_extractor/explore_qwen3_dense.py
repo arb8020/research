@@ -12,16 +12,27 @@ import sys
 def setup_environment():
     """Install required packages."""
     print("Setting up environment...")
-    subprocess.run([
-        sys.executable, "-m", "pip", "install", "-q", "--upgrade",
-        "transformers>=4.51", "accelerate", "safetensors", "torch"
-    ], check=True)
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "-q",
+            "--upgrade",
+            "transformers>=4.51",
+            "accelerate",
+            "safetensors",
+            "torch",
+        ],
+        check=True,
+    )
     print("Environment ready!")
 
 
 def explore():
     import torch
-    from transformers import AutoModelForCausalLM, AutoConfig
+    from transformers import AutoConfig, AutoModelForCausalLM
 
     MODEL_NAME = "Qwen/Qwen3-0.6B"
 
@@ -37,19 +48,28 @@ def explore():
     print(f"num_hidden_layers: {config.num_hidden_layers}")
     print(f"num_attention_heads: {config.num_attention_heads}")
     print(f"num_key_value_heads: {getattr(config, 'num_key_value_heads', 'N/A')}")
-    print(f"head_dim: {getattr(config, 'head_dim', config.hidden_size // config.num_attention_heads)}")
+    print(
+        f"head_dim: {getattr(config, 'head_dim', config.hidden_size // config.num_attention_heads)}"
+    )
     print(f"vocab_size: {config.vocab_size}")
     print(f"rope_theta: {getattr(config, 'rope_theta', 'N/A')}")
     print(f"rms_norm_eps: {getattr(config, 'rms_norm_eps', 'N/A')}")
     print(f"tie_word_embeddings: {getattr(config, 'tie_word_embeddings', 'N/A')}")
 
     # Model-specific attributes
-    print(f"\n### Model-specific ###")
-    for attr in ['attention_bias', 'mlp_bias', 'max_position_embeddings',
-                 'rope_scaling', 'use_sliding_window', 'sliding_window',
-                 'attention_dropout', 'use_qkv_bias']:
-        val = getattr(config, attr, 'N/A')
-        if val != 'N/A':
+    print("\n### Model-specific ###")
+    for attr in [
+        "attention_bias",
+        "mlp_bias",
+        "max_position_embeddings",
+        "rope_scaling",
+        "use_sliding_window",
+        "sliding_window",
+        "attention_dropout",
+        "use_qkv_bias",
+    ]:
+        val = getattr(config, attr, "N/A")
+        if val != "N/A":
             print(f"{attr}: {val}")
 
     # Load model
@@ -67,7 +87,7 @@ def explore():
 
     # Attention module
     attn = model.model.layers[0].self_attn
-    print(f"\n### Attention module (layer 0) ###")
+    print("\n### Attention module (layer 0) ###")
     print(f"Attention type: {type(attn).__name__}")
 
     print("\nAttention parameters:")
@@ -75,18 +95,27 @@ def explore():
         print(f"  {name}: {param.shape}")
 
     print("\nAttention attributes:")
-    for attr in ['scaling', 'is_causal', 'attention_dropout', 'q_norm', 'k_norm',
-                 'num_heads', 'num_key_value_heads', 'head_dim', 'num_key_value_groups']:
+    for attr in [
+        "scaling",
+        "is_causal",
+        "attention_dropout",
+        "q_norm",
+        "k_norm",
+        "num_heads",
+        "num_key_value_heads",
+        "head_dim",
+        "num_key_value_groups",
+    ]:
         if hasattr(attn, attr):
             val = getattr(attn, attr)
-            if hasattr(val, 'weight'):
+            if hasattr(val, "weight"):
                 print(f"  {attr}: {type(val).__name__} with weight {val.weight.shape}")
             else:
                 print(f"  {attr}: {val}")
 
     # MLP module
     mlp = model.model.layers[0].mlp
-    print(f"\n### MLP module (layer 0) ###")
+    print("\n### MLP module (layer 0) ###")
     print(f"MLP type: {type(mlp).__name__}")
 
     print("\nMLP parameters:")
@@ -94,12 +123,12 @@ def explore():
         print(f"  {name}: {param.shape}")
 
     # Norms
-    print(f"\n### Norms ###")
+    print("\n### Norms ###")
     layer0 = model.model.layers[0]
     print(f"input_layernorm: {type(layer0.input_layernorm).__name__}")
-    if hasattr(layer0, 'post_attention_layernorm'):
+    if hasattr(layer0, "post_attention_layernorm"):
         print(f"post_attention_layernorm: {type(layer0.post_attention_layernorm).__name__}")
-    if hasattr(layer0, 'pre_feedforward_layernorm'):
+    if hasattr(layer0, "pre_feedforward_layernorm"):
         print(f"pre_feedforward_layernorm: {type(layer0.pre_feedforward_layernorm).__name__}")
 
     # Layer submodules
@@ -110,17 +139,17 @@ def explore():
     # Weight keys sample
     print("\n### Weight keys (layer 0) ###")
     weights = dict(model.state_dict())
-    layer0_keys = sorted([k for k in weights.keys() if 'layers.0.' in k])
+    layer0_keys = sorted([k for k in weights.keys() if "layers.0." in k])
     for k in layer0_keys:
         print(f"  {k}: {weights[k].shape}")
 
     # Check embeddings
     print("\n### Embeddings ###")
     print(f"embed_tokens: {weights['model.embed_tokens.weight'].shape}")
-    if 'lm_head.weight' in weights:
+    if "lm_head.weight" in weights:
         print(f"lm_head: {weights['lm_head.weight'].shape}")
         # Check if tied
-        tied = torch.equal(weights['model.embed_tokens.weight'], weights['lm_head.weight'])
+        tied = torch.equal(weights["model.embed_tokens.weight"], weights["lm_head.weight"])
         print(f"tied_embeddings: {tied}")
     else:
         print("lm_head: NOT PRESENT (tied to embed_tokens)")

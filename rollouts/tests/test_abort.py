@@ -21,7 +21,6 @@ from rollouts import (
     Endpoint,
     Message,
     RunConfig,
-    StopReason,
     Trajectory,
     handle_stop_max_turns,
     run_agent,
@@ -30,7 +29,9 @@ from rollouts import (
 
 def create_test_state(provider: str = "openai", model: str = "gpt-4o-mini") -> AgentState:
     """Create a test agent state for abort testing."""
-    api_key = os.getenv("OPENAI_API_KEY") if provider == "openai" else os.getenv("ANTHROPIC_API_KEY")
+    api_key = (
+        os.getenv("OPENAI_API_KEY") if provider == "openai" else os.getenv("ANTHROPIC_API_KEY")
+    )
     if not api_key:
         pytest.skip(f"Missing {provider.upper()}_API_KEY environment variable")
 
@@ -44,13 +45,11 @@ def create_test_state(provider: str = "openai", model: str = "gpt-4o-mini") -> A
 
     initial_message = Message(
         role="user",
-        content="Calculate 25 + 17. Use the calculator tools, then call complete_task when done."
+        content="Calculate 25 + 17. Use the calculator tools, then call complete_task when done.",
     )
 
     actor = Actor(
-        trajectory=Trajectory(messages=[initial_message]),
-        endpoint=endpoint,
-        tools=env.get_tools()
+        trajectory=Trajectory(messages=[initial_message]), endpoint=endpoint, tools=env.get_tools()
     )
 
     return AgentState(actor=actor, environment=env)
@@ -69,10 +68,13 @@ async def test_abort_cancels_http_request():
     aborted = False
 
     async with trio.open_nursery() as nursery:
+
         async def agent_task():
             nonlocal aborted
+
             async def silent_handler(e):
                 pass
+
             run_config = RunConfig(
                 on_chunk=silent_handler,
                 cancel_scope=cancel_scope,
@@ -101,7 +103,7 @@ async def test_abort_sets_stop_reason():
 
     This test verifies that when cancellation occurs, run_agent appends
     a state with stop=StopReason.ABORTED before re-raising trio.Cancelled.
-    
+
     Since run_agent re-raises the exception, we can't access the return value
     directly. Instead, we verify the behavior by checking that:
     1. The cancellation exception is raised (proving cancellation worked)
@@ -115,11 +117,13 @@ async def test_abort_sets_stop_reason():
     async def checkpoint_handler(event):
         """Track checkpoint events."""
         from rollouts import StreamChunk
+
         nonlocal final_checkpoint_called
         if isinstance(event, StreamChunk) and event.type == "final":
             final_checkpoint_called = True
 
     async with trio.open_nursery() as nursery:
+
         async def agent_task():
             nonlocal cancellation_raised
             run_config = RunConfig(
@@ -155,10 +159,13 @@ async def test_abort_with_anthropic():
     aborted = False
 
     async with trio.open_nursery() as nursery:
+
         async def agent_task():
             nonlocal aborted
+
             async def silent_handler(e):
                 pass
+
             run_config = RunConfig(
                 on_chunk=silent_handler,
                 cancel_scope=cancel_scope,
@@ -193,10 +200,12 @@ async def test_abort_checkpoints_state():
     async def checkpoint_handler(event):
         """Capture checkpoint events."""
         from rollouts import StreamChunk
+
         if isinstance(event, StreamChunk):
             checkpointed_events.append(event.type)
 
     async with trio.open_nursery() as nursery:
+
         async def agent_task():
             run_config = RunConfig(
                 on_chunk=checkpoint_handler,
@@ -215,5 +224,6 @@ async def test_abort_checkpoints_state():
         nursery.cancel_scope.cancel()
 
     # Should have checkpointed the final (aborted) state
-    assert "final" in checkpointed_events, f"Should have checkpointed final state on abort, got: {checkpointed_events}"
-
+    assert "final" in checkpointed_events, (
+        f"Should have checkpointed final state on abort, got: {checkpointed_events}"
+    )

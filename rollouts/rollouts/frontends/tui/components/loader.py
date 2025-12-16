@@ -5,7 +5,7 @@ Loader component - displays a spinning animation with text.
 from __future__ import annotations
 
 import time
-from typing import Callable, List, Optional
+from collections.abc import Callable
 
 from ..tui import Component
 from ..utils import visible_width
@@ -19,8 +19,8 @@ class Loader(Component):
     def __init__(
         self,
         text: str = "Working...",
-        spinner_color_fn: Optional[Callable[[str], str]] = None,
-        text_color_fn: Optional[Callable[[str], str]] = None,
+        spinner_color_fn: Callable[[str], str] | None = None,
+        text_color_fn: Callable[[str], str] | None = None,
     ) -> None:
         """Initialize loader component.
 
@@ -43,7 +43,7 @@ class Loader(Component):
         """No cached state to invalidate."""
         pass
 
-    def render(self, width: int) -> List[str]:
+    def render(self, width: int) -> list[str]:
         """Render loader with spinning animation."""
         if not self._running:
             return []
@@ -62,4 +62,3 @@ class Loader(Component):
         padded_line = line + " " * padding_needed
 
         return [padded_line]
-

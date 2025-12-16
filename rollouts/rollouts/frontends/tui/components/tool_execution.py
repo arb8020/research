@@ -4,13 +4,11 @@ Tool execution component - displays tool calls with arguments and results.
 
 from __future__ import annotations
 
-import json
-from typing import Any, Callable, Dict, List, Optional
+from collections.abc import Callable
+from typing import Any
 
-from ..tui import Component, Container
-from .spacer import Spacer
+from ..tui import Container
 from .text import Text
-from ..utils import visible_width
 
 
 class ToolExecution(Container):
@@ -19,12 +17,13 @@ class ToolExecution(Container):
     def __init__(
         self,
         tool_name: str,
-        args: Optional[Dict[str, Any]] = None,
-        bg_fn_pending: Optional[Callable[[str], str]] = None,
-        bg_fn_success: Optional[Callable[[str], str]] = None,
-        bg_fn_error: Optional[Callable[[str], str]] = None,
-        theme: Optional[Any] = None,
-        formatter: Optional[Callable[[str, Dict[str, Any], Optional[Dict[str, Any]], bool, Any], str]] = None,
+        args: dict[str, Any] | None = None,
+        bg_fn_pending: Callable[[str], str] | None = None,
+        bg_fn_success: Callable[[str], str] | None = None,
+        bg_fn_error: Callable[[str], str] | None = None,
+        theme: Any | None = None,
+        formatter: Callable[[str, dict[str, Any], dict[str, Any] | None, bool, Any], str]
+        | None = None,
     ) -> None:
         """Initialize tool execution component.
 
@@ -40,7 +39,7 @@ class ToolExecution(Container):
         super().__init__()
         self._tool_name = tool_name
         self._args = args or {}
-        self._result: Optional[Dict[str, Any]] = None
+        self._result: dict[str, Any] | None = None
         self._expanded = False
         self._theme = theme
         self._formatter = formatter
@@ -50,17 +49,17 @@ class ToolExecution(Container):
         self._bg_fn_success = bg_fn_success or (lambda x: x)
         self._bg_fn_error = bg_fn_error or (lambda x: x)
 
-        self._content_text: Optional[Text] = None
+        self._content_text: Text | None = None
         self._rebuild_display()
 
-    def update_args(self, args: Dict[str, Any]) -> None:
+    def update_args(self, args: dict[str, Any]) -> None:
         """Update tool arguments (called during streaming)."""
         self._args = args
         self._rebuild_display()
 
     def update_result(
         self,
-        result: Dict[str, Any],
+        result: dict[str, Any],
         is_error: bool = False,
     ) -> None:
         """Update tool result.
@@ -101,16 +100,26 @@ class ToolExecution(Container):
         # Get gutter and padding from theme if available
         if self._theme:
             if self._result:
-                gutter = self._theme.tool_error_gutter if self._result.get("isError") else self._theme.tool_success_gutter
+                gutter = (
+                    self._theme.tool_error_gutter
+                    if self._result.get("isError")
+                    else self._theme.tool_success_gutter
+                )
             else:
                 gutter = self._theme.tool_success_gutter  # Pending state uses success gutter
-            padding_y = self._theme.tool_padding_y if hasattr(self._theme, 'tool_padding_y') else 0
+            padding_y = self._theme.tool_padding_y if hasattr(self._theme, "tool_padding_y") else 0
         else:
             # Fallback if no theme provided
             gutter = "☹ " if (self._result and self._result.get("isError")) else "☺ "
             padding_y = 0
 
-        self._content_text = Text(formatted_text, padding_x=2, padding_y=padding_y, custom_bg_fn=bg_fn, gutter_prefix=gutter)
+        self._content_text = Text(
+            formatted_text,
+            padding_x=2,
+            padding_y=padding_y,
+            custom_bg_fn=bg_fn,
+            gutter_prefix=gutter,
+        )
         self.add_child(self._content_text)
 
     def _get_text_output(self) -> str:
@@ -119,7 +128,7 @@ class ToolExecution(Container):
             return ""
 
         content = self._result.get("content", {})
-        
+
         # If content is a string, return it directly
         if isinstance(content, str):
             return content
@@ -128,11 +137,14 @@ class ToolExecution(Container):
         if isinstance(content, dict):
             content_list = content.get("content", [])
             if isinstance(content_list, list):
-                text_blocks = [c for c in content_list if isinstance(c, dict) and c.get("type") == "text"]
+                text_blocks = [
+                    c for c in content_list if isinstance(c, dict) and c.get("type") == "text"
+                ]
                 text_output = "\n".join(c.get("text", "") for c in text_blocks if c.get("text"))
-                
+
                 # Strip ANSI codes and carriage returns
                 import re
+
                 text_output = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", text_output)  # Strip ANSI
                 text_output = text_output.replace("\r", "")  # Strip carriage returns
                 return text_output
@@ -147,7 +159,9 @@ class ToolExecution(Container):
         """
         # Use environment formatter if provided
         if self._formatter:
-            return self._formatter(self._tool_name, self._args, self._result, self._expanded, self._theme)
+            return self._formatter(
+                self._tool_name, self._args, self._result, self._expanded, self._theme
+            )
 
         # Generic fallback for tools without a formatter
         return self._format_generic()
@@ -183,4 +197,3 @@ class ToolExecution(Container):
                     text += f"\n  ... ({remaining} more lines)"
 
         return text
-

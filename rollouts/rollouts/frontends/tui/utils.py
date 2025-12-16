@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from typing import NamedTuple, Optional, List, Tuple
+from typing import NamedTuple
 
 
 def visible_width(text: str) -> int:
@@ -48,11 +48,12 @@ def visible_width(text: str) -> int:
 
 class AnsiCode(NamedTuple):
     """Extracted ANSI escape code."""
+
     code: str
     length: int
 
 
-def extract_ansi_code(text: str, pos: int) -> Optional[AnsiCode]:
+def extract_ansi_code(text: str, pos: int) -> AnsiCode | None:
     """Extract ANSI escape sequence at given position.
 
     Returns None if no escape sequence at position.
@@ -110,9 +111,9 @@ def _update_tracker_from_text(text: str, tracker: AnsiCodeTracker) -> None:
             i += 1
 
 
-def _split_into_tokens_with_ansi(text: str) -> List[str]:
+def _split_into_tokens_with_ansi(text: str) -> list[str]:
     """Split text into tokens (words/whitespace) while keeping ANSI codes attached."""
-    tokens: List[str] = []
+    tokens: list[str] = []
     current = ""
     in_whitespace = False
     i = 0
@@ -141,7 +142,7 @@ def _split_into_tokens_with_ansi(text: str) -> List[str]:
     return tokens
 
 
-def wrap_text_with_ansi(text: str, width: int) -> List[str]:
+def wrap_text_with_ansi(text: str, width: int) -> list[str]:
     """Wrap text with ANSI codes preserved.
 
     Does word wrapping only - NO padding, NO background colors.
@@ -160,7 +161,7 @@ def wrap_text_with_ansi(text: str, width: int) -> List[str]:
 
     # Handle newlines by processing each line separately
     input_lines = text.split("\n")
-    result: List[str] = []
+    result: list[str] = []
 
     for input_line in input_lines:
         result.extend(_wrap_single_line(input_line, width))
@@ -168,7 +169,7 @@ def wrap_text_with_ansi(text: str, width: int) -> List[str]:
     return result if result else [""]
 
 
-def _wrap_single_line(line: str, width: int) -> List[str]:
+def _wrap_single_line(line: str, width: int) -> list[str]:
     """Wrap a single line (no embedded newlines)."""
     if not line:
         return [""]
@@ -177,7 +178,7 @@ def _wrap_single_line(line: str, width: int) -> List[str]:
     if visible_len <= width:
         return [line]
 
-    wrapped: List[str] = []
+    wrapped: list[str] = []
     tracker = AnsiCodeTracker()
     tokens = _split_into_tokens_with_ansi(line)
 
@@ -228,14 +229,14 @@ def _wrap_single_line(line: str, width: int) -> List[str]:
     return wrapped if wrapped else [""]
 
 
-def _break_long_word(word: str, width: int, tracker: AnsiCodeTracker) -> List[str]:
+def _break_long_word(word: str, width: int, tracker: AnsiCodeTracker) -> list[str]:
     """Break a word that's too long to fit on one line."""
-    lines: List[str] = []
+    lines: list[str] = []
     current_line = tracker.get_active_codes()
     current_width = 0
 
     # Separate ANSI codes from visible content
-    segments: List[Tuple[str, str]] = []  # (type, value)
+    segments: list[tuple[str, str]] = []  # (type, value)
     i = 0
 
     while i < len(word):

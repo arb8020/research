@@ -13,10 +13,9 @@ if script_dir not in sys.path:
 
 def debug_mask():
     import torch
+    from qwen_functional import create_causal_mask
     from transformers import AutoModelForCausalLM
     from transformers.modeling_attn_mask_utils import AttentionMaskConverter
-
-    from qwen_functional import create_causal_mask
 
     print("=" * 60)
     print("Attention Mask Debug")
@@ -69,9 +68,10 @@ def debug_mask():
 
     # Now apply _unmask_unattended (HF does this in _prepare_4d_causal_attention_mask_for_sdpa)
     from transformers.modeling_attn_mask_utils import AttentionMaskConverter as AMC
+
     hf_mask_4d_unmasked = AMC._unmask_unattended(hf_mask_4d, min_dtype=torch.finfo(dtype).min)
 
-    print(f"\nHF mask (after _unmask_unattended) sample values:")
+    print("\nHF mask (after _unmask_unattended) sample values:")
     print(f"  batch 0, pos 0 (padding): {hf_mask_4d_unmasked[0, 0, 0, :].tolist()}")
     print(f"  batch 0, pos 3 (first real): {hf_mask_4d_unmasked[0, 0, 3, :].tolist()}")
     print(f"  batch 0, pos 7 (last): {hf_mask_4d_unmasked[0, 0, 7, :].tolist()}")
@@ -87,7 +87,7 @@ def debug_mask():
     else:
         print(f"My mask shape: {my_mask.shape}")
         print(f"My mask dtype: {my_mask.dtype}")
-        print(f"\nMy mask sample values:")
+        print("\nMy mask sample values:")
         print(f"  batch 0, pos 0 (padding): {my_mask[0, 0, 0, :].tolist()}")
         print(f"  batch 0, pos 3 (first real): {my_mask[0, 0, 3, :].tolist()}")
         print(f"  batch 0, pos 7 (last): {my_mask[0, 0, 7, :].tolist()}")
@@ -104,7 +104,7 @@ def debug_mask():
 
         if not match:
             diff = (my_mask - hf_mask_4d_unmasked).abs()
-            print(f"\nDifference locations (non-zero):")
+            print("\nDifference locations (non-zero):")
             for b in range(batch_size):
                 for i in range(seq_len):
                     row_diff = diff[b, 0, i, :]
@@ -126,7 +126,7 @@ def debug_mask():
         # Get position embeddings (HF way)
         # HF computes position_ids from attention_mask
         position_ids = (attention_mask.cumsum(-1) - 1).clamp(min=0).long()
-        print(f"\nPosition IDs from mask:")
+        print("\nPosition IDs from mask:")
         print(f"  batch 0: {position_ids[0].tolist()}")
         print(f"  batch 1: {position_ids[1].tolist()}")
 
@@ -140,7 +140,9 @@ def debug_mask():
         # Actually run HF attention layer 0 with explicit mask
         layer0_out_with_mask, _, _ = model.model.layers[0](
             embeds,
-            attention_mask=attention_mask.unsqueeze(1).unsqueeze(1).to(dtype) * torch.finfo(dtype).min * (1 - attention_mask.unsqueeze(1).unsqueeze(1).to(dtype)),
+            attention_mask=attention_mask.unsqueeze(1).unsqueeze(1).to(dtype)
+            * torch.finfo(dtype).min
+            * (1 - attention_mask.unsqueeze(1).unsqueeze(1).to(dtype)),
             position_ids=position_ids,
             use_cache=False,
         )
@@ -149,9 +151,10 @@ def debug_mask():
         hf_logits = model(input_ids, attention_mask=attention_mask).logits
 
         from qwen_functional import qwen_forward
+
         my_logits = qwen_forward(input_ids, weights, attention_mask=attention_mask)
 
-        print(f"\nFull forward comparison:")
+        print("\nFull forward comparison:")
         print(f"  HF logits shape: {hf_logits.shape}")
         print(f"  My logits shape: {my_logits.shape}")
 
@@ -166,12 +169,15 @@ def debug_mask():
 
 if __name__ == "__main__":
     import torch
+
     if torch.cuda.is_available():
         debug_mask()
     else:
         print("No GPU available. Run on remote GPU.")
-        from verify import run_on_gpu
         import argparse
+
+        from verify import run_on_gpu
+
         parser = argparse.ArgumentParser()
         parser.add_argument("--gpu-id", type=str)
         args = parser.parse_args()

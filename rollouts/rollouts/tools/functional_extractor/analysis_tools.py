@@ -7,10 +7,10 @@ HuggingFace models to functional PyTorch code.
 
 from __future__ import annotations
 
-import sys
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 import torch
 from torch import Tensor
@@ -19,6 +19,7 @@ from torch import Tensor
 @dataclass
 class OpNode:
     """A single operation in the traced graph."""
+
     name: str
     op: str  # placeholder, call_function, call_method, call_module, output
     target: str
@@ -29,6 +30,7 @@ class OpNode:
 @dataclass
 class TraceResult:
     """Result of tracing a model."""
+
     nodes: list[OpNode]
     inputs: list[str]
     outputs: list[str]
@@ -70,13 +72,15 @@ def trace_model(
 
     nodes = []
     for node in exported.graph.nodes:
-        nodes.append(OpNode(
-            name=node.name,
-            op=node.op,
-            target=str(node.target),
-            args=tuple(str(a)[:100] for a in node.args),
-            kwargs={k: str(v)[:100] for k, v in node.kwargs.items()},
-        ))
+        nodes.append(
+            OpNode(
+                name=node.name,
+                op=node.op,
+                target=str(node.target),
+                args=tuple(str(a)[:100] for a in node.args),
+                kwargs={k: str(v)[:100] for k, v in node.kwargs.items()},
+            )
+        )
 
     inputs = [n.name for n in nodes if n.op == "placeholder"]
     outputs = [n.name for n in nodes if n.op == "output"]
@@ -116,6 +120,7 @@ def compare_traces(trace1: TraceResult, trace2: TraceResult) -> dict:
 @dataclass
 class CoverageResult:
     """Result of code coverage analysis."""
+
     executed_lines: dict[str, set[int]]  # file -> line numbers
     executed_branches: dict[str, set[tuple[int, int]]]  # file -> (line, branch_id)
     total_lines: int
@@ -205,7 +210,7 @@ def find_dead_branches(
     # Run with all inputs and collect coverage
     all_executed = {}
 
-    for inputs, kwargs in zip(example_inputs, example_kwargs_list):
+    for inputs, kwargs in zip(example_inputs, example_kwargs_list, strict=False):
         cov = coverage.Coverage(branch=True)
         cov.start()
 
@@ -230,6 +235,7 @@ def find_dead_branches(
 @dataclass
 class IntermediateCapture:
     """Captured intermediate values from model execution."""
+
     name: str
     shape: tuple
     dtype: torch.dtype
@@ -262,25 +268,30 @@ def capture_intermediates(
     def make_hook(name: str):
         def hook(module, input, output):
             if isinstance(output, Tensor):
-                captures.append(IntermediateCapture(
-                    name=name,
-                    shape=tuple(output.shape),
-                    dtype=output.dtype,
-                    value=output.detach().cpu(),
-                    max_val=output.max().item(),
-                    min_val=output.min().item(),
-                    mean_val=output.float().mean().item(),
-                ))
+                captures.append(
+                    IntermediateCapture(
+                        name=name,
+                        shape=tuple(output.shape),
+                        dtype=output.dtype,
+                        value=output.detach().cpu(),
+                        max_val=output.max().item(),
+                        min_val=output.min().item(),
+                        mean_val=output.float().mean().item(),
+                    )
+                )
             elif isinstance(output, tuple) and len(output) > 0 and isinstance(output[0], Tensor):
-                captures.append(IntermediateCapture(
-                    name=f"{name}[0]",
-                    shape=tuple(output[0].shape),
-                    dtype=output[0].dtype,
-                    value=output[0].detach().cpu(),
-                    max_val=output[0].max().item(),
-                    min_val=output[0].min().item(),
-                    mean_val=output[0].float().mean().item(),
-                ))
+                captures.append(
+                    IntermediateCapture(
+                        name=f"{name}[0]",
+                        shape=tuple(output[0].shape),
+                        dtype=output[0].dtype,
+                        value=output[0].detach().cpu(),
+                        max_val=output[0].max().item(),
+                        min_val=output[0].min().item(),
+                        mean_val=output[0].float().mean().item(),
+                    )
+                )
+
         return hook
 
     hooks = []

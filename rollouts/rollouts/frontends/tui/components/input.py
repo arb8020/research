@@ -4,11 +4,10 @@ Input component - multi-line text editor with cursor.
 
 from __future__ import annotations
 
-from typing import Callable, List, Optional
+from collections.abc import Callable
 
+from ..theme import DARK_THEME, Theme
 from ..tui import Component
-from ..theme import Theme, DARK_THEME
-from ..utils import visible_width
 
 
 class Input(Component):
@@ -16,8 +15,8 @@ class Input(Component):
 
     def __init__(
         self,
-        border_color_fn: Optional[Callable[[str], str]] = None,
-        theme: Optional[Theme] = None,
+        border_color_fn: Callable[[str], str] | None = None,
+        theme: Theme | None = None,
     ) -> None:
         """Initialize input component.
 
@@ -26,14 +25,14 @@ class Input(Component):
             theme: Theme for styling (used if border_color_fn not provided)
         """
         self._theme = theme or DARK_THEME
-        self._lines: List[str] = [""]
+        self._lines: list[str] = [""]
         self._cursor_line = 0
         self._cursor_col = 0
         self._last_width = 80
         # Use provided border_color_fn or fall back to theme
         self._border_color_fn = border_color_fn or self._theme.border_fg
-        self._on_submit: Optional[Callable[[str], None]] = None
-        self._on_change: Optional[Callable[[str], None]] = None
+        self._on_submit: Callable[[str], None] | None = None
+        self._on_change: Callable[[str], None] | None = None
         self._disable_submit = False
 
         # Paste tracking
@@ -43,16 +42,16 @@ class Input(Component):
         self._is_in_paste = False
 
         # Queued messages display (shown in gray above input)
-        self._queued_messages: List[str] = []
+        self._queued_messages: list[str] = []
 
         # External editor callback (Ctrl+G)
-        self._on_editor: Optional[Callable[[str], None]] = None
+        self._on_editor: Callable[[str], None] | None = None
 
-    def set_on_submit(self, callback: Optional[Callable[[str], None]]) -> None:
+    def set_on_submit(self, callback: Callable[[str], None] | None) -> None:
         """Set callback for when user submits (Enter)."""
         self._on_submit = callback
 
-    def set_on_change(self, callback: Optional[Callable[[str], None]]) -> None:
+    def set_on_change(self, callback: Callable[[str], None] | None) -> None:
         """Set callback for when text changes."""
         self._on_change = callback
 
@@ -60,7 +59,7 @@ class Input(Component):
         """Set whether submit is disabled."""
         self._disable_submit = disabled
 
-    def set_on_editor(self, callback: Optional[Callable[[str], None]]) -> None:
+    def set_on_editor(self, callback: Callable[[str], None] | None) -> None:
         """Set callback for when user requests external editor (Ctrl+G)."""
         self._on_editor = callback
 
@@ -101,20 +100,20 @@ class Input(Component):
         """No cached state to invalidate."""
         pass
 
-    def render(self, width: int) -> List[str]:
+    def render(self, width: int) -> list[str]:
         """Render input component with cursor."""
         self._last_width = width
         horizontal = self._border_color_fn("─")
         gray_fg = "\x1b[38;5;245m"  # Gray text for queued messages
         reset = "\x1b[0m"
 
-        result: List[str] = []
+        result: list[str] = []
 
         # Render queued messages above input (gray text)
         if self._queued_messages:
             for i, msg in enumerate(self._queued_messages):
                 # Truncate long messages
-                display_msg = msg if len(msg) <= width - 4 else msg[:width - 7] + "..."
+                display_msg = msg if len(msg) <= width - 4 else msg[: width - 7] + "..."
                 prefix = f"{gray_fg}[{i + 1}] "
                 line = f"{prefix}{display_msg}{reset}"
                 # Pad to width
@@ -126,7 +125,7 @@ class Input(Component):
         result.append(horizontal * width)
 
         # Layout text lines with gutter prefix from theme
-        gutter = self._theme.input_gutter if hasattr(self._theme, 'input_gutter') else "> "
+        gutter = self._theme.input_gutter if hasattr(self._theme, "input_gutter") else "> "
         left_padding = gutter
         content_width = width - len(gutter)  # Account for gutter prefix
         layout_lines = self._layout_text(content_width)
@@ -167,9 +166,9 @@ class Input(Component):
 
         return result
 
-    def _layout_text(self, content_width: int) -> List[dict]:
+    def _layout_text(self, content_width: int) -> list[dict]:
         """Layout text lines with cursor position."""
-        layout_lines: List[dict] = []
+        layout_lines: list[dict] = []
 
         if not self._lines or (len(self._lines) == 1 and self._lines[0] == ""):
             # Empty editor
@@ -181,13 +180,11 @@ class Input(Component):
 
             if len(line) <= content_width:
                 # Line fits
-                layout_lines.append(
-                    {
-                        "text": line,
-                        "has_cursor": is_current_line,
-                        "cursor_pos": self._cursor_col if is_current_line else 0,
-                    }
-                )
+                layout_lines.append({
+                    "text": line,
+                    "has_cursor": is_current_line,
+                    "cursor_pos": self._cursor_col if is_current_line else 0,
+                })
             else:
                 # Line needs wrapping
                 for pos in range(0, len(line), content_width):
@@ -199,16 +196,18 @@ class Input(Component):
                     has_cursor_in_chunk = (
                         is_current_line
                         and self._cursor_col >= chunk_start
-                        and (self._cursor_col <= chunk_end if is_last_chunk else self._cursor_col < chunk_end)
+                        and (
+                            self._cursor_col <= chunk_end
+                            if is_last_chunk
+                            else self._cursor_col < chunk_end
+                        )
                     )
 
-                    layout_lines.append(
-                        {
-                            "text": chunk,
-                            "has_cursor": has_cursor_in_chunk,
-                            "cursor_pos": self._cursor_col - chunk_start if has_cursor_in_chunk else 0,
-                        }
-                    )
+                    layout_lines.append({
+                        "text": chunk,
+                        "has_cursor": has_cursor_in_chunk,
+                        "cursor_pos": self._cursor_col - chunk_start if has_cursor_in_chunk else 0,
+                    })
 
         return layout_lines
 
@@ -606,4 +605,3 @@ class Input(Component):
             new_col += 1
 
         self._cursor_col = new_col
-

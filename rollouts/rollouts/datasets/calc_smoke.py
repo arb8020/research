@@ -53,18 +53,13 @@ def calc_smoke_to_trajectory(row: dict[str, Any]) -> Trajectory:
     # System message instructs agent to use calculator tools
     system_msg = Message(
         role="system",
-        content="You are a helpful math assistant. Use the calculator tools (add, subtract, multiply, divide) to solve problems accurately."
+        content="You are a helpful math assistant. Use the calculator tools (add, subtract, multiply, divide) to solve problems accurately.",
     )
 
     # User message contains the question
-    user_msg = Message(
-        role="user",
-        content=question
-    )
+    user_msg = Message(role="user", content=question)
 
-    trajectory = Trajectory(
-        messages=[system_msg, user_msg]
-    )
+    trajectory = Trajectory(messages=[system_msg, user_msg])
     assert trajectory is not None
     assert len(trajectory.messages) == 2
 

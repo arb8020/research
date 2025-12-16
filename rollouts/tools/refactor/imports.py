@@ -59,7 +59,7 @@ def _parse_python_imports(content: str, file_dir: Path) -> list[Path]:
 
     # from .foo import bar  OR  from ..foo import bar
     # Group 1: the dots + module path
-    relative_pattern = re.compile(r'^from\s+(\.+[\w.]*)\s+import', re.MULTILINE)
+    relative_pattern = re.compile(r"^from\s+(\.+[\w.]*)\s+import", re.MULTILINE)
 
     for match in relative_pattern.finditer(content):
         import_path = match.group(1)
@@ -75,7 +75,7 @@ def _resolve_python_relative_import(import_path: str, file_dir: Path) -> Path | 
     # Count leading dots
     dots = 0
     for char in import_path:
-        if char == '.':
+        if char == ".":
             dots += 1
         else:
             break
@@ -91,16 +91,16 @@ def _resolve_python_relative_import(import_path: str, file_dir: Path) -> Path | 
         return None
 
     # Convert module.submodule to path
-    path_parts = module_part.split('.')
-    resolved = base_dir / '/'.join(path_parts)
+    path_parts = module_part.split(".")
+    resolved = base_dir / "/".join(path_parts)
 
     # Try as file
-    if (resolved.with_suffix('.py')).exists():
-        return resolved.with_suffix('.py')
+    if (resolved.with_suffix(".py")).exists():
+        return resolved.with_suffix(".py")
 
     # Try as package
-    if (resolved / '__init__.py').exists():
-        return resolved / '__init__.py'
+    if (resolved / "__init__.py").exists():
+        return resolved / "__init__.py"
 
     return None
 
@@ -111,11 +111,11 @@ def _parse_js_imports(content: str, file_dir: Path) -> list[Path]:
 
     patterns = [
         # import x from './path'  OR  import x from "../path"
-        re.compile(r'''import\s+.*?\s+from\s+['"](\.[^'"]+)['"]'''),
+        re.compile(r"""import\s+.*?\s+from\s+['"](\.[^'"]+)['"]"""),
         # import('./path')
-        re.compile(r'''import\s*\(\s*['"](\.[^'"]+)['"]\s*\)'''),
+        re.compile(r"""import\s*\(\s*['"](\.[^'"]+)['"]\s*\)"""),
         # require('./path')
-        re.compile(r'''require\s*\(\s*['"](\.[^'"]+)['"]\s*\)'''),
+        re.compile(r"""require\s*\(\s*['"](\.[^'"]+)['"]\s*\)"""),
     ]
 
     for pattern in patterns:
@@ -137,7 +137,7 @@ def _resolve_js_import(import_path: str, file_dir: Path) -> Path | None:
         return base
 
     # Try with extensions
-    extensions = ['.ts', '.tsx', '.js', '.jsx']
+    extensions = [".ts", ".tsx", ".js", ".jsx"]
     for ext in extensions:
         candidate = base.with_suffix(ext)
         if candidate.exists():
@@ -145,7 +145,7 @@ def _resolve_js_import(import_path: str, file_dir: Path) -> Path | None:
 
     # Try as directory with index
     for ext in extensions:
-        candidate = base / f'index{ext}'
+        candidate = base / f"index{ext}"
         if candidate.exists():
             return candidate
 
@@ -157,25 +157,25 @@ def _parse_lua_imports(content: str, file_dir: Path) -> list[Path]:
     imports = []
 
     # require('path') or require "path"
-    pattern = re.compile(r'''require\s*\(?['"]([^'"]+)['"]\)?''')
+    pattern = re.compile(r"""require\s*\(?['"]([^'"]+)['"]\)?""")
 
     for match in pattern.finditer(content):
         module_path = match.group(1)
 
         # Skip if looks like a package (no ./ prefix and no dots suggesting path)
-        if not module_path.startswith('.') and '/' not in module_path:
+        if not module_path.startswith(".") and "/" not in module_path:
             # Could be 'foo.bar' style - convert to path
-            path_str = module_path.replace('.', '/')
+            path_str = module_path.replace(".", "/")
         else:
             path_str = module_path
 
         resolved = file_dir / path_str
 
         # Try with .lua extension
-        if (resolved.with_suffix('.lua')).exists():
-            imports.append(resolved.with_suffix('.lua'))
-        elif (resolved / 'init.lua').exists():
-            imports.append(resolved / 'init.lua')
+        if (resolved.with_suffix(".lua")).exists():
+            imports.append(resolved.with_suffix(".lua"))
+        elif (resolved / "init.lua").exists():
+            imports.append(resolved / "init.lua")
 
     return imports
 
@@ -206,9 +206,9 @@ def _parse_custom_markers(content: str, file_dir: Path) -> list[Path]:
     imports = []
 
     patterns = [
-        re.compile(r'^#\[(\./[^\]]+)\]$', re.MULTILINE),
-        re.compile(r'^//\[(\./[^\]]+)\]$', re.MULTILINE),
-        re.compile(r'^--\[(\./[^\]]+)\]$', re.MULTILINE),
+        re.compile(r"^#\[(\./[^\]]+)\]$", re.MULTILINE),
+        re.compile(r"^//\[(\./[^\]]+)\]$", re.MULTILINE),
+        re.compile(r"^--\[(\./[^\]]+)\]$", re.MULTILINE),
     ]
 
     for pattern in patterns:
