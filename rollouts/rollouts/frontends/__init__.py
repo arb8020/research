@@ -22,6 +22,7 @@ Usage:
     states = await run_interactive(trajectory, endpoint, frontend=frontend)
 """
 
+from .json_frontend import JsonFrontend
 from .none import NoneFrontend
 from .protocol import Frontend, FrontendWithStatus
 from .runner import InteractiveRunner, run_interactive
@@ -36,6 +37,7 @@ __all__ = [
     "InteractiveRunner",
     "run_interactive",
     # Implementations
+    "JsonFrontend",
     "NoneFrontend",
     "TUIFrontend",
     "TextualFrontend",
