@@ -1,8 +1,12 @@
 """vLLM/SGLang provider implementation.
 
-Two modes available:
-- rollout_sglang: Non-streaming, uses httpx directly (legacy)
+Three modes available:
+- rollout_sglang: Non-streaming, uses httpx directly
 - rollout_sglang_streaming: Streaming via OpenAI SDK, with ToolCallError handling
+- rollout_sglang_token_level: (stub) Direct sglang_router integration for advanced use cases
+
+See radixark/miles for reference token-level implementation:
+https://github.com/radixark/miles/blob/main/miles/rollout/sglang_rollout.py
 """
 
 from __future__ import annotations
@@ -362,3 +366,37 @@ async def rollout_sglang_streaming(
     assert result_actor is not None
     assert result_actor.trajectory is not None
     return result_actor
+
+
+async def rollout_sglang_token_level(
+    actor: Actor,
+    on_chunk: Callable[[StreamEvent], Awaitable[None]],
+    **kwargs: Any,
+) -> Actor:
+    """(STUB) Direct sglang_router integration for token-level control.
+
+    NOT IMPLEMENTED - This is a placeholder for future work.
+
+    This mode would use sglang_router directly (not OpenAI-compatible API)
+    for advanced use cases like:
+    - Speculative decoding
+    - Custom sampling strategies
+    - Direct token-level access for RL training
+    - Higher throughput via batched generation
+
+    Reference implementation:
+        radixark/miles: miles/rollout/sglang_rollout.py
+        - Uses sglang_router.generate() with token IDs
+        - Implements custom sampling params
+        - Supports speculative decoding via sglang_speculative_algorithm
+
+    Required dependencies (not currently installed):
+        - sglang_router
+
+    See module docstring for more context.
+    """
+    raise NotImplementedError(
+        "Token-level SGLang integration not yet implemented. "
+        "Use rollout_sglang or rollout_sglang_streaming instead. "
+        "See radixark/miles for reference implementation."
+    )
