@@ -1,14 +1,21 @@
-"""vLLM/SGLang provider implementation."""
+"""vLLM/SGLang provider implementation.
+
+Two modes available:
+- rollout_sglang: Non-streaming, uses httpx directly (legacy)
+- rollout_sglang_streaming: Streaming via OpenAI SDK, with ToolCallError handling
+"""
 
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any
 
 import httpx
 from dacite import from_dict
+from openai import AsyncOpenAI
 
 from rollouts._retry import async_retry
 from rollouts.dtypes import Actor, ChatCompletion, StreamEvent
@@ -21,7 +28,9 @@ from .base import (
     _format_invalid_param_error,
     _prepare_messages_for_llm,
 )
-from .openai_completions import _message_to_openai, _tool_to_openai
+from .openai_completions import _message_to_openai, _tool_to_openai, aggregate_stream
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_vllm_api_base(api_base: str) -> str:
@@ -202,6 +211,99 @@ async def rollout_sglang(
         completions=actor.trajectory.completions + [completion],
     )
     assert new_trajectory is not None
+
+    result_actor = replace(actor, trajectory=new_trajectory)
+    assert result_actor is not None
+    assert result_actor.trajectory is not None
+    return result_actor
+
+
+async def rollout_sglang_streaming(
+    actor: Actor,
+    on_chunk: Callable[[StreamEvent], Awaitable[None]],
+    **kwargs: Any,
+) -> Actor:
+    """Invoke SGLang server with streaming via OpenAI SDK.
+
+    This is the preferred method for SGLang - uses streaming to get:
+    - Real-time token output
+    - Proper ToolCallError handling for malformed tool args
+    - Consistent behavior with other streaming providers
+
+    Args:
+        actor: Current actor state with endpoint and trajectory
+        on_chunk: Callback for streaming events
+        **kwargs: Additional arguments (ignored, for API consistency)
+
+    Returns:
+        Updated actor with new message appended to trajectory
+    """
+    assert actor is not None
+    assert isinstance(actor, Actor)
+    assert actor.endpoint is not None
+    assert actor.trajectory is not None
+    assert actor.endpoint.api_base, "SGLang requires api_base to be set"
+    assert on_chunk is not None
+    assert callable(on_chunk)
+
+    # Normalize base URL for OpenAI SDK (needs /v1 suffix, not /v1/chat/completions)
+    api_base = actor.endpoint.api_base.rstrip("/")
+    if api_base.endswith("/v1/chat/completions"):
+        api_base = api_base[:-len("/chat/completions")]
+    elif not api_base.endswith("/v1"):
+        api_base = api_base + "/v1"
+
+    # Create OpenAI client pointing to SGLang server
+    client = AsyncOpenAI(
+        api_key="not-needed",  # SGLang doesn't require API key
+        base_url=api_base,
+        max_retries=actor.endpoint.max_retries,
+        timeout=actor.endpoint.timeout,
+    )
+
+    # Prepare messages
+    llm_messages = _prepare_messages_for_llm(actor.trajectory.messages)
+    messages = [_message_to_openai(m) for m in llm_messages]
+
+    # Build params
+    params = {
+        "model": actor.endpoint.model,
+        "messages": messages,
+        "temperature": actor.endpoint.temperature,
+        "stream": True,
+    }
+
+    if actor.endpoint.max_tokens:
+        params["max_tokens"] = actor.endpoint.max_tokens
+
+    if actor.tools:
+        params["tools"] = [_tool_to_openai(t) for t in actor.tools]
+        params["tool_choice"] = "auto"
+
+    if hasattr(actor.endpoint, "extra_params") and actor.endpoint.extra_params:
+        params.update(actor.endpoint.extra_params)
+
+    # Execute streaming request - reuse aggregate_stream from openai_completions
+    # This handles ToolCallError gracefully when JSON parsing fails
+    try:
+        stream = await client.chat.completions.create(**params)
+        completion = await aggregate_stream(stream, on_chunk)
+    except Exception as e:
+        logger.error(f"SGLang streaming request failed: {e}")
+        raise
+
+    # Update trajectory with completion
+    completion = replace(completion, model=actor.endpoint.model)
+    assert completion.choices is not None
+    assert len(completion.choices) > 0
+    final_message = completion.choices[0].message
+    assert final_message is not None
+
+    new_trajectory = replace(
+        actor.trajectory,
+        messages=actor.trajectory.messages + [final_message],
+        completions=actor.trajectory.completions + [completion],
+    )
 
     result_actor = replace(actor, trajectory=new_trajectory)
     assert result_actor is not None
