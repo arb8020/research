@@ -311,6 +311,96 @@ class SFTTrainingConfig:
 
 
 @dataclass(frozen=True)
+class TrainerConfig:
+    """Configuration for gradient accumulation in training backend.
+
+    Supports two ways to specify micro-batching:
+    - micro_batch_size: Direct control (when you know your hardware)
+    - num_minibatches: Relative split (when you don't)
+
+    # TODO: API Design Decision - Standardize on one parameter?
+    #
+    # Currently we support both micro_batch_size and num_minibatches because they
+    # serve different use cases (Casey Muratori's "redundancy" principle):
+    #
+    # - micro_batch_size: "I know 4 sequences fit on my 24GB GPU"
+    #   Better for self-hosted where you know your hardware constraints.
+    #
+    # - num_minibatches: "Split into 8 pieces, whatever that means"
+    #   Better for managed services like Tinker where the provider handles
+    #   hardware mapping and you don't know/care about underlying GPU memory.
+    #
+    # Tinker uses num_minibatches because users don't control their GPUs.
+    # Slime/Verifiers use micro_batch_size because users run on specific hardware.
+    #
+    # For now, keep both (they're mutually exclusive). If we find one is never
+    # used in practice, remove it. "Make your code usable before you try to
+    # make it reusable" - don't prematurely optimize the API.
+    #
+    # Related: forward_backward() currently hides micro-batching internally.
+    # This is the "coarse-grained convenient" version. If users need finer
+    # control (e.g., interleaving sampling with training like Tinker's streaming
+    # minibatch), we should expose lower-level primitives (zero_grad, forward,
+    # backward) rather than removing the high-level one. Casey's "continuous
+    # granularity" principle: layer APIs, don't delete lower levels.
+
+    Attributes:
+        micro_batch_size: Process this many samples per forward/backward pass.
+            If None, uses num_minibatches or processes full batch at once.
+        num_minibatches: Split batch into this many pieces for gradient accumulation.
+            If None, uses micro_batch_size or processes full batch at once.
+        max_grad_norm: Clip gradients to this norm. If None, no clipping.
+
+    Example (hardware-aware):
+        >>> config = TrainerConfig(micro_batch_size=4)  # 4 samples fit on 24GB GPU
+
+    Example (relative):
+        >>> config = TrainerConfig(num_minibatches=8)  # Split into 8 pieces
+    """
+
+    micro_batch_size: int | None = None
+    num_minibatches: int | None = None
+    max_grad_norm: float | None = 1.0
+
+    def __post_init__(self):
+        """Validate config."""
+        if self.micro_batch_size is not None and self.num_minibatches is not None:
+            raise ValueError(
+                "Cannot specify both micro_batch_size and num_minibatches. Use one or the other."
+            )
+        if self.micro_batch_size is not None and self.micro_batch_size <= 0:
+            raise ValueError(f"micro_batch_size must be > 0, got {self.micro_batch_size}")
+        if self.num_minibatches is not None and self.num_minibatches <= 0:
+            raise ValueError(f"num_minibatches must be > 0, got {self.num_minibatches}")
+
+    def get_num_minibatches(self, batch_size: int) -> int:
+        """Compute number of minibatches for a given batch size.
+
+        Args:
+            batch_size: Total batch size
+
+        Returns:
+            Number of minibatches (1 = no accumulation)
+        """
+        if self.micro_batch_size is not None:
+            if batch_size % self.micro_batch_size != 0:
+                raise ValueError(
+                    f"batch_size ({batch_size}) must be divisible by "
+                    f"micro_batch_size ({self.micro_batch_size})"
+                )
+            return batch_size // self.micro_batch_size
+        elif self.num_minibatches is not None:
+            if batch_size % self.num_minibatches != 0:
+                raise ValueError(
+                    f"batch_size ({batch_size}) must be divisible by "
+                    f"num_minibatches ({self.num_minibatches})"
+                )
+            return self.num_minibatches
+        else:
+            return 1  # No accumulation
+
+
+@dataclass(frozen=True)
 class RLTrainingConfig:
     """Configuration for RL training loop.
 

@@ -19,6 +19,7 @@ from rollouts.training.types import (
     Sample,
     SFTTrainingConfig,
     Status,
+    TrainerConfig,
 )
 
 
@@ -129,6 +130,7 @@ __all__ = [
     "RLTrainingConfig",
     "RolloutConfig",
     "RolloutBatch",
+    "TrainerConfig",
     # Filters (SLIME-style)
     "check_reward_nonzero_std",
     "check_min_reward",
