@@ -9,7 +9,8 @@ print("Loading tokenizer...")
 tokenizer = AutoTokenizer.from_pretrained("Snowflake/snowflake-arctic-embed-l")
 
 # Test text (long document)
-test_text = """
+test_text = (
+    """
 This is a test document with multiple paragraphs. We want to see how token-aware chunking
 handles documents that exceed the model's maximum token limit. This is important for
 contamination detection because we need to ensure no part of a document is lost.
@@ -21,7 +22,9 @@ short words or special characters.
 Token-aware chunking solves this by tokenizing first, then chunking at exact token boundaries.
 This ensures every chunk fits within the model's context window, with no truncation.
 
-""" * 10  # Repeat to make it long enough
+"""
+    * 10
+)  # Repeat to make it long enough
 
 print(f"\nTest text length: {len(test_text)} characters")
 print(f"Test text tokens: {len(tokenizer.encode(test_text))} tokens")

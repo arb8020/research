@@ -1,2 +1,1 @@
 """Corpus Proximity example package."""
-

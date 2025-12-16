@@ -15,13 +15,9 @@ import time
 import modal
 
 # Build image once (shared across all functions)
-jax_image = (
-    modal.Image.from_registry(
-        "nvcr.io/nvidia/pytorch:24.01-py3",
-        add_python="3.11"
-    )
-    .pip_install("jax[cuda12]==0.4.23")
-)
+jax_image = modal.Image.from_registry(
+    "nvcr.io/nvidia/pytorch:24.01-py3", add_python="3.11"
+).pip_install("jax[cuda12]==0.4.23")
 
 app = modal.App("jax-integration-test")
 

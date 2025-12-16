@@ -21,19 +21,18 @@ import os
 from typing import Literal, TypeAlias
 
 from dotenv import load_dotenv
-from shared.config import get_prime_key, get_runpod_key
-from shared.logging_config import setup_logging
 
 from bifrost import BifrostClient
 from broker import CloudType, GPUClient, GPUInstance
+from shared.config import get_prime_key, get_runpod_key
+from shared.logging_config import setup_logging
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
 ProvisionError: TypeAlias = Literal["create_failed", "ready_timeout", "ssh_timeout"]
 ProvisionResult: TypeAlias = (
-    tuple[Literal[True], GPUInstance, None] |
-    tuple[Literal[False], None, ProvisionError]
+    tuple[Literal[True], GPUInstance, None] | tuple[Literal[False], None, ProvisionError]
 )
 
 
@@ -47,7 +46,9 @@ def get_credentials(provider_filter=None):
 
     if provider_filter:
         if provider_filter not in credentials:
-            raise ValueError(f"Provider '{provider_filter}' not found. Set {provider_filter.upper()}_API_KEY")
+            raise ValueError(
+                f"Provider '{provider_filter}' not found. Set {provider_filter.upper()}_API_KEY"
+            )
         credentials = {provider_filter: credentials[provider_filter]}
 
     assert credentials, "No API keys found - set RUNPOD_API_KEY or PRIME_API_KEY"
@@ -59,7 +60,7 @@ def search_cheapest_gpus(gpu_client, max_offers=5):
     offers = gpu_client.search(
         query=gpu_client.cloud_type == CloudType.COMMUNITY,
         sort=lambda x: x.price_per_hour,
-        reverse=False
+        reverse=False,
     )
     assert offers, "No GPU offers found"
     return offers[:max_offers]
@@ -71,7 +72,7 @@ def provision_instance(gpu_client, offers, instance_name) -> ProvisionResult:
         offers,
         image="runpod/pytorch:1.0.0-cu1281-torch280-ubuntu2204",
         name=instance_name,
-        n_offers=len(offers)
+        n_offers=len(offers),
     )
     if not instance:
         logger.error("Failed to create instance")
@@ -101,14 +102,12 @@ def deploy_code(bifrost_client, use_existing=False):
     curl -LsSf https://astral.sh/uv/install.sh | sh
     export PATH="$HOME/.cargo/bin:$PATH"
 fi""",
-            "uv sync --extra dev-nano-inference-jax"
+            "uv sync --extra dev-nano-inference-jax",
         ]
         bifrost_client.push(bootstrap_cmd=bootstrap_cmd)
     else:
         # Sync code and update dependencies on existing instance
-        bootstrap_cmd = [
-            "uv sync --extra dev-nano-inference-jax"
-        ]
+        bootstrap_cmd = ["uv sync --extra dev-nano-inference-jax"]
         bifrost_client.push(bootstrap_cmd=bootstrap_cmd)
 
 
@@ -127,7 +126,7 @@ def run_gpu_test(bifrost_client):
 
     result = bifrost_client.exec(
         "uv run python examples/nano-inference/backends/jax/test_gpt2.py --batches 5",
-        working_dir="~/.bifrost/workspace"
+        working_dir="~/.bifrost/workspace",
     )
 
     logger.info("=" * 70)
@@ -189,14 +188,15 @@ def run_deploy_and_test(provider=None, use_existing=None, name=None, terminate=F
             return None
 
         bifrost_client = BifrostClient(
-            ssh_connection=instance.ssh_connection_string(),
-            ssh_key_path=ssh_key_path
+            ssh_connection=instance.ssh_connection_string(), ssh_key_path=ssh_key_path
         )
         deploy_code(bifrost_client, use_existing=False)
 
         logger.info(f"Deployed: {instance_name}")
         logger.info(f"  SSH: {instance.ssh_connection_string()}")
-        logger.info(f"  Iterate: python backends/jax/run_gpu_test.py --use-existing {instance_name}")
+        logger.info(
+            f"  Iterate: python backends/jax/run_gpu_test.py --use-existing {instance_name}"
+        )
 
         run_gpu_test(bifrost_client)
 
@@ -206,7 +206,9 @@ def run_deploy_and_test(provider=None, use_existing=None, name=None, terminate=F
             logger.info(f"Instance terminated. Cost: ~${instance.price_per_hour * 0.1:.4f}")
         else:
             logger.info(f"Instance kept running: {instance_name}")
-            logger.info(f"  To terminate: broker terminate {instance.id} --provider {instance.provider}")
+            logger.info(
+                f"  To terminate: broker terminate {instance.id} --provider {instance.provider}"
+            )
             logger.info(f"  Hourly cost: ${instance.price_per_hour:.4f}/hr")
 
         return instance
@@ -214,14 +216,21 @@ def run_deploy_and_test(provider=None, use_existing=None, name=None, terminate=F
 
 def main():
     parser = argparse.ArgumentParser(description="Deploy and test JAX GPT-2 on GPU")
-    parser.add_argument("--provider", type=str, choices=["runpod", "primeintellect"],
-                       help="Cloud provider to use")
-    parser.add_argument("--use-existing", type=str, metavar="NAME_OR_SSH",
-                       help="Use existing instance (name, ID, or SSH connection string)")
-    parser.add_argument("--name", type=str,
-                       help="Name for new instance (default: jax-gpt2-dev)")
-    parser.add_argument("--terminate", action="store_true",
-                       help="Terminate instance after test (only for new instances)")
+    parser.add_argument(
+        "--provider", type=str, choices=["runpod", "primeintellect"], help="Cloud provider to use"
+    )
+    parser.add_argument(
+        "--use-existing",
+        type=str,
+        metavar="NAME_OR_SSH",
+        help="Use existing instance (name, ID, or SSH connection string)",
+    )
+    parser.add_argument("--name", type=str, help="Name for new instance (default: jax-gpt2-dev)")
+    parser.add_argument(
+        "--terminate",
+        action="store_true",
+        help="Terminate instance after test (only for new instances)",
+    )
     args = parser.parse_args()
 
     setup_logging()
@@ -235,7 +244,7 @@ def main():
             provider=args.provider,
             use_existing=args.use_existing,
             name=args.name,
-            terminate=args.terminate
+            terminate=args.terminate,
         )
 
         logger.info("=" * 70)
@@ -252,10 +261,12 @@ def main():
     except Exception as e:
         logger.error(f"Error: {e}")
         import traceback
+
         traceback.print_exc()
         return 1
 
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(main())

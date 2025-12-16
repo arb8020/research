@@ -3,7 +3,7 @@
 
 import sys
 
-sys.path.append('/Users/chiraagbalu/research')
+sys.path.append("/Users/chiraagbalu/research")
 
 import numpy as np
 
@@ -121,7 +121,7 @@ def main():
 
     # Save to file
     output_file = "residual_stream_examples.txt"
-    with open(output_file, 'w') as f:
+    with open(output_file, "w") as f:
         # Redirect stdout to file
         original_stdout = sys.stdout
         sys.stdout = f

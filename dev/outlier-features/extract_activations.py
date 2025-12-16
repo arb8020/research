@@ -29,22 +29,22 @@ def get_model_layers(model):
         The model parameter should be the nnsight LanguageModel wrapper, NOT the underlying PyTorch model.
     """
     # Handle multimodal models (e.g., Gemma-3 VLMs) that have language_model.layers
-    if hasattr(model, 'language_model') and hasattr(model.language_model, 'layers'):
+    if hasattr(model, "language_model") and hasattr(model.language_model, "layers"):
         return model.language_model.layers
     # Handle decoder-only models (e.g., OPT, GPT-J) that have model.decoder.layers
-    elif hasattr(model, 'decoder') and hasattr(model.decoder, 'layers'):
+    elif hasattr(model, "decoder") and hasattr(model.decoder, "layers"):
         return model.decoder.layers
     # Handle GPT2 models that have model.transformer.h
-    elif hasattr(model, 'transformer') and hasattr(model.transformer, 'h'):
+    elif hasattr(model, "transformer") and hasattr(model.transformer, "h"):
         return model.transformer.h
     # Handle standard models (Llama, Qwen, Mistral, etc.) with model.layers
-    elif hasattr(model, 'layers'):
+    elif hasattr(model, "layers"):
         return model.layers
     # Fallback: try accessing through .model or ._model attribute
-    elif hasattr(model, 'model'):
+    elif hasattr(model, "model"):
         # Recursively call with the wrapped model
         return get_model_layers(model.model)
-    elif hasattr(model, '_model'):
+    elif hasattr(model, "_model"):
         return get_model_layers(model._model)
     else:
         raise AttributeError(f"Could not find layers in model of type {type(model)}")
@@ -68,13 +68,13 @@ def get_layernorm_outputs(layer):
         - OPT: self_attn_layer_norm.output, final_layer_norm.output
     """
     # GPT2 models use ln_1 (before attn) and ln_2 (before MLP)
-    if hasattr(layer, 'ln_1') and hasattr(layer, 'ln_2'):
+    if hasattr(layer, "ln_1") and hasattr(layer, "ln_2"):
         return layer.ln_1.output, layer.ln_2.output
     # GPT-J uses ln_1 but has parallel attention (no separate MLP layernorm)
     # Return ln_1 for both since attn and mlp run in parallel after single layernorm
-    elif hasattr(layer, 'ln_1') and hasattr(layer, 'attn') and hasattr(layer, 'mlp'):
+    elif hasattr(layer, "ln_1") and hasattr(layer, "attn") and hasattr(layer, "mlp"):
         return layer.ln_1.output, layer.ln_1.output
-    elif hasattr(layer, 'self_attn_layer_norm') and hasattr(layer, 'final_layer_norm'):
+    elif hasattr(layer, "self_attn_layer_norm") and hasattr(layer, "final_layer_norm"):
         # OPT variants expose dedicated layer norms feeding the attn/MLP blocks
         return layer.self_attn_layer_norm.output, layer.final_layer_norm.output
     # Standard pre-norm models use input_layernorm and post_attention_layernorm
@@ -83,9 +83,7 @@ def get_layernorm_outputs(layer):
 
 
 def extract_activations_batch(
-    model: LanguageModel,
-    texts: list[str],
-    layers: list[int]
+    model: LanguageModel, texts: list[str], layers: list[int]
 ) -> dict[str, torch.Tensor]:
     """Pure function: extract activations from batch of texts.
 
@@ -131,7 +129,7 @@ def extract_activations_optimized(
     texts: list[str],
     layers: list[int] | None = None,
     save_dir: str = "./activations",
-    chunk_size: int | None = None
+    chunk_size: int | None = None,
 ) -> tuple[str, dict]:
     """Memory-optimized activation extraction with chunked layer processing.
 
@@ -172,13 +170,17 @@ def extract_activations_optimized(
         logger.info(f"Processing all {len(layers)} layers together (no chunking)")
     else:
         assert chunk_size > 0, f"chunk_size must be positive, got {chunk_size}"
-        layer_chunks = [layers[i:i + chunk_size] for i in range(0, len(layers), chunk_size)]
-        logger.info(f"Processing {len(layers)} layers in {len(layer_chunks)} chunks of {chunk_size}")
+        layer_chunks = [layers[i : i + chunk_size] for i in range(0, len(layers), chunk_size)]
+        logger.info(
+            f"Processing {len(layers)} layers in {len(layer_chunks)} chunks of {chunk_size}"
+        )
 
     saved_files = []
 
     for chunk_idx, layers_chunk in enumerate(layer_chunks):
-        logger.info(f"  Chunk {chunk_idx + 1}/{len(layer_chunks)}: layers {layers_chunk[0]}-{layers_chunk[-1]}")
+        logger.info(
+            f"  Chunk {chunk_idx + 1}/{len(layer_chunks)}: layers {layers_chunk[0]}-{layers_chunk[-1]}"
+        )
 
         # Extract activations for this chunk only
         activations = {}
@@ -189,15 +191,15 @@ def extract_activations_optimized(
 
                 # Access layernorm outputs directly based on architecture
                 # Must be done inline in trace context, not via helper function
-                if hasattr(layer, 'ln_1') and hasattr(layer, 'ln_2'):
+                if hasattr(layer, "ln_1") and hasattr(layer, "ln_2"):
                     # GPT2: pre-norm with ln_1 and ln_2
                     ln_into_attn = layer.ln_1.output.save()
                     ln_into_mlp = layer.ln_2.output.save()
-                elif hasattr(layer, 'ln_1') and hasattr(layer, 'attn') and hasattr(layer, 'mlp'):
+                elif hasattr(layer, "ln_1") and hasattr(layer, "attn") and hasattr(layer, "mlp"):
                     # GPT-J: parallel architecture, single layernorm
                     ln_into_attn = layer.ln_1.output.save()
                     ln_into_mlp = layer.ln_1.output.save()
-                elif hasattr(layer, 'self_attn_layer_norm') and hasattr(layer, 'final_layer_norm'):
+                elif hasattr(layer, "self_attn_layer_norm") and hasattr(layer, "final_layer_norm"):
                     # OPT (pre-LN variants): capture layernorm outputs feeding attn/MLP
                     ln_into_attn = layer.self_attn_layer_norm.output.save()
                     ln_into_mlp = layer.final_layer_norm.output.save()
@@ -223,14 +225,18 @@ def extract_activations_optimized(
                 seq_len = tensor.shape[0] // batch_size
                 tensor = tensor.view(batch_size, seq_len, tensor.shape[-1])
 
-            assert tensor.dim() == 3, f"Expected 3D tensor for {layer_name}, got shape {tensor.shape}"
+            assert tensor.dim() == 3, (
+                f"Expected 3D tensor for {layer_name}, got shape {tensor.shape}"
+            )
 
             # Save activation
             activation_file = run_dir / f"{layer_name}_activations.pt"
             torch.save(tensor, activation_file)
             saved_files.append(str(activation_file))
 
-            logger.info(f"    Saved {layer_name}: shape={tuple(tensor.shape)} -> {activation_file.name}")
+            logger.info(
+                f"    Saved {layer_name}: shape={tuple(tensor.shape)} -> {activation_file.name}"
+            )
 
         # Clear chunk activations and GPU cache
         del activations
@@ -238,18 +244,20 @@ def extract_activations_optimized(
 
     # Save metadata
     metadata = {
-        "model_name": llm.tokenizer.name_or_path if hasattr(llm.tokenizer, 'name_or_path') else str(llm),
+        "model_name": llm.tokenizer.name_or_path
+        if hasattr(llm.tokenizer, "name_or_path")
+        else str(llm),
         "num_sequences": len(texts),
         "sequence_texts": texts,
         "layers_extracted": layers,
         "chunk_size": chunk_size,
         "num_chunks": len(layer_chunks),
         "saved_files": saved_files,
-        "timestamp": timestamp
+        "timestamp": timestamp,
     }
 
     metadata_file = run_dir / "metadata.json"
-    with open(metadata_file, 'w') as f:
+    with open(metadata_file, "w") as f:
         json.dump(metadata, f, indent=2)
 
     logger.info(f"  Saved metadata: {metadata_file.name}")

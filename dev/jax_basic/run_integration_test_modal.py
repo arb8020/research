@@ -29,16 +29,13 @@ def build_jax_image():
 
     # Start with NVIDIA PyTorch base (has CUDA 12.1)
     image = (
-        modal.Image.from_registry(
-            "nvcr.io/nvidia/pytorch:24.01-py3",
-            add_python="3.11"
-        )
+        modal.Image.from_registry("nvcr.io/nvidia/pytorch:24.01-py3", add_python="3.11")
         .pip_install(
             "jax[cuda12]==0.4.23",  # Specific version for reproducibility
         )
         .add_local_file(
             local_path=str(Path(__file__).parent / "gpu_test_script.py"),
-            remote_path="/root/gpu_test_script.py"
+            remote_path="/root/gpu_test_script.py",
         )
     )
 
@@ -63,9 +60,7 @@ def run_modal_jax_test(gpu_type: str = "T4"):
 
     # Verify Modal config exists
     modal_config = Path.home() / ".modal.toml"
-    assert modal_config.exists(), (
-        "Modal config not found. Run: modal token new"
-    )
+    assert modal_config.exists(), "Modal config not found. Run: modal token new"
 
     logger.info("=" * 70)
     logger.info("JAX GPU Integration Test - Modal")
@@ -128,7 +123,7 @@ def run_modal_jax_test(gpu_type: str = "T4"):
             "A10G": 1.12,
             "A100-40GB": 3.15,
             "A100-80GB": 4.20,
-            "H100": 8.40
+            "H100": 8.40,
         }
         price_per_hour = gpu_prices.get(gpu_type, 1.0)
         estimated_cost = price_per_hour * (2 / 60)  # ~2 minutes
@@ -146,23 +141,18 @@ def run_modal_jax_test(gpu_type: str = "T4"):
 def main():
     """Entry point - handle logging setup and error reporting."""
     # Parse command line arguments
-    parser = argparse.ArgumentParser(
-        description="JAX GPU Integration Test - Modal"
-    )
+    parser = argparse.ArgumentParser(description="JAX GPU Integration Test - Modal")
     parser.add_argument(
         "--gpu",
         type=str,
         default="T4",
         choices=["T4", "L4", "A10G", "A100-40GB", "A100-80GB", "H100"],
-        help="GPU type to use (default: T4, cheapest)"
+        help="GPU type to use (default: T4, cheapest)",
     )
     args = parser.parse_args()
 
     # Setup logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(message)s'
-    )
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
 
     try:
         run_modal_jax_test(gpu_type=args.gpu)
@@ -177,10 +167,12 @@ def main():
     except Exception as e:
         logger.error(f"\n❌ Unexpected error: {e}")
         import traceback
+
         traceback.print_exc()
         return 1
 
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(main())

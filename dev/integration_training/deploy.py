@@ -20,17 +20,10 @@ from pathlib import Path
 
 # Import local config
 from base_config import Config
+from dotenv import load_dotenv
 
 # Import bifrost for deployment
 from bifrost.client import BifrostClient
-from dotenv import load_dotenv
-from kerbal.job_monitor import (
-    LogStreamConfig,
-    stream_log_until_complete,
-)
-
-# Import shared logging
-from shared.logging_config import setup_logging
 
 # Import kerbal for dependency management and deployment patterns
 from kerbal import (
@@ -39,6 +32,13 @@ from kerbal import (
     setup_script_deps,
     start_tmux_session,
 )
+from kerbal.job_monitor import (
+    LogStreamConfig,
+    stream_log_until_complete,
+)
+
+# Import shared logging
+from shared.logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ REMOTE_WORKSPACE_PATH = "~/.bifrost/workspace/dev/integration_training"
 
 # GPU availability thresholds (used with kerbal's check_gpus_available)
 DEFAULT_MEMORY_THRESHOLD_MB = 1000  # Consider GPU busy if > 1GB used
-DEFAULT_UTIL_THRESHOLD_PCT = 5      # Consider GPU busy if > 5% utilized
+DEFAULT_UTIL_THRESHOLD_PCT = 5  # Consider GPU busy if > 5% utilized
 
 
 def load_config_from_file(config_path: str) -> Config:
@@ -61,7 +61,7 @@ def load_config_from_file(config_path: str) -> Config:
     """
     import importlib.util
 
-    assert config_path.endswith('.py'), f"Config must be .py file, got {config_path}"
+    assert config_path.endswith(".py"), f"Config must be .py file, got {config_path}"
     assert Path(config_path).exists(), f"Config file not found: {config_path}"
 
     spec = importlib.util.spec_from_file_location("exp_config", config_path)
@@ -71,7 +71,7 @@ def load_config_from_file(config_path: str) -> Config:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    assert hasattr(module, 'config'), "Config file must define 'config' variable"
+    assert hasattr(module, "config"), "Config file must define 'config' variable"
     config: Config = module.config
     assert isinstance(config, Config), f"Expected Config object, got {type(config)}"
 
@@ -91,7 +91,7 @@ def check_remote_prerequisites(bifrost_client: BifrostClient) -> list[str]:
 
     # Check for tmux (terminal multiplexer)
     result = bifrost_client.exec("command -v tmux >/dev/null 2>&1 && echo 'OK' || echo 'MISSING'")
-    if result.stdout.strip() != 'OK':
+    if result.stdout.strip() != "OK":
         missing.append("tmux")
 
     return missing
@@ -113,14 +113,12 @@ def run_type_check(bifrost_client: BifrostClient, workspace_path: str) -> list[s
 
     # Run ty check on train.py (filter out import warnings)
     result = bifrost_client.exec(
-        f"cd {project_dir} && "
-        f"uvx ty check train.py 2>&1 | "
-        f"grep -E '^error\\[' || true"
+        f"cd {project_dir} && uvx ty check train.py 2>&1 | grep -E '^error\\[' || true"
     )
 
     errors = []
     if result.stdout.strip():
-        errors = result.stdout.strip().split('\n')
+        errors = result.stdout.strip().split("\n")
         logger.warning(f"⚠️  Found {len(errors)} type error(s):")
         for error in errors[:5]:  # Show first 5
             logger.warning(f"  {error}")
@@ -145,7 +143,9 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
 
     # Deploy code with explicit workspace path for isolation
     # This deploys the entire monorepo to prevent path issues with local packages
-    workspace_path = bifrost_client.push(workspace_path="~/.bifrost/workspaces/integration_training")
+    workspace_path = bifrost_client.push(
+        workspace_path="~/.bifrost/workspaces/integration_training"
+    )
 
     logger.info(f"✅ Code deployed to {workspace_path}")
 
@@ -302,9 +302,7 @@ def sync_results(
 
     # Download results (recursive since remote_result_dir is a directory)
     result = bifrost_client.download_files(
-        remote_path=f"{remote_result_dir}/",
-        local_path=str(local_output_dir),
-        recursive=True
+        remote_path=f"{remote_result_dir}/", local_path=str(local_output_dir), recursive=True
     )
 
     if result and result.success:
@@ -315,27 +313,14 @@ def sync_results(
 
 def main():
     """Main deployment orchestrator."""
-    parser = argparse.ArgumentParser(
-        description="Deploy training to remote GPU instance"
-    )
-    parser.add_argument(
-        "config",
-        help="Path to config file (e.g., configs/01_debug_sft_rl.py)"
-    )
-    parser.add_argument(
-        "--ssh",
-        required=True,
-        help="SSH connection string (e.g., root@host:port)"
-    )
-    parser.add_argument(
-        "--ssh-key",
-        default="~/.ssh/id_ed25519",
-        help="Path to SSH private key"
-    )
+    parser = argparse.ArgumentParser(description="Deploy training to remote GPU instance")
+    parser.add_argument("config", help="Path to config file (e.g., configs/01_debug_sft_rl.py)")
+    parser.add_argument("--ssh", required=True, help="SSH connection string (e.g., root@host:port)")
+    parser.add_argument("--ssh-key", default="~/.ssh/id_ed25519", help="Path to SSH private key")
     parser.add_argument(
         "--detached",
         action="store_true",
-        help="Start training and exit immediately (don't wait for completion)"
+        help="Start training and exit immediately (don't wait for completion)",
     )
     args = parser.parse_args()
 
@@ -344,6 +329,7 @@ def main():
 
     # Track deployment start time
     import time
+
     start_time = time.time()
 
     # Setup logging
@@ -353,7 +339,7 @@ def main():
             "httpx": "WARNING",
             "urllib3": "WARNING",
             "paramiko": "WARNING",
-        }
+        },
     )
 
     # Load config
@@ -402,7 +388,7 @@ def main():
                 busy_gpu_ids = []
 
                 for line in result.stdout.strip().splitlines():
-                    parts = [p.strip() for p in line.split(',')]
+                    parts = [p.strip() for p in line.split(",")]
                     if len(parts) >= 3:
                         try:
                             gpu_id = int(parts[0])
@@ -411,7 +397,10 @@ def main():
                             all_gpu_ids.append(gpu_id)
 
                             # Check if free using same thresholds
-                            if mem_mb <= DEFAULT_MEMORY_THRESHOLD_MB and util <= DEFAULT_UTIL_THRESHOLD_PCT:
+                            if (
+                                mem_mb <= DEFAULT_MEMORY_THRESHOLD_MB
+                                and util <= DEFAULT_UTIL_THRESHOLD_PCT
+                            ):
                                 free_gpu_ids.append(gpu_id)
                             else:
                                 busy_gpu_ids.append(gpu_id)
@@ -512,6 +501,7 @@ def main():
     except Exception as e:
         logger.error(f"✗ Deployment failed: {e}")
         import traceback
+
         traceback.print_exc()
         return 1
 

@@ -7,13 +7,12 @@ import json
 import logging
 import subprocess
 import sys
+from collections.abc import Iterable, Iterator
 from pathlib import Path
-from typing import Iterable, Iterator
 
 from annotation import AnnotatedOutput, annotate_text
 from corpus_index import CorpusIndex
 from formatting import format_annotations, format_annotations_compact
-
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent.parent
@@ -25,7 +24,13 @@ def run_python_script(script: str, *args: str) -> int:
     return result.returncode
 
 
-def run_deploy_pipeline(config: str, keep_running: bool, provider: str | None, use_existing: str | None, name: str | None) -> int:
+def run_deploy_pipeline(
+    config: str,
+    keep_running: bool,
+    provider: str | None,
+    use_existing: str | None,
+    name: str | None,
+) -> int:
     cmd = [sys.executable, str(SCRIPT_DIR / "deploy.py"), "--config", config]
     if keep_running:
         cmd.append("--keep-running")
@@ -98,7 +103,11 @@ def handle_annotate(args: argparse.Namespace) -> int:
         print(f"Input file not found: {input_path}")
         return 1
 
-    output_path = Path(args.output) if args.output else input_path.with_name(input_path.stem + "_annotated.jsonl")
+    output_path = (
+        Path(args.output)
+        if args.output
+        else input_path.with_name(input_path.stem + "_annotated.jsonl")
+    )
 
     records = []
     for row in read_jsonl(input_path):
@@ -153,27 +162,47 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command")
 
     index_parser = subparsers.add_parser("index", help="Build corpus index")
-    index_parser.add_argument("--config", default="configs/clustering_01_tiny.py", help="Config file relative to corpus-proximity directory")
-    index_parser.add_argument("--deploy-gpu", action="store_true", help="Run pipeline on remote GPU")
-    index_parser.add_argument("--keep-running", action="store_true", help="Keep remote GPU running after completion")
-    index_parser.add_argument("--provider", choices=["runpod", "primeintellect"], help="GPU provider (deploy mode)")
+    index_parser.add_argument(
+        "--config",
+        default="configs/clustering_01_tiny.py",
+        help="Config file relative to corpus-proximity directory",
+    )
+    index_parser.add_argument(
+        "--deploy-gpu", action="store_true", help="Run pipeline on remote GPU"
+    )
+    index_parser.add_argument(
+        "--keep-running", action="store_true", help="Keep remote GPU running after completion"
+    )
+    index_parser.add_argument(
+        "--provider", choices=["runpod", "primeintellect"], help="GPU provider (deploy mode)"
+    )
     index_parser.add_argument("--use-existing", help="Existing instance name or SSH (deploy mode)")
     index_parser.add_argument("--name", help="Custom instance name (deploy mode)")
-    index_parser.add_argument("--skip-naming", action="store_true", help="Skip cluster naming step (local mode)")
+    index_parser.add_argument(
+        "--skip-naming", action="store_true", help="Skip cluster naming step (local mode)"
+    )
     index_parser.set_defaults(func=handle_index)
 
     annotate_parser = subparsers.add_parser("annotate", help="Annotate model outputs")
-    annotate_parser.add_argument("--corpus-index", required=True, help="Path to corpus index directory")
+    annotate_parser.add_argument(
+        "--corpus-index", required=True, help="Path to corpus index directory"
+    )
     annotate_parser.add_argument("--input", required=True, help="Input JSONL with model outputs")
     annotate_parser.add_argument("--output", help="Destination JSONL for annotations")
     annotate_parser.add_argument("--k", type=int, default=3, help="Top-k nearest clusters per span")
-    annotate_parser.add_argument("--no-phrase-level", action="store_true", help="Disable sentence-level splitting")
+    annotate_parser.add_argument(
+        "--no-phrase-level", action="store_true", help="Disable sentence-level splitting"
+    )
     annotate_parser.set_defaults(func=handle_annotate)
 
     show_parser = subparsers.add_parser("show", help="Pretty-print annotations")
     show_parser.add_argument("--annotated-file", required=True, help="Annotated JSONL file")
-    show_parser.add_argument("--index", type=int, default=0, help="Entry index to display (0-based)")
-    show_parser.add_argument("--show-chunks", action="store_true", help="Display nearest corpus chunks")
+    show_parser.add_argument(
+        "--index", type=int, default=0, help="Entry index to display (0-based)"
+    )
+    show_parser.add_argument(
+        "--show-chunks", action="store_true", help="Display nearest corpus chunks"
+    )
     show_parser.add_argument("--compact", action="store_true", help="Use compact output format")
     show_parser.set_defaults(func=handle_show)
 

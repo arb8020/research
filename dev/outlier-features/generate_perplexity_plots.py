@@ -127,16 +127,16 @@ def load_perplexity_result(perplexity_dir: Path) -> dict | None:
     with open(json_file) as f:
         data = json.load(f)
 
-    model_name = data.get('model')
-    perplexity = data.get('perplexity')
+    model_name = data.get("model")
+    perplexity = data.get("perplexity")
     assert model_name is not None, f"Missing model in {perplexity_dir.name}"
     assert perplexity is not None, f"Missing perplexity in {perplexity_dir.name}"
 
     return {
-        'model_name': model_name,
-        'perplexity': perplexity,
-        'num_sequences': data.get('num_sequences', 0),
-        'total_tokens': data.get('total_tokens', 0),
+        "model_name": model_name,
+        "perplexity": perplexity,
+        "num_sequences": data.get("num_sequences", 0),
+        "total_tokens": data.get("total_tokens", 0),
     }
 
 
@@ -158,15 +158,13 @@ def extract_outliers_from_json(file_path: Path) -> list[dict] | None:
 
     # Extract all_systematic_outliers array using regex
     match = re.search(
-        r'"all_systematic_outliers":\s*\[(.*?)(?:\],\s*"batch_results")',
-        content,
-        re.DOTALL
+        r'"all_systematic_outliers":\s*\[(.*?)(?:\],\s*"batch_results")', content, re.DOTALL
     )
 
     if not match:
         return None
 
-    outliers_json = '[' + match.group(1) + ']'
+    outliers_json = "[" + match.group(1) + "]"
     outliers = json.loads(outliers_json)
     assert isinstance(outliers, list), f"Expected list, got {type(outliers)}"
 
@@ -186,22 +184,22 @@ def calculate_outlier_metrics(outliers: list[dict]) -> dict:
 
     if not outliers:
         return {
-            'num_outliers': 0,
-            'mean_layer_pct': 0.0,
-            'median_layer_pct': 0.0,
-            'mean_seq_pct': 0.0,
-            'median_seq_pct': 0.0,
+            "num_outliers": 0,
+            "mean_layer_pct": 0.0,
+            "median_layer_pct": 0.0,
+            "mean_seq_pct": 0.0,
+            "median_seq_pct": 0.0,
         }
 
-    layer_pcts = [o['layer_percentage'] * 100 for o in outliers]
-    seq_pcts = [o['seq_percentage'] * 100 for o in outliers]
+    layer_pcts = [o["layer_percentage"] * 100 for o in outliers]
+    seq_pcts = [o["seq_percentage"] * 100 for o in outliers]
 
     return {
-        'num_outliers': len(outliers),
-        'mean_layer_pct': float(np.mean(layer_pcts)),
-        'median_layer_pct': float(np.median(layer_pcts)),
-        'mean_seq_pct': float(np.mean(seq_pcts)),
-        'median_seq_pct': float(np.median(seq_pcts)),
+        "num_outliers": len(outliers),
+        "mean_layer_pct": float(np.mean(layer_pcts)),
+        "median_layer_pct": float(np.median(layer_pcts)),
+        "mean_seq_pct": float(np.mean(seq_pcts)),
+        "median_seq_pct": float(np.median(seq_pcts)),
     }
 
 
@@ -222,7 +220,7 @@ def extract_model_name_from_result(result_dir: Path) -> str | None:
     if config_file.exists():
         with open(config_file) as f:
             config = json.load(f)
-            model_name = config.get('model', {}).get('name')
+            model_name = config.get("model", {}).get("name")
             if model_name:
                 return model_name
 
@@ -259,7 +257,7 @@ def load_all_perplexity_results(perplexity_dir: Path) -> dict[str, dict]:
 
         ppl_data = load_perplexity_result(result_dir)
         if ppl_data:
-            model_name = ppl_data['model_name']
+            model_name = ppl_data["model_name"]
             results[model_name] = ppl_data
             print(f"✅ Loaded perplexity: {model_name} = {ppl_data['perplexity']:.2f}")
 
@@ -267,8 +265,7 @@ def load_all_perplexity_results(perplexity_dir: Path) -> dict[str, dict]:
 
 
 def match_single_outlier_result(
-    result_dir: Path,
-    perplexity_results: dict[str, dict]
+    result_dir: Path, perplexity_results: dict[str, dict]
 ) -> dict | None:
     """Match a single outlier result with perplexity data.
 
@@ -309,24 +306,23 @@ def match_single_outlier_result(
     ppl_data = perplexity_results[model_name]
 
     result = {
-        'model_name': metadata['name'],
-        'full_model_name': model_name,
-        'total_params_b': metadata['total_params_b'],
-        'active_params_b': metadata['active_params_b'],
-        'perplexity': ppl_data['perplexity'],
-        **outlier_metrics
+        "model_name": metadata["name"],
+        "full_model_name": model_name,
+        "total_params_b": metadata["total_params_b"],
+        "active_params_b": metadata["active_params_b"],
+        "perplexity": ppl_data["perplexity"],
+        **outlier_metrics,
     }
 
-    print(f"✅ Matched: {metadata['name']} - PPL={ppl_data['perplexity']:.2f}, "
-          f"Outliers={outlier_metrics['num_outliers']}")
+    print(
+        f"✅ Matched: {metadata['name']} - PPL={ppl_data['perplexity']:.2f}, "
+        f"Outliers={outlier_metrics['num_outliers']}"
+    )
 
     return result
 
 
-def match_perplexity_to_outliers(
-    perplexity_dir: Path,
-    outlier_dir: Path
-) -> list[dict]:
+def match_perplexity_to_outliers(perplexity_dir: Path, outlier_dir: Path) -> list[dict]:
     """Match perplexity results with outlier analysis results.
 
     Args:
@@ -357,11 +353,7 @@ def match_perplexity_to_outliers(
 
 
 def create_plot_matplotlib(
-    results: list[dict],
-    y_key: str,
-    output_path: Path,
-    title: str,
-    ylabel: str
+    results: list[dict], y_key: str, output_path: Path, title: str, ylabel: str
 ):
     """Create perplexity plot using matplotlib.
 
@@ -379,54 +371,45 @@ def create_plot_matplotlib(
 
     import matplotlib
     import matplotlib.pyplot as plt
-    matplotlib.use('Agg')
+
+    matplotlib.use("Agg")
 
     # Extract data
-    x_values = [r['perplexity'] for r in results]
+    x_values = [r["perplexity"] for r in results]
     y_values = [r[y_key] for r in results]
-    labels = [r['model_name'] for r in results]
+    labels = [r["model_name"] for r in results]
 
     # Create figure
     plt.figure(figsize=(10, 7))
 
     # Scatter plot
-    plt.scatter(x_values, y_values, s=100, alpha=0.6, c='steelblue')
+    plt.scatter(x_values, y_values, s=100, alpha=0.6, c="steelblue")
 
     # Add model labels
-    for x, y, label in zip(x_values, y_values, labels):
+    for x, y, label in zip(x_values, y_values, labels, strict=False):
         plt.annotate(
-            label,
-            (x, y),
-            xytext=(5, 5),
-            textcoords='offset points',
-            fontsize=9,
-            alpha=0.8
+            label, (x, y), xytext=(5, 5), textcoords="offset points", fontsize=9, alpha=0.8
         )
 
     # Formatting
-    plt.xlabel('Perplexity (FineWeb-Edu)', fontsize=12)
+    plt.xlabel("Perplexity (FineWeb-Edu)", fontsize=12)
     plt.ylabel(ylabel, fontsize=12)
-    plt.title(title, fontsize=14, fontweight='bold')
+    plt.title(title, fontsize=14, fontweight="bold")
     plt.grid(True, alpha=0.3)
 
     # Use log scale for x-axis if perplexity range is large
     if max(x_values) / min(x_values) > 10:
-        plt.xscale('log')
+        plt.xscale("log")
 
     plt.tight_layout()
 
     # Save
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     print(f"  📊 Saved: {output_path.name}")
 
 
-def create_plot_terminal(
-    results: list[dict],
-    y_key: str,
-    title: str,
-    ylabel: str
-):
+def create_plot_terminal(results: list[dict], y_key: str, title: str, ylabel: str):
     """Create perplexity plot in terminal using plotext.
 
     Args:
@@ -441,24 +424,24 @@ def create_plot_terminal(
     import plotext as plt
 
     # Extract data
-    x_values = [r['perplexity'] for r in results]
+    x_values = [r["perplexity"] for r in results]
     y_values = [r[y_key] for r in results]
-    labels = [r['model_name'] for r in results]
+    labels = [r["model_name"] for r in results]
 
     # Clear previous plot
     plt.clear_figure()
-    plt.theme('clear')
+    plt.theme("clear")
 
     # Colors for each model
-    colors = ['red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white']
+    colors = ["red", "green", "yellow", "blue", "magenta", "cyan", "white"]
 
     # Plot each point separately with label
-    for i, (x, y, label) in enumerate(zip(x_values, y_values, labels)):
+    for i, (x, y, label) in enumerate(zip(x_values, y_values, labels, strict=False)):
         color = colors[i % len(colors)]
         plt.scatter([x], [y], marker="●", label=label, color=color)
 
     # Formatting
-    plt.xlabel('Perplexity (FineWeb-Edu)')
+    plt.xlabel("Perplexity (FineWeb-Edu)")
     plt.ylabel(ylabel)
     plt.title(title)
     plt.show()
@@ -466,24 +449,25 @@ def create_plot_terminal(
     # Print legend
     print("Legend:")
     color_codes = {
-        'red': '\033[91m', 'green': '\033[92m', 'yellow': '\033[93m',
-        'blue': '\033[94m', 'magenta': '\033[95m', 'cyan': '\033[96m',
-        'white': '\033[97m',
+        "red": "\033[91m",
+        "green": "\033[92m",
+        "yellow": "\033[93m",
+        "blue": "\033[94m",
+        "magenta": "\033[95m",
+        "cyan": "\033[96m",
+        "white": "\033[97m",
     }
-    reset = '\033[0m'
+    reset = "\033[0m"
 
-    for i, (x, y, label) in enumerate(zip(x_values, y_values, labels)):
+    for i, (x, y, label) in enumerate(zip(x_values, y_values, labels, strict=False)):
         color = colors[i % len(colors)]
-        color_code = color_codes.get(color, '')
+        color_code = color_codes.get(color, "")
         print(f"  {color_code}●{reset} {label}: PPL={x:.2f}, {ylabel}={y:.1f}")
     print()
 
 
 def generate_single_plot(
-    results: list[dict],
-    plot_spec: dict,
-    output_dir: Path | None,
-    terminal: bool
+    results: list[dict], plot_spec: dict, output_dir: Path | None, terminal: bool
 ):
     """Generate a single plot.
 
@@ -499,18 +483,18 @@ def generate_single_plot(
     if terminal:
         create_plot_terminal(
             results=results,
-            y_key=plot_spec['y_key'],
-            title=plot_spec['title'],
-            ylabel=plot_spec['ylabel'],
+            y_key=plot_spec["y_key"],
+            title=plot_spec["title"],
+            ylabel=plot_spec["ylabel"],
         )
     else:
         assert output_dir is not None, "output_dir required when not in terminal mode"
         create_plot_matplotlib(
             results=results,
-            y_key=plot_spec['y_key'],
-            output_path=output_dir / plot_spec['filename'],
-            title=plot_spec['title'],
-            ylabel=plot_spec['ylabel'],
+            y_key=plot_spec["y_key"],
+            output_path=output_dir / plot_spec["filename"],
+            title=plot_spec["title"],
+            ylabel=plot_spec["ylabel"],
         )
 
 
@@ -522,42 +506,40 @@ def get_plot_specs() -> list[dict]:
     """
     return [
         {
-            'y_key': 'mean_layer_pct',
-            'filename': '01_perplexity_vs_mean_layer_pct.png',
-            'title': 'Outlier Emergence vs Perplexity (Layers - Mean)',
-            'ylabel': 'Mean % Layers with Outliers',
+            "y_key": "mean_layer_pct",
+            "filename": "01_perplexity_vs_mean_layer_pct.png",
+            "title": "Outlier Emergence vs Perplexity (Layers - Mean)",
+            "ylabel": "Mean % Layers with Outliers",
         },
         {
-            'y_key': 'median_layer_pct',
-            'filename': '02_perplexity_vs_median_layer_pct.png',
-            'title': 'Outlier Emergence vs Perplexity (Layers - Median)',
-            'ylabel': 'Median % Layers with Outliers',
+            "y_key": "median_layer_pct",
+            "filename": "02_perplexity_vs_median_layer_pct.png",
+            "title": "Outlier Emergence vs Perplexity (Layers - Median)",
+            "ylabel": "Median % Layers with Outliers",
         },
         {
-            'y_key': 'mean_seq_pct',
-            'filename': '03_perplexity_vs_mean_seq_pct.png',
-            'title': 'Outlier Emergence vs Perplexity (Sequence - Mean)',
-            'ylabel': 'Mean % Sequence Positions with Outliers',
+            "y_key": "mean_seq_pct",
+            "filename": "03_perplexity_vs_mean_seq_pct.png",
+            "title": "Outlier Emergence vs Perplexity (Sequence - Mean)",
+            "ylabel": "Mean % Sequence Positions with Outliers",
         },
         {
-            'y_key': 'median_seq_pct',
-            'filename': '04_perplexity_vs_median_seq_pct.png',
-            'title': 'Outlier Emergence vs Perplexity (Sequence - Median)',
-            'ylabel': 'Median % Sequence Positions with Outliers',
+            "y_key": "median_seq_pct",
+            "filename": "04_perplexity_vs_median_seq_pct.png",
+            "title": "Outlier Emergence vs Perplexity (Sequence - Median)",
+            "ylabel": "Median % Sequence Positions with Outliers",
         },
         {
-            'y_key': 'num_outliers',
-            'filename': '05_perplexity_vs_num_outliers.png',
-            'title': 'Number of Outlier Dimensions vs Perplexity',
-            'ylabel': 'Number of Systematic Outlier Dimensions',
+            "y_key": "num_outliers",
+            "filename": "05_perplexity_vs_num_outliers.png",
+            "title": "Number of Outlier Dimensions vs Perplexity",
+            "ylabel": "Number of Systematic Outlier Dimensions",
         },
     ]
 
 
 def generate_perplexity_plots(
-    results: list[dict],
-    output_dir: Path | None = None,
-    terminal: bool = False
+    results: list[dict], output_dir: Path | None = None, terminal: bool = False
 ):
     """Generate perplexity analysis plots (Figure 3b replication).
 
@@ -602,7 +584,9 @@ def print_summary_table(results: list[dict], use_rich: bool = False):
 
         console = Console()
 
-        table = Table(title="Perplexity Analysis Summary", show_header=True, header_style="bold magenta")
+        table = Table(
+            title="Perplexity Analysis Summary", show_header=True, header_style="bold magenta"
+        )
         table.add_column("Model", style="cyan", no_wrap=True)
         table.add_column("Params (B)", justify="right", style="green")
         table.add_column("Perplexity", justify="right", style="yellow")
@@ -611,37 +595,43 @@ def print_summary_table(results: list[dict], use_rich: bool = False):
         table.add_column("Mean S%", justify="right", style="blue")
 
         # Sort by perplexity
-        for r in sorted(results, key=lambda x: x['perplexity']):
+        for r in sorted(results, key=lambda x: x["perplexity"]):
             table.add_row(
-                r['model_name'],
+                r["model_name"],
                 f"{r['total_params_b']:.1f}",
                 f"{r['perplexity']:.2f}",
                 f"{r['num_outliers']}",
                 f"{r['mean_layer_pct']:.1f}",
-                f"{r['mean_seq_pct']:.1f}"
+                f"{r['mean_seq_pct']:.1f}",
             )
 
         console.print("\n")
         console.print(table)
-        console.print("\n[italic]L% = % Layers Affected | S% = % Sequence Positions Affected[/italic]\n")
+        console.print(
+            "\n[italic]L% = % Layers Affected | S% = % Sequence Positions Affected[/italic]\n"
+        )
         return
 
     # Plain text fallback
     print("\n" + "=" * 90)
     print("PERPLEXITY ANALYSIS SUMMARY")
     print("=" * 90)
-    print(f"{'Model':<20} {'Params':<10} {'Perplexity':<12} {'Outliers':<10} "
-          f"{'Mean L%':<10} {'Mean S%':<10}")
+    print(
+        f"{'Model':<20} {'Params':<10} {'Perplexity':<12} {'Outliers':<10} "
+        f"{'Mean L%':<10} {'Mean S%':<10}"
+    )
     print("-" * 90)
 
     # Sort by perplexity
-    for r in sorted(results, key=lambda x: x['perplexity']):
-        print(f"{r['model_name']:<20} "
-              f"{r['total_params_b']:<10.1f} "
-              f"{r['perplexity']:<12.2f} "
-              f"{r['num_outliers']:<10} "
-              f"{r['mean_layer_pct']:<10.1f} "
-              f"{r['mean_seq_pct']:<10.1f}")
+    for r in sorted(results, key=lambda x: x["perplexity"]):
+        print(
+            f"{r['model_name']:<20} "
+            f"{r['total_params_b']:<10.1f} "
+            f"{r['perplexity']:<12.2f} "
+            f"{r['num_outliers']:<10} "
+            f"{r['mean_layer_pct']:<10.1f} "
+            f"{r['mean_seq_pct']:<10.1f}"
+        )
 
     print("=" * 90)
     print("Sorted by perplexity (lower = better) | L% = % Layers | S% = % Sequence Positions")
@@ -653,15 +643,22 @@ def output_csv(results: list[dict]):
     assert results is not None, "results must not be None"
 
     import csv
+
     writer = csv.DictWriter(
         sys.stdout,
         fieldnames=[
-            'model_name', 'total_params_b', 'perplexity', 'num_outliers',
-            'mean_layer_pct', 'median_layer_pct', 'mean_seq_pct', 'median_seq_pct'
-        ]
+            "model_name",
+            "total_params_b",
+            "perplexity",
+            "num_outliers",
+            "mean_layer_pct",
+            "median_layer_pct",
+            "mean_seq_pct",
+            "median_seq_pct",
+        ],
     )
     writer.writeheader()
-    for r in sorted(results, key=lambda x: x['perplexity']):
+    for r in sorted(results, key=lambda x: x["perplexity"]):
         writer.writerow(r)
 
 
@@ -701,8 +698,10 @@ def run_analysis(args) -> int:
     # Filter for dense models if requested
     if args.dense_only:
         original_count = len(results)
-        results = [r for r in results if is_dense_model(r['full_model_name'])]
-        print(f"🔍 Filtered to {len(results)} dense models (excluded {original_count - len(results)} MoE models)")
+        results = [r for r in results if is_dense_model(r["full_model_name"])]
+        print(
+            f"🔍 Filtered to {len(results)} dense models (excluded {original_count - len(results)} MoE models)"
+        )
 
     if not results:
         print("❌ No results after filtering!")
@@ -735,34 +734,36 @@ def run_analysis(args) -> int:
 def main():
     """Main entry point with error handling boundary."""
     try:
-        parser = argparse.ArgumentParser(description="Generate perplexity analysis plots (Figure 3b)")
+        parser = argparse.ArgumentParser(
+            description="Generate perplexity analysis plots (Figure 3b)"
+        )
         parser.add_argument(
             "--perplexity-dir",
             type=Path,
             default=Path("remote_results"),
-            help="Directory containing perplexity results (default: remote_results)"
+            help="Directory containing perplexity results (default: remote_results)",
         )
         parser.add_argument(
             "--outlier-dir",
             type=Path,
             default=Path("remote_results"),
-            help="Directory containing outlier analysis results (default: remote_results)"
+            help="Directory containing outlier analysis results (default: remote_results)",
         )
         parser.add_argument(
             "--terminal",
             action="store_true",
-            help="Display plots in terminal using plotext instead of saving to files"
+            help="Display plots in terminal using plotext instead of saving to files",
         )
         parser.add_argument(
             "--format",
             choices=["plot", "table", "csv", "json"],
             default="plot",
-            help="Output format for terminal mode: plot (default), table, csv, or json"
+            help="Output format for terminal mode: plot (default), table, csv, or json",
         )
         parser.add_argument(
             "--dense-only",
             action="store_true",
-            help="Only include dense (non-MoE) models in the analysis"
+            help="Only include dense (non-MoE) models in the analysis",
         )
         args = parser.parse_args()
 
@@ -771,6 +772,7 @@ def main():
     except Exception as e:
         print(f"❌ Error: {e}")
         import traceback
+
         traceback.print_exc()
         return 1
 

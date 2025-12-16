@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import trio_asyncio
+
 from rollouts.dtypes import (
     AgentState,
     Endpoint,
@@ -29,7 +30,6 @@ from rollouts.dtypes import (
     ToolFunction,
     ToolFunctionParameter,
 )
-
 from shared import intercept_prints
 
 logger = logging.getLogger(__name__)
@@ -171,26 +171,26 @@ class BackendBenchEnvironment:
 
         backend-bench provides oai_tools which we convert to rollouts Tools.
         """
-        if not hasattr(self.prime_env, 'oai_tools') or not self.prime_env.oai_tools:
+        if not hasattr(self.prime_env, "oai_tools") or not self.prime_env.oai_tools:
             return []
 
         tools = []
         for oai_tool in self.prime_env.oai_tools:
-            if oai_tool['type'] == 'function':
-                func = oai_tool['function']
+            if oai_tool["type"] == "function":
+                func = oai_tool["function"]
 
                 # Convert to rollouts Tool format
                 tool_function = ToolFunction(
-                    name=func['name'],
-                    description=func['description'],
+                    name=func["name"],
+                    description=func["description"],
                     parameters=ToolFunctionParameter(
-                        properties=func['parameters'].get('properties', {}),
-                        type=func['parameters'].get('type', 'object')
+                        properties=func["parameters"].get("properties", {}),
+                        type=func["parameters"].get("type", "object"),
                     ),
-                    required=func['parameters'].get('required', [])
+                    required=func["parameters"].get("required", []),
                 )
 
-                tool = Tool(function=tool_function, type='function')
+                tool = Tool(function=tool_function, type="function")
                 tools.append(tool)
 
         return tools
@@ -217,14 +217,16 @@ class BackendBenchEnvironment:
             assistant_msg = {
                 "role": "assistant",
                 "content": None,
-                "tool_calls": [{
-                    "id": tool_call.id,
-                    "type": "function",
-                    "function": {
-                        "name": tool_call.name,
-                        "arguments": json.dumps(tool_call.args)  # Convert dict to JSON string
+                "tool_calls": [
+                    {
+                        "id": tool_call.id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_call.name,
+                            "arguments": json.dumps(tool_call.args),  # Convert dict to JSON string
+                        },
                     }
-                }]
+                ],
             }
             self.messages.append(assistant_msg)
 
@@ -239,31 +241,22 @@ class BackendBenchEnvironment:
 
             # Extract new tool response messages
             # Prime returns tool messages in OpenAI format
-            new_messages = updated_messages[len(self.messages):]
+            new_messages = updated_messages[len(self.messages) :]
             self.messages = updated_messages
 
             # Return the tool result content
-            if new_messages and new_messages[0].get('role') == 'tool':
-                content = new_messages[0].get('content', '')
-                return ToolResult(
-                    call_id=tool_call.id,
-                    ok=True,
-                    content=content
-                )
+            if new_messages and new_messages[0].get("role") == "tool":
+                content = new_messages[0].get("content", "")
+                return ToolResult(call_id=tool_call.id, ok=True, content=content)
 
             return ToolResult(
                 call_id=tool_call.id,
                 ok=False,
                 content="",
-                error="No tool response received from environment"
+                error="No tool response received from environment",
             )
         except Exception as e:
-            return ToolResult(
-                call_id=tool_call.id,
-                ok=False,
-                content="",
-                error=str(e)
-            )
+            return ToolResult(call_id=tool_call.id, ok=False, content="", error=str(e))
 
     async def on_assistant_message(self, message: Message, state: AgentState) -> AgentState:
         """Called after each assistant message to execute code and provide feedback.
@@ -284,8 +277,8 @@ class BackendBenchEnvironment:
         self.logger.info("=" * 60)
         self.logger.info("BEFORE env_response:")
         self.logger.info(f"  self.state keys: {list(self.state.keys())}")
-        has_results = 'results' in self.state and self.state.get('results')
-        has_best = 'best_result' in self.state and self.state.get('best_result')
+        has_results = "results" in self.state and self.state.get("results")
+        has_best = "best_result" in self.state and self.state.get("best_result")
         self.logger.info(f"  has results: {has_results}, has best_result: {has_best}")
         self.logger.info(f"  messages so far: {len(self.messages)}")
 
@@ -306,8 +299,8 @@ class BackendBenchEnvironment:
         self.logger.info("AFTER env_response:")
         self.logger.info(f"  updated_state keys: {list(updated_state.keys())}")
 
-        if updated_state.get('results'):
-            results = updated_state['results']
+        if updated_state.get("results"):
+            results = updated_state["results"]
             self.logger.info(f"  Number of results: {len(results)}")
 
             # Log summary of last result (not the full object!)
@@ -317,60 +310,67 @@ class BackendBenchEnvironment:
                 self.logger.info(f"    - Correctness score: {last_result.correctness_score}")
                 self.logger.info(f"    - Performance score: {last_result.performance_score}")
                 self.logger.info(f"    - Is correct: {last_result.is_correct}")
-                self.logger.info(f"    - Correctness tests: {len(last_result.correctness_results)} tests")
-                self.logger.info(f"    - Performance tests: {len(last_result.performance_results)} tests")
+                self.logger.info(
+                    f"    - Correctness tests: {len(last_result.correctness_results)} tests"
+                )
+                self.logger.info(
+                    f"    - Performance tests: {len(last_result.performance_results)} tests"
+                )
 
                 # Log any errors (truncated)
                 for i, test in enumerate(last_result.correctness_results):
                     if test.error_msg:
-                        error_preview = test.error_msg[:100] + "..." if len(test.error_msg) > 100 else test.error_msg
+                        error_preview = (
+                            test.error_msg[:100] + "..."
+                            if len(test.error_msg) > 100
+                            else test.error_msg
+                        )
                         self.logger.info(f"    - Correctness test {i}: ERROR - {error_preview}")
                     else:
-                        self.logger.info(f"    - Correctness test {i}: {'PASS' if test.is_correct else 'FAIL'}")
+                        self.logger.info(
+                            f"    - Correctness test {i}: {'PASS' if test.is_correct else 'FAIL'}"
+                        )
         else:
             self.logger.info("  results: NOT FOUND")
 
-        best_result = updated_state.get('best_result')
+        best_result = updated_state.get("best_result")
         if best_result:
-            self.logger.info(f"  best_result: correctness={best_result.correctness_score}, perf={best_result.performance_score}")
+            self.logger.info(
+                f"  best_result: correctness={best_result.correctness_score}, perf={best_result.performance_score}"
+            )
         else:
             self.logger.info("  best_result: NOT FOUND")
 
         self.logger.info("=" * 60)
 
         # Extract new messages (feedback from environment)
-        new_messages = updated_messages[len(self.messages):]
+        new_messages = updated_messages[len(self.messages) :]
         self.messages = updated_messages
 
         # Convert back to rollouts format and inject into trajectory
         if new_messages:
-            feedback_messages = [Message(role=msg["role"], content=msg.get("content"))
-                               for msg in new_messages]
+            feedback_messages = [
+                Message(role=msg["role"], content=msg.get("content")) for msg in new_messages
+            ]
 
             # Inject feedback into state's trajectory AND store updated backend-bench state
             # The reward function needs access to the state with results/best_result
             updated_metadata = {
                 **state.actor.trajectory.metadata,
-                "backend_bench_state": self.state  # Store the updated Prime state
+                "backend_bench_state": self.state,  # Store the updated Prime state
             }
 
             updated_trajectory = replace(
                 state.actor.trajectory,
                 messages=[*state.actor.trajectory.messages, *feedback_messages],
-                metadata=updated_metadata
+                metadata=updated_metadata,
             )
             updated_actor = replace(state.actor, trajectory=updated_trajectory)
             return replace(state, actor=updated_actor)
 
         # No feedback, store state anyway for reward function
-        updated_metadata = {
-            **state.actor.trajectory.metadata,
-            "backend_bench_state": self.state
-        }
-        updated_trajectory = replace(
-            state.actor.trajectory,
-            metadata=updated_metadata
-        )
+        updated_metadata = {**state.actor.trajectory.metadata, "backend_bench_state": self.state}
+        updated_trajectory = replace(state.actor.trajectory, metadata=updated_metadata)
         updated_actor = replace(state.actor, trajectory=updated_trajectory)
         return replace(state, actor=updated_actor)
 
@@ -395,11 +395,9 @@ class BackendBenchEnvironment:
     async def cleanup(self):
         """Cleanup resources when done."""
         # Backend-bench may have GPU resources or sandboxes to clean up
-        if hasattr(self.prime_env, 'cleanup'):
+        if hasattr(self.prime_env, "cleanup"):
             with intercept_prints(self.logger):
-                await trio_asyncio.run_aio_coroutine(
-                    self.prime_env.cleanup()
-                )
+                await trio_asyncio.run_aio_coroutine(self.prime_env.cleanup())
 
 
 async def create_environment(prime_env, sample_data):
@@ -420,7 +418,7 @@ async def create_environment(prime_env, sample_data):
             answer=sample_data.get("answer", ""),
             task=sample_data.get("task", "backend_bench"),
             info=sample_data.get("info", {}),  # Pass just the info dict, not all sample_data
-            example_id=sample_data.get("example_id", 0)
+            example_id=sample_data.get("example_id", 0),
         )
     )
 

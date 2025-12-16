@@ -30,10 +30,8 @@ config = Config(
         # Training: 4 GPUs with FSDP
         gpu_ranks=[4, 5, 6, 7],
         device_type="cuda",
-
         # Backend: FSDP for multi-GPU training
         train_backend="fsdp",
-
         # Distributed training parameters
         master_addr="localhost",
         master_port=29500,
@@ -67,14 +65,12 @@ config = Config(
         num_iterations=100,  # Just 100 steps for debug
         batch_size=2,  # Per-GPU batch size
         target_examples_per_step=8,  # Total across 4 GPUs
-
         # Learning rates (nanochat defaults)
         unembedding_lr=0.004,
         embedding_lr=0.2,
         matrix_lr=0.02,
         weight_decay=0.0,
         init_lr_frac=0.02,
-
         # Logging
         eval_every=25,
         eval_steps=10,

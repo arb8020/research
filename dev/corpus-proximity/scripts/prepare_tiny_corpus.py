@@ -6,8 +6,9 @@ import logging
 import random
 from pathlib import Path
 
-logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+
 
 def main():
     # Paths
@@ -25,7 +26,7 @@ def main():
     # Load all chunks
     logger.info(f"Loading chunks from {input_path}")
     all_chunks = []
-    with open(input_path, 'r') as f:
+    with open(input_path) as f:
         for line in f:
             all_chunks.append(json.loads(line))
 
@@ -43,9 +44,9 @@ def main():
 
     # Save sampled chunks
     logger.info(f"Saving to {output_path}")
-    with open(output_path, 'w') as f:
+    with open(output_path, "w") as f:
         for chunk in sampled_chunks:
-            f.write(json.dumps(chunk) + '\n')
+            f.write(json.dumps(chunk) + "\n")
 
     logger.info(f"Saved {len(sampled_chunks)} chunks to {output_path}")
 
@@ -64,4 +65,5 @@ def main():
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(main())

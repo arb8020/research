@@ -21,10 +21,10 @@ import numpy as np
 from backends.jax.loader import load_weights
 from backends.jax.model import gpt2_forward
 from config import GPT2Config
-from utils.comparison import compare_logits, get_hf_logits
 
 import jax
 import jax.numpy as jnp
+from utils.comparison import compare_logits, get_hf_logits
 
 
 def load_weights_for_jax() -> dict[str, jax.Array]:
@@ -43,30 +43,21 @@ def generate_test_batches(k=5):
     """Generate k different test batches for comparison."""
     test_batches = []
 
-    test_batches.append({
-        "name": "Hello world",
-        "tokens": np.array([[15496, 995]])
-    })
+    test_batches.append({"name": "Hello world", "tokens": np.array([[15496, 995]])})
 
-    test_batches.append({
-        "name": "The quick brown",
-        "tokens": np.array([[464, 2068, 7586]])
-    })
+    test_batches.append({"name": "The quick brown", "tokens": np.array([[464, 2068, 7586]])})
 
-    test_batches.append({
-        "name": "Single token",
-        "tokens": np.array([[15496]])
-    })
+    test_batches.append({"name": "Single token", "tokens": np.array([[15496]])})
 
     test_batches.append({
         "name": "Longer sequence",
-        "tokens": np.array([[464, 2068, 7586, 1976, 11687, 625, 262]])
+        "tokens": np.array([[464, 2068, 7586, 1976, 11687, 625, 262]]),
     })
 
     if k >= 5:
         test_batches.append({
             "name": "Batch size 2",
-            "tokens": np.array([[15496, 995], [464, 2068]])
+            "tokens": np.array([[15496, 995], [464, 2068]]),
         })
 
     return test_batches[:k]
@@ -96,7 +87,7 @@ def test_single_batch(input_ids_BT: np.ndarray, weights: dict[str, jax.Array], c
         hf_logits,
         rtol=5e-3,  # 0.5% relative tolerance
         atol=1e-1,  # 0.1 absolute tolerance
-        verbose=False
+        verbose=False,
     )
 
     return comparison
@@ -114,7 +105,7 @@ def test_multiple_batches(weights: dict[str, jax.Array], config: GPT2Config, k=5
         print(f"\n📊 Batch {i + 1}/{k}: {batch['name']}")
         print("-" * 40)
 
-        test_input = batch['tokens']
+        test_input = batch["tokens"]
         print(f"Input shape: {test_input.shape}")
         print(f"Input tokens: {test_input.tolist()}")
 
@@ -122,11 +113,11 @@ def test_multiple_batches(weights: dict[str, jax.Array], config: GPT2Config, k=5
             comparison = test_single_batch(test_input, weights, config)
 
             batch_result = {
-                "name": batch['name'],
+                "name": batch["name"],
                 "input_shape": test_input.shape,
-                "max_abs_diff": comparison.get('max_abs_diff', float('inf')),
-                "mean_abs_diff": comparison.get('mean_abs_diff', float('inf')),
-                "all_close": comparison.get('all_close', False)
+                "max_abs_diff": comparison.get("max_abs_diff", float("inf")),
+                "mean_abs_diff": comparison.get("mean_abs_diff", float("inf")),
+                "all_close": comparison.get("all_close", False),
             }
             results.append(batch_result)
 
@@ -134,7 +125,7 @@ def test_multiple_batches(weights: dict[str, jax.Array], config: GPT2Config, k=5
             print(f"Mean absolute difference: {batch_result['mean_abs_diff']:.6f}")
             print(f"All close (rtol=5e-3, atol=1e-1): {batch_result['all_close']}")
 
-            if batch_result['all_close']:
+            if batch_result["all_close"]:
                 print("✅ PASS")
             else:
                 print("❌ FAIL")
@@ -142,14 +133,15 @@ def test_multiple_batches(weights: dict[str, jax.Array], config: GPT2Config, k=5
         except Exception as e:
             print(f"❌ Error: {e}")
             import traceback
+
             traceback.print_exc()
             results.append({
-                "name": batch['name'],
+                "name": batch["name"],
                 "input_shape": test_input.shape,
-                "max_abs_diff": float('inf'),
-                "mean_abs_diff": float('inf'),
+                "max_abs_diff": float("inf"),
+                "mean_abs_diff": float("inf"),
                 "all_close": False,
-                "error": str(e)
+                "error": str(e),
             })
 
     return results
@@ -162,7 +154,7 @@ def print_summary(results):
     print("=" * 70)
 
     total_batches = len(results)
-    passed_batches = sum(1 for r in results if r['all_close'])
+    passed_batches = sum(1 for r in results if r["all_close"])
 
     print(f"Total batches tested: {total_batches}")
     print(f"Batches passed: {passed_batches}")
@@ -171,8 +163,8 @@ def print_summary(results):
 
     print("\nPer-batch results:")
     for i, result in enumerate(results):
-        status = "✅ PASS" if result['all_close'] else "❌ FAIL"
-        max_diff = result['max_abs_diff']
+        status = "✅ PASS" if result["all_close"] else "❌ FAIL"
+        max_diff = result["max_abs_diff"]
         if np.isinf(max_diff):
             diff_str = "ERROR"
         else:
@@ -184,7 +176,7 @@ def print_summary(results):
     else:
         print(f"\n💡 {total_batches - passed_batches} tests failed.")
 
-        valid_diffs = [r['max_abs_diff'] for r in results if not np.isinf(r['max_abs_diff'])]
+        valid_diffs = [r["max_abs_diff"] for r in results if not np.isinf(r["max_abs_diff"])]
         if valid_diffs:
             avg_max_diff = np.mean(valid_diffs)
             if avg_max_diff > 10:
@@ -196,9 +188,12 @@ def print_summary(results):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Test JAX GPT-2 implementation against HuggingFace")
-    parser.add_argument("--batches", type=int, default=5,
-                       help="Number of test batches to run (default: 5)")
+    parser = argparse.ArgumentParser(
+        description="Test JAX GPT-2 implementation against HuggingFace"
+    )
+    parser.add_argument(
+        "--batches", type=int, default=5, help="Number of test batches to run (default: 5)"
+    )
 
     args = parser.parse_args()
 
@@ -220,6 +215,7 @@ def main():
     except Exception as e:
         print(f"\n❌ Testing failed: {e}")
         import traceback
+
         traceback.print_exc()
 
 

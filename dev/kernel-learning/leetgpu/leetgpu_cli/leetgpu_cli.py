@@ -2,6 +2,7 @@
 """
 LeetGPU CLI - Command-line interface for LeetGPU challenges
 """
+
 import argparse
 from pathlib import Path
 
@@ -16,11 +17,11 @@ def list_challenges(args):
     challenges = client.get_all_challenges()
 
     # Sort by ID
-    challenges.sort(key=lambda c: c['id'])
+    challenges.sort(key=lambda c: c["id"])
 
     # Filter by difficulty if specified
     if args.difficulty:
-        challenges = [c for c in challenges if c['difficulty'].lower() == args.difficulty.lower()]
+        challenges = [c for c in challenges if c["difficulty"].lower() == args.difficulty.lower()]
 
     # Print header
     print(f"\n{'ID':<4} {'Title':<40} {'Difficulty':<10}")
@@ -44,7 +45,7 @@ def init_challenge(args):
     else:
         # Search by name
         challenges = client.get_all_challenges()
-        matches = [c for c in challenges if args.challenge.lower() in c['title'].lower()]
+        matches = [c for c in challenges if args.challenge.lower() in c["title"].lower()]
 
         if not matches:
             print(f"Error: No challenge found matching '{args.challenge}'")
@@ -56,11 +57,11 @@ def init_challenge(args):
             print("\nPlease specify the exact challenge ID")
             return
         else:
-            challenge_id = matches[0]['id']
+            challenge_id = matches[0]["id"]
 
     # Fetch challenge details
     challenges = client.get_all_challenges()
-    challenge = next((c for c in challenges if c['id'] == challenge_id), None)
+    challenge = next((c for c in challenges if c["id"] == challenge_id), None)
 
     if not challenge:
         print(f"Error: Challenge {challenge_id} not found")
@@ -71,13 +72,13 @@ def init_challenge(args):
 
     # Determine language
     language = args.language or "cute"
-    if language not in starter['languages']:
+    if language not in starter["languages"]:
         print(f"Error: Language '{language}' not available for this challenge")
         print(f"Available languages: {', '.join(starter['languages'])}")
         return
 
     # Create directory in current working directory
-    problem_name = challenge['title'].lower().replace(' ', '-')
+    problem_name = challenge["title"].lower().replace(" ", "-")
     challenge_dir = Path.cwd() / problem_name
 
     if challenge_dir.exists() and not args.force:
@@ -89,23 +90,23 @@ def init_challenge(args):
 
     # Determine file extension
     extensions = {
-        'cute': 'py',
-        'cuda': 'cu',
-        'triton': 'py',
-        'mojo': 'mojo',
-        'pytorch': 'py',
-        'tinygrad': 'py',
+        "cute": "py",
+        "cuda": "cu",
+        "triton": "py",
+        "mojo": "mojo",
+        "pytorch": "py",
+        "tinygrad": "py",
     }
-    ext = extensions.get(language, 'txt')
+    ext = extensions.get(language, "txt")
 
     # Write starter code
     code_file = challenge_dir / f"starter_kernel.{ext}"
-    with open(code_file, 'w') as f:
-        f.write(starter['starter_code'][language])
+    with open(code_file, "w") as f:
+        f.write(starter["starter_code"][language])
 
     # Write problem spec
     spec_file = challenge_dir / "problem.md"
-    with open(spec_file, 'w') as f:
+    with open(spec_file, "w") as f:
         f.write(f"# {challenge['title']}\n\n")
         f.write(f"**Difficulty:** {challenge['difficulty']}\n\n")
         f.write(f"**Challenge ID:** {challenge_id}\n\n")
@@ -113,28 +114,35 @@ def init_challenge(args):
         f.write("## Problem Description\n\n")
         # Strip HTML tags for markdown (simple approach)
         import re
-        spec_text = re.sub('<[^<]+?>', '', challenge['spec'])
+
+        spec_text = re.sub("<[^<]+?>", "", challenge["spec"])
         f.write(spec_text)
 
     # Write metadata
     metadata_file = challenge_dir / "metadata.json"
     import json
-    with open(metadata_file, 'w') as f:
-        json.dump({
-            'challenge_id': challenge_id,
-            'title': challenge['title'],
-            'difficulty': challenge['difficulty'],
-            'language': language,
-        }, f, indent=2)
+
+    with open(metadata_file, "w") as f:
+        json.dump(
+            {
+                "challenge_id": challenge_id,
+                "title": challenge["title"],
+                "difficulty": challenge["difficulty"],
+                "language": language,
+            },
+            f,
+            indent=2,
+        )
 
     # Create solution file with problem description as docstring + starter code
     solution_file = challenge_dir / f"solution_kernel.{ext}"
-    with open(solution_file, 'w') as f:
+    with open(solution_file, "w") as f:
         import re
-        spec_text = re.sub('<[^<]+?>', '', challenge['spec'])
+
+        spec_text = re.sub("<[^<]+?>", "", challenge["spec"])
 
         # For Python-like languages, use docstring
-        if ext in ['py', 'mojo']:
+        if ext in ["py", "mojo"]:
             f.write('"""\n')
             f.write(f"{challenge['title']}\n\n")
             f.write(f"Difficulty: {challenge['difficulty']}\n")
@@ -144,19 +152,19 @@ def init_challenge(args):
             f.write('\n"""\n\n')
         else:
             # For C-like languages, use block comments
-            f.write('/*\n')
+            f.write("/*\n")
             f.write(f" * {challenge['title']}\n")
             f.write(" *\n")
             f.write(f" * Difficulty: {challenge['difficulty']}\n")
             f.write(f" * Challenge ID: {challenge_id}\n")
             f.write(f" * Language: {language}\n")
             f.write(" *\n")
-            for line in spec_text.strip().split('\n'):
+            for line in spec_text.strip().split("\n"):
                 f.write(f" * {line}\n")
-            f.write(' */\n\n')
+            f.write(" */\n\n")
 
         # Write starter code
-        f.write(starter['starter_code'][language])
+        f.write(starter["starter_code"][language])
 
     print(f"✓ Created challenge directory: {challenge_dir}")
     print(f"  - {code_file.name} (starter code)")
@@ -202,9 +210,9 @@ def submit_solution(args):
 
     try:
         result = client.submit_code(
-            challenge_id=metadata['challenge_id'],
+            challenge_id=metadata["challenge_id"],
             code=code,
-            language=metadata['language'],
+            language=metadata["language"],
             gpu=gpu,
             is_public=not args.private,
         )
@@ -230,7 +238,7 @@ def show_info(args):
     else:
         # Search by name
         challenges = client.get_all_challenges()
-        matches = [c for c in challenges if args.challenge.lower() in c['title'].lower()]
+        matches = [c for c in challenges if args.challenge.lower() in c["title"].lower()]
 
         if not matches:
             print(f"Error: No challenge found matching '{args.challenge}'")
@@ -241,11 +249,11 @@ def show_info(args):
                 print(f"  {m['id']}: {m['title']}")
             return
         else:
-            challenge_id = matches[0]['id']
+            challenge_id = matches[0]["id"]
 
     # Fetch challenge
     challenges = client.get_all_challenges()
-    challenge = next((c for c in challenges if c['id'] == challenge_id), None)
+    challenge = next((c for c in challenges if c["id"] == challenge_id), None)
 
     if not challenge:
         print(f"Error: Challenge {challenge_id} not found")
@@ -261,7 +269,7 @@ def show_info(args):
     print(f"Difficulty: {challenge['difficulty']}")
     print(f"Languages:  {', '.join(starter['languages'])}")
     print("\nDescription:")
-    print(challenge['spec'])
+    print(challenge["spec"])
     print(f"\n{'=' * 60}\n")
 
 
@@ -271,34 +279,38 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
-    subparsers = parser.add_subparsers(dest='command', help='Commands')
+    subparsers = parser.add_subparsers(dest="command", help="Commands")
 
     # List command
-    list_parser = subparsers.add_parser('list', help='List all challenges')
-    list_parser.add_argument('-d', '--difficulty', choices=['easy', 'medium', 'hard'],
-                            help='Filter by difficulty')
+    list_parser = subparsers.add_parser("list", help="List all challenges")
+    list_parser.add_argument(
+        "-d", "--difficulty", choices=["easy", "medium", "hard"], help="Filter by difficulty"
+    )
     list_parser.set_defaults(func=list_challenges)
 
     # Init command
-    init_parser = subparsers.add_parser('init', help='Initialize a challenge directory')
-    init_parser.add_argument('challenge', help='Challenge ID or name')
-    init_parser.add_argument('-l', '--language', default='cute',
-                            help='Programming language (default: cute)')
-    init_parser.add_argument('-f', '--force', action='store_true',
-                            help='Overwrite existing directory')
+    init_parser = subparsers.add_parser("init", help="Initialize a challenge directory")
+    init_parser.add_argument("challenge", help="Challenge ID or name")
+    init_parser.add_argument(
+        "-l", "--language", default="cute", help="Programming language (default: cute)"
+    )
+    init_parser.add_argument(
+        "-f", "--force", action="store_true", help="Overwrite existing directory"
+    )
     init_parser.set_defaults(func=init_challenge)
 
     # Submit command
-    submit_parser = subparsers.add_parser('submit', help='Submit a solution')
-    submit_parser.add_argument('file', help='Solution file to submit')
-    submit_parser.add_argument('-g', '--gpu', help='GPU to run on (default: NVIDIA TESLA T4)')
-    submit_parser.add_argument('-p', '--private', action='store_true',
-                              help='Make submission private')
+    submit_parser = subparsers.add_parser("submit", help="Submit a solution")
+    submit_parser.add_argument("file", help="Solution file to submit")
+    submit_parser.add_argument("-g", "--gpu", help="GPU to run on (default: NVIDIA TESLA T4)")
+    submit_parser.add_argument(
+        "-p", "--private", action="store_true", help="Make submission private"
+    )
     submit_parser.set_defaults(func=submit_solution)
 
     # Info command
-    info_parser = subparsers.add_parser('info', help='Show challenge information')
-    info_parser.add_argument('challenge', help='Challenge ID or name')
+    info_parser = subparsers.add_parser("info", help="Show challenge information")
+    info_parser.add_argument("challenge", help="Challenge ID or name")
     info_parser.set_defaults(func=show_info)
 
     args = parser.parse_args()

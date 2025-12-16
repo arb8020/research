@@ -33,7 +33,7 @@ def ref_kernel(
     PyTorch reference implementation of NVFP4 block-scaled GEMV.
     """
     a_ref, b_ref, sfa_ref_cpu, sfb_ref_cpu, _, _, c_ref = data
-    
+
     # Get dimensions from MxNxL layout
     _, _, l = c_ref.shape
 
@@ -63,13 +63,13 @@ def generate_input(
 ):
     """
     Generate input tensors for NVFP4 block-scaled GEMV.
-    
+
     Args:
         m: Number of rows in matrix A
         k: Number of columns in A (and length of vector b)
         l: Batch size
         seed: Random seed for reproducibility
-    
+
     Returns:
         Tuple of (a, b, scale_a, scale_b, c) where:
             a: [m, k, l] - Input matrix in torch.float4e2m1fn_x2 data type
@@ -86,11 +86,9 @@ def generate_input(
     n = 1
     # Scaling factor needs to pad the N size to 128
     n_padded_128 = 128
-    
+
     # Generate uint8 tensor, then convert to float4e2m1fn_x2 data type
-    a_ref = torch.randint(
-        0, 4, (l, m, k // 2), dtype=torch.uint8, device="cuda"
-    ).permute(1, 2, 0)
+    a_ref = torch.randint(0, 4, (l, m, k // 2), dtype=torch.uint8, device="cuda").permute(1, 2, 0)
     # Pad b tensor's N dimension to 128 to call torch._scaled_mm for nvfp4 dot product computation
     b_ref = torch.randint(
         0, 4, (l, n_padded_128, k // 2), dtype=torch.uint8, device="cuda"
@@ -99,10 +97,8 @@ def generate_input(
     b_ref = b_ref.view(torch.float4_e2m1fn_x2)
 
     # Create float16 output tensor
-    c_ref = torch.randn((l, m, n), dtype=torch.float16, device="cuda").permute(
-        1, 2, 0
-    )
-    
+    c_ref = torch.randn((l, m, n), dtype=torch.float16, device="cuda").permute(1, 2, 0)
+
     # Helper function to prepare the scale factor tensors for both reference
     # kernel and customize kernel. The customized data layout can be found in:
     # https://docs.nvidia.com/cuda/cublas/index.html?highlight=fp4#d-block-scaling-factors-layout
@@ -111,11 +107,11 @@ def generate_input(
         ref_shape = (l, mn, sf_k)
         ref_permute_order = (1, 2, 0)
         # Init with uint8 tensor, then convert to float8_e4m3fn
-        ref_f8_random_int = torch.randint(0, 3, ref_shape, dtype=torch.int8, device='cuda')
+        ref_f8_random_int = torch.randint(0, 3, ref_shape, dtype=torch.int8, device="cuda")
         ref_f8_torch_tensor = ref_f8_random_int.to(dtype=torch.float8_e4m3fn)
         # permute to match ref_permute_order
         ref_f8_torch_tensor_permuted = ref_f8_torch_tensor.permute(*ref_permute_order)
-        
+
         atom_m = (32, 4)
         atom_k = 4
         mma_shape = (
@@ -131,30 +127,32 @@ def generate_input(
         # Which is needed by the CuTe customized kernel
         mma_permute_order = (3, 4, 1, 5, 2, 0)
         # Generate a random int8 tensor, then convert to float8_e4m3fn
-        rand_int_tensor = torch.randint(0, 3, mma_shape, dtype=torch.int8, device='cuda')
+        rand_int_tensor = torch.randint(0, 3, mma_shape, dtype=torch.int8, device="cuda")
         reordered_f8_torch_tensor = rand_int_tensor.to(dtype=torch.float8_e4m3fn)
         # Permute according to mma_permute_order
         reordered_f8_torch_tensor = reordered_f8_torch_tensor.permute(*mma_permute_order)
 
         # GPU-side vectorized reordering (replaces slow CPU nested loops)
         # Create index grids for all dimensions
-        i_idx = torch.arange(mn, device='cuda')
-        j_idx = torch.arange(sf_k, device='cuda')
-        b_idx = torch.arange(l, device='cuda')
-        
+        i_idx = torch.arange(mn, device="cuda")
+        j_idx = torch.arange(sf_k, device="cuda")
+        b_idx = torch.arange(l, device="cuda")
+
         # Create meshgrid for all combinations of (i, j, b)
-        i_grid, j_grid, b_grid = torch.meshgrid(i_idx, j_idx, b_idx, indexing='ij')
-        
+        i_grid, j_grid, b_grid = torch.meshgrid(i_idx, j_idx, b_idx, indexing="ij")
+
         # Calculate target indices in vectorized manner
         mm = i_grid // (atom_m[0] * atom_m[1])
         mm32 = i_grid % atom_m[0]
         mm4 = (i_grid % 128) // atom_m[0]
         kk = j_grid // atom_k
         kk4 = j_grid % atom_k
-        
+
         # Perform the reordering with advanced indexing (all on GPU)
-        reordered_f8_torch_tensor[mm32, mm4, mm, kk4, kk, b_grid] = ref_f8_torch_tensor_permuted[i_grid, j_grid, b_grid]
-        
+        reordered_f8_torch_tensor[mm32, mm4, mm, kk4, kk, b_grid] = ref_f8_torch_tensor_permuted[
+            i_grid, j_grid, b_grid
+        ]
+
         return ref_f8_torch_tensor_permuted.cpu(), reordered_f8_torch_tensor
 
     sf_k = ceil_div(k, sf_vec_size)
@@ -163,9 +161,8 @@ def generate_input(
 
     sfa_ref = sfa_ref_cpu.to("cuda")
     sfb_ref = sfb_ref_cpu.to("cuda")
-    
+
     return (a_ref, b_ref, sfa_ref, sfb_ref, sfa_permuted, sfb_permuted, c_ref)
 
 
 check_implementation = make_match_reference(ref_kernel, rtol=1e-03, atol=1e-03)
-

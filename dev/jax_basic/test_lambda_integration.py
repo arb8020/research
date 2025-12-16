@@ -24,10 +24,10 @@ import logging
 import os
 
 from dotenv import load_dotenv
-from shared.config import get_lambda_key
-from shared.logging_config import setup_logging
 
 from broker import GPUClient
+from shared.config import get_lambda_key
+from shared.logging_config import setup_logging
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ def search_lambda_offers(gpu_client, gpu_type=None):
         query=f"gpu_type.contains('{gpu_type}')" if gpu_type else None,
         provider="lambdalabs",
         sort=lambda x: x.price_per_hour,
-        reverse=False
+        reverse=False,
     )
 
     if not offers:
@@ -58,19 +58,20 @@ def search_lambda_offers(gpu_client, gpu_type=None):
     logger.info(f"Found {len(offers)} offers")
     logger.info("\nTop 5 offers:")
     for i, offer in enumerate(offers[:5], 1):
-        logger.info(f"  {i}. {offer.gpu_type} x{offer.gpu_count} - ${offer.price_per_hour:.2f}/hr - {offer.availability_zone}")
+        logger.info(
+            f"  {i}. {offer.gpu_type} x{offer.gpu_count} - ${offer.price_per_hour:.2f}/hr - {offer.availability_zone}"
+        )
 
     return offers
 
 
 def provision_instance(gpu_client, offers):
     """Provision a Lambda Labs instance"""
-    logger.info(f"\nProvisioning: {offers[0].gpu_type} x{offers[0].gpu_count} at ${offers[0].price_per_hour:.2f}/hr")
-
-    instance = gpu_client.create(
-        query=offers[0],
-        name="lambda-integration-test"
+    logger.info(
+        f"\nProvisioning: {offers[0].gpu_type} x{offers[0].gpu_count} at ${offers[0].price_per_hour:.2f}/hr"
     )
+
+    instance = gpu_client.create(query=offers[0], name="lambda-integration-test")
 
     if not instance:
         raise RuntimeError("Failed to create instance")
@@ -188,7 +189,9 @@ def run_lambda_integration_test(gpu_type=None, skip_create=False):
 def main():
     parser = argparse.ArgumentParser(description="Lambda Labs integration test")
     parser.add_argument("--gpu-type", help="Filter by GPU type (e.g., 'H100', 'A100')")
-    parser.add_argument("--skip-create", action="store_true", help="Only test search, don't create instance")
+    parser.add_argument(
+        "--skip-create", action="store_true", help="Only test search, don't create instance"
+    )
 
     args = parser.parse_args()
 
@@ -206,10 +209,12 @@ def main():
     except Exception as e:
         logger.error(f"Error: {e}")
         import traceback
+
         traceback.print_exc()
         return 1
 
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(main())

@@ -16,8 +16,7 @@ _TOKENIZER_MAX_LEN_SENTINEL = 1_000_000_000  # treat extremely large values as "
 
 
 def _effective_sequence_length(
-    requested_length: int,
-    tokenizer: PreTrainedTokenizer | PreTrainedTokenizerFast | None
+    requested_length: int, tokenizer: PreTrainedTokenizer | PreTrainedTokenizerFast | None
 ) -> int:
     """Return the sequence length we should actually use for this tokenizer."""
 
@@ -96,7 +95,7 @@ def chunk_text_by_chars(text: str, chunk_size: int) -> list[str]:
 
     chunks = []
     for i in range(0, len(text), chunk_size):
-        chunk = text[i:i + chunk_size]
+        chunk = text[i : i + chunk_size]
         if chunk.strip():  # Skip empty chunks
             chunks.append(chunk)
 
@@ -104,9 +103,7 @@ def chunk_text_by_chars(text: str, chunk_size: int) -> list[str]:
 
 
 def chunk_text_by_tokens(
-    text: str,
-    tokenizer: PreTrainedTokenizer | PreTrainedTokenizerFast,
-    chunk_size: int
+    text: str, tokenizer: PreTrainedTokenizer | PreTrainedTokenizerFast, chunk_size: int
 ) -> list[str]:
     """Split text into token-based chunks.
 
@@ -129,7 +126,7 @@ def chunk_text_by_tokens(
 
     chunks = []
     for i in range(0, len(tokens), chunk_size):
-        chunk_tokens = tokens[i:i + chunk_size]
+        chunk_tokens = tokens[i : i + chunk_size]
         chunk_text = tokenizer.decode(chunk_tokens, skip_special_tokens=True)
         if chunk_text.strip():  # Skip empty chunks
             chunks.append(chunk_text)
@@ -218,7 +215,7 @@ def get_text_sequences(
                 else:
                     # Character-based extraction (original logic)
                     sequence = current_text[:sequence_length]
-                    current_text = current_text[sequence_length // 2:]  # 50% overlap
+                    current_text = current_text[sequence_length // 2 :]  # 50% overlap
                     content_length = len(current_text)
 
                 # Decide whether to keep or skip this sequence
@@ -233,7 +230,8 @@ def get_text_sequences(
     except Exception as e:
         raise RuntimeError(f"Failed to extract sequences from {dataset_name}: {e}")
 
-    assert len(sequences) == num_sequences, \
+    assert len(sequences) == num_sequences, (
         f"Could only extract {len(sequences)} sequences, needed {num_sequences}"
+    )
 
     return sequences

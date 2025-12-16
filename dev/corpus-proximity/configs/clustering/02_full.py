@@ -12,7 +12,7 @@ config = Config(
         num_shards=10,  # Full nanochat dataset
         data_dir=_BASE_DIR / "shards",
         processed_dir=_BASE_DIR / "processed_full",
-        output_file="chunks_full.jsonl"
+        output_file="chunks_full.jsonl",
     ),
     clustering=ClusteringConfig(
         embedding_model="Snowflake/snowflake-arctic-embed-l",
@@ -33,6 +33,6 @@ config = Config(
         naming_model="gpt-4o-mini",
         naming_api_base="https://api.openai.com/v1",
         naming_temperature=0.7,
-        naming_max_tokens=50
-    )
+        naming_max_tokens=50,
+    ),
 )

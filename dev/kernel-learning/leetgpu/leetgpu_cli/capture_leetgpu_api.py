@@ -2,6 +2,7 @@
 Capture LeetGPU submission API requests using Playwright.
 This script intercepts network requests to understand the API format.
 """
+
 import asyncio
 import json
 
@@ -33,7 +34,9 @@ async def capture_api_requests():
                         print(f"\n📤 Request Body (raw):\n{post_data}\n")
                         try:
                             body_json = json.loads(post_data)
-                            print(f"📤 Request Body (formatted):\n{json.dumps(body_json, indent=2)}\n")
+                            print(
+                                f"📤 Request Body (formatted):\n{json.dumps(body_json, indent=2)}\n"
+                            )
                         except:
                             pass
 
@@ -41,7 +44,7 @@ async def capture_api_requests():
                         "url": request.url,
                         "method": request.method,
                         "headers": dict(request.headers),
-                        "body": post_data
+                        "body": post_data,
                     })
 
         # Also listen to responses
@@ -54,7 +57,9 @@ async def capture_api_requests():
                         print(f"📥 Response Body:\n{body}\n")
                         try:
                             response_json = json.loads(body)
-                            print(f"📥 Response Body (formatted):\n{json.dumps(response_json, indent=2)}\n")
+                            print(
+                                f"📥 Response Body (formatted):\n{json.dumps(response_json, indent=2)}\n"
+                            )
                         except:
                             pass
                     except:

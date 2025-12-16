@@ -2,6 +2,7 @@
 
 This is a template - replace the implementation with your actual Triton kernel.
 """
+
 from kernel_utils.backends import BACKENDS
 from kernel_utils.task import input_t, output_t
 
@@ -59,6 +60,7 @@ def triton_kernel(data: input_t) -> output_t:
     # TODO: Replace this with your Triton kernel implementation
     # For now, fall back to reference for testing the infrastructure
     from nvfp4.reference_kernel import ref_kernel
+
     return ref_kernel(data)
 
     # Example of how to launch Triton kernel (uncomment when implemented):

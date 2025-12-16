@@ -27,14 +27,16 @@ class TrajectoryData:
     Following Casey: Data is transparent, not opaque.
     All fields are public and directly accessible.
     """
+
     losses: list[float]  # Loss at each step
     params_history: list[np.ndarray]  # Parameters at each step (converted to numpy)
     steps: list[int]  # Step numbers
 
     def __post_init__(self):
         # Tiger Style: Assert all invariants
-        assert len(self.losses) == len(self.params_history) == len(self.steps), \
+        assert len(self.losses) == len(self.params_history) == len(self.steps), (
             "All trajectory arrays must have same length"
+        )
         assert len(self.losses) > 0, "Trajectory must have at least one point"
         assert all(s >= 0 for s in self.steps), "Steps must be non-negative"
 
@@ -45,6 +47,7 @@ class ContourData:
 
     Following Casey: Separate concerns - trajectory vs landscape.
     """
+
     x: np.ndarray  # X coordinates (1D array)
     y: np.ndarray  # Y coordinates (1D array)
     z: np.ndarray  # Loss values (2D array, shape [len(y), len(x)])
@@ -54,8 +57,9 @@ class ContourData:
         assert self.x.ndim == 1, f"x must be 1D, got {self.x.ndim}D"
         assert self.y.ndim == 1, f"y must be 1D, got {self.y.ndim}D"
         assert self.z.ndim == 2, f"z must be 2D, got {self.z.ndim}D"
-        assert self.z.shape == (len(self.y), len(self.x)), \
+        assert self.z.shape == (len(self.y), len(self.x)), (
             f"z.shape {self.z.shape} must match (len(y)={len(self.y)}, len(x)={len(self.x)})"
+        )
 
 
 @dataclass
@@ -64,6 +68,7 @@ class OptimizationVizData:
 
     Following Casey: One struct to rule them all - keep related data together.
     """
+
     trajectory: TrajectoryData
     landscape: ContourData | None  # None for non-2D problems
     optimizer_name: str
@@ -90,8 +95,7 @@ def extract_trajectory_data(
         TrajectoryData with numpy arrays
     """
     # Tiger Style: Assert preconditions
-    assert len(losses) == len(params_history), \
-        "losses and params_history must have same length"
+    assert len(losses) == len(params_history), "losses and params_history must have same length"
     assert len(losses) > 0, "Must have at least one data point"
 
     # Convert JAX arrays to numpy for portability
@@ -104,18 +108,14 @@ def extract_trajectory_data(
 
     steps = list(range(len(losses)))
 
-    return TrajectoryData(
-        losses=losses,
-        params_history=params_numpy,
-        steps=steps
-    )
+    return TrajectoryData(losses=losses, params_history=params_numpy, steps=steps)
 
 
 def compute_2d_landscape(
     loss_fn: Callable[[np.ndarray], float],
     x_range: tuple[float, float],
     y_range: tuple[float, float],
-    resolution: int = 100
+    resolution: int = 100,
 ) -> ContourData:
     """Compute 2D loss landscape for visualization.
 
@@ -160,7 +160,7 @@ def create_viz_data(
     optimizer_name: str,
     learning_rate: float,
     landscape_bounds: tuple[tuple[float, float], tuple[float, float]] | None = None,
-    landscape_resolution: int = 100
+    landscape_resolution: int = 100,
 ) -> OptimizationVizData:
     """Create complete visualization data from optimizer output.
 
@@ -205,25 +205,23 @@ def create_viz_data(
                 x_range, y_range = landscape_bounds
 
             landscape = compute_2d_landscape(
-                loss_fn=loss_fn,
-                x_range=x_range,
-                y_range=y_range,
-                resolution=landscape_resolution
+                loss_fn=loss_fn, x_range=x_range, y_range=y_range, resolution=landscape_resolution
             )
 
     return OptimizationVizData(
         trajectory=trajectory,
         landscape=landscape,
         optimizer_name=optimizer_name,
-        learning_rate=learning_rate
+        learning_rate=learning_rate,
     )
 
 
 def main():
     """Test data generation."""
+
     # Simple test case
     def loss_fn(params: np.ndarray) -> float:
-        return float(np.sum(params ** 2) / 2.0)
+        return float(np.sum(params**2) / 2.0)
 
     # Create fake trajectory
     losses = [6.5, 5.2, 4.1, 3.2, 2.5, 2.0, 1.5, 1.0]
@@ -243,7 +241,7 @@ def main():
         params_history=params_history,
         loss_fn=loss_fn,
         optimizer_name="SGD",
-        learning_rate=0.1
+        learning_rate=0.1,
     )
 
     print("=" * 80)
@@ -256,8 +254,10 @@ def main():
 
     if viz_data.landscape:
         print(f"Landscape resolution: {len(viz_data.landscape.x)} x {len(viz_data.landscape.y)}")
-        print(f"Landscape bounds: x=[{viz_data.landscape.x[0]:.2f}, {viz_data.landscape.x[-1]:.2f}], "
-              f"y=[{viz_data.landscape.y[0]:.2f}, {viz_data.landscape.y[-1]:.2f}]")
+        print(
+            f"Landscape bounds: x=[{viz_data.landscape.x[0]:.2f}, {viz_data.landscape.x[-1]:.2f}], "
+            f"y=[{viz_data.landscape.y[0]:.2f}, {viz_data.landscape.y[-1]:.2f}]"
+        )
 
     print("\nTest passed!")
     return 0
@@ -265,4 +265,5 @@ def main():
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(main())

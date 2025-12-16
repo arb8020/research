@@ -3,6 +3,7 @@
 Provides structured results for correctness and performance tests,
 enabling JSON export and result aggregation.
 """
+
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -65,8 +66,11 @@ class BackendResults:
         """Average speedup across performance tests."""
         if not self.performance_tests:
             return 0.0
-        speedups = [r.speedup for r in self.performance_tests
-                    if r.successfully_ran and r.speedup is not None]
+        speedups = [
+            r.speedup
+            for r in self.performance_tests
+            if r.successfully_ran and r.speedup is not None
+        ]
         if not speedups:
             return 0.0
         return sum(speedups) / len(speedups)
@@ -76,13 +80,17 @@ class BackendResults:
         """Geometric mean speedup (better for multiplicative metrics)."""
         if not self.performance_tests:
             return 0.0
-        speedups = [r.speedup for r in self.performance_tests
-                    if r.successfully_ran and r.speedup is not None and r.speedup > 0]
+        speedups = [
+            r.speedup
+            for r in self.performance_tests
+            if r.successfully_ran and r.speedup is not None and r.speedup > 0
+        ]
         if not speedups:
             return 0.0
 
         # Geometric mean: exp(mean(log(speedups)))
         import math
+
         log_sum = sum(math.log(s) for s in speedups)
         return math.exp(log_sum / len(speedups))
 
@@ -175,7 +183,7 @@ class TestSuiteResults:
         filepath = Path(filepath)
         filepath.parent.mkdir(parents=True, exist_ok=True)
 
-        with open(filepath, 'w') as f:
+        with open(filepath, "w") as f:
             json.dump(self.to_dict(), f, indent=2)
 
     @classmethod
@@ -195,11 +203,13 @@ class TestSuiteResults:
         for b_data in data["backends"]:
             correctness = [CorrectnessResult(**r) for r in b_data["correctness_tests"]]
             performance = [PerformanceResult(**r) for r in b_data["performance_tests"]]
-            backends.append(BackendResults(
-                backend_name=b_data["backend_name"],
-                correctness_tests=correctness,
-                performance_tests=performance,
-            ))
+            backends.append(
+                BackendResults(
+                    backend_name=b_data["backend_name"],
+                    correctness_tests=correctness,
+                    performance_tests=performance,
+                )
+            )
 
         return cls(
             suite_name=data["suite_name"],

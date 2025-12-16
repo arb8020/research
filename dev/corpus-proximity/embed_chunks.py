@@ -27,7 +27,7 @@ def extract_rate_limit_info(exception: Exception) -> tuple[int | None, int | Non
     Returns: (retry_after_seconds, requests_remaining, reset_time) or (None, None, None) if not found
     """
     # Check if exception has a response attribute (HfHubHTTPError from httpx)
-    if not hasattr(exception, 'response'):
+    if not hasattr(exception, "response"):
         return None, None, None
 
     response = cast(httpx.Response, exception.response)
@@ -35,8 +35,8 @@ def extract_rate_limit_info(exception: Exception) -> tuple[int | None, int | Non
 
     # Extract Retry-After header (preferred - tells us exactly when to retry)
     retry_after = None
-    if 'retry-after' in headers or 'Retry-After' in headers:
-        retry_after_str = headers.get('retry-after') or headers.get('Retry-After')
+    if "retry-after" in headers or "Retry-After" in headers:
+        retry_after_str = headers.get("retry-after") or headers.get("Retry-After")
         if retry_after_str:
             try:
                 retry_after = int(retry_after_str)
@@ -45,8 +45,8 @@ def extract_rate_limit_info(exception: Exception) -> tuple[int | None, int | Non
 
     # Extract X-RateLimit-Remaining header
     requests_remaining = None
-    if 'x-ratelimit-remaining' in headers or 'X-RateLimit-Remaining' in headers:
-        remaining_str = headers.get('x-ratelimit-remaining') or headers.get('X-RateLimit-Remaining')
+    if "x-ratelimit-remaining" in headers or "X-RateLimit-Remaining" in headers:
+        remaining_str = headers.get("x-ratelimit-remaining") or headers.get("X-RateLimit-Remaining")
         if remaining_str:
             try:
                 requests_remaining = int(remaining_str)
@@ -55,8 +55,8 @@ def extract_rate_limit_info(exception: Exception) -> tuple[int | None, int | Non
 
     # Extract X-RateLimit-Reset header
     reset_time = None
-    if 'x-ratelimit-reset' in headers or 'X-RateLimit-Reset' in headers:
-        reset_str = headers.get('x-ratelimit-reset') or headers.get('X-RateLimit-Reset')
+    if "x-ratelimit-reset" in headers or "X-RateLimit-Reset" in headers:
+        reset_str = headers.get("x-ratelimit-reset") or headers.get("X-RateLimit-Reset")
         if reset_str:
             try:
                 reset_time = int(reset_str)
@@ -80,11 +80,8 @@ def load_chunks(input_path: Path) -> tuple[list[str], list[dict]]:
     with open(input_path) as f:
         for line in f:
             chunk = json.loads(line)
-            texts.append(chunk['text'])
-            metadata.append({
-                'shard_id': chunk['shard_id'],
-                'chunk_id': chunk['chunk_id']
-            })
+            texts.append(chunk["text"])
+            metadata.append({"shard_id": chunk["shard_id"], "chunk_id": chunk["chunk_id"]})
 
     elapsed = time.time() - start_time
     logger.info(f"Loaded {len(texts)} chunks from {input_path} in {elapsed:.2f}s")
@@ -97,7 +94,7 @@ def load_model_with_retry(
     max_retries: int,
     retry_delay_seconds: int,
     retry_backoff_multiplier: float,
-    hf_token: str | None
+    hf_token: str | None,
 ) -> SentenceTransformer:
     """
     Load SentenceTransformer model with exponential backoff retry on rate limits.
@@ -115,7 +112,8 @@ def load_model_with_retry(
     # Set HF token if provided (why: increases rate limit from 3000 to much higher)
     if hf_token:
         import os
-        os.environ['HF_TOKEN'] = hf_token
+
+        os.environ["HF_TOKEN"] = hf_token
         logger.info("Using provided HuggingFace token for authentication")
 
     last_error = None
@@ -131,7 +129,9 @@ def load_model_with_retry(
             time.sleep(delay)
 
         try:
-            logger.info(f"Loading model: {model_name} on device: {device or 'auto'} (attempt {attempt + 1})")
+            logger.info(
+                f"Loading model: {model_name} on device: {device or 'auto'} (attempt {attempt + 1})"
+            )
             model_start = time.time()
             model = SentenceTransformer(model_name, device=device)
             model_load_time = time.time() - model_start
@@ -145,7 +145,11 @@ def load_model_with_retry(
             error_str = str(e)
 
             # Check if this is a rate limit error (positive space check)
-            if '429' in error_str or 'Too Many Requests' in error_str or 'rate limit' in error_str.lower():
+            if (
+                "429" in error_str
+                or "Too Many Requests" in error_str
+                or "rate limit" in error_str.lower()
+            ):
                 # Extract rate limit info from HTTP response headers
                 retry_after, requests_remaining, reset_time = extract_rate_limit_info(e)
 
@@ -157,6 +161,7 @@ def load_model_with_retry(
                     rate_info_parts.append(f"{requests_remaining} requests remaining")
                 if reset_time is not None:
                     import datetime
+
                     reset_dt = datetime.datetime.fromtimestamp(reset_time)
                     rate_info_parts.append(f"resets at {reset_dt.strftime('%H:%M:%S')}")
 
@@ -195,7 +200,7 @@ def embed_chunks(
     max_retries: int = 3,
     retry_delay_seconds: int = 60,
     retry_backoff_multiplier: float = 2.0,
-    hf_token: str | None = None
+    hf_token: str | None = None,
 ) -> np.ndarray:
     """Embed text chunks using sentence-transformers."""
     # Preconditions
@@ -209,20 +214,19 @@ def embed_chunks(
         max_retries=max_retries,
         retry_delay_seconds=retry_delay_seconds,
         retry_backoff_multiplier=retry_backoff_multiplier,
-        hf_token=hf_token
+        hf_token=hf_token,
     )
 
     num_batches = (len(texts) + batch_size - 1) // batch_size
     assert num_batches > 0  # Must have at least one batch
-    logger.info(f"Embedding {len(texts)} chunks with batch_size={batch_size} ({num_batches} batches)")
+    logger.info(
+        f"Embedding {len(texts)} chunks with batch_size={batch_size} ({num_batches} batches)"
+    )
 
     # Encode with progress bar
     embed_start = time.time()
     embeddings = model.encode(
-        texts,
-        batch_size=batch_size,
-        show_progress_bar=True,
-        convert_to_numpy=True
+        texts, batch_size=batch_size, show_progress_bar=True, convert_to_numpy=True
     )
     embed_time = time.time() - embed_start
 
@@ -233,10 +237,7 @@ def embed_chunks(
 
 
 def save_embeddings(
-    embeddings: np.ndarray,
-    metadata: list[dict],
-    output_dir: Path,
-    use_memmap: bool = False
+    embeddings: np.ndarray, metadata: list[dict], output_dir: Path, use_memmap: bool = False
 ):
     """Save embeddings and metadata to disk."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -248,12 +249,7 @@ def save_embeddings(
     save_start = time.time()
     if use_memmap:
         logger.info(f"Saving embeddings as memory-mapped array to {embeddings_path}")
-        memmap = np.memmap(
-            embeddings_path,
-            dtype='float32',
-            mode='w+',
-            shape=embeddings.shape
-        )
+        memmap = np.memmap(embeddings_path, dtype="float32", mode="w+", shape=embeddings.shape)
         memmap[:] = embeddings[:]
         memmap.flush()
     else:
@@ -266,9 +262,9 @@ def save_embeddings(
     # Save metadata
     logger.info(f"Saving metadata to {metadata_path}")
     meta_start = time.time()
-    with open(metadata_path, 'w') as f:
+    with open(metadata_path, "w") as f:
         for item in metadata:
-            f.write(json.dumps(item) + '\n')
+            f.write(json.dumps(item) + "\n")
     meta_time = time.time() - meta_start
     logger.info(f"Metadata saved in {meta_time:.2f}s")
 
@@ -305,8 +301,10 @@ def verify_embeddings(output_dir: Path, num_samples: int = 3):
     # Sample embeddings
     logger.info(f"\nSample embeddings (first {num_samples}):")
     for i in range(min(num_samples, len(embeddings))):
-        logger.info(f"  Embedding {i}: norm={np.linalg.norm(embeddings[i]):.4f}, "
-                   f"mean={embeddings[i].mean():.4f}, std={embeddings[i].std():.4f}")
+        logger.info(
+            f"  Embedding {i}: norm={np.linalg.norm(embeddings[i]):.4f}, "
+            f"mean={embeddings[i].mean():.4f}, std={embeddings[i].std():.4f}"
+        )
         logger.info(f"    Metadata: {metadata[i]}")
 
     logger.info(f"{'=' * 80}\n")
@@ -317,13 +315,10 @@ def main():
     import sys
 
     # Setup logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s'
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
     # Load config
-    if len(sys.argv) > 1 and sys.argv[1].endswith('.py'):
+    if len(sys.argv) > 1 and sys.argv[1].endswith(".py"):
         # Load config from experiment file
         spec = importlib.util.spec_from_file_location("exp_config", sys.argv[1])
         if spec is None:
@@ -362,7 +357,7 @@ def main():
             max_retries=config.embedding.max_retries,
             retry_delay_seconds=config.embedding.retry_delay_seconds,
             retry_backoff_multiplier=config.embedding.retry_backoff_multiplier,
-            hf_token=config.embedding.hf_token
+            hf_token=config.embedding.hf_token,
         )
 
         # Save embeddings
@@ -371,7 +366,7 @@ def main():
             embeddings=embeddings,
             metadata=metadata,
             output_dir=config.embedding.output_dir,
-            use_memmap=False  # Could add to config if needed
+            use_memmap=False,  # Could add to config if needed
         )
 
         # Verify (always verify for now)
@@ -385,17 +380,21 @@ def main():
 
         total_time = time.time() - pipeline_start
         logger.info("=" * 80)
-        logger.info(f"Embedding pipeline complete! Total time: {total_time:.2f}s ({total_time / 60:.1f} min)")
+        logger.info(
+            f"Embedding pipeline complete! Total time: {total_time:.2f}s ({total_time / 60:.1f} min)"
+        )
         logger.info("=" * 80)
         return 0
 
     except Exception as e:
         logger.error(f"Error: {e}")
         import traceback
+
         traceback.print_exc()
         return 1
 
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(main())

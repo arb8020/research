@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 """Run only the naming step on existing GPU instance with cached data."""
 
+import importlib.util
 import logging
 import os
 import sys
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
+
+from cluster_corpus import get_cache_key
 from dotenv import load_dotenv
 
-from broker import GPUClient
 from bifrost import BifrostClient
-from shared.config import get_runpod_key, get_prime_key
-from cluster_corpus import get_cache_key
-import importlib.util
+from broker import GPUClient
+from shared.config import get_prime_key, get_runpod_key
 
 REMOTE_WORKSPACE_PATH = "~/.bifrost/workspace/examples/corpus-proximity"
+
 
 def main():
     if len(sys.argv) < 2:
@@ -27,10 +29,7 @@ def main():
 
     load_dotenv()
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s'
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
     # Check for OPENAI_API_KEY
     openai_api_key = os.getenv("OPENAI_API_KEY", "")
@@ -77,14 +76,13 @@ def main():
 
     # Connect with bifrost
     bifrost_client = BifrostClient(
-        ssh_connection=corpus_instance.ssh_connection_string(),
-        ssh_key_path=ssh_key_path
+        ssh_connection=corpus_instance.ssh_connection_string(), ssh_key_path=ssh_key_path
     )
 
     # Check what's cached on the remote instance
-    logging.info("\n" + "="*80)
+    logging.info("\n" + "=" * 80)
     logging.info("Checking cached data on remote instance...")
-    logging.info("="*80)
+    logging.info("=" * 80)
 
     check_cmd = f"""cd {REMOTE_WORKSPACE_PATH} && \
 echo "Cluster tree:" && ls -lh data/clusters_tiny/*/tree.json 2>/dev/null || echo "  ❌ No cluster tree found" && \
@@ -98,9 +96,9 @@ echo "Processed data:" && ls -lh data/processed_tiny/*.jsonl 2>/dev/null || echo
         print(result.stdout)
 
     # Run just the naming step with OPENAI_API_KEY
-    logging.info("\n" + "="*80)
+    logging.info("\n" + "=" * 80)
     logging.info("🏷️  Running naming step with OPENAI_API_KEY...")
-    logging.info("="*80 + "\n")
+    logging.info("=" * 80 + "\n")
 
     # Export the API key and run the naming script
     cmd = f"""cd {REMOTE_WORKSPACE_PATH} && \
@@ -112,11 +110,11 @@ uv run python name_clusters.py {config_arg} --name"""
 
     # Stream output
     for line in result:
-        print(line, end='')
+        print(line, end="")
 
-    logging.info("\n" + "="*80)
+    logging.info("\n" + "=" * 80)
     logging.info("✅ Naming step completed")
-    logging.info("="*80)
+    logging.info("=" * 80)
 
     # Download results if requested
     if download_results:
@@ -131,7 +129,7 @@ uv run python name_clusters.py {config_arg} --name"""
 
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        config = getattr(module, "config")
+        config = module.config
         cache_key = get_cache_key(config)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -151,8 +149,7 @@ uv run python name_clusters.py {config_arg} --name"""
         for remote_path, local_path in targets:
             try:
                 result = bifrost_client.download_files(
-                    remote_path=remote_path,
-                    local_path=str(local_path)
+                    remote_path=remote_path, local_path=str(local_path)
                 )
                 if result and result.success and result.files_copied > 0:
                     logging.info(f"✅ Downloaded {local_path.name}")
@@ -166,6 +163,7 @@ uv run python name_clusters.py {config_arg} --name"""
         logging.info("\nℹ️  To download results, run with --download flag")
 
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())

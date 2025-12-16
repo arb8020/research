@@ -33,9 +33,7 @@ def format_annotations(annotated_output: AnnotatedOutput, show_chunks: bool = Fa
 
         for ann in phrase_annotations:
             stage = f", {ann.corpus_stage}" if ann.corpus_stage else ""
-            lines.append(
-                f"     [{ann.rank}] {ann.cluster_name} (d={ann.distance:.3f}{stage})"
-            )
+            lines.append(f"     [{ann.rank}] {ann.cluster_name} (d={ann.distance:.3f}{stage})")
 
         if show_chunks and phrase_annotations:
             chunk_text = phrase_annotations[0].nearest_chunk_text
@@ -50,13 +48,19 @@ def format_annotations(annotated_output: AnnotatedOutput, show_chunks: bool = Fa
 
         if avg_distance < 0.15:
             confidence = "HIGH"
-            interpretation = "Model output closely matches training corpus - likely grounded response."
+            interpretation = (
+                "Model output closely matches training corpus - likely grounded response."
+            )
         elif avg_distance < 0.30:
             confidence = "MEDIUM"
-            interpretation = "Model output moderately close to training corpus - possible extrapolation."
+            interpretation = (
+                "Model output moderately close to training corpus - possible extrapolation."
+            )
         else:
             confidence = "LOW"
-            interpretation = "Model output far from training corpus - likely hallucination or novel generation."
+            interpretation = (
+                "Model output far from training corpus - likely hallucination or novel generation."
+            )
 
         lines.append("🎯 Interpretation:")
         lines.append(f"  Average distance: {avg_distance:.3f} ({confidence} confidence)")
@@ -87,4 +91,3 @@ def format_annotations_compact(annotated_output: AnnotatedOutput) -> str:
         text_preview = text_preview[:60] + "..."
 
     return f'"{text_preview}" → {clusters_str}'
-

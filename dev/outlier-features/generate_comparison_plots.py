@@ -83,9 +83,7 @@ def extract_outliers_from_json(file_path: Path) -> list[dict] | None:
         # Try to extract all_systematic_outliers array using regex
         # Pattern: "all_systematic_outliers": [...], "batch_results"
         match = re.search(
-            r'"all_systematic_outliers":\s*\[(.*?)(?:\],\s*"batch_results")',
-            content,
-            re.DOTALL
+            r'"all_systematic_outliers":\s*\[(.*?)(?:\],\s*"batch_results")', content, re.DOTALL
         )
 
         if not match:
@@ -93,7 +91,7 @@ def extract_outliers_from_json(file_path: Path) -> list[dict] | None:
             return None
 
         # Parse just the outliers array
-        outliers_json = '[' + match.group(1) + ']'
+        outliers_json = "[" + match.group(1) + "]"
         outliers = json.loads(outliers_json)
 
         return outliers
@@ -132,20 +130,20 @@ def calculate_metrics(outliers: list[dict]) -> dict[str, float]:
     """
     if not outliers:
         return {
-            'mean_layer_pct': 0.0,
-            'median_layer_pct': 0.0,
-            'mean_seq_pct': 0.0,
-            'median_seq_pct': 0.0,
+            "mean_layer_pct": 0.0,
+            "median_layer_pct": 0.0,
+            "mean_seq_pct": 0.0,
+            "median_seq_pct": 0.0,
         }
 
-    layer_pcts = [o['layer_percentage'] * 100 for o in outliers]  # Convert to percentage
-    seq_pcts = [o['seq_percentage'] * 100 for o in outliers]
+    layer_pcts = [o["layer_percentage"] * 100 for o in outliers]  # Convert to percentage
+    seq_pcts = [o["seq_percentage"] * 100 for o in outliers]
 
     return {
-        'mean_layer_pct': float(np.mean(layer_pcts)),
-        'median_layer_pct': float(np.median(layer_pcts)),
-        'mean_seq_pct': float(np.mean(seq_pcts)),
-        'median_seq_pct': float(np.median(seq_pcts)),
+        "mean_layer_pct": float(np.mean(layer_pcts)),
+        "median_layer_pct": float(np.median(layer_pcts)),
+        "mean_seq_pct": float(np.mean(seq_pcts)),
+        "median_seq_pct": float(np.median(seq_pcts)),
     }
 
 
@@ -184,17 +182,19 @@ def collect_all_results(results_dir: Path) -> list[dict]:
         metadata = MODEL_METADATA[model_name]
 
         result = {
-            'model_name': metadata['name'],
-            'total_params_b': metadata['total_params_b'],
-            'active_params_b': metadata['active_params_b'],
-            'num_outliers': len(outliers),
-            **metrics
+            "model_name": metadata["name"],
+            "total_params_b": metadata["total_params_b"],
+            "active_params_b": metadata["active_params_b"],
+            "num_outliers": len(outliers),
+            **metrics,
         }
 
         all_results.append(result)
-        print(f"✅ {metadata['name']}: {len(outliers)} outliers, "
-              f"mean layer {metrics['mean_layer_pct']:.1f}%, "
-              f"mean seq {metrics['mean_seq_pct']:.1f}%")
+        print(
+            f"✅ {metadata['name']}: {len(outliers)} outliers, "
+            f"mean layer {metrics['mean_layer_pct']:.1f}%, "
+            f"mean seq {metrics['mean_seq_pct']:.1f}%"
+        )
 
     return all_results
 
@@ -206,7 +206,7 @@ def create_plot_matplotlib(
     output_path: Path,
     title: str,
     xlabel: str,
-    ylabel: str
+    ylabel: str,
 ):
     """Create a single comparison plot using matplotlib.
 
@@ -221,50 +221,41 @@ def create_plot_matplotlib(
     """
     import matplotlib
     import matplotlib.pyplot as plt
-    matplotlib.use('Agg')  # Non-interactive backend
+
+    matplotlib.use("Agg")  # Non-interactive backend
 
     # Extract data
     x_values = [r[x_key] for r in results]
     y_values = [r[y_key] for r in results]
-    labels = [r['model_name'] for r in results]
+    labels = [r["model_name"] for r in results]
 
     # Create figure
     plt.figure(figsize=(10, 7))
 
     # Scatter plot with labels
-    plt.scatter(x_values, y_values, s=100, alpha=0.6, c='steelblue')
+    plt.scatter(x_values, y_values, s=100, alpha=0.6, c="steelblue")
 
     # Add model labels
-    for x, y, label in zip(x_values, y_values, labels):
+    for x, y, label in zip(x_values, y_values, labels, strict=False):
         plt.annotate(
-            label,
-            (x, y),
-            xytext=(5, 5),
-            textcoords='offset points',
-            fontsize=9,
-            alpha=0.8
+            label, (x, y), xytext=(5, 5), textcoords="offset points", fontsize=9, alpha=0.8
         )
 
     # Formatting
     plt.xlabel(xlabel, fontsize=12)
     plt.ylabel(ylabel, fontsize=12)
-    plt.title(title, fontsize=14, fontweight='bold')
+    plt.title(title, fontsize=14, fontweight="bold")
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
 
     # Save
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     print(f"  📊 Saved: {output_path.name}")
 
 
 def create_plot_terminal(
-    results: list[dict],
-    x_key: str,
-    y_key: str,
-    title: str,
-    xlabel: str,
-    ylabel: str
+    results: list[dict], x_key: str, y_key: str, title: str, xlabel: str, ylabel: str
 ):
     """Create a single comparison plot in terminal using plotext.
 
@@ -285,20 +276,20 @@ def create_plot_terminal(
     # Extract data
     x_values = [r[x_key] for r in results]
     y_values = [r[y_key] for r in results]
-    labels = [r['model_name'] for r in results]
+    labels = [r["model_name"] for r in results]
 
     # Clear previous plot
     plt.clear_figure()
 
     # Use terminal's native colors (respects your terminal theme)
-    plt.theme('clear')
+    plt.theme("clear")
 
     # Define colors for each model (using plotext color names)
-    colors = ['red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white']
+    colors = ["red", "green", "yellow", "blue", "magenta", "cyan", "white"]
 
     # Create a scatter plot with labels and colors for each point
     # plotext doesn't have good annotation support, so we plot each point separately with a label
-    for i, (x, y, label) in enumerate(zip(x_values, y_values, labels)):
+    for i, (x, y, label) in enumerate(zip(x_values, y_values, labels, strict=False)):
         color = colors[i % len(colors)]
         plt.scatter([x], [y], marker="●", label=label, color=color)
 
@@ -313,19 +304,19 @@ def create_plot_terminal(
     # Print colored legend separately below the plot for clarity
     print("Legend:")
     color_codes = {
-        'red': '\033[91m',
-        'green': '\033[92m',
-        'yellow': '\033[93m',
-        'blue': '\033[94m',
-        'magenta': '\033[95m',
-        'cyan': '\033[96m',
-        'white': '\033[97m',
+        "red": "\033[91m",
+        "green": "\033[92m",
+        "yellow": "\033[93m",
+        "blue": "\033[94m",
+        "magenta": "\033[95m",
+        "cyan": "\033[96m",
+        "white": "\033[97m",
     }
-    reset = '\033[0m'
+    reset = "\033[0m"
 
-    for i, (x, y, label) in enumerate(zip(x_values, y_values, labels)):
+    for i, (x, y, label) in enumerate(zip(x_values, y_values, labels, strict=False)):
         color = colors[i % len(colors)]
-        color_code = color_codes.get(color, '')
+        color_code = color_codes.get(color, "")
         print(f"  {color_code}●{reset} {label}: ({x:.1f}, {y:.1f})")
     print()
 
@@ -348,74 +339,71 @@ def generate_all_plots(results: list[dict], output_dir: Path | None = None, term
     plots = [
         # Total params x Layer % x Mean/Median
         {
-            'x_key': 'total_params_b',
-            'y_key': 'mean_layer_pct',
-            'filename': '01_total_params_vs_mean_layer_pct.png',
-            'title': 'Outlier Layer Coverage vs Total Parameters (Mean)',
-            'xlabel': 'Total Parameters (B)',
-            'ylabel': 'Mean % Layers with Outliers',
+            "x_key": "total_params_b",
+            "y_key": "mean_layer_pct",
+            "filename": "01_total_params_vs_mean_layer_pct.png",
+            "title": "Outlier Layer Coverage vs Total Parameters (Mean)",
+            "xlabel": "Total Parameters (B)",
+            "ylabel": "Mean % Layers with Outliers",
         },
         {
-            'x_key': 'total_params_b',
-            'y_key': 'median_layer_pct',
-            'filename': '02_total_params_vs_median_layer_pct.png',
-            'title': 'Outlier Layer Coverage vs Total Parameters (Median)',
-            'xlabel': 'Total Parameters (B)',
-            'ylabel': 'Median % Layers with Outliers',
+            "x_key": "total_params_b",
+            "y_key": "median_layer_pct",
+            "filename": "02_total_params_vs_median_layer_pct.png",
+            "title": "Outlier Layer Coverage vs Total Parameters (Median)",
+            "xlabel": "Total Parameters (B)",
+            "ylabel": "Median % Layers with Outliers",
         },
-
         # Total params x Seq % x Mean/Median
         {
-            'x_key': 'total_params_b',
-            'y_key': 'mean_seq_pct',
-            'filename': '03_total_params_vs_mean_seq_pct.png',
-            'title': 'Outlier Sequence Coverage vs Total Parameters (Mean)',
-            'xlabel': 'Total Parameters (B)',
-            'ylabel': 'Mean % Sequence Positions with Outliers',
+            "x_key": "total_params_b",
+            "y_key": "mean_seq_pct",
+            "filename": "03_total_params_vs_mean_seq_pct.png",
+            "title": "Outlier Sequence Coverage vs Total Parameters (Mean)",
+            "xlabel": "Total Parameters (B)",
+            "ylabel": "Mean % Sequence Positions with Outliers",
         },
         {
-            'x_key': 'total_params_b',
-            'y_key': 'median_seq_pct',
-            'filename': '04_total_params_vs_median_seq_pct.png',
-            'title': 'Outlier Sequence Coverage vs Total Parameters (Median)',
-            'xlabel': 'Total Parameters (B)',
-            'ylabel': 'Median % Sequence Positions with Outliers',
+            "x_key": "total_params_b",
+            "y_key": "median_seq_pct",
+            "filename": "04_total_params_vs_median_seq_pct.png",
+            "title": "Outlier Sequence Coverage vs Total Parameters (Median)",
+            "xlabel": "Total Parameters (B)",
+            "ylabel": "Median % Sequence Positions with Outliers",
         },
-
         # Active params x Layer % x Mean/Median
         {
-            'x_key': 'active_params_b',
-            'y_key': 'mean_layer_pct',
-            'filename': '05_active_params_vs_mean_layer_pct.png',
-            'title': 'Outlier Layer Coverage vs Active Parameters (Mean)',
-            'xlabel': 'Active Parameters (B)',
-            'ylabel': 'Mean % Layers with Outliers',
+            "x_key": "active_params_b",
+            "y_key": "mean_layer_pct",
+            "filename": "05_active_params_vs_mean_layer_pct.png",
+            "title": "Outlier Layer Coverage vs Active Parameters (Mean)",
+            "xlabel": "Active Parameters (B)",
+            "ylabel": "Mean % Layers with Outliers",
         },
         {
-            'x_key': 'active_params_b',
-            'y_key': 'median_layer_pct',
-            'filename': '06_active_params_vs_median_layer_pct.png',
-            'title': 'Outlier Layer Coverage vs Active Parameters (Median)',
-            'xlabel': 'Active Parameters (B)',
-            'ylabel': 'Median % Layers with Outliers',
+            "x_key": "active_params_b",
+            "y_key": "median_layer_pct",
+            "filename": "06_active_params_vs_median_layer_pct.png",
+            "title": "Outlier Layer Coverage vs Active Parameters (Median)",
+            "xlabel": "Active Parameters (B)",
+            "ylabel": "Median % Layers with Outliers",
         },
-
         # Active params x Seq % x Mean/Median
         {
-            'x_key': 'active_params_b',
-            'y_key': 'mean_seq_pct',
-            'filename': '07_active_params_vs_mean_seq_pct.png',
-            'title': 'Outlier Sequence Coverage vs Active Parameters (Mean)',
-            'xlabel': 'Active Parameters (B)',
-            'ylabel': 'Mean % Sequence Positions with Outliers',
+            "x_key": "active_params_b",
+            "y_key": "mean_seq_pct",
+            "filename": "07_active_params_vs_mean_seq_pct.png",
+            "title": "Outlier Sequence Coverage vs Active Parameters (Mean)",
+            "xlabel": "Active Parameters (B)",
+            "ylabel": "Mean % Sequence Positions with Outliers",
         },
         {
-            'x_key': 'active_params_b',
-            'y_key': 'median_seq_pct',
-            'filename': '08_active_params_vs_median_seq_pct.png',
-            'title': 'Outlier Sequence Coverage vs Active Parameters (Median)',
-            'xlabel': 'Active Parameters (B)',
-            'ylabel': 'Median % Sequence Positions with Outliers',
+            "x_key": "active_params_b",
+            "y_key": "median_seq_pct",
+            "filename": "08_active_params_vs_median_seq_pct.png",
+            "title": "Outlier Sequence Coverage vs Active Parameters (Median)",
+            "xlabel": "Active Parameters (B)",
+            "ylabel": "Median % Sequence Positions with Outliers",
         },
     ]
 
@@ -424,11 +412,11 @@ def generate_all_plots(results: list[dict], output_dir: Path | None = None, term
         if terminal:
             create_plot_terminal(
                 results=results,
-                x_key=plot_spec['x_key'],
-                y_key=plot_spec['y_key'],
-                title=plot_spec['title'],
-                xlabel=plot_spec['xlabel'],
-                ylabel=plot_spec['ylabel'],
+                x_key=plot_spec["x_key"],
+                y_key=plot_spec["y_key"],
+                title=plot_spec["title"],
+                xlabel=plot_spec["xlabel"],
+                ylabel=plot_spec["ylabel"],
             )
             # Prompt to continue
             if plot_spec != plots[-1]:  # Not the last plot
@@ -437,12 +425,12 @@ def generate_all_plots(results: list[dict], output_dir: Path | None = None, term
             assert output_dir is not None, "output_dir required when not in terminal mode"
             create_plot_matplotlib(
                 results=results,
-                x_key=plot_spec['x_key'],
-                y_key=plot_spec['y_key'],
-                output_path=output_dir / plot_spec['filename'],
-                title=plot_spec['title'],
-                xlabel=plot_spec['xlabel'],
-                ylabel=plot_spec['ylabel'],
+                x_key=plot_spec["x_key"],
+                y_key=plot_spec["y_key"],
+                output_path=output_dir / plot_spec["filename"],
+                title=plot_spec["title"],
+                xlabel=plot_spec["xlabel"],
+                ylabel=plot_spec["ylabel"],
             )
 
 
@@ -460,7 +448,9 @@ def print_summary_table(results: list[dict], use_rich: bool = False):
 
             console = Console()
 
-            table = Table(title="Sweep Comparison Summary", show_header=True, header_style="bold magenta")
+            table = Table(
+                title="Sweep Comparison Summary", show_header=True, header_style="bold magenta"
+            )
             table.add_column("Model", style="cyan", no_wrap=True)
             table.add_column("Total (B)", justify="right", style="green")
             table.add_column("Active (B)", justify="right", style="green")
@@ -471,21 +461,23 @@ def print_summary_table(results: list[dict], use_rich: bool = False):
             table.add_column("Med S%", justify="right", style="red")
 
             # Sort by total params
-            for r in sorted(results, key=lambda x: x['total_params_b']):
+            for r in sorted(results, key=lambda x: x["total_params_b"]):
                 table.add_row(
-                    r['model_name'],
+                    r["model_name"],
                     f"{r['total_params_b']:.1f}",
                     f"{r['active_params_b']:.1f}",
                     f"{r['num_outliers']}",
                     f"{r['mean_layer_pct']:.1f}",
                     f"{r['median_layer_pct']:.1f}",
                     f"{r['mean_seq_pct']:.1f}",
-                    f"{r['median_seq_pct']:.1f}"
+                    f"{r['median_seq_pct']:.1f}",
                 )
 
             console.print("\n")
             console.print(table)
-            console.print("\n[italic]L% = % Layers Affected | S% = % Sequence Positions Affected[/italic]\n")
+            console.print(
+                "\n[italic]L% = % Layers Affected | S% = % Sequence Positions Affected[/italic]\n"
+            )
             return
         except ImportError:
             pass  # Fall back to plain text
@@ -494,20 +486,24 @@ def print_summary_table(results: list[dict], use_rich: bool = False):
     print("\n" + "=" * 100)
     print("SWEEP COMPARISON SUMMARY")
     print("=" * 100)
-    print(f"{'Model':<20} {'Total':<10} {'Active':<10} {'Outliers':<10} "
-          f"{'Mean L%':<10} {'Med L%':<10} {'Mean S%':<10} {'Med S%':<10}")
+    print(
+        f"{'Model':<20} {'Total':<10} {'Active':<10} {'Outliers':<10} "
+        f"{'Mean L%':<10} {'Med L%':<10} {'Mean S%':<10} {'Med S%':<10}"
+    )
     print("-" * 100)
 
     # Sort by total params
-    for r in sorted(results, key=lambda x: x['total_params_b']):
-        print(f"{r['model_name']:<20} "
-              f"{r['total_params_b']:<10.1f} "
-              f"{r['active_params_b']:<10.1f} "
-              f"{r['num_outliers']:<10} "
-              f"{r['mean_layer_pct']:<10.1f} "
-              f"{r['median_layer_pct']:<10.1f} "
-              f"{r['mean_seq_pct']:<10.1f} "
-              f"{r['median_seq_pct']:<10.1f}")
+    for r in sorted(results, key=lambda x: x["total_params_b"]):
+        print(
+            f"{r['model_name']:<20} "
+            f"{r['total_params_b']:<10.1f} "
+            f"{r['active_params_b']:<10.1f} "
+            f"{r['num_outliers']:<10} "
+            f"{r['mean_layer_pct']:<10.1f} "
+            f"{r['median_layer_pct']:<10.1f} "
+            f"{r['mean_seq_pct']:<10.1f} "
+            f"{r['median_seq_pct']:<10.1f}"
+        )
 
     print("=" * 100)
     print("L% = % Layers Affected | S% = % Sequence Positions Affected")
@@ -522,18 +518,25 @@ def output_csv(results: list[dict]):
     writer = csv.DictWriter(
         sys.stdout,
         fieldnames=[
-            'model_name', 'total_params_b', 'active_params_b', 'num_outliers',
-            'mean_layer_pct', 'median_layer_pct', 'mean_seq_pct', 'median_seq_pct'
-        ]
+            "model_name",
+            "total_params_b",
+            "active_params_b",
+            "num_outliers",
+            "mean_layer_pct",
+            "median_layer_pct",
+            "mean_seq_pct",
+            "median_seq_pct",
+        ],
     )
     writer.writeheader()
-    for r in sorted(results, key=lambda x: x['total_params_b']):
+    for r in sorted(results, key=lambda x: x["total_params_b"]):
         writer.writerow(r)
 
 
 def output_json(results: list[dict]):
     """Output results as JSON format."""
     import json
+
     print(json.dumps(results, indent=2))
 
 
@@ -544,13 +547,13 @@ def main():
     parser.add_argument(
         "--terminal",
         action="store_true",
-        help="Display plots in terminal using plotext instead of saving to files"
+        help="Display plots in terminal using plotext instead of saving to files",
     )
     parser.add_argument(
         "--format",
         choices=["plot", "table", "csv", "json"],
         default="plot",
-        help="Output format for terminal mode: plot (default), table, csv, or json"
+        help="Output format for terminal mode: plot (default), table, csv, or json",
     )
     args = parser.parse_args()
 

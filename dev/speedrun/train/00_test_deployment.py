@@ -15,6 +15,7 @@ except ImportError as e:
     print(f"✗ Missing dependency: {e}")
     print("\nInstalled packages:")
     import subprocess
+
     subprocess.run(["pip", "list"])
     raise
 
@@ -24,11 +25,11 @@ import torch.distributed as dist
 
 def main():
     # Initialize distributed training
-    dist.init_process_group(backend='nccl')
+    dist.init_process_group(backend="nccl")
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
-    local_rank = int(os.environ.get('LOCAL_RANK', 0))
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
 
     # Set device based on local rank to avoid duplicate GPU assignment
     # torchrun sets CUDA_VISIBLE_DEVICES, so local_rank is the correct device index
@@ -41,13 +42,13 @@ def main():
     print(f"[Rank {rank}] PyTorch version: {torch.__version__}")
 
     # Test CUDA operations
-    x = torch.randn(1000, 1000, device='cuda')
+    x = torch.randn(1000, 1000, device="cuda")
     y = x @ x.T
     result = y.sum().item()
     print(f"[Rank {rank}] Matrix multiply test passed: sum={result:.2f}")
 
     # Test distributed all-reduce
-    tensor = torch.tensor([rank], dtype=torch.float32, device='cuda')
+    tensor = torch.tensor([rank], dtype=torch.float32, device="cuda")
     dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
     expected_sum = sum(range(world_size))
 

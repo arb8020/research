@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import trio_asyncio
+
 from rollouts.dtypes import Endpoint, EvalConfig, Message, Tool, ToolFunction, ToolFunctionParameter
 
 
@@ -128,26 +129,26 @@ class MathPythonEnvironment:
 
         math-python provides oai_tools which we can convert to rollouts Tools.
         """
-        if not hasattr(self.prime_env, 'oai_tools') or not self.prime_env.oai_tools:
+        if not hasattr(self.prime_env, "oai_tools") or not self.prime_env.oai_tools:
             return []
 
         tools = []
         for oai_tool in self.prime_env.oai_tools:
-            if oai_tool['type'] == 'function':
-                func = oai_tool['function']
+            if oai_tool["type"] == "function":
+                func = oai_tool["function"]
 
                 # Convert to rollouts Tool format
                 tool_function = ToolFunction(
-                    name=func['name'],
-                    description=func['description'],
+                    name=func["name"],
+                    description=func["description"],
                     parameters=ToolFunctionParameter(
-                        properties=func['parameters'].get('properties', {}),
-                        type=func['parameters'].get('type', 'object')
+                        properties=func["parameters"].get("properties", {}),
+                        type=func["parameters"].get("type", "object"),
                     ),
-                    required=func['parameters'].get('required', [])
+                    required=func["parameters"].get("required", []),
                 )
 
-                tool = Tool(function=tool_function, type='function')
+                tool = Tool(function=tool_function, type="function")
                 tools.append(tool)
 
         return tools
@@ -174,14 +175,16 @@ class MathPythonEnvironment:
             assistant_msg = {
                 "role": "assistant",
                 "content": None,
-                "tool_calls": [{
-                    "id": tool_call.id,
-                    "type": "function",
-                    "function": {
-                        "name": tool_call.name,
-                        "arguments": json.dumps(tool_call.args)  # Convert dict to JSON string
+                "tool_calls": [
+                    {
+                        "id": tool_call.id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_call.name,
+                            "arguments": json.dumps(tool_call.args),  # Convert dict to JSON string
+                        },
                     }
-                }]
+                ],
             }
             self.messages.append(assistant_msg)
 
@@ -195,31 +198,22 @@ class MathPythonEnvironment:
 
             # Extract new tool response messages
             # Prime returns tool messages in OpenAI format
-            new_messages = updated_messages[len(self.messages):]
+            new_messages = updated_messages[len(self.messages) :]
             self.messages = updated_messages
 
             # Return the tool result content
-            if new_messages and new_messages[0].get('role') == 'tool':
-                content = new_messages[0].get('content', '')
-                return ToolResult(
-                    call_id=tool_call.id,
-                    ok=True,
-                    content=content
-                )
+            if new_messages and new_messages[0].get("role") == "tool":
+                content = new_messages[0].get("content", "")
+                return ToolResult(call_id=tool_call.id, ok=True, content=content)
 
             return ToolResult(
                 call_id=tool_call.id,
                 ok=False,
                 content="",
-                error="No tool response received from environment"
+                error="No tool response received from environment",
             )
         except Exception as e:
-            return ToolResult(
-                call_id=tool_call.id,
-                ok=False,
-                content="",
-                error=str(e)
-            )
+            return ToolResult(call_id=tool_call.id, ok=False, content="", error=str(e))
 
     async def add_message_and_get_response(self, message: Message) -> list[Message]:
         """Add assistant message and get environment response.
@@ -246,12 +240,11 @@ class MathPythonEnvironment:
         self.state = updated_state
 
         # Extract new messages
-        new_messages = updated_messages[len(self.messages):]
+        new_messages = updated_messages[len(self.messages) :]
         self.messages = updated_messages
 
         # Convert back to rollouts format
-        return [Message(role=msg["role"], content=msg.get("content"))
-                for msg in new_messages]
+        return [Message(role=msg["role"], content=msg.get("content")) for msg in new_messages]
 
     async def serialize(self):
         """Serialize environment state.
@@ -276,9 +269,7 @@ class MathPythonEnvironment:
         sandbox_id = self.state.get("sandbox_id")
         if sandbox_id:
             # Use trio_asyncio bridge to call Prime's async destroy_sandbox
-            await trio_asyncio.run_aio_coroutine(
-                self.prime_env.destroy_sandbox(sandbox_id)
-            )
+            await trio_asyncio.run_aio_coroutine(self.prime_env.destroy_sandbox(sandbox_id))
 
 
 async def create_environment(prime_env, sample_data):
@@ -299,13 +290,11 @@ async def create_environment(prime_env, sample_data):
             answer=sample_data.get("answer", ""),
             task="default",
             info=sample_data,
-            example_id=sample_data.get("example_id", 0)
+            example_id=sample_data.get("example_id", 0),
         )
     )
 
     # Setup environment-specific state (also async)
-    state = await trio_asyncio.run_aio_coroutine(
-        prime_env.setup_state(state)
-    )
+    state = await trio_asyncio.run_aio_coroutine(prime_env.setup_state(state))
 
     return MathPythonEnvironment(prime_env, state)

@@ -1,6 +1,7 @@
 """
 Python client for submitting code to LeetGPU programmatically.
 """
+
 from dataclasses import dataclass
 from typing import Literal
 
@@ -10,6 +11,7 @@ import requests
 @dataclass
 class SubmissionResult:
     """Result of a code submission."""
+
     submission_id: int
     status: str
     gpu: str
@@ -219,7 +221,7 @@ def main():
     print(f"Available languages: {', '.join(starter['languages'])}\n")
     print("CuteDSL starter code:")
     print("-" * 60)
-    print(starter['starter_code']['cute'])
+    print(starter["starter_code"]["cute"])
     print("-" * 60)
 
     # Example 3: Get previous submissions

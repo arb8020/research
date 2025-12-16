@@ -76,12 +76,14 @@ Constraints
   1 &le; M, N, K &le; 8192
   Performance is measured with M = 8192, N = 6144, K = 4096
 """
+
 import cutlass.cute as cute
 
 
 @cute.jit
-def solve(A: cute.Tensor, B: cute.Tensor, C: cute.Tensor, M: cute.Int32, N: cute.Int32, K: cute.Int32):
-
+def solve(
+    A: cute.Tensor, B: cute.Tensor, C: cute.Tensor, M: cute.Int32, N: cute.Int32, K: cute.Int32
+):
     kernel = matmul(A, B, C, M, N, K)
 
     block_threads = 32  # 32 x 32 for 2D grid, 1024 tpb
@@ -97,16 +99,17 @@ def solve(A: cute.Tensor, B: cute.Tensor, C: cute.Tensor, M: cute.Int32, N: cute
     grid_blocks_y = ceil_div(M, block_threads)
 
     kernel.launch(
-            grid=(grid_blocks_x, grid_blocks_y, 1),
-            block=(block_threads, block_threads, 1),
+        grid=(grid_blocks_x, grid_blocks_y, 1),
+        block=(block_threads, block_threads, 1),
     )
 
     pass
 
 
 @cute.kernel
-def matmul(A: cute.Tensor, B: cute.Tensor, C: cute.Tensor, M: cute.Int32, N: cute.Int32, K: cute.Int32):
-
+def matmul(
+    A: cute.Tensor, B: cute.Tensor, C: cute.Tensor, M: cute.Int32, N: cute.Int32, K: cute.Int32
+):
     # 2D launch config
 
     tidx, tidy, _ = cute.arch.thread_idx()
@@ -120,18 +123,15 @@ def matmul(A: cute.Tensor, B: cute.Tensor, C: cute.Tensor, M: cute.Int32, N: cut
 
     if i < M and j < K:
         acc_dot = 0.0
-        
-        for n in range(N): 
+
+        for n in range(N):
             # n is shared dim between A: [M,N] B: [N,K]
-            
-            # A[i,k] -> A is [M,N] 
+
+            # A[i,k] -> A is [M,N]
             # B[k,j] -> B is [N,K]
-            
+
             acc_dot += A[i, n] * B[n, j]
 
-        C[i, j] = acc_dot 
+        C[i, j] = acc_dot
 
     pass
-
-
-

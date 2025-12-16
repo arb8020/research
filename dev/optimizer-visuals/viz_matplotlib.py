@@ -13,9 +13,7 @@ from viz_data import ContourData, OptimizationVizData, TrajectoryData
 
 
 def plot_loss_curve(
-    trajectory: TrajectoryData,
-    ax: plt.Axes | None = None,
-    title: str = "Loss vs. Step"
+    trajectory: TrajectoryData, ax: plt.Axes | None = None, title: str = "Loss vs. Step"
 ) -> plt.Axes:
     """Plot loss curve over optimization steps.
 
@@ -30,9 +28,9 @@ def plot_loss_curve(
     if ax is None:
         _, ax = plt.subplots(1, 1, figsize=(8, 5))
 
-    ax.plot(trajectory.steps, trajectory.losses, 'b-', linewidth=2)
-    ax.set_xlabel('Step')
-    ax.set_ylabel('Loss')
+    ax.plot(trajectory.steps, trajectory.losses, "b-", linewidth=2)
+    ax.set_xlabel("Step")
+    ax.set_ylabel("Loss")
     ax.set_title(title)
     ax.grid(True, alpha=0.3)
 
@@ -43,7 +41,7 @@ def plot_2d_trajectory(
     trajectory: TrajectoryData,
     landscape: ContourData,
     ax: plt.Axes | None = None,
-    title: str = "Parameter Trajectory"
+    title: str = "Parameter Trajectory",
 ) -> plt.Axes:
     """Plot 2D parameter trajectory on loss landscape.
 
@@ -68,33 +66,25 @@ def plot_2d_trajectory(
     y_vals = [p[1] for p in trajectory.params_history]
 
     # Plot landscape contours
-    ax.contour(
-        landscape.x,
-        landscape.y,
-        landscape.z,
-        levels=20,
-        alpha=0.3,
-        cmap='viridis'
-    )
+    ax.contour(landscape.x, landscape.y, landscape.z, levels=20, alpha=0.3, cmap="viridis")
 
     # Plot trajectory
-    ax.plot(x_vals, y_vals, 'ro-', linewidth=2, markersize=6, label='Trajectory')
-    ax.plot(x_vals[0], y_vals[0], 'go', markersize=10, label='Start')
-    ax.plot(x_vals[-1], y_vals[-1], 'r*', markersize=15, label='End')
+    ax.plot(x_vals, y_vals, "ro-", linewidth=2, markersize=6, label="Trajectory")
+    ax.plot(x_vals[0], y_vals[0], "go", markersize=10, label="Start")
+    ax.plot(x_vals[-1], y_vals[-1], "r*", markersize=15, label="End")
 
-    ax.set_xlabel('x[0]')
-    ax.set_ylabel('x[1]')
+    ax.set_xlabel("x[0]")
+    ax.set_ylabel("x[1]")
     ax.set_title(title)
     ax.legend()
     ax.grid(True, alpha=0.3)
-    ax.axis('equal')
+    ax.axis("equal")
 
     return ax
 
 
 def plot_optimization_summary(
-    viz_data: OptimizationVizData,
-    save_path: Path | None = None
+    viz_data: OptimizationVizData, save_path: Path | None = None
 ) -> tuple[plt.Figure, tuple[plt.Axes, ...]]:
     """Create complete optimization summary plot.
 
@@ -115,14 +105,14 @@ def plot_optimization_summary(
         plot_loss_curve(
             viz_data.trajectory,
             ax=ax1,
-            title=f"{viz_data.optimizer_name} - Loss (lr={viz_data.learning_rate})"
+            title=f"{viz_data.optimizer_name} - Loss (lr={viz_data.learning_rate})",
         )
 
         plot_2d_trajectory(
             viz_data.trajectory,
             viz_data.landscape,
             ax=ax2,
-            title=f"{viz_data.optimizer_name} - Trajectory"
+            title=f"{viz_data.optimizer_name} - Trajectory",
         )
 
         axes = (ax1, ax2)
@@ -133,7 +123,7 @@ def plot_optimization_summary(
         plot_loss_curve(
             viz_data.trajectory,
             ax=ax,
-            title=f"{viz_data.optimizer_name} - Loss (lr={viz_data.learning_rate})"
+            title=f"{viz_data.optimizer_name} - Loss (lr={viz_data.learning_rate})",
         )
 
         axes = (ax,)
@@ -148,8 +138,7 @@ def plot_optimization_summary(
 
 
 def compare_optimizers(
-    viz_data_list: list[OptimizationVizData],
-    save_path: Path | None = None
+    viz_data_list: list[OptimizationVizData], save_path: Path | None = None
 ) -> tuple[plt.Figure, Any]:
     """Compare multiple optimizers side by side.
 
@@ -179,7 +168,7 @@ def compare_optimizers(
             plot_loss_curve(
                 viz_data.trajectory,
                 ax=axes[0, i],
-                title=f"{viz_data.optimizer_name} (lr={viz_data.learning_rate})"
+                title=f"{viz_data.optimizer_name} (lr={viz_data.learning_rate})",
             )
 
             # Bottom row: trajectories
@@ -188,7 +177,7 @@ def compare_optimizers(
                     viz_data.trajectory,
                     viz_data.landscape,
                     ax=axes[1, i],
-                    title=f"{viz_data.optimizer_name}"
+                    title=f"{viz_data.optimizer_name}",
                 )
     else:
         # Just loss curves in one row
@@ -200,7 +189,7 @@ def compare_optimizers(
             plot_loss_curve(
                 viz_data.trajectory,
                 ax=axes[i],
-                title=f"{viz_data.optimizer_name} (lr={viz_data.learning_rate})"
+                title=f"{viz_data.optimizer_name} (lr={viz_data.learning_rate})",
             )
 
     plt.tight_layout()

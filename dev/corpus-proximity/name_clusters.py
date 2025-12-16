@@ -25,7 +25,7 @@ def sample_cluster_texts(
     embeddings: np.ndarray,
     texts: list[str],
     k: int = 5,
-    strategy: str = "centroid"
+    strategy: str = "centroid",
 ) -> list[str]:
     """
     Sample representative texts from cluster.
@@ -61,11 +61,7 @@ def sample_cluster_texts(
     return [texts[i] for i in sampled_indices]
 
 
-def sample_noise_points(
-    node: ClusterNode,
-    texts: list[str],
-    k: int = 5
-) -> list[str]:
+def sample_noise_points(node: ClusterNode, texts: list[str], k: int = 5) -> list[str]:
     """
     Sample random texts from noise points.
 
@@ -96,7 +92,7 @@ async def generate_cluster_name(
     texts: list[str],
     endpoint: Endpoint,
     parent_name: str | None = None,
-    num_samples: int = 5
+    num_samples: int = 5,
 ) -> str:
     """
     Generate cluster name using LLM.
@@ -117,7 +113,7 @@ async def generate_cluster_name(
 
     # Build prompt
     if parent_name:
-        context = f"Parent cluster: \"{parent_name}\"\n\n"
+        context = f'Parent cluster: "{parent_name}"\n\n'
     else:
         context = ""
 
@@ -151,17 +147,16 @@ Examples from this cluster (cluster has {node.size} total texts):
         return label or f"Cluster {node.cluster_id}"
 
     except Exception as e:
-        logger.error(f"Error generating name for cluster {node.cluster_id}: {type(e).__name__}: {e}")
+        logger.error(
+            f"Error generating name for cluster {node.cluster_id}: {type(e).__name__}: {e}"
+        )
         logger.debug(f"Endpoint: model={endpoint.model}, api_base={endpoint.api_base}")
         logger.debug(f"Prompt length: {len(prompt)} chars")
         return f"Cluster {node.cluster_id}"
 
 
 async def name_cluster_tree(
-    root: ClusterNode,
-    embeddings: np.ndarray,
-    texts: list[str],
-    endpoint: Endpoint
+    root: ClusterNode, embeddings: np.ndarray, texts: list[str], endpoint: Endpoint
 ) -> ClusterNode:
     """
     Name all clusters in tree using breadth-first traversal.
@@ -207,9 +202,9 @@ async def name_cluster_tree(
         names = await asyncio.gather(*tasks)
 
         # Assign names
-        for node, name in zip(nodes_at_depth, names):
+        for node, name in zip(nodes_at_depth, names, strict=False):
             node.name = name
-            logger.info(f"  {node.cluster_id}: \"{name}\" (size={node.size})")
+            logger.info(f'  {node.cluster_id}: "{name}" (size={node.size})')
 
     return root
 
@@ -253,7 +248,9 @@ def print_cluster_tree(node: ClusterNode, indent: int = 0):
     name_str = f' "{node.name}"' if node.name else ""
     noise_str = f" ({len(node.noise_indices)} noise)" if node.noise_indices else ""
 
-    print(f"{prefix}[{node.cluster_id}]{name_str} size={node.size}, sil={node.silhouette_score:.3f}{noise_str}")
+    print(
+        f"{prefix}[{node.cluster_id}]{name_str} size={node.size}, sil={node.silhouette_score:.3f}{noise_str}"
+    )
 
     for child in node.children:
         print_cluster_tree(child, indent + 1)
@@ -264,7 +261,7 @@ def inspect_cluster(
     root: ClusterNode,
     texts: list[str],
     num_samples: int = 5,
-    show_noise: bool = False
+    show_noise: bool = False,
 ):
     """
     Inspect a specific cluster by ID.
@@ -305,9 +302,13 @@ def inspect_cluster(
 
     # Show noise samples if requested
     if show_noise and node.noise_indices:
-        print(f"\nNoise samples ({min(num_samples, len(node.noise_indices))} of {len(node.noise_indices)}):\n")
+        print(
+            f"\nNoise samples ({min(num_samples, len(node.noise_indices))} of {len(node.noise_indices)}):\n"
+        )
 
-        noise_sample_indices = random.sample(node.noise_indices, min(num_samples, len(node.noise_indices)))
+        noise_sample_indices = random.sample(
+            node.noise_indices, min(num_samples, len(node.noise_indices))
+        )
 
         for i, idx in enumerate(noise_sample_indices, 1):
             text = texts[idx]
@@ -329,16 +330,17 @@ async def main():
     parser.add_argument("--inspect", help="Inspect specific cluster by ID")
     parser.add_argument("--tree", action="store_true", help="Print cluster tree")
     parser.add_argument("--list", action="store_true", help="List all cluster IDs")
-    parser.add_argument("--samples", type=int, default=5, help="Number of samples to show (default: 5)")
-    parser.add_argument("--show-noise", action="store_true", help="Show noise points when inspecting")
+    parser.add_argument(
+        "--samples", type=int, default=5, help="Number of samples to show (default: 5)"
+    )
+    parser.add_argument(
+        "--show-noise", action="store_true", help="Show noise points when inspecting"
+    )
 
     args = parser.parse_args()
 
     # Setup logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s'
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
     # Load config
     spec = importlib.util.spec_from_file_location("exp_config", args.config)
@@ -386,11 +388,11 @@ async def main():
     texts = []
     for orig_chunk in original_chunks:
         sub_chunks = chunk_text(
-            text=orig_chunk['text'],
+            text=orig_chunk["text"],
             strategy=config.clustering.chunking_strategy,
             chunk_size=config.clustering.chunk_max_tokens,
             overlap_pct=config.clustering.chunk_overlap_pct,
-            tokenizer=tokenizer
+            tokenizer=tokenizer,
         )
         texts.extend(sub_chunks)
 
@@ -419,7 +421,10 @@ async def main():
             api_key = os.getenv("OPENAI_API_KEY", "")
             if not api_key:
                 logger.error("OPENAI_API_KEY not set. Add it to .env file or export it")
-                logger.error("Current environment variables: %s", [k for k in os.environ.keys() if 'API' in k or 'KEY' in k])
+                logger.error(
+                    "Current environment variables: %s",
+                    [k for k in os.environ.keys() if "API" in k or "KEY" in k],
+                )
                 return 1
 
             logger.info(f"Using naming model: {config.clustering.naming_model}")
@@ -432,12 +437,13 @@ async def main():
                 api_base=config.clustering.naming_api_base,
                 api_key=api_key,
                 temperature=config.clustering.naming_temperature,
-                max_tokens=config.clustering.naming_max_tokens
+                max_tokens=config.clustering.naming_max_tokens,
             )
 
             root = await name_cluster_tree(root, embeddings, texts, endpoint)
 
             from cluster_corpus import save_cluster_tree
+
             logger.info(f"Saving updated tree to {tree_path}")
             save_cluster_tree(root, texts, [], tree_path)
             success_marker.touch()
@@ -449,12 +455,15 @@ async def main():
             logger.error(f"Exception type: {type(exc).__name__}")
             logger.error(f"Exception message: {exc}")
             import traceback
+
             logger.error(f"Traceback:\n{traceback.format_exc()}")
             raise
 
     elif args.inspect:
         # Inspect specific cluster
-        inspect_cluster(args.inspect, root, texts, num_samples=args.samples, show_noise=args.show_noise)
+        inspect_cluster(
+            args.inspect, root, texts, num_samples=args.samples, show_noise=args.show_noise
+        )
 
     elif args.tree:
         # Print tree
@@ -480,6 +489,7 @@ def reconstruct_tree(tree_dict: dict, embeddings: np.ndarray, texts: list[str]) 
     Note: We don't have the original indices stored, so we'll use empty lists.
     This is fine for inspection purposes.
     """
+
     def reconstruct_node(d: dict, parent_id: str | None = None) -> ClusterNode:
         # Create node (indices now stored in JSON)
         node = ClusterNode(
@@ -493,7 +503,7 @@ def reconstruct_tree(tree_dict: dict, embeddings: np.ndarray, texts: list[str]) 
             children=[],
             noise_indices=d.get("noise_indices", []),  # Load noise indices from JSON
             name=d.get("name", ""),
-            _skip_validation=True  # Skip validation for reconstruction
+            _skip_validation=True,  # Skip validation for reconstruction
         )
 
         # Recursively reconstruct children
@@ -508,4 +518,5 @@ def reconstruct_tree(tree_dict: dict, embeddings: np.ndarray, texts: list[str]) 
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(asyncio.run(main()))

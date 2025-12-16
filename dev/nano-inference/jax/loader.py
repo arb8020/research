@@ -8,10 +8,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 
-from utils.weights import download_gpt2_weights, load_gpt2_weights
-
 import jax.numpy as jnp
 from jax import Array
+from utils.weights import download_gpt2_weights, load_gpt2_weights
 
 
 def load_weights(model_name: str = "gpt2", cache_dir: str | None = None) -> dict[str, Array]:
@@ -47,12 +46,12 @@ def convert_hf_weights_to_jax_format(hf_weights: dict[str, Array]) -> dict[str, 
     converted = {}
 
     for name, param in hf_weights.items():
-        clean_name = name.replace('transformer.', '')
+        clean_name = name.replace("transformer.", "")
         converted[clean_name] = param
 
-        if clean_name == 'wte.weight':
-            converted['wte'] = param
-        elif clean_name == 'wpe.weight':
-            converted['wpe'] = param
+        if clean_name == "wte.weight":
+            converted["wte"] = param
+        elif clean_name == "wpe.weight":
+            converted["wpe"] = param
 
     return converted

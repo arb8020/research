@@ -5,17 +5,14 @@ Example showing Phase 3 API - Enhanced job management with sessions
 from bifrost import BifrostClient
 
 # Phase 3: Enhanced job management
-client = BifrostClient(
-    ssh_connection="root@1.2.3.4:22",
-    ssh_key_path="~/.ssh/id_ed25519"
-)
+client = BifrostClient(ssh_connection="root@1.2.3.4:22", ssh_key_path="~/.ssh/id_ed25519")
 
 # Run detached job with human-readable session name
 job = client.run_detached(
     command="python train.py",
     bootstrap_cmd="uv sync --frozen",
     bootstrap_timeout=600,  # 10 minutes for bootstrap
-    session_name="training-run-1"  # Human-readable!
+    session_name="training-run-1",  # Human-readable!
 )
 
 print(f"Job ID: {job.job_id}")  # training-run-1-20251012-143025-a3f2b8c1

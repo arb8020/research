@@ -18,6 +18,7 @@ class CorpusConfig:
     Following Casey Muratori: Data is transparent, not opaque.
     User controls what corpus to use, we just provide access.
     """
+
     name: str
     dataset_name: str  # HuggingFace dataset name
     split: str = "train"
@@ -36,7 +37,7 @@ NANOCHAT_PRETRAIN = CorpusConfig(
     dataset_name="karpathy/fineweb-edu-100b-shuffle",
     split="train",
     num_shards=240,  # ~24GB, ~11.2B tokens
-    streaming=True
+    streaming=True,
 )
 
 FINEWEB_EDU_FULL = CorpusConfig(
@@ -44,7 +45,7 @@ FINEWEB_EDU_FULL = CorpusConfig(
     dataset_name="HuggingFaceFW/fineweb-edu",
     split="train",
     num_shards=None,  # All 1.3T tokens
-    streaming=True
+    streaming=True,
 )
 
 FINEWEB_EDU_SAMPLE = CorpusConfig(
@@ -52,7 +53,7 @@ FINEWEB_EDU_SAMPLE = CorpusConfig(
     dataset_name="HuggingFaceFW/fineweb-edu-sample-10BT",
     split="train",
     num_shards=None,
-    streaming=True
+    streaming=True,
 )
 
 # Nanochat midtrain corpora
@@ -62,7 +63,7 @@ SMOLTALK = CorpusConfig(
     config_name="all",
     split="train",
     num_shards=None,  # ~460K examples
-    streaming=True
+    streaming=True,
 )
 
 MMLU_AUX_TRAIN = CorpusConfig(
@@ -71,7 +72,7 @@ MMLU_AUX_TRAIN = CorpusConfig(
     config_name="all",  # Use 'all' config, then select auxiliary_train split
     split="auxiliary_train",
     num_shards=None,  # ~100K examples
-    streaming=True
+    streaming=True,
 )
 
 GSM8K_TRAIN = CorpusConfig(
@@ -80,7 +81,7 @@ GSM8K_TRAIN = CorpusConfig(
     config_name="main",
     split="train",
     num_shards=None,  # ~7.4K examples (train split, NOT test)
-    streaming=True
+    streaming=True,
 )
 
 # Nanochat SFT corpora (subset of midtrain + eval datasets)
@@ -90,7 +91,7 @@ ARC_EASY_TRAIN = CorpusConfig(
     config_name="ARC-Easy",
     split="train",
     num_shards=None,  # ~2.3K examples
-    streaming=True
+    streaming=True,
 )
 
 ARC_CHALLENGE_TRAIN = CorpusConfig(
@@ -99,7 +100,7 @@ ARC_CHALLENGE_TRAIN = CorpusConfig(
     config_name="ARC-Challenge",
     split="train",
     num_shards=None,  # ~1.1K examples
-    streaming=True
+    streaming=True,
 )
 
 
@@ -124,10 +125,7 @@ def stream_corpus(config: CorpusConfig) -> Iterator[str]:
     logger.info(f"Streaming corpus: {config.name}")
 
     dataset = load_dataset(
-        config.dataset_name,
-        name=config.config_name,
-        split=config.split,
-        streaming=config.streaming
+        config.dataset_name, name=config.config_name, split=config.split, streaming=config.streaming
     )
 
     # Cast to IterableDataset for type safety
@@ -139,8 +137,8 @@ def stream_corpus(config: CorpusConfig) -> Iterator[str]:
 
     for item in dataset:
         # Most text datasets have a 'text' field
-        if isinstance(item, dict) and 'text' in item:
-            yield item['text']
+        if isinstance(item, dict) and "text" in item:
+            yield item["text"]
         elif isinstance(item, dict):
             # Fallback: try to find any text-like field
             for key, value in item.items():
@@ -202,10 +200,7 @@ def verify_corpus_access(config: CorpusConfig) -> bool:
 
 def main():
     """Dry-run test all corpus configs."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s'
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
     corpora = [
         NANOCHAT_PRETRAIN,
@@ -237,4 +232,5 @@ def main():
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(main())

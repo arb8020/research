@@ -26,11 +26,13 @@ sys.path.append(str(Path(__file__).parent.parent.parent))
 from config import GPT2Config
 
 
-def _validate_ffn_shapes(x_BTD: jnp.ndarray,
-                        weight_in_DF: jnp.ndarray,
-                        bias_in_F: jnp.ndarray,
-                        weight_out_FD: jnp.ndarray,
-                        bias_out_D: jnp.ndarray):
+def _validate_ffn_shapes(
+    x_BTD: jnp.ndarray,
+    weight_in_DF: jnp.ndarray,
+    bias_in_F: jnp.ndarray,
+    weight_out_FD: jnp.ndarray,
+    bias_out_D: jnp.ndarray,
+):
     """Validate feedforward network shapes."""
     D = x_BTD.shape[-1]
     F = weight_in_DF.shape[1]
@@ -56,23 +58,27 @@ def _validate_layer_norm_shapes(x_BTD: jnp.ndarray, gamma_D: jnp.ndarray, beta_D
 
 def gelu(x):
     """Hendrycks & Gimpel (2016) https://arxiv.org/abs/1606.08415"""
-    cdf = 0.5 * (1.0 + jnp.tanh(
-        jnp.sqrt(2.0 / jnp.pi) * (x + 0.044715 * jnp.power(x, 3))
-    ))
+    cdf = 0.5 * (1.0 + jnp.tanh(jnp.sqrt(2.0 / jnp.pi) * (x + 0.044715 * jnp.power(x, 3))))
     return x * cdf
 
 
 def gelu_new(x_BTD: Array) -> Array:
     """GELU activation - "gelu_new" variant used by GPT-2 (exact HuggingFace implementation)."""
-    return 0.5 * x_BTD * (1.0 + jnp.tanh(jnp.sqrt(2.0 / jnp.pi) * (x_BTD + 0.044715 * jnp.power(x_BTD, 3.0))))
+    return (
+        0.5
+        * x_BTD
+        * (1.0 + jnp.tanh(jnp.sqrt(2.0 / jnp.pi) * (x_BTD + 0.044715 * jnp.power(x_BTD, 3.0))))
+    )
 
 
-def project_and_embed(input_ids: jnp.ndarray, weights: dict[str, Array], config: GPT2Config) -> jnp.ndarray:
+def project_and_embed(
+    input_ids: jnp.ndarray, weights: dict[str, Array], config: GPT2Config
+) -> jnp.ndarray:
     """Radford et al. (2019) https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf"""
 
-    projected_BLD = weights['wte.weight'][input_ids]
+    projected_BLD = weights["wte.weight"][input_ids]
     _, seq_len = input_ids.shape
-    position_embeddings = weights['wpe.weight'][:seq_len]
+    position_embeddings = weights["wpe.weight"][:seq_len]
     projected_embedded_BLD = projected_BLD + position_embeddings
 
     return projected_embedded_BLD
@@ -85,10 +91,16 @@ def embedding_lookup(weights: dict[str, Array], tokens: Array, weight_name: str)
     return weights[weight_name][tokens]
 
 
-def layer_norm(x_BTD: jnp.ndarray, weights: dict[str, Array], weight_prefix: str, epsilon: float = 1e-5) -> jnp.ndarray:
+def layer_norm(
+    x_BTD: jnp.ndarray, weights: dict[str, Array], weight_prefix: str, epsilon: float = 1e-5
+) -> jnp.ndarray:
     """Ba et al. (2016) https://arxiv.org/abs/1607.06450"""
     # Extract gamma and beta from weights
-    gamma_D = weights[f"{weight_prefix}.weight"] if f"{weight_prefix}.weight" in weights else weights[weight_prefix]
+    gamma_D = (
+        weights[f"{weight_prefix}.weight"]
+        if f"{weight_prefix}.weight" in weights
+        else weights[weight_prefix]
+    )
     beta_D = weights[f"{weight_prefix}.bias"]
 
     _validate_layer_norm_shapes(x_BTD, gamma_D, beta_D)
@@ -112,7 +124,11 @@ def linear_transform(x: Array, weights: dict[str, Array], weight_prefix: str) ->
     """Apply linear transformation: x @ W + b"""
     assert len(x.shape) >= 2
 
-    weight = weights[f"{weight_prefix}.weight"] if f"{weight_prefix}.weight" in weights else weights[weight_prefix]
+    weight = (
+        weights[f"{weight_prefix}.weight"]
+        if f"{weight_prefix}.weight" in weights
+        else weights[weight_prefix]
+    )
     assert x.shape[-1] == weight.shape[0]
 
     output = jnp.matmul(x, weight)
@@ -125,12 +141,14 @@ def linear_transform(x: Array, weights: dict[str, Array], weight_prefix: str) ->
     return output
 
 
-def ffn(x_BTD: jnp.ndarray,
-        weight_in_DF: jnp.ndarray,
-        bias_in_F: jnp.ndarray,
-        weight_out_FD: jnp.ndarray,
-        bias_out_D: jnp.ndarray,
-        activation_fn: Callable[[jnp.ndarray], jnp.ndarray]) -> jnp.ndarray:
+def ffn(
+    x_BTD: jnp.ndarray,
+    weight_in_DF: jnp.ndarray,
+    bias_in_F: jnp.ndarray,
+    weight_out_FD: jnp.ndarray,
+    bias_out_D: jnp.ndarray,
+    activation_fn: Callable[[jnp.ndarray], jnp.ndarray],
+) -> jnp.ndarray:
     """Vaswani et al. (2017) https://arxiv.org/abs/1706.03762"""
     _validate_ffn_shapes(x_BTD, weight_in_DF, bias_in_F, weight_out_FD, bias_out_D)
     hidden_BTF = linear(x_BTD, weight_in_DF, bias_in_F)
@@ -147,7 +165,9 @@ def mlp_block(x_BTD: Array, weights: dict[str, Array], layer_idx: int) -> Array:
     return output_BTD
 
 
-def multi_head_attention(x_BTD: Array, weights: dict[str, Array], layer_idx: int, config: GPT2Config) -> Array:
+def multi_head_attention(
+    x_BTD: Array, weights: dict[str, Array], layer_idx: int, config: GPT2Config
+) -> Array:
     """Multi-head self-attention.
 
     For GPT-2: N (num_query_heads) = K (num_kv_heads) since it's standard MHA, not GQA.

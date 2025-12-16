@@ -8,6 +8,7 @@ To use this:
 2. Uncomment the code below
 3. Rename to cute_kernel.py
 """
+
 # Uncomment when CUTLASS is installed:
 import cutlass
 import torch
@@ -48,8 +49,12 @@ def kernel(
     # Get local tiles
     a_tile = cute.local_tile(a_tensor, (mma_tiler_mnk[0], K, 1), (cta_m, 0, cta_l))
     b_tile = cute.local_tile(b_tensor, (1, K, 1), (0, 0, cta_l))
-    sfa_tile = cute.local_tile(sfa_tensor, ((32, 4), (K // sf_vec_size, 4), 1), ((0, 0), (0, 0), cta_l))
-    sfb_tile = cute.local_tile(sfb_tensor, ((32, 4), (K // sf_vec_size, 4), 1), ((0, 0), (0, 0), cta_l))
+    sfa_tile = cute.local_tile(
+        sfa_tensor, ((32, 4), (K // sf_vec_size, 4), 1), ((0, 0), (0, 0), cta_l)
+    )
+    sfb_tile = cute.local_tile(
+        sfb_tensor, ((32, 4), (K // sf_vec_size, 4), 1), ((0, 0), (0, 0), cta_l)
+    )
     c_tile = cute.local_tile(c_tensor, (mma_tiler_mnk[0], 1, 1), (cta_m, 0, cta_l))
 
     # Accumulator
@@ -112,29 +117,27 @@ def my_kernel(
     c_tensor = cute.TensorView(c_ptr, c_layout, c_dtype)
 
     # Scale factor layouts
-    sfa_layout = blockscaled_utils.tile_atom_to_shape_SF(
-        (M, K, L), sf_vec_size
-    )
+    sfa_layout = blockscaled_utils.tile_atom_to_shape_SF((M, K, L), sf_vec_size)
     sfa_tensor = cute.TensorView(sfa_ptr, sfa_layout, sf_dtype)
 
-    sfb_layout = blockscaled_utils.tile_atom_to_shape_SF(
-        (1, K, L), sf_vec_size
-    )
+    sfb_layout = blockscaled_utils.tile_atom_to_shape_SF((1, K, L), sf_vec_size)
     sfb_tensor = cute.TensorView(sfb_ptr, sfb_layout, sf_dtype)
 
     # Launch kernel
-    grid_dims = (
-        (M + mma_tiler_mnk[0] - 1) // mma_tiler_mnk[0],
-        1,
-        L
-    )
+    grid_dims = ((M + mma_tiler_mnk[0] - 1) // mma_tiler_mnk[0], 1, L)
     block_dims = (threads_per_cta, 1, 1)
 
     kernel(
-        a_tensor, b_tensor, c_tensor, sfa_tensor, sfb_tensor,
-        M, K, L,
+        a_tensor,
+        b_tensor,
+        c_tensor,
+        sfa_tensor,
+        sfb_tensor,
+        M,
+        K,
+        L,
         grid=grid_dims,
-        block=block_dims
+        block=block_dims,
     )
 
 
@@ -166,10 +169,16 @@ def custom_kernel(
         c.data_ptr(),
         sfa.data_ptr(),
         sfb.data_ptr(),
-        M, K, L,
-        a.stride(0), a.stride(1), a.stride(2),
-        b.stride(1), b.stride(2),
-        c.stride(0), c.stride(2),
+        M,
+        K,
+        L,
+        a.stride(0),
+        a.stride(1),
+        a.stride(2),
+        b.stride(1),
+        b.stride(2),
+        c.stride(0),
+        c.stride(2),
     )
 
     return c
@@ -201,6 +210,7 @@ def cute_kernel(data: input_t) -> output_t:
 
     # For now, fall back to reference
     from nvfp4.reference_kernel import ref_kernel
+
     return ref_kernel(data)
 
 

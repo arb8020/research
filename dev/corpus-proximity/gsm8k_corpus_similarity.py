@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class SimilarityResult:
     """A single similarity measurement result."""
+
     sample_id: str
     variant: str  # "question" | "answer" | "question_answer"
     corpus_stage: str  # "pretrain" | "midtrain" | "sft"
@@ -63,7 +64,7 @@ def load_corpus_chunks(config: Config) -> dict[str, list[str]]:
 
     # Pretrain stage: NANOCHAT_PRETRAIN
     logger.info(f"\nLoading pretrain corpus ({sim_config.corpus_sizes['pretrain']} samples)...")
-    pretrain_texts = sample_corpus(NANOCHAT_PRETRAIN, n=sim_config.corpus_sizes['pretrain'])
+    pretrain_texts = sample_corpus(NANOCHAT_PRETRAIN, n=sim_config.corpus_sizes["pretrain"])
     pretrain_chunks = []
     for text in pretrain_texts:
         pretrain_chunks.extend(
@@ -77,7 +78,7 @@ def load_corpus_chunks(config: Config) -> dict[str, list[str]]:
     midtrain_chunks = []
 
     # Divide samples across 3 corpora
-    samples_per_corpus = sim_config.corpus_sizes['midtrain'] // 3
+    samples_per_corpus = sim_config.corpus_sizes["midtrain"] // 3
 
     logger.info(f"  SMOLTALK: {samples_per_corpus} samples...")
     smoltalk_texts = sample_corpus(SMOLTALK, n=samples_per_corpus)
@@ -108,21 +109,17 @@ def load_corpus_chunks(config: Config) -> dict[str, list[str]]:
     sft_chunks = []
 
     # Divide samples across 2 corpora
-    samples_per_corpus = sim_config.corpus_sizes['sft'] // 2
+    samples_per_corpus = sim_config.corpus_sizes["sft"] // 2
 
     logger.info(f"  ARC_EASY_TRAIN: {samples_per_corpus} samples...")
     arc_easy_texts = sample_corpus(ARC_EASY_TRAIN, n=samples_per_corpus)
     for text in arc_easy_texts:
-        sft_chunks.extend(
-            chunk_text(text, sim_config.chunking_strategy, sim_config.chunk_size)
-        )
+        sft_chunks.extend(chunk_text(text, sim_config.chunking_strategy, sim_config.chunk_size))
 
     logger.info(f"  ARC_CHALLENGE_TRAIN: {samples_per_corpus} samples...")
     arc_challenge_texts = sample_corpus(ARC_CHALLENGE_TRAIN, n=samples_per_corpus)
     for text in arc_challenge_texts:
-        sft_chunks.extend(
-            chunk_text(text, sim_config.chunking_strategy, sim_config.chunk_size)
-        )
+        sft_chunks.extend(chunk_text(text, sim_config.chunking_strategy, sim_config.chunk_size))
 
     chunks["sft"] = sft_chunks
     logger.info(f"  SFT: {len(sft_chunks)} chunks")
@@ -132,9 +129,7 @@ def load_corpus_chunks(config: Config) -> dict[str, list[str]]:
 
 
 def embed_corpus(
-    chunks: dict[str, list[str]],
-    model: SentenceTransformer,
-    cache_dir: Path
+    chunks: dict[str, list[str]], model: SentenceTransformer, cache_dir: Path
 ) -> dict[str, TrainingCorpus]:
     """Embed corpus chunks and cache to disk.
 
@@ -164,10 +159,7 @@ def embed_corpus(
         else:
             logger.info(f"\nEmbedding {len(chunk_list)} chunks for {stage}...")
             embeddings = model.encode(
-                chunk_list,
-                batch_size=64,
-                show_progress_bar=True,
-                convert_to_numpy=True
+                chunk_list, batch_size=64, show_progress_bar=True, convert_to_numpy=True
             )
             # Cache embeddings
             np.save(cache_path, embeddings)
@@ -178,17 +170,14 @@ def embed_corpus(
         embeddings_normalized = embeddings / norms
 
         # Create metadata (simple index-based)
-        metadata = [
-            {'shard_id': 0, 'chunk_id': i}
-            for i in range(len(chunk_list))
-        ]
+        metadata = [{"shard_id": 0, "chunk_id": i} for i in range(len(chunk_list))]
 
         # Create TrainingCorpus (validates invariants)
         corpora[stage] = TrainingCorpus(
             stage=stage,  # type: ignore
             embeddings=embeddings_normalized,
             chunks=chunk_list,
-            metadata=metadata
+            metadata=metadata,
         )
 
         logger.info(f"  {stage}: {embeddings.shape}")
@@ -216,14 +205,10 @@ def load_gsm8k_samples(num_samples: int, split: str = "test") -> list[dict]:
 
     samples = []
     for i, item in enumerate(dataset):
-        question = item['question']
-        answer = item['answer'].split('####')[-1].strip()
+        question = item["question"]
+        answer = item["answer"].split("####")[-1].strip()
 
-        samples.append({
-            'id': f"gsm8k_{i:04d}",
-            'question': question,
-            'answer': answer
-        })
+        samples.append({"id": f"gsm8k_{i:04d}", "question": question, "answer": answer})
 
     logger.info(f"Loaded {len(samples)} GSM8K samples")
     logger.info("=" * 80 + "\n")
@@ -231,9 +216,7 @@ def load_gsm8k_samples(num_samples: int, split: str = "test") -> list[dict]:
 
 
 def embed_gsm8k_samples(
-    samples: list[dict],
-    model: SentenceTransformer,
-    model_answers: list[str] | None = None
+    samples: list[dict], model: SentenceTransformer, model_answers: list[str] | None = None
 ) -> dict[str, np.ndarray]:
     """Embed GSM8K samples in 3-4 variants.
 
@@ -260,52 +243,37 @@ def embed_gsm8k_samples(
 
     # Question only
     logger.info("\n1. Question variant...")
-    questions = [s['question'] for s in samples]
-    variants['question'] = model.encode(
-        questions,
-        batch_size=32,
-        show_progress_bar=True,
-        convert_to_numpy=True
+    questions = [s["question"] for s in samples]
+    variants["question"] = model.encode(
+        questions, batch_size=32, show_progress_bar=True, convert_to_numpy=True
     )
 
     # Answer only (ground truth)
     logger.info("\n2. Answer variant (ground truth)...")
-    answers = [s['answer'] for s in samples]
-    variants['answer'] = model.encode(
-        answers,
-        batch_size=32,
-        show_progress_bar=True,
-        convert_to_numpy=True
+    answers = [s["answer"] for s in samples]
+    variants["answer"] = model.encode(
+        answers, batch_size=32, show_progress_bar=True, convert_to_numpy=True
     )
 
     # Question + Answer
     logger.info("\n3. Question+Answer variant...")
     question_answers = [f"{s['question']} Answer: {s['answer']}" for s in samples]
-    variants['question_answer'] = model.encode(
-        question_answers,
-        batch_size=32,
-        show_progress_bar=True,
-        convert_to_numpy=True
+    variants["question_answer"] = model.encode(
+        question_answers, batch_size=32, show_progress_bar=True, convert_to_numpy=True
     )
 
     # Model answers (if provided)
     if model_answers:
         logger.info("\n4. Model answer variant...")
-        variants['model_answer'] = model.encode(
-            model_answers,
-            batch_size=32,
-            show_progress_bar=True,
-            convert_to_numpy=True
+        variants["model_answer"] = model.encode(
+            model_answers, batch_size=32, show_progress_bar=True, convert_to_numpy=True
         )
 
     logger.info("=" * 80 + "\n")
     return variants
 
 
-def generate_model_answers(
-    samples: list[dict],
-    config: Config
-) -> list[str]:
+def generate_model_answers(samples: list[dict], config: Config) -> list[str]:
     """Generate model answers for GSM8K samples using inference API.
 
     Uses asyncio.to_thread to avoid async spreading through the codebase.
@@ -339,7 +307,7 @@ def generate_model_answers(
         api_base=config.similarity.model_api_base,
         api_key=api_key,
         temperature=config.similarity.model_temperature,
-        max_tokens=config.similarity.model_max_tokens
+        max_tokens=config.similarity.model_max_tokens,
     )
 
     async def generate_all():
@@ -351,9 +319,7 @@ def generate_model_answers(
 
             # Convert to GSM8KSample and then to Rollout
             gsm8k_sample = GSM8KSample(
-                question=sample['question'],
-                answer=sample['answer'],
-                sample_id=sample['id']
+                question=sample["question"], answer=sample["answer"], sample_id=sample["id"]
             )
             rollout = gsm8k_sample.to_rollout()
 
@@ -385,7 +351,7 @@ def search_all(
     corpora: dict[str, TrainingCorpus],
     model: SentenceTransformer,
     k: int,
-    distance_metric: str
+    distance_metric: str,
 ) -> list[SimilarityResult]:
     """Search all variants against all corpus stages.
 
@@ -408,7 +374,7 @@ def search_all(
     distance_fns = {
         "cosine": cosine_distance,
         "euclidean": euclidean_distance,
-        "manhattan": manhattan_distance
+        "manhattan": manhattan_distance,
     }
     distance_fn = distance_fns.get(distance_metric, cosine_distance)
     logger.info(f"Using distance metric: {distance_metric}\n")
@@ -421,7 +387,7 @@ def search_all(
 
         # For each sample
         for sample_idx, sample in enumerate(samples):
-            sample_id = sample['id']
+            sample_id = sample["id"]
             query_embedding = embeddings_array[sample_idx]
 
             # Normalize query embedding
@@ -440,14 +406,16 @@ def search_all(
 
                 # Create results
                 for rank, idx in enumerate(top_indices, start=1):
-                    all_results.append(SimilarityResult(
-                        sample_id=sample_id,
-                        variant=variant_name,
-                        corpus_stage=stage_name,
-                        distance=float(distances[idx]),
-                        nearest_chunk_text=corpus.chunks[idx],
-                        rank=rank
-                    ))
+                    all_results.append(
+                        SimilarityResult(
+                            sample_id=sample_id,
+                            variant=variant_name,
+                            corpus_stage=stage_name,
+                            distance=float(distances[idx]),
+                            nearest_chunk_text=corpus.chunks[idx],
+                            rank=rank,
+                        )
+                    )
 
         logger.info(f"  Processed {len(samples)} samples\n")
 
@@ -469,18 +437,11 @@ def save_results(results: list[SimilarityResult], output_path: Path):
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(output_path, 'w', newline='') as f:
+    with open(output_path, "w", newline="") as f:
         writer = csv.writer(f)
 
         # Header
-        writer.writerow([
-            'sample_id',
-            'variant',
-            'corpus_stage',
-            'rank',
-            'distance',
-            'chunk_text'
-        ])
+        writer.writerow(["sample_id", "variant", "corpus_stage", "rank", "distance", "chunk_text"])
 
         # Data
         for result in results:
@@ -490,7 +451,7 @@ def save_results(results: list[SimilarityResult], output_path: Path):
                 result.corpus_stage,
                 result.rank,
                 result.distance,
-                result.nearest_chunk_text[:200]  # Truncate for CSV readability
+                result.nearest_chunk_text[:200],  # Truncate for CSV readability
             ])
 
     logger.info(f"Saved {len(results)} results")
@@ -502,13 +463,10 @@ def main():
     import sys
 
     # Setup logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s'
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
     # Load config
-    if len(sys.argv) > 1 and sys.argv[1].endswith('.py'):
+    if len(sys.argv) > 1 and sys.argv[1].endswith(".py"):
         # Load config from experiment file
         spec = importlib.util.spec_from_file_location("exp_config", sys.argv[1])
         if spec is None:
@@ -535,10 +493,7 @@ def main():
     try:
         # Load model
         logger.info("Loading sentence transformer model...")
-        model = SentenceTransformer(
-            config.embedding.model,
-            device=config.embedding.device
-        )
+        model = SentenceTransformer(config.embedding.model, device=config.embedding.device)
         logger.info(f"Model: {config.embedding.model}\n")
 
         # 1. Load corpus chunks
@@ -550,8 +505,7 @@ def main():
 
         # 3. Load GSM8K samples
         gsm8k_samples = load_gsm8k_samples(
-            num_samples=config.similarity.num_gsm8k_samples,
-            split=config.similarity.gsm8k_split
+            num_samples=config.similarity.num_gsm8k_samples, split=config.similarity.gsm8k_split
         )
 
         # 4. Generate model answers (optional - requires API calls)
@@ -569,7 +523,7 @@ def main():
             corpora=corpora,
             model=model,
             k=config.similarity.k_neighbors,
-            distance_metric=config.similarity.distance_metric
+            distance_metric=config.similarity.distance_metric,
         )
 
         # 7. Save results
@@ -587,7 +541,9 @@ def main():
         if model_answers:
             logger.info("  (includes model-generated answers)")
         logger.info(f"Corpus stages: {list(corpora.keys())}")
-        logger.info(f"Results per sample: {config.similarity.k_neighbors * num_variants * len(corpora)}")
+        logger.info(
+            f"Results per sample: {config.similarity.k_neighbors * num_variants * len(corpora)}"
+        )
         logger.info(f"Total results: {len(results)}")
         logger.info(f"Output: {output_path}")
         logger.info("=" * 80)
@@ -598,10 +554,12 @@ def main():
     except Exception as e:
         logger.error(f"Error: {e}")
         import traceback
+
         traceback.print_exc()
         return 1
 
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(main())

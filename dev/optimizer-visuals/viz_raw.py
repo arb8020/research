@@ -9,9 +9,7 @@ from viz_data import OptimizationVizData, TrajectoryData
 
 
 def print_trajectory_raw(
-    trajectory: TrajectoryData,
-    gradients: list[np.ndarray] | None = None,
-    max_steps: int = 10
+    trajectory: TrajectoryData, gradients: list[np.ndarray] | None = None, max_steps: int = 10
 ):
     """Print raw trajectory data.
 
@@ -33,7 +31,9 @@ def print_trajectory_raw(
         params_str = str(trajectory.params_history[i])
         if gradients is not None and i < len(gradients):
             grads_str = str(gradients[i])
-            print(f"{trajectory.steps[i]:4d} | {trajectory.losses[i]:9.6f} | {params_str:35s} | {grads_str}")
+            print(
+                f"{trajectory.steps[i]:4d} | {trajectory.losses[i]:9.6f} | {params_str:35s} | {grads_str}"
+            )
         else:
             print(f"{trajectory.steps[i]:4d} | {trajectory.losses[i]:9.6f} | {params_str}")
 
@@ -43,15 +43,15 @@ def print_trajectory_raw(
         params_str = str(trajectory.params_history[i])
         if gradients is not None and i < len(gradients):
             grads_str = str(gradients[i])
-            print(f"{trajectory.steps[i]:4d} | {trajectory.losses[i]:9.6f} | {params_str:35s} | {grads_str}")
+            print(
+                f"{trajectory.steps[i]:4d} | {trajectory.losses[i]:9.6f} | {params_str:35s} | {grads_str}"
+            )
         else:
             print(f"{trajectory.steps[i]:4d} | {trajectory.losses[i]:9.6f} | {params_str}")
 
 
 def print_optimization_summary_raw(
-    viz_data: OptimizationVizData,
-    gradients: list[np.ndarray] | None = None,
-    max_steps: int = 10
+    viz_data: OptimizationVizData, gradients: list[np.ndarray] | None = None, max_steps: int = 10
 ):
     """Print optimization summary as raw data.
 

@@ -46,7 +46,7 @@ def main():
 
         def loss_fn_numpy(params: np.ndarray) -> float:
             """Numpy version of quadratic loss for landscape computation."""
-            return float(np.sum(params ** 2) / 2.0)
+            return float(np.sum(params**2) / 2.0)
 
         landscape_bounds = ((-4.0, 4.0), (-4.0, 4.0))
         default_lr = 0.1
@@ -64,7 +64,7 @@ def main():
                 init_fn=sgd_init,
                 update_fn=sgd_update,
                 learning_rate=lr,
-                num_steps=20
+                num_steps=20,
             )
 
             viz_data = create_viz_data(
@@ -74,7 +74,7 @@ def main():
                 optimizer_name="SGD",
                 learning_rate=lr,
                 landscape_bounds=landscape_bounds,
-                landscape_resolution=100
+                landscape_resolution=100,
             )
             viz_data_list.append(viz_data)
 
@@ -99,7 +99,7 @@ def main():
             update_fn=sgd_update,
             learning_rate=learning_rate,
             num_steps=num_steps,
-            return_grads=show_raw
+            return_grads=show_raw,
         )
 
         viz_data = create_viz_data(
@@ -109,7 +109,7 @@ def main():
             optimizer_name="SGD",
             learning_rate=learning_rate,
             landscape_bounds=landscape_bounds,
-            landscape_resolution=100
+            landscape_resolution=100,
         )
 
         # Show visualizations based on flags

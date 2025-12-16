@@ -3,6 +3,7 @@
 This shows how you would register a Triton or CuTe kernel.
 Copy this pattern when you write your optimized kernels.
 """
+
 from kernel_utils.backends import BACKENDS
 from kernel_utils.task import input_t, output_t
 
@@ -14,6 +15,7 @@ def my_triton_kernel(data: input_t) -> output_t:
     """
     # TODO: Replace with actual Triton kernel implementation
     from nvfp4_reference_kernel import ref_kernel
+
     return ref_kernel(data)
 
 
@@ -24,6 +26,7 @@ def my_cute_kernel(data: input_t) -> output_t:
     """
     # TODO: Replace with actual CuTe/CUDA kernel implementation
     from nvfp4_reference_kernel import ref_kernel
+
     return ref_kernel(data)
 
 

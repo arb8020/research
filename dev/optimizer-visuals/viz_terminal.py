@@ -23,10 +23,7 @@ def plot_loss_curve_terminal(trajectory: TrajectoryData, title: str = "Loss vs. 
     plt.show()
 
 
-def plot_2d_trajectory_terminal(
-    trajectory: TrajectoryData,
-    title: str = "Parameter Trajectory"
-):
+def plot_2d_trajectory_terminal(trajectory: TrajectoryData, title: str = "Parameter Trajectory"):
     """Plot 2D parameter trajectory in terminal.
 
     Args:
@@ -64,15 +61,11 @@ def plot_optimization_summary_terminal(viz_data: OptimizationVizData):
     print()
 
     # Loss curve
-    plot_loss_curve_terminal(
-        viz_data.trajectory,
-        title=f"{viz_data.optimizer_name} - Loss"
-    )
+    plot_loss_curve_terminal(viz_data.trajectory, title=f"{viz_data.optimizer_name} - Loss")
 
     # Trajectory if 2D
     if viz_data.landscape is not None:
         print()
         plot_2d_trajectory_terminal(
-            viz_data.trajectory,
-            title=f"{viz_data.optimizer_name} - Trajectory"
+            viz_data.trajectory, title=f"{viz_data.optimizer_name} - Trajectory"
         )

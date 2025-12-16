@@ -4,10 +4,9 @@
 import os
 import sys
 
-from shared.config import get_prime_key, get_runpod_key
-
 from bifrost import BifrostClient
 from broker import GPUClient
+from shared.config import get_prime_key, get_runpod_key
 
 
 def main():
@@ -15,18 +14,20 @@ def main():
 
     credentials = {}
     if key := get_runpod_key():
-        credentials['runpod'] = key
+        credentials["runpod"] = key
     if key := get_prime_key():
-        credentials['primeintellect'] = key
+        credentials["primeintellect"] = key
 
-    client = GPUClient(credentials=credentials, ssh_key_path=os.getenv('SSH_KEY_PATH', '~/.ssh/id_ed25519'))
+    client = GPUClient(
+        credentials=credentials, ssh_key_path=os.getenv("SSH_KEY_PATH", "~/.ssh/id_ed25519")
+    )
     instances = client.list_instances()
 
     if instance_id:
         target = next((i for i in instances if i.id == instance_id or i.name == instance_id), None)
     else:
         # Find corpus-proximity instance
-        target = next((i for i in instances if i.name and 'corpus' in i.name.lower()), None)
+        target = next((i for i in instances if i.name and "corpus" in i.name.lower()), None)
 
     if not target:
         print(f"No instance found matching: {instance_id or 'corpus*'}")
@@ -41,17 +42,23 @@ def main():
     print()
 
     try:
-        bf = BifrostClient(target.ssh_connection_string(), os.getenv('SSH_KEY_PATH', '~/.ssh/id_ed25519'))
+        bf = BifrostClient(
+            target.ssh_connection_string(), os.getenv("SSH_KEY_PATH", "~/.ssh/id_ed25519")
+        )
 
         # Check for completion markers
-        result = bf.exec('cd ~/.bifrost/workspace/dev/corpus-proximity && ls -la .clustering_* 2>/dev/null')
+        result = bf.exec(
+            "cd ~/.bifrost/workspace/dev/corpus-proximity && ls -la .clustering_* 2>/dev/null"
+        )
         if result.stdout.strip():
             print("Completion markers:")
             print(result.stdout)
             print()
 
         # Get recent log lines
-        result = bf.exec('cd ~/.bifrost/workspace/dev/corpus-proximity && tail -50 pipeline.log 2>/dev/null || echo "No pipeline.log"')
+        result = bf.exec(
+            'cd ~/.bifrost/workspace/dev/corpus-proximity && tail -50 pipeline.log 2>/dev/null || echo "No pipeline.log"'
+        )
         print("Recent pipeline log:")
         print("=" * 80)
         print(result.stdout)

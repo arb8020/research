@@ -27,9 +27,7 @@ class PricingConfig:
 
 def create_argument_parser() -> argparse.ArgumentParser:
     """Create and configure argument parser for deployment script."""
-    parser = argparse.ArgumentParser(
-        description="Deploy GPT-2 training to remote GPU cluster"
-    )
+    parser = argparse.ArgumentParser(description="Deploy GPT-2 training to remote GPU cluster")
 
     # Training configuration
     parser.add_argument(
@@ -184,9 +182,7 @@ def resolve_pricing_constraints(
             print("  These constraints cannot both be satisfied.")
             return None
 
-    return PricingConfig(
-        max_price_per_gpu=max_price_per_gpu, max_total_price=max_total_price
-    )
+    return PricingConfig(max_price_per_gpu=max_price_per_gpu, max_total_price=max_total_price)
 
 
 def load_provider_credentials() -> dict[str, str] | None:
@@ -206,9 +202,7 @@ def load_provider_credentials() -> dict[str, str] | None:
 
     if not credentials:
         print("✗ No GPU provider credentials found")
-        print(
-            "Set RUNPOD_API_KEY, VAST_API_KEY, or PRIME_API_KEY environment variables"
-        )
+        print("Set RUNPOD_API_KEY, VAST_API_KEY, or PRIME_API_KEY environment variables")
         print("\nExample:")
         print("  export RUNPOD_API_KEY=your-key-here")
         print("  export VAST_API_KEY=your-key-here")
@@ -218,9 +212,7 @@ def load_provider_credentials() -> dict[str, str] | None:
     return credentials
 
 
-def print_deployment_header(
-    args: argparse.Namespace, pricing: PricingConfig
-) -> None:
+def print_deployment_header(args: argparse.Namespace, pricing: PricingConfig) -> None:
     """Print deployment configuration header."""
     print("=" * 60)
     print("GPT-2 Training Deployment")
@@ -236,9 +228,7 @@ def print_deployment_header(
             print(
                 f"Max total price: ${pricing.max_total_price}/hour (${pricing.max_total_price / args.gpu_count:.2f}/GPU/hr)"
             )
-        print(
-            f"Disk: {args.container_disk_gb}GB container + {args.volume_disk_gb}GB volume"
-        )
+        print(f"Disk: {args.container_disk_gb}GB container + {args.volume_disk_gb}GB volume")
     else:
         print(f"Using existing instance: {args.use_existing}")
     print("=" * 60)
@@ -326,9 +316,7 @@ def provision_new_instance(
     print(f"Query: {query_description}")
 
     # First, search to see what's available (for better error messages)
-    available_offers = gpu_client.search(
-        query, sort=lambda x: x.price_per_hour, reverse=False
-    )
+    available_offers = gpu_client.search(query, sort=lambda x: x.price_per_hour, reverse=False)
 
     gpu_instance = gpu_client.create(
         query=query,
@@ -365,9 +353,7 @@ def print_provisioning_failure(
 ) -> None:
     """Print detailed error message when provisioning fails."""
     print("\n✗ Failed to provision GPU instance")
-    print(
-        f"  No {args.gpu_count}x {args.gpu_type} available matching your constraints"
-    )
+    print(f"  No {args.gpu_count}x {args.gpu_type} available matching your constraints")
 
     # Show the constraints that were applied
     print("\n  Your search criteria:")
@@ -391,9 +377,7 @@ def print_provisioning_failure(
         )
         for i, offer in enumerate(available_offers[:3], 1):
             total_price = offer.price_per_hour * offer.gpu_count
-            print(
-                f"\n  {i}. {offer.provider} - {offer.gpu_type} ({offer.cloud_type.value})"
-            )
+            print(f"\n  {i}. {offer.provider} - {offer.gpu_type} ({offer.cloud_type.value})")
             print(
                 f"     Price: ${offer.price_per_hour:.2f}/GPU/hr (${total_price:.2f}/hr for {offer.gpu_count} GPU)"
             )
@@ -407,9 +391,7 @@ def print_provisioning_failure(
 
             # Explain why this doesn't work
             if max_gpus is not None and max_gpus < args.gpu_count:
-                print(
-                    f"     ✗ Cannot provision {args.gpu_count} GPUs (max available: {max_gpus})"
-                )
+                print(f"     ✗ Cannot provision {args.gpu_count} GPUs (max available: {max_gpus})")
             elif avail_counts and args.gpu_count not in avail_counts:
                 print(f"     ✗ {args.gpu_count} GPUs not in available counts")
     else:
@@ -421,13 +403,9 @@ def print_provisioning_failure(
     suggested_count = max([c for c in valid_counts if c < args.gpu_count], default=4)
     print(f"  1. Use {suggested_count} GPUs instead: --gpu-count {suggested_count}")
     if args.cloud_type == "secure":
-        print(
-            "  2. Try community cloud (cheaper, but spot instances): --cloud-type community"
-        )
+        print("  2. Try community cloud (cheaper, but spot instances): --cloud-type community")
     if pricing.max_total_price:
-        print(
-            f"  3. Increase budget: --max-total-price {int(pricing.max_total_price * 1.5)}"
-        )
+        print(f"  3. Increase budget: --max-total-price {int(pricing.max_total_price * 1.5)}")
     if args.provider:
         print(f"  4. Try different provider: remove --provider {args.provider}")
     else:
@@ -437,9 +415,7 @@ def print_provisioning_failure(
     )
 
 
-def deploy_code_and_dependencies(
-    gpu_instance: Any, ssh_key_path: str
-) -> str | None:
+def deploy_code_and_dependencies(gpu_instance: Any, ssh_key_path: str) -> str | None:
     """Deploy code and install dependencies on GPU instance.
 
     Returns workspace_path on success, None on failure.
@@ -485,7 +461,8 @@ def run_training(
     if detached:
         # Use run_detached for background execution
         job_info = bifrost_client.run_detached(
-            command=command, no_deploy=True  # Already deployed in step 2
+            command=command,
+            no_deploy=True,  # Already deployed in step 2
         )
         print("✓ Training launched in detached mode")
         print(f"  Job ID: {job_info.job_id}")
@@ -556,9 +533,7 @@ def main() -> int:
     gpu_client = GPUClient(credentials=credentials, ssh_key_path=args.ssh_key_path)
 
     if args.use_existing:
-        gpu_instance = connect_to_existing_instance(
-            gpu_client, args.use_existing, args.provider
-        )
+        gpu_instance = connect_to_existing_instance(gpu_client, args.use_existing, args.provider)
     else:
         gpu_instance = provision_new_instance(gpu_client, args, pricing)
 

@@ -15,6 +15,7 @@ example doc to highlight the structure of the dataset:
   "token_count": 594
 }
 """
+
 import argparse
 import multiprocessing as mp
 import os
@@ -28,7 +29,7 @@ from tqdm import tqdm
 
 
 def write_datafile(filename, toks):
-    """ 
+    """
     Saves token data as a .bin file, for reading in C.
     - First comes a header with 256 int32s
     - The tokens follow, each as a uint16
@@ -38,7 +39,9 @@ def write_datafile(filename, toks):
     header = np.zeros(256, dtype=np.int32)
     header[0] = 20240520  # magic
     header[1] = 1  # version
-    header[2] = len(toks)  # number of tokens after the 256*4 bytes of header (each 2 bytes as uint16)
+    header[2] = len(
+        toks
+    )  # number of tokens after the 256*4 bytes of header (each 2 bytes as uint16)
     # construct the tokens numpy array, if not already
     if not isinstance(toks, np.ndarray) or not toks.dtype == np.uint16:
         # validate that no token exceeds a uint16
@@ -52,12 +55,18 @@ def write_datafile(filename, toks):
     with open(filename, "wb") as f:
         f.write(header.tobytes())
         f.write(toks_np.tobytes())
+
+
 # ------------------------------------------
 
 
 parser = argparse.ArgumentParser(description="FineWeb dataset preprocessing")
-parser.add_argument("-v", "--version", type=str, default="10B", help="Which version of fineweb to use 10B|100B")
-parser.add_argument("-s", "--shard_size", type=int, default=10**8, help="Size of each shard in tokens")
+parser.add_argument(
+    "-v", "--version", type=str, default="10B", help="Which version of fineweb to use 10B|100B"
+)
+parser.add_argument(
+    "-s", "--shard_size", type=int, default=10**8, help="Size of each shard in tokens"
+)
 args = parser.parse_args()
 
 # FineWeb has a few possible subsamples available
@@ -78,7 +87,7 @@ fw = load_dataset("HuggingFaceFW/fineweb", name=remote_name, split="train")
 
 # init the tokenizer
 enc = tiktoken.get_encoding("gpt2")
-eot = enc._special_tokens['<|endoftext|>']  # end of text token
+eot = enc._special_tokens["<|endoftext|>"]  # end of text token
 
 
 def tokenize(doc):
@@ -86,7 +95,9 @@ def tokenize(doc):
     tokens = [eot]  # the special <|endoftext|> token delimits all documents
     tokens.extend(enc.encode_ordinary(doc["text"]))
     tokens_np = np.array(tokens)
-    assert (0 <= tokens_np).all() and (tokens_np < 2**16).all(), "token dictionary too large for uint16"
+    assert (0 <= tokens_np).all() and (tokens_np < 2**16).all(), (
+        "token dictionary too large for uint16"
+    )
     tokens_np_uint16 = tokens_np.astype(np.uint16)
     return tokens_np_uint16
 
@@ -100,15 +111,16 @@ with mp.Pool(nprocs) as pool:
     token_count = 0
     progress_bar = None
     for tokens in pool.imap(tokenize, fw, chunksize=16):
-
         # is there enough space in the current shard for the new tokens?
         if token_count + len(tokens) < args.shard_size:
             # simply append tokens to current shard
-            all_tokens_np[token_count:token_count + len(tokens)] = tokens
+            all_tokens_np[token_count : token_count + len(tokens)] = tokens
             token_count += len(tokens)
             # update progress bar
             if progress_bar is None:
-                progress_bar = tqdm(total=args.shard_size, unit="tokens", desc=f"Shard {shard_index}")
+                progress_bar = tqdm(
+                    total=args.shard_size, unit="tokens", desc=f"Shard {shard_index}"
+                )
             progress_bar.update(len(tokens))
         else:
             # write the current shard and start a new one
@@ -117,12 +129,12 @@ with mp.Pool(nprocs) as pool:
             # split the document into whatever fits in this shard; the remainder goes to next one
             remainder = args.shard_size - token_count
             progress_bar.update(remainder)
-            all_tokens_np[token_count:token_count + remainder] = tokens[:remainder]
+            all_tokens_np[token_count : token_count + remainder] = tokens[:remainder]
             write_datafile(filename, all_tokens_np)
             shard_index += 1
             progress_bar = None
             # populate the next shard with the leftovers of the current doc
-            all_tokens_np[0:len(tokens) - remainder] = tokens[remainder:]
+            all_tokens_np[0 : len(tokens) - remainder] = tokens[remainder:]
             token_count = len(tokens) - remainder
 
     # write any remaining tokens as the last shard
