@@ -138,14 +138,12 @@ def _stream_and_wait(
             return False, None, f"Session check failed: {err}"
 
         # Stream new log content
-        new_content, new_pos, err = _tail_log_from_position(
-            client, config.log_file, last_position
-        )
+        new_content, new_pos, err = _tail_log_from_position(client, config.log_file, last_position)
         if err:
             logger.warning(f"⚠️  Log tail failed: {err}")
         elif new_content:
             # Print immediately with flush for real-time feedback
-            print(new_content, end='', flush=True)
+            print(new_content, end="", flush=True)
             last_position = new_pos
 
             # Check for stop marker if configured
@@ -215,7 +213,7 @@ def _tail_log_from_position(
 
     if result.stdout:
         new_content = result.stdout
-        new_position = last_position + len(new_content.encode('utf-8'))
+        new_position = last_position + len(new_content.encode("utf-8"))
         return new_content, new_position, None
     else:
         # No new content
@@ -268,7 +266,7 @@ def _extract_exit_code_from_content(
     for line in content.splitlines():
         if marker in line:
             # Extract number after colon
-            parts = line.split(':')
+            parts = line.split(":")
             if len(parts) >= 2:
                 code_str = parts[-1].strip()
                 if code_str.isdigit():
@@ -330,7 +328,7 @@ def stream_log_with_condition(
         if err:
             logger.warning(f"⚠️  Log tail failed: {err}")
         elif content:
-            print(content, end='', flush=True)
+            print(content, end="", flush=True)
             last_position = new_pos
 
             if stop_condition(content):

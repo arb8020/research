@@ -135,8 +135,7 @@ class WorkerServer:
         except OSError as e:
             if e.errno == 98:  # Address already in use
                 raise OSError(
-                    f"Port {self.port} already in use. "
-                    "Another WorkerServer may be running."
+                    f"Port {self.port} already in use. Another WorkerServer may be running."
                 ) from e
             raise
 
@@ -199,8 +198,8 @@ class WorkerServer:
             self.listen_sock.close()
 
         # Set up file handles for JSON communication
-        r = client_sock.makefile('r')
-        w = client_sock.makefile('w')
+        r = client_sock.makefile("r")
+        w = client_sock.makefile("w")
 
         # Create handle for work function (same API as Worker)
         from rollouts.training.worker import Worker
@@ -251,6 +250,7 @@ class WorkerServer:
 # ============================================================================
 # CLI for launching worker servers on compute nodes
 # ============================================================================
+
 
 def main():
     """CLI entry point for launching worker server.

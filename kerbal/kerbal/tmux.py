@@ -92,6 +92,7 @@ def start_tmux_session(
     env_prefix = ""
     if env_vars:
         from kerbal.env import build_env_prefix
+
         env_prefix = build_env_prefix(env_vars)
 
     # Build tmux command
@@ -120,7 +121,9 @@ def start_tmux_session(
 
         if capture_exit_code:
             # Full capture with exit code marker
-            tmux_cmd += f" 'script -efc \"{escaped_command}\" {log_file}; echo EXIT_CODE: $? >> {log_file}'"
+            tmux_cmd += (
+                f" 'script -efc \"{escaped_command}\" {log_file}; echo EXIT_CODE: $? >> {log_file}'"
+            )
         else:
             # Casey: Granularity - can run without exit code marker
             tmux_cmd += f" 'script -efc \"{escaped_command}\" {log_file}'"

@@ -152,10 +152,7 @@ class JobHandle:
 
     def _get_exit_code(self) -> int | None:
         """Extract exit code from log file."""
-        cmd = (
-            f"grep -E 'EXIT_CODE:' {self.log_file} 2>/dev/null | "
-            f"tail -1 | awk '{{print $NF}}'"
-        )
+        cmd = f"grep -E 'EXIT_CODE:' {self.log_file} 2>/dev/null | tail -1 | awk '{{print $NF}}'"
         result = self.client.exec(cmd)
         if result.stdout and result.stdout.strip().isdigit():
             return int(result.stdout.strip())
@@ -204,6 +201,7 @@ def submit(
     # Generate job name if not provided
     if job_name is None:
         import time
+
         job_name = f"job-{int(time.time())}"
 
     logger.info(f"Submitting job: {job_name}")
@@ -221,6 +219,7 @@ def submit(
     if deps is not None:
         logger.info("  Installing dependencies...")
         from kerbal.python_env import setup_script_deps
+
         setup_script_deps(client, workspace, deps)
         logger.info("  Dependencies installed")
 

@@ -70,9 +70,7 @@ class NCCLConfig:
         assert 0 <= self.rank < self.world_size, (
             f"rank must be in [0, {self.world_size}), got {self.rank}"
         )
-        assert self.local_rank >= 0, (
-            f"local_rank must be >= 0, got {self.local_rank}"
-        )
+        assert self.local_rank >= 0, f"local_rank must be >= 0, got {self.local_rank}"
 
 
 def setup_nccl_env(config: NCCLConfig) -> dict[str, str | None]:
@@ -113,7 +111,14 @@ def setup_nccl_env(config: NCCLConfig) -> dict[str, str | None]:
     assert isinstance(config, NCCLConfig), f"config must be NCCLConfig, got {type(config)}"
 
     # Save old values for restoration
-    env_vars = ["MASTER_ADDR", "MASTER_PORT", "WORLD_SIZE", "RANK", "LOCAL_RANK", "CUDA_VISIBLE_DEVICES"]
+    env_vars = [
+        "MASTER_ADDR",
+        "MASTER_PORT",
+        "WORLD_SIZE",
+        "RANK",
+        "LOCAL_RANK",
+        "CUDA_VISIBLE_DEVICES",
+    ]
     old_env = {}
     for var in env_vars:
         old_env[var] = os.environ.get(var)
@@ -127,10 +132,12 @@ def setup_nccl_env(config: NCCLConfig) -> dict[str, str | None]:
     os.environ["CUDA_VISIBLE_DEVICES"] = str(config.local_rank)
 
     # Tiger Style: Assert postconditions
-    assert os.environ["MASTER_ADDR"] == config.master_addr, \
+    assert os.environ["MASTER_ADDR"] == config.master_addr, (
         f"MASTER_ADDR mismatch: {os.environ['MASTER_ADDR']} != {config.master_addr}"
-    assert os.environ["RANK"] == str(config.rank), \
+    )
+    assert os.environ["RANK"] == str(config.rank), (
         f"RANK mismatch: {os.environ['RANK']} != {config.rank}"
+    )
 
     return old_env
 
@@ -195,8 +202,9 @@ def create_nccl_configs(
     assert nodes, "nodes cannot be empty"
     assert len(nodes) > 0, "Must have at least one node"
     assert len(nodes) < 1000, f"Too many nodes: {len(nodes)}"
-    assert 1024 <= master_port <= 65535, \
+    assert 1024 <= master_port <= 65535, (
         f"master_port must be in range [1024, 65535], got {master_port}"
+    )
 
     # Validate each node
     for i, node in enumerate(nodes):

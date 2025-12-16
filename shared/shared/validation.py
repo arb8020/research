@@ -35,20 +35,18 @@ def validate_ssh_key_path(path: str) -> str:
 
     # Expand and validate path
     expanded_path = os.path.expanduser(path)
-    assert os.path.exists(expanded_path), \
-        f"SSH private key not found: {expanded_path}"
-    assert os.access(expanded_path, os.R_OK), \
-        f"SSH private key not readable: {expanded_path}"
+    assert os.path.exists(expanded_path), f"SSH private key not found: {expanded_path}"
+    assert os.access(expanded_path, os.R_OK), f"SSH private key not readable: {expanded_path}"
 
     # Check permissions (non-blocking warning)
     _check_ssh_key_permissions(expanded_path)
 
     # Assert reasonable file size
     stat_info = os.stat(expanded_path)
-    assert stat_info.st_size < 10_000, \
+    assert stat_info.st_size < 10_000, (
         f"SSH key file suspiciously large ({stat_info.st_size} bytes): {expanded_path}"
-    assert stat_info.st_size > 0, \
-        f"SSH key file is empty: {expanded_path}"
+    )
+    assert stat_info.st_size > 0, f"SSH key file is empty: {expanded_path}"
 
     # Assert output invariant
     assert len(expanded_path) > 0, "Validated SSH key path"
@@ -66,8 +64,7 @@ def _check_ssh_key_permissions(key_path: str) -> None:
 
     if perms & 0o077:  # Group or other has permissions
         logger.warning(
-            f"SSH key has insecure permissions: {oct(perms)[-3:]}. "
-            f"Recommend: chmod 600 {key_path}"
+            f"SSH key has insecure permissions: {oct(perms)[-3:]}. Recommend: chmod 600 {key_path}"
         )
 
 
@@ -92,10 +89,8 @@ def validate_timeout(timeout: int, min_value: int = 1, max_value: int = 3600) ->
     assert min_value < max_value, "min_value must be less than max_value"
 
     # Assert timeout range
-    assert timeout >= min_value, \
-        f"timeout must be >= {min_value}, got {timeout}"
-    assert timeout <= max_value, \
-        f"timeout must be <= {max_value}, got {timeout}"
+    assert timeout >= min_value, f"timeout must be >= {min_value}, got {timeout}"
+    assert timeout <= max_value, f"timeout must be <= {max_value}, got {timeout}"
 
     # Assert output invariant
     assert timeout > 0, "Validated timeout"
@@ -118,8 +113,7 @@ def validate_port(port: int) -> int:
     assert isinstance(port, int), f"port must be int, got {type(port)}"
 
     # Assert port range (1-65535 for TCP/UDP)
-    assert 1 <= port <= 65535, \
-        f"port must be 1-65535, got {port}"
+    assert 1 <= port <= 65535, f"port must be 1-65535, got {port}"
 
     # Warn about privileged ports
     if port < 1024:
@@ -151,13 +145,15 @@ def validate_hostname(hostname: str) -> str:
 
     # Assert no dangerous characters
     dangerous_chars = set(" ;|&`$(){}[]<>\"'\\")
-    assert not any(c in dangerous_chars for c in hostname), \
+    assert not any(c in dangerous_chars for c in hostname), (
         f"hostname contains dangerous characters: {hostname}"
+    )
 
     # Assert reasonable format (alphanumeric, dots, hyphens)
     valid_chars = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_")
-    assert all(c in valid_chars for c in hostname), \
+    assert all(c in valid_chars for c in hostname), (
         f"hostname contains invalid characters: {hostname}"
+    )
 
     # Assert output invariant
     assert len(hostname) > 0, "Validated hostname"
@@ -183,8 +179,9 @@ def validate_username(username: str) -> str:
 
     # Assert reasonable format (alphanumeric, underscore, hyphen)
     valid_chars = set("abcdefghijklmnopqrstuvwxyz0123456789_-")
-    assert all(c in valid_chars for c in username.lower()), \
+    assert all(c in valid_chars for c in username.lower()), (
         f"username contains invalid characters: {username}"
+    )
 
     # Assert output invariant
     assert len(username) > 0, "Validated username"

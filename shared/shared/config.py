@@ -59,23 +59,23 @@ def get_modal_token() -> str | None:
             current_section = None
             sections = {}
 
-            for line in content.split('\n'):
+            for line in content.split("\n"):
                 line = line.strip()
                 # Section header
-                if line.startswith('[') and line.endswith(']'):
+                if line.startswith("[") and line.endswith("]"):
                     current_section = line[1:-1]
                     sections[current_section] = {}
                 # Key-value pair
-                elif '=' in line and current_section:
-                    key, _, value = line.partition('=')
+                elif "=" in line and current_section:
+                    key, _, value = line.partition("=")
                     key = key.strip()
                     value = value.strip().strip('"').strip("'")
                     sections[current_section][key] = value
 
             # Find active workspace
             for workspace, config in sections.items():
-                if config.get('active') == 'true':
-                    return config.get('token_id')
+                if config.get("active") == "true":
+                    return config.get("token_id")
         except Exception:
             pass  # If parsing fails, return None
 

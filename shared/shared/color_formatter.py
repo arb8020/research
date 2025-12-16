@@ -2,23 +2,25 @@
 
 Tiger Style: Simple, explicit ANSI codes. No external dependencies.
 """
+
 import logging
 
 
 # ANSI color codes
 class Colors:
     """ANSI color codes for terminal output."""
-    RESET = '\033[0m'
+
+    RESET = "\033[0m"
 
     # Level colors
-    DEBUG = '\033[36m'      # Cyan
-    INFO = '\033[37m'       # White (default)
-    WARNING = '\033[33m'    # Yellow
-    ERROR = '\033[31m'      # Red
-    CRITICAL = '\033[31;1m'  # Bold Red
+    DEBUG = "\033[36m"  # Cyan
+    INFO = "\033[37m"  # White (default)
+    WARNING = "\033[33m"  # Yellow
+    ERROR = "\033[31m"  # Red
+    CRITICAL = "\033[31;1m"  # Bold Red
 
     # Component colors
-    TIMESTAMP = '\033[90m'  # Dark gray
+    TIMESTAMP = "\033[90m"  # Dark gray
 
 
 class ColorFormatter(logging.Formatter):
@@ -62,14 +64,14 @@ class ColorFormatter(logging.Formatter):
         level_color = self.LEVEL_COLORS.get(record.levelno, Colors.INFO)
 
         # Format timestamp
-        timestamp = self.formatTime(record, datefmt='%H:%M:%S')
+        timestamp = self.formatTime(record, datefmt="%H:%M:%S")
 
         # Format message
         message = record.getMessage()
 
         # Add exception info if present
         if record.exc_info:
-            message += '\n' + self.formatException(record.exc_info)
+            message += "\n" + self.formatException(record.exc_info)
 
         # Build output with colors
         if self.show_timestamp:

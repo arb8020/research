@@ -31,6 +31,7 @@ from typing import Any
 def get_deps():
     """Get vLLM dependencies as DependencyConfig."""
     from kerbal.protocol import DependencyConfig
+
     return DependencyConfig(
         project_name="vllm-server",
         dependencies=[

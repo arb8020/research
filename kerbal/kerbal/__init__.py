@@ -56,8 +56,13 @@ Example - Basic deployment:
         print(f"Job failed: {err}")
 """
 
+# Inference engine presets
+from kerbal import inference
 from kerbal.env import build_env_prefix
 from kerbal.gpu import check_gpus_available, wait_for_gpus
+
+# High-level job/server API
+from kerbal.job import JobHandle, submit
 from kerbal.job_monitor import (
     LogStreamConfig,
     stream_log_until_complete,
@@ -80,15 +85,9 @@ from kerbal.python_env import (
     setup_script_deps,  # DEPRECATED: Use setup_python_env instead
     verify_package,
 )
+from kerbal.server import ServerHandle, serve
 from kerbal.tmux import start_tmux_session
 from kerbal.transfer import push_code, sync_results
-
-# High-level job/server API
-from kerbal.job import JobHandle, submit
-from kerbal.server import ServerHandle, serve
-
-# Inference engine presets
-from kerbal import inference
 
 __all__ = [
     # High-level API (job/server)

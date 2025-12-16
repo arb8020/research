@@ -3,6 +3,7 @@
 Tiger Style: Explicit configuration, bounded resources, fail-fast.
 Sean Goedecke: Boring, well-tested patterns (Python's logging module).
 """
+
 import logging.config
 import os
 from typing import Any
@@ -70,17 +71,9 @@ def setup_logging(
         use_rich = False
 
     formatters = {
-        "standard": {
-            "format": "[%(asctime)s] %(levelname)s: %(message)s",
-            "datefmt": "%H:%M:%S"
-        },
-        "minimal": {
-            "format": "%(message)s"
-        },
-        "color": {
-            "()": "shared.color_formatter.ColorFormatter",
-            "show_timestamp": True
-        },
+        "standard": {"format": "[%(asctime)s] %(levelname)s: %(message)s", "datefmt": "%H:%M:%S"},
+        "minimal": {"format": "%(message)s"},
+        "color": {"()": "shared.color_formatter.ColorFormatter", "show_timestamp": True},
         "json": {
             "()": "shared.json_formatter.JSONFormatter",
             "fmt_keys": {
@@ -88,9 +81,9 @@ def setup_logging(
                 "logger": "name",
                 "module": "module",
                 "function": "funcName",
-                "line": "lineno"
-            }
-        }
+                "line": "lineno",
+            },
+        },
     }
 
     # Choose handler and formatter based on mode
@@ -102,7 +95,7 @@ def setup_logging(
                 "formatter": "minimal",
                 "rich_tracebacks": rich_tracebacks,
                 "show_time": False,
-                "show_path": False
+                "show_path": False,
             }
         }
     else:
@@ -118,7 +111,7 @@ def setup_logging(
                 "class": "logging.StreamHandler",
                 "level": "DEBUG",  # Let loggers control their own levels
                 "formatter": console_formatter,
-                "stream": "ext://sys.stdout"
+                "stream": "ext://sys.stdout",
             }
         }
 
@@ -154,10 +147,7 @@ def setup_logging(
         "formatters": formatters,
         "handlers": handlers,
         "loggers": {},
-        "root": {
-            "level": level,
-            "handlers": handler_list
-        }
+        "root": {"level": level, "handlers": handler_list},
     }
 
     # Add specific logger configurations
@@ -168,7 +158,7 @@ def setup_logging(
         loggers_config[logger_name] = {
             "level": logger_level,
             "handlers": handler_list,
-            "propagate": False  # Don't propagate to root to avoid duplicate logs
+            "propagate": False,  # Don't propagate to root to avoid duplicate logs
         }
 
     logging.config.dictConfig(config)
@@ -177,8 +167,9 @@ def setup_logging(
     # Python 3.12+ creates the listener automatically, we just need to start it
     if use_queue_handler:
         queue_handler = logging.getHandlerByName("queue_handler")
-        if queue_handler is not None and hasattr(queue_handler, 'listener'):
+        if queue_handler is not None and hasattr(queue_handler, "listener"):
             queue_handler.listener.start()
             # Register cleanup on exit (mCoding pattern)
             import atexit
+
             atexit.register(queue_handler.listener.stop)

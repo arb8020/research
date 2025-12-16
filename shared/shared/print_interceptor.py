@@ -26,6 +26,7 @@ Tiger Style:
     - Can capture or pass-through stderr
     - Bounded: No infinite buffering
 """
+
 import logging
 import sys
 from contextlib import contextmanager
@@ -70,14 +71,14 @@ class PrintToLogger:
         Returns:
             Number of characters written (for file-like compatibility)
         """
-        if message == '\n':
+        if message == "\n":
             # Bare newline - flush buffer if non-empty
             if self._buffer:
                 self.logger.log(self.level, self._buffer)
                 self._buffer = ""
-        elif '\n' in message:
+        elif "\n" in message:
             # Contains newlines - split and flush each line
-            lines = (self._buffer + message).split('\n')
+            lines = (self._buffer + message).split("\n")
             # Log all complete lines (all but last)
             for line in lines[:-1]:
                 if line:  # Skip empty lines
