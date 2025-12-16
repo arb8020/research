@@ -17,8 +17,45 @@ from typing import Any
 import trio
 
 from rollouts.agents import Actor, AgentState, RunConfig, handle_stop_max_turns, run_agent
-from rollouts.dtypes import Endpoint, Message, Trajectory
+from rollouts.dtypes import Endpoint, Message, TextContent, ThinkingContent, ToolCallContent, Trajectory
 from rollouts.training.types import Sample, Status
+
+
+def _content_to_str(content: str | list | None) -> str:
+    """Convert message content to string for training.
+
+    Handles:
+    - str: return as-is
+    - list[ContentBlock]: extract text from TextContent/ThinkingContent blocks
+    - list[dict]: extract text from dict-based content blocks
+    - None: return empty string
+
+    Tiger Style: Handle all content types explicitly.
+    """
+    if isinstance(content, str):
+        return content
+    elif isinstance(content, list):
+        text_parts: list[str] = []
+        for block in content:
+            # Handle dataclass ContentBlock types
+            if isinstance(block, TextContent):
+                text_parts.append(block.text)
+            elif isinstance(block, ThinkingContent):
+                text_parts.append(f"<thinking>{block.thinking}</thinking>")
+            elif isinstance(block, ToolCallContent):
+                # Tool calls don't contribute text content
+                pass
+            # Handle dict-based content blocks (from JSON deserialization)
+            elif isinstance(block, dict):
+                if block.get("type") == "text":
+                    text_parts.append(block.get("text", ""))
+                elif block.get("type") == "thinking":
+                    text_parts.append(f"<thinking>{block.get('thinking', '')}</thinking>")
+                elif "text" in block:
+                    text_parts.append(block["text"])
+        return " ".join(text_parts) if text_parts else ""
+    else:
+        return ""
 
 # ──────────────────────── High-Level API (Coarse-Grained) ────────────────────
 
@@ -220,19 +257,7 @@ def trajectory_to_sample(
     # Extract prompt (first user message)
     prompt_msg = trajectory.messages[0]
     assert prompt_msg.role == "user", f"first message should be user, got {prompt_msg.role}"
-    # Convert content to string (Sample.prompt expects str | list[dict])
-    if isinstance(prompt_msg.content, str):
-        prompt = prompt_msg.content
-    elif isinstance(prompt_msg.content, list):
-        # Extract text from content blocks (TextContent has .text attribute)
-        from rollouts.dtypes import TextContent
-        text_parts: list[str] = []
-        for block in prompt_msg.content:
-            if isinstance(block, TextContent):
-                text_parts.append(block.text)
-        prompt = " ".join(text_parts)
-    else:
-        prompt = ""
+    prompt = _content_to_str(prompt_msg.content)
 
     # Apply chat template to full trajectory (HuggingFace format)
     full_text = tokenizer.apply_chat_template(
@@ -344,10 +369,11 @@ def _msg_to_dict(msg: Message) -> dict[str, Any]:
     """Convert Message → dict for HuggingFace tokenizer.
 
     Tiger Style: Explicit conversion, no hidden logic.
+    HuggingFace expects {"role": str, "content": str}.
     """
     return {
         "role": msg.role,
-        "content": msg.content or "",
+        "content": _content_to_str(msg.content),
     }
 
 
