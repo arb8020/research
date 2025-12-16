@@ -81,6 +81,10 @@ class TrainerConfig:
     lr: float = 1e-5
     weight_decay: float = 0.0
     max_grad_norm: float = 1.0
+    # Gradient accumulation (Tinker naming: num_minibatches)
+    # With batch_size=8 * rollouts_per_example=4 = 32 sequences,
+    # split into 8 minibatches = 4 sequences per forward/backward
+    num_minibatches: int = 8
 
 
 @dataclass(frozen=True)
@@ -485,7 +489,9 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
                     )
                     results.append(sample)
                 except Exception as e:
-                    logger.warning(f"Rollout failed for prompt '{prompt[:50]}...': {e}", exc_info=True)
+                    logger.warning(
+                        f"Rollout failed for prompt '{prompt[:50]}...': {e}", exc_info=True
+                    )
 
             return results
 
@@ -561,17 +567,43 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
                 labels = input_ids.clone()  # For causal LM, labels = input_ids
                 loss_mask = torch.tensor(batch_loss_masks, device=device)  # [batch, seq_len]
 
-                # 5. Forward pass + GRPO loss
+                # 5. Forward pass + GRPO loss with gradient accumulation
+                # Split batch into minibatches to avoid OOM (Tinker/Slime pattern)
                 model.train()
                 optimizer.zero_grad()
 
-                outputs = model(input_ids=input_ids)
-                logits = outputs.logits  # [batch, seq_len, vocab_size]
+                batch_size = input_ids.shape[0]
+                num_minibatches = config.trainer.num_minibatches
+                micro_batch_size = batch_size // num_minibatches
 
-                loss = grpo_loss(logits, labels, loss_mask, advantages)
+                total_loss = 0.0
+                for i in range(num_minibatches):
+                    start_idx = i * micro_batch_size
+                    end_idx = start_idx + micro_batch_size
 
-                # 6. Backward pass + optimizer step
-                loss.backward()
+                    # Slice micro-batch
+                    mb_input_ids = input_ids[start_idx:end_idx]
+                    mb_labels = labels[start_idx:end_idx]
+                    mb_loss_mask = loss_mask[start_idx:end_idx]
+                    mb_advantages = advantages[start_idx:end_idx]
+
+                    # Forward pass
+                    outputs = model(input_ids=mb_input_ids)
+                    logits = outputs.logits  # [micro_batch, seq_len, vocab_size]
+
+                    # Compute loss for this micro-batch
+                    mb_loss = grpo_loss(logits, mb_labels, mb_loss_mask, mb_advantages)
+
+                    # Scale loss for gradient accumulation (Slime pattern)
+                    scaled_loss = mb_loss / num_minibatches
+                    scaled_loss.backward()
+
+                    total_loss += mb_loss.item()
+
+                # Average loss for logging
+                loss = total_loss / num_minibatches
+
+                # 6. Optimizer step (after all micro-batches)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), config.trainer.max_grad_norm)
                 optimizer.step()
 
@@ -583,7 +615,7 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
                 )
                 step_metrics = {
                     "step": step + 1,
-                    "loss": loss.item(),
+                    "loss": loss,  # Already a float from accumulation
                     "mean_reward": mean_reward,
                     "reward_std": reward_std,
                     "num_samples": len(batch.tokens),
@@ -592,9 +624,7 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
                 metrics_history.append(step_metrics)
 
                 if (step + 1) % config.log_every == 0:
-                    logger.info(
-                        f"Step {step + 1}: loss={loss.item():.4f}, mean_reward={mean_reward:.3f}"
-                    )
+                    logger.info(f"Step {step + 1}: loss={loss:.4f}, mean_reward={mean_reward:.3f}")
 
                 # 8. Checkpoint + Weight Sync
                 if (step + 1) % config.checkpoint_every == 0:
@@ -755,7 +785,7 @@ def run_remote(
                 )
                 if result and result.success:
                     print(f"  Synced: {filename}")
-            except Exception as e:
+            except Exception:
                 # File might not exist yet, that's ok
                 pass
 

@@ -23,7 +23,7 @@ import torch
 import torch.distributed as dist
 import trio
 
-from rollouts.training.types import TrainFuture
+from rollouts.training.types import TrainerConfig, TrainFuture
 
 # FSDP checkpoint support (SLIME pattern)
 try:
@@ -71,6 +71,7 @@ class PyTorchTrainingBackend:
         Path  # TODO(ray): Replace with CheckpointStorage protocol for S3/distributed storage
     )
     device: torch.device | None = None  # Tiger Style: Explicit device (optional for CPU-only)
+    trainer_config: TrainerConfig = field(default_factory=TrainerConfig)
 
     # State (SLIME-inspired)
     weight_version: int = 0
@@ -125,7 +126,12 @@ class PyTorchTrainingBackend:
             self._fsdp_state_dict_opts = None
 
     def forward_backward(self, batch: dict[str, Any]) -> TrainFuture[dict[str, float]]:
-        """Compute loss and gradients (returns future immediately).
+        """Compute loss and gradients with gradient accumulation (returns future immediately).
+
+        Supports micro-batching for memory efficiency (SLIME/Tinker pattern):
+        - Splits batch into micro-batches based on trainer_config
+        - Accumulates gradients across micro-batches
+        - Scales loss by number of micro-batches for correct averaging
 
         Args:
             batch: {
@@ -146,10 +152,8 @@ class PyTorchTrainingBackend:
         assert "labels" in batch, "batch must have 'labels'"
         assert "loss_mask" in batch, "batch must have 'loss_mask'"
 
-        # For D6v1, simplify: run synchronously and return completed future
-        # (True async with trio.to_thread can be added later if needed)
         try:
-            # Zero gradients
+            # Zero gradients at the start
             self.optimizer.zero_grad()
 
             # Move batch to device if specified (Tiger Style: explicit device handling)
@@ -159,26 +163,51 @@ class PyTorchTrainingBackend:
                     for k, v in batch.items()
                 }
 
-            # Forward pass
-            output = self.model(batch["input_ids"])
+            # Compute number of micro-batches for gradient accumulation
+            batch_size = batch["input_ids"].shape[0]
+            num_minibatches = self.trainer_config.get_num_minibatches(batch_size)
+            micro_batch_size = batch_size // num_minibatches
 
-            # Extract logits from model output (HuggingFace models return ModelOutput objects)
-            # Handle both raw tensors and ModelOutput objects
-            # Type check would catch if we passed wrong type to loss_fn
-            logits: torch.Tensor
-            if hasattr(output, "logits"):
-                logits = output.logits  # HuggingFace ModelOutput -> extract tensor
-            else:
-                logits = output  # Raw tensor (custom models)
+            # Accumulate loss and process micro-batches
+            total_loss = 0.0
 
-            # Compute loss (SLIME pattern: pass logits and batch dict)
-            # Type hint on loss_fn ensures logits is torch.Tensor, not ModelOutput
-            loss = self.loss_fn(logits=logits, batch=batch)
+            for i in range(num_minibatches):
+                start_idx = i * micro_batch_size
+                end_idx = start_idx + micro_batch_size
 
-            # Backward pass
-            loss.backward()
+                # Slice micro-batch
+                micro_batch = {
+                    k: v[start_idx:end_idx] if isinstance(v, torch.Tensor) and v.dim() > 0 else v
+                    for k, v in batch.items()
+                }
 
-            # Compute grad norm (before clipping)
+                # Forward pass on micro-batch
+                output = self.model(micro_batch["input_ids"])
+
+                # Extract logits from model output (HuggingFace models return ModelOutput objects)
+                logits: torch.Tensor
+                if hasattr(output, "logits"):
+                    logits = output.logits
+                else:
+                    logits = output
+
+                # Compute loss (SLIME pattern: pass logits and batch dict)
+                loss = self.loss_fn(logits=logits, batch=micro_batch)
+
+                # Scale loss for gradient accumulation (SLIME pattern)
+                # This ensures the total gradient is averaged correctly
+                scaled_loss = loss / num_minibatches
+
+                # Backward pass (gradients accumulate)
+                scaled_loss.backward()
+
+                # Track total loss for logging
+                total_loss += loss.item()
+
+            # Average loss for logging
+            avg_loss = total_loss / num_minibatches
+
+            # Compute grad norm (after accumulation, before clipping)
             grad_norm = (
                 sum(
                     p.grad.norm().item() ** 2 for p in self.model.parameters() if p.grad is not None
@@ -188,7 +217,12 @@ class PyTorchTrainingBackend:
 
             # Create future with immediate result
             future: TrainFuture[dict[str, float]] = TrainFuture(operation="forward_backward")
-            future.set_result({"loss": loss.item(), "grad_norm": grad_norm})
+            future.set_result({
+                "loss": avg_loss,
+                "grad_norm": grad_norm,
+                "num_minibatches": num_minibatches,
+                "micro_batch_size": micro_batch_size,
+            })
             return future
 
         except Exception as e:
@@ -199,8 +233,10 @@ class PyTorchTrainingBackend:
     def optim_step(self) -> TrainFuture[dict[str, float]]:
         """Apply gradients and update weights (returns future).
 
+        Clips gradients if max_grad_norm is set in trainer_config (SLIME pattern).
+
         Returns:
-            Future resolving to {"lr": float, "step": int}
+            Future resolving to {"lr": float, "step": int, "grad_norm_clipped": float}
 
         Raises:
             AssertionError: If backend is poisoned
@@ -209,6 +245,15 @@ class PyTorchTrainingBackend:
         assert not self._poisoned, "Backend is poisoned (previous error)"
 
         try:
+            # Clip gradients if configured (SLIME pattern)
+            grad_norm_clipped = None
+            if self.trainer_config.max_grad_norm is not None:
+                grad_norm_clipped = torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(),
+                    self.trainer_config.max_grad_norm,
+                )
+                grad_norm_clipped = float(grad_norm_clipped)
+
             # Apply gradients
             self.optimizer.step()
             self.current_step += 1
@@ -217,8 +262,12 @@ class PyTorchTrainingBackend:
             lr = self.optimizer.param_groups[0]["lr"]
 
             # Create future with immediate result
+            result = {"lr": lr, "step": self.current_step}
+            if grad_norm_clipped is not None:
+                result["grad_norm_clipped"] = grad_norm_clipped
+
             future: TrainFuture[dict[str, float]] = TrainFuture(operation="optim_step")
-            future.set_result({"lr": lr, "step": self.current_step})
+            future.set_result(result)
             return future
 
         except Exception as e:
@@ -509,6 +558,10 @@ class PyTorchTrainingBackend:
             # Training state
             "current_step": self.current_step,
             "weight_version": self.weight_version,
+            # Trainer config (gradient accumulation)
+            "micro_batch_size": self.trainer_config.micro_batch_size,
+            "num_minibatches": self.trainer_config.num_minibatches,
+            "max_grad_norm": self.trainer_config.max_grad_norm,
             # Execution state
             "is_poisoned": self._poisoned,
             "is_fsdp": self._fsdp_state_dict_opts is not None,
