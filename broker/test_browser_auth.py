@@ -31,7 +31,7 @@ def test_with_browser_headers(pod_id: str, headers: dict[str, str]) -> None:
     print("Headers:")
     for key, value in headers.items():
         # Mask sensitive values
-        if key.lower() in ['authorization', 'cookie', 'x-api-key']:
+        if key.lower() in ["authorization", "cookie", "x-api-key"]:
             display_value = f"...{value[-10:]}" if len(value) > 10 else "***"
         else:
             display_value = value
@@ -40,11 +40,7 @@ def test_with_browser_headers(pod_id: str, headers: dict[str, str]) -> None:
 
     try:
         print("Sending GET request...")
-        response = requests.get(
-            url,
-            headers=headers,
-            timeout=(10, 30)
-        )
+        response = requests.get(url, headers=headers, timeout=(10, 30))
 
         print(f"Response status code: {response.status_code}")
         print(f"Response headers: {dict(response.headers)}")
@@ -55,9 +51,9 @@ def test_with_browser_headers(pod_id: str, headers: dict[str, str]) -> None:
             print()
 
             # Try to parse response
-            content_type = response.headers.get('Content-Type', '')
+            content_type = response.headers.get("Content-Type", "")
 
-            if 'application/json' in content_type:
+            if "application/json" in content_type:
                 try:
                     data = response.json()
                     print("Response body (JSON):")
@@ -83,6 +79,7 @@ def test_with_browser_headers(pod_id: str, headers: dict[str, str]) -> None:
     except Exception as e:
         print(f"❌ Unexpected error: {e}")
         import traceback
+
         traceback.print_exc()
 
 
@@ -135,7 +132,7 @@ headers = {
         print("6. Paste into this script's 'headers' dict")
         print()
         response = input("Continue anyway? (y/n): ")
-        if response.lower() != 'y':
+        if response.lower() != "y":
             sys.exit(1)
 
     test_with_browser_headers(pod_id, headers)

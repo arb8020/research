@@ -45,7 +45,7 @@ def search(
     sort: Callable[[Any], Any] | None = None,
     reverse: bool = False,
     # API credentials (dict mapping provider to API key)
-    credentials: dict | None = None
+    credentials: dict | None = None,
 ) -> list[GPUOffer]:
     """
     Search for available GPU offers across providers
@@ -74,33 +74,53 @@ def search(
     if provider is None or provider == "runpod":
         api_key = credentials.get("runpod") if credentials else None
         if api_key:  # Only search if we have credentials
-            runpod_offers = runpod.search_gpu_offers(cuda_version=cuda_version, manufacturer=manufacturer,
-                                                     memory_gb=memory_gb, container_disk_gb=container_disk_gb,
-                                                     gpu_count=gpu_count, api_key=api_key)
+            runpod_offers = runpod.search_gpu_offers(
+                cuda_version=cuda_version,
+                manufacturer=manufacturer,
+                memory_gb=memory_gb,
+                container_disk_gb=container_disk_gb,
+                gpu_count=gpu_count,
+                api_key=api_key,
+            )
             offers.extend(runpod_offers)
 
     if provider is None or provider == "primeintellect":
         api_key = credentials.get("primeintellect") if credentials else None
         if api_key:  # Only search if we have credentials
-            prime_offers = primeintellect.search_gpu_offers(cuda_version=cuda_version, manufacturer=manufacturer,
-                                                            memory_gb=memory_gb, container_disk_gb=container_disk_gb,
-                                                            gpu_count=gpu_count, api_key=api_key)
+            prime_offers = primeintellect.search_gpu_offers(
+                cuda_version=cuda_version,
+                manufacturer=manufacturer,
+                memory_gb=memory_gb,
+                container_disk_gb=container_disk_gb,
+                gpu_count=gpu_count,
+                api_key=api_key,
+            )
             offers.extend(prime_offers)
 
     if provider is None or provider == "lambdalabs":
         api_key = credentials.get("lambdalabs") if credentials else None
         if api_key:  # Only search if we have credentials
-            lambda_offers = lambdalabs.search_gpu_offers(cuda_version=cuda_version, manufacturer=manufacturer,
-                                                         memory_gb=memory_gb, container_disk_gb=container_disk_gb,
-                                                         gpu_count=gpu_count, api_key=api_key)
+            lambda_offers = lambdalabs.search_gpu_offers(
+                cuda_version=cuda_version,
+                manufacturer=manufacturer,
+                memory_gb=memory_gb,
+                container_disk_gb=container_disk_gb,
+                gpu_count=gpu_count,
+                api_key=api_key,
+            )
             offers.extend(lambda_offers)
 
     if provider is None or provider == "vast":
         api_key = credentials.get("vast") if credentials else None
         if api_key:  # Only search if we have credentials
-            vast_offers = vast.search_gpu_offers(cuda_version=cuda_version, manufacturer=manufacturer,
-                                                 memory_gb=memory_gb, container_disk_gb=container_disk_gb,
-                                                 gpu_count=gpu_count, api_key=api_key)
+            vast_offers = vast.search_gpu_offers(
+                cuda_version=cuda_version,
+                manufacturer=manufacturer,
+                memory_gb=memory_gb,
+                container_disk_gb=container_disk_gb,
+                gpu_count=gpu_count,
+                api_key=api_key,
+            )
             offers.extend(vast_offers)
 
     # Apply pandas-style query if provided
@@ -110,21 +130,23 @@ def search(
         # Legacy filtering for backward compatibility
         if gpu_type:
             offers = [o for o in offers if gpu_type.lower() in o.gpu_type.lower()]
-        
+
         if max_price_per_hour:
             offers = [o for o in offers if o.price_per_hour <= max_price_per_hour]
-    
+
     # Sort by specified key or default to price
     if sort is not None:
         offers.sort(key=sort, reverse=reverse)
     else:
         # Default: sort by price (cheapest first)
         offers.sort(key=lambda x: x.price_per_hour, reverse=reverse)
-    
+
     return offers
 
 
-def get_instance(instance_id: str, provider: str, credentials: dict | None = None) -> GPUInstance | None:
+def get_instance(
+    instance_id: str, provider: str, credentials: dict | None = None
+) -> GPUInstance | None:
     """
     Get details of a specific instance
 
@@ -184,8 +206,17 @@ def terminate_instance(instance_id: str, provider: str, credentials: dict | None
 
 
 def _normalize_query_input(
-    query, gpu_type, max_price_per_hour, provider, cuda_version,
-    manufacturer, gpu_count, sort, reverse, credentials, kwargs
+    query,
+    gpu_type,
+    max_price_per_hour,
+    provider,
+    cuda_version,
+    manufacturer,
+    gpu_count,
+    sort,
+    reverse,
+    credentials,
+    kwargs,
 ) -> list[GPUOffer]:
     """Normalize query input to list of GPUOffers.
 
@@ -201,8 +232,8 @@ def _normalize_query_input(
         return query
     else:
         # Query object or None - search for suitable offers
-        memory_gb = kwargs.get('memory_gb')
-        container_disk_gb = kwargs.get('container_disk_gb')
+        memory_gb = kwargs.get("memory_gb")
+        container_disk_gb = kwargs.get("container_disk_gb")
 
         offers = search(
             query=query,
@@ -216,15 +247,25 @@ def _normalize_query_input(
             gpu_count=gpu_count,
             sort=sort,
             reverse=reverse,
-            credentials=credentials
+            credentials=credentials,
         )
         return offers
 
 
 def _try_provision_with_fallback(
-    suitable_offers, n_offers, image, name, gpu_count,
-    exposed_ports, enable_http_proxy, start_jupyter,
-    jupyter_password, manufacturer, template_id, credentials, kwargs
+    suitable_offers,
+    n_offers,
+    image,
+    name,
+    gpu_count,
+    exposed_ports,
+    enable_http_proxy,
+    start_jupyter,
+    jupyter_password,
+    manufacturer,
+    template_id,
+    credentials,
+    kwargs,
 ) -> ProvisionResult:
     """Try provisioning from top N offers with automatic fallback.
 
@@ -235,13 +276,23 @@ def _try_provision_with_fallback(
     total_offers = min(len(suitable_offers), n_offers)
 
     for i, offer in enumerate(suitable_offers[:n_offers], 1):
-        logger.info(f"trying offer {i}/{total_offers}: {offer.gpu_type} at ${offer.price_per_hour:.3f}/hr")
+        logger.info(
+            f"trying offer {i}/{total_offers}: {offer.gpu_type} at ${offer.price_per_hour:.3f}/hr"
+        )
 
         # Create provision request using this offer
         request = _build_provision_request(
-            offer, image, name, gpu_count, exposed_ports,
-            enable_http_proxy, start_jupyter, jupyter_password,
-            manufacturer, template_id, kwargs
+            offer,
+            image,
+            name,
+            gpu_count,
+            exposed_ports,
+            enable_http_proxy,
+            start_jupyter,
+            jupyter_password,
+            manufacturer,
+            template_id,
+            kwargs,
         )
 
         # Try provisioning from this offer
@@ -252,35 +303,41 @@ def _try_provision_with_fallback(
         if attempt.error is None:
             # Tiger Style: Assert postcondition - successful attempt must have instance
             # This enforces the invariant that error=None implies instance is set
-            assert attempt.instance is not None, \
+            assert attempt.instance is not None, (
                 "Successful attempt (error=None) but instance not stored in ProvisionAttempt"
+            )
 
             instance = attempt.instance
 
             # Tiger Style: Additional validation of the retrieved instance
             assert instance.id, f"Instance in ProvisionAttempt missing ID: {instance}"
-            assert instance.provider == offer.provider, \
+            assert instance.provider == offer.provider, (
                 f"Instance provider mismatch: expected {offer.provider}, got {instance.provider}"
+            )
 
             logger.info(f"successfully provisioned gpu instance: {instance.id}")
             logger.info(f"   gpu: {instance.gpu_type} x{instance.gpu_count}")
             logger.info(f"   provider: {offer.provider}")
             logger.info(f"   expected price: ${offer.total_price(instance.gpu_count):.3f}/hr")
 
-            return ProvisionResult(
-                success=True,
-                instance=instance,
-                attempts=attempts
-            )
+            return ProvisionResult(success=True, instance=instance, attempts=attempts)
 
     # All offers failed - categorize the failure
     return _categorize_failure(attempts, total_offers)
 
 
 def _build_provision_request(
-    offer, image, name, gpu_count, exposed_ports,
-    enable_http_proxy, start_jupyter, jupyter_password,
-    manufacturer, template_id, kwargs
+    offer,
+    image,
+    name,
+    gpu_count,
+    exposed_ports,
+    enable_http_proxy,
+    start_jupyter,
+    jupyter_password,
+    manufacturer,
+    template_id,
+    kwargs,
 ) -> ProvisionRequest:
     """Build ProvisionRequest from offer and parameters.
 
@@ -311,7 +368,7 @@ def _build_provision_request(
         manufacturer=manufacturer,
         template_id=template_id,
         raw_data=offer.raw_data,  # Pass raw_data for provider-specific needs (e.g., Vast.ai price)
-        **kwargs
+        **kwargs,
     )
 
 
@@ -346,15 +403,12 @@ def _categorize_failure(attempts: list[ProvisionAttempt], total_offers: int) -> 
         error_summary=error_summary,
         all_unavailable=(unavailable_count == len(attempts)),
         credential_error=(credential_errors > 0),
-        network_error=(network_errors > 0)
+        network_error=(network_errors > 0),
     )
 
 
 def _try_provision_from_offer(
-    offer: GPUOffer,
-    request: ProvisionRequest,
-    ssh_startup_script: str | None,
-    credentials: dict
+    offer: GPUOffer, request: ProvisionRequest, ssh_startup_script: str | None, credentials: dict
 ) -> ProvisionAttempt:
     """Try to provision from a single offer with explicit error categorization.
 
@@ -368,10 +422,12 @@ def _try_provision_from_offer(
 
     # Validate API key exists for this provider
     api_key = credentials.get(offer.provider)
-    assert api_key is not None, \
+    assert api_key is not None, (
         f"Offer from {offer.provider} but no API key in credentials - search should have filtered this"
-    assert isinstance(api_key, str) and len(api_key) > 0, \
+    )
+    assert isinstance(api_key, str) and len(api_key) > 0, (
         f"Invalid API key for {offer.provider}: must be non-empty string"
+    )
 
     # Get provider module
     provider_module = PROVIDER_MODULES[offer.provider]
@@ -381,14 +437,16 @@ def _try_provision_from_offer(
         instance = provider_module.provision_instance(request, ssh_startup_script, api_key=api_key)
 
         # Tiger Style: Assert postcondition - provider must return GPUInstance or None
-        assert instance is None or isinstance(instance, GPUInstance), \
+        assert instance is None or isinstance(instance, GPUInstance), (
             f"{offer.provider}.provision_instance returned invalid type: {type(instance)}"
+        )
 
         if instance:
             # Success - validate instance has required fields
             assert instance.id, f"Instance missing ID: {instance}"
-            assert instance.provider == offer.provider, \
+            assert instance.provider == offer.provider, (
                 f"Instance provider mismatch: expected {offer.provider}, got {instance.provider}"
+            )
 
             # Tiger Style: Store instance in ProvisionAttempt to avoid double provisioning
             # This fixes the bug where _try_provision_with_fallback would provision again
@@ -399,7 +457,7 @@ def _try_provision_from_offer(
                 price_per_hour=offer.price_per_hour,
                 error=None,
                 error_category=None,
-                instance=instance  # Store the provisioned instance
+                instance=instance,  # Store the provisioned instance
             )
         else:
             # Provider returned None - offer unavailable (expected operating error)
@@ -411,7 +469,7 @@ def _try_provision_from_offer(
                 price_per_hour=offer.price_per_hour,
                 error="Offer unavailable",
                 error_category="unavailable",
-                instance=None  # Explicit None for failed attempts
+                instance=None,  # Explicit None for failed attempts
             )
 
     except ValueError as e:
@@ -424,7 +482,7 @@ def _try_provision_from_offer(
             price_per_hour=offer.price_per_hour,
             error=str(e),
             error_category="credentials",
-            instance=None  # Explicit None for failed attempts
+            instance=None,  # Explicit None for failed attempts
         )
 
     except Exception as e:
@@ -441,11 +499,14 @@ def _try_provision_from_offer(
                 price_per_hour=offer.price_per_hour,
                 error=str(e),
                 error_category="network",
-                instance=None  # Explicit None for failed attempts
+                instance=None,  # Explicit None for failed attempts
             )
         else:
             # Unknown error - log with full context
-            logger.error(f"Unexpected error provisioning {offer.provider} {offer.gpu_type}: {e}", exc_info=True)
+            logger.error(
+                f"Unexpected error provisioning {offer.provider} {offer.gpu_type}: {e}",
+                exc_info=True,
+            )
             return ProvisionAttempt(
                 offer_id=offer.id,
                 gpu_type=offer.gpu_type,
@@ -453,7 +514,7 @@ def _try_provision_from_offer(
                 price_per_hour=offer.price_per_hour,
                 error=str(e),
                 error_category="unknown",
-                instance=None  # Explicit None for failed attempts
+                instance=None,  # Explicit None for failed attempts
             )
 
 
@@ -482,7 +543,7 @@ def create(
     n_offers: int = 3,
     # API credentials
     credentials: dict | None = None,
-    **kwargs
+    **kwargs,
 ) -> ProvisionResult:
     """
     Provision GPU using pandas-style query, search results, or specific offer.
@@ -525,8 +586,17 @@ def create(
 
     # Normalize input to list of offers
     suitable_offers = _normalize_query_input(
-        query, gpu_type, max_price_per_hour, provider, cuda_version,
-        manufacturer, gpu_count, sort, reverse, credentials, kwargs
+        query,
+        gpu_type,
+        max_price_per_hour,
+        provider,
+        cuda_version,
+        manufacturer,
+        gpu_count,
+        sort,
+        reverse,
+        credentials,
+        kwargs,
     )
 
     # Tiger Style: Assert postcondition from normalization
@@ -537,18 +607,30 @@ def create(
         return ProvisionResult(
             success=False,
             error_summary="No GPU offers found matching criteria",
-            no_offers_found=True
+            no_offers_found=True,
         )
 
     # Try provisioning from top N offers
     return _try_provision_with_fallback(
-        suitable_offers, n_offers, image, name, gpu_count,
-        exposed_ports, enable_http_proxy, start_jupyter,
-        jupyter_password, manufacturer, template_id, credentials, kwargs
+        suitable_offers,
+        n_offers,
+        image,
+        name,
+        gpu_count,
+        exposed_ports,
+        enable_http_proxy,
+        start_jupyter,
+        jupyter_password,
+        manufacturer,
+        template_id,
+        credentials,
+        kwargs,
     )
 
 
-def list_instances(provider: str | None = None, credentials: dict | None = None) -> list[GPUInstance]:
+def list_instances(
+    provider: str | None = None, credentials: dict | None = None
+) -> list[GPUInstance]:
     """
     List all user's instances across providers
 

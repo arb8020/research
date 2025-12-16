@@ -17,9 +17,7 @@ async def test_basic_connection():
     print(f"Testing connection to {SSH_TARGET}...")
 
     async with AsyncBifrostClient(
-        ssh_connection=SSH_TARGET,
-        ssh_key_path=SSH_KEY_PATH,
-        timeout=30
+        ssh_connection=SSH_TARGET, ssh_key_path=SSH_KEY_PATH, timeout=30
     ) as client:
         print("✓ Connected successfully")
 
@@ -43,10 +41,7 @@ async def test_exec_stream():
     """Test streaming command output."""
     print(f"\nTesting exec_stream to {SSH_TARGET}...")
 
-    async with AsyncBifrostClient(
-        ssh_connection=SSH_TARGET,
-        ssh_key_path=SSH_KEY_PATH
-    ) as client:
+    async with AsyncBifrostClient(ssh_connection=SSH_TARGET, ssh_key_path=SSH_KEY_PATH) as client:
         print("Streaming output from 'ls -la /':")
 
         line_count = 0
@@ -63,10 +58,7 @@ async def test_parallel_commands():
     """Test running multiple commands in parallel using trio nursery."""
     print("\nTesting parallel command execution...")
 
-    async with AsyncBifrostClient(
-        ssh_connection=SSH_TARGET,
-        ssh_key_path=SSH_KEY_PATH
-    ) as client:
+    async with AsyncBifrostClient(ssh_connection=SSH_TARGET, ssh_key_path=SSH_KEY_PATH) as client:
         results = {}
 
         async def run_command(name: str, cmd: str):
@@ -90,10 +82,7 @@ async def test_file_operations():
     """Test file upload/download operations."""
     print("\nTesting file operations...")
 
-    async with AsyncBifrostClient(
-        ssh_connection=SSH_TARGET,
-        ssh_key_path=SSH_KEY_PATH
-    ) as client:
+    async with AsyncBifrostClient(ssh_connection=SSH_TARGET, ssh_key_path=SSH_KEY_PATH) as client:
         # Create a test file locally
         test_content = "Hello from AsyncBifrostClient!"
         local_test_file = "/tmp/bifrost_async_test.txt"
@@ -135,10 +124,7 @@ async def test_timeout():
     """Test trio timeout functionality."""
     print("\nTesting timeout mechanism...")
 
-    async with AsyncBifrostClient(
-        ssh_connection=SSH_TARGET,
-        ssh_key_path=SSH_KEY_PATH
-    ) as client:
+    async with AsyncBifrostClient(ssh_connection=SSH_TARGET, ssh_key_path=SSH_KEY_PATH) as client:
         # Test command that should timeout
         try:
             with trio.move_on_after(2) as cancel_scope:
@@ -156,10 +142,7 @@ async def test_expand_path():
     """Test path expansion."""
     print("\nTesting path expansion...")
 
-    async with AsyncBifrostClient(
-        ssh_connection=SSH_TARGET,
-        ssh_key_path=SSH_KEY_PATH
-    ) as client:
+    async with AsyncBifrostClient(ssh_connection=SSH_TARGET, ssh_key_path=SSH_KEY_PATH) as client:
         # Test tilde expansion
         expanded = await client.expand_path("~/test/path")
         print(f"✓ Expanded ~/test/path to: {expanded}")
@@ -188,6 +171,7 @@ async def main():
     except Exception as e:
         print(f"\n✗ Test failed with error: {e}")
         import traceback
+
         traceback.print_exc()
 
 

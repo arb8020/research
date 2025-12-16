@@ -15,10 +15,7 @@ async def test_nvidia_smi():
     """Test nvidia-smi command."""
     print("Testing nvidia-smi...")
 
-    async with AsyncBifrostClient(
-        ssh_connection=SSH_TARGET,
-        ssh_key_path=SSH_KEY_PATH
-    ) as client:
+    async with AsyncBifrostClient(ssh_connection=SSH_TARGET, ssh_key_path=SSH_KEY_PATH) as client:
         # Test basic nvidia-smi
         result = await client.exec("nvidia-smi")
         print(f"✓ nvidia-smi exit code: {result.exit_code}")
@@ -32,20 +29,16 @@ async def test_real_streaming():
     """Test that streaming actually streams (not buffered)."""
     print("\nTesting real-time streaming...")
 
-    async with AsyncBifrostClient(
-        ssh_connection=SSH_TARGET,
-        ssh_key_path=SSH_KEY_PATH
-    ) as client:
+    async with AsyncBifrostClient(ssh_connection=SSH_TARGET, ssh_key_path=SSH_KEY_PATH) as client:
         # Test with a command that outputs over time
         print("Streaming 'for i in {1..5}; do echo \"Line $i\"; sleep 0.5; done':")
 
         import time
+
         start_time = time.time()
         line_times = []
 
-        async for line in client.exec_stream(
-            "for i in {1..5}; do echo \"Line $i\"; sleep 0.5; done"
-        ):
+        async for line in client.exec_stream('for i in {1..5}; do echo "Line $i"; sleep 0.5; done'):
             elapsed = time.time() - start_time
             line_times.append(elapsed)
             print(f"  [{elapsed:.2f}s] {line}")
@@ -73,10 +66,7 @@ async def test_long_output_streaming():
     """Test streaming with long output (like pip install)."""
     print("\nTesting long output streaming...")
 
-    async with AsyncBifrostClient(
-        ssh_connection=SSH_TARGET,
-        ssh_key_path=SSH_KEY_PATH
-    ) as client:
+    async with AsyncBifrostClient(ssh_connection=SSH_TARGET, ssh_key_path=SSH_KEY_PATH) as client:
         print("Streaming 'ls -la /usr/bin | head -20':")
 
         line_count = 0
@@ -91,10 +81,7 @@ async def test_nvidia_smi_streaming():
     """Test nvidia-smi with streaming."""
     print("\nTesting nvidia-smi with streaming...")
 
-    async with AsyncBifrostClient(
-        ssh_connection=SSH_TARGET,
-        ssh_key_path=SSH_KEY_PATH
-    ) as client:
+    async with AsyncBifrostClient(ssh_connection=SSH_TARGET, ssh_key_path=SSH_KEY_PATH) as client:
         print("Streaming 'nvidia-smi':")
 
         line_count = 0
@@ -112,14 +99,13 @@ async def test_error_streaming():
     """Test that stderr is captured in streaming."""
     print("\nTesting error output in streaming...")
 
-    async with AsyncBifrostClient(
-        ssh_connection=SSH_TARGET,
-        ssh_key_path=SSH_KEY_PATH
-    ) as client:
+    async with AsyncBifrostClient(ssh_connection=SSH_TARGET, ssh_key_path=SSH_KEY_PATH) as client:
         print("Streaming command that produces stderr:")
 
         line_count = 0
-        async for line in client.exec_stream("echo 'stdout'; echo 'stderr' >&2; echo 'more stdout'"):
+        async for line in client.exec_stream(
+            "echo 'stdout'; echo 'stderr' >&2; echo 'more stdout'"
+        ):
             print(f"  {line}")
             line_count += 1
 
@@ -146,6 +132,7 @@ async def main():
     except Exception as e:
         print(f"\n✗ Test failed with error: {e}")
         import traceback
+
         traceback.print_exc()
 
 

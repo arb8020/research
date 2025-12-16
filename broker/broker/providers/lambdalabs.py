@@ -17,8 +17,13 @@ LAMBDA_API_BASE_URL = "https://cloud.lambdalabs.com/api/v1"
 
 
 @retry(max_attempts=3, delay=1, backoff=2, exceptions=(requests.RequestException, requests.Timeout))
-def _make_api_request(method: str, endpoint: str, data: dict | None = None,
-                     params: dict | None = None, api_key: str | None = None) -> dict[str, Any]:
+def _make_api_request(
+    method: str,
+    endpoint: str,
+    data: dict | None = None,
+    params: dict | None = None,
+    api_key: str | None = None,
+) -> dict[str, Any]:
     """Make a REST API request to Lambda Labs API with automatic retries.
 
     Retries up to 3 times with exponential backoff (1s, 2s, 4s) on network errors.
@@ -33,13 +38,15 @@ def _make_api_request(method: str, endpoint: str, data: dict | None = None,
     if not api_key:
         raise ValueError("Lambda Labs API key is required but was not provided")
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
     url = f"{LAMBDA_API_BASE_URL}{endpoint}"
-    logger.debug("Lambda Labs API request %s %s (api key ...%s)", method, url, api_key[-4:] if api_key else "none")
+    logger.debug(
+        "Lambda Labs API request %s %s (api key ...%s)",
+        method,
+        url,
+        api_key[-4:] if api_key else "none",
+    )
 
     try:
         response = requests.request(
@@ -65,9 +72,14 @@ def _make_api_request(method: str, endpoint: str, data: dict | None = None,
     return response.json()
 
 
-def search_gpu_offers(cuda_version: str | None = None, manufacturer: str | None = None,
-                      memory_gb: int | None = None, container_disk_gb: int | None = None,
-                      gpu_count: int = 1, api_key: str | None = None) -> list[GPUOffer]:
+def search_gpu_offers(
+    cuda_version: str | None = None,
+    manufacturer: str | None = None,
+    memory_gb: int | None = None,
+    container_disk_gb: int | None = None,
+    gpu_count: int = 1,
+    api_key: str | None = None,
+) -> list[GPUOffer]:
     """Search for available GPU offers on Lambda Labs with optional filtering"""
 
     try:
@@ -125,7 +137,9 @@ def search_gpu_offers(cuda_version: str | None = None, manufacturer: str | None 
             price_per_hour = price_cents / 100.0
 
             # Normalize to per-GPU pricing
-            price_per_gpu = price_per_hour / gpu_count_in_type if gpu_count_in_type > 0 else price_per_hour
+            price_per_gpu = (
+                price_per_hour / gpu_count_in_type if gpu_count_in_type > 0 else price_per_hour
+            )
 
             # Create offers for each region with availability
             for region in regions:
@@ -153,8 +167,8 @@ def search_gpu_offers(cuda_version: str | None = None, manufacturer: str | None 
                     raw_data={
                         "instance_type_name": instance_type_name,
                         "region_name": region_name,
-                        **type_data
-                    }
+                        **type_data,
+                    },
                 )
                 offers.append(gpu_offer)
 
@@ -165,8 +179,9 @@ def search_gpu_offers(cuda_version: str | None = None, manufacturer: str | None 
         return []
 
 
-def provision_instance(request: ProvisionRequest, ssh_startup_script: str | None = None,
-                      api_key: str | None = None) -> GPUInstance | None:
+def provision_instance(
+    request: ProvisionRequest, ssh_startup_script: str | None = None, api_key: str | None = None
+) -> GPUInstance | None:
     """Provision a GPU instance on Lambda Labs"""
 
     # Parse instance type and region from offer ID
@@ -181,7 +196,9 @@ def provision_instance(request: ProvisionRequest, ssh_startup_script: str | None
             region_name = parts[2]
 
     if not instance_type_name or not region_name:
-        logger.error(f"Invalid offer ID format: {request.gpu_type}. Expected: lambda-<instance_type>-<region>")
+        logger.error(
+            f"Invalid offer ID format: {request.gpu_type}. Expected: lambda-<instance_type>-<region>"
+        )
         return None
 
     # Get SSH key ID from Lambda Labs
@@ -195,7 +212,9 @@ def provision_instance(request: ProvisionRequest, ssh_startup_script: str | None
             ssh_key_names = [ssh_keys[0]["name"]]
             logger.info(f"using ssh key: {ssh_key_names[0]}")
         else:
-            logger.warning("No SSH keys found in Lambda Labs account. Instance may not be accessible.")
+            logger.warning(
+                "No SSH keys found in Lambda Labs account. Instance may not be accessible."
+            )
     except Exception as e:
         logger.warning(f"Failed to fetch SSH keys: {e}")
 
@@ -204,11 +223,11 @@ def provision_instance(request: ProvisionRequest, ssh_startup_script: str | None
         "region_name": region_name,
         "instance_type_name": instance_type_name,
         "ssh_key_names": ssh_key_names,
-        "quantity": 1  # Lambda Labs only supports launching 1 instance at a time
+        "quantity": 1,  # Lambda Labs only supports launching 1 instance at a time
     }
 
     # Add file system names if specified (optional)
-    if hasattr(request, 'file_system_names') and request.file_system_names:
+    if hasattr(request, "file_system_names") and request.file_system_names:
         launch_data["file_system_names"] = request.file_system_names
 
     # Add instance name if specified (Lambda Labs may not support this directly)
@@ -216,7 +235,9 @@ def provision_instance(request: ProvisionRequest, ssh_startup_script: str | None
     instance_name = request.name or f"lambda-{instance_type_name}-{int(time.time())}"
 
     try:
-        response = _make_api_request("POST", "/instance-operations/launch", data=launch_data, api_key=api_key)
+        response = _make_api_request(
+            "POST", "/instance-operations/launch", data=launch_data, api_key=api_key
+        )
 
         if not response or "data" not in response:
             logger.error("No instance data returned from Lambda Labs launch")
@@ -254,7 +275,7 @@ def provision_instance(request: ProvisionRequest, ssh_startup_script: str | None
             name=instance_name,
             price_per_hour=0.0,  # Will be filled in when details are fetched
             raw_data=response,
-            api_key=api_key
+            api_key=api_key,
         )
 
     except Exception as e:
@@ -293,7 +314,9 @@ def list_instances(api_key: str | None = None) -> list[GPUInstance]:
                 if instance:
                     instances.append(instance)
             except Exception as e:
-                logger.warning(f"Failed to parse instance {instance_data.get('id', 'unknown')}: {e}")
+                logger.warning(
+                    f"Failed to parse instance {instance_data.get('id', 'unknown')}: {e}"
+                )
                 continue
 
         return instances
@@ -307,10 +330,10 @@ def terminate_instance(instance_id: str, api_key: str | None = None) -> bool:
     """Terminate a Lambda Labs instance"""
     try:
         # Lambda Labs terminate endpoint takes a JSON body with instance_ids array
-        terminate_data = {
-            "instance_ids": [instance_id]
-        }
-        _make_api_request("POST", "/instance-operations/terminate", data=terminate_data, api_key=api_key)
+        terminate_data = {"instance_ids": [instance_id]}
+        _make_api_request(
+            "POST", "/instance-operations/terminate", data=terminate_data, api_key=api_key
+        )
         logger.info(f"successfully terminated lambda labs instance {instance_id}")
         return True
 
@@ -319,7 +342,9 @@ def terminate_instance(instance_id: str, api_key: str | None = None) -> bool:
         return False
 
 
-def _parse_instance_to_gpu_instance(instance_data: dict[str, Any], api_key: str | None = None) -> GPUInstance:
+def _parse_instance_to_gpu_instance(
+    instance_data: dict[str, Any], api_key: str | None = None
+) -> GPUInstance:
     """Parse a Lambda Labs instance dictionary into a GPUInstance"""
 
     # Map Lambda Labs statuses to our enum
@@ -385,7 +410,7 @@ def _parse_instance_to_gpu_instance(instance_data: dict[str, Any], api_key: str 
         ssh_port=ssh_port,
         ssh_username=ssh_username,
         raw_data=instance_data,
-        api_key=api_key  # Store API key for instance methods
+        api_key=api_key,  # Store API key for instance methods
     )
 
 
@@ -398,7 +423,7 @@ def get_user_balance(api_key: str | None = None) -> dict[str, Any] | None:
         return {
             "provider": "lambdalabs",
             "current_balance": None,
-            "message": "Balance endpoint not available for Lambda Labs"
+            "message": "Balance endpoint not available for Lambda Labs",
         }
 
     except Exception as e:

@@ -3,7 +3,6 @@
 import json
 import logging
 import os
-import socket
 import time
 from collections.abc import Callable, Iterator
 from datetime import datetime
@@ -42,26 +41,26 @@ logger = logging.getLogger(__name__)
 class BifrostClient:
     """
     Bifrost SDK client for remote GPU execution and job management.
-    
+
     Provides programmatic access to all Bifrost functionality:
     - Remote code execution (detached and synchronous)
     - Job monitoring and log streaming
     - File transfer operations
     - Git-based code deployment
-    
+
     Example:
         client = BifrostClient("root@gpu.example.com:22")
         job = client.run_detached("python train_model.py")
         client.wait_for_completion(job.job_id)
         client.copy_files("/remote/outputs/", "./results/", recursive=True)
     """
-    
+
     def __init__(
         self,
         ssh_connection: str,
         ssh_key_path: str,
         timeout: int = 30,
-        progress_callback: Callable[[str, int, int], None] | None = None
+        progress_callback: Callable[[str, int, int], None] | None = None,
     ):
         """
         Initialize Bifrost client.
@@ -84,7 +83,7 @@ class BifrostClient:
             host=self.ssh.host,
             port=self.ssh.port,
             user=self.ssh.user,
-            key_path=validated_ssh_key_path
+            key_path=validated_ssh_key_path,
         )
 
         self.timeout = validated_timeout
@@ -97,7 +96,7 @@ class BifrostClient:
 
         # Track last deployed workspace for smart working_dir defaults
         self._last_workspace: str | None = None
-    
+
     @retry(max_attempts=3, delay=2, backoff=2, exceptions=(Exception,))
     def _establish_connection(self, ssh_client: paramiko.SSHClient, private_key=None) -> None:
         """Establish SSH connection with retry logic and keepalive.
@@ -121,7 +120,7 @@ class BifrostClient:
                 port=self.ssh.port,
                 username=self.ssh.user,
                 pkey=private_key,
-                timeout=self.timeout
+                timeout=self.timeout,
             )
         else:
             # Use SSH agent or default keys
@@ -129,7 +128,7 @@ class BifrostClient:
                 hostname=self.ssh.host,
                 port=self.ssh.port,
                 username=self.ssh.user,
-                timeout=self.timeout
+                timeout=self.timeout,
             )
 
         # Tiger Style: Assert post-condition and enable keepalive
@@ -200,13 +199,14 @@ class BifrostClient:
         assert transport.is_active(), "SSH transport must be active"
 
         return self._ssh_client
-    
+
     def _load_ssh_key(self) -> str | None:
         """Load SSH private key content from file path."""
         if not self.ssh_key_path:
             return None
 
         import os
+
         key_path = os.path.expanduser(self.ssh_key_path)
         try:
             with open(key_path) as f:
@@ -214,8 +214,9 @@ class BifrostClient:
         except Exception as e:
             raise ConnectionError(f"Failed to load SSH key from {key_path}: {e}")
 
-    def _build_command_with_env(self, command: str, working_dir: str,
-                                env: EnvironmentVariables | None) -> str:
+    def _build_command_with_env(
+        self, command: str, working_dir: str, env: EnvironmentVariables | None
+    ) -> str:
         """Build command with environment variables and working directory.
 
         Args:
@@ -258,11 +259,7 @@ class BifrostClient:
         """
         return generate_job_id(session_name)
 
-    def push(
-        self,
-        workspace_path: str,
-        bootstrap_cmd: str | list[str] | None = None
-    ) -> str:
+    def push(self, workspace_path: str, bootstrap_cmd: str | list[str] | None = None) -> str:
         """Deploy code to remote workspace.
 
         Args:
@@ -313,8 +310,14 @@ class BifrostClient:
         self._last_workspace = workspace_path
 
         return workspace_path
-    
-    def exec(self, command: str, env: EnvironmentVariables | dict[str, str] | None = None, working_dir: str | None = None, timeout: float | None = None) -> ExecResult:
+
+    def exec(
+        self,
+        command: str,
+        env: EnvironmentVariables | dict[str, str] | None = None,
+        working_dir: str | None = None,
+        timeout: float | None = None,
+    ) -> ExecResult:
         """
         Execute command in remote environment.
 
@@ -347,7 +350,9 @@ class BifrostClient:
                 if self._last_workspace:
                     self.logger.debug(f"Using workspace from last push(): {working_dir}")
                 else:
-                    self.logger.debug(f"No workspace deployed yet, using home directory: {working_dir}")
+                    self.logger.debug(
+                        f"No workspace deployed yet, using home directory: {working_dir}"
+                    )
 
             # Convert dict to EnvironmentVariables if needed
             env_vars = None
@@ -372,9 +377,9 @@ class BifrostClient:
                 return ExecResult(
                     stdout=stdout.read().decode(),
                     stderr=stderr.read().decode(),
-                    exit_code=exit_code
+                    exit_code=exit_code,
                 )
-            except socket.timeout:
+            except TimeoutError:
                 raise ConnectionError(f"Command timed out after {timeout}s: {command}")
 
         except Exception as e:
@@ -382,7 +387,13 @@ class BifrostClient:
                 raise
             raise ConnectionError(f"Execution failed: {e}")
 
-    def exec_stream(self, command: str, env: EnvironmentVariables | dict[str, str] | None = None, working_dir: str | None = None, timeout: float | None = None) -> Iterator[str]:
+    def exec_stream(
+        self,
+        command: str,
+        env: EnvironmentVariables | dict[str, str] | None = None,
+        working_dir: str | None = None,
+        timeout: float | None = None,
+    ) -> Iterator[str]:
         """
         Execute command and stream output line-by-line in real-time.
 
@@ -410,7 +421,9 @@ class BifrostClient:
                 if self._last_workspace:
                     self.logger.debug(f"Using workspace from last push(): {working_dir}")
                 else:
-                    self.logger.debug(f"No workspace deployed yet, using home directory: {working_dir}")
+                    self.logger.debug(
+                        f"No workspace deployed yet, using home directory: {working_dir}"
+                    )
 
             # Convert dict to EnvironmentVariables if needed
             env_vars = None
@@ -460,7 +473,7 @@ class BifrostClient:
                             break
 
                         time.sleep(0.1)
-                    except socket.timeout:
+                    except TimeoutError:
                         raise ConnectionError(f"Command timed out after {timeout}s: {command}")
 
                 # Drain any remaining data after command exit
@@ -517,8 +530,12 @@ class BifrostClient:
 
         return expanded
 
-    def deploy(self, command: str, bootstrap_cmd: str | list[str] | None = None,
-               env: EnvironmentVariables | dict[str, str] | None = None) -> ExecResult:
+    def deploy(
+        self,
+        command: str,
+        bootstrap_cmd: str | list[str] | None = None,
+        env: EnvironmentVariables | dict[str, str] | None = None,
+    ) -> ExecResult:
         """Deploy code and execute command.
 
         Equivalent to: push(bootstrap_cmd) + exec(command, env)
@@ -537,7 +554,7 @@ class BifrostClient:
         """
         workspace_path = self.push(bootstrap_cmd)
         return self.exec(command, env=env, working_dir=workspace_path)
-    
+
     def run_detached(
         self,
         command: str,
@@ -545,7 +562,7 @@ class BifrostClient:
         bootstrap_timeout: int = 600,
         env: EnvironmentVariables | dict[str, str] | None = None,
         session_name: str | None = None,
-        no_deploy: bool = False
+        no_deploy: bool = False,
     ) -> JobInfo:
         """Execute command as detached background job.
 
@@ -614,12 +631,12 @@ class BifrostClient:
                 command=command,
                 tmux_session=main_session,
                 bootstrap_session=bootstrap_session,
-                start_time=datetime.now()
+                start_time=datetime.now(),
             )
 
         except Exception as e:
             raise JobError(f"Failed to create detached job: {e}")
-    
+
     def get_job_status(self, job_id: str) -> JobInfo:
         """
         Get current status of a detached job.
@@ -647,17 +664,17 @@ class BifrostClient:
             metadata_dict = json.loads(stdout.read().decode())
             # Parse metadata using frozen dataclass for validation
             metadata = JobMetadata.from_dict(metadata_dict)
-            
+
             # Get current status (may be updated from metadata)
             status_cmd = f"cat ~/.bifrost/jobs/{job_id}/status 2>/dev/null"
             stdin, stdout, stderr = ssh_client.exec_command(status_cmd)
             status_str = stdout.read().decode().strip()
 
             # Parse times from metadata
-            start_time = datetime.fromisoformat(metadata.start_time.replace('Z', '+00:00'))
+            start_time = datetime.fromisoformat(metadata.start_time.replace("Z", "+00:00"))
             end_time = None
             if metadata.end_time:
-                end_time = datetime.fromisoformat(metadata.end_time.replace('Z', '+00:00'))
+                end_time = datetime.fromisoformat(metadata.end_time.replace("Z", "+00:00"))
 
             # Calculate runtime
             runtime_seconds = None
@@ -673,33 +690,35 @@ class BifrostClient:
                 start_time=start_time,
                 end_time=end_time,
                 exit_code=metadata.exit_code,
-                runtime_seconds=runtime_seconds
+                runtime_seconds=runtime_seconds,
             )
-            
+
         except json.JSONDecodeError as e:
             raise JobError(f"Invalid job metadata for {job_id}: {e}")
         except Exception as e:
             if isinstance(e, (ConnectionError, JobError)):
                 raise
             raise JobError(f"Failed to get job status: {e}")
-    
+
     def get_all_jobs(self) -> list[JobInfo]:
         """
         Get status of all jobs on the remote instance.
-        
+
         Returns:
             List of JobInfo objects for all jobs
-            
+
         Raises:
             ConnectionError: SSH connection failed
         """
         try:
             ssh_client = self._get_ssh_client()
-            
+
             # Get list of job directories
-            stdin, stdout, stderr = ssh_client.exec_command("ls -1 ~/.bifrost/jobs/ 2>/dev/null || echo ''")
-            job_dirs = [d.strip() for d in stdout.read().decode().split('\n') if d.strip()]
-            
+            stdin, stdout, stderr = ssh_client.exec_command(
+                "ls -1 ~/.bifrost/jobs/ 2>/dev/null || echo ''"
+            )
+            job_dirs = [d.strip() for d in stdout.read().decode().split("\n") if d.strip()]
+
             jobs = []
             for job_id in job_dirs:
                 try:
@@ -708,14 +727,14 @@ class BifrostClient:
                 except JobError:
                     # Skip jobs that can't be read
                     continue
-            
+
             return jobs
-            
+
         except Exception as e:
             if isinstance(e, ConnectionError):
                 raise
             raise ConnectionError(f"Failed to list jobs: {e}")
-    
+
     def get_logs(self, job_id: str, lines: int = 100, log_type: str = "command") -> str:
         """Get recent logs from a job.
 
@@ -762,35 +781,35 @@ class BifrostClient:
     def follow_job_logs(self, job_id: str) -> Iterator[str]:
         """
         Stream job logs in real-time (like tail -f).
-        
+
         Args:
             job_id: Job identifier
-            
+
         Yields:
             Log lines as they are written
-            
+
         Raises:
             ConnectionError: SSH connection failed
             JobError: Job not found or logs unavailable
         """
         try:
             ssh_client = self._get_ssh_client()
-            
+
             log_file = f"~/.bifrost/jobs/{job_id}/job.log"
-            
+
             # Use tail -f to follow the log file
             tail_cmd = f"tail -f {log_file}"
             stdin, stdout, stderr = ssh_client.exec_command(tail_cmd)
-            
+
             # Stream output line by line
             for line in iter(stdout.readline, ""):
-                yield line.rstrip('\n')
-                
+                yield line.rstrip("\n")
+
         except Exception as e:
             if isinstance(e, ConnectionError):
                 raise
             raise JobError(f"Failed to follow job logs: {e}")
-    
+
     def list_sessions(self) -> list[str]:
         """List all bifrost tmux sessions on remote.
 
@@ -799,13 +818,15 @@ class BifrostClient:
         """
         ssh_client = self._get_ssh_client()
 
-        stdin, stdout, stderr = ssh_client.exec_command("tmux list-sessions -F '#{session_name}' 2>/dev/null || echo ''")
+        stdin, stdout, stderr = ssh_client.exec_command(
+            "tmux list-sessions -F '#{session_name}' 2>/dev/null || echo ''"
+        )
         if stdout.channel.recv_exit_status() != 0:
             return []
 
-        sessions = stdout.read().decode().strip().split('\n')
+        sessions = stdout.read().decode().strip().split("\n")
         # Filter to bifrost sessions only
-        return [s for s in sessions if s.startswith('bifrost-') and s]
+        return [s for s in sessions if s.startswith("bifrost-") and s]
 
     def get_session_info(self, job_id: str) -> SessionInfo:
         """Get tmux session information for a job.
@@ -826,16 +847,14 @@ class BifrostClient:
                 main_session=main_session,
                 attach_main=attach_main,
                 bootstrap_session=bootstrap_session,
-                attach_bootstrap=attach_bootstrap
+                attach_bootstrap=attach_bootstrap,
             )
         else:
-            return SessionInfo(
-                job_id=job_id,
-                main_session=main_session,
-                attach_main=attach_main
-            )
+            return SessionInfo(job_id=job_id, main_session=main_session, attach_main=attach_main)
 
-    def wait_for_completion(self, job_id: str, poll_interval: float = 5.0, timeout: float | None = None) -> JobInfo:
+    def wait_for_completion(
+        self, job_id: str, poll_interval: float = 5.0, timeout: float | None = None
+    ) -> JobInfo:
         """
         Wait for a job to complete.
 
@@ -869,13 +888,8 @@ class BifrostClient:
                 raise JobError(f"Timeout waiting for job {job_id} to complete")
 
             time.sleep(poll_interval)
-    
-    def copy_files(
-        self,
-        remote_path: str,
-        local_path: str,
-        recursive: bool = False
-    ) -> CopyResult:
+
+    def copy_files(self, remote_path: str, local_path: str, recursive: bool = False) -> CopyResult:
         """
         Copy files from remote to local machine.
 
@@ -905,7 +919,7 @@ class BifrostClient:
             # See _copy_file() for the tilde expansion logic.
 
             # Check if remote path exists (expand tilde if present)
-            if remote_path.startswith('~/'):
+            if remote_path.startswith("~/"):
                 # For tilde paths, don't use quotes so bash can expand ~
                 stdin, stdout, stderr = ssh_client.exec_command(f"test -e {remote_path}")
             else:
@@ -913,42 +927,44 @@ class BifrostClient:
                 stdin, stdout, stderr = ssh_client.exec_command(f"test -e '{remote_path}'")
             if stdout.channel.recv_exit_status() != 0:
                 raise TransferError(f"Remote path not found: {remote_path}")
-            
+
             # Check if remote path is directory (expand tilde if present)
-            if remote_path.startswith('~/'):
+            if remote_path.startswith("~/"):
                 stdin, stdout, stderr = ssh_client.exec_command(f"test -d {remote_path}")
             else:
                 stdin, stdout, stderr = ssh_client.exec_command(f"test -d '{remote_path}'")
             is_directory = stdout.channel.recv_exit_status() == 0
-            
+
             if is_directory and not recursive:
                 raise TransferError(f"{remote_path} is a directory. Use recursive=True")
-            
+
             # Create SFTP client
             sftp = ssh_client.open_sftp()
-            
+
             try:
                 files_copied = 0
                 total_bytes = 0
-                
+
                 if is_directory:
-                    files_copied, total_bytes = self._copy_directory(sftp, ssh_client, remote_path, local_path)
+                    files_copied, total_bytes = self._copy_directory(
+                        sftp, ssh_client, remote_path, local_path
+                    )
                 else:
                     total_bytes = self._copy_file(sftp, remote_path, local_path)
                     files_copied = 1
-                
+
                 duration = time.time() - start_time
-                
+
                 return CopyResult(
                     success=True,
                     files_copied=files_copied,
                     total_bytes=total_bytes,
-                    duration_seconds=duration
+                    duration_seconds=duration,
                 )
-                
+
             finally:
                 sftp.close()
-                
+
         except Exception as e:
             if isinstance(e, (ConnectionError, TransferError)):
                 raise
@@ -958,9 +974,9 @@ class BifrostClient:
                 files_copied=0,
                 total_bytes=0,
                 duration_seconds=duration,
-                error_message=str(e)
+                error_message=str(e),
             )
-    
+
     def _copy_file(self, sftp, remote_path: str, local_path: str) -> int:
         """Copy single file and return bytes transferred.
 
@@ -975,52 +991,54 @@ class BifrostClient:
         # CRITICAL: Expand tilde for SFTP operations
         # SFTP treats "~/foo" as literal path with directory named "~"
         # Shell commands expand it to "/root/foo" (or appropriate home dir)
-        if remote_path.startswith('~/'):
-            remote_path = remote_path.replace('~', '/root', 1)
+        if remote_path.startswith("~/"):
+            remote_path = remote_path.replace("~", "/root", 1)
 
         # Get file size
         file_size = sftp.stat(remote_path).st_size
-        
+
         # Define progress callback wrapper
         def progress_wrapper(transferred, total):
             if self.progress_callback:
                 self.progress_callback("file", transferred, total)
-        
+
         # Copy file with optional progress reporting
         if file_size > 1024 * 1024 and self.progress_callback:  # Files >1MB
             sftp.get(remote_path, local_path, callback=progress_wrapper)
         else:
             sftp.get(remote_path, local_path)
-        
+
         return file_size
-    
-    def _copy_directory(self, sftp, ssh_client, remote_path: str, local_path: str) -> tuple[int, int]:
+
+    def _copy_directory(
+        self, sftp, ssh_client, remote_path: str, local_path: str
+    ) -> tuple[int, int]:
         """Copy directory recursively and return (files_copied, total_bytes)."""
         # Get directory listing (expand tilde if present)
-        if remote_path.startswith('~/'):
+        if remote_path.startswith("~/"):
             stdin, stdout, stderr = ssh_client.exec_command(f"find {remote_path} -type f")
         else:
             stdin, stdout, stderr = ssh_client.exec_command(f"find '{remote_path}' -type f")
         if stdout.channel.recv_exit_status() != 0:
             error = stderr.read().decode()
             raise TransferError(f"Failed to list directory contents: {error}")
-        
-        file_list = [f.strip() for f in stdout.read().decode().split('\n') if f.strip()]
-        
+
+        file_list = [f.strip() for f in stdout.read().decode().split("\n") if f.strip()]
+
         files_copied = 0
         total_bytes = 0
-        
+
         # Convert remote_path to absolute form for proper relative path calculation
-        if remote_path.startswith('~/'):
-            abs_remote_path = remote_path.replace('~', '/root', 1)
+        if remote_path.startswith("~/"):
+            abs_remote_path = remote_path.replace("~", "/root", 1)
         else:
             abs_remote_path = remote_path
-            
+
         for remote_file in file_list:
             # Calculate relative path and local destination
             rel_path = os.path.relpath(remote_file, abs_remote_path)
             local_file = os.path.join(local_path, rel_path)
-            
+
             # Copy file
             try:
                 file_bytes = self._copy_file(sftp, remote_file, local_file)
@@ -1028,70 +1046,69 @@ class BifrostClient:
                 total_bytes += file_bytes
             except Exception as e:
                 self.logger.warning(f"Failed to copy {rel_path}: {e}")
-        
+
         return files_copied, total_bytes
-    
+
     def upload_files(
-        self, 
-        local_path: str, 
-        remote_path: str, 
-        recursive: bool = False
+        self, local_path: str, remote_path: str, recursive: bool = False
     ) -> CopyResult:
         """
         Upload files from local to remote machine.
-        
+
         Args:
             local_path: Local file or directory path
             remote_path: Remote destination path
             recursive: Upload directories recursively
-            
+
         Returns:
             CopyResult with transfer statistics
-            
+
         Raises:
             ConnectionError: SSH connection failed
             TransferError: File transfer failed
         """
         start_time = time.time()
-        
+
         try:
             ssh_client = self._get_ssh_client()
-            
+
             # Check if local path exists
             local_path_obj = Path(local_path)
             if not local_path_obj.exists():
                 raise TransferError(f"Local path not found: {local_path}")
-            
+
             is_directory = local_path_obj.is_dir()
-            
+
             if is_directory and not recursive:
                 raise TransferError(f"{local_path} is a directory. Use recursive=True")
-            
+
             # Create SFTP client
             sftp = ssh_client.open_sftp()
-            
+
             try:
                 files_uploaded = 0
                 total_bytes = 0
-                
+
                 if is_directory:
-                    files_uploaded, total_bytes = self._upload_directory(sftp, ssh_client, local_path, remote_path)
+                    files_uploaded, total_bytes = self._upload_directory(
+                        sftp, ssh_client, local_path, remote_path
+                    )
                 else:
                     total_bytes = self._upload_file(sftp, local_path, remote_path)
                     files_uploaded = 1
-                
+
                 duration = time.time() - start_time
-                
+
                 return CopyResult(
                     success=True,
                     files_copied=files_uploaded,
                     total_bytes=total_bytes,
-                    duration_seconds=duration
+                    duration_seconds=duration,
                 )
-                
+
             finally:
                 sftp.close()
-                
+
         except Exception as e:
             if isinstance(e, (ConnectionError, TransferError)):
                 raise
@@ -1101,9 +1118,9 @@ class BifrostClient:
                 files_copied=0,
                 total_bytes=0,
                 duration_seconds=duration,
-                error_message=str(e)
+                error_message=str(e),
             )
-    
+
     def _create_remote_dir(self, sftp, remote_dir: str):
         """Create remote directory recursively."""
         try:
@@ -1118,45 +1135,47 @@ class BifrostClient:
             except OSError:
                 # Directory might have been created by another process
                 pass
-    
+
     def _upload_file(self, sftp, local_path: str, remote_path: str) -> int:
         """Upload single file and return bytes transferred."""
         # Create remote directory if needed
         remote_dir = os.path.dirname(remote_path)
-        if remote_dir and remote_dir != '.':
+        if remote_dir and remote_dir != ".":
             # Create directory structure recursively
             self._create_remote_dir(sftp, remote_dir)
-        
+
         # Get file size
         file_size = os.path.getsize(local_path)
-        
+
         # Define progress callback wrapper
         def progress_wrapper(transferred, total):
             if self.progress_callback:
                 self.progress_callback("file", transferred, total)
-        
+
         # Upload file with optional progress reporting
         if file_size > 1024 * 1024 and self.progress_callback:  # Files >1MB
             sftp.put(local_path, remote_path, callback=progress_wrapper)
         else:
             sftp.put(local_path, remote_path)
-        
+
         return file_size
-    
-    def _upload_directory(self, sftp, ssh_client, local_path: str, remote_path: str) -> tuple[int, int]:
+
+    def _upload_directory(
+        self, sftp, ssh_client, local_path: str, remote_path: str
+    ) -> tuple[int, int]:
         """Upload directory recursively and return (files_uploaded, total_bytes)."""
         local_path_obj = Path(local_path)
-        
+
         files_uploaded = 0
         total_bytes = 0
-        
+
         # Walk through local directory
-        for local_file in local_path_obj.rglob('*'):
+        for local_file in local_path_obj.rglob("*"):
             if local_file.is_file():
                 # Calculate relative path and remote destination
                 rel_path = local_file.relative_to(local_path_obj)
-                remote_file = f"{remote_path}/{rel_path}".replace('\\', '/')
-                
+                remote_file = f"{remote_path}/{rel_path}".replace("\\", "/")
+
                 # Upload file
                 try:
                     file_bytes = self._upload_file(sftp, str(local_file), remote_file)
@@ -1164,40 +1183,37 @@ class BifrostClient:
                     total_bytes += file_bytes
                 except Exception as e:
                     self.logger.warning(f"Failed to upload {rel_path}: {e}")
-        
+
         return files_uploaded, total_bytes
-    
+
     def download_files(
-        self, 
-        remote_path: str, 
-        local_path: str, 
-        recursive: bool = False
+        self, remote_path: str, local_path: str, recursive: bool = False
     ) -> CopyResult:
         """
         Download files from remote to local machine.
-        
+
         This is an alias for copy_files() with clearer naming.
-        
+
         Args:
             remote_path: Remote file or directory path
             local_path: Local destination path
             recursive: Download directories recursively
-            
+
         Returns:
             CopyResult with transfer statistics
         """
         return self.copy_files(remote_path, local_path, recursive)
-    
+
     def close(self):
         """Close SSH connection."""
         if self._ssh_client:
             self._ssh_client.close()
             self._ssh_client = None
-    
+
     def __enter__(self):
         """Context manager entry."""
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit."""
         self.close()

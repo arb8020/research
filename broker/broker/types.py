@@ -11,7 +11,7 @@ from .ssh_clients_compat import execute_command_async, execute_command_sync
 
 class InstanceStatus(str, Enum):
     PENDING = "pending"
-    RUNNING = "running" 
+    RUNNING = "running"
     STOPPED = "stopped"
     TERMINATED = "terminated"
     FAILED = "failed"
@@ -19,6 +19,7 @@ class InstanceStatus(str, Enum):
 
 class GPUAvailability(str, Enum):
     """GPU availability status"""
+
     IMMEDIATE = "immediate"
     QUEUED = "queued"
     UNAVAILABLE = "unavailable"
@@ -26,14 +27,16 @@ class GPUAvailability(str, Enum):
 
 class CloudType(str, Enum):
     """Cloud deployment type for GPU instances"""
+
     SECURE = "secure"
-    COMMUNITY = "community" 
+    COMMUNITY = "community"
     ALL = "all"
 
 
 @dataclass
 class GPUOffer:
     """A GPU offer from a provider"""
+
     id: str
     provider: str
     gpu_type: str
@@ -77,6 +80,7 @@ class GPUOffer:
 @dataclass
 class GPUInstance:
     """A provisioned GPU instance with convenience methods"""
+
     id: str
     provider: str
     status: InstanceStatus
@@ -89,38 +93,35 @@ class GPUInstance:
     ssh_username: str | None = None
     raw_data: dict[str, Any] | None = None
     api_key: str | None = None  # Store API key for internal API calls
-    
-    def exec(self, command: str, ssh_key_path: str | None = None, timeout: int = 30) -> 'SSHResult':
+
+    def exec(self, command: str, ssh_key_path: str | None = None, timeout: int = 30) -> "SSHResult":
         """Execute command via SSH using configured key (synchronous)"""
         self._validate_ssh_ready()
         key_content = self._load_ssh_key(ssh_key_path)
-        
+
         exit_code, stdout, stderr = execute_command_sync(
             self, key_content, command, timeout=timeout
         )
-        
-        return SSHResult(
-            success=exit_code == 0,
-            stdout=stdout,
-            stderr=stderr,
-            exit_code=exit_code
-        )
-    
-    async def aexec(self, command: str, ssh_key_path: str | None = None, timeout: int = 30) -> 'SSHResult':
+
+        return SSHResult(success=exit_code == 0, stdout=stdout, stderr=stderr, exit_code=exit_code)
+
+    async def aexec(
+        self, command: str, ssh_key_path: str | None = None, timeout: int = 30
+    ) -> "SSHResult":
         """Execute command via SSH using configured key (asynchronous)
-        
+
         Args:
             command: Command to execute
             ssh_key_path: Path to SSH private key file
             timeout: Command timeout in seconds
-            
+
         Returns:
             SSHResult with command output
-            
+
         Example:
             # Single async command
             result = await instance.aexec("nvidia-smi")
-            
+
             # Multiple commands in parallel
             results = await asyncio.gather(
                 instance.aexec("nvidia-smi"),
@@ -130,38 +131,35 @@ class GPUInstance:
         """
         self._validate_ssh_ready()
         key_content = self._load_ssh_key(ssh_key_path)
-        
+
         exit_code, stdout, stderr = await execute_command_async(
             self, key_content, command, timeout=timeout
         )
-        
-        return SSHResult(
-            success=exit_code == 0,
-            stdout=stdout,
-            stderr=stderr,
-            exit_code=exit_code
-        )
-    
+
+        return SSHResult(success=exit_code == 0, stdout=stdout, stderr=stderr, exit_code=exit_code)
+
     def _validate_ssh_ready(self) -> None:
         """Validate that instance has SSH connection details available"""
         if not self.public_ip or not self.ssh_username:
             raise ValueError("Instance SSH details not available - may not be running yet")
-    
+
     def _load_ssh_key(self, ssh_key_path: str | None) -> str | None:
         """Load SSH private key content from file path"""
         import os
-        
+
         if not ssh_key_path:
             return None
-        
+
         key_path = os.path.expanduser(ssh_key_path)
         try:
             with open(key_path) as f:
                 return f.read()
         except Exception as e:
             raise ValueError(f"Failed to load SSH key from {key_path}: {e}") from e
-    
-    def ssh_connection_string(self, ssh_key_path: str | None = None, full_command: bool = False) -> str:
+
+    def ssh_connection_string(
+        self, ssh_key_path: str | None = None, full_command: bool = False
+    ) -> str:
         """Get SSH connection string for use with bifrost or other tools.
 
         Args:
@@ -187,13 +185,14 @@ class GPUInstance:
             return " ".join(parts)
         else:
             return f"{self.ssh_username}@{self.public_ip}:{self.ssh_port}"
-    
+
     def terminate(self) -> bool:
         """Terminate this instance"""
         from .api import terminate_instance
+
         credentials = {self.provider: self.api_key} if self.api_key else None
         return terminate_instance(self.id, self.provider, credentials=credentials)
-    
+
     def wait_until_ready(self, timeout: int = 600) -> bool:
         """Wait until instance status is RUNNING"""
         import time
@@ -207,18 +206,18 @@ class GPUInstance:
             updated_instance = get_instance(self.id, self.provider, credentials=credentials)
             if not updated_instance:
                 return False
-                
+
             if updated_instance.status == InstanceStatus.RUNNING:
                 # Update this instance with new details
                 self.__dict__.update(updated_instance.__dict__)
                 return True
             elif updated_instance.status in [InstanceStatus.FAILED, InstanceStatus.TERMINATED]:
                 return False
-                
+
             time.sleep(15)  # Check every 15 seconds
-        
+
         return False  # Timeout
-    
+
     def wait_until_ssh_ready(self, timeout: int = 900) -> bool:
         """Wait until instance is running AND SSH is ready for connections.
 
@@ -238,8 +237,9 @@ class GPUInstance:
         logger = logging.getLogger(__name__)
 
         # Assert preconditions (Tiger Style)
-        assert isinstance(timeout, int) and timeout > 0, \
+        assert isinstance(timeout, int) and timeout > 0, (
             f"timeout must be positive int, got {timeout}"
+        )
         assert self.provider, "Instance missing provider"
         assert self.api_key, "Instance missing API key"
 
@@ -261,22 +261,23 @@ class GPUInstance:
         except Exception as e:
             logger.error(f"wait_until_ssh_ready failed: {e}")
             return False
-    
-    def refresh(self) -> 'GPUInstance':
+
+    def refresh(self) -> "GPUInstance":
         """Refresh instance details from provider"""
         from .api import get_instance
-        
+
         updated_instance = get_instance(self.id, self.provider)
         if updated_instance:
             self.__dict__.update(updated_instance.__dict__)
             return self
         else:
             raise ValueError(f"Could not refresh instance {self.id}")
-    
+
 
 @dataclass
 class ProvisionRequest:
     """Request to provision a GPU instance"""
+
     gpu_type: str | None = None
     gpu_count: int = 1
     image: str = "runpod/pytorch:1.0.0-cu1281-torch280-ubuntu2204"
@@ -304,6 +305,7 @@ class ProvisionRequest:
 @dataclass
 class SSHResult:
     """Result of SSH command execution"""
+
     success: bool
     stdout: str
     stderr: str
@@ -314,6 +316,7 @@ class SSHResult:
 @dataclass
 class SSHConfig:
     """SSH connection configuration"""
+
     hostname: str
     port: int
     username: str
@@ -331,13 +334,14 @@ class ProvisionAttempt:
     Tiger Style: When error is None (success), instance must be set.
     This postcondition is enforced by assertions in _try_provision_from_offer.
     """
+
     offer_id: str
     gpu_type: str
     provider: str
     price_per_hour: float
     error: str | None = None  # None if successful
     error_category: str | None = None  # "credentials", "unavailable", "network", "unknown"
-    instance: Optional['GPUInstance'] = None  # Set when error is None (successful provisioning)
+    instance: Optional["GPUInstance"] = None  # Set when error is None (successful provisioning)
 
 
 @dataclass
@@ -356,16 +360,17 @@ class ProvisionResult:
     - credential_error: Invalid API key detected (fix credentials)
     - network_error: Network timeout/failure (transient, retry later)
     """
+
     success: bool
     instance: GPUInstance | None = None
     attempts: list[ProvisionAttempt] = field(default_factory=list)
     error_summary: str | None = None
 
     # Error categories for programmatic handling
-    no_offers_found: bool = False      # Search returned empty
-    all_unavailable: bool = False      # All offers returned None (capacity issue)
-    credential_error: bool = False     # Invalid API key detected
-    network_error: bool = False        # Network timeout/failure
+    no_offers_found: bool = False  # Search returned empty
+    all_unavailable: bool = False  # All offers returned None (capacity issue)
+    credential_error: bool = False  # Invalid API key detected
+    network_error: bool = False  # Network timeout/failure
 
 
 # ============================================================================
@@ -380,6 +385,7 @@ class ProviderCredentials:
     Supports multiple providers (RunPod, Prime Intellect, Lambda Labs, Vast.ai, etc).
     Immutable to prevent accidental credential leaks.
     """
+
     runpod: str = ""
     primeintellect: str = ""
     lambdalabs: str = ""
@@ -388,28 +394,29 @@ class ProviderCredentials:
 
     def __post_init__(self):
         # Tiger Style: assert at least one credential provided
-        assert self.runpod or self.primeintellect or self.lambdalabs or self.vast, \
+        assert self.runpod or self.primeintellect or self.lambdalabs or self.vast, (
             "At least one provider credential required"
+        )
 
         # Validate credential format (basic length check)
         if self.runpod:
-            assert len(self.runpod) > 10, \
-                "RunPod API key appears invalid (too short)"
+            assert len(self.runpod) > 10, "RunPod API key appears invalid (too short)"
 
         if self.primeintellect:
-            assert len(self.primeintellect) > 10, \
+            assert len(self.primeintellect) > 10, (
                 "Prime Intellect API key appears invalid (too short)"
+            )
 
         if self.lambdalabs:
-            assert len(self.lambdalabs) > 10, \
-                "Lambda Labs API key appears invalid (too short)"
+            assert len(self.lambdalabs) > 10, "Lambda Labs API key appears invalid (too short)"
 
         if self.vast:
-            assert len(self.vast) > 10, \
-                "Vast.ai API key appears invalid (too short)"
+            assert len(self.vast) > 10, "Vast.ai API key appears invalid (too short)"
 
         # Assert output invariant
-        assert self.runpod or self.primeintellect or self.lambdalabs or self.vast, "credentials validated"
+        assert self.runpod or self.primeintellect or self.lambdalabs or self.vast, (
+            "credentials validated"
+        )
 
     def get(self, provider: str) -> str | None:
         """Get credential for specific provider."""
@@ -437,13 +444,13 @@ class ProviderCredentials:
         return result
 
     @classmethod
-    def from_dict(cls, credentials: dict[str, str]) -> 'ProviderCredentials':
+    def from_dict(cls, credentials: dict[str, str]) -> "ProviderCredentials":
         """Create from dict (for backward compatibility)."""
         return cls(
             runpod=credentials.get("runpod", ""),
             primeintellect=credentials.get("primeintellect", ""),
             lambdalabs=credentials.get("lambdalabs", ""),
-            vast=credentials.get("vast", "")
+            vast=credentials.get("vast", ""),
         )
 
 
@@ -464,29 +471,16 @@ class ProviderModule(Protocol):
         self,
         request: ProvisionRequest,
         ssh_startup_script: str | None = None,
-        api_key: str | None = None
-    ) -> GPUInstance | None:
-        ...
+        api_key: str | None = None,
+    ) -> GPUInstance | None: ...
 
     def get_instance_details(
-        self,
-        instance_id: str,
-        api_key: str | None = None
-    ) -> GPUInstance | None:
-        ...
+        self, instance_id: str, api_key: str | None = None
+    ) -> GPUInstance | None: ...
 
-    def list_instances(
-        self,
-        api_key: str | None = None
-    ) -> list[GPUInstance]:
-        ...
+    def list_instances(self, api_key: str | None = None) -> list[GPUInstance]: ...
 
-    def terminate_instance(
-        self,
-        instance_id: str,
-        api_key: str | None = None
-    ) -> bool:
-        ...
+    def terminate_instance(self, instance_id: str, api_key: str | None = None) -> bool: ...
 
     def search_gpu_offers(
         self,
@@ -495,6 +489,5 @@ class ProviderModule(Protocol):
         memory_gb: int | None = None,
         container_disk_gb: int | None = None,
         gpu_count: int = 1,
-        api_key: str | None = None
-    ) -> list[GPUOffer]:
-        ...
+        api_key: str | None = None,
+    ) -> list[GPUOffer]: ...

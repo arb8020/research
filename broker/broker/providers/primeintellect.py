@@ -17,8 +17,13 @@ PRIME_API_BASE_URL = "https://api.primeintellect.ai/api/v1"
 
 
 @retry(max_attempts=3, delay=1, backoff=2, exceptions=(requests.RequestException, requests.Timeout))
-def _make_api_request(method: str, endpoint: str, data: dict | None = None,
-                     params: dict | None = None, api_key: str | None = None) -> dict[str, Any]:
+def _make_api_request(
+    method: str,
+    endpoint: str,
+    data: dict | None = None,
+    params: dict | None = None,
+    api_key: str | None = None,
+) -> dict[str, Any]:
     """Make a REST API request to Prime Intellect API with automatic retries.
 
     Retries up to 3 times with exponential backoff (1s, 2s, 4s) on network errors.
@@ -33,13 +38,15 @@ def _make_api_request(method: str, endpoint: str, data: dict | None = None,
     if not api_key:
         raise ValueError("Prime Intellect API key is required but was not provided")
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
     url = f"{PRIME_API_BASE_URL}{endpoint}"
-    logger.debug("Prime Intellect API request %s %s (api key ...%s)", method, url, api_key[-4:] if api_key else "none")
+    logger.debug(
+        "Prime Intellect API request %s %s (api key ...%s)",
+        method,
+        url,
+        api_key[-4:] if api_key else "none",
+    )
 
     try:
         response = requests.request(
@@ -65,9 +72,14 @@ def _make_api_request(method: str, endpoint: str, data: dict | None = None,
     return response.json()
 
 
-def search_gpu_offers(cuda_version: str | None = None, manufacturer: str | None = None,
-                      memory_gb: int | None = None, container_disk_gb: int | None = None,
-                      gpu_count: int = 1, api_key: str | None = None) -> list[GPUOffer]:
+def search_gpu_offers(
+    cuda_version: str | None = None,
+    manufacturer: str | None = None,
+    memory_gb: int | None = None,
+    container_disk_gb: int | None = None,
+    gpu_count: int = 1,
+    api_key: str | None = None,
+) -> list[GPUOffer]:
     """Search for available GPU offers on Prime Intellect with optional filtering
 
     Note: Prime Intellect's availability API doesn't support gpu_count as a query parameter,
@@ -105,9 +117,13 @@ def search_gpu_offers(cuda_version: str | None = None, manufacturer: str | None 
                     # Note: Prime Intellect doesn't have manufacturer field, using provider as proxy
                     if manufacturer.lower() not in offer["provider"].lower():
                         continue
-                
+
                 # Determine cloud type from security field
-                cloud_type = CloudType.SECURE if offer.get("security") == "secure_cloud" else CloudType.COMMUNITY
+                cloud_type = (
+                    CloudType.SECURE
+                    if offer.get("security") == "secure_cloud"
+                    else CloudType.COMMUNITY
+                )
 
                 # Extract pricing - prefer onDemand, fallback to communityPrice
                 # Note: PrimeIntellect returns total node price for multi-GPU offers
@@ -121,11 +137,15 @@ def search_gpu_offers(cuda_version: str | None = None, manufacturer: str | None 
 
                 # Normalize to per-GPU pricing
                 offer_gpu_count = offer.get("gpuCount", 1)
-                price_per_hour = total_price / offer_gpu_count if offer_gpu_count > 0 else total_price
+                price_per_hour = (
+                    total_price / offer_gpu_count if offer_gpu_count > 0 else total_price
+                )
 
                 # Create unique offer ID
-                offer_id = f"prime-{offer.get('cloudId', 'unknown')}-{offer.get('dataCenter', 'unknown')}"
-                
+                offer_id = (
+                    f"prime-{offer.get('cloudId', 'unknown')}-{offer.get('dataCenter', 'unknown')}"
+                )
+
                 gpu_offer = GPUOffer(
                     id=offer_id,
                     provider="primeintellect",
@@ -140,20 +160,23 @@ def search_gpu_offers(cuda_version: str | None = None, manufacturer: str | None 
                     cloud_type=cloud_type,
                     cuda_version=cuda_version,  # Pass through filter
                     manufacturer=offer.get("provider"),  # Use provider as manufacturer proxy
-                    underlying_provider=offer.get("provider"),  # Extract underlying provider (e.g., massedcompute, hyperstack)
-                    raw_data=offer
+                    underlying_provider=offer.get(
+                        "provider"
+                    ),  # Extract underlying provider (e.g., massedcompute, hyperstack)
+                    raw_data=offer,
                 )
                 offers.append(gpu_offer)
-        
+
         return offers
-        
+
     except Exception as e:
         logger.error(f"Failed to search Prime Intellect GPU offers: {e}")
         return []
 
 
-def provision_instance(request: ProvisionRequest, ssh_startup_script: str | None = None,
-                      api_key: str | None = None) -> GPUInstance | None:
+def provision_instance(
+    request: ProvisionRequest, ssh_startup_script: str | None = None, api_key: str | None = None
+) -> GPUInstance | None:
     """Provision a GPU instance on Prime Intellect"""
     # Build the pod definition
     pod_data = {
@@ -161,13 +184,13 @@ def provision_instance(request: ProvisionRequest, ssh_startup_script: str | None
         "gpuCount": request.gpu_count,
         "image": request.image or "ubuntu_22_cuda_12",  # Default to Ubuntu with CUDA
     }
-    
+
     # Build provider specification first - use the actual provider from the offer
     # For Prime Intellect, we need to specify the underlying provider (e.g., "runpod", "hyperstack")
     provider_data = {
         "type": "runpod"  # Default to runpod for now
     }
-    
+
     # Add GPU type if specified
     if request.gpu_type:
         # For Prime Intellect, gpu_type should be the cloudId from the offer
@@ -183,52 +206,46 @@ def provision_instance(request: ProvisionRequest, ssh_startup_script: str | None
         else:
             # Direct cloudId provided
             pod_data["cloudId"] = request.gpu_type
-    
+
     # Add resource specifications if provided
     if request.container_disk_gb:
         pod_data["diskSize"] = request.container_disk_gb
     if request.memory_gb:
         pod_data["memory"] = request.memory_gb
-    
+
     # Add environment variables if startup script provided
     env_vars = []
     if ssh_startup_script:
-        env_vars.append({
-            "key": "STARTUP_SCRIPT",
-            "value": ssh_startup_script
-        })
-    
+        env_vars.append({"key": "STARTUP_SCRIPT", "value": ssh_startup_script})
+
     # Add Jupyter password if provided
     if request.jupyter_password:
         pod_data["jupyterPassword"] = request.jupyter_password
-    
+
     if env_vars:
         pod_data["envVars"] = env_vars
-    
+
     # Provider data already built above
-    
+
     # Determine security level
     if not request.spot_instance:
         pod_data["security"] = "secure_cloud"
     else:
         pod_data["security"] = "community_cloud"
-    
+
     # Build the complete request body
-    request_body = {
-        "pod": pod_data,
-        "provider": provider_data
-    }
-    
+    request_body = {"pod": pod_data, "provider": provider_data}
+
     try:
         data = _make_api_request("POST", "/pods/", data=request_body, api_key=api_key)
-        
+
         if not data:
             logger.error("No pod returned from Prime Intellect deployment")
             return None
-        
+
         # Parse the response and create GPUInstance
         return _parse_pod_to_instance(data, api_key=api_key)
-        
+
     except Exception as e:
         logger.error(f"Failed to provision Prime Intellect instance: {e}")
         return None
@@ -238,12 +255,12 @@ def get_instance_details(instance_id: str, api_key: str | None = None) -> GPUIns
     """Get details of a specific instance"""
     try:
         data = _make_api_request("GET", f"/pods/{instance_id}", api_key=api_key)
-        
+
         if not data:
             return None
-        
+
         return _parse_pod_to_instance(data, api_key=api_key)
-        
+
     except Exception as e:
         logger.error(f"Failed to get Prime Intellect instance details: {e}")
         return None
@@ -253,11 +270,11 @@ def list_instances(api_key: str | None = None) -> list[GPUInstance]:
     """List all user's instances"""
     try:
         data = _make_api_request("GET", "/pods/", api_key=api_key)
-        
+
         instances = []
         # API might return a list directly or wrapped in a data field
         pods = data if isinstance(data, list) else data.get("pods", [])
-        
+
         for pod in pods:
             try:
                 instance = _parse_pod_to_instance(pod, api_key=api_key)
@@ -266,9 +283,9 @@ def list_instances(api_key: str | None = None) -> list[GPUInstance]:
             except Exception as e:
                 logger.warning(f"Failed to parse pod {pod.get('id', 'unknown')}: {e}")
                 continue
-        
+
         return instances
-        
+
     except Exception as e:
         logger.error(f"Failed to list Prime Intellect instances: {e}")
         return []
@@ -280,7 +297,7 @@ def terminate_instance(instance_id: str, api_key: str | None = None) -> bool:
         _make_api_request("DELETE", f"/pods/{instance_id}", api_key=api_key)
         logger.info(f"successfully terminated prime intellect instance {instance_id}")
         return True
-        
+
     except Exception as e:
         logger.error(f"Failed to terminate Prime Intellect instance: {e}")
         return False
@@ -288,23 +305,23 @@ def terminate_instance(instance_id: str, api_key: str | None = None) -> bool:
 
 def _parse_pod_to_instance(pod: dict[str, Any], api_key: str | None = None) -> GPUInstance:
     """Parse a pod dictionary into a GPUInstance"""
-    
+
     # Map Prime Intellect statuses to our enum
     status_map = {
         "PROVISIONING": InstanceStatus.PENDING,
         "RUNNING": InstanceStatus.RUNNING,
         "STOPPED": InstanceStatus.STOPPED,
         "TERMINATED": InstanceStatus.TERMINATED,
-        "FAILED": InstanceStatus.FAILED
+        "FAILED": InstanceStatus.FAILED,
     }
     status = status_map.get(pod.get("status", ""), InstanceStatus.PENDING)
-    
+
     # Extract SSH connection info
     ssh_connection = pod.get("sshConnection", "")
     public_ip = pod.get("ip", "")
     ssh_port = 22
     ssh_username = "root"
-    
+
     # Parse SSH connection string if available (format might be "ssh root@ip -p port")
     if ssh_connection and "@" in ssh_connection:
         try:
@@ -318,14 +335,14 @@ def _parse_pod_to_instance(pod: dict[str, Any], api_key: str | None = None) -> G
                     ssh_port = int(parts[i + 1])
         except (ValueError, IndexError):
             logger.warning(f"Failed to parse SSH connection string: {ssh_connection}")
-    
+
     # Extract GPU information
     gpu_type = pod.get("gpuName", pod.get("gpuType", "unknown"))
     gpu_count = pod.get("gpuCount", 1)
-    
+
     # Extract pricing
     price_per_hour = pod.get("priceHr", 0.0)
-    
+
     return GPUInstance(
         id=pod["id"],
         provider="primeintellect",
@@ -338,7 +355,7 @@ def _parse_pod_to_instance(pod: dict[str, Any], api_key: str | None = None) -> G
         ssh_port=ssh_port,
         ssh_username=ssh_username,
         raw_data=pod,
-        api_key=api_key  # Store API key for instance methods
+        api_key=api_key,  # Store API key for instance methods
     )
 
 
@@ -354,7 +371,7 @@ def get_user_balance(api_key: str | None = None) -> dict[str, Any] | None:
         return {
             "provider": "primeintellect",
             "current_balance": None,
-            "message": "Balance endpoint not yet implemented for Prime Intellect"
+            "message": "Balance endpoint not yet implemented for Prime Intellect",
         }
 
     except Exception as e:
