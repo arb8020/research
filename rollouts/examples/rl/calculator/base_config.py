@@ -119,8 +119,8 @@ class RLConfig:
     log_every: int = 1
     checkpoint_every: int = 5
 
-    # Output
-    output_dir: str = "/tmp/rollouts_rl"
+    # Output (relative to repo root, timestamped subdirs created automatically)
+    output_dir: str = "results/rl"
     experiment_name: str = "calculator_grpo"
 
     def save(self, path: Path | str) -> None:
@@ -923,8 +923,8 @@ def run_remote(
         local_results.mkdir(parents=True, exist_ok=True)
 
         # Sync all timestamped run directories (logs + config, NOT checkpoints)
-        # Remote structure: /tmp/rollouts_rl/calculator_grpo_20251216-143022/
-        remote_base = "/tmp/rollouts_rl"
+        # Remote structure: results/rl/calculator_grpo_20251216-143022/
+        remote_base = "results/rl"
         files_to_sync = [
             "config.json",
             "training.jsonl",  # All logs in JSONL format (for TUI replay)
