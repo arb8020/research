@@ -5,11 +5,7 @@ import triton.language as tl
 
 @triton.jit
 def _log_softmax__default_triton_kernel(
-    X_ptr, Y_ptr,
-    M, N,
-    stride_m_x, stride_n_x,
-    stride_m_y, stride_n_y,
-    BLOCK_SIZE: tl.constexpr
+    X_ptr, Y_ptr, M, N, stride_m_x, stride_n_x, stride_m_y, stride_n_y, BLOCK_SIZE: tl.constexpr
 ):
     pid_m = tl.program_id(0)
     pid_n = tl.program_id(1)
@@ -36,7 +32,7 @@ def _log_softmax__default_triton_kernel(
     ptrs = X_ptr + offs_m_2d * stride_m_x + offs_n_2d * stride_n_x
 
     # Load with mask
-    x = tl.load(ptrs, mask=(mask_m[:, None] & mask_n[None, :]), other=-float('inf'))
+    x = tl.load(ptrs, mask=(mask_m[:, None] & mask_n[None, :]), other=-float("inf"))
 
     # Compute max per row (m dimension)
     # max over n dimension (axis=1)
@@ -58,9 +54,11 @@ def _log_softmax__default_triton_kernel(
     log_softmax = x - max_per_row_broadcast - log_sum_exp[:, None]
 
     # Store result
-    tl.store(Y_ptr + offs_m_2d * stride_m_y + offs_n_2d * stride_n_y,
-             log_softmax,
-             mask=(mask_m[:, None] & mask_n[None, :]))
+    tl.store(
+        Y_ptr + offs_m_2d * stride_m_y + offs_n_2d * stride_n_y,
+        log_softmax,
+        mask=(mask_m[:, None] & mask_n[None, :]),
+    )
 
 
 def _log_softmax__default_kernel_impl(*args, **kwargs):
@@ -72,14 +70,16 @@ def _log_softmax__default_kernel_impl(*args, **kwargs):
     if len(args) > 0:
         input = args[0]
         other_args = args[1:]
-    elif 'input' in kwargs:
-        input = kwargs['input']
+    elif "input" in kwargs:
+        input = kwargs["input"]
         other_args = ()
     else:
-        raise ValueError("Input tensor must be provided as first positional argument or as 'input' keyword argument")
+        raise ValueError(
+            "Input tensor must be provided as first positional argument or as 'input' keyword argument"
+        )
 
     # Extract dim argument
-    dim = kwargs.get('dim', -1)
+    dim = kwargs.get("dim", -1)
     if dim < 0:
         dim = input.dim() + dim
     if dim < 0 or dim >= input.dim():
@@ -87,12 +87,14 @@ def _log_softmax__default_kernel_impl(*args, **kwargs):
 
     # Move input to GPU if needed
     input_device = input.device
-    if input_device.type == 'cpu':
+    if input_device.type == "cpu":
         if torch.cuda.is_available():
             input_cuda = input.cuda()
         else:
-            raise RuntimeError("CUDA is not available but input tensor is on CPU and kernel requires GPU")
-    elif input_device.type == 'cuda':
+            raise RuntimeError(
+                "CUDA is not available but input tensor is on CPU and kernel requires GPU"
+            )
+    elif input_device.type == "cuda":
         if not torch.cuda.is_available():
             raise RuntimeError("CUDA is not available but input tensor is on CUDA device")
         input_cuda = input
@@ -130,9 +132,12 @@ def _log_softmax__default_kernel_impl(*args, **kwargs):
     _log_softmax__default_triton_kernel[grid_m, grid_n](
         input_2d.data_ptr(),
         output_2d.data_ptr(),
-        M, N,
-        stride_m_x, stride_n_x,
-        stride_m_y, stride_n_y,
+        M,
+        N,
+        stride_m_x,
+        stride_n_x,
+        stride_m_y,
+        stride_n_y,
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=4,
         num_stages=2,
@@ -148,7 +153,7 @@ def _log_softmax__default_kernel_impl(*args, **kwargs):
     output = output_perm.permute(*inv_permute_dims)
 
     # Move output back to original device if needed
-    if input_device.type == 'cpu':
+    if input_device.type == "cpu":
         output = output.cpu()
 
     return output

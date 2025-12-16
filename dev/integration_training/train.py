@@ -62,7 +62,7 @@ def load_config_from_file(config_path: str) -> Config:
 
     Tiger Style: Assert preconditions.
     """
-    assert config_path.endswith('.py'), f"Config must be .py file, got {config_path}"
+    assert config_path.endswith(".py"), f"Config must be .py file, got {config_path}"
     assert Path(config_path).exists(), f"Config file not found: {config_path}"
 
     spec = importlib.util.spec_from_file_location("exp_config", config_path)
@@ -72,7 +72,7 @@ def load_config_from_file(config_path: str) -> Config:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    assert hasattr(module, 'config'), "Config file must define 'config' variable"
+    assert hasattr(module, "config"), "Config file must define 'config' variable"
     config: Config = module.config
     assert isinstance(config, Config), f"Expected Config object, got {type(config)}"
 
@@ -149,13 +149,13 @@ async def create_fsdp_backend(config: Config, output_dir: Path):
     """
     import torch
     import torch.distributed as dist
+
     from rollouts.training.backends.fsdp import FSDPConfig, FSDPTrainingBackend
 
     # Tiger Style: Assert torch.distributed is initialized
     if not dist.is_available():
         raise RuntimeError(
-            "torch.distributed is not available. "
-            "Please install PyTorch with distributed support."
+            "torch.distributed is not available. Please install PyTorch with distributed support."
         )
 
     if not dist.is_initialized():
@@ -165,7 +165,9 @@ async def create_fsdp_backend(config: Config, output_dir: Path):
         world_size = int(os.environ.get("WORLD_SIZE", "1"))
         local_rank = int(os.environ.get("LOCAL_RANK", "0"))
 
-        logger.info(f"Initializing torch.distributed: rank={rank}/{world_size}, local_rank={local_rank}")
+        logger.info(
+            f"Initializing torch.distributed: rank={rank}/{world_size}, local_rank={local_rank}"
+        )
 
         # Initialize process group
         dist.init_process_group(backend="nccl")
@@ -242,7 +244,9 @@ async def create_fsdp_backend(config: Config, output_dir: Path):
         min_lr_ratio=0.1,
     )
 
-    logger.info(f"[Rank {rank}/{world_size}] LR scheduler: {warmup_steps} warmup steps + cosine decay")
+    logger.info(
+        f"[Rank {rank}/{world_size}] LR scheduler: {warmup_steps} warmup steps + cosine decay"
+    )
     logger.info(f"[Rank {rank}/{world_size}] FSDP backend created")
 
     return backend
@@ -265,8 +269,7 @@ async def run_sft(config: Config, output_dir: Path):
     tokenizer = load_tokenizer(config.model.name)
 
     # Check if we should use FSDP (multi-GPU training)
-    use_fsdp = (config.target.train_backend == "fsdp" and
-                len(config.target.gpu_ranks) > 1)
+    use_fsdp = config.target.train_backend == "fsdp" and len(config.target.gpu_ranks) > 1
 
     if use_fsdp:
         # FSDP multi-GPU training
@@ -288,7 +291,9 @@ async def run_sft(config: Config, output_dir: Path):
     logger.info("Loading SFT data mixture:")
     samples = []
     for spec in config.data.sft_mixture:
-        logger.info(f"  Loading {spec.name} (split={spec.split}, subset={spec.subset}, max={spec.max_samples})")
+        logger.info(
+            f"  Loading {spec.name} (split={spec.split}, subset={spec.subset}, max={spec.max_samples})"
+        )
 
         # Load dataset based on spec
         dataset_samples = load_sft_dataset(
@@ -312,8 +317,9 @@ async def run_sft(config: Config, output_dir: Path):
 
     # Create training config
     sft_config = SFTTrainingConfig(
-        num_steps=config.sft.num_iterations if config.sft.num_iterations > 0
-                 else (len(samples) // config.sft.target_examples_per_step) * config.sft.num_epochs,
+        num_steps=config.sft.num_iterations
+        if config.sft.num_iterations > 0
+        else (len(samples) // config.sft.target_examples_per_step) * config.sft.num_epochs,
         batch_size=config.sft.batch_size,
         log_every=config.sft.log_every,
         checkpoint_every=config.sft.checkpoint_every,
@@ -377,7 +383,9 @@ async def run_rl(config: Config, output_dir: Path, source_checkpoint: str | None
     logger.info(f"Loading RL dataset: {config.data.rl_dataset}")
     # TODO: Implement RL dataset loading and setup
     # This requires implementing a reward function and rollout generation
-    raise NotImplementedError("RL training not yet fully implemented - needs reward function and rollout generation")
+    raise NotImplementedError(
+        "RL training not yet fully implemented - needs reward function and rollout generation"
+    )
 
 
 def main():
@@ -397,7 +405,7 @@ def main():
 
     parser = argparse.ArgumentParser(
         description="Post-training with rollouts/",
-        epilog="Example: python train.py configs/01_debug_sft.py"
+        epilog="Example: python train.py configs/01_debug_sft.py",
     )
     parser.add_argument("config", help="Path to config file")
     args = parser.parse_args()
@@ -410,8 +418,7 @@ def main():
     config = load_config_from_file(str(config_path))
 
     # Check if FSDP multi-GPU and not already launched by torchrun
-    use_fsdp = (config.target.train_backend == "fsdp" and
-                len(config.target.gpu_ranks) > 1)
+    use_fsdp = config.target.train_backend == "fsdp" and len(config.target.gpu_ranks) > 1
     already_distributed = os.environ.get("RANK") is not None
 
     if use_fsdp and not already_distributed:
@@ -446,7 +453,9 @@ def main():
 
     # Extract mode from config
     mode = config.output.mode
-    assert mode in ["sft", "rl", "sft+rl"], f"Invalid mode in config: {mode}. Must be 'sft', 'rl', or 'sft+rl'"
+    assert mode in ["sft", "rl", "sft+rl"], (
+        f"Invalid mode in config: {mode}. Must be 'sft', 'rl', or 'sft+rl'"
+    )
 
     # Validate checkpoint path for RL
     if mode == "rl" and config.output.source_checkpoint:

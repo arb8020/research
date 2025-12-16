@@ -31,6 +31,7 @@ class IntegrationEvalConfig:
     Follows the pattern from wafer_stuff/clicker/config.py but adapted
     for Prime Intellect integration testing.
     """
+
     # Model configuration
     # Option 1: Gemini (matches clicker pattern)
     model_name: str = "gemini-2.0-flash-exp"

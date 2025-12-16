@@ -6,14 +6,12 @@ Tests chunk loading and data structure without requiring model downloads.
 
 import json
 import logging
+from collections import defaultdict
 from pathlib import Path
-from collections import Counter, defaultdict
+
 import numpy as np
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -25,7 +23,7 @@ def analyze_chunks(chunks_path: Path):
         return None
 
     logger.info(f"Analyzing chunks from: {chunks_path}")
-    logger.info("="*80)
+    logger.info("=" * 80)
 
     # Collect statistics
     total_chunks = 0
@@ -34,15 +32,15 @@ def analyze_chunks(chunks_path: Path):
     shard_chunk_counts = defaultdict(int)
     sample_texts = []
 
-    with open(chunks_path, 'r') as f:
+    with open(chunks_path) as f:
         for line in f:
             chunk = json.loads(line)
             total_chunks += 1
 
             # Extract metadata
-            shard_id = chunk['shard_id']
-            chunk_id = chunk['chunk_id']
-            text = chunk['text']
+            shard_id = chunk["shard_id"]
+            chunk_id = chunk["chunk_id"]
+            text = chunk["text"]
 
             shard_ids.add(shard_id)
             text_lengths.append(len(text))
@@ -56,18 +54,18 @@ def analyze_chunks(chunks_path: Path):
     text_lengths_arr = np.array(text_lengths)
 
     info = {
-        'total_chunks': total_chunks,
-        'num_shards': len(shard_ids),
-        'shard_ids': sorted(list(shard_ids)),
-        'text_length_stats': {
-            'min': int(text_lengths_arr.min()),
-            'max': int(text_lengths_arr.max()),
-            'mean': float(text_lengths_arr.mean()),
-            'median': float(np.median(text_lengths_arr)),
-            'std': float(text_lengths_arr.std()),
+        "total_chunks": total_chunks,
+        "num_shards": len(shard_ids),
+        "shard_ids": sorted(list(shard_ids)),
+        "text_length_stats": {
+            "min": int(text_lengths_arr.min()),
+            "max": int(text_lengths_arr.max()),
+            "mean": float(text_lengths_arr.mean()),
+            "median": float(np.median(text_lengths_arr)),
+            "std": float(text_lengths_arr.std()),
         },
-        'chunks_per_shard': dict(shard_chunk_counts),
-        'sample_texts': sample_texts,
+        "chunks_per_shard": dict(shard_chunk_counts),
+        "sample_texts": sample_texts,
     }
 
     return info
@@ -76,31 +74,31 @@ def analyze_chunks(chunks_path: Path):
 def print_info(info):
     """Pretty print the analysis information."""
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("CORPUS PROXIMITY SMOKE TEST RESULTS")
-    print("="*80)
+    print("=" * 80)
 
-    print(f"\n📊 CHUNK STATISTICS:")
+    print("\n📊 CHUNK STATISTICS:")
     print(f"  Total chunks: {info['total_chunks']:,}")
     print(f"  Number of shards: {info['num_shards']}")
     print(f"  Shard IDs: {info['shard_ids']}")
 
-    print(f"\n📏 TEXT LENGTH STATISTICS:")
-    stats = info['text_length_stats']
+    print("\n📏 TEXT LENGTH STATISTICS:")
+    stats = info["text_length_stats"]
     print(f"  Min length: {stats['min']:,} chars")
     print(f"  Max length: {stats['max']:,} chars")
     print(f"  Mean length: {stats['mean']:.1f} chars")
     print(f"  Median length: {stats['median']:.1f} chars")
     print(f"  Std deviation: {stats['std']:.1f} chars")
 
-    print(f"\n📦 CHUNKS PER SHARD:")
-    for shard_id in sorted(info['chunks_per_shard'].keys()):
-        count = info['chunks_per_shard'][shard_id]
+    print("\n📦 CHUNKS PER SHARD:")
+    for shard_id in sorted(info["chunks_per_shard"].keys()):
+        count = info["chunks_per_shard"][shard_id]
         print(f"  Shard {shard_id}: {count:,} chunks")
 
-    print(f"\n📝 SAMPLE TEXTS:")
-    for i, (shard_id, chunk_id, text) in enumerate(info['sample_texts'], 1):
-        preview = text[:100].replace('\n', ' ')
+    print("\n📝 SAMPLE TEXTS:")
+    for i, (shard_id, chunk_id, text) in enumerate(info["sample_texts"], 1):
+        preview = text[:100].replace("\n", " ")
         if len(text) > 100:
             preview += "..."
         print(f"  Sample {i} [shard={shard_id}, chunk={chunk_id}]:")
@@ -108,18 +106,18 @@ def print_info(info):
         print(f"    Preview: {preview}")
         print()
 
-    print("="*80)
+    print("=" * 80)
     print("✅ Smoke test complete!")
-    print("="*80)
+    print("=" * 80)
 
 
 def main():
     """Run the smoke test."""
-    import sys
     import importlib.util
+    import sys
 
     # Load config
-    if len(sys.argv) > 1 and sys.argv[1].endswith('.py'):
+    if len(sys.argv) > 1 and sys.argv[1].endswith(".py"):
         # Load config from experiment file
         spec = importlib.util.spec_from_file_location("exp_config", sys.argv[1])
         if spec is None:
@@ -128,16 +126,17 @@ def main():
             raise ImportError(f"Spec has no loader: {sys.argv[1]}")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        config = getattr(module, "config")
+        config = module.config
     else:
         # Use default config
         from config import Config
+
         config = Config()
 
     # Get chunks path
     chunks_path = config.data.processed_dir / config.data.output_file
 
-    logger.info(f"Config loaded:")
+    logger.info("Config loaded:")
     logger.info(f"  Processed dir: {config.data.processed_dir}")
     logger.info(f"  Output file: {config.data.output_file}")
     logger.info(f"  Full path: {chunks_path}")
@@ -150,17 +149,12 @@ def main():
 
         # Save results
         results_path = Path("smoke_test_results.json")
-        with open(results_path, 'w') as f:
+        with open(results_path, "w") as f:
             # Convert sample texts to simple format for JSON
             json_info = info.copy()
-            json_info['sample_texts'] = [
-                {
-                    'shard_id': s,
-                    'chunk_id': c,
-                    'text_length': len(t),
-                    'text_preview': t[:200]
-                }
-                for s, c, t in info['sample_texts']
+            json_info["sample_texts"] = [
+                {"shard_id": s, "chunk_id": c, "text_length": len(t), "text_preview": t[:200]}
+                for s, c, t in info["sample_texts"]
             ]
             json.dump(json_info, f, indent=2)
 
@@ -173,4 +167,5 @@ def main():
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(main())

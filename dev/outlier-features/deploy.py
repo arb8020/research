@@ -24,15 +24,15 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Literal, TypeAlias
 
-from bifrost.client import BifrostClient
-
-# Import broker and bifrost for deployment
-from broker.client import ClientGPUInstance, GPUClient
-
 # Import local config
 from config import Config
 from dotenv import load_dotenv
 from estimate_vram import estimate_vram_requirements
+
+from bifrost.client import BifrostClient
+
+# Import broker and bifrost for deployment
+from broker.client import ClientGPUInstance, GPUClient
 
 # Import shared logging
 from shared.logging_config import setup_logging
@@ -69,14 +69,14 @@ def normalize_save_dir(save_dir: Path | str) -> str:
     posix_path = PurePosixPath(save_dir)
 
     # Get parts and filter out current directory markers
-    parts = [p for p in posix_path.parts if p not in ('.', '..')]
+    parts = [p for p in posix_path.parts if p not in (".", "..")]
 
     # Reconstruct path
-    normalized = '/'.join(parts) if parts else ''
+    normalized = "/".join(parts) if parts else ""
 
     # Validation
     assert normalized, f"save_dir normalized to empty string from: {save_dir}"
-    assert not normalized.startswith('/'), f"save_dir should be relative, got: {normalized}"
+    assert not normalized.startswith("/"), f"save_dir should be relative, got: {normalized}"
 
     return normalized
 
@@ -84,8 +84,8 @@ def normalize_save_dir(save_dir: Path | str) -> str:
 # Type aliases for provision result
 ProvisionError: TypeAlias = Literal["create_failed", "ssh_timeout"]
 ProvisionResult: TypeAlias = (
-    tuple[Literal[True], ClientGPUInstance, str, None] |
-    tuple[Literal[False], None, None, ProvisionError]
+    tuple[Literal[True], ClientGPUInstance, str, None]
+    | tuple[Literal[False], None, None, ProvisionError]
 )
 
 
@@ -98,7 +98,7 @@ def load_config_from_file(config_path: str) -> Config:
     Returns:
         Config object
     """
-    assert config_path.endswith('.py'), f"Config must be .py file, got {config_path}"
+    assert config_path.endswith(".py"), f"Config must be .py file, got {config_path}"
 
     spec = importlib.util.spec_from_file_location("exp_config", config_path)
     assert spec is not None, f"Failed to load spec from {config_path}"
@@ -107,7 +107,7 @@ def load_config_from_file(config_path: str) -> Config:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    assert hasattr(module, 'config'), "Config file must define 'config' variable"
+    assert hasattr(module, "config"), "Config file must define 'config' variable"
     config: Config = module.config
     assert isinstance(config, Config), f"Expected Config object, got {type(config)}"
 
@@ -132,17 +132,19 @@ def estimate_vram_if_needed(config: Config) -> int:
         model_name=config.model.name,
         safety_factor=config.deployment.safety_factor,
         sequence_length=config.dataset.sequence_length,
-        batch_size=config.analysis.batch_size
+        batch_size=config.analysis.batch_size,
     )
 
-    min_vram = vram_estimate['recommended_vram']
-    effective_params = vram_estimate.get('effective_params_billions', 0.0)
+    min_vram = vram_estimate["recommended_vram"]
+    effective_params = vram_estimate.get("effective_params_billions", 0.0)
     logger.info(f"📊 Estimated VRAM: {min_vram}GB (effective params: {effective_params:.1f}B)")
 
     # Cap at 80GB (max A100 size) for multi-GPU configs
     # Broker will find gpu_count GPUs each with ≤80GB, totaling enough VRAM
     if config.deployment.gpu_count > 1 and min_vram > 80:
-        logger.info(f"📊 Capping per-GPU VRAM at 80GB for {config.deployment.gpu_count}x GPU config (total: {min_vram}GB)")
+        logger.info(
+            f"📊 Capping per-GPU VRAM at 80GB for {config.deployment.gpu_count}x GPU config (total: {min_vram}GB)"
+        )
         min_vram = 80
 
     return min_vram
@@ -163,8 +165,10 @@ def provision_gpu(config: Config, min_vram: int) -> ProvisionResult:
     if config.deployment.volume_disk > 0:
         disk_desc += f" + {config.deployment.volume_disk}GB volume"
 
-    logger.info(f"📡 Creating {gpu_desc} instance (min {min_vram}GB VRAM per GPU, "
-                f"{config.deployment.min_cpu_ram}GB CPU RAM, max ${config.deployment.max_price}/hr, {disk_desc})...")
+    logger.info(
+        f"📡 Creating {gpu_desc} instance (min {min_vram}GB VRAM per GPU, "
+        f"{config.deployment.min_cpu_ram}GB CPU RAM, max ${config.deployment.max_price}/hr, {disk_desc})..."
+    )
 
     # Load RunPod credentials from environment
     # NOTE: This deployment script is configured for RunPod only
@@ -181,10 +185,10 @@ def provision_gpu(config: Config, min_vram: int) -> ProvisionResult:
 
     # Build query for GPU
     query = (
-        (gpu_client.vram_gb >= min_vram) &
-        (gpu_client.memory_gb >= config.deployment.min_cpu_ram) &
-        (gpu_client.price_per_hour <= config.deployment.max_price) &
-        (gpu_client.manufacturer == 'Nvidia')
+        (gpu_client.vram_gb >= min_vram)
+        & (gpu_client.memory_gb >= config.deployment.min_cpu_ram)
+        & (gpu_client.price_per_hour <= config.deployment.max_price)
+        & (gpu_client.manufacturer == "Nvidia")
     )
 
     # Add GPU type filter if specified
@@ -200,7 +204,7 @@ def provision_gpu(config: Config, min_vram: int) -> ProvisionResult:
         sort=lambda x: x.price_per_hour,
         reverse=False,
         container_disk_gb=config.deployment.container_disk,
-        volume_disk_gb=config.deployment.volume_disk if config.deployment.volume_disk > 0 else None
+        volume_disk_gb=config.deployment.volume_disk if config.deployment.volume_disk > 0 else None,
     )
 
     if not gpu_instance:
@@ -222,7 +226,7 @@ def provision_gpu(config: Config, min_vram: int) -> ProvisionResult:
     return (True, gpu_instance, ssh_key_path, None)
 
 
-def deploy_code(ssh_connection: str, ssh_key_path: str, config: Config) -> 'BifrostClient':
+def deploy_code(ssh_connection: str, ssh_key_path: str, config: Config) -> "BifrostClient":
     """Deploy code to remote instance via bifrost.
 
     Args:
@@ -242,12 +246,12 @@ def deploy_code(ssh_connection: str, ssh_key_path: str, config: Config) -> 'Bifr
 
     # Configure HuggingFace cache if using volume disk
     if config.deployment.volume_disk > 0:
-        hf_cache_cmd = '''
+        hf_cache_cmd = """
 mkdir -p /workspace/hf_cache 2>/dev/null || mkdir -p ~/.cache/huggingface
 export HF_HOME=/workspace/hf_cache 2>/dev/null || export HF_HOME=~/.cache/huggingface
 export HUGGINGFACE_HUB_CACHE=$HF_HOME
 export TRANSFORMERS_CACHE=$HF_HOME/transformers
-'''
+"""
         bifrost_client.exec(hf_cache_cmd)
         logger.info("✅ HuggingFace cache configured for volume disk")
 
@@ -289,7 +293,9 @@ export TRANSFORMERS_CACHE=$HF_HOME/transformers && \\
 
     # Build main command
     # Note: We'll copy the config file to remote, then run with that path
-    remote_config_path = f"~/.bifrost/workspace/dev/outlier-features/configs/{Path(config_path).name}"
+    remote_config_path = (
+        f"~/.bifrost/workspace/dev/outlier-features/configs/{Path(config_path).name}"
+    )
 
     cmd = f"""cd ~/.bifrost/workspace/dev/outlier-features && \\
 exec > {log_file} 2>&1 && \\
@@ -302,7 +308,9 @@ exec > {log_file} 2>&1 && \\
     return cmd
 
 
-def start_analysis(bifrost_client: 'BifrostClient', config: Config, config_path: str, mode: str = "outliers"):
+def start_analysis(
+    bifrost_client: "BifrostClient", config: Config, config_path: str, mode: str = "outliers"
+):
     """Start analysis in tmux session on remote.
 
     Args:
@@ -333,11 +341,15 @@ def start_analysis(bifrost_client: 'BifrostClient', config: Config, config_path:
 
     log_file = "perplexity_computation.log" if mode == "perplexity" else "outlier_analysis.log"
     logger.info(f"✅ {mode_label.capitalize()} started - will take 10-30 minutes")
-    logger.info(f"📊 Monitor: bifrost exec '{bifrost_client.ssh}' "
-                f"'cd ~/.bifrost/workspace/dev/outlier-features && tail -20 {log_file}'")
+    logger.info(
+        f"📊 Monitor: bifrost exec '{bifrost_client.ssh}' "
+        f"'cd ~/.bifrost/workspace/dev/outlier-features && tail -20 {log_file}'"
+    )
 
 
-def wait_for_analysis_completion(bifrost_client: 'BifrostClient', config: Config, timeout: int = 2700) -> bool:
+def wait_for_analysis_completion(
+    bifrost_client: "BifrostClient", config: Config, timeout: int = 2700
+) -> bool:
     """Poll for analysis completion with explicit timeout.
 
     Args:
@@ -362,7 +374,9 @@ def wait_for_analysis_completion(bifrost_client: 'BifrostClient', config: Config
     max_iterations = timeout // poll_interval
     assert max_iterations > 0, f"Timeout {timeout}s too short for poll interval {poll_interval}s"
 
-    logger.info(f"⏳ Waiting for analysis completion (timeout: {timeout}s, polling every {poll_interval}s)...")
+    logger.info(
+        f"⏳ Waiting for analysis completion (timeout: {timeout}s, polling every {poll_interval}s)..."
+    )
 
     for i in range(max_iterations):
         # Check for completion markers AND final results file with debug info
@@ -388,19 +402,19 @@ echo 'RUNNING'
         result = bifrost_client.exec(check_cmd)
 
         # Extract status (last line of output)
-        output_lines = result.stdout.strip().split('\n') if result.stdout else []
-        status = output_lines[-1] if output_lines else 'UNKNOWN'
+        output_lines = result.stdout.strip().split("\n") if result.stdout else []
+        status = output_lines[-1] if output_lines else "UNKNOWN"
 
         # Log debug info every 5 polls (or first poll)
         if i == 0 or (i + 1) % 5 == 0:
             logger.debug("Poll debug output:\n" + result.stdout if result.stdout else "No output")
 
-        if status == 'COMPLETE':
+        if status == "COMPLETE":
             logger.info("✅ Analysis completed successfully")
             # Show final debug info
             logger.info("Final state:\n" + result.stdout if result.stdout else "")
             return True
-        elif status == 'FAILED':
+        elif status == "FAILED":
             logger.error("❌ Analysis failed (marker file found)")
             logger.error("Failure state:\n" + result.stdout if result.stdout else "")
             return False
@@ -414,7 +428,9 @@ echo 'RUNNING'
     return False
 
 
-def sync_results(bifrost_client: 'BifrostClient', config: Config, output_dir: Path, mode: str = "outliers"):
+def sync_results(
+    bifrost_client: "BifrostClient", config: Config, output_dir: Path, mode: str = "outliers"
+):
     """Sync analysis results from remote GPU to local directory.
 
     IMPORTANT: Syncs from config.output.save_dir (NOT hardcoded 'results/').
@@ -461,8 +477,7 @@ def sync_results(bifrost_client: 'BifrostClient', config: Config, output_dir: Pa
     log_path = output_dir / log_filename
     try:
         result = bifrost_client.download_files(
-            remote_path=remote_log_path,
-            local_path=str(log_path)
+            remote_path=remote_log_path, local_path=str(log_path)
         )
         if result and result.success and result.files_copied > 0:
             logger.info(f"✅ Synced: {log_filename}")
@@ -482,8 +497,7 @@ def sync_results(bifrost_client: 'BifrostClient', config: Config, output_dir: Pa
     final_results_local = output_dir / results_filename
 
     result = bifrost_client.download_files(
-        remote_path=final_results_remote,
-        local_path=str(final_results_local)
+        remote_path=final_results_remote, local_path=str(final_results_local)
     )
 
     if not (result and result.success and result.files_copied > 0):
@@ -500,8 +514,7 @@ def sync_results(bifrost_client: 'BifrostClient', config: Config, output_dir: Pa
     config_remote = f"{remote_results_path}/config.json"
     try:
         result = bifrost_client.download_files(
-            remote_path=config_remote,
-            local_path=str(output_dir / "config.json")
+            remote_path=config_remote, local_path=str(output_dir / "config.json")
         )
         if result and result.success and result.files_copied > 0:
             logger.info("✅ Synced: config.json")
@@ -523,9 +536,7 @@ def cleanup_instance(instance_id: str):
 
     try:
         result = subprocess.run(
-            ["broker", "terminate", instance_id, "--yes"],
-            text=True,
-            capture_output=True
+            ["broker", "terminate", instance_id, "--yes"], text=True, capture_output=True
         )
 
         if result.returncode == 0:
@@ -543,12 +554,19 @@ def main():
     """Main deployment orchestrator."""
     # Parse args
     import argparse
+
     parser = argparse.ArgumentParser(description="Automated Outlier Analysis with GPU Deployment")
     parser.add_argument("config", help="Path to config file (e.g., configs/02_olmoe_baseline.py)")
-    parser.add_argument("--keep-running", action="store_true",
-                        help="Keep GPU instance running after analysis")
-    parser.add_argument("--mode", type=str, default="outliers", choices=["outliers", "perplexity"],
-                        help="Analysis mode: 'outliers' (default) or 'perplexity'")
+    parser.add_argument(
+        "--keep-running", action="store_true", help="Keep GPU instance running after analysis"
+    )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default="outliers",
+        choices=["outliers", "perplexity"],
+        help="Analysis mode: 'outliers' (default) or 'perplexity'",
+    )
     args = parser.parse_args()
 
     # Load config
@@ -560,7 +578,7 @@ def main():
 
     # Create timestamped experiment name
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    model_safe_name = config.model.name.replace('/', '_').replace('-', '_')
+    model_safe_name = config.model.name.replace("/", "_").replace("-", "_")
     if config.output.experiment_name:
         experiment_name = f"{config.output.experiment_name}_{timestamp}"
     else:
@@ -568,14 +586,12 @@ def main():
 
     # Setup logging
     setup_logging(
-        level=config.output.log_level,
-        logger_levels={
-            "httpx": "WARNING",
-            "urllib3": "WARNING"
-        }
+        level=config.output.log_level, logger_levels={"httpx": "WARNING", "urllib3": "WARNING"}
     )
 
-    mode_label = "Perplexity Computation" if args.mode == "perplexity" else "Outlier Features Analysis"
+    mode_label = (
+        "Perplexity Computation" if args.mode == "perplexity" else "Outlier Features Analysis"
+    )
     logger.info(f"🎯 {mode_label} - Automated Deployment")
     logger.info(f"📅 Experiment: {experiment_name}")
     logger.info(f"🤖 Model: {config.model.name}")
@@ -602,7 +618,9 @@ def main():
 
         # Step 5: Wait for completion
         logger.info("\n⏳ Waiting for completion...")
-        success = wait_for_analysis_completion(bifrost_client, config, timeout=config.deployment.analysis_timeout)
+        success = wait_for_analysis_completion(
+            bifrost_client, config, timeout=config.deployment.analysis_timeout
+        )
 
         # Step 6: Sync results
         logger.info("\n💾 Syncing results to local...")
@@ -624,10 +642,11 @@ def main():
     except Exception as e:
         logger.error(f"✗ Deployment failed: {e}")
         import traceback
+
         traceback.print_exc()
 
         # Cleanup GPU instance even on failure (unless explicitly kept)
-        if 'gpu_instance' in locals() and gpu_instance and not config.deployment.keep_running:
+        if "gpu_instance" in locals() and gpu_instance and not config.deployment.keep_running:
             logger.info("\n🧹 Cleaning up GPU instance after failure...")
             try:
                 cleanup_instance(gpu_instance.id)

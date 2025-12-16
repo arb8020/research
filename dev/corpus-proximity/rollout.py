@@ -19,15 +19,18 @@ import dacite
 @dataclass(frozen=True)
 class Message:
     """A single message in a conversation (user, assistant, system)."""
+
     role: str
     content: str
 
 
 # ────────────────────────────── Completion Types ──────────────────────────────
 
+
 @dataclass(frozen=True)
 class Usage:
     """Token usage information from API response."""
+
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
@@ -37,6 +40,7 @@ class Usage:
 @dataclass(frozen=True)
 class Logprob:
     """Single token logprob information."""
+
     token: str
     logprob: float
     bytes: list[int]
@@ -46,12 +50,14 @@ class Logprob:
 @dataclass(frozen=True)
 class Logprobs:
     """Collection of logprobs for a completion."""
+
     content: list[Logprob] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class Choice:
     """A single completion choice from the API."""
+
     index: int
     message: Message
     finish_reason: str
@@ -62,6 +68,7 @@ class Choice:
 @dataclass(frozen=True)
 class ChatCompletion:
     """A complete API response from the model."""
+
     id: str
     object: str
     created: int
@@ -74,9 +81,11 @@ class ChatCompletion:
 
 # ────────────────────────────── Main Rollout Type ──────────────────────────────
 
+
 @dataclass
 class Rollout:
     """Batch of inference interactions: messages (input), completions (output), metadata."""
+
     messages: list[Message] = field(default_factory=list)
     completions: list[ChatCompletion] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -118,7 +127,7 @@ class Rollout:
     @staticmethod
     def load_jsonl_streaming(filepath: str | Path) -> Iterator["Rollout"]:
         """Stream rollouts from JSONL file (memory-efficient for large files)."""
-        with open(filepath, encoding='utf-8') as f:
+        with open(filepath, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line:
@@ -145,11 +154,13 @@ class Rollout:
     def hash(self) -> str:
         """Generate a unique hash for this rollout."""
         import hashlib
+
         rollout_str = json.dumps(asdict(self), sort_keys=True)
         return hashlib.sha256(rollout_str.encode()).hexdigest()[:16]
 
 
 # ────────────────────── Sample Protocol ──────────────────────
+
 
 @runtime_checkable
 class Sample(Protocol):
@@ -162,9 +173,11 @@ class Sample(Protocol):
 
 # ────────────────────── Dataset Sample Implementations ──────────────────────
 
+
 @dataclass
 class GSM8KSample:
     """GSM8K dataset sample."""
+
     question: str
     answer: str
     sample_id: str = ""
@@ -178,29 +191,25 @@ class GSM8KSample:
         """Convert to Rollout with user message and metadata."""
         return Rollout(
             messages=[Message(role="user", content=self.question)],
-            metadata={
-                "dataset": "gsm8k",
-                "ground_truth": self.answer,
-                "sample_id": self.sample_id
-            }
+            metadata={"dataset": "gsm8k", "ground_truth": self.answer, "sample_id": self.sample_id},
         )
 
     @staticmethod
     def from_hf_dict(item: dict, idx: int = 0) -> "GSM8KSample":
         """Create from HuggingFace dict (works for both loaded and streaming)."""
-        answer = item["answer"].split("####")[-1].strip() if "####" in item["answer"] else item["answer"]
-        return GSM8KSample(
-            question=item["question"],
-            answer=answer,
-            sample_id=f"gsm8k_{idx:04d}"
+        answer = (
+            item["answer"].split("####")[-1].strip() if "####" in item["answer"] else item["answer"]
         )
+        return GSM8KSample(question=item["question"], answer=answer, sample_id=f"gsm8k_{idx:04d}")
 
 
 # ────────────────────── Endpoint & Inference ──────────────────────
 
+
 @dataclass(frozen=True)
 class Endpoint:
     """OpenAI/vLLM API endpoint configuration."""
+
     model: str
     api_base: str = "https://api.openai.com/v1"
     api_key: str = ""
@@ -209,9 +218,7 @@ class Endpoint:
 
 
 async def generate(
-    endpoint: Endpoint,
-    rollout: Rollout,
-    on_chunk: Callable[[str], Awaitable[None]] | None = None
+    endpoint: Endpoint, rollout: Rollout, on_chunk: Callable[[str], Awaitable[None]] | None = None
 ) -> Rollout:
     """Generate completion and return updated rollout.
 
@@ -240,7 +247,7 @@ async def generate(
             messages=messages,
             temperature=endpoint.temperature,
             max_tokens=endpoint.max_tokens,
-            stream=True
+            stream=True,
         )
 
         accumulated_content = ""
@@ -269,11 +276,13 @@ async def generate(
             created=created or 0,
             model=endpoint.model,
             usage=Usage(0, 0, 0),  # Stream doesn't provide usage
-            choices=[Choice(
-                index=0,
-                message=Message(role="assistant", content=accumulated_content),
-                finish_reason=finish_reason or "stop"
-            )]
+            choices=[
+                Choice(
+                    index=0,
+                    message=Message(role="assistant", content=accumulated_content),
+                    finish_reason=finish_reason or "stop",
+                )
+            ],
         )
     else:
         # Non-streaming mode: get full response
@@ -282,7 +291,7 @@ async def generate(
             messages=messages,
             temperature=endpoint.temperature,
             max_tokens=endpoint.max_tokens,
-            stream=False
+            stream=False,
         )
 
         # Parse response into our ChatCompletion format
@@ -294,24 +303,28 @@ async def generate(
             usage=Usage(
                 prompt_tokens=response.usage.prompt_tokens,
                 completion_tokens=response.usage.completion_tokens,
-                total_tokens=response.usage.total_tokens
+                total_tokens=response.usage.total_tokens,
             ),
-            choices=[Choice(
-                index=choice.index,
-                message=Message(role=choice.message.role, content=choice.message.content or ""),
-                finish_reason=choice.finish_reason
-            ) for choice in response.choices]
+            choices=[
+                Choice(
+                    index=choice.index,
+                    message=Message(role=choice.message.role, content=choice.message.content or ""),
+                    finish_reason=choice.finish_reason,
+                )
+                for choice in response.choices
+            ],
         )
 
     # Return updated rollout
     return Rollout(
         messages=rollout.messages + [completion.choices[0].message],
         completions=rollout.completions + [completion],
-        metadata=rollout.metadata
+        metadata=rollout.metadata,
     )
 
 
 # ────────────────────── CLI ──────────────────────
+
 
 async def main():
     """CLI for querying OpenAI/vLLM endpoints."""
@@ -333,10 +346,7 @@ async def main():
 
     # Setup logging
     log_level = logging.INFO if args.verbose else logging.WARNING
-    logging.basicConfig(
-        level=log_level,
-        format='%(levelname)s - %(message)s'
-    )
+    logging.basicConfig(level=log_level, format="%(levelname)s - %(message)s")
     logger = logging.getLogger(__name__)
 
     # Get API key
@@ -353,7 +363,7 @@ async def main():
         api_base=args.api_base,
         api_key=api_key,
         temperature=args.temperature,
-        max_tokens=args.max_tokens
+        max_tokens=args.max_tokens,
     )
 
     # Create initial rollout with messages
@@ -388,7 +398,9 @@ async def main():
         # Show token usage
         if updated_rollout.completions:
             usage = updated_rollout.completions[-1].usage
-            logger.info(f"\nTokens - Prompt: {usage.prompt_tokens}, Completion: {usage.completion_tokens}, Total: {usage.total_tokens}")
+            logger.info(
+                f"\nTokens - Prompt: {usage.prompt_tokens}, Completion: {usage.completion_tokens}, Total: {usage.total_tokens}"
+            )
 
         return 0
 
@@ -396,6 +408,7 @@ async def main():
         logger.error(f"Error: {e}")
         if args.verbose:
             import traceback
+
             traceback.print_exc()
         return 1
 
@@ -403,4 +416,5 @@ async def main():
 if __name__ == "__main__":
     import asyncio
     import sys
+
     sys.exit(asyncio.run(main()))

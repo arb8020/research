@@ -41,7 +41,7 @@ def download_shard(shard_id: int, data_dir: Path, max_retries: int = 5) -> bool:
             response.raise_for_status()
 
             # Write to temp file in chunks
-            with open(temp_filepath, 'wb') as f:
+            with open(temp_filepath, "wb") as f:
                 for chunk in response.iter_content(chunk_size=1024 * 1024):  # 1MB chunks
                     if chunk:
                         f.write(chunk)
@@ -55,7 +55,7 @@ def download_shard(shard_id: int, data_dir: Path, max_retries: int = 5) -> bool:
         except (OSError, requests.RequestException) as e:
             logger.warning(f"Download failed for shard {shard_id}: {e}")
             if attempt < max_retries - 1:
-                wait_time = 2 ** attempt  # Exponential backoff
+                wait_time = 2**attempt  # Exponential backoff
                 logger.info(f"Retrying in {wait_time} seconds...")
                 time.sleep(wait_time)
             else:
@@ -91,18 +91,14 @@ def process_shard(shard_id: int, data_dir: Path) -> list[dict[str, str]]:
 
         # Iterate through rows
         for row_idx in range(len(table)):
-            text = table['text'][row_idx].as_py()
+            text = table["text"][row_idx].as_py()
 
             # Split into paragraphs (split on double newline)
-            paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
+            paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
 
             # Create chunks
             for para in paragraphs:
-                chunks.append({
-                    'shard_id': shard_id,
-                    'chunk_id': chunk_id,
-                    'text': para
-                })
+                chunks.append({"shard_id": shard_id, "chunk_id": chunk_id, "text": para})
                 chunk_id += 1
 
         logger.info(f"Processed shard {shard_id}: {len(chunks)} chunks")
@@ -117,9 +113,9 @@ def save_chunks(chunks: list[dict[str, str]], output_path: Path):
     """Save chunks to JSONL file."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(output_path, 'w') as f:
+    with open(output_path, "w") as f:
         for chunk in chunks:
-            f.write(json.dumps(chunk) + '\n')
+            f.write(json.dumps(chunk) + "\n")
 
     logger.info(f"Saved {len(chunks)} chunks to {output_path}")
 
@@ -158,13 +154,10 @@ def main():
     import sys
 
     # Setup logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s'
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
     # Load config
-    if len(sys.argv) > 1 and sys.argv[1].endswith('.py'):
+    if len(sys.argv) > 1 and sys.argv[1].endswith(".py"):
         # Load config from experiment file
         spec = importlib.util.spec_from_file_location("exp_config", sys.argv[1])
         if spec is None:
@@ -214,4 +207,5 @@ def main():
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(main())

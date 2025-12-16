@@ -10,7 +10,7 @@ from config import Config
 from search import load_training_corpus, search
 from sentence_transformers import SentenceTransformer
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -23,23 +23,32 @@ def test_known_sentence(corpus, model, chunks_path: Path):
     with open(chunks_path) as f:
         chunks = [json.loads(line) for line in f]
 
-    valid_chunks = [c for c in chunks if len(c['text']) > 50]
+    valid_chunks = [c for c in chunks if len(c["text"]) > 50]
     test_chunk = random.choice(valid_chunks)
 
     logger.info(f"Query: shard={test_chunk['shard_id']}, chunk={test_chunk['chunk_id']}")
     logger.info(f"{test_chunk['text'][:150]}...\n")
 
-    results = search(test_chunk['text'], [corpus], model, top_k=5)
+    results = search(test_chunk["text"], [corpus], model, top_k=5)
 
     for i, result in enumerate(results, 1):
-        match = "✓" if result.shard_id == test_chunk['shard_id'] and result.chunk_id == test_chunk['chunk_id'] else ""
-        logger.info(f"{i}. dist={result.distance:.6f} {match} shard={result.shard_id} chunk={result.chunk_id} stage={result.stage}")
+        match = (
+            "✓"
+            if result.shard_id == test_chunk["shard_id"]
+            and result.chunk_id == test_chunk["chunk_id"]
+            else ""
+        )
+        logger.info(
+            f"{i}. dist={result.distance:.6f} {match} shard={result.shard_id} chunk={result.chunk_id} stage={result.stage}"
+        )
         logger.info(f"   {result.text[:80]}...")
 
     top = results[0]
-    is_match = top.shard_id == test_chunk['shard_id'] and top.chunk_id == test_chunk['chunk_id']
+    is_match = top.shard_id == test_chunk["shard_id"] and top.chunk_id == test_chunk["chunk_id"]
 
-    logger.info(f"\n{'✅ PASS' if is_match else '❌ FAIL'}: Top result {'is' if is_match else 'is NOT'} exact match (dist={top.distance:.6f})")
+    logger.info(
+        f"\n{'✅ PASS' if is_match else '❌ FAIL'}: Top result {'is' if is_match else 'is NOT'} exact match (dist={top.distance:.6f})"
+    )
     return is_match
 
 
@@ -55,7 +64,9 @@ def test_unknown_sentence(corpus, model):
     results = search(query, [corpus], model, top_k=5)
 
     for i, result in enumerate(results, 1):
-        logger.info(f"{i}. dist={result.distance:.6f} shard={result.shard_id} chunk={result.chunk_id} stage={result.stage}")
+        logger.info(
+            f"{i}. dist={result.distance:.6f} shard={result.shard_id} chunk={result.chunk_id} stage={result.stage}"
+        )
         logger.info(f"   {result.text[:80]}...")
 
     top_dist = results[0].distance
@@ -69,7 +80,7 @@ def main():
     import importlib.util
     import sys
 
-    if len(sys.argv) > 1 and sys.argv[1].endswith('.py'):
+    if len(sys.argv) > 1 and sys.argv[1].endswith(".py"):
         spec = importlib.util.spec_from_file_location("exp_config", sys.argv[1])
         if spec is None:
             raise ImportError(f"Could not load spec from {sys.argv[1]}")
@@ -86,7 +97,7 @@ def main():
         embeddings_path=config.embedding.output_dir / "embeddings.npy",
         metadata_path=config.embedding.output_dir / "metadata.jsonl",
         chunks_path=config.data.processed_dir / config.data.output_file,
-        stage="pretrain"  # Default to pretrain for now
+        stage="pretrain",  # Default to pretrain for now
     )
 
     model = SentenceTransformer(config.embedding.model, device=config.embedding.device)
@@ -104,4 +115,5 @@ def main():
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(main())

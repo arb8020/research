@@ -31,10 +31,8 @@ config = Config(
         # Training: 2 GPUs with FSDP (minimal test)
         gpu_ranks=[1, 2],
         device_type="cuda",
-
         # Backend: FSDP for multi-GPU training
         train_backend="fsdp",
-
         # Distributed training parameters
         master_addr="localhost",
         master_port=29500,
@@ -68,27 +66,22 @@ config = Config(
         num_iterations=100,  # Just 100 steps for debug
         batch_size=2,  # Per-GPU batch size
         target_examples_per_step=8,  # Total across 2 GPUs
-
         # Learning rates (SLIME defaults - fixed from nanochat which were 2000x too high!)
         # SLIME uses single LR for all parameters (no tiered LR scheme)
-        unembedding_lr=1e-5,   # 0.00001 (was 0.004 = 400x too high)
-        embedding_lr=1e-5,     # 0.00001 (was 0.2 = 20,000x too high!)
-        matrix_lr=1e-5,        # 0.00001 (was 0.02 = 2,000x too high!)
-        weight_decay=0.1,      # SLIME default (was 0.0 - missing regularization)
-        init_lr_frac=0.02,     # Legacy parameter (not used with warmup_ratio)
-
+        unembedding_lr=1e-5,  # 0.00001 (was 0.004 = 400x too high)
+        embedding_lr=1e-5,  # 0.00001 (was 0.2 = 20,000x too high!)
+        matrix_lr=1e-5,  # 0.00001 (was 0.02 = 2,000x too high!)
+        weight_decay=0.1,  # SLIME default (was 0.0 - missing regularization)
+        init_lr_frac=0.02,  # Legacy parameter (not used with warmup_ratio)
         # Optimizer parameters (already correct - SLIME standards)
         adam_beta1=0.9,
         adam_beta2=0.95,
         adam_eps=1e-8,
-
         # Gradient control (already correct)
         clip_grad=1.0,
-
         # Learning rate schedule (SLIME defaults)
-        warmup_ratio=0.1,      # 10% warmup (was 0.03 = 3x too low)
+        warmup_ratio=0.1,  # 10% warmup (was 0.03 = 3x too low)
         lr_decay_style="cosine",
-
         # Logging
         eval_every=25,
         eval_steps=10,

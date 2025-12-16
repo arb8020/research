@@ -22,6 +22,7 @@ DistanceFn = Callable[[np.ndarray, np.ndarray], float]
 @dataclass
 class SearchResult:
     """A single search result."""
+
     text: str
     distance: float
     shard_id: int
@@ -36,6 +37,7 @@ class TrainingCorpus:
     Following Casey Muratori: Data is transparent, not opaque.
     Following Tiger Style: Assert all invariants.
     """
+
     stage: Stage  # Type-safe: "pretrain", "midtrain", or "sft"
     embeddings: np.ndarray  # MUST be normalized, L2 norm = 1 (N, D)
     chunks: list[str]  # the actual text (N,)
@@ -45,37 +47,39 @@ class TrainingCorpus:
         # Tiger Style: Assert all invariants
 
         # Length invariants
-        assert len(self.embeddings) == len(self.chunks) == len(self.metadata), \
+        assert len(self.embeddings) == len(self.chunks) == len(self.metadata), (
             "embeddings, chunks, metadata must have same length"
+        )
 
         # Shape invariants
-        assert self.embeddings.ndim == 2, \
-            f"embeddings must be 2D, got {self.embeddings.ndim}D"
-        assert self.embeddings.shape[0] > 0, \
-            "corpus must have at least one chunk"
+        assert self.embeddings.ndim == 2, f"embeddings must be 2D, got {self.embeddings.ndim}D"
+        assert self.embeddings.shape[0] > 0, "corpus must have at least one chunk"
 
         # Stage validation (Literal enforces at type-check time, but assert at runtime too)
-        assert self.stage in ("pretrain", "midtrain", "sft"), \
+        assert self.stage in ("pretrain", "midtrain", "sft"), (
             f"stage must be pretrain/midtrain/sft, got '{self.stage}'"
+        )
 
         # Embeddings MUST be normalized (L2 norm = 1)
         norms = np.linalg.norm(self.embeddings, axis=1)
-        assert np.allclose(norms, 1.0, atol=1e-5), \
+        assert np.allclose(norms, 1.0, atol=1e-5), (
             f"embeddings must be normalized (L2 norm = 1), got norms in [{norms.min():.6f}, {norms.max():.6f}]"
+        )
 
         # Metadata structure validation
         for i, meta in enumerate(self.metadata):
-            assert "shard_id" in meta, \
-                f"metadata[{i}] missing 'shard_id' key"
-            assert "chunk_id" in meta, \
-                f"metadata[{i}] missing 'chunk_id' key"
-            assert isinstance(meta["shard_id"], int), \
+            assert "shard_id" in meta, f"metadata[{i}] missing 'shard_id' key"
+            assert "chunk_id" in meta, f"metadata[{i}] missing 'chunk_id' key"
+            assert isinstance(meta["shard_id"], int), (
                 f"metadata[{i}]['shard_id'] must be int, got {type(meta['shard_id'])}"
-            assert isinstance(meta["chunk_id"], int), \
+            )
+            assert isinstance(meta["chunk_id"], int), (
                 f"metadata[{i}]['chunk_id'] must be int, got {type(meta['chunk_id'])}"
+            )
 
 
 # Distance functions
+
 
 def cosine_distance(query_embedding: np.ndarray, corpus_embedding: np.ndarray) -> float:
     """Default distance: 1 - cosine_similarity.
@@ -96,6 +100,7 @@ def manhattan_distance(query_embedding: np.ndarray, corpus_embedding: np.ndarray
 
 
 # Loading functions
+
 
 def load_embeddings(path: Path) -> np.ndarray:
     """Load and normalize embeddings from .npy file.
@@ -127,7 +132,7 @@ def load_chunks(path: Path) -> list[str]:
     with open(path) as f:
         for line in f:
             chunk = json.loads(line)
-            chunks.append(chunk['text'])
+            chunks.append(chunk["text"])
 
     return chunks
 
@@ -150,10 +155,7 @@ def load_metadata(path: Path) -> list[dict]:
 
 
 def load_training_corpus(
-    embeddings_path: Path,
-    metadata_path: Path,
-    chunks_path: Path,
-    stage: Stage
+    embeddings_path: Path, metadata_path: Path, chunks_path: Path, stage: Stage
 ) -> TrainingCorpus:
     """Load a training corpus from disk files.
 
@@ -183,15 +185,11 @@ def load_training_corpus(
     chunks = load_chunks(chunks_path)
     metadata = load_metadata(metadata_path)
 
-    return TrainingCorpus(
-        stage=stage,
-        embeddings=embeddings,
-        chunks=chunks,
-        metadata=metadata
-    )
+    return TrainingCorpus(stage=stage, embeddings=embeddings, chunks=chunks, metadata=metadata)
 
 
 # Pure functions
+
 
 def search(
     query: str,
@@ -199,7 +197,7 @@ def search(
     model: SentenceTransformer,
     top_k: int = 5,
     per_corpus: bool = False,
-    distance_fn: DistanceFn = cosine_distance
+    distance_fn: DistanceFn = cosine_distance,
 ) -> list[SearchResult]:
     """Search one or more training corpora.
 
@@ -267,13 +265,15 @@ def search(
         top_indices = np.argsort(distances)[:top_k]
 
         for idx in top_indices:
-            all_results.append(SearchResult(
-                text=corpus.chunks[idx],
-                distance=float(distances[idx]),
-                shard_id=corpus.metadata[idx]['shard_id'],
-                chunk_id=corpus.metadata[idx]['chunk_id'],
-                stage=corpus.stage
-            ))
+            all_results.append(
+                SearchResult(
+                    text=corpus.chunks[idx],
+                    distance=float(distances[idx]),
+                    shard_id=corpus.metadata[idx]["shard_id"],
+                    chunk_id=corpus.metadata[idx]["chunk_id"],
+                    stage=corpus.stage,
+                )
+            )
 
     # Sort by distance and return
     all_results.sort(key=lambda r: r.distance)
@@ -287,9 +287,7 @@ def search(
 
 
 def compare_distances(
-    query: str,
-    corpora: dict[str, TrainingCorpus],
-    model: SentenceTransformer
+    query: str, corpora: dict[str, TrainingCorpus], model: SentenceTransformer
 ) -> dict[str, float]:
     """Get minimum distance to each corpus (convenience function).
 
@@ -318,7 +316,7 @@ def compare_distances(
     distances = {}
     for stage, corpus in corpora.items():
         results = search(query, [corpus], model, top_k=1)
-        distances[stage] = results[0].distance if results else float('inf')
+        distances[stage] = results[0].distance if results else float("inf")
 
     return distances
 
@@ -328,13 +326,10 @@ def main():
     import sys
 
     # Setup logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s'
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
     # Load config
-    if len(sys.argv) > 1 and sys.argv[1].endswith('.py'):
+    if len(sys.argv) > 1 and sys.argv[1].endswith(".py"):
         # Load config from experiment file
         spec = importlib.util.spec_from_file_location("exp_config", sys.argv[1])
         if spec is None:
@@ -353,7 +348,7 @@ def main():
         embeddings_path=config.embedding.output_dir / "embeddings.npy",
         metadata_path=config.embedding.output_dir / "metadata.jsonl",
         chunks_path=config.data.processed_dir / config.data.output_file,
-        stage="pretrain"  # Default to pretrain for now
+        stage="pretrain",  # Default to pretrain for now
     )
 
     model = SentenceTransformer(config.embedding.model, device=config.embedding.device)
@@ -391,4 +386,5 @@ def main():
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(main())

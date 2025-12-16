@@ -164,7 +164,9 @@ def annotate_text(
     effective_k = min(k, num_chunks)
     assert effective_k > 0, "Corpus index must contain at least one chunk"
 
-    for phrase_idx, (phrase, phrase_emb) in enumerate(zip(phrases, phrase_embeddings)):
+    for phrase_idx, (phrase, phrase_emb) in enumerate(
+        zip(phrases, phrase_embeddings, strict=False)
+    ):
         distances = compute_distances(phrase_emb, corpus_index.embeddings)
         top_indices = np.argsort(distances)[:effective_k]
 

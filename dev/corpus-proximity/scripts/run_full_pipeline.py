@@ -8,7 +8,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent  # Go up from scripts/ to project root
 SUCCESS_MARKER = PROJECT_ROOT / ".pipeline_complete"
@@ -91,4 +90,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

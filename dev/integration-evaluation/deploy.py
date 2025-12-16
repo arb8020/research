@@ -18,9 +18,17 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 # Import bifrost for deployment
 from bifrost.client import BifrostClient
-from dotenv import load_dotenv
+
+# Import kerbal for dependency management and deployment patterns
+from kerbal import (
+    check_gpus_available,
+    setup_python_env,
+    start_tmux_session,
+)
 from kerbal.job_monitor import (
     LogStreamConfig,
     stream_log_until_complete,
@@ -29,13 +37,6 @@ from kerbal.job_monitor import (
 # Import shared logging
 from shared.logging_config import setup_logging
 
-# Import kerbal for dependency management and deployment patterns
-from kerbal import (
-    check_gpus_available,
-    setup_python_env,
-    start_tmux_session,
-)
-
 logger = logging.getLogger(__name__)
 
 # Remote workspace path constant
@@ -43,7 +44,7 @@ REMOTE_WORKSPACE_PATH = "~/.bifrost/workspace/dev/integration_evaluation"
 
 # GPU availability thresholds
 DEFAULT_MEMORY_THRESHOLD_MB = 1000  # Consider GPU busy if > 1GB used
-DEFAULT_UTIL_THRESHOLD_PCT = 5      # Consider GPU busy if > 5% utilized
+DEFAULT_UTIL_THRESHOLD_PCT = 5  # Consider GPU busy if > 5% utilized
 
 
 def load_config_from_file(config_path: str):
@@ -57,7 +58,7 @@ def load_config_from_file(config_path: str):
     """
     import importlib.util
 
-    assert config_path.endswith('.py'), f"Config must be .py file, got {config_path}"
+    assert config_path.endswith(".py"), f"Config must be .py file, got {config_path}"
     assert Path(config_path).exists(), f"Config file not found: {config_path}"
 
     spec = importlib.util.spec_from_file_location("eval_config", config_path)
@@ -67,7 +68,7 @@ def load_config_from_file(config_path: str):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    assert hasattr(module, 'config'), "Config file must define 'config' variable"
+    assert hasattr(module, "config"), "Config file must define 'config' variable"
     config = module.config
 
     return config
@@ -86,7 +87,7 @@ def check_remote_prerequisites(bifrost_client: BifrostClient) -> list[str]:
 
     # Check for tmux (terminal multiplexer)
     result = bifrost_client.exec("command -v tmux >/dev/null 2>&1 && echo 'OK' || echo 'MISSING'")
-    if result.stdout.strip() != 'OK':
+    if result.stdout.strip() != "OK":
         missing.append("tmux")
 
     return missing
@@ -104,7 +105,9 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
     logger.info("📦 Deploying code and bootstrapping environment...")
 
     # Deploy code with explicit workspace path for isolation
-    workspace_path = bifrost_client.push(workspace_path="~/.bifrost/workspaces/integration_evaluation")
+    workspace_path = bifrost_client.push(
+        workspace_path="~/.bifrost/workspaces/integration_evaluation"
+    )
 
     logger.info(f"✅ Code deployed to {workspace_path}")
 
@@ -126,10 +129,12 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
 
     # Verify the directory exists
     result = bifrost_client.exec(f"test -d {project_workspace} && echo 'EXISTS' || echo 'MISSING'")
-    if result.stdout.strip() != 'EXISTS':
+    if result.stdout.strip() != "EXISTS":
         logger.error(f"❌ Project directory not found: {project_workspace}")
         logger.info("Looking for integration-evaluation...")
-        result = bifrost_client.exec(f"find {workspace_path} -name 'integration-evaluation' -type d 2>/dev/null | head -5")
+        result = bifrost_client.exec(
+            f"find {workspace_path} -name 'integration-evaluation' -type d 2>/dev/null | head -5"
+        )
         logger.info(f"Found:\n{result.stdout}")
         raise RuntimeError(f"Project directory does not exist: {project_workspace}")
 
@@ -170,10 +175,7 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
 
     # Debug: Check the generated pyproject.toml
     logger.info("🔍 Checking generated pyproject.toml...")
-    result = bifrost_client.exec(
-        f"cd {project_workspace} && "
-        f"cat pyproject.toml 2>&1"
-    )
+    result = bifrost_client.exec(f"cd {project_workspace} && cat pyproject.toml 2>&1")
     logger.info(f"Generated pyproject.toml:\n{result.stdout}")
 
     # Debug: Check what's actually in the venv
@@ -215,7 +217,9 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
         )
 
         if install_result.exit_code != 0:
-            logger.error(f"❌ Failed to install backendbench (exit code {install_result.exit_code})")
+            logger.error(
+                f"❌ Failed to install backendbench (exit code {install_result.exit_code})"
+            )
             logger.error(f"Output: {install_result.stdout}")
             raise RuntimeError("Failed to install backendbench")
 
@@ -296,16 +300,16 @@ def deploy_code(bifrost_client: BifrostClient) -> str:
         f"cd {project_workspace} && "
         f"source .venv/bin/activate && "
         f"python -c 'import verifiers, backend_bench, BackendBench; "
-        f"print(f\"verifiers: {{verifiers.__file__}}\"); "
-        f"print(f\"backend_bench: {{backend_bench.__file__}}\"); "
-        f"print(f\"BackendBench: {{BackendBench.__file__}}\")' 2>&1"
+        f'print(f"verifiers: {{verifiers.__file__}}"); '
+        f'print(f"backend_bench: {{backend_bench.__file__}}"); '
+        f'print(f"BackendBench: {{BackendBench.__file__}}")\' 2>&1'
     )
     if result.exit_code != 0:
         logger.error("❌ Package verification failed!")
         logger.error(f"Output: {result.stdout}")
         raise RuntimeError("Required packages not importable after installation")
     logger.info("✅ All packages verified:")
-    for line in result.stdout.strip().split('\n'):
+    for line in result.stdout.strip().split("\n"):
         logger.info(f"   {line}")
 
     return workspace_path
@@ -356,7 +360,7 @@ def start_evaluation(
         logger.warning(f"⚠️  {api_key_var} not set - evaluation may fail")
 
     # Set CUDA_VISIBLE_DEVICES to requested GPUs
-    if hasattr(config, 'gpu_ranks') and config.gpu_ranks:
+    if hasattr(config, "gpu_ranks") and config.gpu_ranks:
         gpu_list = ",".join(str(r) for r in config.gpu_ranks)
         env_vars["CUDA_VISIBLE_DEVICES"] = gpu_list
         logger.info(f"🎮 Using GPUs: {gpu_list}")
@@ -368,7 +372,7 @@ def start_evaluation(
     full_cmd = f"source {venv_path} && {eval_cmd}"
 
     # Generate tmux session name from config
-    experiment_name = getattr(config, 'experiment_name', 'eval')
+    experiment_name = getattr(config, "experiment_name", "eval")
     tmux_session = f"eval_{experiment_name}"
     eval_log = f"{remote_result_dir}/evaluation.log"
 
@@ -421,9 +425,7 @@ def sync_results(
 
     # Download results (recursive since remote_result_dir is a directory)
     result = bifrost_client.download_files(
-        remote_path=f"{remote_result_dir}/",
-        local_path=str(local_output_dir),
-        recursive=True
+        remote_path=f"{remote_result_dir}/", local_path=str(local_output_dir), recursive=True
     )
 
     if result and result.success:
@@ -434,27 +436,14 @@ def sync_results(
 
 def main():
     """Main deployment orchestrator."""
-    parser = argparse.ArgumentParser(
-        description="Deploy evaluation to remote GPU instance"
-    )
-    parser.add_argument(
-        "config",
-        help="Path to config file (e.g., configs/prime_backend_bench.py)"
-    )
-    parser.add_argument(
-        "--ssh",
-        required=True,
-        help="SSH connection string (e.g., root@host:port)"
-    )
-    parser.add_argument(
-        "--ssh-key",
-        default="~/.ssh/id_ed25519",
-        help="Path to SSH private key"
-    )
+    parser = argparse.ArgumentParser(description="Deploy evaluation to remote GPU instance")
+    parser.add_argument("config", help="Path to config file (e.g., configs/prime_backend_bench.py)")
+    parser.add_argument("--ssh", required=True, help="SSH connection string (e.g., root@host:port)")
+    parser.add_argument("--ssh-key", default="~/.ssh/id_ed25519", help="Path to SSH private key")
     parser.add_argument(
         "--detached",
         action="store_true",
-        help="Start evaluation and exit immediately (don't wait for completion)"
+        help="Start evaluation and exit immediately (don't wait for completion)",
     )
     args = parser.parse_args()
 
@@ -463,6 +452,7 @@ def main():
 
     # Track deployment start time
     import time
+
     start_time = time.time()
 
     # Setup logging
@@ -472,7 +462,7 @@ def main():
             "httpx": "WARNING",
             "urllib3": "WARNING",
             "paramiko": "WARNING",
-        }
+        },
     )
 
     # Load config
@@ -480,7 +470,7 @@ def main():
 
     # Create timestamped result directory name
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    experiment_name = getattr(config, 'experiment_name', 'eval')
+    experiment_name = getattr(config, "experiment_name", "eval")
     result_dir_name = f"{experiment_name}_{timestamp}"
 
     logger.info("🎯 Integration Evaluation Deployment")
@@ -509,7 +499,7 @@ def main():
         logger.info("✅ All prerequisites present (tmux)")
 
         # Check GPU availability
-        gpu_ids = getattr(config, 'gpu_ranks', [0])
+        gpu_ids = getattr(config, "gpu_ranks", [0])
         if gpu_ids and config.backend_bench_gpu == "local":
             # First enumerate all physical GPUs on the node
             logger.info("🔍 Enumerating GPUs on remote...")
@@ -522,7 +512,7 @@ def main():
                 busy_gpu_ids = []
 
                 for line in result.stdout.strip().splitlines():
-                    parts = [p.strip() for p in line.split(',')]
+                    parts = [p.strip() for p in line.split(",")]
                     if len(parts) >= 3:
                         try:
                             gpu_id = int(parts[0])
@@ -531,7 +521,10 @@ def main():
                             all_gpu_ids.append(gpu_id)
 
                             # Check if free using same thresholds
-                            if mem_mb <= DEFAULT_MEMORY_THRESHOLD_MB and util <= DEFAULT_UTIL_THRESHOLD_PCT:
+                            if (
+                                mem_mb <= DEFAULT_MEMORY_THRESHOLD_MB
+                                and util <= DEFAULT_UTIL_THRESHOLD_PCT
+                            ):
                                 free_gpu_ids.append(gpu_id)
                             else:
                                 busy_gpu_ids.append(gpu_id)
@@ -601,8 +594,10 @@ def main():
             logger.info("🔍 Checking tmux pane for error details...")
 
             # First check if session still exists
-            check_result = bifrost_client.exec(f"tmux has-session -t {tmux_session} 2>&1 && echo 'EXISTS' || echo 'GONE'")
-            if 'GONE' in check_result.stdout:
+            check_result = bifrost_client.exec(
+                f"tmux has-session -t {tmux_session} 2>&1 && echo 'EXISTS' || echo 'GONE'"
+            )
+            if "GONE" in check_result.stdout:
                 logger.warning(f"⚠️  Tmux session '{tmux_session}' already exited")
                 logger.info("💡 The script failed before writing to the log. Common causes:")
                 logger.info("   • Import error (missing dependency)")
@@ -648,6 +643,7 @@ def main():
     except Exception as e:
         logger.error(f"✗ Deployment failed: {e}")
         import traceback
+
         traceback.print_exc()
         return 1
 

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Chunking strategies for splitting text into smaller pieces."""
 
-
 # Optional imports - will use if available, fallback to regex if not
 try:
     import spacy
+
     SPACY_AVAILABLE = True
     # Load model lazily (on first use)
     _spacy_nlp = None
@@ -14,17 +14,20 @@ except ImportError:
 
 try:
     import nltk
+
     NLTK_AVAILABLE = True
     # Download punkt tokenizer if not already available
     try:
-        nltk.data.find('tokenizers/punkt')
+        nltk.data.find("tokenizers/punkt")
     except LookupError:
-        nltk.download('punkt', quiet=True)
+        nltk.download("punkt", quiet=True)
 except ImportError:
     NLTK_AVAILABLE = False
 
 
-def chunk_text(text: str, strategy: str, chunk_size: int = 512, overlap_pct: float = 0.15, tokenizer=None) -> list[str]:
+def chunk_text(
+    text: str, strategy: str, chunk_size: int = 512, overlap_pct: float = 0.15, tokenizer=None
+) -> list[str]:
     """Split text into chunks based on strategy.
 
     Following Casey Muratori: Redundancy for convenience.
@@ -80,7 +83,7 @@ def chunk_paragraph(text: str) -> list[str]:
         # ["Para 1.", "Para 2.", "Para 3."]
     """
     # Split on double newline
-    paragraphs = text.split('\n\n')
+    paragraphs = text.split("\n\n")
 
     # Filter out empty/whitespace-only paragraphs
     chunks = [p.strip() for p in paragraphs if p.strip()]
@@ -137,7 +140,9 @@ def chunk_fixed_chars(text: str, size: int, overlap_pct: float = 0.15) -> list[s
     return chunks
 
 
-def chunk_fixed_tokens(text: str, tokenizer, max_tokens: int = 512, overlap_pct: float = 0.15) -> list[str]:
+def chunk_fixed_tokens(
+    text: str, tokenizer, max_tokens: int = 512, overlap_pct: float = 0.15
+) -> list[str]:
     """Split into fixed token-length chunks with overlap.
 
     Token-aware chunking ensures chunks don't exceed embedding model limits.
@@ -222,7 +227,9 @@ def chunk_sentence_spacy(text: str) -> list[str]:
         # ["Dr. Smith went home.", "He bought 3.14 kg of apples."]
     """
     if not SPACY_AVAILABLE:
-        raise ImportError("spaCy is not installed. Install with: pip install spacy && python -m spacy download en_core_web_sm")
+        raise ImportError(
+            "spaCy is not installed. Install with: pip install spacy && python -m spacy download en_core_web_sm"
+        )
 
     # Lazy load spaCy model
     global _spacy_nlp
@@ -280,10 +287,7 @@ def main():
     """Test all chunking strategies."""
     import logging
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(levelname)s - %(message)s'
-    )
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
 
     test_text = """This is the first paragraph. It has multiple sentences.
 
@@ -344,4 +348,5 @@ Third paragraph here. Mr. Johnson calculated that 3.14 is pi."""
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(main())

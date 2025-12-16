@@ -13,15 +13,15 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Literal, TypeAlias
 
-from broker.client import ClientGPUInstance
 from cluster_corpus import get_cache_key
 from config import Config
 from dotenv import load_dotenv
-from shared.config import get_prime_key, get_runpod_key
-from shared.logging_config import setup_logging
 
 from bifrost import BifrostClient
 from broker import CloudType, GPUClient, GPUInstance
+from broker.client import ClientGPUInstance
+from shared.config import get_prime_key, get_runpod_key
+from shared.logging_config import setup_logging
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REMOTE_WORKSPACE_PATH = "~/.bifrost/workspace/dev/corpus-proximity"
@@ -29,8 +29,7 @@ TMUX_SESSION = "corpus_proximity_pipeline"
 
 ProvisionError: TypeAlias = Literal["create_failed", "ready_timeout", "ssh_timeout"]
 ProvisionResult: TypeAlias = (
-    tuple[Literal[True], GPUInstance, None] |
-    tuple[Literal[False], None, ProvisionError]
+    tuple[Literal[True], GPUInstance, None] | tuple[Literal[False], None, ProvisionError]
 )
 
 
@@ -74,7 +73,9 @@ def get_credentials(provider_filter: str | None = None) -> dict[str, str]:
         credentials["primeintellect"] = prime_key
     if provider_filter:
         if provider_filter not in credentials:
-            raise ValueError(f"Provider '{provider_filter}' not found. Set {provider_filter.upper()}_API_KEY")
+            raise ValueError(
+                f"Provider '{provider_filter}' not found. Set {provider_filter.upper()}_API_KEY"
+            )
         return {provider_filter: credentials[provider_filter]}
     assert credentials, "No API keys found - set RUNPOD_API_KEY or PRIME_API_KEY"
     return credentials
@@ -90,7 +91,15 @@ def search_cheapest_gpus(gpu_client: GPUClient, max_offers: int = 5):
     return offers[:max_offers]
 
 
-def provision_instance(gpu_client: GPUClient, offers, instance_name: str, *, min_vram: int | None = None, min_cpu_ram: int | None = None, max_price: float | None = None) -> ProvisionResult:
+def provision_instance(
+    gpu_client: GPUClient,
+    offers,
+    instance_name: str,
+    *,
+    min_vram: int | None = None,
+    min_cpu_ram: int | None = None,
+    max_price: float | None = None,
+) -> ProvisionResult:
     filtered = []
     for offer in offers:
         if min_vram and offer.vram_gb < min_vram:
@@ -165,7 +174,9 @@ def start_remote_pipeline(bifrost_client: BifrostClient, config_arg: str) -> Non
         logging.warning("⚠️  OPENAI_API_KEY not found in local .env - cluster naming will fail")
 
     # Clean up previous runs
-    setup_cmd = f"cd {REMOTE_WORKSPACE_PATH} && rm -f .pipeline_complete .pipeline_failed pipeline.log"
+    setup_cmd = (
+        f"cd {REMOTE_WORKSPACE_PATH} && rm -f .pipeline_complete .pipeline_failed pipeline.log"
+    )
     bifrost_client.exec(setup_cmd)
 
     # Kill existing tmux session if any
@@ -262,7 +273,7 @@ fi
             for line in reversed(lines):
                 if "%" in line and "|" in line:
                     # Extract just the progress percentage and basic info
-                    match = re.search(r'(\d+)%\|.*?\s+(\d+)/(\d+)', line)
+                    match = re.search(r"(\d+)%\|.*?\s+(\d+)/(\d+)", line)
                     if match:
                         pct, current, total = match.groups()
                         detailed_progress = f" [{pct}% - {current}/{total}]"
@@ -272,22 +283,25 @@ fi
         if "clustering corpus" in current_step:
             detail_result = bifrost_client.exec(detailed_cmd)
             if detail_result.stdout:
-                detail_lines = [l.strip() for l in detail_result.stdout.strip().splitlines() if l.strip()]
+                detail_lines = [
+                    l.strip() for l in detail_result.stdout.strip().splitlines() if l.strip()
+                ]
                 if detail_lines:
                     # Extract useful info from recent log lines
                     for line in detail_lines:
                         if "depth" in line.lower():
                             # Extract depth and cluster count info
-                            depth_match = re.search(r'depth[=\s]+(\d+)', line, re.IGNORECASE)
+                            depth_match = re.search(r"depth[=\s]+(\d+)", line, re.IGNORECASE)
                             if depth_match:
                                 detailed_progress = f" [depth {depth_match.group(1)}]"
                         elif "clusters" in line.lower():
-                            cluster_match = re.search(r'(\d+)\s+clusters', line, re.IGNORECASE)
+                            cluster_match = re.search(r"(\d+)\s+clusters", line, re.IGNORECASE)
                             if cluster_match:
                                 detailed_progress += f" {cluster_match.group(1)} clusters"
 
-        logging.info("pipeline running: %s%s (%ss / %ss)",
-                    current_step, detailed_progress, elapsed, timeout)
+        logging.info(
+            "pipeline running: %s%s (%ss / %ss)", current_step, detailed_progress, elapsed, timeout
+        )
         time.sleep(poll_interval)
     logging.error("❌ Pipeline timed out after %ss", timeout)
     return False
@@ -308,7 +322,9 @@ def sync_results(bifrost_client: BifrostClient, config: Config, output_dir: Path
 
     for remote_path, local_path in targets:
         try:
-            result = bifrost_client.download_files(remote_path=remote_path, local_path=str(local_path))
+            result = bifrost_client.download_files(
+                remote_path=remote_path, local_path=str(local_path)
+            )
             if not (result and result.success and result.files_copied > 0):
                 logging.warning("⚠️  Failed to sync %s", remote_path)
             else:
@@ -332,7 +348,9 @@ def cleanup_instance(instance_id: str) -> None:
 
     logging.info("terminating gpu instance %s", instance_id)
     try:
-        result = subprocess.run(["broker", "terminate", instance_id, "--yes"], text=True, capture_output=True)
+        result = subprocess.run(
+            ["broker", "terminate", instance_id, "--yes"], text=True, capture_output=True
+        )
     except Exception as exc:
         logging.warning("⚠️  Cleanup error: %s", exc)
         logging.info("manual cleanup: broker terminate %s", instance_id)
@@ -344,7 +362,9 @@ def cleanup_instance(instance_id: str) -> None:
         logging.warning("⚠️  Cleanup may have failed: %s", result.stderr)
 
 
-def connect_existing_instance(identifier: str, provider: str | None, ssh_key_path: str) -> tuple[BifrostClient, ClientGPUInstance | None]:
+def connect_existing_instance(
+    identifier: str, provider: str | None, ssh_key_path: str
+) -> tuple[BifrostClient, ClientGPUInstance | None]:
     credentials = get_credentials(provider_filter=provider) if provider else get_credentials()
     gpu_client = GPUClient(credentials=credentials, ssh_key_path=ssh_key_path)
     instance = find_instance_by_name_or_id(gpu_client, identifier)
@@ -355,7 +375,9 @@ def connect_existing_instance(identifier: str, provider: str | None, ssh_key_pat
     return bifrost_client, instance
 
 
-def provision_new_instance(provider: str | None, instance_name: str, config: Config) -> tuple[BifrostClient, GPUInstance]:
+def provision_new_instance(
+    provider: str | None, instance_name: str, config: Config
+) -> tuple[BifrostClient, GPUInstance]:
     credentials = get_credentials(provider_filter=provider)
     ssh_key_path = os.getenv("SSH_KEY_PATH", "~/.ssh/id_ed25519")
     gpu_client = GPUClient(credentials=credentials, ssh_key_path=ssh_key_path)
@@ -370,17 +392,30 @@ def provision_new_instance(provider: str | None, instance_name: str, config: Con
     )
     if not success or not instance:
         raise RuntimeError(f"Provisioning failed: {error}")
-    bifrost_client = BifrostClient(ssh_connection=instance.ssh_connection_string(), ssh_key_path=ssh_key_path)
+    bifrost_client = BifrostClient(
+        ssh_connection=instance.ssh_connection_string(), ssh_key_path=ssh_key_path
+    )
     return bifrost_client, instance
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Deploy corpus-proximity to GPU")
-    parser.add_argument("--provider", type=str, choices=["runpod", "primeintellect"], help="GPU provider")
-    parser.add_argument("--use-existing", type=str, metavar="NAME_OR_SSH", help="Existing instance name or SSH")
+    parser.add_argument(
+        "--provider", type=str, choices=["runpod", "primeintellect"], help="GPU provider"
+    )
+    parser.add_argument(
+        "--use-existing", type=str, metavar="NAME_OR_SSH", help="Existing instance name or SSH"
+    )
     parser.add_argument("--name", type=str, help="Custom instance name")
-    parser.add_argument("--config", type=str, required=True, help="Path to config file relative to corpus-proximity directory")
-    parser.add_argument("--keep-running", action="store_true", help="Keep GPU running after completion")
+    parser.add_argument(
+        "--config",
+        type=str,
+        required=True,
+        help="Path to config file relative to corpus-proximity directory",
+    )
+    parser.add_argument(
+        "--keep-running", action="store_true", help="Keep GPU running after completion"
+    )
     args = parser.parse_args()
 
     setup_logging()
@@ -390,7 +425,9 @@ def main() -> int:
     if not os.getenv("OPENAI_API_KEY"):
         logging.warning("⚠️  OPENAI_API_KEY not found in environment")
         logging.warning("   Cluster naming will fail. Set it in .env file or export it.")
-        logging.warning("   Continuing anyway in case you only want to run clustering without naming...")
+        logging.warning(
+            "   Continuing anyway in case you only want to run clustering without naming..."
+        )
 
     try:
         config = load_config_from_file(args.config)
@@ -411,9 +448,13 @@ def main() -> int:
     try:
         if args.use_existing:
             if "@" in args.use_existing and ":" in args.use_existing:
-                bifrost_client = BifrostClient(ssh_connection=args.use_existing, ssh_key_path=ssh_key_path)
+                bifrost_client = BifrostClient(
+                    ssh_connection=args.use_existing, ssh_key_path=ssh_key_path
+                )
             else:
-                bifrost_client, instance = connect_existing_instance(args.use_existing, args.provider, ssh_key_path)
+                bifrost_client, instance = connect_existing_instance(
+                    args.use_existing, args.provider, ssh_key_path
+                )
         else:
             instance_name = args.name or "corpus-proximity-dev"
             bifrost_client, instance = provision_new_instance(args.provider, instance_name, config)

@@ -28,38 +28,40 @@ from config import GPT2Config
 def gpt2_extract_block_weights(layer_idx: int, weights: dict[str, Array]) -> dict[str, Array]:
     """helper function to extract weights for a GPT2 block at given layer index"""
     return {
-        'ln_1': {
-            'weight': weights[f"h.{layer_idx}.ln_1.weight"],
-            'bias': weights[f"h.{layer_idx}.ln_1.bias"]
+        "ln_1": {
+            "weight": weights[f"h.{layer_idx}.ln_1.weight"],
+            "bias": weights[f"h.{layer_idx}.ln_1.bias"],
         },
-        'attn': {
-            'c_attn': {
-                'weight': weights[f"h.{layer_idx}.attn.c_attn.weight"],
-                'bias': weights[f"h.{layer_idx}.attn.c_attn.bias"]
+        "attn": {
+            "c_attn": {
+                "weight": weights[f"h.{layer_idx}.attn.c_attn.weight"],
+                "bias": weights[f"h.{layer_idx}.attn.c_attn.bias"],
             },
-            'c_proj': {
-                'weight': weights[f"h.{layer_idx}.attn.c_proj.weight"],
-                'bias': weights[f"h.{layer_idx}.attn.c_proj.bias"]
-            }
-        },
-        'ln_2': {
-            'weight': weights[f"h.{layer_idx}.ln_2.weight"],
-            'bias': weights[f"h.{layer_idx}.ln_2.bias"]
-        },
-        'mlp': {
-            'c_fc': {
-                'weight': weights[f"h.{layer_idx}.mlp.c_fc.weight"],
-                'bias': weights[f"h.{layer_idx}.mlp.c_fc.bias"]
+            "c_proj": {
+                "weight": weights[f"h.{layer_idx}.attn.c_proj.weight"],
+                "bias": weights[f"h.{layer_idx}.attn.c_proj.bias"],
             },
-            'c_proj': {
-                'weight': weights[f"h.{layer_idx}.mlp.c_proj.weight"],
-                'bias': weights[f"h.{layer_idx}.mlp.c_proj.bias"]
-            }
-        }
+        },
+        "ln_2": {
+            "weight": weights[f"h.{layer_idx}.ln_2.weight"],
+            "bias": weights[f"h.{layer_idx}.ln_2.bias"],
+        },
+        "mlp": {
+            "c_fc": {
+                "weight": weights[f"h.{layer_idx}.mlp.c_fc.weight"],
+                "bias": weights[f"h.{layer_idx}.mlp.c_fc.bias"],
+            },
+            "c_proj": {
+                "weight": weights[f"h.{layer_idx}.mlp.c_proj.weight"],
+                "bias": weights[f"h.{layer_idx}.mlp.c_proj.bias"],
+            },
+        },
     }
 
 
-def transformer_block(x_BTD: Array, weights: dict[str, Array], layer_idx: int, config: GPT2Config) -> Array:
+def transformer_block(
+    x_BTD: Array, weights: dict[str, Array], layer_idx: int, config: GPT2Config
+) -> Array:
     """Single transformer block with attention and MLP."""
     assert layer_idx >= 0
     assert layer_idx < config.n_layers

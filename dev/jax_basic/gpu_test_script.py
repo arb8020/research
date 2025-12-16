@@ -15,6 +15,7 @@ def main():
     try:
         import jax
         import jax.numpy as jnp
+
         print("   ✅ JAX imported successfully")
     except ImportError as e:
         print(f"   ❌ Failed to import JAX: {e}")
@@ -29,7 +30,7 @@ def main():
 
     # Use JAX's type-based device query (cleaner than checking device_kind)
     try:
-        gpu_devices = jax.devices('gpu')
+        gpu_devices = jax.devices("gpu")
     except RuntimeError:
         gpu_devices = []
 
@@ -67,7 +68,7 @@ def main():
 
     # Check if default device is a GPU
     try:
-        gpu_devices = jax.devices('gpu')
+        gpu_devices = jax.devices("gpu")
         if default_device not in gpu_devices:
             print("   ❌ Computation did not run on GPU!")
             return False
@@ -85,5 +86,6 @@ def main():
 
 if __name__ == "__main__":
     import sys
+
     success = main()
     sys.exit(0 if success else 1)

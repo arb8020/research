@@ -105,8 +105,8 @@ def load_perplexity_result(perplexity_dir: Path) -> dict | None:
         data = json.load(f)
 
     return {
-        'model_name': data.get('model'),
-        'perplexity': data.get('perplexity'),
+        "model_name": data.get("model"),
+        "perplexity": data.get("perplexity"),
     }
 
 
@@ -116,15 +116,13 @@ def extract_outliers_from_json(file_path: Path) -> list[dict] | None:
         content = f.read(50_000_000)
 
     match = re.search(
-        r'"all_systematic_outliers":\s*\[(.*?)(?:\],\s*"batch_results")',
-        content,
-        re.DOTALL
+        r'"all_systematic_outliers":\s*\[(.*?)(?:\],\s*"batch_results")', content, re.DOTALL
     )
 
     if not match:
         return None
 
-    outliers_json = '[' + match.group(1) + ']'
+    outliers_json = "[" + match.group(1) + "]"
     outliers = json.loads(outliers_json)
     return outliers
 
@@ -133,18 +131,18 @@ def calculate_outlier_metrics(outliers: list[dict]) -> dict:
     """Calculate aggregate metrics from outliers list."""
     if not outliers:
         return {
-            'num_outliers': 0,
-            'mean_layer_pct': 0.0,
-            'mean_seq_pct': 0.0,
+            "num_outliers": 0,
+            "mean_layer_pct": 0.0,
+            "mean_seq_pct": 0.0,
         }
 
-    layer_pcts = [o['layer_percentage'] * 100 for o in outliers]
-    seq_pcts = [o['seq_percentage'] * 100 for o in outliers]
+    layer_pcts = [o["layer_percentage"] * 100 for o in outliers]
+    seq_pcts = [o["seq_percentage"] * 100 for o in outliers]
 
     return {
-        'num_outliers': len(outliers),
-        'mean_layer_pct': float(np.mean(layer_pcts)),
-        'mean_seq_pct': float(np.mean(seq_pcts)),
+        "num_outliers": len(outliers),
+        "mean_layer_pct": float(np.mean(layer_pcts)),
+        "mean_seq_pct": float(np.mean(seq_pcts)),
     }
 
 
@@ -154,7 +152,7 @@ def extract_model_name_from_result(result_dir: Path) -> str | None:
     if config_file.exists():
         with open(config_file) as f:
             config = json.load(f)
-            model_name = config.get('model', {}).get('name')
+            model_name = config.get("model", {}).get("name")
             if model_name:
                 return model_name
 
@@ -178,8 +176,8 @@ def load_all_results(results_dir: Path) -> list[dict]:
             if not result_dir.is_dir():
                 continue
             ppl_data = load_perplexity_result(result_dir)
-            if ppl_data and ppl_data['model_name']:
-                perplexity_map[ppl_data['model_name']] = ppl_data['perplexity']
+            if ppl_data and ppl_data["model_name"]:
+                perplexity_map[ppl_data["model_name"]] = ppl_data["perplexity"]
 
     # Now load outlier results and match with perplexity
     all_results = []
@@ -204,18 +202,20 @@ def load_all_results(results_dir: Path) -> list[dict]:
             metadata = MODEL_METADATA[model_name]
 
             result = {
-                'model_name': metadata['name'],
-                'full_model_name': model_name,
-                'total_params_b': metadata['total_params_b'],
-                'active_params_b': metadata['active_params_b'],
-                'perplexity': perplexity_map.get(model_name),
-                'is_dense': is_dense_model(model_name),
-                **outlier_metrics
+                "model_name": metadata["name"],
+                "full_model_name": model_name,
+                "total_params_b": metadata["total_params_b"],
+                "active_params_b": metadata["active_params_b"],
+                "perplexity": perplexity_map.get(model_name),
+                "is_dense": is_dense_model(model_name),
+                **outlier_metrics,
             }
 
             all_results.append(result)
-            print(f"✅ Loaded: {metadata['name']} - Dense={result['is_dense']}, "
-                  f"PPL={result['perplexity']}, Outliers={outlier_metrics['num_outliers']}")
+            print(
+                f"✅ Loaded: {metadata['name']} - Dense={result['is_dense']}, "
+                f"PPL={result['perplexity']}, Outliers={outlier_metrics['num_outliers']}"
+            )
 
     return all_results
 
@@ -228,43 +228,39 @@ def create_plot(
     title: str,
     xlabel: str,
     ylabel: str,
-    use_log_x: bool = False
+    use_log_x: bool = False,
 ):
     """Create a plot with 0-100% y-axis."""
     import matplotlib
     import matplotlib.pyplot as plt
-    matplotlib.use('Agg')
+
+    matplotlib.use("Agg")
 
     x_values = [r[x_key] for r in results]
     y_values = [r[y_key] for r in results]
-    labels = [r['model_name'] for r in results]
+    labels = [r["model_name"] for r in results]
 
     plt.figure(figsize=(10, 7))
-    plt.scatter(x_values, y_values, s=100, alpha=0.6, c='steelblue')
+    plt.scatter(x_values, y_values, s=100, alpha=0.6, c="steelblue")
 
-    for x, y, label in zip(x_values, y_values, labels):
+    for x, y, label in zip(x_values, y_values, labels, strict=False):
         plt.annotate(
-            label,
-            (x, y),
-            xytext=(5, 5),
-            textcoords='offset points',
-            fontsize=9,
-            alpha=0.8
+            label, (x, y), xytext=(5, 5), textcoords="offset points", fontsize=9, alpha=0.8
         )
 
     plt.xlabel(xlabel, fontsize=12)
     plt.ylabel(ylabel, fontsize=12)
-    plt.title(title, fontsize=14, fontweight='bold')
+    plt.title(title, fontsize=14, fontweight="bold")
     plt.grid(True, alpha=0.3)
 
     # Set y-axis to 0-100%
     plt.ylim(0, 100)
 
     if use_log_x:
-        plt.xscale('log')
+        plt.xscale("log")
 
     plt.tight_layout()
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     print(f"  📊 Saved: {output_path.name}")
 
@@ -274,36 +270,36 @@ def generate_all_plots(results: list[dict], output_dir: Path):
     output_dir.mkdir(exist_ok=True, parents=True)
 
     # Split into dense and MoE
-    dense_results = [r for r in results if r['is_dense']]
-    moe_results = [r for r in results if not r['is_dense']]
+    dense_results = [r for r in results if r["is_dense"]]
+    moe_results = [r for r in results if not r["is_dense"]]
 
     print("\n📊 Generating plots with 0-100% y-axis...")
     print(f"   Dense models: {len(dense_results)}")
     print(f"   MoE models: {len(moe_results)}")
 
     # Dense models: Perplexity vs Layer/Seq % (only if we have perplexity data)
-    dense_with_ppl = [r for r in dense_results if r['perplexity'] is not None]
+    dense_with_ppl = [r for r in dense_results if r["perplexity"] is not None]
 
     if dense_with_ppl:
         print("\n🔵 Dense Models - Perplexity Plots:")
         create_plot(
             dense_with_ppl,
-            x_key='perplexity',
-            y_key='mean_layer_pct',
-            output_path=output_dir / 'dense_perplexity_vs_layer_pct.png',
-            title='Dense Models: Outlier Layer Coverage vs Perplexity',
-            xlabel='Perplexity (FineWeb-Edu)',
-            ylabel='Mean % Layers with Outliers',
+            x_key="perplexity",
+            y_key="mean_layer_pct",
+            output_path=output_dir / "dense_perplexity_vs_layer_pct.png",
+            title="Dense Models: Outlier Layer Coverage vs Perplexity",
+            xlabel="Perplexity (FineWeb-Edu)",
+            ylabel="Mean % Layers with Outliers",
         )
 
         create_plot(
             dense_with_ppl,
-            x_key='perplexity',
-            y_key='mean_seq_pct',
-            output_path=output_dir / 'dense_perplexity_vs_seq_pct.png',
-            title='Dense Models: Outlier Sequence Coverage vs Perplexity',
-            xlabel='Perplexity (FineWeb-Edu)',
-            ylabel='Mean % Sequence Positions with Outliers',
+            x_key="perplexity",
+            y_key="mean_seq_pct",
+            output_path=output_dir / "dense_perplexity_vs_seq_pct.png",
+            title="Dense Models: Outlier Sequence Coverage vs Perplexity",
+            xlabel="Perplexity (FineWeb-Edu)",
+            ylabel="Mean % Sequence Positions with Outliers",
         )
 
     # MoE models: Total Params vs Layer/Seq %
@@ -311,42 +307,42 @@ def generate_all_plots(results: list[dict], output_dir: Path):
         print("\n🟣 MoE Models - Parameter Plots:")
         create_plot(
             moe_results,
-            x_key='total_params_b',
-            y_key='mean_layer_pct',
-            output_path=output_dir / 'moe_total_params_vs_layer_pct.png',
-            title='MoE Models: Outlier Layer Coverage vs Total Parameters',
-            xlabel='Total Parameters (Billions)',
-            ylabel='Mean % Layers with Outliers',
+            x_key="total_params_b",
+            y_key="mean_layer_pct",
+            output_path=output_dir / "moe_total_params_vs_layer_pct.png",
+            title="MoE Models: Outlier Layer Coverage vs Total Parameters",
+            xlabel="Total Parameters (Billions)",
+            ylabel="Mean % Layers with Outliers",
         )
 
         create_plot(
             moe_results,
-            x_key='total_params_b',
-            y_key='mean_seq_pct',
-            output_path=output_dir / 'moe_total_params_vs_seq_pct.png',
-            title='MoE Models: Outlier Sequence Coverage vs Total Parameters',
-            xlabel='Total Parameters (Billions)',
-            ylabel='Mean % Sequence Positions with Outliers',
+            x_key="total_params_b",
+            y_key="mean_seq_pct",
+            output_path=output_dir / "moe_total_params_vs_seq_pct.png",
+            title="MoE Models: Outlier Sequence Coverage vs Total Parameters",
+            xlabel="Total Parameters (Billions)",
+            ylabel="Mean % Sequence Positions with Outliers",
         )
 
         create_plot(
             moe_results,
-            x_key='active_params_b',
-            y_key='mean_layer_pct',
-            output_path=output_dir / 'moe_active_params_vs_layer_pct.png',
-            title='MoE Models: Outlier Layer Coverage vs Active Parameters',
-            xlabel='Active Parameters (Billions)',
-            ylabel='Mean % Layers with Outliers',
+            x_key="active_params_b",
+            y_key="mean_layer_pct",
+            output_path=output_dir / "moe_active_params_vs_layer_pct.png",
+            title="MoE Models: Outlier Layer Coverage vs Active Parameters",
+            xlabel="Active Parameters (Billions)",
+            ylabel="Mean % Layers with Outliers",
         )
 
         create_plot(
             moe_results,
-            x_key='active_params_b',
-            y_key='mean_seq_pct',
-            output_path=output_dir / 'moe_active_params_vs_seq_pct.png',
-            title='MoE Models: Outlier Sequence Coverage vs Active Parameters',
-            xlabel='Active Parameters (Billions)',
-            ylabel='Mean % Sequence Positions with Outliers',
+            x_key="active_params_b",
+            y_key="mean_seq_pct",
+            output_path=output_dir / "moe_active_params_vs_seq_pct.png",
+            title="MoE Models: Outlier Sequence Coverage vs Active Parameters",
+            xlabel="Active Parameters (Billions)",
+            ylabel="Mean % Sequence Positions with Outliers",
         )
 
 

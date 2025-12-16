@@ -22,13 +22,8 @@ class EmbeddingModel(Protocol):
     """Protocol for embedding models used by the annotation pipeline."""
 
     def encode(
-        self,
-        sentences: Iterable[str],
-        *,
-        normalize_embeddings: bool,
-        convert_to_numpy: bool
-    ) -> np.ndarray:
-        ...
+        self, sentences: Iterable[str], *, normalize_embeddings: bool, convert_to_numpy: bool
+    ) -> np.ndarray: ...
 
 
 @dataclass
@@ -45,12 +40,7 @@ class CorpusIndex:
     _cluster_lookup: dict[str, dict] = field(default_factory=dict, repr=False)
 
     @classmethod
-    def load(
-        cls,
-        index_path: str | Path,
-        *,
-        embedding_model: str | None = None
-    ) -> CorpusIndex:
+    def load(cls, index_path: str | Path, *, embedding_model: str | None = None) -> CorpusIndex:
         """Load a serialized corpus index from disk.
 
         Args:
@@ -109,9 +99,8 @@ class CorpusIndex:
             assert config_path.exists(), f"Missing config: {config_path}"
             with open(config_path) as fh:
                 config_dict = json.load(fh)
-            embedding_model = (
-                config_dict.get("clustering", {})
-                .get("embedding_model", "Snowflake/snowflake-arctic-embed-l")
+            embedding_model = config_dict.get("clustering", {}).get(
+                "embedding_model", "Snowflake/snowflake-arctic-embed-l"
             )
 
         logger.info(f"Loading embedding model: {embedding_model}")
@@ -128,7 +117,7 @@ class CorpusIndex:
             tree=tree,
             chunk_to_cluster=chunk_to_cluster,
             model=model,
-            index_path=path
+            index_path=path,
         )
         index._cluster_lookup = index._build_cluster_lookup(tree)
         return index

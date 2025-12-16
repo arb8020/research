@@ -64,7 +64,6 @@ import cutlass.cute as cute
 # input, output are tensors on the GPU
 @cute.jit
 def solve(input: cute.Tensor, output: cute.Tensor, rows: cute.Int32, cols: cute.Int32):
-
     kernel = transpose(input, output, rows, cols)
 
     n_ops = rows * cols
@@ -74,22 +73,18 @@ def solve(input: cute.Tensor, output: cute.Tensor, rows: cute.Int32, cols: cute.
 
     grid_blocks_x = ceil_div(rows, n_tpb)
     grid_blocks_y = ceil_div(cols, n_tpb)
-    
-    kernel.launch(
-            grid=(grid_blocks_x, grid_blocks_y, 1),
-            block=(n_tpb, n_tpb, 1)
-    )
+
+    kernel.launch(grid=(grid_blocks_x, grid_blocks_y, 1), block=(n_tpb, n_tpb, 1))
 
     pass
 
 
 @cute.kernel
 def transpose(input: cute.Tensor, output: cute.Tensor, rows: cute.Int32, cols: cute.Int32):
-
     # what is a transpose
     # A[i,j] = B[j,i]
-    
-    tidx, tidy, tidz = cute.arch.thread_idx() 
+
+    tidx, tidy, tidz = cute.arch.thread_idx()
     bidx, bidy, bidz = cute.arch.block_idx()
     bdimx, bdimy, bdimz = cute.arch.block_dim()
 

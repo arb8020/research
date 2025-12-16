@@ -20,11 +20,14 @@ import jax.numpy as jnp
 @dataclasses.dataclass
 class KVCache:
     """Container for key and value caches."""
+
     k_LTKH: jax.Array  # (num_layers, max_seq_len, num_kv_heads, head_dim)
     v_LTKH: jax.Array  # (num_layers, max_seq_len, num_kv_heads, head_dim)
 
 
-def init_kv_cache(n_layers: int, max_seq_len: int, n_kv_heads: int, head_dim: int, dtype=jnp.float32) -> KVCache:
+def init_kv_cache(
+    n_layers: int, max_seq_len: int, n_kv_heads: int, head_dim: int, dtype=jnp.float32
+) -> KVCache:
     """Initialize empty KV cache with zero-filled arrays."""
     assert n_layers > 0
     assert max_seq_len > 0
@@ -38,7 +41,9 @@ def init_kv_cache(n_layers: int, max_seq_len: int, n_kv_heads: int, head_dim: in
     )
 
 
-def update_kv_cache(cache: KVCache, layer_idx: int, start_pos: int, k_TKH: jax.Array, v_TKH: jax.Array) -> KVCache:
+def update_kv_cache(
+    cache: KVCache, layer_idx: int, start_pos: int, k_TKH: jax.Array, v_TKH: jax.Array
+) -> KVCache:
     """Update KV cache with new key/value tensors.
 
     JAX arrays are immutable - this creates new arrays and returns a new KVCache.
@@ -55,8 +60,8 @@ def update_kv_cache(cache: KVCache, layer_idx: int, start_pos: int, k_TKH: jax.A
     assert start_pos + seq_len <= max_seq_len
 
     # JAX functional array update: .at[].set() returns NEW array
-    new_k_LTKH = cache.k_LTKH.at[layer_idx, start_pos:start_pos + seq_len].set(k_TKH)
-    new_v_LTKH = cache.v_LTKH.at[layer_idx, start_pos:start_pos + seq_len].set(v_TKH)
+    new_k_LTKH = cache.k_LTKH.at[layer_idx, start_pos : start_pos + seq_len].set(k_TKH)
+    new_v_LTKH = cache.v_LTKH.at[layer_idx, start_pos : start_pos + seq_len].set(v_TKH)
 
     return KVCache(k_LTKH=new_k_LTKH, v_LTKH=new_v_LTKH)
 

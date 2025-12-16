@@ -5,12 +5,18 @@ import triton.language as tl
 
 @triton.jit
 def _adaptive_avg_pool2d__default_triton_kernel(
-    input_ptr, output_ptr,
-    input_H, input_W,
-    output_H, output_W,
-    stride_H, stride_W,
-    kernel_H, kernel_W,
-    N, C,
+    input_ptr,
+    output_ptr,
+    input_H,
+    input_W,
+    output_H,
+    output_W,
+    stride_H,
+    stride_W,
+    kernel_H,
+    kernel_W,
+    N,
+    C,
     BLOCK_C: tl.constexpr,
     BLOCK_HW: tl.constexpr,
 ):
@@ -119,18 +125,22 @@ def _adaptive_avg_pool2d__default_kernel_impl(*args, **kwargs) -> torch.Tensor:
     if len(args) > 0:
         input = args[0]
         other_args = args[1:]
-    elif 'input' in kwargs:
-        input = kwargs['input']
+    elif "input" in kwargs:
+        input = kwargs["input"]
         other_args = ()
     else:
-        raise ValueError("Input tensor must be provided as first positional argument or as 'input' keyword argument")
+        raise ValueError(
+            "Input tensor must be provided as first positional argument or as 'input' keyword argument"
+        )
 
     if len(other_args) > 0:
         output_size = other_args[0]
-    elif 'output_size' in kwargs:
-        output_size = kwargs['output_size']
+    elif "output_size" in kwargs:
+        output_size = kwargs["output_size"]
     else:
-        raise ValueError("output_size must be provided as second positional argument or as 'output_size' keyword argument")
+        raise ValueError(
+            "output_size must be provided as second positional argument or as 'output_size' keyword argument"
+        )
 
     # Validate input dims
     if input.dim() != 4:
@@ -146,12 +156,14 @@ def _adaptive_avg_pool2d__default_kernel_impl(*args, **kwargs) -> torch.Tensor:
 
     # Move input to CUDA if needed
     input_device = input.device
-    if input_device.type == 'cpu':
+    if input_device.type == "cpu":
         if torch.cuda.is_available():
             input_cuda = input.cuda()
         else:
-            raise RuntimeError("CUDA is not available but input tensor is on CPU. Cannot run Triton kernel.")
-    elif input_device.type == 'cuda':
+            raise RuntimeError(
+                "CUDA is not available but input tensor is on CPU. Cannot run Triton kernel."
+            )
+    elif input_device.type == "cuda":
         input_cuda = input
     else:
         raise RuntimeError(f"Unsupported device type {input_device.type}")
@@ -167,7 +179,9 @@ def _adaptive_avg_pool2d__default_kernel_impl(*args, **kwargs) -> torch.Tensor:
     kernel_W = input_W - (output_W - 1) * stride_W
 
     # Allocate output tensor on CUDA
-    output_cuda = torch.empty((N, C, output_H, output_W), device=input_cuda.device, dtype=input_cuda.dtype)
+    output_cuda = torch.empty(
+        (N, C, output_H, output_W), device=input_cuda.device, dtype=input_cuda.dtype
+    )
 
     # Launch Triton kernel
     BLOCK_C = 32
@@ -181,11 +195,16 @@ def _adaptive_avg_pool2d__default_kernel_impl(*args, **kwargs) -> torch.Tensor:
     _adaptive_avg_pool2d__default_triton_kernel[grid](
         input_cuda.data_ptr(),
         output_cuda.data_ptr(),
-        input_H, input_W,
-        output_H, output_W,
-        stride_H, stride_W,
-        kernel_H, kernel_W,
-        N, C,
+        input_H,
+        input_W,
+        output_H,
+        output_W,
+        stride_H,
+        stride_W,
+        kernel_H,
+        kernel_W,
+        N,
+        C,
         BLOCK_C=BLOCK_C,
         BLOCK_HW=BLOCK_HW,
         num_warps=4,
@@ -193,7 +212,7 @@ def _adaptive_avg_pool2d__default_kernel_impl(*args, **kwargs) -> torch.Tensor:
     )
 
     # Move output back to original device if needed
-    if input_device.type == 'cpu':
+    if input_device.type == "cpu":
         output = output_cuda.cpu()
     else:
         output = output_cuda

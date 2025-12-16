@@ -6,13 +6,18 @@ import triton.language as tl
 # Triton kernel for _adaptive_avg_pool2d_backward.default
 @triton.jit
 def _adaptive_avg_pool2d_backward__default_triton_kernel(
-    grad_output_ptr, grad_input_ptr,
-    grad_output_H, grad_output_W,
-    grad_input_H, grad_input_W,
-    stride_H, stride_W,
-    kernel_H, kernel_W,
+    grad_output_ptr,
+    grad_input_ptr,
+    grad_output_H,
+    grad_output_W,
+    grad_input_H,
+    grad_input_W,
+    stride_H,
+    stride_W,
+    kernel_H,
+    kernel_W,
     n_channels,
-    BLOCK_SIZE: tl.constexpr
+    BLOCK_SIZE: tl.constexpr,
 ):
     pid = tl.program_id(0)
     # Each program handles one channel of one batch element
@@ -21,8 +26,16 @@ def _adaptive_avg_pool2d_backward__default_triton_kernel(
     channel = pid % n_channels
 
     # Pointers to grad_output and grad_input for this batch and channel
-    grad_output_ptr = grad_output_ptr + batch * n_channels * grad_output_H * grad_output_W + channel * grad_output_H * grad_output_W
-    grad_input_ptr = grad_input_ptr + batch * n_channels * grad_input_H * grad_input_W + channel * grad_input_H * grad_input_W
+    grad_output_ptr = (
+        grad_output_ptr
+        + batch * n_channels * grad_output_H * grad_output_W
+        + channel * grad_output_H * grad_output_W
+    )
+    grad_input_ptr = (
+        grad_input_ptr
+        + batch * n_channels * grad_input_H * grad_input_W
+        + channel * grad_input_H * grad_input_W
+    )
 
     # Iterate over grad_input pixels in blocks
     offs = tl.arange(0, BLOCK_SIZE)
@@ -88,11 +101,16 @@ def _adaptive_avg_pool2d_backward__default_triton_kernel(
 
 @triton.jit
 def _adaptive_avg_pool2d_backward__default_triton_kernel(
-    grad_output_ptr, grad_input_ptr,
-    grad_output_H, grad_output_W,
-    grad_input_H, grad_input_W,
-    stride_H, stride_W,
-    kernel_H, kernel_W,
+    grad_output_ptr,
+    grad_input_ptr,
+    grad_output_H,
+    grad_output_W,
+    grad_input_H,
+    grad_input_W,
+    stride_H,
+    stride_W,
+    kernel_H,
+    kernel_W,
     n_channels,
     BLOCK_SIZE_H: tl.constexpr,
     BLOCK_SIZE_W: tl.constexpr,
@@ -164,7 +182,12 @@ def _adaptive_avg_pool2d_backward__default_triton_kernel(
                 continue
 
             # Load grad_output at (batch, channel, oh, ow)
-            grad_output_offset = batch * n_channels * grad_output_H * grad_output_W + channel * grad_output_H * grad_output_W + oh * grad_output_W + ow
+            grad_output_offset = (
+                batch * n_channels * grad_output_H * grad_output_W
+                + channel * grad_output_H * grad_output_W
+                + oh * grad_output_W
+                + ow
+            )
             grad_output_val = tl.load(grad_output_ptr + grad_output_offset, mask=valid, other=0.0)
 
             # grad_output_val is scalar per (oh, ow), but we have multiple grad_input pixels
@@ -186,7 +209,12 @@ def _adaptive_avg_pool2d_backward__default_triton_kernel(
             acc += tl.where(valid, grad_output_val / (kernel_H * kernel_W), 0.0)
 
     # Write acc to grad_input_ptr
-    grad_input_offset = batch * n_channels * grad_input_H * grad_input_W + channel * grad_input_H * grad_input_W + h_idx_2d * grad_input_W + w_idx_2d
+    grad_input_offset = (
+        batch * n_channels * grad_input_H * grad_input_W
+        + channel * grad_input_H * grad_input_W
+        + h_idx_2d * grad_input_W
+        + w_idx_2d
+    )
     tl.store(grad_input_ptr + grad_input_offset, acc, mask=mask)
 
 
@@ -201,8 +229,8 @@ def _adaptive_avg_pool2d_backward__default_kernel_impl(*args, **kwargs):
         grad_output = args[0]
         input = args[1]
     else:
-        grad_output = kwargs.get('grad_output', None)
-        input = kwargs.get('input', None)
+        grad_output = kwargs.get("grad_output", None)
+        input = kwargs.get("input", None)
     if grad_output is None or input is None:
         raise ValueError("grad_output and input tensors must be provided as args or kwargs")
 
@@ -228,12 +256,12 @@ def _adaptive_avg_pool2d_backward__default_kernel_impl(*args, **kwargs):
     orig_device = grad_output.device
     orig_input_device = input.device
 
-    if grad_output.device.type == 'cpu':
+    if grad_output.device.type == "cpu":
         if torch.cuda.is_available():
             grad_output = grad_output.cuda()
         else:
             raise RuntimeError("CUDA is not available but grad_output is on CPU")
-    if input.device.type == 'cpu':
+    if input.device.type == "cpu":
         if torch.cuda.is_available():
             input = input.cuda()
         else:
@@ -269,7 +297,7 @@ def _adaptive_avg_pool2d_backward__default_kernel_impl(*args, **kwargs):
     )
 
     # Move grad_input back to original device if needed
-    if orig_input_device.type == 'cpu' and grad_input.device.type == 'cuda':
+    if orig_input_device.type == "cpu" and grad_input.device.type == "cuda":
         grad_input = grad_input.cpu()
 
     return grad_input

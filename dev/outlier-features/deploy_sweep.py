@@ -80,7 +80,13 @@ def get_model_number(config_path: str) -> str:
     return Path(config_path).stem[:2]
 
 
-def launch_deployment(config_path: Path, model_names: dict, sweep_log_dir: Path, dry_run: bool = False, mode: str = "outliers") -> subprocess.Popen | None:
+def launch_deployment(
+    config_path: Path,
+    model_names: dict,
+    sweep_log_dir: Path,
+    dry_run: bool = False,
+    mode: str = "outliers",
+) -> subprocess.Popen | None:
     """Launch a single deployment in background."""
     model_num = get_model_number(str(config_path))
     model_name = model_names.get(model_num, "Unknown")
@@ -102,13 +108,8 @@ def launch_deployment(config_path: Path, model_names: dict, sweep_log_dir: Path,
         return None
 
     # Launch in background, redirect output to log file
-    with open(log_file, 'w') as f:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=f,
-            stderr=subprocess.STDOUT,
-            cwd=Path(__file__).parent
-        )
+    with open(log_file, "w") as f:
+        proc = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, cwd=Path(__file__).parent)
 
     print(f"      PID: {proc.pid}")
     print()
@@ -175,19 +176,19 @@ def main():
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Show what would be deployed without actually launching"
+        help="Show what would be deployed without actually launching",
     )
     parser.add_argument(
         "--config-dir",
         type=str,
         default="sweep_configs",
-        help="Config directory to use (default: sweep_configs, use sweep_dense for dense models)"
+        help="Config directory to use (default: sweep_configs, use sweep_dense for dense models)",
     )
     parser.add_argument(
         "--models",
         nargs="+",
         default=["all"],
-        help="Which models to deploy (e.g., --models 01 03 06, or 'all')"
+        help="Which models to deploy (e.g., --models 01 03 06, or 'all')",
     )
     parser.add_argument(
         "--status",
@@ -195,30 +196,23 @@ def main():
         const=5,
         type=int,
         metavar="N",
-        help="Check status of running deployments (optionally specify number of lines to show, default: 5)"
+        help="Check status of running deployments (optionally specify number of lines to show, default: 5)",
     )
     parser.add_argument(
         "--sweep",
         type=str,
-        help="Specific sweep directory to check status for (e.g., sweep_20251025_141227_sweep_dense)"
+        help="Specific sweep directory to check status for (e.g., sweep_20251025_141227_sweep_dense)",
     )
     parser.add_argument(
-        "--delay",
-        type=int,
-        default=30,
-        help="Delay in seconds between launches (default: 30)"
+        "--delay", type=int, default=30, help="Delay in seconds between launches (default: 30)"
     )
-    parser.add_argument(
-        "--yes", "-y",
-        action="store_true",
-        help="Skip confirmation prompt"
-    )
+    parser.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
     parser.add_argument(
         "--mode",
         type=str,
         default="outliers",
         choices=["outliers", "perplexity"],
-        help="Analysis mode: 'outliers' (default) or 'perplexity'"
+        help="Analysis mode: 'outliers' (default) or 'perplexity'",
     )
 
     args = parser.parse_args()
@@ -240,10 +234,7 @@ def main():
     if "all" in args.models:
         configs_to_deploy = all_configs
     else:
-        configs_to_deploy = [
-            cfg for cfg in all_configs
-            if get_model_number(cfg) in args.models
-        ]
+        configs_to_deploy = [cfg for cfg in all_configs if get_model_number(cfg) in args.models]
 
     # Print summary
     print("=" * 80)
@@ -269,7 +260,7 @@ def main():
 
     if not args.dry_run and not args.yes:
         response = input("Proceed with deployment? [y/N]: ")
-        if response.lower() != 'y':
+        if response.lower() != "y":
             print("Deployment cancelled.")
             return
         print()
@@ -277,6 +268,7 @@ def main():
     # Create sweep log directory: logs/sweep_<timestamp>_<config_dir>/
     # Example: logs/sweep_20251025_135530_dense/
     from datetime import datetime
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     config_dir_name = Path(args.config_dir).name  # "sweep_configs" or "sweep_dense"
     sweep_log_dir = Path(f"logs/sweep_{timestamp}_{config_dir_name}")
@@ -289,7 +281,9 @@ def main():
     # Launch all deployments
     processes = []
     for i, config_path in enumerate(configs_to_deploy):
-        proc = launch_deployment(Path(config_path), model_names, sweep_log_dir, dry_run=args.dry_run, mode=args.mode)
+        proc = launch_deployment(
+            Path(config_path), model_names, sweep_log_dir, dry_run=args.dry_run, mode=args.mode
+        )
 
         if proc:
             processes.append((get_model_number(config_path), proc))

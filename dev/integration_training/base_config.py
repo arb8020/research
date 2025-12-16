@@ -20,6 +20,7 @@ class TargetConfig:
     Tiger Style: Explicit hardware requirements for reproducibility.
     Follows qwen3_next/base_config.py pattern.
     """
+
     gpu_ranks: list[int]  # GPU indices to use (e.g., [0], [0,1], [0,1,2,3])
     device_type: str = "cuda"  # cuda|cpu|mps
 
@@ -35,6 +36,7 @@ class TargetConfig:
 @dataclass
 class ModelConfig:
     """Model configuration."""
+
     name: str = "Qwen/Qwen2.5-0.5B-Instruct"
     dtype: str = "bfloat16"  # bfloat16|float32
     compile: bool = False  # torch.compile (can be flaky with variable lengths)
@@ -54,6 +56,7 @@ class DatasetSpec:
         ...     max_samples=10_000,
         ... )
     """
+
     name: str  # HuggingFace dataset name or "custom_json"
     split: str = "train"  # train|test|validation
     subset: str | None = None  # For datasets with subsets (e.g., GSM8K "main")
@@ -80,23 +83,28 @@ class DataConfig:
         ...     DatasetSpec("HuggingFaceTB/smol-smoltalk", split="train", max_samples=10_000),
         ... ]
     """
+
     # SFT data mixture (list of datasets to mix)
-    sft_mixture: list[DatasetSpec] = field(default_factory=lambda: [
-        DatasetSpec(
-            name="HuggingFaceTB/smol-smoltalk",
-            split="train",
-            max_samples=10_000,  # 10K rows (nanochat SFT default)
-        ),
-    ])
+    sft_mixture: list[DatasetSpec] = field(
+        default_factory=lambda: [
+            DatasetSpec(
+                name="HuggingFaceTB/smol-smoltalk",
+                split="train",
+                max_samples=10_000,  # 10K rows (nanochat SFT default)
+            ),
+        ]
+    )
 
     # RL data mixture (usually just one dataset like GSM8K)
-    rl_mixture: list[DatasetSpec] = field(default_factory=lambda: [
-        DatasetSpec(
-            name="openai/gsm8k",
-            split="train",
-            subset="main",
-        ),
-    ])
+    rl_mixture: list[DatasetSpec] = field(
+        default_factory=lambda: [
+            DatasetSpec(
+                name="openai/gsm8k",
+                split="train",
+                subset="main",
+            ),
+        ]
+    )
 
     # Data processing
     max_length: int = 2048  # Maximum sequence length
@@ -110,6 +118,7 @@ class SFTConfig:
     Hyperparameters from nanochat/scripts/chat_sft.py (proven defaults).
     Tiger Style: ALL parameters explicit, no hidden defaults.
     """
+
     # Training schedule
     num_epochs: int = 1
     num_iterations: int = -1  # Override epochs (-1 = use epochs)
@@ -150,6 +159,7 @@ class RLConfig:
     Uses simplified GRPO (REINFORCE-style).
     Tiger Style: ALL parameters explicit, no hidden defaults.
     """
+
     # Training schedule
     num_epochs: int = 1
     examples_per_step: int = 16  # Total examples (not samples!) per step
@@ -190,6 +200,7 @@ class RLConfig:
 @dataclass
 class OutputConfig:
     """Output and logging configuration."""
+
     save_dir: Path = Path("./results")
     log_level: str = "INFO"
     experiment_name: str | None = None
@@ -216,6 +227,7 @@ class Config:
         ... )
         >>> config.save(Path("outputs/exp_001/config.json"))
     """
+
     target: TargetConfig
     model: ModelConfig
     data: DataConfig
@@ -238,11 +250,11 @@ class Config:
         def serialize(obj):
             if isinstance(obj, Path):
                 return str(obj)
-            elif hasattr(obj, '__dataclass_fields__'):
+            elif hasattr(obj, "__dataclass_fields__"):
                 return asdict(obj)
             return str(obj)
 
-        with open(path, 'w') as f:
+        with open(path, "w") as f:
             json.dump(asdict(self), f, indent=2, default=serialize)
 
     @classmethod
@@ -272,21 +284,21 @@ class Config:
             field_data = data[field_name]
 
             # Special handling for DataConfig (has nested DatasetSpec lists)
-            if field_name == 'data':
+            if field_name == "data":
                 # Reconstruct sft_mixture
-                if 'sft_mixture' in field_data:
-                    field_data['sft_mixture'] = [
-                        DatasetSpec(**spec) for spec in field_data['sft_mixture']
+                if "sft_mixture" in field_data:
+                    field_data["sft_mixture"] = [
+                        DatasetSpec(**spec) for spec in field_data["sft_mixture"]
                     ]
                 # Reconstruct rl_mixture
-                if 'rl_mixture' in field_data:
-                    field_data['rl_mixture'] = [
-                        DatasetSpec(**spec) for spec in field_data['rl_mixture']
+                if "rl_mixture" in field_data:
+                    field_data["rl_mixture"] = [
+                        DatasetSpec(**spec) for spec in field_data["rl_mixture"]
                     ]
 
             # Convert string paths back to Path objects
-            if field_name == 'output' and 'save_dir' in field_data:
-                field_data['save_dir'] = Path(field_data['save_dir'])
+            if field_name == "output" and "save_dir" in field_data:
+                field_data["save_dir"] = Path(field_data["save_dir"])
 
             kwargs[field_name] = field_type(**field_data)
 

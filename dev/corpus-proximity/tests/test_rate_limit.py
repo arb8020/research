@@ -12,8 +12,7 @@ import httpx
 from sentence_transformers import SentenceTransformer
 
 logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -30,7 +29,7 @@ def test_rate_limit():
     print("This will try to download from HuggingFace and capture error details...\n")
 
     try:
-        model = SentenceTransformer(model_name, device='cpu')
+        model = SentenceTransformer(model_name, device="cpu")
         print("\n✅ SUCCESS: Model loaded without rate limiting!")
         print(f"Model device: {model.device}")
         print(f"Model max_seq_length: {model.max_seq_length}")
@@ -50,7 +49,7 @@ def test_rate_limit():
         print("-" * 80)
 
         for attr in dir(e):
-            if not attr.startswith('_'):
+            if not attr.startswith("_"):
                 try:
                     value = getattr(e, attr)
                     if not callable(value):
@@ -59,7 +58,7 @@ def test_rate_limit():
                     pass
 
         # Check if there's response info (for HTTP errors)
-        if hasattr(e, 'response'):
+        if hasattr(e, "response"):
             print("\n" + "-" * 80)
             print("HTTP RESPONSE DETAILS:")
             print("-" * 80)
@@ -74,14 +73,14 @@ def test_rate_limit():
             print(f"\n  Response body:\n{response.text[:1000]}")
 
         # Check for nested exceptions
-        if hasattr(e, '__cause__') and e.__cause__:
+        if hasattr(e, "__cause__") and e.__cause__:
             print("\n" + "-" * 80)
             print("ORIGINAL CAUSE:")
             print("-" * 80)
             print(f"  Type: {type(e.__cause__).__name__}")
             print(f"  Message: {str(e.__cause__)}")
 
-            if hasattr(e.__cause__, 'response'):
+            if hasattr(e.__cause__, "response"):
                 cause_response = cast(httpx.Response, e.__cause__.response)
                 print("\n  Original response headers:")
                 for key, value in cause_response.headers.items():
@@ -94,33 +93,35 @@ def test_rate_limit():
         # Extract key info
         findings = []
 
-        if '429' in str(e):
+        if "429" in str(e):
             findings.append("✗ Rate limited (429 Too Many Requests)")
 
-        if 'retry' in str(e).lower():
+        if "retry" in str(e).lower():
             findings.append("✓ Retry information present")
         else:
             findings.append("✗ No retry information found")
 
-        if 'rate limit' in str(e).lower():
+        if "rate limit" in str(e).lower():
             findings.append("✓ Explicit rate limit message")
 
-        if hasattr(e, 'response') and hasattr(e.response, 'headers'):
+        if hasattr(e, "response") and hasattr(e.response, "headers"):
             headers = cast(httpx.Response, e.response).headers
-            if 'retry-after' in headers or 'Retry-After' in headers:
-                retry_after = headers.get('retry-after') or headers.get('Retry-After')
+            if "retry-after" in headers or "Retry-After" in headers:
+                retry_after = headers.get("retry-after") or headers.get("Retry-After")
                 findings.append(f"✓ Retry-After header: {retry_after}")
             else:
                 findings.append("✗ No Retry-After header")
 
-            if 'x-ratelimit-remaining' in headers or 'X-RateLimit-Remaining' in headers:
-                remaining = headers.get('x-ratelimit-remaining') or headers.get('X-RateLimit-Remaining')
+            if "x-ratelimit-remaining" in headers or "X-RateLimit-Remaining" in headers:
+                remaining = headers.get("x-ratelimit-remaining") or headers.get(
+                    "X-RateLimit-Remaining"
+                )
                 findings.append(f"✓ Rate limit remaining: {remaining}")
             else:
                 findings.append("✗ No rate limit remaining header")
 
-            if 'x-ratelimit-reset' in headers or 'X-RateLimit-Reset' in headers:
-                reset = headers.get('x-ratelimit-reset') or headers.get('X-RateLimit-Reset')
+            if "x-ratelimit-reset" in headers or "X-RateLimit-Reset" in headers:
+                reset = headers.get("x-ratelimit-reset") or headers.get("X-RateLimit-Reset")
                 findings.append(f"✓ Rate limit reset: {reset}")
             else:
                 findings.append("✗ No rate limit reset header")

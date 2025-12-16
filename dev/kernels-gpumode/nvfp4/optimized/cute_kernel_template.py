@@ -8,6 +8,7 @@ To use this:
 2. Uncomment the code below
 3. Rename to cute_kernel.py
 """
+
 from kernel_utils.backends import BACKENDS
 from kernel_utils.task import input_t, output_t
 
@@ -202,6 +203,7 @@ def cute_kernel(data: input_t) -> output_t:
 
     # For now, fall back to reference
     from nvfp4.reference_kernel import ref_kernel
+
     return ref_kernel(data)
 
 

@@ -16,6 +16,7 @@ def check_jax_gpu():
     try:
         import jax
         import jax.numpy as jnp
+
         print("   ✅ JAX imported successfully")
     except ImportError as e:
         print(f"   ❌ Failed to import JAX: {e}")
@@ -28,7 +29,7 @@ def check_jax_gpu():
         print(f"   [{i}] {device}")
 
     try:
-        gpu_devices = jax.devices('gpu')
+        gpu_devices = jax.devices("gpu")
     except RuntimeError:
         gpu_devices = []
 
@@ -69,6 +70,7 @@ def test_gpt2_gpu():
 
     try:
         import jax.numpy as jnp
+
         sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
         from backends.jax.loader import load_weights
@@ -94,6 +96,7 @@ def test_gpt2_gpu():
     except Exception as e:
         print(f"   ❌ GPT-2 test failed: {e}")
         import traceback
+
         traceback.print_exc()
         return False
 
@@ -103,10 +106,11 @@ def verify_gpu_used():
     print("\n5. Verifying GPU was used...")
     try:
         import jax
+
         default_device = jax.devices()[0]
         print(f"   Default device: {default_device}")
 
-        gpu_devices = jax.devices('gpu')
+        gpu_devices = jax.devices("gpu")
         if default_device not in gpu_devices:
             print("   ❌ Computation did not run on GPU!")
             return False

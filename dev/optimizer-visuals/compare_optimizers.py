@@ -34,7 +34,7 @@ def main():
         update_fn=sgd_update,
         learning_rate=0.01,
         num_steps=num_steps,
-        return_grads=show_raw
+        return_grads=show_raw,
     )
 
     # Run Adam
@@ -46,7 +46,7 @@ def main():
         update_fn=adam_update,
         learning_rate=0.1,
         num_steps=num_steps,
-        return_grads=show_raw
+        return_grads=show_raw,
     )
 
     # Create viz data
@@ -59,7 +59,7 @@ def main():
         optimizer_name="SGD",
         learning_rate=0.01,
         landscape_bounds=((-2.0, 2.0), (-4.0, 4.0)),
-        landscape_resolution=100
+        landscape_resolution=100,
     )
 
     adam_viz = create_viz_data(
@@ -69,7 +69,7 @@ def main():
         optimizer_name="Adam",
         learning_rate=0.1,
         landscape_bounds=((-2.0, 2.0), (-4.0, 4.0)),
-        landscape_resolution=100
+        landscape_resolution=100,
     )
 
     if show_raw:
@@ -101,4 +101,5 @@ def main():
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(main())

@@ -19,12 +19,12 @@ import torch
 # Import local modules
 from config import Config
 from dataset_utils import get_text_sequences
+from tqdm import tqdm
+from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
 
 # Import shared logging setup
 from shared.logging_config import setup_logging
 from shared.retry import retry
-from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ def load_config_from_file(config_path: str) -> Config:
     Returns:
         Config object
     """
-    assert config_path.endswith('.py'), f"Config must be .py file, got {config_path}"
+    assert config_path.endswith(".py"), f"Config must be .py file, got {config_path}"
 
     spec = importlib.util.spec_from_file_location("exp_config", config_path)
     assert spec is not None, f"Failed to load spec from {config_path}"
@@ -47,7 +47,7 @@ def load_config_from_file(config_path: str) -> Config:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    assert hasattr(module, 'config'), "Config file must define 'config' variable"
+    assert hasattr(module, "config"), "Config file must define 'config' variable"
     config: Config = module.config
     assert isinstance(config, Config), f"Expected Config object, got {type(config)}"
 
@@ -83,10 +83,7 @@ def load_tokenizer_with_retry(model_name: str) -> PreTrainedTokenizerBase:
 
 @retry(max_attempts=3, delay=30, backoff=2, exceptions=(OSError,))
 def load_model_with_retry(
-    model_name: str,
-    device_map: str,
-    torch_dtype,
-    max_memory: dict | None = None
+    model_name: str, device_map: str, torch_dtype, max_memory: dict | None = None
 ) -> AutoModelForCausalLM:
     """Load model with retry on HuggingFace rate limits.
 
@@ -110,18 +107,19 @@ def load_model_with_retry(
     assert torch_dtype is not None, "torch_dtype must not be None"
 
     if max_memory is None:
-        model = cast(AutoModelForCausalLM, AutoModelForCausalLM.from_pretrained(
-            model_name,
-            device_map=device_map,
-            torch_dtype=torch_dtype
-        ))
+        model = cast(
+            AutoModelForCausalLM,
+            AutoModelForCausalLM.from_pretrained(
+                model_name, device_map=device_map, torch_dtype=torch_dtype
+            ),
+        )
     else:
-        model = cast(AutoModelForCausalLM, AutoModelForCausalLM.from_pretrained(
-            model_name,
-            device_map=device_map,
-            torch_dtype=torch_dtype,
-            max_memory=max_memory
-        ))
+        model = cast(
+            AutoModelForCausalLM,
+            AutoModelForCausalLM.from_pretrained(
+                model_name, device_map=device_map, torch_dtype=torch_dtype, max_memory=max_memory
+            ),
+        )
 
     assert model is not None, "Model loading returned None"
     # Cast to Any to call .eval() (exists at runtime)
@@ -129,7 +127,9 @@ def load_model_with_retry(
     return model
 
 
-def load_model_and_tokenizer(config: Config) -> tuple[AutoModelForCausalLM, PreTrainedTokenizerBase]:
+def load_model_and_tokenizer(
+    config: Config,
+) -> tuple[AutoModelForCausalLM, PreTrainedTokenizerBase]:
     """Load model and tokenizer without nnsight wrapper.
 
     Args:
@@ -162,19 +162,12 @@ def load_model_and_tokenizer(config: Config) -> tuple[AutoModelForCausalLM, PreT
 
     if gpu_count == 1:
         logger.info("Using single-GPU configuration with device_map='auto'")
-        model = load_model_with_retry(
-            config.model.name,
-            device_map="auto",
-            torch_dtype=torch_dtype
-        )
+        model = load_model_with_retry(config.model.name, device_map="auto", torch_dtype=torch_dtype)
     else:
         logger.info("Using multi-GPU balanced configuration...")
         max_memory = {i: "76GiB" for i in range(gpu_count)}
         model = load_model_with_retry(
-            config.model.name,
-            device_map="balanced",
-            torch_dtype=torch_dtype,
-            max_memory=max_memory
+            config.model.name, device_map="balanced", torch_dtype=torch_dtype, max_memory=max_memory
         )
 
     assert model is not None, "Model loading failed"
@@ -185,10 +178,7 @@ def load_model_and_tokenizer(config: Config) -> tuple[AutoModelForCausalLM, PreT
 
 
 def compute_perplexity_single_text(
-    model: AutoModelForCausalLM,
-    tokenizer: PreTrainedTokenizerBase,
-    text: str,
-    sequence_length: int
+    model: AutoModelForCausalLM, tokenizer: PreTrainedTokenizerBase, text: str, sequence_length: int
 ) -> tuple[float, int]:
     """Compute loss and token count for a single text.
 
@@ -210,11 +200,7 @@ def compute_perplexity_single_text(
     # Cast tokenizer to Any to call it (tokenizers are callable at runtime)
     tokenizer_any = cast(Any, tokenizer)
     inputs = tokenizer_any(
-        text,
-        return_tensors="pt",
-        truncation=True,
-        max_length=sequence_length,
-        padding=False
+        text, return_tensors="pt", truncation=True, max_length=sequence_length, padding=False
     )
 
     # Move to same device as model
@@ -240,7 +226,7 @@ def compute_perplexity_on_batch(
     model: AutoModelForCausalLM,
     tokenizer: PreTrainedTokenizerBase,
     texts: list[str],
-    sequence_length: int
+    sequence_length: int,
 ) -> dict:
     """Compute perplexity on a batch of text sequences.
 
@@ -280,7 +266,7 @@ def compute_perplexity_on_batch(
         "perplexity": perplexity,
         "avg_loss": avg_loss,
         "total_tokens": total_tokens,
-        "num_sequences": len(texts)
+        "num_sequences": len(texts),
     }
 
 
@@ -288,7 +274,7 @@ def process_batches(
     model: AutoModelForCausalLM,
     tokenizer: PreTrainedTokenizerBase,
     text_sequences: list[str],
-    config: Config
+    config: Config,
 ) -> list[dict]:
     """Process sequences in batches and compute perplexity.
 
@@ -313,7 +299,7 @@ def process_batches(
     num_batches = (len(text_sequences) + batch_size - 1) // batch_size
 
     for batch_idx in range(0, len(text_sequences), batch_size):
-        batch_texts = text_sequences[batch_idx:batch_idx + batch_size]
+        batch_texts = text_sequences[batch_idx : batch_idx + batch_size]
         logger.info(f"Processing batch {batch_idx // batch_size + 1}/{num_batches}")
 
         batch_result = compute_perplexity_on_batch(
@@ -342,8 +328,8 @@ def aggregate_batch_results(batch_results: list[dict]) -> dict:
     assert batch_results, "batch_results must not be empty"
     assert len(batch_results) > 0, "Must have at least one batch result"
 
-    total_loss = sum(r['avg_loss'] * r['total_tokens'] for r in batch_results)
-    total_tokens = sum(r['total_tokens'] for r in batch_results)
+    total_loss = sum(r["avg_loss"] * r["total_tokens"] for r in batch_results)
+    total_tokens = sum(r["total_tokens"] for r in batch_results)
     assert total_tokens > 0, "No tokens in batch results"
 
     avg_loss = total_loss / total_tokens
@@ -353,7 +339,7 @@ def aggregate_batch_results(batch_results: list[dict]) -> dict:
         "perplexity": final_perplexity,
         "avg_loss": avg_loss,
         "total_tokens": total_tokens,
-        "num_sequences": sum(r['num_sequences'] for r in batch_results)
+        "num_sequences": sum(r["num_sequences"] for r in batch_results),
     }
 
 
@@ -377,11 +363,11 @@ def save_results(results: dict, config: Config, batch_results: list[dict]):
         "dataset": config.dataset.name,
         "sequence_length": config.dataset.sequence_length,
         "timestamp": datetime.now().isoformat(),
-        "batch_results": batch_results
+        "batch_results": batch_results,
     }
 
     results_file = config.output.save_dir / "perplexity_results.json"
-    with open(results_file, 'w') as f:
+    with open(results_file, "w") as f:
         json.dump(final_results, f, indent=2)
 
     logger.info(f"📁 Results saved: {results_file}")
@@ -406,7 +392,9 @@ def run_perplexity_pipeline(config: Config) -> int:
     logger.info("=" * 80)
     logger.info(f"Model: {config.model.name}")
     logger.info(f"Dataset: {config.dataset.name}")
-    logger.info(f"Sequences: {config.dataset.num_sequences} x {config.dataset.sequence_length} tokens")
+    logger.info(
+        f"Sequences: {config.dataset.num_sequences} x {config.dataset.sequence_length} tokens"
+    )
     if config.output.experiment_name:
         logger.info(f"Experiment: {config.output.experiment_name}")
     logger.info("=" * 80 + "\n")
@@ -458,7 +446,7 @@ def main():
     """Main entry point with error handling boundary."""
     try:
         # Load config
-        if len(sys.argv) > 1 and sys.argv[1].endswith('.py'):
+        if len(sys.argv) > 1 and sys.argv[1].endswith(".py"):
             config = load_config_from_file(sys.argv[1])
         else:
             config = Config()  # Use defaults
@@ -466,11 +454,7 @@ def main():
         # Setup logging
         setup_logging(
             level=config.output.log_level,
-            logger_levels={
-                "httpx": "WARNING",
-                "urllib3": "WARNING",
-                "transformers": "WARNING"
-            }
+            logger_levels={"httpx": "WARNING", "urllib3": "WARNING", "transformers": "WARNING"},
         )
 
         # Run pipeline
@@ -479,6 +463,7 @@ def main():
     except Exception as e:
         logger.error(f"✗ Perplexity computation failed: {e}")
         import traceback
+
         traceback.print_exc()
         return 1
 

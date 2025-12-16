@@ -49,21 +49,22 @@ def load_activations(run_dir: str) -> tuple[dict[str, torch.Tensor], dict]:
         assert attn_file.exists(), f"Activation file not found: {attn_file}"
         assert mlp_file.exists(), f"Activation file not found: {mlp_file}"
 
-        attn_tensor = torch.load(attn_file, map_location='cpu')
-        mlp_tensor = torch.load(mlp_file, map_location='cpu')
+        attn_tensor = torch.load(attn_file, map_location="cpu")
+        mlp_tensor = torch.load(mlp_file, map_location="cpu")
 
         activations[f"layer_{layer_idx}_ln_attn"] = attn_tensor
         activations[f"layer_{layer_idx}_ln_mlp"] = mlp_tensor
 
-        logger.debug(f"Loaded layer_{layer_idx} activations: "
-                    f"ln_attn={tuple(attn_tensor.shape)}, ln_mlp={tuple(mlp_tensor.shape)}")
+        logger.debug(
+            f"Loaded layer_{layer_idx} activations: "
+            f"ln_attn={tuple(attn_tensor.shape)}, ln_mlp={tuple(mlp_tensor.shape)}"
+        )
 
     return activations, metadata
 
 
 def find_outliers_in_activations(
-    activations: dict[str, torch.Tensor],
-    magnitude_threshold: float = 6.0
+    activations: dict[str, torch.Tensor], magnitude_threshold: float = 6.0
 ) -> dict:
     """Find outlier features across all layers and sequence positions.
 
@@ -77,7 +78,9 @@ def find_outliers_in_activations(
     Returns:
         Dict with outlier statistics and locations
     """
-    assert magnitude_threshold > 0, f"magnitude_threshold must be positive, got {magnitude_threshold}"
+    assert magnitude_threshold > 0, (
+        f"magnitude_threshold must be positive, got {magnitude_threshold}"
+    )
     logger.info(f"Searching for outliers with magnitude >= {magnitude_threshold}")
 
     # Track outliers by feature dimension h_i across all layers
@@ -90,8 +93,9 @@ def find_outliers_in_activations(
 
         # tensor shape: (batch, seq_len, d_model) where d_model contains feature dimensions h_i
         batch_size, seq_len, d_model = tensor.shape
-        assert batch_size > 0 and seq_len > 0 and d_model > 0, \
+        assert batch_size > 0 and seq_len > 0 and d_model > 0, (
             f"Invalid tensor shape: {tensor.shape}"
+        )
 
         # Find outliers using paper's magnitude criterion (≥ 6.0)
         outlier_mask = torch.abs(tensor) >= magnitude_threshold
@@ -101,13 +105,15 @@ def find_outliers_in_activations(
         max_val = tensor.abs().max().item()
 
         layer_stats[layer_name] = {
-            'num_outliers': num_outliers,
-            'max_magnitude': max_val,
-            'outlier_percentage': (num_outliers / tensor.numel()) * 100,
-            'shape': tuple(tensor.shape)
+            "num_outliers": num_outliers,
+            "max_magnitude": max_val,
+            "outlier_percentage": (num_outliers / tensor.numel()) * 100,
+            "shape": tuple(tensor.shape),
         }
 
-        logger.debug(f"  Found {num_outliers} outliers ({layer_stats[layer_name]['outlier_percentage']:.3f}%)")
+        logger.debug(
+            f"  Found {num_outliers} outliers ({layer_stats[layer_name]['outlier_percentage']:.3f}%)"
+        )
         logger.debug(f"  Max magnitude: {max_val:.3f}")
 
         # Record outliers by feature dimension h_i
@@ -118,26 +124,24 @@ def find_outliers_in_activations(
             # Group outliers by their feature dimension h_i
             for i in range(len(feature_indices)):
                 feature_dim = feature_indices[i].item()  # This is h_i in paper notation
-                seq_pos = seq_indices[i].item()          # Position in sequence dimension s
-                value = values[i].item()                 # Activation value with magnitude ≥ 6.0
+                seq_pos = seq_indices[i].item()  # Position in sequence dimension s
+                value = values[i].item()  # Activation value with magnitude ≥ 6.0
 
                 feature_outliers[feature_dim].append({
-                    'layer': layer_name,
-                    'seq_pos': seq_pos,
-                    'value': value
+                    "layer": layer_name,
+                    "seq_pos": seq_pos,
+                    "value": value,
                 })
 
     return {
-        'feature_outliers': dict(feature_outliers),
-        'layer_stats': layer_stats,
-        'threshold': magnitude_threshold
+        "feature_outliers": dict(feature_outliers),
+        "layer_stats": layer_stats,
+        "threshold": magnitude_threshold,
     }
 
 
 def analyze_systematic_outliers(
-    outlier_info: dict,
-    min_layer_percentage: float = 0.25,
-    min_seq_percentage: float = 0.06
+    outlier_info: dict, min_layer_percentage: float = 0.25, min_seq_percentage: float = 0.06
 ) -> list[dict]:
     """Find systematic outliers that appear consistently across layers and positions.
 
@@ -152,34 +156,38 @@ def analyze_systematic_outliers(
     Returns:
         List of systematic outlier features meeting all criteria
     """
-    assert 0 < min_layer_percentage <= 1, \
+    assert 0 < min_layer_percentage <= 1, (
         f"min_layer_percentage must be in (0, 1], got {min_layer_percentage}"
-    assert 0 < min_seq_percentage <= 1, \
+    )
+    assert 0 < min_seq_percentage <= 1, (
         f"min_seq_percentage must be in (0, 1], got {min_seq_percentage}"
+    )
 
-    feature_outliers = outlier_info['feature_outliers']
-    layer_stats = outlier_info['layer_stats']
+    feature_outliers = outlier_info["feature_outliers"]
+    layer_stats = outlier_info["layer_stats"]
 
     total_layers = len(layer_stats)
     assert total_layers > 0, "No layers in outlier_info"
 
     # Get sequence length from any layer (they should all be the same)
-    seq_len = next(iter(layer_stats.values()))['shape'][1]
+    seq_len = next(iter(layer_stats.values()))["shape"][1]
     assert seq_len > 0, f"Invalid sequence length: {seq_len}"
 
     systematic_features = []
 
     logger.info("Analyzing systematic outliers:")
-    logger.info(f"Criteria: ≥{min_layer_percentage * 100}% of {total_layers} layers, "
-                f"≥{min_seq_percentage * 100}% of {seq_len} seq positions")
+    logger.info(
+        f"Criteria: ≥{min_layer_percentage * 100}% of {total_layers} layers, "
+        f"≥{min_seq_percentage * 100}% of {seq_len} seq positions"
+    )
 
     for feature_dim, outlier_list in feature_outliers.items():
         # Paper criterion 1: "affects at least 25% of layers"
-        layers_with_outlier = set(item['layer'] for item in outlier_list)
+        layers_with_outlier = set(item["layer"] for item in outlier_list)
         layer_percentage = len(layers_with_outlier) / total_layers
 
         # Paper criterion 2: "affects at least 6% of the sequence dimensions"
-        seq_positions_with_outlier = set(item['seq_pos'] for item in outlier_list)
+        seq_positions_with_outlier = set(item["seq_pos"] for item in outlier_list)
         seq_percentage = len(seq_positions_with_outlier) / seq_len
 
         # Apply paper's systematic criteria (magnitude ≥6.0 already applied)
@@ -187,22 +195,24 @@ def analyze_systematic_outliers(
         meets_seq_criteria = seq_percentage >= min_seq_percentage
 
         if meets_layer_criteria and meets_seq_criteria:
-            max_magnitude = max(abs(item['value']) for item in outlier_list)
+            max_magnitude = max(abs(item["value"]) for item in outlier_list)
 
             systematic_features.append({
-                'feature_dim': feature_dim,
-                'layer_percentage': layer_percentage,
-                'seq_percentage': seq_percentage,
-                'max_magnitude': max_magnitude,
-                'total_occurrences': len(outlier_list),
-                'layers_affected': sorted(set(item['layer'] for item in outlier_list)),
-                'example_values': [item['value'] for item in outlier_list[:5]]
+                "feature_dim": feature_dim,
+                "layer_percentage": layer_percentage,
+                "seq_percentage": seq_percentage,
+                "max_magnitude": max_magnitude,
+                "total_occurrences": len(outlier_list),
+                "layers_affected": sorted(set(item["layer"] for item in outlier_list)),
+                "example_values": [item["value"] for item in outlier_list[:5]],
             })
 
-            logger.debug(f"  Feature {feature_dim}: {layer_percentage:.1%} layers, "
-                        f"{seq_percentage:.1%} seq_pos, max_mag={max_magnitude:.2f}")
+            logger.debug(
+                f"  Feature {feature_dim}: {layer_percentage:.1%} layers, "
+                f"{seq_percentage:.1%} seq_pos, max_mag={max_magnitude:.2f}"
+            )
 
-    systematic_features.sort(key=lambda x: x['max_magnitude'], reverse=True)
+    systematic_features.sort(key=lambda x: x["max_magnitude"], reverse=True)
 
     logger.info(f"Found {len(systematic_features)} systematic outlier features")
 
@@ -213,7 +223,7 @@ def analyze_run_for_outliers(
     run_dir: str,
     magnitude_threshold: float = 6.0,
     min_layer_percentage: float = 0.25,
-    min_seq_percentage: float = 0.06
+    min_seq_percentage: float = 0.06,
 ) -> tuple[list[dict], dict]:
     """Complete pipeline: load activations and analyze for outliers.
 
@@ -237,9 +247,7 @@ def analyze_run_for_outliers(
 
     # Find systematic outliers
     systematic_outliers = analyze_systematic_outliers(
-        outlier_info,
-        min_layer_percentage,
-        min_seq_percentage
+        outlier_info, min_layer_percentage, min_seq_percentage
     )
 
     return systematic_outliers, outlier_info

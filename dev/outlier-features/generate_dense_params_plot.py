@@ -10,7 +10,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 
-matplotlib.use('Agg')
+matplotlib.use("Agg")
 
 
 DENSE_MODELS = {
@@ -28,15 +28,13 @@ def extract_outliers_from_json(file_path: Path) -> list[dict] | None:
         content = f.read(50_000_000)
 
     match = re.search(
-        r'"all_systematic_outliers":\s*\[(.*?)(?:\],\s*"batch_results")',
-        content,
-        re.DOTALL
+        r'"all_systematic_outliers":\s*\[(.*?)(?:\],\s*"batch_results")', content, re.DOTALL
     )
 
     if not match:
         return None
 
-    outliers_json = '[' + match.group(1) + ']'
+    outliers_json = "[" + match.group(1) + "]"
     outliers = json.loads(outliers_json)
     return outliers
 
@@ -44,14 +42,14 @@ def extract_outliers_from_json(file_path: Path) -> list[dict] | None:
 def calculate_outlier_metrics(outliers: list[dict]) -> dict:
     """Calculate aggregate metrics from outliers list."""
     if not outliers:
-        return {'mean_layer_pct': 0.0, 'mean_seq_pct': 0.0}
+        return {"mean_layer_pct": 0.0, "mean_seq_pct": 0.0}
 
-    layer_pcts = [o['layer_percentage'] * 100 for o in outliers]
-    seq_pcts = [o['seq_percentage'] * 100 for o in outliers]
+    layer_pcts = [o["layer_percentage"] * 100 for o in outliers]
+    seq_pcts = [o["seq_percentage"] * 100 for o in outliers]
 
     return {
-        'mean_layer_pct': float(np.mean(layer_pcts)),
-        'mean_seq_pct': float(np.mean(seq_pcts)),
+        "mean_layer_pct": float(np.mean(layer_pcts)),
+        "mean_seq_pct": float(np.mean(seq_pcts)),
     }
 
 
@@ -92,36 +90,38 @@ def main():
         metadata = DENSE_MODELS[model_name]
 
         results.append({
-            'name': metadata['name'],
-            'params': metadata['total_params_b'],
-            'mean_layer_pct': metrics['mean_layer_pct'],
+            "name": metadata["name"],
+            "params": metadata["total_params_b"],
+            "mean_layer_pct": metrics["mean_layer_pct"],
         })
         print(f"✅ {metadata['name']}: {metrics['mean_layer_pct']:.1f}%")
 
     # Sort by params
-    results.sort(key=lambda x: x['params'])
+    results.sort(key=lambda x: x["params"])
 
     # Create plot
-    x_values = [r['params'] for r in results]
-    y_values = [r['mean_layer_pct'] for r in results]
-    labels = [r['name'] for r in results]
+    x_values = [r["params"] for r in results]
+    y_values = [r["mean_layer_pct"] for r in results]
+    labels = [r["name"] for r in results]
 
     plt.figure(figsize=(10, 7))
-    plt.scatter(x_values, y_values, s=100, alpha=0.6, c='steelblue')
+    plt.scatter(x_values, y_values, s=100, alpha=0.6, c="steelblue")
 
-    for x, y, label in zip(x_values, y_values, labels):
-        plt.annotate(label, (x, y), xytext=(5, 5), textcoords='offset points', fontsize=9, alpha=0.8)
+    for x, y, label in zip(x_values, y_values, labels, strict=False):
+        plt.annotate(
+            label, (x, y), xytext=(5, 5), textcoords="offset points", fontsize=9, alpha=0.8
+        )
 
-    plt.xlabel('Total Parameters (Billions)', fontsize=12)
-    plt.ylabel('Mean % Layers with Outliers', fontsize=12)
-    plt.title('Dense Models: Outlier Layer Coverage vs Parameters', fontsize=14, fontweight='bold')
+    plt.xlabel("Total Parameters (Billions)", fontsize=12)
+    plt.ylabel("Mean % Layers with Outliers", fontsize=12)
+    plt.title("Dense Models: Outlier Layer Coverage vs Parameters", fontsize=14, fontweight="bold")
     plt.grid(True, alpha=0.3)
     plt.ylim(0, 100)
     plt.tight_layout()
 
     output_path = Path("unified_plots/dense_params_vs_layer_pct.png")
     output_path.parent.mkdir(exist_ok=True, parents=True)
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
 
     print(f"\n📊 Saved: {output_path}")

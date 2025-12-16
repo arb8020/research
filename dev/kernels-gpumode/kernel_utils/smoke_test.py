@@ -11,6 +11,7 @@ Usage:
     # Test specific backends
     python -m kernel_utils.smoke_test reference triton cute
 """
+
 import sys
 from pathlib import Path
 
@@ -185,9 +186,13 @@ def run_smoke_tests(
                         test_input_prof = test.generate()
                         profile_dir = Path("profiles")
                         trace_path, prof_err = profile_kernel(
-                            backend, test_input_prof, profile_dir,
-                            backend_name, test.name,
-                            num_warmup=5, num_profile_runs=1
+                            backend,
+                            test_input_prof,
+                            profile_dir,
+                            backend_name,
+                            test.name,
+                            num_warmup=5,
+                            num_profile_runs=1,
                         )
                         if prof_err is None:
                             print(f"   📊 Torch profile saved: {trace_path}")
@@ -199,13 +204,21 @@ def run_smoke_tests(
                         if backend_name != reference_backend:
                             test_input_ref_prof = test.generate()
                             ref_trace_path, ref_prof_err = profile_kernel(
-                                ref_backend_fn, test_input_ref_prof, profile_dir,
-                                reference_backend, test.name,
-                                num_warmup=5, num_profile_runs=1
+                                ref_backend_fn,
+                                test_input_ref_prof,
+                                profile_dir,
+                                reference_backend,
+                                test.name,
+                                num_warmup=5,
+                                num_profile_runs=1,
                             )
                             if ref_prof_err is None:
                                 print(f"   📊 Reference torch profile saved: {ref_trace_path}")
-                                profile_traces.append((reference_backend, test.name, ref_trace_path))
+                                profile_traces.append((
+                                    reference_backend,
+                                    test.name,
+                                    ref_trace_path,
+                                ))
                             else:
                                 print(f"   ⚠️  Reference torch profiling failed: {ref_prof_err}")
 
@@ -215,8 +228,7 @@ def run_smoke_tests(
                         test_input_ncu = test.generate()
                         ncu_dir = Path("ncu_reports")
                         ncu_report_path, ncu_err = ncu_profile_kernel(
-                            backend, test_input_ncu, ncu_dir,
-                            backend_name, test.name
+                            backend, test_input_ncu, ncu_dir, backend_name, test.name
                         )
                         if ncu_err is None:
                             print(f"   📊 NCU report saved: {ncu_report_path}")
@@ -228,8 +240,11 @@ def run_smoke_tests(
                         if backend_name != reference_backend:
                             test_input_ref_ncu = test.generate()
                             ref_ncu_path, ref_ncu_err = ncu_profile_kernel(
-                                ref_backend_fn, test_input_ref_ncu, ncu_dir,
-                                reference_backend, test.name
+                                ref_backend_fn,
+                                test_input_ref_ncu,
+                                ncu_dir,
+                                reference_backend,
+                                test.name,
                             )
                             if ref_ncu_err is None:
                                 print(f"   📊 Reference NCU report saved: {ref_ncu_path}")
@@ -242,7 +257,7 @@ def run_smoke_tests(
                 print("   ❌ Correctness: FAIL")
                 if error_msg:
                     # Print first line of error
-                    first_line = error_msg.split('\n')[0]
+                    first_line = error_msg.split("\n")[0]
                     print(f"   Error: {first_line}")
 
                 # Still record performance (as failed)
@@ -311,9 +326,7 @@ def main() -> int:
     """Main entry point."""
     import argparse
 
-    parser = argparse.ArgumentParser(
-        description="Run NVFP4 smoke tests on registered backends"
-    )
+    parser = argparse.ArgumentParser(description="Run NVFP4 smoke tests on registered backends")
     parser.add_argument(
         "backends",
         nargs="*",
@@ -376,6 +389,7 @@ def main() -> int:
     except Exception as e:
         print(f"\n❌ Fatal error: {e}")
         import traceback
+
         traceback.print_exc()
         return 1
 

@@ -25,18 +25,21 @@ class OptimizerState(NamedTuple):
     Following Casey Muratori: Data is transparent.
     All optimizer state is visible and explicit.
     """
+
     step: int  # Current optimization step (starts at 0)
     params: PyTree  # Model parameters
 
 
 class SGDState(NamedTuple):
     """SGD optimizer state - just parameters, no momentum yet."""
+
     step: int
     params: PyTree
 
 
 class AdamState(NamedTuple):
     """Adam optimizer state."""
+
     step: int
     params: PyTree
     m: PyTree  # Momentum (EMA of gradients)
@@ -55,11 +58,7 @@ def sgd_init(params: PyTree) -> SGDState:
     return SGDState(step=0, params=params)
 
 
-def sgd_update(
-    state: SGDState,
-    grads: PyTree,
-    learning_rate: float
-) -> SGDState:
+def sgd_update(state: SGDState, grads: PyTree, learning_rate: float) -> SGDState:
     """Single SGD update step: params = params - lr * grads
 
     Following Tiger Style:
@@ -80,16 +79,9 @@ def sgd_update(
     assert state.step >= 0, f"step must be non-negative, got {state.step}"
 
     # Update parameters: new = old - lr * grad
-    new_params = jax.tree.map(
-        lambda p, g: p - learning_rate * g,
-        state.params,
-        grads
-    )
+    new_params = jax.tree.map(lambda p, g: p - learning_rate * g, state.params, grads)
 
-    return SGDState(
-        step=state.step + 1,
-        params=new_params
-    )
+    return SGDState(step=state.step + 1, params=new_params)
 
 
 def adam_init(params: PyTree) -> AdamState:
@@ -114,7 +106,7 @@ def adam_update(
     learning_rate: float,
     beta1: float = 0.9,
     beta2: float = 0.999,
-    epsilon: float = 1e-8
+    epsilon: float = 1e-8,
 ) -> AdamState:
     """Adam update step.
 
@@ -139,33 +131,17 @@ def adam_update(
     assert state.step >= 0, f"step must be non-negative, got {state.step}"
 
     # Update momentum: m = beta1 * m + (1 - beta1) * grad
-    new_m = jax.tree.map(
-        lambda m, g: beta1 * m + (1 - beta1) * g,
-        state.m,
-        grads
-    )
+    new_m = jax.tree.map(lambda m, g: beta1 * m + (1 - beta1) * g, state.m, grads)
 
     # Update second moment: v = beta2 * v + (1 - beta2) * grad^2
-    new_v = jax.tree.map(
-        lambda v, g: beta2 * v + (1 - beta2) * (g ** 2),
-        state.v,
-        grads
-    )
+    new_v = jax.tree.map(lambda v, g: beta2 * v + (1 - beta2) * (g**2), state.v, grads)
 
     # Update parameters: param = param - lr * m / (sqrt(v) + epsilon)
     new_params = jax.tree.map(
-        lambda p, m, v: p - learning_rate * m / (jnp.sqrt(v) + epsilon),
-        state.params,
-        new_m,
-        new_v
+        lambda p, m, v: p - learning_rate * m / (jnp.sqrt(v) + epsilon), state.params, new_m, new_v
     )
 
-    return AdamState(
-        step=state.step + 1,
-        params=new_params,
-        m=new_m,
-        v=new_v
-    )
+    return AdamState(step=state.step + 1, params=new_params, m=new_m, v=new_v)
 
 
 def optimize(
@@ -175,7 +151,7 @@ def optimize(
     update_fn: Callable[[Any, PyTree, float], Any],
     learning_rate: float,
     num_steps: int,
-    return_grads: bool = False
+    return_grads: bool = False,
 ) -> tuple[list[float], list[PyTree], list[Any], list[PyTree]]:
     """Run optimization loop and collect trajectory.
 
@@ -260,7 +236,7 @@ def quadratic_loss(params: jnp.ndarray) -> jnp.ndarray:
     Returns:
         Scalar loss value (0-dimensional array)
     """
-    return jnp.sum(params ** 2) / 2.0
+    return jnp.sum(params**2) / 2.0
 
 
 def main():
@@ -291,7 +267,7 @@ def main():
         init_fn=sgd_init,
         update_fn=sgd_update,
         learning_rate=learning_rate,
-        num_steps=num_steps
+        num_steps=num_steps,
     )
 
     # Print results
@@ -305,10 +281,10 @@ def main():
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
 
     # Plot 1: Loss over time
-    ax1.plot(losses, 'b-', linewidth=2)
-    ax1.set_xlabel('Step')
-    ax1.set_ylabel('Loss')
-    ax1.set_title('Loss vs. Optimization Step')
+    ax1.plot(losses, "b-", linewidth=2)
+    ax1.set_xlabel("Step")
+    ax1.set_ylabel("Loss")
+    ax1.set_title("Loss vs. Optimization Step")
     ax1.grid(True, alpha=0.3)
 
     # Plot 2: Parameter trajectory in 2D
@@ -321,19 +297,19 @@ def main():
     X, Y = jnp.meshgrid(x_range, y_range)
     Z = (X**2 + Y**2) / 2.0
 
-    ax2.contour(X, Y, Z, levels=20, alpha=0.3, cmap='viridis')
-    ax2.plot(x_vals, y_vals, 'ro-', linewidth=2, markersize=6, label='SGD trajectory')
-    ax2.plot(x_vals[0], y_vals[0], 'go', markersize=10, label='Start')
-    ax2.plot(x_vals[-1], y_vals[-1], 'r*', markersize=15, label='End')
-    ax2.set_xlabel('x[0]')
-    ax2.set_ylabel('x[1]')
-    ax2.set_title('Parameter Trajectory')
+    ax2.contour(X, Y, Z, levels=20, alpha=0.3, cmap="viridis")
+    ax2.plot(x_vals, y_vals, "ro-", linewidth=2, markersize=6, label="SGD trajectory")
+    ax2.plot(x_vals[0], y_vals[0], "go", markersize=10, label="Start")
+    ax2.plot(x_vals[-1], y_vals[-1], "r*", markersize=15, label="End")
+    ax2.set_xlabel("x[0]")
+    ax2.set_ylabel("x[1]")
+    ax2.set_title("Parameter Trajectory")
     ax2.legend()
     ax2.grid(True, alpha=0.3)
-    ax2.axis('equal')
+    ax2.axis("equal")
 
     plt.tight_layout()
-    plt.savefig('/Users/chiraagbalu/research/examples/optimizer-visuals/sgd_test.png', dpi=150)
+    plt.savefig("/Users/chiraagbalu/research/examples/optimizer-visuals/sgd_test.png", dpi=150)
     print("\nVisualization saved to: examples/optimizer-visuals/sgd_test.png")
 
     return 0
@@ -341,4 +317,5 @@ def main():
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(main())

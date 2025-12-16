@@ -21,10 +21,10 @@ from analyze_activations import analyze_run_for_outliers
 from config import Config
 from dataset_utils import get_text_sequences
 from extract_activations import extract_activations_optimized
+from transformers import AutoTokenizer
 
 # Import shared logging setup
 from shared.logging_config import setup_logging
-from transformers import AutoTokenizer
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ def load_config_from_file(config_path: str) -> Config:
         ImportError: If config file cannot be loaded
         AttributeError: If config file doesn't have 'config' variable
     """
-    assert config_path.endswith('.py'), f"Config must be .py file, got {config_path}"
+    assert config_path.endswith(".py"), f"Config must be .py file, got {config_path}"
 
     spec = importlib.util.spec_from_file_location("exp_config", config_path)
     assert spec is not None, f"Failed to load spec from {config_path}"
@@ -51,7 +51,7 @@ def load_config_from_file(config_path: str) -> Config:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    assert hasattr(module, 'config'), "Config file must define 'config' variable"
+    assert hasattr(module, "config"), "Config file must define 'config' variable"
     config: Config = module.config
     assert isinstance(config, Config), f"Expected Config object, got {type(config)}"
 
@@ -130,7 +130,7 @@ def load_model_optimized(config: Config):
         llm = LanguageModel(
             config.model.name,
             device_map="auto",
-            torch_dtype=getattr(torch, config.model.torch_dtype)
+            torch_dtype=getattr(torch, config.model.torch_dtype),
         )
     else:
         logger.info("Using multi-GPU balanced configuration with 76GB per GPU limit...")
@@ -139,14 +139,14 @@ def load_model_optimized(config: Config):
             config.model.name,
             device_map="balanced",
             max_memory=max_memory,
-            torch_dtype=getattr(torch, config.model.torch_dtype)
+            torch_dtype=getattr(torch, config.model.torch_dtype),
         )
 
     # Disable KV cache to save memory
     # Access underlying model for nnsight compatibility (some models use _model)
-    if hasattr(llm, 'model'):
+    if hasattr(llm, "model"):
         llm.model.config.use_cache = config.model.use_cache
-    elif hasattr(llm, '_model'):
+    elif hasattr(llm, "_model"):
         llm._model.config.use_cache = config.model.use_cache
     else:
         # Fallback: try to access config directly on the wrapped model
@@ -184,7 +184,7 @@ def process_single_batch(
     batch_idx: int,
     config: Config,
     save_dir: Path,
-    num_batches: int | None = None
+    num_batches: int | None = None,
 ) -> dict:
     """Extract and analyze activations for a single batch.
 
@@ -210,7 +210,7 @@ def process_single_batch(
         texts=batch_texts,
         layers=config.analysis.layers,
         save_dir=str(save_dir),
-        chunk_size=config.analysis.chunk_layers
+        chunk_size=config.analysis.chunk_layers,
     )
     logger.info(f"✓ Activation extraction completed: {run_dir}")
 
@@ -220,7 +220,7 @@ def process_single_batch(
         run_dir=run_dir,
         magnitude_threshold=config.analysis.magnitude_threshold,
         min_layer_percentage=config.analysis.min_layer_percentage,
-        min_seq_percentage=config.analysis.min_seq_percentage
+        min_seq_percentage=config.analysis.min_seq_percentage,
     )
 
     # Step 3: Create batch result summary (excluding full outlier_info to save space)
@@ -230,21 +230,25 @@ def process_single_batch(
         "sequences_processed": len(batch_texts),
         "systematic_outliers": systematic_outliers,
         "outlier_summary": {
-            "total_outlier_features": len(outlier_info.get('feature_outliers', {})),
-            "layer_stats": outlier_info.get('layer_stats', {}),
-            "threshold": outlier_info.get('threshold', 6.0)
+            "total_outlier_features": len(outlier_info.get("feature_outliers", {})),
+            "layer_stats": outlier_info.get("layer_stats", {}),
+            "threshold": outlier_info.get("threshold", 6.0),
         },
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
     }
 
-    logger.info(f"✓ Batch {batch_idx + 1}: Found {len(systematic_outliers)} systematic outlier features")
+    logger.info(
+        f"✓ Batch {batch_idx + 1}: Found {len(systematic_outliers)} systematic outlier features"
+    )
 
     # Step 4: Cleanup activation files to save disk space
     run_dir_path = Path(run_dir)
     if run_dir_path.exists():
-        disk_freed_mb = sum(f.stat().st_size for f in run_dir_path.rglob('*.pt')) / (1024 * 1024)
+        disk_freed_mb = sum(f.stat().st_size for f in run_dir_path.rglob("*.pt")) / (1024 * 1024)
         shutil.rmtree(run_dir_path)
-        logger.info(f"🗑️  Cleaned up activation files: {run_dir_path.name} ({disk_freed_mb:.1f}MB freed)")
+        logger.info(
+            f"🗑️  Cleaned up activation files: {run_dir_path.name} ({disk_freed_mb:.1f}MB freed)"
+        )
 
     # Step 5: Clear GPU cache
     torch.cuda.empty_cache()
@@ -269,9 +273,11 @@ def aggregate_batch_results(batch_results: list[dict], config: Config) -> dict:
 
     all_systematic_outliers = []
     for batch_result in batch_results:
-        all_systematic_outliers.extend(batch_result['systematic_outliers'])
-        logger.info(f"Batch {batch_result['batch_id']}: "
-                   f"{len(batch_result['systematic_outliers'])} systematic outlier features")
+        all_systematic_outliers.extend(batch_result["systematic_outliers"])
+        logger.info(
+            f"Batch {batch_result['batch_id']}: "
+            f"{len(batch_result['systematic_outliers'])} systematic outlier features"
+        )
 
     logger.info(f"Total systematic outlier features found: {len(all_systematic_outliers)}")
 
@@ -279,25 +285,22 @@ def aggregate_batch_results(batch_results: list[dict], config: Config) -> dict:
     feature_aggregates = {}
     if all_systematic_outliers:
         for feature in all_systematic_outliers:
-            dim = feature['feature_dim']
+            dim = feature["feature_dim"]
             if dim not in feature_aggregates:
                 feature_aggregates[dim] = {
-                    'feature_dim': dim,
-                    'max_magnitude': feature['max_magnitude'],
-                    'occurrences': 1
+                    "feature_dim": dim,
+                    "max_magnitude": feature["max_magnitude"],
+                    "occurrences": 1,
                 }
             else:
-                feature_aggregates[dim]['max_magnitude'] = max(
-                    feature_aggregates[dim]['max_magnitude'],
-                    feature['max_magnitude']
+                feature_aggregates[dim]["max_magnitude"] = max(
+                    feature_aggregates[dim]["max_magnitude"], feature["max_magnitude"]
                 )
-                feature_aggregates[dim]['occurrences'] += 1
+                feature_aggregates[dim]["occurrences"] += 1
 
         # Sort by max magnitude
         top_features = sorted(
-            feature_aggregates.values(),
-            key=lambda x: x['max_magnitude'],
-            reverse=True
+            feature_aggregates.values(), key=lambda x: x["max_magnitude"], reverse=True
         )
 
         logger.info("\nTop outlier features across all batches:")
@@ -313,17 +316,11 @@ def aggregate_batch_results(batch_results: list[dict], config: Config) -> dict:
 
     logger.info("=" * 80 + "\n")
 
-    return {
-        'all_systematic_outliers': all_systematic_outliers,
-        'top_features': top_features
-    }
+    return {"all_systematic_outliers": all_systematic_outliers, "top_features": top_features}
 
 
 def save_final_results(
-    batch_results: list[dict],
-    aggregated: dict,
-    config: Config,
-    output_dir: Path
+    batch_results: list[dict], aggregated: dict, config: Config, output_dir: Path
 ):
     """Save final aggregated results to disk.
 
@@ -340,9 +337,9 @@ def save_final_results(
     final_results = {
         "analysis_summary": {
             "total_batches": len(batch_results),
-            "total_sequences": sum(br['sequences_processed'] for br in batch_results),
-            "total_systematic_outliers": len(aggregated['all_systematic_outliers']),
-            "completion_time": datetime.now().isoformat()
+            "total_sequences": sum(br["sequences_processed"] for br in batch_results),
+            "total_systematic_outliers": len(aggregated["all_systematic_outliers"]),
+            "completion_time": datetime.now().isoformat(),
         },
         "run_config": {
             "model": config.model.name,
@@ -355,13 +352,13 @@ def save_final_results(
             "shard_range_inclusive": [shard_start, shard_end],
             "experiment_name": config.output.experiment_name,
         },
-        "top_features": aggregated['top_features'],
-        "all_systematic_outliers": aggregated['all_systematic_outliers'],
-        "batch_results": batch_results
+        "top_features": aggregated["top_features"],
+        "all_systematic_outliers": aggregated["all_systematic_outliers"],
+        "batch_results": batch_results,
     }
 
     final_results_file = output_dir / "final_analysis_results.json"
-    with open(final_results_file, 'w') as f:
+    with open(final_results_file, "w") as f:
         json.dump(final_results, f, indent=2)
 
     logger.info(f"📁 Final results saved: {final_results_file}")
@@ -370,18 +367,14 @@ def save_final_results(
 def main():
     """Main orchestrator - config loading and batch coordination only."""
     # Load config
-    if len(sys.argv) > 1 and sys.argv[1].endswith('.py'):
+    if len(sys.argv) > 1 and sys.argv[1].endswith(".py"):
         config = load_config_from_file(sys.argv[1])
     else:
         config = Config()  # Use defaults
 
     # Setup logging
     setup_logging(
-        level=config.output.log_level,
-        logger_levels={
-            "httpx": "WARNING",
-            "urllib3": "WARNING"
-        }
+        level=config.output.log_level, logger_levels={"httpx": "WARNING", "urllib3": "WARNING"}
     )
 
     logger.info("=" * 80)
@@ -389,7 +382,9 @@ def main():
     logger.info("=" * 80)
     logger.info(f"Model: {config.model.name}")
     logger.info(f"Dataset: {config.dataset.name}")
-    logger.info(f"Sequences: {config.dataset.num_sequences} x {config.dataset.sequence_length} tokens")
+    logger.info(
+        f"Sequences: {config.dataset.num_sequences} x {config.dataset.sequence_length} tokens"
+    )
     logger.info(f"Batch size: {config.analysis.batch_size}")
     logger.info(f"Threshold: {config.analysis.magnitude_threshold}")
     if config.output.experiment_name:
@@ -399,8 +394,9 @@ def main():
     try:
         # Validate config
         assert config.dataset.num_sequences > 0, "num_sequences must be positive"
-        assert config.dataset.num_sequences % config.analysis.batch_size == 0, \
+        assert config.dataset.num_sequences % config.analysis.batch_size == 0, (
             f"num_sequences ({config.dataset.num_sequences}) must be divisible by batch_size ({config.analysis.batch_size})"
+        )
 
         # Load dataset
         tokenizer, text_sequences = load_dataset_sequences(config)
@@ -450,6 +446,7 @@ def main():
     except Exception as e:
         logger.error(f"✗ Analysis failed: {e}")
         import traceback
+
         traceback.print_exc()
         return 1
 

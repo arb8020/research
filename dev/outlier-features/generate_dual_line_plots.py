@@ -15,7 +15,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 
-matplotlib.use('Agg')
+matplotlib.use("Agg")
 
 
 DENSE_MODELS = {
@@ -105,8 +105,8 @@ def load_perplexity_result(perplexity_dir: Path) -> dict | None:
         data = json.load(f)
 
     return {
-        'model_name': data.get('model'),
-        'perplexity': data.get('perplexity'),
+        "model_name": data.get("model"),
+        "perplexity": data.get("perplexity"),
     }
 
 
@@ -116,15 +116,13 @@ def extract_outliers_from_json(file_path: Path) -> list[dict] | None:
         content = f.read(50_000_000)
 
     match = re.search(
-        r'"all_systematic_outliers":\s*\[(.*?)(?:\],\s*"batch_results")',
-        content,
-        re.DOTALL
+        r'"all_systematic_outliers":\s*\[(.*?)(?:\],\s*"batch_results")', content, re.DOTALL
     )
 
     if not match:
         return None
 
-    outliers_json = '[' + match.group(1) + ']'
+    outliers_json = "[" + match.group(1) + "]"
     outliers = json.loads(outliers_json)
     return outliers
 
@@ -133,18 +131,18 @@ def calculate_outlier_metrics(outliers: list[dict]) -> dict:
     """Calculate aggregate metrics from outliers list."""
     if not outliers:
         return {
-            'num_outliers': 0,
-            'mean_layer_pct': 0.0,
-            'mean_seq_pct': 0.0,
+            "num_outliers": 0,
+            "mean_layer_pct": 0.0,
+            "mean_seq_pct": 0.0,
         }
 
-    layer_pcts = [o['layer_percentage'] * 100 for o in outliers]
-    seq_pcts = [o['seq_percentage'] * 100 for o in outliers]
+    layer_pcts = [o["layer_percentage"] * 100 for o in outliers]
+    seq_pcts = [o["seq_percentage"] * 100 for o in outliers]
 
     return {
-        'num_outliers': len(outliers),
-        'mean_layer_pct': float(np.mean(layer_pcts)),
-        'mean_seq_pct': float(np.mean(seq_pcts)),
+        "num_outliers": len(outliers),
+        "mean_layer_pct": float(np.mean(layer_pcts)),
+        "mean_seq_pct": float(np.mean(seq_pcts)),
     }
 
 
@@ -154,7 +152,7 @@ def extract_model_name_from_result(result_dir: Path) -> str | None:
     if config_file.exists():
         with open(config_file) as f:
             config = json.load(f)
-            model_name = config.get('model', {}).get('name')
+            model_name = config.get("model", {}).get("name")
             if model_name:
                 return model_name
 
@@ -178,8 +176,8 @@ def load_all_results(results_dir: Path) -> list[dict]:
             if not result_dir.is_dir():
                 continue
             ppl_data = load_perplexity_result(result_dir)
-            if ppl_data and ppl_data['model_name']:
-                perplexity_map[ppl_data['model_name']] = ppl_data['perplexity']
+            if ppl_data and ppl_data["model_name"]:
+                perplexity_map[ppl_data["model_name"]] = ppl_data["perplexity"]
 
     # Now load outlier results and match with perplexity
     all_results = []
@@ -204,13 +202,13 @@ def load_all_results(results_dir: Path) -> list[dict]:
             metadata = MODEL_METADATA[model_name]
 
             result = {
-                'model_name': metadata['name'],
-                'full_model_name': model_name,
-                'total_params_b': metadata['total_params_b'],
-                'active_params_b': metadata['active_params_b'],
-                'perplexity': perplexity_map.get(model_name),
-                'is_dense': is_dense_model(model_name),
-                **outlier_metrics
+                "model_name": metadata["name"],
+                "full_model_name": model_name,
+                "total_params_b": metadata["total_params_b"],
+                "active_params_b": metadata["active_params_b"],
+                "perplexity": perplexity_map.get(model_name),
+                "is_dense": is_dense_model(model_name),
+                **outlier_metrics,
             }
 
             all_results.append(result)
@@ -231,34 +229,56 @@ def create_dual_line_plot(
 
     # Extract data
     x_values = [r[x_key] for r in results]
-    layer_values = [r['mean_layer_pct'] for r in results]
-    seq_values = [r['mean_seq_pct'] for r in results]
-    labels = [r['model_name'] for r in results]
+    layer_values = [r["mean_layer_pct"] for r in results]
+    seq_values = [r["mean_seq_pct"] for r in results]
+    labels = [r["model_name"] for r in results]
 
     # Create figure
     fig, ax = plt.subplots(figsize=(10, 7))
 
     # Plot both as scatter points (blue and orange like Dettmers)
-    ax.scatter(x_values, layer_values, s=100, color='#1f77b4', marker='o',
-               label='% Layers', alpha=0.7)
-    ax.scatter(x_values, seq_values, s=100, color='#ff7f0e', marker='s',
-               label='% Sequence Positions', alpha=0.7)
+    ax.scatter(
+        x_values, layer_values, s=100, color="#1f77b4", marker="o", label="% Layers", alpha=0.7
+    )
+    ax.scatter(
+        x_values,
+        seq_values,
+        s=100,
+        color="#ff7f0e",
+        marker="s",
+        label="% Sequence Positions",
+        alpha=0.7,
+    )
 
     # Add labels for each point
-    for x, y_layer, y_seq, label in zip(x_values, layer_values, seq_values, labels):
+    for x, y_layer, y_seq, label in zip(x_values, layer_values, seq_values, labels, strict=False):
         # Layer % label (above point)
-        ax.annotate(label, (x, y_layer), xytext=(0, 8),
-                   textcoords='offset points', fontsize=8,
-                   ha='center', alpha=0.7, color='#1f77b4')
+        ax.annotate(
+            label,
+            (x, y_layer),
+            xytext=(0, 8),
+            textcoords="offset points",
+            fontsize=8,
+            ha="center",
+            alpha=0.7,
+            color="#1f77b4",
+        )
         # Seq % label (below point) - only if far enough apart
         if abs(y_layer - y_seq) > 10:
-            ax.annotate(label, (x, y_seq), xytext=(0, -12),
-                       textcoords='offset points', fontsize=8,
-                       ha='center', alpha=0.7, color='#ff7f0e')
+            ax.annotate(
+                label,
+                (x, y_seq),
+                xytext=(0, -12),
+                textcoords="offset points",
+                fontsize=8,
+                ha="center",
+                alpha=0.7,
+                color="#ff7f0e",
+            )
 
     ax.set_xlabel(xlabel, fontsize=12)
-    ax.set_ylabel('% Affected', fontsize=12)
-    ax.set_title(title, fontsize=14, fontweight='bold')
+    ax.set_ylabel("% Affected", fontsize=12)
+    ax.set_title(title, fontsize=14, fontweight="bold")
     ax.grid(True, alpha=0.3)
     ax.set_ylim(0, 100)
 
@@ -266,10 +286,10 @@ def create_dual_line_plot(
     if invert_x:
         ax.invert_xaxis()
 
-    ax.legend(loc='best', fontsize=11)
+    ax.legend(loc="best", fontsize=11)
 
     plt.tight_layout()
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     print(f"  📊 Saved: {output_path.name}")
 
@@ -279,59 +299,59 @@ def generate_all_dual_plots(results: list[dict], output_dir: Path):
     output_dir.mkdir(exist_ok=True, parents=True)
 
     # Split into dense and MoE
-    dense_results = [r for r in results if r['is_dense']]
-    moe_results = [r for r in results if not r['is_dense']]
+    dense_results = [r for r in results if r["is_dense"]]
+    moe_results = [r for r in results if not r["is_dense"]]
 
     print("\n📊 Generating dual-line plots...")
     print(f"   Dense models: {len(dense_results)}")
     print(f"   MoE models: {len(moe_results)}")
 
     # Dense models with perplexity
-    dense_with_ppl = [r for r in dense_results if r['perplexity'] is not None]
+    dense_with_ppl = [r for r in dense_results if r["perplexity"] is not None]
 
     if dense_with_ppl:
         # Sort by x-axis value for line plots
-        dense_params_sorted = sorted(dense_results, key=lambda x: x['total_params_b'])
-        dense_ppl_sorted = sorted(dense_with_ppl, key=lambda x: x['perplexity'])
+        dense_params_sorted = sorted(dense_results, key=lambda x: x["total_params_b"])
+        dense_ppl_sorted = sorted(dense_with_ppl, key=lambda x: x["perplexity"])
 
         print("\n🔵 Dense Models:")
         create_dual_line_plot(
             dense_params_sorted,
-            x_key='total_params_b',
-            output_path=output_dir / 'dense_params_dual.png',
-            title='Dense Models: Layer & Sequence Coverage vs Parameters',
-            xlabel='Total Parameters (Billions)',
+            x_key="total_params_b",
+            output_path=output_dir / "dense_params_dual.png",
+            title="Dense Models: Layer & Sequence Coverage vs Parameters",
+            xlabel="Total Parameters (Billions)",
         )
 
         create_dual_line_plot(
             dense_ppl_sorted,
-            x_key='perplexity',
-            output_path=output_dir / 'dense_perplexity_dual.png',
-            title='Dense Models: Layer & Sequence Coverage vs Perplexity',
-            xlabel='Perplexity (FineWeb-Edu)',
+            x_key="perplexity",
+            output_path=output_dir / "dense_perplexity_dual.png",
+            title="Dense Models: Layer & Sequence Coverage vs Perplexity",
+            xlabel="Perplexity (FineWeb-Edu)",
             invert_x=True,  # Match Dettmers: high perplexity left, low right
         )
 
     # MoE models
     if moe_results:
-        moe_total_sorted = sorted(moe_results, key=lambda x: x['total_params_b'])
-        moe_active_sorted = sorted(moe_results, key=lambda x: x['active_params_b'])
+        moe_total_sorted = sorted(moe_results, key=lambda x: x["total_params_b"])
+        moe_active_sorted = sorted(moe_results, key=lambda x: x["active_params_b"])
 
         print("\n🟣 MoE Models:")
         create_dual_line_plot(
             moe_total_sorted,
-            x_key='total_params_b',
-            output_path=output_dir / 'moe_total_params_dual.png',
-            title='MoE Models: Layer & Sequence Coverage vs Total Parameters',
-            xlabel='Total Parameters (Billions)',
+            x_key="total_params_b",
+            output_path=output_dir / "moe_total_params_dual.png",
+            title="MoE Models: Layer & Sequence Coverage vs Total Parameters",
+            xlabel="Total Parameters (Billions)",
         )
 
         create_dual_line_plot(
             moe_active_sorted,
-            x_key='active_params_b',
-            output_path=output_dir / 'moe_active_params_dual.png',
-            title='MoE Models: Layer & Sequence Coverage vs Active Parameters',
-            xlabel='Active Parameters (Billions)',
+            x_key="active_params_b",
+            output_path=output_dir / "moe_active_params_dual.png",
+            title="MoE Models: Layer & Sequence Coverage vs Active Parameters",
+            xlabel="Active Parameters (Billions)",
         )
 
 

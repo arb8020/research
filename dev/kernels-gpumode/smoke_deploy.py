@@ -29,17 +29,17 @@ Usage:
     # Test on specific GPU
     python smoke_deploy.py --ssh root@host:port --gpu 1 --new triton
 """
+
 import argparse
 import logging
 import sys
 from pathlib import Path
 
 from bifrost.client import BifrostClient
+from kerbal import DependencyConfig, setup_script_deps
 
 # Import shared logging
 from shared.logging_config import setup_logging
-
-from kerbal import DependencyConfig, setup_script_deps
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +144,7 @@ def deploy_and_test(
     if result.stderr:
         logger.warning(f"stderr: {result.stderr}")
 
-    success = (result.exit_code == 0)
+    success = result.exit_code == 0
 
     # Enhanced message with backend info
     if backends:
@@ -190,7 +190,9 @@ def deploy_and_test(
             # List profile files (only .json, not tensorboard files)
             list_result = client.exec(f"find {profiles_remote} -name '*.json' -type f")
             if list_result.exit_code == 0:
-                profile_files = [f.strip() for f in list_result.stdout.strip().split('\n') if f.strip()]
+                profile_files = [
+                    f.strip() for f in list_result.stdout.strip().split("\n") if f.strip()
+                ]
 
                 if profile_files:
                     profiles_local.mkdir(parents=True, exist_ok=True)
@@ -206,7 +208,9 @@ def deploy_and_test(
                             logger.warning(f"   Failed to download: {filename}")
 
                     logger.info("\n   📊 View torch profiles:")
-                    logger.info(f"      Chrome trace: Open chrome://tracing and load files from {profiles_local}/")
+                    logger.info(
+                        f"      Chrome trace: Open chrome://tracing and load files from {profiles_local}/"
+                    )
                     logger.info(f"      TensorBoard: tensorboard --logdir={profiles_local}/")
                 else:
                     logger.warning("   No profile files found")
@@ -229,9 +233,7 @@ def deploy_and_test(
 
             logger.info(f"   Downloading from {ncu_remote}...")
             result = client.download_files(
-                remote_path=ncu_remote,
-                local_path=str(ncu_local),
-                recursive=True
+                remote_path=ncu_remote, local_path=str(ncu_local), recursive=True
             )
 
             if result.success:
@@ -322,7 +324,7 @@ Examples:
             "httpx": "WARNING",
             "urllib3": "WARNING",
             "paramiko": "WARNING",
-        }
+        },
     )
 
     success, message = deploy_and_test(

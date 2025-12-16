@@ -31,10 +31,7 @@ def linear_regression_loss(W: jnp.ndarray, X: jnp.ndarray, y: jnp.ndarray) -> jn
 
 
 def generate_linear_data(
-    input_dim: int,
-    output_dim: int,
-    n_samples: int,
-    key: jax.random.PRNGKey
+    input_dim: int, output_dim: int, n_samples: int, key: jax.random.PRNGKey
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Generate synthetic linear regression data.
 
@@ -71,7 +68,7 @@ def adam_step_with_state(
     lr: float = 0.001,
     beta1: float = 0.9,
     beta2: float = 0.999,
-    eps: float = 1e-8
+    eps: float = 1e-8,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Single Adam step, returning updated (W, m, v).
 
@@ -91,11 +88,11 @@ def adam_step_with_state(
     """
     # Update biased moments
     m_new = beta1 * m + (1 - beta1) * grad
-    v_new = beta2 * v + (1 - beta2) * (grad ** 2)
+    v_new = beta2 * v + (1 - beta2) * (grad**2)
 
     # Bias correction (optional, but standard)
-    m_hat = m_new / (1 - beta1 ** t)
-    v_hat = v_new / (1 - beta2 ** t)
+    m_hat = m_new / (1 - beta1**t)
+    v_hat = v_new / (1 - beta2**t)
 
     # Update weights
     W_new = W - lr * m_hat / (jnp.sqrt(v_hat) + eps)
@@ -154,56 +151,60 @@ def main():
         singular_values_history.append(singular_values)
 
         if t % 100 == 0:
-            print(f"  Step {t:4d}: loss={loss:.6f}, max_sv={singular_values[0]:.4f}, min_sv={singular_values[-1]:.4f}")
+            print(
+                f"  Step {t:4d}: loss={loss:.6f}, max_sv={singular_values[0]:.4f}, min_sv={singular_values[-1]:.4f}"
+            )
 
     print("\nOptimization complete!")
 
     # Convert to array for plotting
-    singular_values_history = np.array(singular_values_history)  # shape: (num_steps, min(output_dim, input_dim))
+    singular_values_history = np.array(
+        singular_values_history
+    )  # shape: (num_steps, min(output_dim, input_dim))
 
     # Visualize results
     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(14, 10))
 
     # Plot 1: Loss curve
-    ax1.plot(losses, 'b-', linewidth=2)
-    ax1.set_xlabel('Step')
-    ax1.set_ylabel('Loss')
-    ax1.set_title('Training Loss')
+    ax1.plot(losses, "b-", linewidth=2)
+    ax1.set_xlabel("Step")
+    ax1.set_ylabel("Loss")
+    ax1.set_title("Training Loss")
     ax1.grid(True, alpha=0.3)
-    ax1.set_yscale('log')
+    ax1.set_yscale("log")
 
     # Plot 2: All singular values over time
     for i in range(singular_values_history.shape[1]):
         ax2.plot(singular_values_history[:, i], alpha=0.6, linewidth=1)
-    ax2.set_xlabel('Step')
-    ax2.set_ylabel('Singular Value')
-    ax2.set_title('Momentum Matrix Singular Values Over Time')
+    ax2.set_xlabel("Step")
+    ax2.set_ylabel("Singular Value")
+    ax2.set_title("Momentum Matrix Singular Values Over Time")
     ax2.grid(True, alpha=0.3)
-    ax2.set_yscale('log')
+    ax2.set_yscale("log")
 
     # Plot 3: Top 5 vs bottom 5 singular values
     top_k = 5
     for i in range(top_k):
-        ax3.plot(singular_values_history[:, i], label=f'SV {i + 1}', linewidth=2)
-    ax3.set_xlabel('Step')
-    ax3.set_ylabel('Singular Value')
-    ax3.set_title(f'Top {top_k} Singular Values')
+        ax3.plot(singular_values_history[:, i], label=f"SV {i + 1}", linewidth=2)
+    ax3.set_xlabel("Step")
+    ax3.set_ylabel("Singular Value")
+    ax3.set_title(f"Top {top_k} Singular Values")
     ax3.legend()
     ax3.grid(True, alpha=0.3)
-    ax3.set_yscale('log')
+    ax3.set_yscale("log")
 
     # Plot 4: Singular value spectrum at different times
     steps_to_plot = [50, 150, 300, 500]
     for step_idx in steps_to_plot:
         if step_idx <= num_steps:
             sv = singular_values_history[step_idx - 1]
-            ax4.plot(sv, 'o-', label=f'Step {step_idx}', alpha=0.7)
-    ax4.set_xlabel('Singular Value Index')
-    ax4.set_ylabel('Singular Value Magnitude')
-    ax4.set_title('Singular Value Spectrum at Different Times')
+            ax4.plot(sv, "o-", label=f"Step {step_idx}", alpha=0.7)
+    ax4.set_xlabel("Singular Value Index")
+    ax4.set_ylabel("Singular Value Magnitude")
+    ax4.set_title("Singular Value Spectrum at Different Times")
     ax4.legend()
     ax4.grid(True, alpha=0.3)
-    ax4.set_yscale('log')
+    ax4.set_yscale("log")
 
     plt.tight_layout()
     save_path = Path(__file__).parent / "momentum_rank_analysis.png"
@@ -234,4 +235,5 @@ def main():
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(main())

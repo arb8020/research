@@ -26,12 +26,12 @@ load_dotenv()
 sys.path.insert(0, str(Path.home() / "research" / "shared"))
 sys.path.insert(0, str(Path(__file__).parent.parent / "rollouts"))
 
+# Import verifiers for loading Prime Hub environments
+from verifiers import load_environment
+
 from rollouts.evaluation import evaluate
 from rollouts.integrations.prime import prime_reward_fn
 from rollouts.logging_utils import init_rollout_logging
-
-# Import verifiers for loading Prime Hub environments
-from verifiers import load_environment
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +60,12 @@ async def run_evaluation(config_path: Path, result_dir: Path):
     spec.loader.exec_module(config_module)
 
     assert hasattr(config_module, "config"), "Config file must export 'config' variable"
-    assert hasattr(config_module, "prepare_messages"), "Config file must export 'prepare_messages' function"
-    assert hasattr(config_module, "create_environment"), "Config file must export 'create_environment' function"
+    assert hasattr(config_module, "prepare_messages"), (
+        "Config file must export 'prepare_messages' function"
+    )
+    assert hasattr(config_module, "create_environment"), (
+        "Config file must export 'create_environment' function"
+    )
 
     config = config_module.config
     prepare_messages = config_module.prepare_messages
@@ -79,18 +83,18 @@ async def run_evaluation(config_path: Path, result_dir: Path):
     # Extract environment-specific parameters from config if they exist
     # This allows configs to explicitly specify backend-bench parameters
     env_kwargs = {}
-    if hasattr(config, 'backend_bench_gpu'):
-        env_kwargs['gpu'] = config.backend_bench_gpu
+    if hasattr(config, "backend_bench_gpu"):
+        env_kwargs["gpu"] = config.backend_bench_gpu
         logger.info(f"   GPU: {config.backend_bench_gpu}")
-    if hasattr(config, 'backend_bench_suite'):
-        env_kwargs['suite'] = config.backend_bench_suite
+    if hasattr(config, "backend_bench_suite"):
+        env_kwargs["suite"] = config.backend_bench_suite
         logger.info(f"   Suite: {config.backend_bench_suite}")
-    if hasattr(config, 'backend_bench_ops'):
-        env_kwargs['ops'] = config.backend_bench_ops
-    if hasattr(config, 'backend_bench_num_turns'):
-        env_kwargs['num_turns'] = config.backend_bench_num_turns
-    if hasattr(config, 'backend_bench_feedback_loop'):
-        env_kwargs['feedback_loop'] = config.backend_bench_feedback_loop
+    if hasattr(config, "backend_bench_ops"):
+        env_kwargs["ops"] = config.backend_bench_ops
+    if hasattr(config, "backend_bench_num_turns"):
+        env_kwargs["num_turns"] = config.backend_bench_num_turns
+    if hasattr(config, "backend_bench_feedback_loop"):
+        env_kwargs["feedback_loop"] = config.backend_bench_feedback_loop
 
     if env_kwargs:
         logger.info(f"   Explicit parameters: {list(env_kwargs.keys())}")
@@ -99,9 +103,9 @@ async def run_evaluation(config_path: Path, result_dir: Path):
 
     # Get dataset size - handle both dataset and eval_dataset
     dataset_size = 0
-    if hasattr(prime_env, 'dataset') and prime_env.dataset is not None:
+    if hasattr(prime_env, "dataset") and prime_env.dataset is not None:
         dataset_size = len(prime_env.dataset)
-    elif hasattr(prime_env, 'eval_dataset') and prime_env.eval_dataset is not None:
+    elif hasattr(prime_env, "eval_dataset") and prime_env.eval_dataset is not None:
         dataset_size = len(prime_env.eval_dataset)
 
     logger.info(f"   Dataset size: {dataset_size}")
@@ -116,9 +120,9 @@ async def run_evaluation(config_path: Path, result_dir: Path):
     # Use Prime dataset directly (no conversion needed - prepare_messages handles format)
     # Some environments use 'dataset', others use 'eval_dataset'
     logger.info("\n📊 Using Prime dataset")
-    if hasattr(prime_env, 'dataset') and prime_env.dataset is not None:
+    if hasattr(prime_env, "dataset") and prime_env.dataset is not None:
         rollouts_dataset = list(prime_env.dataset)
-    elif hasattr(prime_env, 'eval_dataset') and prime_env.eval_dataset is not None:
+    elif hasattr(prime_env, "eval_dataset") and prime_env.eval_dataset is not None:
         rollouts_dataset = list(prime_env.eval_dataset)
     else:
         raise ValueError("Prime environment has no dataset or eval_dataset attribute")
@@ -142,6 +146,7 @@ async def run_evaluation(config_path: Path, result_dir: Path):
     # Run evaluation within trio_asyncio loop context
     # This allows all Prime API calls to share the same event loop
     import trio_asyncio
+
     async with trio_asyncio.open_loop():
         try:
             report = await evaluate(
@@ -154,7 +159,7 @@ async def run_evaluation(config_path: Path, result_dir: Path):
             )
         finally:
             # Cleanup any remaining sandboxes (in case of errors during evaluation)
-            if hasattr(prime_env, 'cleanup_sandboxes'):
+            if hasattr(prime_env, "cleanup_sandboxes"):
                 logger.info("\n🧹 Cleaning up sandboxes...")
                 prime_env.cleanup_sandboxes()
 
@@ -173,7 +178,7 @@ async def run_evaluation(config_path: Path, result_dir: Path):
     if report.sample_results:
         all_prime_metrics = {}
         for sample in report.sample_results:
-            prime_metrics = sample.trajectory.metadata.get('prime_metrics', {})
+            prime_metrics = sample.trajectory.metadata.get("prime_metrics", {})
             for metric_name, metric_value in prime_metrics.items():
                 if isinstance(metric_value, (int, float)):
                     if metric_name not in all_prime_metrics:
@@ -193,17 +198,17 @@ async def run_evaluation(config_path: Path, result_dir: Path):
         logger.info(f"  Reward: {sample.metrics['reward']:.3f}")
 
         # Handle different dataset formats (wiki-search has 'question', acebench doesn't)
-        if 'question' in sample.input_data:
+        if "question" in sample.input_data:
             logger.info(f"  Question: {sample.input_data['question'][:80]}...")
 
         # Show ground truth if present (not present in backend-bench)
-        ground_truth = sample.trajectory.metadata.get('prime_ground_truth')
+        ground_truth = sample.trajectory.metadata.get("prime_ground_truth")
         if ground_truth is not None:
             gt_preview = str(ground_truth)[:100]
             logger.info(f"  Ground truth: {gt_preview}...")
 
         # Show parsed answer (truncated for code)
-        parsed_answer = sample.trajectory.metadata.get('prime_parsed_answer')
+        parsed_answer = sample.trajectory.metadata.get("prime_parsed_answer")
         if parsed_answer:
             answer_preview = str(parsed_answer)[:100]
             logger.info(f"  Parsed answer: {answer_preview}...")
@@ -211,7 +216,7 @@ async def run_evaluation(config_path: Path, result_dir: Path):
             logger.info("  Parsed answer: None")
 
         # Show Prime metrics (useful for backend-bench: correctness, performance, etc.)
-        prime_metrics = sample.trajectory.metadata.get('prime_metrics', {})
+        prime_metrics = sample.trajectory.metadata.get("prime_metrics", {})
         if prime_metrics:
             logger.info("  Prime metrics:")
             for metric_name, metric_value in prime_metrics.items():
@@ -237,13 +242,9 @@ async def run_evaluation(config_path: Path, result_dir: Path):
 
 def main():
     """Main entrypoint."""
-    parser = argparse.ArgumentParser(
-        description="Prime Intellect integration evaluation"
-    )
+    parser = argparse.ArgumentParser(description="Prime Intellect integration evaluation")
     parser.add_argument(
-        "config",
-        type=Path,
-        help="Path to config file (e.g., configs/prime_2048.py)"
+        "config", type=Path, help="Path to config file (e.g., configs/prime_2048.py)"
     )
 
     args = parser.parse_args()
@@ -272,7 +273,7 @@ def main():
             "verifiers.utils": "WARNING",
             "verifiers.utils.env_utils": "WARNING",
             "verifiers.rubrics": "WARNING",
-        }
+        },
     )
 
     logger.info(f"🚀 Running Prime integration evaluation: {experiment_name}")

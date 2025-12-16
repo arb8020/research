@@ -68,7 +68,8 @@ def load_ncu_csv(path: Path | str) -> tuple[pd.DataFrame, None] | tuple[None, st
 
         # Read CSV starting from header
         from io import StringIO
-        csv_data = ''.join(lines[header_idx:])
+
+        csv_data = "".join(lines[header_idx:])
         df = pd.read_csv(StringIO(csv_data))
 
     except Exception as e:
@@ -78,7 +79,7 @@ def load_ncu_csv(path: Path | str) -> tuple[pd.DataFrame, None] | tuple[None, st
         return None, "NCU CSV contains no data"
 
     # Verify expected columns
-    required_cols = ['Kernel Name', 'Metric Name', 'Metric Value']
+    required_cols = ["Kernel Name", "Metric Name", "Metric Value"]
     missing = [col for col in required_cols if col not in df.columns]
     if missing:
         return None, f"Missing required columns: {missing}"
@@ -98,10 +99,10 @@ def pivot_metrics(df: pd.DataFrame) -> pd.DataFrame:
     # Each kernel invocation (ID) has multiple metric rows
     # Pivot so each kernel is one row with metrics as columns
     pivoted = df.pivot_table(
-        index=['ID', 'Kernel Name', 'Block Size', 'Grid Size'],
-        columns='Metric Name',
-        values='Metric Value',
-        aggfunc='first'
+        index=["ID", "Kernel Name", "Block Size", "Grid Size"],
+        columns="Metric Name",
+        values="Metric Value",
+        aggfunc="first",
     ).reset_index()
 
     return pivoted
@@ -121,9 +122,9 @@ def analyze_kernel_performance(df: pd.DataFrame) -> pd.DataFrame:
 
     # Common metric columns (rename for convenience)
     metric_map = {
-        'gpu__time_duration.sum': 'duration_ns',
-        'sm__throughput.avg.pct_of_peak_sustained_elapsed': 'sm_utilization_pct',
-        'dram__throughput.avg.pct_of_peak_sustained_elapsed': 'dram_utilization_pct',
+        "gpu__time_duration.sum": "duration_ns",
+        "sm__throughput.avg.pct_of_peak_sustained_elapsed": "sm_utilization_pct",
+        "dram__throughput.avg.pct_of_peak_sustained_elapsed": "dram_utilization_pct",
     }
 
     # Rename columns if they exist
@@ -132,9 +133,9 @@ def analyze_kernel_performance(df: pd.DataFrame) -> pd.DataFrame:
             kernel_df = kernel_df.rename(columns={old_name: new_name})
 
     # Calculate derived metrics
-    if 'duration_ns' in kernel_df.columns:
-        kernel_df['duration_us'] = kernel_df['duration_ns'] / 1000.0
-        kernel_df['duration_ms'] = kernel_df['duration_ns'] / 1_000_000.0
+    if "duration_ns" in kernel_df.columns:
+        kernel_df["duration_us"] = kernel_df["duration_ns"] / 1000.0
+        kernel_df["duration_ms"] = kernel_df["duration_ns"] / 1_000_000.0
 
     return kernel_df
 
@@ -153,28 +154,28 @@ def summarize_kernels(df: pd.DataFrame) -> pd.DataFrame:
     # Group by kernel name
     agg_funcs = {}
 
-    if 'duration_ns' in df.columns:
-        agg_funcs['duration_ns'] = ['count', 'mean', 'sum', 'min', 'max']
-    if 'sm_utilization_pct' in df.columns:
-        agg_funcs['sm_utilization_pct'] = ['mean', 'min', 'max']
-    if 'dram_utilization_pct' in df.columns:
-        agg_funcs['dram_utilization_pct'] = ['mean', 'min', 'max']
+    if "duration_ns" in df.columns:
+        agg_funcs["duration_ns"] = ["count", "mean", "sum", "min", "max"]
+    if "sm_utilization_pct" in df.columns:
+        agg_funcs["sm_utilization_pct"] = ["mean", "min", "max"]
+    if "dram_utilization_pct" in df.columns:
+        agg_funcs["dram_utilization_pct"] = ["mean", "min", "max"]
 
     if not agg_funcs:
         return pd.DataFrame()
 
-    summary = df.groupby('Kernel Name').agg(agg_funcs)
+    summary = df.groupby("Kernel Name").agg(agg_funcs)
 
     # Flatten column names
-    summary.columns = ['_'.join(col).strip() for col in summary.columns.values]
+    summary.columns = ["_".join(col).strip() for col in summary.columns.values]
 
     # Sort by total time
-    if 'duration_ns_sum' in summary.columns:
-        summary = summary.sort_values('duration_ns_sum', ascending=False)
+    if "duration_ns_sum" in summary.columns:
+        summary = summary.sort_values("duration_ns_sum", ascending=False)
 
         # Calculate percentage of total time
-        total_time = summary['duration_ns_sum'].sum()
-        summary['pct_total_time'] = (summary['duration_ns_sum'] / total_time * 100).round(2)
+        total_time = summary["duration_ns_sum"].sum()
+        summary["pct_total_time"] = (summary["duration_ns_sum"] / total_time * 100).round(2)
 
     return summary.reset_index()
 
@@ -194,33 +195,32 @@ def find_bottlenecks(df: pd.DataFrame, top_n: int = 10) -> pd.DataFrame:
     bottlenecks = []
 
     # Low SM utilization
-    if 'sm_utilization_pct' in df.columns and 'duration_us' in df.columns:
-        low_sm = df[df['sm_utilization_pct'] < 50.0].copy()
+    if "sm_utilization_pct" in df.columns and "duration_us" in df.columns:
+        low_sm = df[df["sm_utilization_pct"] < 50.0].copy()
         if not low_sm.empty:
-            low_sm['bottleneck_type'] = 'Low SM Utilization'
-            low_sm['severity'] = low_sm['duration_us'] * (50 - low_sm['sm_utilization_pct'])
+            low_sm["bottleneck_type"] = "Low SM Utilization"
+            low_sm["severity"] = low_sm["duration_us"] * (50 - low_sm["sm_utilization_pct"])
             bottlenecks.append(low_sm)
 
     # Low DRAM utilization (but high duration - indicates compute bound)
-    if 'dram_utilization_pct' in df.columns and 'duration_us' in df.columns:
-        low_dram = df[(df['dram_utilization_pct'] < 10.0) & (df['duration_us'] > 10)].copy()
+    if "dram_utilization_pct" in df.columns and "duration_us" in df.columns:
+        low_dram = df[(df["dram_utilization_pct"] < 10.0) & (df["duration_us"] > 10)].copy()
         if not low_dram.empty:
-            low_dram['bottleneck_type'] = 'Low DRAM Utilization'
-            low_dram['severity'] = low_dram['duration_us']
+            low_dram["bottleneck_type"] = "Low DRAM Utilization"
+            low_dram["severity"] = low_dram["duration_us"]
             bottlenecks.append(low_dram)
 
     if not bottlenecks:
         return pd.DataFrame()
 
     all_bottlenecks = pd.concat(bottlenecks, ignore_index=True)
-    all_bottlenecks = all_bottlenecks.sort_values('severity', ascending=False)
+    all_bottlenecks = all_bottlenecks.sort_values("severity", ascending=False)
 
     return all_bottlenecks.head(top_n)
 
 
 def compare_backends(
-    baseline_path: Path | str,
-    compare_path: Path | str
+    baseline_path: Path | str, compare_path: Path | str
 ) -> tuple[dict, None] | tuple[None, str]:
     """Compare NCU metrics between two backend implementations.
 
@@ -249,32 +249,36 @@ def compare_backends(
     compare_perf = analyze_kernel_performance(compare_df)
 
     # Calculate totals
-    baseline_total_ns = baseline_perf['duration_ns'].sum() if 'duration_ns' in baseline_perf.columns else 0
-    compare_total_ns = compare_perf['duration_ns'].sum() if 'duration_ns' in compare_perf.columns else 0
+    baseline_total_ns = (
+        baseline_perf["duration_ns"].sum() if "duration_ns" in baseline_perf.columns else 0
+    )
+    compare_total_ns = (
+        compare_perf["duration_ns"].sum() if "duration_ns" in compare_perf.columns else 0
+    )
 
     speedup = baseline_total_ns / compare_total_ns if compare_total_ns > 0 else 0
 
     # Build comparison
     comparison = {
-        'baseline_file': str(baseline_path),
-        'compare_file': str(compare_path),
-        'baseline_total_us': baseline_total_ns / 1000.0,
-        'compare_total_us': compare_total_ns / 1000.0,
-        'speedup': speedup,
-        'baseline_kernels': len(baseline_perf),
-        'compare_kernels': len(compare_perf),
+        "baseline_file": str(baseline_path),
+        "compare_file": str(compare_path),
+        "baseline_total_us": baseline_total_ns / 1000.0,
+        "compare_total_us": compare_total_ns / 1000.0,
+        "speedup": speedup,
+        "baseline_kernels": len(baseline_perf),
+        "compare_kernels": len(compare_perf),
     }
 
     # Average utilization
-    if 'sm_utilization_pct' in baseline_perf.columns:
-        comparison['baseline_avg_sm_util'] = baseline_perf['sm_utilization_pct'].mean()
-    if 'sm_utilization_pct' in compare_perf.columns:
-        comparison['compare_avg_sm_util'] = compare_perf['sm_utilization_pct'].mean()
+    if "sm_utilization_pct" in baseline_perf.columns:
+        comparison["baseline_avg_sm_util"] = baseline_perf["sm_utilization_pct"].mean()
+    if "sm_utilization_pct" in compare_perf.columns:
+        comparison["compare_avg_sm_util"] = compare_perf["sm_utilization_pct"].mean()
 
-    if 'dram_utilization_pct' in baseline_perf.columns:
-        comparison['baseline_avg_dram_util'] = baseline_perf['dram_utilization_pct'].mean()
-    if 'dram_utilization_pct' in compare_perf.columns:
-        comparison['compare_avg_dram_util'] = compare_perf['dram_utilization_pct'].mean()
+    if "dram_utilization_pct" in baseline_perf.columns:
+        comparison["baseline_avg_dram_util"] = baseline_perf["dram_utilization_pct"].mean()
+    if "dram_utilization_pct" in compare_perf.columns:
+        comparison["compare_avg_dram_util"] = compare_perf["dram_utilization_pct"].mean()
 
     return comparison, None
 
@@ -284,9 +288,9 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Analyze NCU CSV reports")
-    parser.add_argument('ncu_csv', type=Path, help='Path to NCU CSV file')
-    parser.add_argument('--compare', type=Path, help='Compare against another NCU CSV')
-    parser.add_argument('--output', type=Path, help='Save summary to CSV')
+    parser.add_argument("ncu_csv", type=Path, help="Path to NCU CSV file")
+    parser.add_argument("--compare", type=Path, help="Compare against another NCU CSV")
+    parser.add_argument("--output", type=Path, help="Save summary to CSV")
 
     args = parser.parse_args()
 
@@ -304,8 +308,8 @@ def main():
     perf_df = analyze_kernel_performance(df)
     print(f"Total kernel invocations: {len(perf_df)}")
 
-    if 'duration_ns' in perf_df.columns:
-        total_us = perf_df['duration_ns'].sum() / 1000.0
+    if "duration_ns" in perf_df.columns:
+        total_us = perf_df["duration_ns"].sum() / 1000.0
         print(f"Total GPU time: {total_us:.3f} μs ({total_us / 1000:.3f} ms)")
 
     # Summarize by kernel
@@ -319,24 +323,24 @@ def main():
         display_summary = summary.head(15).copy()
 
         # Truncate kernel names for display
-        display_summary['Kernel Name'] = display_summary['Kernel Name'].apply(
-            lambda x: x[:60] + '...' if len(x) > 60 else x
+        display_summary["Kernel Name"] = display_summary["Kernel Name"].apply(
+            lambda x: x[:60] + "..." if len(x) > 60 else x
         )
 
         # Select and rename columns for display
         display_cols = {
-            'Kernel Name': 'Kernel Name',
+            "Kernel Name": "Kernel Name",
         }
-        if 'duration_ns_count' in summary.columns:
-            display_cols['duration_ns_count'] = 'Calls'
-        if 'duration_ns_mean' in summary.columns:
-            display_cols['duration_ns_mean'] = 'Avg (ns)'
-        if 'pct_total_time' in summary.columns:
-            display_cols['pct_total_time'] = '% Time'
-        if 'sm_utilization_pct_mean' in summary.columns:
-            display_cols['sm_utilization_pct_mean'] = 'SM %'
-        if 'dram_utilization_pct_mean' in summary.columns:
-            display_cols['dram_utilization_pct_mean'] = 'DRAM %'
+        if "duration_ns_count" in summary.columns:
+            display_cols["duration_ns_count"] = "Calls"
+        if "duration_ns_mean" in summary.columns:
+            display_cols["duration_ns_mean"] = "Avg (ns)"
+        if "pct_total_time" in summary.columns:
+            display_cols["pct_total_time"] = "% Time"
+        if "sm_utilization_pct_mean" in summary.columns:
+            display_cols["sm_utilization_pct_mean"] = "SM %"
+        if "dram_utilization_pct_mean" in summary.columns:
+            display_cols["dram_utilization_pct_mean"] = "DRAM %"
 
         display_summary = display_summary[list(display_cols.keys())].rename(columns=display_cols)
         print(display_summary.to_string(index=False))
@@ -349,11 +353,11 @@ def main():
         print(f"{'=' * 80}\n")
 
         for _, row in bottlenecks.iterrows():
-            kernel_name = row['Kernel Name'][:70]
-            btype = row['bottleneck_type']
-            duration = row.get('duration_us', 0)
-            sm_util = row.get('sm_utilization_pct', 0)
-            dram_util = row.get('dram_utilization_pct', 0)
+            kernel_name = row["Kernel Name"][:70]
+            btype = row["bottleneck_type"]
+            duration = row.get("duration_us", 0)
+            sm_util = row.get("sm_utilization_pct", 0)
+            dram_util = row.get("dram_utilization_pct", 0)
 
             print(f"• {kernel_name}")
             print(f"  Type: {btype}, Duration: {duration:.2f} μs")
@@ -377,19 +381,25 @@ def main():
                 print(f"Baseline total time: {comparison['baseline_total_us']:.3f} μs")
                 print(f"Compare total time:  {comparison['compare_total_us']:.3f} μs")
 
-                speedup = comparison['speedup']
+                speedup = comparison["speedup"]
                 if speedup > 1:
                     print(f"Speedup: {speedup:.3f}x ({(speedup - 1) * 100:.1f}% faster)")
                 elif speedup < 1 and speedup > 0:
                     print(f"Slowdown: {1 / speedup:.3f}x ({(1 - speedup) * 100:.1f}% slower)")
 
-                if 'baseline_avg_sm_util' in comparison:
-                    print(f"\nBaseline avg SM utilization: {comparison['baseline_avg_sm_util']:.1f}%")
+                if "baseline_avg_sm_util" in comparison:
+                    print(
+                        f"\nBaseline avg SM utilization: {comparison['baseline_avg_sm_util']:.1f}%"
+                    )
                     print(f"Compare avg SM utilization:  {comparison['compare_avg_sm_util']:.1f}%")
 
-                if 'baseline_avg_dram_util' in comparison:
-                    print(f"\nBaseline avg DRAM utilization: {comparison['baseline_avg_dram_util']:.1f}%")
-                    print(f"Compare avg DRAM utilization:  {comparison['compare_avg_dram_util']:.1f}%")
+                if "baseline_avg_dram_util" in comparison:
+                    print(
+                        f"\nBaseline avg DRAM utilization: {comparison['baseline_avg_dram_util']:.1f}%"
+                    )
+                    print(
+                        f"Compare avg DRAM utilization:  {comparison['compare_avg_dram_util']:.1f}%"
+                    )
         else:
             print(f"\n⚠️  Compare file not found: {args.compare}")
 

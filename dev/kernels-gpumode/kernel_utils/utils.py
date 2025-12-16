@@ -3,6 +3,7 @@
 Provides tolerance-based matching and performance measurement,
 following backend-bench patterns but with explicit error handling.
 """
+
 import time
 import traceback
 from collections.abc import Callable
@@ -29,8 +30,7 @@ def allclose_with_error(
         (is_match, max_abs_error, max_rel_error)
     """
     # Tiger Style: Assert preconditions
-    assert actual.shape == expected.shape, \
-        f"Shape mismatch: {actual.shape} vs {expected.shape}"
+    assert actual.shape == expected.shape, f"Shape mismatch: {actual.shape} vs {expected.shape}"
     assert rtol > 0, f"rtol must be positive, got {rtol}"
     assert atol > 0, f"atol must be positive, got {atol}"
 
@@ -41,9 +41,7 @@ def allclose_with_error(
     # Avoid division by zero in relative error
     expected_abs = torch.abs(expected)
     rel_diff = abs_diff / torch.where(
-        expected_abs > 1e-8,
-        expected_abs,
-        torch.ones_like(expected_abs)
+        expected_abs > 1e-8, expected_abs, torch.ones_like(expected_abs)
     )
     max_rel_error = float(rel_diff.max().item())
 
@@ -144,6 +142,7 @@ def benchmark_kernel(
         if use_triton and torch.cuda.is_available():
             try:
                 import triton.testing
+
                 # Triton's do_bench handles warmup and synchronization
                 time_ms = triton.testing.do_bench(
                     lambda: kernel_fn(test_input),
@@ -256,9 +255,7 @@ def compare_backends(
 
     # Benchmark reference first
     ref_backend = BACKENDS[reference_backend]
-    ref_time, ref_err = benchmark_kernel(
-        ref_backend, test_input, num_warmup, num_runs, use_triton
-    )
+    ref_time, ref_err = benchmark_kernel(ref_backend, test_input, num_warmup, num_runs, use_triton)
     if ref_err:
         raise RuntimeError(f"Reference '{reference_backend}' benchmark failed: {ref_err}")
 
@@ -271,9 +268,7 @@ def compare_backends(
             continue
 
         backend = BACKENDS[name]
-        time_ms, err = benchmark_kernel(
-            backend, test_input, num_warmup, num_runs, use_triton
-        )
+        time_ms, err = benchmark_kernel(backend, test_input, num_warmup, num_runs, use_triton)
 
         if err:
             results[name] = (0.0, -1.0)
@@ -402,6 +397,7 @@ def ncu_profile_kernel(
         # Extract test parameters from SMOKE_TESTS by matching test_name
         # This avoids pickling torch tensors
         from kernel_utils.task import SMOKE_TESTS
+
         test_case = None
         for tc in SMOKE_TESTS:
             if tc.name == test_name:
@@ -418,7 +414,7 @@ def ncu_profile_kernel(
             "l": test_case.l,
             "seed": test_case.seed,
         }
-        with open(params_path, 'w') as f:
+        with open(params_path, "w") as f:
             json.dump(test_params, f)
 
         # Get the project directory (parent of kernel_utils)
@@ -485,16 +481,21 @@ print("Kernel execution completed")
 """
 
         # Write the script
-        with open(script_path, 'w') as f:
+        with open(script_path, "w") as f:
             f.write(script_content)
 
         # Build NCU command
         # Try common NCU paths if 'ncu' is not in PATH
         import shutil
+
         ncu_path = shutil.which("ncu")
         if ncu_path is None:
             # Check common CUDA installation paths
-            for cuda_path in ["/usr/local/cuda/bin/ncu", "/usr/local/cuda-12/bin/ncu", "/opt/nvidia/nsight-compute/ncu"]:
+            for cuda_path in [
+                "/usr/local/cuda/bin/ncu",
+                "/usr/local/cuda-12/bin/ncu",
+                "/opt/nvidia/nsight-compute/ncu",
+            ]:
                 if Path(cuda_path).exists():
                     ncu_path = cuda_path
                     break
@@ -516,7 +517,8 @@ print("Kernel execution completed")
         ncu_cmd.extend([
             ncu_path,
             "--csv",
-            "--log-file", str(report_path),
+            "--log-file",
+            str(report_path),
             "--force-overwrite",
         ])
 
@@ -525,10 +527,7 @@ print("Kernel execution completed")
             ncu_cmd.extend(ncu_args.split())
 
         # Add the Python command
-        ncu_cmd.extend([
-            sys.executable,
-            str(script_path)
-        ])
+        ncu_cmd.extend([sys.executable, str(script_path)])
 
         # Run NCU
         result = subprocess.run(

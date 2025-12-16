@@ -3,6 +3,7 @@
 Provides a simple registry system for managing multiple kernel backends
 (reference, Triton, CuTe, etc.) with consistent interfaces.
 """
+
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
@@ -76,8 +77,9 @@ class BackendRegistry:
         assert name not in self._backends, f"Backend '{name}' already registered"
         assert callable(kernel_fn), "kernel_fn must be callable"
         assert len(name) > 0, "Backend name cannot be empty"
-        assert language in ["pytorch", "triton", "cuda", "cutlass", "other"], \
+        assert language in ["pytorch", "triton", "cuda", "cutlass", "other"], (
             f"Invalid language: {language}"
+        )
 
         self._backends[name] = BackendInfo(name, kernel_fn, description, language)
 
@@ -95,9 +97,7 @@ class BackendRegistry:
         """
         if name not in self._backends:
             available = list(self._backends.keys())
-            raise KeyError(
-                f"Backend '{name}' not found. Available backends: {available}"
-            )
+            raise KeyError(f"Backend '{name}' not found. Available backends: {available}")
         return self._backends[name]
 
     def list(self) -> list[str]:

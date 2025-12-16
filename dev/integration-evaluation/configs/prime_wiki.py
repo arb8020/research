@@ -31,6 +31,7 @@ class IntegrationEvalConfig:
     Follows the pattern from wafer_stuff/clicker/config.py but adapted
     for Prime Intellect integration testing.
     """
+
     # Model configuration
     # Option 1: OpenAI GPT-4.1 Mini (fast and cheap)
     model_name: str = "gpt-4.1-mini"

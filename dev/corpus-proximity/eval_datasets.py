@@ -37,22 +37,20 @@ def load_gsm8k(split: str = "test", num_samples: int | None = None) -> list[Traj
     for item in dataset:
         # GSM8K format: question + answer with #### separator
         assert isinstance(item, dict), f"Expected dict, got {type(item)}"
-        question = item['question']
-        answer = item['answer'].split('####')[-1].strip()
+        question = item["question"]
+        answer = item["answer"].split("####")[-1].strip()
 
         prompts.append(question)
         ground_truths.append(answer)
 
     logger.info(f"Loaded {len(prompts)} GSM8K examples")
 
-    return batch_create_trajectories(
-        prompts=prompts,
-        ground_truths=ground_truths,
-        dataset="gsm8k"
-    )
+    return batch_create_trajectories(prompts=prompts, ground_truths=ground_truths, dataset="gsm8k")
 
 
-def load_arc(subset: str = "easy", split: str = "test", num_samples: int | None = None) -> list[Trajectory]:
+def load_arc(
+    subset: str = "easy", split: str = "test", num_samples: int | None = None
+) -> list[Trajectory]:
     """Load ARC dataset as trajectories.
 
     Args:
@@ -69,7 +67,9 @@ def load_arc(subset: str = "easy", split: str = "test", num_samples: int | None 
     dataset_name = f"arc-{subset}"
     logger.info(f"Loading ARC-{subset} {split} split...")
 
-    dataset = cast(Dataset, load_dataset("allenai/ai2_arc", f"ARC-{subset.capitalize()}", split=split))
+    dataset = cast(
+        Dataset, load_dataset("allenai/ai2_arc", f"ARC-{subset.capitalize()}", split=split)
+    )
 
     if num_samples:
         dataset = dataset.select(range(min(num_samples, len(dataset))))
@@ -78,25 +78,27 @@ def load_arc(subset: str = "easy", split: str = "test", num_samples: int | None 
 
     for item in dataset:
         assert isinstance(item, dict), f"Expected dict, got {type(item)}"
-        question = item['question']
-        choices_dict = item['choices']
+        question = item["question"]
+        choices_dict = item["choices"]
         assert isinstance(choices_dict, dict), f"Expected dict, got {type(choices_dict)}"
-        choices = choices_dict['text']
-        labels = choices_dict['label']
-        answer_key = item['answerKey']
+        choices = choices_dict["text"]
+        labels = choices_dict["label"]
+        answer_key = item["answerKey"]
 
         # Format as multiple choice
-        choice_text = "\n".join([f"{label}. {text}" for label, text in zip(labels, choices)])
+        choice_text = "\n".join([
+            f"{label}. {text}" for label, text in zip(labels, choices, strict=False)
+        ])
         prompt = f"{question}\n\n{choice_text}\n\nAnswer:"
 
         traj = Trajectory(
             prompt=prompt,
             metadata={
-                'dataset': dataset_name,
-                'ground_truth': answer_key,
-                'choices': choices,
-                'labels': labels
-            }
+                "dataset": dataset_name,
+                "ground_truth": answer_key,
+                "choices": choices,
+                "labels": labels,
+            },
         )
         trajectories.append(traj)
 
@@ -105,9 +107,7 @@ def load_arc(subset: str = "easy", split: str = "test", num_samples: int | None 
 
 
 def load_mmlu(
-    subject: str | None = None,
-    split: str = "test",
-    num_samples: int | None = None
+    subject: str | None = None, split: str = "test", num_samples: int | None = None
 ) -> list[Trajectory]:
     """Load MMLU dataset as trajectories.
 
@@ -129,7 +129,7 @@ def load_mmlu(
         subjects = [subject]
     else:
         dataset = cast(Dataset, load_dataset("cais/mmlu", "all", split=split))
-        subjects = dataset['subject'] if 'subject' in dataset.column_names else []
+        subjects = dataset["subject"] if "subject" in dataset.column_names else []
 
     if num_samples:
         dataset = dataset.select(range(min(num_samples, len(dataset))))
@@ -138,24 +138,30 @@ def load_mmlu(
 
     for i, item in enumerate(dataset):
         assert isinstance(item, dict), f"Expected dict, got {type(item)}"
-        question = item['question']
-        choices = item['choices']
-        answer = item['answer']  # 0-3
-        subj = subjects[i] if isinstance(subjects, list) and i < len(subjects) else item.get('subject', 'unknown')
+        question = item["question"]
+        choices = item["choices"]
+        answer = item["answer"]  # 0-3
+        subj = (
+            subjects[i]
+            if isinstance(subjects, list) and i < len(subjects)
+            else item.get("subject", "unknown")
+        )
 
         # Format as multiple choice
-        choice_labels = ['A', 'B', 'C', 'D']
-        choice_text = "\n".join([f"{label}. {text}" for label, text in zip(choice_labels, choices)])
+        choice_labels = ["A", "B", "C", "D"]
+        choice_text = "\n".join([
+            f"{label}. {text}" for label, text in zip(choice_labels, choices, strict=False)
+        ])
         prompt = f"{question}\n\n{choice_text}\n\nAnswer:"
 
         traj = Trajectory(
             prompt=prompt,
             metadata={
-                'dataset': 'mmlu',
-                'subject': subj,
-                'ground_truth': choice_labels[answer],
-                'choices': choices
-            }
+                "dataset": "mmlu",
+                "subject": subj,
+                "ground_truth": choice_labels[answer],
+                "choices": choices,
+            },
         )
         trajectories.append(traj)
 
@@ -167,9 +173,9 @@ def save_trajectories(trajectories: list[Trajectory], output_path: Path):
     """Save trajectories to JSONL file."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(output_path, 'w') as f:
+    with open(output_path, "w") as f:
         for traj in trajectories:
-            f.write(json.dumps(traj.to_dict()) + '\n')
+            f.write(json.dumps(traj.to_dict()) + "\n")
 
     logger.info(f"Saved {len(trajectories)} trajectories to {output_path}")
 
@@ -190,7 +196,7 @@ def load_trajectories(input_path: Path) -> list[Trajectory]:
 def main():
     """Demo: Load and save eval datasets."""
 
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
     output_dir = Path("data/eval_datasets")
 
@@ -215,4 +221,5 @@ def main():
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(main())

@@ -14,10 +14,12 @@ def quadratic_loss(params: jnp.ndarray) -> jnp.ndarray:
 
     Minimum at origin, same curvature in all directions.
     """
-    return jnp.sum(params ** 2) / 2.0
+    return jnp.sum(params**2) / 2.0
 
 
-def narrow_valley_loss(params: jnp.ndarray, x_scale: float = 10.0, y_scale: float = 1.0) -> jnp.ndarray:
+def narrow_valley_loss(
+    params: jnp.ndarray, x_scale: float = 10.0, y_scale: float = 1.0
+) -> jnp.ndarray:
     """Narrow valley: steep in x, shallow in y.
 
     f(x, y) = (x_scale * x)^2 / 2 + (y_scale * y)^2 / 2
@@ -35,7 +37,9 @@ def narrow_valley_loss(params: jnp.ndarray, x_scale: float = 10.0, y_scale: floa
     return ((x_scale * x) ** 2 + (y_scale * y) ** 2) / 2.0
 
 
-def narrow_valley_loss_numpy(params: np.ndarray, x_scale: float = 10.0, y_scale: float = 1.0) -> float:
+def narrow_valley_loss_numpy(
+    params: np.ndarray, x_scale: float = 10.0, y_scale: float = 1.0
+) -> float:
     """Numpy version for landscape visualization."""
     assert params.shape == (2,), "narrow_valley_loss requires 2D params"
     x, y = params[0], params[1]
@@ -55,11 +59,11 @@ def rosenbrock_loss(params: jnp.ndarray, a: float = 1.0, b: float = 100.0) -> jn
     """
     assert params.shape == (2,), "rosenbrock_loss requires 2D params"
     x, y = params[0], params[1]
-    return (a - x) ** 2 + b * (y - x ** 2) ** 2
+    return (a - x) ** 2 + b * (y - x**2) ** 2
 
 
 def rosenbrock_loss_numpy(params: np.ndarray, a: float = 1.0, b: float = 100.0) -> float:
     """Numpy version for landscape visualization."""
     assert params.shape == (2,), "rosenbrock_loss requires 2D params"
     x, y = params[0], params[1]
-    return float((a - x) ** 2 + b * (y - x ** 2) ** 2)
+    return float((a - x) ** 2 + b * (y - x**2) ** 2)

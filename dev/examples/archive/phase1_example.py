@@ -12,14 +12,12 @@ client = GPUClient(
         "runpod": os.environ["RUNPOD_API_KEY"],
         # "vast": os.environ.get("VAST_API_KEY", ""),  # Ready for multi-provider
     },
-    ssh_key_path="~/.ssh/id_ed25519"  # Required, no auto-discovery
+    ssh_key_path="~/.ssh/id_ed25519",  # Required, no auto-discovery
 )
 
 # Search with provider filter (multi-provider ready)
 offers = client.search(
-    client.provider.in_(['runpod']) &
-    client.gpu_type.contains("RTX") &
-    client.price_per_hour < 0.50
+    client.provider.in_(["runpod"]) & client.gpu_type.contains("RTX") & client.price_per_hour < 0.50
 )
 
 print(f"Found {len(offers)} offers")

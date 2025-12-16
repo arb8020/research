@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ClusterNode:
     """A node in the cluster tree."""
+
     cluster_id: str  # Hierarchical ID like "0", "0.1", "0.1.2"
     depth: int
     parent_id: str | None
@@ -36,8 +37,8 @@ class ClusterNode:
     indices: list[int]  # Indices into the embeddings/texts passed to recursive_cluster
 
     # Cluster info
-    centroid: np.ndarray    # (D,) cluster center
-    size: int               # Number of chunks
+    centroid: np.ndarray  # (D,) cluster center
+    size: int  # Number of chunks
     silhouette_score: float  # Cluster coherence
 
     # Subclusters (populated during recursion)
@@ -55,11 +56,13 @@ class ClusterNode:
         if self._skip_validation:
             return
 
-        assert self.size == len(self.indices), \
+        assert self.size == len(self.indices), (
             f"size ({self.size}) must equal len(indices) ({len(self.indices)})"
+        )
         assert self.depth >= 0, f"depth must be non-negative, got {self.depth}"
-        assert 0.0 <= self.silhouette_score <= 1.0, \
+        assert 0.0 <= self.silhouette_score <= 1.0, (
             f"silhouette_score must be in [0, 1], got {self.silhouette_score}"
+        )
 
 
 # ──────────────────────────── Helper Functions ─────────────────────────────
@@ -119,7 +122,7 @@ def recursive_cluster(
     umap_metric: str = "cosine",
     hdbscan_min_samples: int = 10,
     parent_id: str | None = None,
-    cluster_index: int = 0
+    cluster_index: int = 0,
 ) -> ClusterNode:
     """
     Recursively cluster corpus using UMAP + HDBSCAN.
@@ -169,7 +172,7 @@ def recursive_cluster(
             size=n_points,
             silhouette_score=1.0,  # No subdivision = perfect coherence
             children=[],
-            noise_indices=[]
+            noise_indices=[],
         )
 
     # UMAP dimensionality reduction
@@ -180,13 +183,13 @@ def recursive_cluster(
         n_components=n_components,
         metric=umap_metric,
         random_state=42,
-        verbose=True  # Show progress during dimensionality reduction
+        verbose=True,  # Show progress during dimensionality reduction
     )
     reduced_embeddings = reducer.fit_transform(embeddings)
 
     # Adaptive HDBSCAN parameters
-    floor = max(5, 10 // (2 ** depth))  # Prevent degenerate clustering (lowered floor)
-    base_min_cluster_size = max(floor, int(n_points * base_pct * (decay ** depth)))
+    floor = max(5, 10 // (2**depth))  # Prevent degenerate clustering (lowered floor)
+    base_min_cluster_size = max(floor, int(n_points * base_pct * (decay**depth)))
 
     # Allow a few retries with more permissive parameters when HDBSCAN collapses
     min_cluster_size = base_min_cluster_size
@@ -211,8 +214,8 @@ def recursive_cluster(
         clusterer = HDBSCAN(
             min_cluster_size=min_cluster_size,
             min_samples=min_samples,
-            metric='euclidean',  # On UMAP-reduced space
-            cluster_selection_method='eom'
+            metric="euclidean",  # On UMAP-reduced space
+            cluster_selection_method="eom",
         )
         labels = clusterer.fit_predict(reduced_embeddings)
 
@@ -273,7 +276,7 @@ def recursive_cluster(
             size=n_points,
             silhouette_score=0.0,
             children=[],
-            noise_indices=noise_indices
+            noise_indices=noise_indices,
         )
 
     # Compute silhouette score (exclude noise points)
@@ -297,7 +300,7 @@ def recursive_cluster(
         size=n_points,
         silhouette_score=sil_score,
         children=[],
-        noise_indices=noise_indices
+        noise_indices=noise_indices,
     )
 
     # Decide whether to recurse based on silhouette score
@@ -318,7 +321,9 @@ def recursive_cluster(
         mask = labels == label
         subcluster_indices = np.where(mask)[0]
 
-        logger.info(f"  Recursing into subcluster {i} (label={label}, size={len(subcluster_indices)})")
+        logger.info(
+            f"  Recursing into subcluster {i} (label={label}, size={len(subcluster_indices)})"
+        )
 
         child_node = recursive_cluster(
             embeddings=embeddings[mask],
@@ -333,7 +338,7 @@ def recursive_cluster(
             umap_metric=umap_metric,
             hdbscan_min_samples=hdbscan_min_samples,
             parent_id=cluster_id,
-            cluster_index=i
+            cluster_index=i,
         )
 
         # Update child indices to be relative to original corpus
@@ -367,12 +372,7 @@ def get_cache_key(config: Config) -> str:
     return hashlib.sha256(key_str.encode()).hexdigest()[:16]
 
 
-def save_cluster_tree(
-    node: ClusterNode,
-    texts: list[str],
-    metadata: list[dict],
-    output_path: Path
-):
+def save_cluster_tree(node: ClusterNode, texts: list[str], metadata: list[dict], output_path: Path):
     """Save cluster tree to JSON (recursive).
 
     Args:
@@ -381,6 +381,7 @@ def save_cluster_tree(
         metadata: Full metadata corpus
         output_path: Path to save JSON
     """
+
     def node_to_dict(n: ClusterNode) -> dict:
         # Get sample texts from this cluster
         sample_indices = n.indices[:5] if len(n.indices) >= 5 else n.indices
@@ -398,11 +399,11 @@ def save_cluster_tree(
             "num_noise_points": len(n.noise_indices),
             "num_children": len(n.children),
             "sample_texts": sample_texts,
-            "children": [node_to_dict(child) for child in n.children]
+            "children": [node_to_dict(child) for child in n.children],
         }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, 'w') as f:
+    with open(output_path, "w") as f:
         json.dump(node_to_dict(node), f, indent=2)
 
     logger.info(f"Saved cluster tree to {output_path}")
@@ -410,23 +411,24 @@ def save_cluster_tree(
 
 def compute_cluster_stats(node: ClusterNode) -> dict:
     """Compute statistics for cluster tree."""
+
     def traverse(n: ClusterNode, stats: dict):
-        stats['total_clusters'] += 1
-        stats['clusters_by_depth'][n.depth] = stats['clusters_by_depth'].get(n.depth, 0) + 1
-        stats['total_noise_points'] += len(n.noise_indices)
+        stats["total_clusters"] += 1
+        stats["clusters_by_depth"][n.depth] = stats["clusters_by_depth"].get(n.depth, 0) + 1
+        stats["total_noise_points"] += len(n.noise_indices)
 
         if not n.children:
-            stats['leaf_clusters'] += 1
+            stats["leaf_clusters"] += 1
 
         for child in n.children:
             traverse(child, stats)
 
     stats = {
-        'total_clusters': 0,
-        'leaf_clusters': 0,
-        'clusters_by_depth': {},
-        'total_noise_points': 0,
-        'max_depth': get_max_depth(node)
+        "total_clusters": 0,
+        "leaf_clusters": 0,
+        "clusters_by_depth": {},
+        "total_noise_points": 0,
+        "max_depth": get_max_depth(node),
     }
 
     traverse(node, stats)
@@ -472,7 +474,9 @@ def load_and_embed_corpus(config: Config) -> tuple[np.ndarray, list[str], list[d
     logger.info(f"Loaded {len(original_chunks)} original chunks")
 
     # Re-chunk with fixed_tokens strategy
-    logger.info(f"Re-chunking with {config.clustering.chunking_strategy} (max_tokens={config.clustering.chunk_max_tokens})")
+    logger.info(
+        f"Re-chunking with {config.clustering.chunking_strategy} (max_tokens={config.clustering.chunk_max_tokens})"
+    )
 
     tokenizer = AutoTokenizer.from_pretrained(config.clustering.embedding_model)
 
@@ -482,19 +486,19 @@ def load_and_embed_corpus(config: Config) -> tuple[np.ndarray, list[str], list[d
     for orig_chunk in original_chunks:
         # Apply token-based chunking to each original chunk
         sub_chunks = chunk_text(
-            text=orig_chunk['text'],
+            text=orig_chunk["text"],
             strategy=config.clustering.chunking_strategy,
             chunk_size=config.clustering.chunk_max_tokens,
             overlap_pct=config.clustering.chunk_overlap_pct,
-            tokenizer=tokenizer
+            tokenizer=tokenizer,
         )
 
         for i, sub_chunk in enumerate(sub_chunks):
             rechunked_texts.append(sub_chunk)
             rechunked_metadata.append({
-                'shard_id': orig_chunk['shard_id'],
-                'chunk_id': orig_chunk['chunk_id'],
-                'subchunk_id': i
+                "shard_id": orig_chunk["shard_id"],
+                "chunk_id": orig_chunk["chunk_id"],
+                "subchunk_id": i,
             })
 
     logger.info(f"Re-chunked into {len(rechunked_texts)} token-limited chunks")
@@ -509,7 +513,7 @@ def load_and_embed_corpus(config: Config) -> tuple[np.ndarray, list[str], list[d
         batch_size=config.clustering.embedding_batch_size,
         show_progress_bar=True,
         convert_to_numpy=True,
-        normalize_embeddings=True  # L2 normalize
+        normalize_embeddings=True,  # L2 normalize
     )
 
     logger.info(f"Generated embeddings with shape: {embeddings.shape}")
@@ -522,17 +526,14 @@ def main():
     import sys
 
     # Setup logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s'
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
     # Silence noisy HTTP request logs
-    logging.getLogger('httpx').setLevel(logging.WARNING)
-    logging.getLogger('httpcore').setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     # Load config
-    if len(sys.argv) > 1 and sys.argv[1].endswith('.py'):
+    if len(sys.argv) > 1 and sys.argv[1].endswith(".py"):
         spec = importlib.util.spec_from_file_location("exp_config", sys.argv[1])
         if spec is None:
             raise ImportError(f"Could not load spec from {sys.argv[1]}")
@@ -554,7 +555,9 @@ def main():
     logger.info("Recursive Clustering Pipeline")
     logger.info("=" * 80)
     logger.info(f"  Embedding model: {config.clustering.embedding_model}")
-    logger.info(f"  Chunking: {config.clustering.chunking_strategy} (max {config.clustering.chunk_max_tokens} tokens)")
+    logger.info(
+        f"  Chunking: {config.clustering.chunking_strategy} (max {config.clustering.chunk_max_tokens} tokens)"
+    )
     logger.info(f"  Max depth: {config.clustering.max_depth}")
     logger.info(f"  Silhouette threshold: {config.clustering.silhouette_threshold}")
     logger.info("")
@@ -587,9 +590,9 @@ def main():
         logger.info(f"Caching embeddings to {embedding_cache_dir}")
         np.save(embeddings_path, embeddings)
 
-        with open(metadata_path, 'w') as f:
+        with open(metadata_path, "w") as f:
             for meta in metadata:
-                f.write(json.dumps(meta) + '\n')
+                f.write(json.dumps(meta) + "\n")
 
         logger.info("")
         logger.info("=" * 80)
@@ -607,7 +610,7 @@ def main():
             silhouette_threshold=config.clustering.silhouette_threshold,
             umap_n_components=config.clustering.umap_n_components,
             umap_metric=config.clustering.umap_metric,
-            hdbscan_min_samples=config.clustering.hdbscan_min_samples
+            hdbscan_min_samples=config.clustering.hdbscan_min_samples,
         )
 
         logger.info("")
@@ -629,11 +632,11 @@ def main():
         logger.info("Building chunk-to-cluster mapping...")
         chunk_to_cluster = build_chunk_to_cluster_map(root_node)
         mapping_path = cache_dir / "chunk_to_cluster.json"
-        with open(mapping_path, 'w') as f:
+        with open(mapping_path, "w") as f:
             json.dump(chunk_to_cluster, f)
         logger.info(f"Saved chunk-to-cluster mapping to {mapping_path}")
 
-        with open(stats_path, 'w') as f:
+        with open(stats_path, "w") as f:
             json.dump(stats, f, indent=2)
         logger.info(f"Saved statistics to {stats_path}")
 
@@ -658,4 +661,5 @@ def main():
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(main())

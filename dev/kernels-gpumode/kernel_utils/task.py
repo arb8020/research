@@ -3,6 +3,7 @@
 Defines the input/output tensor types and test case structure
 for NVFP4 block-scaled GEMV kernels.
 """
+
 from dataclasses import dataclass
 from typing import TypeAlias
 
@@ -30,11 +31,12 @@ class TestCase:
 
     Immutable to follow single-assignment principle.
     """
-    m: int          # Matrix rows
-    k: int          # Matrix cols / vector length
-    l: int          # Batch size
-    seed: int       # Random seed for reproducibility
-    name: str       # Human-readable test name
+
+    m: int  # Matrix rows
+    k: int  # Matrix cols / vector length
+    l: int  # Batch size
+    seed: int  # Random seed for reproducibility
+    name: str  # Human-readable test name
 
     def __post_init__(self):
         """Validate test case parameters."""
@@ -59,6 +61,7 @@ class TestCase:
             Fresh input tuple for this test case
         """
         from nvfp4.reference_kernel import generate_input
+
         return generate_input(self.m, self.k, self.l, self.seed)
 
     def serialize(self) -> str:

@@ -54,7 +54,7 @@ def main():
     top_indices = jnp.argsort(next_token_logits)[-top_k:][::-1]
     top_probs = jax.nn.softmax(next_token_logits)[top_indices]
 
-    for i, (token_id, prob) in enumerate(zip(top_indices, top_probs)):
+    for i, (token_id, prob) in enumerate(zip(top_indices, top_probs, strict=False)):
         print(f"   {i + 1}. Token {token_id}: {prob:.4f}")
 
     print("\n✅ Example complete!")
