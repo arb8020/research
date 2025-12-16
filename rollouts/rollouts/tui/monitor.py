@@ -12,9 +12,17 @@ Usage:
 
 Keybindings:
     1/2/3   - Switch to pane (training/sglang/metrics)
-    j/k     - Scroll down/up
+    j/k     - Scroll down/up (or switch charts on metrics pane)
     g/G     - Go to top/bottom
     q       - Quit
+
+TODO: Support viewing old runs via results directory
+    - Store experiment outputs in results/{experiment}_{timestamp}/ dirs
+      (like wafer_stuff/clicker: "07_sglang_smoke_08_20251108-040540")
+    - Each dir contains: config.json, metrics.jsonl, training.log, sglang.log
+    - Add CLI flag: python -m rollouts.tui.monitor --replay results/grpo_01_01_20251216-143022/
+    - TUI reads from log files instead of stdin, allows scrubbing through history
+    - Could add timeline scrubber at bottom to jump to specific step
 """
 
 from __future__ import annotations
