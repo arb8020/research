@@ -136,6 +136,7 @@ def convert_to_batch(
     # Extract fields (pure function)
     tokens, loss_masks, rewards = extract_sample_fields(samples)
     response_lengths = compute_response_lengths(loss_masks)
+    group_indices = extract_group_indices(samples)
     metadata = build_batch_metadata(samples, epoch_id, step_id)
 
     # Tiger Style: Assert postconditions
@@ -148,6 +149,7 @@ def convert_to_batch(
         loss_masks=loss_masks,
         rewards=rewards,
         response_lengths=response_lengths,
+        group_indices=group_indices,
         metadata=metadata,
     )
 
@@ -167,6 +169,21 @@ def extract_sample_fields(samples: list[Sample]) -> tuple[list, list, list]:
     loss_masks = [s.loss_mask for s in samples]
     rewards = [s.reward for s in samples]
     return tokens, loss_masks, rewards
+
+
+def extract_group_indices(samples: list[Sample]) -> list[int]:
+    """Extract group indices from samples.
+
+    Group indices track which samples came from the same prompt
+    (for GRPO advantage normalization).
+
+    Args:
+        samples: List of Sample objects
+
+    Returns:
+        List of group indices (one per sample)
+    """
+    return [s.group_index if s.group_index is not None else i for i, s in enumerate(samples)]
 
 
 def compute_response_lengths(loss_masks: list[list[float]]) -> list[int]:

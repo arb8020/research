@@ -10,6 +10,7 @@ This module provides:
 - grpo_loss: Simple GRPO (on-policy, no clipping)
 - grpo_loss_clipped: Slime/Miles style with PPO clipping
 - grpo_loss_masked: Prime-RL style with importance ratio masking
+- compute_group_advantages: GRPO group-wise advantage normalization
 """
 
 import torch
@@ -18,6 +19,63 @@ import torch.nn.functional as F
 
 # Type alias for loss function return type
 LossOutput = tuple[torch.Tensor, dict[str, float]]
+
+
+# ============================================================================
+# Advantage computation (GRPO)
+# ============================================================================
+
+
+def compute_group_advantages(
+    rewards: list[float],
+    group_indices: list[int],
+    normalize_std: bool = False,
+) -> torch.Tensor:
+    """Compute GRPO-style group-normalized advantages.
+
+    For each sample, advantage = reward - mean(rewards in same group).
+    This is the "G" (Group) in GRPO - normalization within prompt groups.
+
+    Args:
+        rewards: List of rewards (one per sample)
+        group_indices: List of group indices (samples with same index are from same prompt)
+        normalize_std: Also divide by group std (like Miles grpo_std_normalization)
+
+    Returns:
+        Tensor of advantages [batch_size]
+
+    Example:
+        >>> rewards = [1.0, 0.0, 1.0, 1.0]  # 2 groups of 2 samples each
+        >>> group_indices = [0, 0, 1, 1]
+        >>> advantages = compute_group_advantages(rewards, group_indices)
+        >>> # Group 0: mean=0.5, advantages=[0.5, -0.5]
+        >>> # Group 1: mean=1.0, advantages=[0.0, 0.0]
+    """
+    rewards_tensor = torch.tensor(rewards, dtype=torch.float32)
+    group_indices_tensor = torch.tensor(group_indices)
+
+    # Get unique groups
+    unique_groups = torch.unique(group_indices_tensor)
+
+    advantages = torch.zeros_like(rewards_tensor)
+
+    for group_idx in unique_groups:
+        mask = group_indices_tensor == group_idx
+        group_rewards = rewards_tensor[mask]
+
+        # Compute group mean
+        group_mean = group_rewards.mean()
+        group_advantages = group_rewards - group_mean
+
+        # Optional: normalize by std (Miles pattern)
+        if normalize_std and len(group_rewards) > 1:
+            group_std = group_rewards.std()
+            if group_std > 1e-6:
+                group_advantages = group_advantages / group_std
+
+        advantages[mask] = group_advantages
+
+    return advantages
 
 
 # ============================================================================

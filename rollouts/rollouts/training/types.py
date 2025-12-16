@@ -146,6 +146,7 @@ class RolloutBatch:
         loss_masks: List of loss masks
         rewards: List of rewards
         response_lengths: List of response lengths
+        group_indices: Group index for each sample (for GRPO advantage computation)
         metadata: Optional batch metadata
 
     Example:
@@ -154,6 +155,7 @@ class RolloutBatch:
         ...     loss_masks=[[0,1,1], [0,0,1]],
         ...     rewards=[1.0, 0.5],
         ...     response_lengths=[2, 1],
+        ...     group_indices=[0, 0],  # Both samples from same prompt
         ... )
     """
 
@@ -161,6 +163,7 @@ class RolloutBatch:
     loss_masks: list[list[float]]
     rewards: list[float]
     response_lengths: list[int]
+    group_indices: list[int] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
