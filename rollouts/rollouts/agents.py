@@ -598,34 +598,45 @@ async def process_pending_tools(
         tool_call = state.pending_tool_calls[i]
         current_state = replace(current_state, next_tool_idx=i)
 
-        # Get confirmation result
-        current_state, confirm_result = await rcfg.confirm_tool(tool_call, current_state, rcfg)
-
-        if confirm_result.proceed:
-            # DESERIALIZE fresh environment for each tool call
-            fresh_env = await current_state.environment.__class__.deserialize(env_data)
-
-            # Execute tool on fresh environment with cancellation support
-            tool_result = await fresh_env.exec_tool(
-                tool_call,
-                current_state,
-                rcfg,
-                cancel_scope=rcfg.cancel_scope,
+        # Check for parse error - if tool call JSON was malformed, return error to model
+        # (like verifiers pattern: send parse errors back so model can retry)
+        if tool_call.parse_error:
+            tool_result = ToolResult(
+                tool_call_id=tool_call.id,
+                is_error=True,
+                error=tool_call.parse_error,
+                content="",
             )
-
-            # ALWAYS serialize the environment state after tool execution
-            # (even if tool failed, environment state like _initialized may have changed)
-            env_data = await fresh_env.serialize()
-
-            # DESERIALIZE again to update current_state
-            current_state = replace(
-                current_state,
-                environment=await current_state.environment.__class__.deserialize(env_data),
-            )
+            confirm_result = None  # No confirmation for parse errors
         else:
-            # Use the provided tool result
-            tool_result = confirm_result.tool_result
-            # TODO: handle None on tool results
+            # Get confirmation result
+            current_state, confirm_result = await rcfg.confirm_tool(tool_call, current_state, rcfg)
+
+            if confirm_result.proceed:
+                # DESERIALIZE fresh environment for each tool call
+                fresh_env = await current_state.environment.__class__.deserialize(env_data)
+
+                # Execute tool on fresh environment with cancellation support
+                tool_result = await fresh_env.exec_tool(
+                    tool_call,
+                    current_state,
+                    rcfg,
+                    cancel_scope=rcfg.cancel_scope,
+                )
+
+                # ALWAYS serialize the environment state after tool execution
+                # (even if tool failed, environment state like _initialized may have changed)
+                env_data = await fresh_env.serialize()
+
+                # DESERIALIZE again to update current_state
+                current_state = replace(
+                    current_state,
+                    environment=await current_state.environment.__class__.deserialize(env_data),
+                )
+            else:
+                # Use the provided tool result
+                tool_result = confirm_result.tool_result
+                # TODO: handle None on tool results
 
         # Emit tool result
         assert tool_result
@@ -651,8 +662,8 @@ async def process_pending_tools(
 
         messages_to_add = [result_message]
 
-        # Add user feedback if provided
-        if confirm_result.user_message:
+        # Add user feedback if provided (only if we have confirm_result)
+        if confirm_result and confirm_result.user_message:
             user_msg = Message(
                 role="user",
                 content=confirm_result.user_message,

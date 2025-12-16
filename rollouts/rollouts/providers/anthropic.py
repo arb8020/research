@@ -194,6 +194,7 @@ async def aggregate_anthropic_stream(
     thinking_content = ""
     thinking_signature = None
     tool_calls: list[ToolCall] = []
+    tool_call_errors: dict[str, tuple[str, str]] = {}  # id -> (error_msg, raw_arguments)
     message_id = None
     created_at = int(time.time())
     finish_reason = "stop"
@@ -317,15 +318,26 @@ async def aggregate_anthropic_stream(
                     )
 
                 except json.JSONDecodeError as e:
+                    error_msg = f"Invalid JSON: {str(e)}"
+                    tool_id = tool_metadata[index]["id"]
                     await on_chunk(
                         ToolCallError(
                             content_index=index,
-                            tool_call_id=tool_metadata[index]["id"],
+                            tool_call_id=tool_id,
                             tool_name=tool_metadata[index]["name"],
-                            error=f"Invalid JSON: {str(e)}",
+                            error=error_msg,
                             raw_arguments=tool_json_accumulator[index],
                         )
                     )
+                    # Still create a ToolCall so it appears in the message and agent loop
+                    # can return an error to the model (like verifiers pattern)
+                    tool_call = ToolCall(
+                        id=tool_id,
+                        name=tool_metadata[index]["name"],
+                        args={},
+                    )
+                    tool_calls.append(tool_call)
+                    tool_call_errors[tool_id] = (error_msg, tool_json_accumulator[index])
 
         elif event_type == "message_delta":
             if hasattr(event, "delta") and hasattr(event.delta, "stop_reason"):
@@ -368,13 +380,26 @@ async def aggregate_anthropic_stream(
             # Match by id
             for tc in tool_calls:
                 if tc.id == tool_metadata[index]["id"]:
-                    final_content_blocks.append(
-                        ToolCallContent(
-                            id=tc.id,
-                            name=tc.name,
-                            arguments=tc.args,
+                    # Check if this tool call had a parse error
+                    if tc.id in tool_call_errors:
+                        error_msg, raw_args = tool_call_errors[tc.id]
+                        final_content_blocks.append(
+                            ToolCallContent(
+                                id=tc.id,
+                                name=tc.name,
+                                arguments={},
+                                parse_error=error_msg,
+                                raw_arguments=raw_args,
+                            )
                         )
-                    )
+                    else:
+                        final_content_blocks.append(
+                            ToolCallContent(
+                                id=tc.id,
+                                name=tc.name,
+                                arguments=tc.args,
+                            )
+                        )
                     break
 
     # Validate we actually received content from the stream

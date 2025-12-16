@@ -75,7 +75,7 @@ def _message_to_openai(m: Message) -> ChatCompletionMessageParam:
     elif not m.content and not tool_calls and m.role == "assistant":
         # Empty assistant message - likely from failed tool call parsing
         # Add placeholder to prevent downstream errors
-        logger.warning(f"Empty assistant message detected - adding placeholder")
+        logger.warning("Empty assistant message detected - adding placeholder")
         m = Message(role="assistant", content="[No response generated]")
 
     msg: dict[str, Any] = {"role": m.role}
@@ -399,7 +399,10 @@ async def aggregate_stream(
         await on_chunk(TextEnd(content_index=content_index, content=accumulated_content))
 
     # Emit tool_end events and build final tool_calls list
+    # Track both successful tool calls and parse errors
     tool_calls: list[ToolCall] = []
+    tool_call_errors: dict[str, tuple[str, str]] = {}  # id -> (error_msg, raw_arguments)
+
     for idx, tc_buf in sorted(call_buf.items()):
         if tc_buf["name"]:
             try:
@@ -419,15 +422,21 @@ async def aggregate_stream(
                 tool_calls.append(tool_call)
 
             except (json.JSONDecodeError, ValueError) as e:
+                error_msg = f"Invalid tool arguments: {str(e)}"
                 await on_chunk(
                     ToolCallError(
                         content_index=tc_buf["content_index"],
                         tool_call_id=tc_buf["id"],
                         tool_name=tc_buf["name"],
-                        error=f"Invalid tool arguments: {str(e)}",
+                        error=error_msg,
                         raw_arguments=tc_buf["arguments"],
                     )
                 )
+                # Still create a ToolCall so it appears in the message and agent loop
+                # can return an error to the model (like verifiers pattern)
+                tool_call = ToolCall(id=tc_buf["id"], name=tc_buf["name"], args={})
+                tool_calls.append(tool_call)
+                tool_call_errors[tc_buf["id"]] = (error_msg, tc_buf["arguments"])
 
     # Emit done event
     await on_chunk(StreamDone(finish_reason=finish_reason or "stop"))
@@ -437,13 +446,26 @@ async def aggregate_stream(
     if accumulated_content:
         content_blocks.append(TextContent(text=accumulated_content))
     for tc in tool_calls:
-        content_blocks.append(
-            ToolCallContent(
-                id=tc.id,
-                name=tc.name,
-                arguments=tc.args,
+        # Check if this tool call had a parse error
+        if tc.id in tool_call_errors:
+            error_msg, raw_args = tool_call_errors[tc.id]
+            content_blocks.append(
+                ToolCallContent(
+                    id=tc.id,
+                    name=tc.name,
+                    arguments={},
+                    parse_error=error_msg,
+                    raw_arguments=raw_args,
+                )
             )
-        )
+        else:
+            content_blocks.append(
+                ToolCallContent(
+                    id=tc.id,
+                    name=tc.name,
+                    arguments=tc.args,
+                )
+            )
 
     final_message = Message(role="assistant", content=content_blocks if content_blocks else "")
 
