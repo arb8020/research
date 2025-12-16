@@ -734,16 +734,18 @@ def run_remote(
         local_results.mkdir(parents=True, exist_ok=True)
 
         # Sync training outputs (config, metrics, logs)
+        # Tiger Style: recursive=True to capture nested artifacts (checkpoints, profiler traces)
         remote_output_dir = "/tmp/rollouts_rl/calculator_grpo"
         try:
             result = bifrost.download_files(
                 remote_path=remote_output_dir,
                 local_path=str(local_results),
+                recursive=True,
             )
             if result and result.success:
                 print(f"Results synced to: {local_results}")
-                print(f"  - SGLang logs: {local_results}/sglang_server.log")
-                print(f"  - Config: {local_results}/config.json")
+                if result.files_copied:
+                    print(f"  - {result.files_copied} files synced")
             else:
                 print(f"Warning: Failed to sync results from {remote_output_dir}")
         except Exception as e:
