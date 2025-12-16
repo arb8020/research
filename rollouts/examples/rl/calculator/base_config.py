@@ -759,6 +759,7 @@ def run_remote(
     keep_alive: bool = False,
     gpu_id: str | None = None,
     use_tui: bool = False,
+    tui_debug: bool = False,
 ) -> None:
     """Run training script on remote GPU via broker/bifrost.
 
@@ -769,6 +770,7 @@ def run_remote(
         keep_alive: Keep GPU after completion
         gpu_id: Reuse existing GPU instance
         use_tui: Show TUI monitor for logs (sparklines, multi-pane)
+        tui_debug: Print raw JSONL instead of TUI (for debugging)
     """
     from dotenv import load_dotenv
 
@@ -824,12 +826,18 @@ def run_remote(
         print("Running training...")
         script_name = Path(script_path).name
         env_vars = "PYTHONUNBUFFERED=1"
-        if use_tui:
+        if use_tui or tui_debug:
             env_vars += " ROLLOUTS_JSON_LOGS=true"
         cmd = f"cd {workspace}/rollouts && {env_vars} uv run python examples/rl/calculator/{script_name}"
         print(f"Running: {cmd}")
 
-        if use_tui:
+        if tui_debug:
+            # Just print raw JSONL for debugging
+            print("-" * 50)
+            for line in bifrost.exec_stream(cmd):
+                print(line, flush=True)
+            print("-" * 50)
+        elif use_tui:
             # Route output through TUI monitor
             from rollouts.tui.monitor import TrainingMonitor
 
