@@ -24,7 +24,7 @@ from .base import (
 from .google import aggregate_google_stream, rollout_google
 from .openai_completions import aggregate_stream, rollout_openai
 from .openai_responses import aggregate_openai_responses_stream, rollout_openai_responses
-from .sglang import rollout_sglang
+from .sglang import rollout_sglang, rollout_sglang_streaming
 
 if TYPE_CHECKING:
     from rollouts.dtypes import Actor, StreamEvent
@@ -71,6 +71,7 @@ __all__ = [
     "rollout_openai",
     "rollout_openai_responses",
     "rollout_sglang",
+    "rollout_sglang_streaming",
     # Aggregate functions
     "aggregate_anthropic_stream",
     "aggregate_google_stream",
@@ -84,4 +85,5 @@ __all__ = [
     "add_cache_control_to_last_content",
     "calculate_cost_from_usage",
     "sanitize_request_for_logging",
+    "StreamEvent",
 ]
