@@ -104,6 +104,20 @@ def __getattr__(name: str):
 
         return trajectory_to_sample
 
+    # Loss functions
+    if name in (
+        "pretrain_loss",
+        "sft_loss",
+        "grpo_loss",
+        "grpo_loss_clipped",
+        "grpo_loss_masked",
+        "ppo_loss",
+        "LossOutput",
+    ):
+        from rollouts.training import losses
+
+        return getattr(losses, name)
+
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -144,4 +158,12 @@ __all__ = [
     "agent_rollout_to_sample",
     "generate_rollout_batch",
     "trajectory_to_sample",
+    # Loss functions
+    "pretrain_loss",
+    "sft_loss",
+    "grpo_loss",
+    "grpo_loss_clipped",
+    "grpo_loss_masked",
+    "ppo_loss",
+    "LossOutput",
 ]

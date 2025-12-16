@@ -304,7 +304,7 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
     from rollouts.environments.calculator import CalculatorEnvironment
     from rollouts.training.agent_integration import agent_rollout_to_sample
     from rollouts.training.datasets.data_buffer import DataBuffer
-    from rollouts.training.rl_losses import grpo_loss
+    from rollouts.training.losses import grpo_loss
     from rollouts.training.rollout_gen.async_rollout_manager import AsyncRolloutManager
     from rollouts.training.types import RolloutConfig
     from rollouts.training.weight_sync import SGLangEngine, sync_weights_to_engines
@@ -577,22 +577,25 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
                 micro_batch_size = batch_size // num_minibatches
 
                 total_loss = 0.0
+                accumulated_metrics: dict[str, float] = {}
                 for i in range(num_minibatches):
                     start_idx = i * micro_batch_size
                     end_idx = start_idx + micro_batch_size
 
                     # Slice micro-batch
                     mb_input_ids = input_ids[start_idx:end_idx]
-                    mb_labels = labels[start_idx:end_idx]
-                    mb_loss_mask = loss_mask[start_idx:end_idx]
-                    mb_advantages = advantages[start_idx:end_idx]
+                    mb_batch = {
+                        "labels": labels[start_idx:end_idx],
+                        "loss_mask": loss_mask[start_idx:end_idx],
+                        "advantages": advantages[start_idx:end_idx],
+                    }
 
                     # Forward pass
                     outputs = model(input_ids=mb_input_ids)
                     logits = outputs.logits  # [micro_batch, seq_len, vocab_size]
 
-                    # Compute loss for this micro-batch
-                    mb_loss = grpo_loss(logits, mb_labels, mb_loss_mask, mb_advantages)
+                    # Compute loss for this micro-batch (returns loss, metrics)
+                    mb_loss, mb_metrics = grpo_loss(logits, mb_batch)
 
                     # Scale loss for gradient accumulation (Slime pattern)
                     scaled_loss = mb_loss / num_minibatches
@@ -600,8 +603,14 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
 
                     total_loss += mb_loss.item()
 
-                # Average loss for logging
+                    # Accumulate metrics
+                    for k, v in mb_metrics.items():
+                        accumulated_metrics[k] = accumulated_metrics.get(k, 0.0) + v
+
+                # Average loss and metrics for logging
                 loss = total_loss / num_minibatches
+                for k in accumulated_metrics:
+                    accumulated_metrics[k] /= num_minibatches
 
                 # 6. Optimizer step (after all micro-batches)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), config.trainer.max_grad_norm)
@@ -615,16 +624,21 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
                 )
                 step_metrics = {
                     "step": step + 1,
-                    "loss": loss,  # Already a float from accumulation
                     "mean_reward": mean_reward,
                     "reward_std": reward_std,
                     "num_samples": len(batch.tokens),
-                    "mean_advantage": advantages.mean().item(),
+                    **accumulated_metrics,  # Include pg_loss, entropy, avg_logprob, etc.
                 }
                 metrics_history.append(step_metrics)
 
                 if (step + 1) % config.log_every == 0:
-                    logger.info(f"Step {step + 1}: loss={loss:.4f}, mean_reward={mean_reward:.3f}")
+                    # Log with more informative metrics
+                    pg_loss = accumulated_metrics.get("pg_loss", loss)
+                    entropy = accumulated_metrics.get("entropy", 0.0)
+                    logger.info(
+                        f"Step {step + 1}: reward={mean_reward:.3f} | "
+                        f"pg_loss={pg_loss:.4f} | entropy={entropy:.2f}"
+                    )
 
                 # 8. Checkpoint + Weight Sync
                 if (step + 1) % config.checkpoint_every == 0:
