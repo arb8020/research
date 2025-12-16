@@ -63,7 +63,10 @@ def parse_streaming_json(partial_json: str) -> dict[str, Any]:
     # Try parsing as complete JSON first
     try:
         result = json.loads(partial_json)
-        assert isinstance(result, dict), f"Tool args must be object, got {type(result)}"
+        # Model might return non-object JSON (e.g., "8" instead of {"result": 8})
+        # Return empty dict rather than crashing - caller will handle via ToolCallError
+        if not isinstance(result, dict):
+            return {}
         return result
     except json.JSONDecodeError:
         pass

@@ -397,6 +397,9 @@ async def aggregate_stream(
         if tc_buf["name"]:
             try:
                 args = json.loads(tc_buf["arguments"]) if tc_buf["arguments"] else {}
+                # Verify args is a dict - model might return "8" instead of {"result": 8}
+                if not isinstance(args, dict):
+                    raise ValueError(f"Tool args must be object, got {type(args).__name__}")
                 tool_call = ToolCall(id=tc_buf["id"], name=tc_buf["name"], args=args)
 
                 await on_chunk(
@@ -408,13 +411,13 @@ async def aggregate_stream(
 
                 tool_calls.append(tool_call)
 
-            except json.JSONDecodeError as e:
+            except (json.JSONDecodeError, ValueError) as e:
                 await on_chunk(
                     ToolCallError(
                         content_index=tc_buf["content_index"],
                         tool_call_id=tc_buf["id"],
                         tool_name=tc_buf["name"],
-                        error=f"Invalid JSON arguments: {str(e)}",
+                        error=f"Invalid tool arguments: {str(e)}",
                         raw_arguments=tc_buf["arguments"],
                     )
                 )
