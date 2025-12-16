@@ -21,23 +21,7 @@ from pathlib import Path
 import trio
 
 from rollouts import AgentSession
-from rollouts.agents import Actor, AgentState, run_agent
-from rollouts.dtypes import (
-    Endpoint,
-    Message,
-    RunConfig,
-    StopReason,
-    StreamDone,
-    StreamEvent,
-    TextDelta,
-    TextEnd,
-    ToolCall,
-    ToolCallContent,
-    ToolCallEnd,
-    ToolConfirmResult,
-    ToolResultReceived,
-    Trajectory,
-)
+from rollouts.dtypes import Endpoint, Message, Trajectory
 from rollouts.environments import (
     CalculatorEnvironment,
     GitWorktreeEnvironment,
@@ -270,270 +254,6 @@ def create_endpoint(
     )
 
 
-async def run_stream_json_mode(
-    trajectory: Trajectory,
-    endpoint: Endpoint,
-    environment,
-    query: str,
-    session_store: FileSessionStore | None,
-    session_id: str | None,
-) -> int:
-    """Run in stream-json mode - emit NDJSON per turn.
-
-    Output format matches Claude Code's stream-json:
-    - {"type":"system","subtype":"init","session_id":"...","tools":[...]}
-    - {"type":"assistant","message":{"content":[...]}}
-    - {"type":"user","message":{"content":[{"type":"tool_result",...}]}}
-    - {"type":"result","subtype":"success","session_id":"...","num_turns":N}
-    """
-    import json
-    import time
-
-    trajectory = Trajectory(messages=trajectory.messages + [Message(role="user", content=query)])
-
-    initial_state = AgentState(
-        actor=Actor(
-            trajectory=trajectory,
-            endpoint=endpoint,
-            tools=environment.get_tools() if environment else [],
-        ),
-        environment=environment,
-    )
-
-    # State for aggregating the current assistant turn
-    current_text: list[str] = []
-    current_tool_calls: list[dict] = []
-    tool_call_map: dict[str, dict] = {}  # tool_call_id -> {name, input}
-    start_time = time.time()
-    num_turns = 0
-
-    def emit(obj: dict) -> None:
-        """Emit a single NDJSON line."""
-        print(json.dumps(obj, ensure_ascii=False), flush=True)
-
-    def flush_assistant_turn() -> None:
-        """Emit the current assistant turn if there's content."""
-        nonlocal current_text, current_tool_calls, num_turns
-        content = []
-
-        # Add text content if any
-        text = "".join(current_text).strip()
-        if text:
-            content.append({"type": "text", "text": text})
-
-        # Add tool calls
-        content.extend(current_tool_calls)
-
-        if content:
-            emit({"type": "assistant", "message": {"content": content}})
-            num_turns += 1
-
-        # Reset state
-        current_text = []
-        current_tool_calls = []
-
-    # Emit init event
-    tools = [t.function.name for t in (environment.get_tools() if environment else [])]
-    emit({
-        "type": "system",
-        "subtype": "init",
-        "session_id": session_id or "",
-        "tools": tools,
-    })
-
-    async def stream_handler(event: StreamEvent) -> None:
-        nonlocal current_text, current_tool_calls, tool_call_map, num_turns
-
-        if isinstance(event, TextDelta):
-            current_text.append(event.delta)
-
-        elif isinstance(event, ToolCallEnd):
-            # Add tool call to current turn
-            tool_use = {
-                "type": "tool_use",
-                "id": event.tool_call.id,
-                "name": event.tool_call.name,
-                "input": dict(event.tool_call.args),
-            }
-            current_tool_calls.append(tool_use)
-            tool_call_map[event.tool_call.id] = tool_use
-
-        elif isinstance(event, ToolResultReceived):
-            # Flush the assistant turn before emitting tool result
-            flush_assistant_turn()
-
-            # Emit tool result as user message
-            emit({
-                "type": "user",
-                "message": {
-                    "content": [{
-                        "type": "tool_result",
-                        "tool_use_id": event.tool_call_id,
-                        "content": event.content,
-                        "is_error": event.is_error,
-                    }]
-                }
-            })
-
-        elif isinstance(event, StreamDone):
-            # Flush any remaining assistant content
-            flush_assistant_turn()
-
-    async def auto_confirm(
-        tc: ToolCall, state: AgentState, rcfg: RunConfig
-    ) -> tuple[AgentState, ToolConfirmResult]:
-        return state, ToolConfirmResult(proceed=True)
-
-    from rollouts.agents import handle_stop_max_turns
-
-    run_config = RunConfig(
-        on_chunk=stream_handler,
-        confirm_tool=auto_confirm,
-        handle_stop=handle_stop_max_turns(50),
-        session_store=session_store,
-    )
-
-    error_occurred = False
-    error_message = ""
-    try:
-        states = await run_agent(initial_state, run_config)
-        final_state = states[-1] if states else initial_state
-        # Flush any remaining content
-        flush_assistant_turn()
-    except ValueError as e:
-        if "empty message" not in str(e):
-            error_occurred = True
-            error_message = str(e)
-    except Exception as e:
-        error_occurred = True
-        error_message = str(e)
-
-    # Emit result event
-    duration_ms = int((time.time() - start_time) * 1000)
-    if error_occurred:
-        emit({
-            "type": "result",
-            "subtype": "error",
-            "session_id": session_id or "",
-            "error": error_message,
-            "num_turns": num_turns,
-            "duration_ms": duration_ms,
-        })
-        return 1
-    else:
-        emit({
-            "type": "result",
-            "subtype": "success",
-            "session_id": session_id or "",
-            "num_turns": num_turns,
-            "duration_ms": duration_ms,
-        })
-        return 0
-
-
-async def run_print_mode(
-    trajectory: Trajectory,
-    endpoint: Endpoint,
-    environment,
-    query: str,
-    session_store: FileSessionStore | None,
-    session_id: str | None,
-) -> int:
-    """Run in non-interactive print mode - execute query and print result.
-
-    Streams text output and shows tool calls with their results.
-    For coding tasks, most output comes from tool calls (write, edit, bash).
-    """
-    from rollouts.dtypes import ToolCallEnd, ToolResultReceived
-
-    trajectory = Trajectory(messages=trajectory.messages + [Message(role="user", content=query)])
-
-    initial_state = AgentState(
-        actor=Actor(
-            trajectory=trajectory,
-            endpoint=endpoint,
-            tools=environment.get_tools() if environment else [],
-        ),
-        environment=environment,
-    )
-
-    # Track tool calls to show results
-    current_tool_calls: dict[str, dict] = {}  # tool_call_id -> {name, args}
-
-    async def print_handler(event: StreamEvent) -> None:
-        nonlocal current_tool_calls
-
-        if isinstance(event, TextDelta):
-            print(event.delta, end="", flush=True)
-        elif isinstance(event, ToolCallEnd):
-            # Store tool call info for when we get the result
-            current_tool_calls[event.tool_call.id] = {
-                "name": event.tool_call.name,
-                "args": event.tool_call.args,
-            }
-        elif isinstance(event, ToolResultReceived):
-            # Show tool call and result
-            tc_info = current_tool_calls.get(event.tool_call_id, {})
-            name = tc_info.get("name", "unknown")
-            args = tc_info.get("args", {})
-
-            # Format based on tool type
-            if name == "write":
-                path = args.get("path", "")
-                content = args.get("content", "")
-                lines = len(content.split("\n"))
-                print(f"📝 write({path}) - {lines} lines", flush=True)
-            elif name == "edit":
-                path = args.get("path", "")
-                print(f"✏️  edit({path})", flush=True)
-            elif name == "bash":
-                cmd = args.get("command", "")
-                # Truncate long commands
-                if len(cmd) > 60:
-                    cmd = cmd[:57] + "..."
-                print(f"$ {cmd}", flush=True)
-                # Show output if any
-                if event.content and event.content.strip():
-                    for line in event.content.strip().split("\n")[:10]:
-                        print(f"  {line}", flush=True)
-                    lines = event.content.strip().split("\n")
-                    if len(lines) > 10:
-                        print(f"  ... ({len(lines) - 10} more lines)", flush=True)
-            elif name == "read":
-                path = args.get("path", "")
-                print(f"📖 read({path})", flush=True)
-            else:
-                print(f"🔧 {name}(...)", flush=True)
-
-    async def auto_confirm(
-        tc: ToolCall, state: AgentState, rcfg: RunConfig
-    ) -> tuple[AgentState, ToolConfirmResult]:
-        return state, ToolConfirmResult(proceed=True)
-
-    from rollouts.agents import handle_stop_max_turns
-
-    run_config = RunConfig(
-        on_chunk=print_handler,
-        confirm_tool=auto_confirm,
-        handle_stop=handle_stop_max_turns(50),
-        session_store=session_store,
-    )
-
-    error_occurred = False
-    try:
-        await run_agent(initial_state, run_config)
-    except ValueError as e:
-        if "empty message" not in str(e):
-            print(f"\nError: {e}", file=sys.stderr)
-            error_occurred = True
-    except Exception as e:
-        print(f"\nError: {e}", file=sys.stderr)
-        error_occurred = True
-
-    print()
-    return 1 if error_occurred else 0
-
-
 def main() -> int:
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -644,7 +364,14 @@ def main() -> int:
         help="Output NDJSON per turn (for print mode). Each line is a JSON object.",
     )
 
-    # TUI options
+    # Frontend options
+    parser.add_argument(
+        "--frontend",
+        type=str,
+        choices=["tui", "none", "textual"],
+        default="tui",
+        help="Frontend: tui (default Python TUI), none (stdout), textual (rich TUI)",
+    )
     parser.add_argument(
         "--theme",
         type=str,
@@ -1066,7 +793,7 @@ def main() -> int:
         if not sys.stdin.isatty():
             initial_prompt = sys.stdin.read().strip() or None
 
-        # Non-interactive print mode
+        # Non-interactive print mode - use frontends
         if args.print_mode is not None:
             query = args.print_mode
             if query == "-":
@@ -1075,38 +802,96 @@ def main() -> int:
                 if not query:
                     print("Error: no input from stdin", file=sys.stderr)
                     return 1
+
+            from rollouts.frontends import JsonFrontend, NoneFrontend, run_interactive
+
             if args.stream_json:
-                return await run_stream_json_mode(
-                    trajectory, endpoint, environment, query, session_store, session_id
-                )
+                frontend = JsonFrontend(include_thinking=True)
+                # Set tools for init event
+                if environment:
+                    frontend.set_tools([t.function.name for t in environment.get_tools()])
             else:
-                return await run_print_mode(
-                    trajectory, endpoint, environment, query, session_store, session_id
+                frontend = NoneFrontend(show_tool_calls=True, show_thinking=False)
+
+            try:
+                await run_interactive(
+                    trajectory,
+                    endpoint,
+                    frontend=frontend,
+                    environment=environment,
+                    max_turns=args.max_turns,
+                    session_store=session_store,
+                    session_id=session_id,
+                    initial_prompt=query,
+                    single_turn=True,
                 )
+                return 0
+            except KeyboardInterrupt:
+                return 0
+            except Exception as e:
+                if args.stream_json:
+                    import json
+                    print(json.dumps({"type": "error", "error": str(e)}), flush=True)
+                else:
+                    print(f"\nError: {e}", file=sys.stderr)
+                return 1
 
-        # Interactive TUI mode
-        from rollouts.frontends.tui.interactive_agent import run_interactive_agent
+        # Interactive mode - select frontend
+        if args.frontend == "none":
+            # Simple stdout frontend
+            from rollouts.frontends import NoneFrontend, run_interactive
 
-        try:
-            await run_interactive_agent(
-                trajectory,
-                endpoint,
-                environment,
-                args.max_turns,
-                session_store,
-                session_id,
-                args.theme,
-                args.debug,
-                args.debug_layout,
-                parent_session_id,
-                branch_point,
-                args.confirm_tools,
-                initial_prompt,
+            frontend = NoneFrontend(show_tool_calls=True, show_thinking=True)
+            try:
+                await run_interactive(
+                    trajectory,
+                    endpoint,
+                    frontend=frontend,
+                    environment=environment,
+                    max_turns=args.max_turns,
+                    session_store=session_store,
+                    session_id=session_id,
+                    parent_session_id=parent_session_id,
+                    branch_point=branch_point,
+                    confirm_tools=args.confirm_tools,
+                    initial_prompt=initial_prompt,
+                )
+                return 0
+            except KeyboardInterrupt:
+                print("\n\n✅ Agent stopped")
+                return 0
+
+        elif args.frontend == "textual":
+            # Textual-based rich TUI (coming soon)
+            print(
+                "Textual frontend not yet implemented. Use --frontend=tui for now.", file=sys.stderr
             )
-            return 0
-        except KeyboardInterrupt:
-            print("\n\n✅ Agent stopped")
-            return 0
+            return 1
+
+        else:
+            # Default: Python TUI (existing implementation)
+            from rollouts.frontends.tui.interactive_agent import run_interactive_agent
+
+            try:
+                await run_interactive_agent(
+                    trajectory,
+                    endpoint,
+                    environment,
+                    args.max_turns,
+                    session_store,
+                    session_id,
+                    args.theme,
+                    args.debug,
+                    args.debug_layout,
+                    parent_session_id,
+                    branch_point,
+                    args.confirm_tools,
+                    initial_prompt,
+                )
+                return 0
+            except KeyboardInterrupt:
+                print("\n\n✅ Agent stopped")
+                return 0
 
     try:
         return trio.run(async_main)
