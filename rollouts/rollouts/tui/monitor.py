@@ -333,14 +333,15 @@ class TrainingMonitor:
 
         # Content - special handling for metrics pane
         if self.active_pane == "metrics" and self._metrics:
-            # Show sparklines header
-            sparkline_lines = self._render_sparklines(width)
-            output.extend(sparkline_lines)
+            # Use plotext chart (takes most of the space)
+            chart_height = min(content_height - 5, 15)  # Leave room for log lines
+            chart_lines = self._render_plotext_chart(width, chart_height)
+            output.extend(chart_lines)
 
-            # Show log lines below sparklines
+            # Show recent log lines below chart
             pane = self.panes[self.active_pane]
-            remaining_height = content_height - len(sparkline_lines)
-            visible_lines = list(pane.lines)[pane.scroll : pane.scroll + remaining_height]
+            remaining_height = content_height - len(chart_lines)
+            visible_lines = list(pane.lines)[-remaining_height:]  # Show most recent
 
             for log_line in visible_lines:
                 output.append(self._render_log_line(log_line, width))
@@ -394,6 +395,33 @@ class TrainingMonitor:
         lines.append(f"{DIM}{'─' * width}{RESET}")
 
         return lines
+
+    def _render_plotext_chart(self, width: int, height: int) -> list[str]:
+        """Render metrics chart using plotext braille charts."""
+        try:
+            import plotext as plt
+        except ImportError:
+            return [f"{DIM}(plotext not installed){RESET}"]
+
+        if not self._metrics:
+            return []
+
+        # Clear previous plot
+        plt.clf()
+
+        # Plot each metric
+        for name, values in sorted(self._metrics.items()):
+            if values:
+                plt.plot(list(values), label=name, marker="braille")
+
+        plt.title(f"Training (step {self._current_step})")
+        plt.xlabel("Step")
+        plt.plotsize(width - 2, height)
+        plt.theme("dark")
+
+        # Build and split into lines
+        chart_str = plt.build()
+        return chart_str.split("\n")
 
     def _render_tab_bar(self, width: int) -> str:
         """Render tab bar showing all panes."""
