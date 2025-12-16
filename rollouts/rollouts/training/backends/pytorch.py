@@ -29,6 +29,7 @@ from rollouts.training.types import TrainFuture
 try:
     from torch.distributed.checkpoint.state_dict import StateDictOptions, get_model_state_dict
     from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
     FSDP_AVAILABLE = True
 except ImportError:
     FSDP_AVAILABLE = False
@@ -66,7 +67,9 @@ class PyTorchTrainingBackend:
     model: torch.nn.Module
     optimizer: torch.optim.Optimizer
     loss_fn: Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]
-    checkpoint_dir: Path  # TODO(ray): Replace with CheckpointStorage protocol for S3/distributed storage
+    checkpoint_dir: (
+        Path  # TODO(ray): Replace with CheckpointStorage protocol for S3/distributed storage
+    )
     device: torch.device | None = None  # Tiger Style: Explicit device (optional for CPU-only)
 
     # State (SLIME-inspired)
@@ -92,9 +95,10 @@ class PyTorchTrainingBackend:
             if self.device.type == "cuda":
                 device_index = self.device.index if self.device.index is not None else 0
                 num_gpus = torch.cuda.device_count()
-                assert device_index < num_gpus, \
-                    f"Device {self.device} is invalid: only {num_gpus} GPU(s) available " \
+                assert device_index < num_gpus, (
+                    f"Device {self.device} is invalid: only {num_gpus} GPU(s) available "
                     f"(indices 0-{num_gpus - 1}). Check your gpu_ranks config."
+                )
 
                 # Verify device is actually accessible (not just in range)
                 try:
@@ -150,8 +154,10 @@ class PyTorchTrainingBackend:
 
             # Move batch to device if specified (Tiger Style: explicit device handling)
             if self.device is not None:
-                batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v
-                        for k, v in batch.items()}
+                batch = {
+                    k: v.to(self.device) if isinstance(v, torch.Tensor) else v
+                    for k, v in batch.items()
+                }
 
             # Forward pass
             output = self.model(batch["input_ids"])
@@ -160,7 +166,7 @@ class PyTorchTrainingBackend:
             # Handle both raw tensors and ModelOutput objects
             # Type check would catch if we passed wrong type to loss_fn
             logits: torch.Tensor
-            if hasattr(output, 'logits'):
+            if hasattr(output, "logits"):
                 logits = output.logits  # HuggingFace ModelOutput -> extract tensor
             else:
                 logits = output  # Raw tensor (custom models)
@@ -173,11 +179,12 @@ class PyTorchTrainingBackend:
             loss.backward()
 
             # Compute grad norm (before clipping)
-            grad_norm = sum(
-                p.grad.norm().item() ** 2
-                for p in self.model.parameters()
-                if p.grad is not None
-            ) ** 0.5
+            grad_norm = (
+                sum(
+                    p.grad.norm().item() ** 2 for p in self.model.parameters() if p.grad is not None
+                )
+                ** 0.5
+            )
 
             # Create future with immediate result
             future: TrainFuture[dict[str, float]] = TrainFuture(operation="forward_backward")
@@ -274,13 +281,18 @@ class PyTorchTrainingBackend:
 
         # DEBUG: Log checkpoint start
         import logging
+
         logger = logging.getLogger(__name__)
         logger.debug(f"[CHECKPOINT DEBUG] Rank {rank}: Starting checkpoint save for step {step}")
-        logger.debug(f"[CHECKPOINT DEBUG] Rank {rank}: Distributed={is_distributed}, FSDP={self._fsdp_state_dict_opts is not None}")
+        logger.debug(
+            f"[CHECKPOINT DEBUG] Rank {rank}: Distributed={is_distributed}, FSDP={self._fsdp_state_dict_opts is not None}"
+        )
 
         # Increment weight version (SLIME pattern)
         self.weight_version += 1
-        logger.debug(f"[CHECKPOINT DEBUG] Rank {rank}: Incremented weight_version to {self.weight_version}")
+        logger.debug(
+            f"[CHECKPOINT DEBUG] Rank {rank}: Incremented weight_version to {self.weight_version}"
+        )
 
         # Create checkpoint directory (only rank 0, then barrier)
         ckpt_dir = self.checkpoint_dir / f"step_{step:04d}"
@@ -298,7 +310,9 @@ class PyTorchTrainingBackend:
         # Get model state dict (FSDP-aware using SLIME pattern)
         # This is where SLIME's fsdp_utils/actor.py:667 pattern is used
         if self._fsdp_state_dict_opts is not None:
-            logger.debug(f"[CHECKPOINT DEBUG] Rank {rank}: Getting FSDP state dict (this may take time)...")
+            logger.debug(
+                f"[CHECKPOINT DEBUG] Rank {rank}: Getting FSDP state dict (this may take time)..."
+            )
             # FSDP model: use new PyTorch checkpoint API
             # get_model_state_dict handles gathering across ranks
             state_dict = get_model_state_dict(self.model, options=self._fsdp_state_dict_opts)
@@ -392,7 +406,9 @@ class PyTorchTrainingBackend:
         # Load optimizer state
         optimizer_path = checkpoint_path / "optimizer.bin"
         assert optimizer_path.exists(), f"optimizer.bin not found in {checkpoint_path}"
-        optimizer_state = await trio.to_thread.run_sync(torch.load, optimizer_path, {"map_location": "cpu"})
+        optimizer_state = await trio.to_thread.run_sync(
+            torch.load, optimizer_path, {"map_location": "cpu"}
+        )
         self.optimizer.load_state_dict(optimizer_state)
 
         # Restore weight version and step (SLIME pattern)
@@ -484,18 +500,15 @@ class PyTorchTrainingBackend:
             "model_dtype": str(param_dtype) if param_dtype else None,
             "model_device": str(param_device) if param_device else None,
             "model_is_training": self.model.training,
-
             # Optimizer state
             "optimizer_type": type(self.optimizer).__name__,
             "optimizer_num_param_groups": len(self.optimizer.param_groups),
             "learning_rate": self.optimizer.param_groups[0]["lr"],
             "betas": self.optimizer.param_groups[0].get("betas", None),
             "weight_decay": self.optimizer.param_groups[0].get("weight_decay", 0),
-
             # Training state
             "current_step": self.current_step,
             "weight_version": self.weight_version,
-
             # Execution state
             "is_poisoned": self._poisoned,
             "is_fsdp": self._fsdp_state_dict_opts is not None,

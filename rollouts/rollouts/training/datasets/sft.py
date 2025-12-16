@@ -33,8 +33,9 @@ def compute_loss_mask(
     """
     # Preconditions
     assert len(tokens) > 0, "Cannot compute mask for empty token list"
-    assert all(0 <= start < end <= len(tokens) for start, end in user_message_spans), \
+    assert all(0 <= start < end <= len(tokens) for start, end in user_message_spans), (
         "All user spans must be valid ranges within token bounds"
+    )
 
     mask = [1.0] * len(tokens)
     for start, end in user_message_spans:
@@ -74,7 +75,9 @@ def tokenize_conversation(
     """
     # Preconditions
     assert len(messages) > 0, "Cannot tokenize empty conversation"
-    assert all("role" in m and "content" in m for m in messages), "All messages must have 'role' and 'content'"
+    assert all("role" in m and "content" in m for m in messages), (
+        "All messages must have 'role' and 'content'"
+    )
 
     # Tokenize full conversation
     full_tokens = _tokenize_full_conversation(messages, tokenizer, max_length)
@@ -90,12 +93,13 @@ def tokenize_conversation(
     for i, (start, end) in enumerate(user_spans):
         assert start >= 0, f"Span {i} has negative start: {start}"
         assert start < end, f"Span {i} is empty or inverted: start={start}, end={end}"
-        assert end <= len(full_tokens), \
-            f"Span {i} exceeds token length: end={end} > len(full_tokens)={len(full_tokens)}\n" \
-            f"  This usually means max_length truncation is inconsistent.\n" \
-            f"  max_length={max_length}, Message count: {len(messages)}\n" \
-            f"  User spans: {user_spans}\n" \
+        assert end <= len(full_tokens), (
+            f"Span {i} exceeds token length: end={end} > len(full_tokens)={len(full_tokens)}\n"
+            f"  This usually means max_length truncation is inconsistent.\n"
+            f"  max_length={max_length}, Message count: {len(messages)}\n"
+            f"  User spans: {user_spans}\n"
             f"  Messages: {messages}"
+        )
 
     return full_tokens, user_spans
 
@@ -450,9 +454,7 @@ def export_samples_to_huggingface_format(
                 ]
             elif isinstance(sample.prompt, list):
                 # Multi-turn conversation
-                messages = list(sample.prompt) + [
-                    {"role": "assistant", "content": sample.response}
-                ]
+                messages = list(sample.prompt) + [{"role": "assistant", "content": sample.response}]
             else:
                 raise ValueError(f"Unsupported prompt type: {type(sample.prompt)}")
 

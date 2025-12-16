@@ -275,11 +275,13 @@ def load_samples_from_parquet(
             metadata["label"] = row[label_key]
         metadata["_raw"] = row.to_dict()
 
-        samples.append(Sample(
-            prompt=prompt,
-            metadata=metadata,
-            index=len(samples),
-        ))
+        samples.append(
+            Sample(
+                prompt=prompt,
+                metadata=metadata,
+                index=len(samples),
+            )
+        )
 
     return samples
 
@@ -331,11 +333,13 @@ def load_samples_from_hf(
             metadata["label"] = row[label_key]
         metadata["_raw"] = dict(row)
 
-        samples.append(Sample(
-            prompt=prompt,
-            metadata=metadata,
-            index=i,
-        ))
+        samples.append(
+            Sample(
+                prompt=prompt,
+                metadata=metadata,
+                index=i,
+            )
+        )
 
     return samples
 
@@ -393,11 +397,13 @@ def load_samples_from_jsonl(
             # Store full original data in metadata
             metadata["_raw"] = data
 
-            samples.append(Sample(
-                prompt=prompt,
-                metadata=metadata,
-                index=line_num - 1,
-            ))
+            samples.append(
+                Sample(
+                    prompt=prompt,
+                    metadata=metadata,
+                    index=line_num - 1,
+                )
+            )
 
     return samples
 
@@ -429,11 +435,13 @@ def load_samples_from_list(
         if labels is not None:
             metadata["label"] = labels[i]
 
-        samples.append(Sample(
-            prompt=prompt,
-            metadata=metadata,
-            index=i,
-        ))
+        samples.append(
+            Sample(
+                prompt=prompt,
+                metadata=metadata,
+                index=i,
+            )
+        )
 
     return samples
 

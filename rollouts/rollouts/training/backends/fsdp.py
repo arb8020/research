@@ -141,9 +141,7 @@ class FSDPTrainingBackend:
         assert callable(self.optimizer_fn), (
             f"optimizer_fn must be callable, got {type(self.optimizer_fn)}"
         )
-        assert callable(self.loss_fn), (
-            f"loss_fn must be callable, got {type(self.loss_fn)}"
-        )
+        assert callable(self.loss_fn), f"loss_fn must be callable, got {type(self.loss_fn)}"
         assert self.checkpoint_dir is not None, "checkpoint_dir cannot be None"
 
         # Auto-detect distributed config
@@ -161,9 +159,7 @@ class FSDPTrainingBackend:
             self.device = torch.device(f"cuda:{self.rank}")
 
         # Tiger Style: Assert valid device
-        assert self.device.type == "cuda", (
-            f"FSDP requires CUDA device, got {self.device.type}"
-        )
+        assert self.device.type == "cuda", f"FSDP requires CUDA device, got {self.device.type}"
 
         # Phase 1: Load checkpoint weights BEFORE FSDP wrapping (THUDM pattern)
         checkpoint_payload = None
@@ -195,8 +191,8 @@ class FSDPTrainingBackend:
 
         # Tiger Style: Assert optimizer creation succeeded
         assert self.optimizer is not None, "optimizer_fn returned None"
-        assert hasattr(self.optimizer, 'step'), "optimizer missing step() method"
-        assert hasattr(self.optimizer, 'zero_grad'), "optimizer missing zero_grad() method"
+        assert hasattr(self.optimizer, "step"), "optimizer missing step() method"
+        assert hasattr(self.optimizer, "zero_grad"), "optimizer missing zero_grad() method"
 
         # Phase 2: Load optimizer state AFTER FSDP wrapping (THUDM pattern)
         if checkpoint_payload and checkpoint_payload.get("optimizer"):
@@ -314,10 +310,14 @@ class FSDPTrainingBackend:
 
         # Wrap each module individually (THUDM pattern)
         for idx, (name, module) in enumerate(modules_to_wrap):
-            logger.debug(f"[FSDP DEBUG] Rank {self.rank}: Wrapping module {idx + 1}/{len(modules_to_wrap)}: {name}")
+            logger.debug(
+                f"[FSDP DEBUG] Rank {self.rank}: Wrapping module {idx + 1}/{len(modules_to_wrap)}: {name}"
+            )
             fully_shard(module)
 
-        logger.debug(f"[FSDP DEBUG] Rank {self.rank}: All sub-modules wrapped, wrapping root model...")
+        logger.debug(
+            f"[FSDP DEBUG] Rank {self.rank}: All sub-modules wrapped, wrapping root model..."
+        )
         # Wrap the entire model (root wrapping)
         fully_shard(self.model)
         logger.debug(f"[FSDP DEBUG] Rank {self.rank}: Root model wrapped successfully")
@@ -351,7 +351,9 @@ class FSDPTrainingBackend:
         assert isinstance(batch["input_ids"], torch.Tensor), "input_ids must be a tensor"
 
         # Move batch to device
-        batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+        batch = {
+            k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()
+        }
 
         # Forward pass (FSDP handles sharding)
         self._fsdp_model.train()
@@ -413,7 +415,7 @@ class FSDPTrainingBackend:
         dist.all_reduce(total_norm_sq_tensor, op=dist.ReduceOp.SUM)
 
         # Compute global norm
-        global_norm = (total_norm_sq_tensor.item() ** 0.5)
+        global_norm = total_norm_sq_tensor.item() ** 0.5
         return global_norm
 
     def optim_step(self) -> TrainFuture[dict[str, float]]:
@@ -437,12 +439,13 @@ class FSDPTrainingBackend:
         # Clip gradients (from config, SLIME default: 1.0)
         # This prevents exploding gradients during training
         grad_norm_clipped = torch.nn.utils.clip_grad_norm_(
-            self._fsdp_model.parameters(),
-            max_norm=self.config.clip_grad
+            self._fsdp_model.parameters(), max_norm=self.config.clip_grad
         )
 
         # Tiger Style: Assert gradient clipping worked
-        assert grad_norm_clipped >= 0, f"Clipped grad norm must be non-negative, got {grad_norm_clipped}"
+        assert grad_norm_clipped >= 0, (
+            f"Clipped grad norm must be non-negative, got {grad_norm_clipped}"
+        )
 
         # Apply gradients
         self.optimizer.step()
@@ -457,7 +460,9 @@ class FSDPTrainingBackend:
         self.step += 1
 
         # Tiger Style: Assert step incremented
-        assert self.step == old_step + 1, f"Step counter did not increment correctly: {old_step} -> {self.step}"
+        assert self.step == old_step + 1, (
+            f"Step counter did not increment correctly: {old_step} -> {self.step}"
+        )
 
         # Get current learning rate
         lr = self.optimizer.param_groups[0]["lr"]
@@ -532,7 +537,9 @@ class FSDPTrainingBackend:
         if is_main_process():
             assert len(state_dict) > 0, "Rank 0 should have full state_dict after collective"
         else:
-            assert len(state_dict) == 0, f"Non-main rank should have empty dict, got {len(state_dict)} keys"
+            assert len(state_dict) == 0, (
+                f"Non-main rank should have empty dict, got {len(state_dict)} keys"
+            )
 
         return ImmediateTrainFuture(state_dict)
 
@@ -565,12 +572,10 @@ class FSDPTrainingBackend:
             )
 
             options = StateDictOptions(full_state_dict=True, cpu_offload=True)
-            set_model_state_dict(
-                self._fsdp_model,
-                model_state_dict=weights,
-                options=options
+            set_model_state_dict(self._fsdp_model, model_state_dict=weights, options=options)
+            logger.debug(
+                f"[FSDP DEBUG] Rank {self.rank}: Loaded weights successfully (PyTorch API)"
             )
-            logger.debug(f"[FSDP DEBUG] Rank {self.rank}: Loaded weights successfully (PyTorch API)")
 
         except Exception as e:
             # Fall back to manual DTensor handling (THUDM pattern)
@@ -579,7 +584,9 @@ class FSDPTrainingBackend:
                 "falling back to manual DTensor loading"
             )
             self._load_weights_with_dtensor(weights)
-            logger.debug(f"[FSDP DEBUG] Rank {self.rank}: Loaded weights successfully (manual DTensor)")
+            logger.debug(
+                f"[FSDP DEBUG] Rank {self.rank}: Loaded weights successfully (manual DTensor)"
+            )
 
         return ImmediateTrainFuture(None)
 
@@ -643,15 +650,11 @@ class FSDPTrainingBackend:
                 dst_tensor.copy_(distributed)
             else:
                 # Regular tensor: just copy to GPU
-                dst_tensor.copy_(
-                    src_tensor.to(device=dst_tensor.device, non_blocking=True)
-                )
+                dst_tensor.copy_(src_tensor.to(device=dst_tensor.device, non_blocking=True))
 
         torch.cuda.synchronize()
 
-    async def save_checkpoint(
-        self, step: int, metrics: dict[str, float]
-    ) -> Path:
+    async def save_checkpoint(self, step: int, metrics: dict[str, float]) -> Path:
         """Save checkpoint following THUDM SLIME pattern with explicit control flow.
 
         Based on SLIME's checkpoint.py save() function:
@@ -699,7 +702,9 @@ class FSDPTrainingBackend:
             ckpt_path.mkdir(exist_ok=True)
             logger.debug("[FSDP DEBUG] Rank 0: Directory created successfully")
         else:
-            logger.debug(f"[RANK-PATH] Rank {self.rank}: Skipping directory creation (not main process)")
+            logger.debug(
+                f"[RANK-PATH] Rank {self.rank}: Skipping directory creation (not main process)"
+            )
 
         # Barrier: ensure directory exists before proceeding
         logger.debug(f"[BARRIER-ENTER] Rank {self.rank}: Waiting for directory creation...")

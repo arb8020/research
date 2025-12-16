@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
-    import torch
+    pass
 
 
 # ──────────────────────── Config Dataclasses ────────────────────────────────
@@ -60,6 +60,7 @@ class DatasetConfig:
 @dataclass(frozen=True)
 class ModelConfig:
     """Model configuration."""
+
     name: str = "Qwen/Qwen2.5-0.5B-Instruct"
     dtype: str = "bfloat16"
 
@@ -67,6 +68,7 @@ class ModelConfig:
 @dataclass(frozen=True)
 class InferenceConfig:
     """Inference server configuration."""
+
     provider: str = "sglang"  # sglang or vllm
     port: int = 30000
     gpu_ids: tuple[int, ...] = (0,)
@@ -75,6 +77,7 @@ class InferenceConfig:
 @dataclass(frozen=True)
 class TrainerConfig:
     """Training configuration."""
+
     gpu_ids: tuple[int, ...] = (0,)  # Same GPU for small models
     lr: float = 1e-5
     weight_decay: float = 0.0
@@ -84,6 +87,7 @@ class TrainerConfig:
 @dataclass(frozen=True)
 class OrchestratorConfig:
     """Rollout orchestration configuration."""
+
     batch_size: int = 8
     rollouts_per_example: int = 4
     max_seq_len: int = 2048
@@ -99,6 +103,7 @@ class RLConfig:
     - Frozen for immutability
     - Serializable to JSON
     """
+
     # Nested configs
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
@@ -123,7 +128,7 @@ class RLConfig:
             json.dump(asdict(self), f, indent=2, default=str)
 
     @classmethod
-    def load(cls, path: Path | str) -> "RLConfig":
+    def load(cls, path: Path | str) -> RLConfig:
         """Load config from JSON."""
         with open(path) as f:
             data = json.load(f)
@@ -168,10 +173,7 @@ def load_samples_from_config(config: DatasetConfig) -> list[dict[str, Any]]:
             limit=config.max_samples,
         )
         # Convert Sample objects to dicts for RL
-        return [
-            {"prompt": s.prompt, "ground_truth": s.metadata.get("label")}
-            for s in samples
-        ]
+        return [{"prompt": s.prompt, "ground_truth": s.metadata.get("label")} for s in samples]
     elif config.source == "jsonl":
         assert config.path, "path required for jsonl source"
         samples = load_samples_from_jsonl(
@@ -180,10 +182,7 @@ def load_samples_from_config(config: DatasetConfig) -> list[dict[str, Any]]:
             label_key=config.label_key,
             limit=config.max_samples,
         )
-        return [
-            {"prompt": s.prompt, "ground_truth": s.metadata.get("label")}
-            for s in samples
-        ]
+        return [{"prompt": s.prompt, "ground_truth": s.metadata.get("label")} for s in samples]
     elif config.source == "parquet":
         assert config.path, "path required for parquet source"
         samples = load_samples_from_parquet(
@@ -192,10 +191,7 @@ def load_samples_from_config(config: DatasetConfig) -> list[dict[str, Any]]:
             label_key=config.label_key,
             limit=config.max_samples,
         )
-        return [
-            {"prompt": s.prompt, "ground_truth": s.metadata.get("label")}
-            for s in samples
-        ]
+        return [{"prompt": s.prompt, "ground_truth": s.metadata.get("label")} for s in samples]
     else:
         raise ValueError(f"Unknown source: {config.source}")
 
@@ -232,7 +228,7 @@ def load_calculator_prompts(max_samples: int | None = None) -> list[dict[str, An
 # ──────────────────────── Reward Function ───────────────────────────────────
 
 
-def calculator_score_fn(sample) -> "Score":
+def calculator_score_fn(sample) -> Score:
     """Score function for calculator tasks.
 
     Compares final_result from complete_task tool to ground_truth.
@@ -253,6 +249,7 @@ def calculator_score_fn(sample) -> "Score":
 
     # Simple heuristic: look for "Final result: X" in response
     import re
+
     match = re.search(r"Final result:\s*([\d.-]+)", response)
     if match:
         try:
@@ -267,11 +264,13 @@ def calculator_score_fn(sample) -> "Score":
     is_correct = abs(final_result - ground_truth) < 0.01
     reward = 1.0 if is_correct else 0.0
 
-    return Score(metrics=(
-        Metric("correct", reward, weight=1.0),
-        Metric("final_result", final_result, weight=0.0),  # tracked only
-        Metric("ground_truth", ground_truth, weight=0.0),  # tracked only
-    ))
+    return Score(
+        metrics=(
+            Metric("correct", reward, weight=1.0),
+            Metric("final_result", final_result, weight=0.0),  # tracked only
+            Metric("ground_truth", ground_truth, weight=0.0),  # tracked only
+        )
+    )
 
 
 # ──────────────────────── Training Loop ─────────────────────────────────────
@@ -301,7 +300,11 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
     from rollouts.dtypes import Endpoint
     from rollouts.environments.calculator import CalculatorEnvironment
     from rollouts.training.agent_integration import agent_rollout_to_sample
+    from rollouts.training.datasets.data_buffer import DataBuffer
     from rollouts.training.rl_losses import grpo_loss
+    from rollouts.training.rollout_gen.async_rollout_manager import AsyncRolloutManager
+    from rollouts.training.types import RolloutConfig
+    from rollouts.training.weight_sync import SGLangEngine, sync_weights_to_engines
 
     # Setup logging
     setup_logging(level="INFO", use_color=True)
@@ -330,10 +333,15 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
     logger.info(f"Launching SGLang on GPU {inference_gpu}, port {inference_port}...")
 
     sglang_cmd = [
-        "python", "-m", "sglang.launch_server",
-        "--model", config.model.name,
-        "--host", "0.0.0.0",
-        "--port", str(inference_port),
+        "python",
+        "-m",
+        "sglang.launch_server",
+        "--model",
+        config.model.name,
+        "--host",
+        "0.0.0.0",
+        "--port",
+        str(inference_port),
         "--trust-remote-code",
     ]
 
@@ -405,119 +413,177 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
         logger.info(f"Loaded {len(tasks)} tasks")
 
         # ─────────────────────────────────────────────────────────────────────
-        # 3. Training loop
+        # 3. Setup AsyncRolloutManager
+        # ─────────────────────────────────────────────────────────────────────
+
+        # Create generate_fn that wraps agent_rollout_to_sample
+        async def generate_fn(prompts: list[str | dict]) -> list:
+            """Generate samples for a batch of prompts."""
+            from rollouts.training.types import Sample as TrainingSample
+
+            results = []
+            for prompt_data in prompts:
+                # Handle both str and dict prompts
+                if isinstance(prompt_data, dict):
+                    prompt = prompt_data["prompt"]
+                    metadata = {"ground_truth": prompt_data.get("ground_truth")}
+                else:
+                    prompt = prompt_data
+                    metadata = {}
+
+                try:
+                    sample = await agent_rollout_to_sample(
+                        prompt=prompt,
+                        environment_cls=CalculatorEnvironment,
+                        endpoint=endpoint,
+                        tokenizer=tokenizer,
+                        max_turns=config.orchestrator.max_turns,
+                        metadata=metadata,
+                    )
+                    results.append(sample)
+                except Exception as e:
+                    logger.warning(f"Rollout failed for prompt '{prompt[:50]}...': {e}")
+
+            return results
+
+        # Setup DataBuffer with task prompts (includes ground_truth metadata)
+        data_buffer = DataBuffer(prompts=tasks)
+
+        # Setup RolloutConfig
+        rollout_config = RolloutConfig(
+            batch_size=config.orchestrator.batch_size,
+            n_samples_per_prompt=config.orchestrator.rollouts_per_example,
+            over_sampling_factor=1.2,  # Generate 20% extra, keep best
+            generate_fn=generate_fn,
+            score_fn=calculator_score_fn,
+        )
+
+        # Setup inference engine for weight sync
+        inference_engine = SGLangEngine(base_url=f"http://localhost:{inference_port}")
+
+        # ─────────────────────────────────────────────────────────────────────
+        # 4. Training loop with AsyncRolloutManager
         # ─────────────────────────────────────────────────────────────────────
         metrics_history = []
+        sync_every = config.checkpoint_every  # Sync weights when we checkpoint
 
-        for step in range(config.num_steps):
-            logger.info(f"\n--- Step {step + 1}/{config.num_steps} ---")
+        async with AsyncRolloutManager(data_buffer, rollout_config) as rollout_manager:
+            for step in range(config.num_steps):
+                logger.info(f"\n--- Step {step + 1}/{config.num_steps} ---")
 
-            # 1. Sample batch of prompts
-            batch_tasks = random.choices(tasks, k=config.orchestrator.batch_size)
+                # 1. Generate rollouts via AsyncRolloutManager
+                logger.info(
+                    f"Generating batch (size={config.orchestrator.batch_size}, "
+                    f"rollouts_per_example={config.orchestrator.rollouts_per_example})..."
+                )
+                batch = await rollout_manager.generate_batch(score_fn=calculator_score_fn)
 
-            # 2. Generate rollouts
-            logger.info(f"Generating {len(batch_tasks)} rollouts...")
-            samples = []
-            for task in batch_tasks:
-                # Generate multiple rollouts per example for GRPO
-                for rollout_idx in range(config.orchestrator.rollouts_per_example):
-                    try:
-                        sample = await agent_rollout_to_sample(
-                            prompt=task["prompt"],
-                            environment_cls=CalculatorEnvironment,
-                            endpoint=endpoint,
-                            tokenizer=tokenizer,
-                            max_turns=config.orchestrator.max_turns,
-                            metadata={"ground_truth": task["ground_truth"]},
-                        )
-                        samples.append(sample)
-                    except Exception as e:
-                        logger.warning(f"Rollout failed: {e}")
+                if not batch.tokens:
+                    logger.warning("No successful rollouts, skipping step")
+                    continue
 
-            if not samples:
-                logger.warning("No successful rollouts, skipping step")
-                continue
+                # 2. Extract rewards (already computed by score_fn in generate_batch)
+                rewards = batch.rewards
 
-            # 3. Compute rewards
-            logger.info("Computing rewards...")
-            rewards = []
-            for sample in samples:
-                score = calculator_score_fn(sample)
-                sample.reward = score.reward
-                rewards.append(score.reward)
+                mean_reward = sum(rewards) / len(rewards) if rewards else 0.0
+                logger.info(f"Mean reward: {mean_reward:.3f}")
 
-            mean_reward = sum(rewards) / len(rewards) if rewards else 0.0
-            logger.info(f"Mean reward: {mean_reward:.3f}")
+                # 3. Compute advantages (GRPO: reward - mean)
+                baseline = mean_reward
+                advantages = torch.tensor([r - baseline for r in rewards], device=device)
 
-            # 4. Compute advantages (GRPO: reward - mean)
-            baseline = mean_reward
-            advantages = torch.tensor([r - baseline for r in rewards], device=device)
+                # 4. Prepare batch for training
+                # Pad sequences to same length
+                max_len = min(
+                    max(len(toks) for toks in batch.tokens),
+                    config.orchestrator.max_seq_len,
+                )
 
-            # 5. Prepare batch for training
-            # Pad sequences to same length
-            max_len = min(
-                max(len(s.tokens) for s in samples),
-                config.orchestrator.max_seq_len,
-            )
+                batch_tokens = []
+                batch_loss_masks = []
+                for tokens, loss_mask in zip(batch.tokens, batch.loss_masks, strict=True):
+                    tokens = list(tokens[:max_len])
+                    loss_mask = list(loss_mask[:max_len])
 
-            batch_tokens = []
-            batch_loss_masks = []
-            for sample in samples:
-                tokens = sample.tokens[:max_len]
-                loss_mask = sample.loss_mask[:max_len]
+                    # Pad to max_len
+                    pad_len = max_len - len(tokens)
+                    tokens = tokens + [tokenizer.pad_token_id] * pad_len
+                    loss_mask = loss_mask + [0.0] * pad_len
 
-                # Pad to max_len
-                pad_len = max_len - len(tokens)
-                tokens = tokens + [tokenizer.pad_token_id] * pad_len
-                loss_mask = loss_mask + [0.0] * pad_len
+                    batch_tokens.append(tokens)
+                    batch_loss_masks.append(loss_mask)
 
-                batch_tokens.append(tokens)
-                batch_loss_masks.append(loss_mask)
+                # Convert to tensors
+                input_ids = torch.tensor(batch_tokens, device=device)  # [batch, seq_len]
+                labels = input_ids.clone()  # For causal LM, labels = input_ids
+                loss_mask = torch.tensor(batch_loss_masks, device=device)  # [batch, seq_len]
 
-            # Convert to tensors
-            input_ids = torch.tensor(batch_tokens, device=device)  # [batch, seq_len]
-            labels = input_ids.clone()  # For causal LM, labels = input_ids
-            loss_mask = torch.tensor(batch_loss_masks, device=device)  # [batch, seq_len]
+                # 5. Forward pass + GRPO loss
+                model.train()
+                optimizer.zero_grad()
 
-            # 6. Forward pass + GRPO loss
-            model.train()
-            optimizer.zero_grad()
+                outputs = model(input_ids=input_ids)
+                logits = outputs.logits  # [batch, seq_len, vocab_size]
 
-            outputs = model(input_ids=input_ids)
-            logits = outputs.logits  # [batch, seq_len, vocab_size]
+                loss = grpo_loss(logits, labels, loss_mask, advantages)
 
-            loss = grpo_loss(logits, labels, loss_mask, advantages)
+                # 6. Backward pass + optimizer step
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), config.trainer.max_grad_norm)
+                optimizer.step()
 
-            # 7. Backward pass + optimizer step
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), config.trainer.max_grad_norm)
-            optimizer.step()
-
-            # 8. Log metrics
-            reward_std = (sum((r - mean_reward) ** 2 for r in rewards) / len(rewards)) ** 0.5 if rewards else 0.0
-            step_metrics = {
-                "step": step + 1,
-                "loss": loss.item(),
-                "mean_reward": mean_reward,
-                "reward_std": reward_std,
-                "num_samples": len(samples),
-                "mean_advantage": advantages.mean().item(),
-            }
-            metrics_history.append(step_metrics)
-
-            if (step + 1) % config.log_every == 0:
-                logger.info(f"Step {step + 1}: loss={loss.item():.4f}, mean_reward={mean_reward:.3f}")
-
-            # 9. Checkpoint
-            if (step + 1) % config.checkpoint_every == 0:
-                ckpt_path = output_dir / f"checkpoint_{step + 1}.pt"
-                torch.save({
+                # 7. Log metrics
+                reward_std = (
+                    (sum((r - mean_reward) ** 2 for r in rewards) / len(rewards)) ** 0.5
+                    if rewards
+                    else 0.0
+                )
+                step_metrics = {
                     "step": step + 1,
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "metrics": step_metrics,
-                }, ckpt_path)
-                logger.info(f"Saved checkpoint: {ckpt_path}")
+                    "loss": loss.item(),
+                    "mean_reward": mean_reward,
+                    "reward_std": reward_std,
+                    "num_samples": len(batch.tokens),
+                    "mean_advantage": advantages.mean().item(),
+                }
+                metrics_history.append(step_metrics)
+
+                if (step + 1) % config.log_every == 0:
+                    logger.info(
+                        f"Step {step + 1}: loss={loss.item():.4f}, mean_reward={mean_reward:.3f}"
+                    )
+
+                # 8. Checkpoint + Weight Sync
+                if (step + 1) % config.checkpoint_every == 0:
+                    # Save checkpoint in HuggingFace format (SGLang needs this)
+                    hf_ckpt_path = output_dir / f"hf_checkpoint_{step + 1}"
+                    model.save_pretrained(hf_ckpt_path)
+                    tokenizer.save_pretrained(hf_ckpt_path)
+                    logger.info(f"Saved HF checkpoint: {hf_ckpt_path}")
+
+                    # Also save optimizer state separately
+                    torch.save(
+                        {
+                            "step": step + 1,
+                            "optimizer_state_dict": optimizer.state_dict(),
+                            "metrics": step_metrics,
+                        },
+                        output_dir / f"optimizer_{step + 1}.pt",
+                    )
+
+                    # Sync weights to inference server
+                    logger.info("Syncing weights to SGLang...")
+                    try:
+                        responses = await sync_weights_to_engines(
+                            [inference_engine],
+                            str(hf_ckpt_path),
+                        )
+                        if responses and responses[0].get("success"):
+                            logger.info("Weight sync successful")
+                        else:
+                            logger.warning(f"Weight sync response: {responses}")
+                    except Exception as e:
+                        logger.warning(f"Weight sync failed: {e}")
 
         # Summary
         logger.info("\n" + "=" * 60)
@@ -564,8 +630,12 @@ def run_remote(
 
     Same pattern as examples/sft/base_config.py.
     """
-    from bifrost import BifrostClient
-    from broker import GPUClient
+    from dotenv import load_dotenv
+
+    from bifrost.client import BifrostClient
+    from broker.client import GPUClient
+
+    load_dotenv()
 
     # Get credentials
     runpod_key = os.getenv("RUNPOD_API_KEY")
@@ -601,17 +671,24 @@ def run_remote(
     bifrost = BifrostClient(instance.ssh_connection_string(), ssh_key_path=key_path)
 
     try:
-        # Deploy code
+        # Deploy code with bootstrap
         print("Deploying code...")
-        workspace = bifrost.push("~/.bifrost/workspaces/rollouts-rl")
+        bootstrap = [
+            "cd rollouts && uv python install 3.12 && uv sync --python 3.12",
+            "uv pip install torch 'transformers<4.52' datasets accelerate sglang[all]",
+        ]
+        workspace = bifrost.push("~/.bifrost/workspaces/rollouts-rl", bootstrap_cmd=bootstrap)
+        print("Code deployed")
 
         # Run training
         print("Running training...")
         script_name = Path(script_path).name
-        for line in bifrost.exec_stream(
-            f"cd {workspace} && uv run python examples/rl/calculator/{script_name}"
-        ):
+        cmd = f"cd {workspace}/rollouts && uv run python examples/rl/calculator/{script_name}"
+        print(f"Running: {cmd}")
+        print("-" * 50)
+        for line in bifrost.exec_stream(cmd):
             print(line, end="")
+        print("-" * 50)
 
     finally:
         if not keep_alive:

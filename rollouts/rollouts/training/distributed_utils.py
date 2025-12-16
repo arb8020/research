@@ -28,6 +28,7 @@ except ImportError:
         Store,
         default_pg_timeout,
     )
+
     _new_process_group_helper = None
     _world = None
 
@@ -144,10 +145,7 @@ def get_gloo_group() -> dist.ProcessGroup:
     global GLOO_GROUP
 
     if GLOO_GROUP is None:
-        raise RuntimeError(
-            "Gloo group has not been initialized. "
-            "Call init_gloo_group() first."
-        )
+        raise RuntimeError("Gloo group has not been initialized. Call init_gloo_group() first.")
 
     return GLOO_GROUP
 
@@ -329,7 +327,7 @@ def distributed_masked_whiten(
     """
     # Calculate local statistics
     local_sum = (values * mask).sum()
-    local_sum_sq = ((values ** 2) * mask).sum()
+    local_sum_sq = ((values**2) * mask).sum()
     local_mask_sum = mask.sum()
 
     # Aggregate statistics across all GPUs
@@ -349,7 +347,7 @@ def distributed_masked_whiten(
 
     global_mean = global_sum / global_mask_sum
     global_mean_sq = global_sum_sq / global_mask_sum
-    global_var = global_mean_sq - global_mean ** 2
+    global_var = global_mean_sq - global_mean**2
 
     # Bessel's correction for unbiased variance estimate
     if global_mask_sum.item() >= 2:

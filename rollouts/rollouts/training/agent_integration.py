@@ -150,8 +150,9 @@ async def generate_rollout_batch(
     if metadata_list is None:
         metadata_list = [{}] * len(prompts)
 
-    assert len(metadata_list) == len(prompts), \
+    assert len(metadata_list) == len(prompts), (
         f"metadata_list ({len(metadata_list)}) must match prompts ({len(prompts)})"
+    )
 
     # Generate all rollouts in parallel (trio structured concurrency)
     async def gen_one(prompt: str, metadata: dict) -> Sample:
@@ -166,7 +167,7 @@ async def generate_rollout_batch(
 
     samples = []
     async with trio.open_nursery() as nursery:
-        for prompt, metadata in zip(prompts, metadata_list):
+        for prompt, metadata in zip(prompts, metadata_list, strict=False):
             samples.append(await nursery.start_soon(gen_one, prompt, metadata))
 
     # Tiger Style: Assert postconditions
@@ -238,11 +239,15 @@ def trajectory_to_sample(
 
     # Extract response (everything after initial prompt)
     response_messages = trajectory.messages[1:]
-    response = tokenizer.apply_chat_template(
-        [_msg_to_dict(m) for m in response_messages],
-        tokenize=False,
-        add_generation_prompt=False,
-    ) if response_messages else ""
+    response = (
+        tokenizer.apply_chat_template(
+            [_msg_to_dict(m) for m in response_messages],
+            tokenize=False,
+            add_generation_prompt=False,
+        )
+        if response_messages
+        else ""
+    )
 
     # Tiger Style: Explicit construction
     sample = Sample(
@@ -256,10 +261,10 @@ def trajectory_to_sample(
     )
 
     # Tiger Style: Assert postconditions
-    assert len(sample.tokens) == len(sample.loss_mask), \
+    assert len(sample.tokens) == len(sample.loss_mask), (
         f"tokens ({len(sample.tokens)}) != loss_mask ({len(sample.loss_mask)})"
-    assert all(0.0 <= w <= 1.0 for w in sample.loss_mask), \
-        "loss_mask must be in [0, 1]"
+    )
+    assert all(0.0 <= w <= 1.0 for w in sample.loss_mask), "loss_mask must be in [0, 1]"
 
     return sample
 
@@ -340,6 +345,7 @@ def _silent_run_config() -> RunConfig:
     Returns:
         RunConfig with no-op chunk handler
     """
+
     async def noop_chunk(chunk):
         """No-op chunk handler (silent mode)."""
         pass

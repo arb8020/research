@@ -78,9 +78,7 @@ def parse_dtype(dtype_str: str) -> torch.dtype:
 
     if dtype_str not in dtype_map:
         valid_options = list(dtype_map.keys())
-        raise ValueError(
-            f"Invalid dtype: '{dtype_str}'. Must be one of {valid_options}"
-        )
+        raise ValueError(f"Invalid dtype: '{dtype_str}'. Must be one of {valid_options}")
 
     return dtype_map[dtype_str]
 
@@ -292,16 +290,11 @@ def create_warmup_cosine_scheduler(
         SequentialLR,
     )
 
-    assert num_warmup_steps >= 0, (
-        f"num_warmup_steps must be >= 0, got {num_warmup_steps}"
-    )
+    assert num_warmup_steps >= 0, f"num_warmup_steps must be >= 0, got {num_warmup_steps}"
     assert num_training_steps > num_warmup_steps, (
-        f"num_training_steps ({num_training_steps}) must be > "
-        f"num_warmup_steps ({num_warmup_steps})"
+        f"num_training_steps ({num_training_steps}) must be > num_warmup_steps ({num_warmup_steps})"
     )
-    assert 0 < min_lr_ratio <= 1.0, (
-        f"min_lr_ratio must be in (0, 1], got {min_lr_ratio}"
-    )
+    assert 0 < min_lr_ratio <= 1.0, f"min_lr_ratio must be in (0, 1], got {min_lr_ratio}"
 
     # Phase 1: Warmup (0.1x → 1.0x of base LR)
     warmup = LinearLR(

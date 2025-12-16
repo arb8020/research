@@ -115,7 +115,9 @@ class RolloutManager:
 
         # Call user-provided rollout function
         samples = self.config.generate_fn(prompts, **self.rollout_kwargs)
-        assert isinstance(samples, list), f"generate_fn must return list[Sample], got {type(samples)}"
+        assert isinstance(samples, list), (
+            f"generate_fn must return list[Sample], got {type(samples)}"
+        )
         assert len(samples) > 0, "generate_fn must return non-empty sample list"
 
         # Apply optional transforms
