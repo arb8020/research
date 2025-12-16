@@ -26,13 +26,10 @@ from rollouts.dtypes import (
     Endpoint,
     Message,
     RunConfig,
-    StopReason,
     StreamDone,
     StreamEvent,
     TextDelta,
-    TextEnd,
     ToolCall,
-    ToolCallContent,
     ToolCallEnd,
     ToolConfirmResult,
     ToolResultReceived,
@@ -366,13 +363,15 @@ async def run_stream_json_mode(
             emit({
                 "type": "user",
                 "message": {
-                    "content": [{
-                        "type": "tool_result",
-                        "tool_use_id": event.tool_call_id,
-                        "content": event.content,
-                        "is_error": event.is_error,
-                    }]
-                }
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": event.tool_call_id,
+                            "content": event.content,
+                            "is_error": event.is_error,
+                        }
+                    ]
+                },
             })
 
         elif isinstance(event, StreamDone):
@@ -644,7 +643,14 @@ def main() -> int:
         help="Output NDJSON per turn (for print mode). Each line is a JSON object.",
     )
 
-    # TUI options
+    # Frontend options
+    parser.add_argument(
+        "--frontend",
+        type=str,
+        choices=["tui", "none", "textual"],
+        default="tui",
+        help="Frontend: tui (default Python TUI), none (stdout), textual (rich TUI)",
+    )
     parser.add_argument(
         "--theme",
         type=str,
@@ -1084,29 +1090,62 @@ def main() -> int:
                     trajectory, endpoint, environment, query, session_store, session_id
                 )
 
-        # Interactive TUI mode
-        from rollouts.frontends.tui.interactive_agent import run_interactive_agent
+        # Interactive mode - select frontend
+        if args.frontend == "none":
+            # Simple stdout frontend
+            from rollouts.frontends import NoneFrontend, run_interactive
 
-        try:
-            await run_interactive_agent(
-                trajectory,
-                endpoint,
-                environment,
-                args.max_turns,
-                session_store,
-                session_id,
-                args.theme,
-                args.debug,
-                args.debug_layout,
-                parent_session_id,
-                branch_point,
-                args.confirm_tools,
-                initial_prompt,
+            frontend = NoneFrontend(show_tool_calls=True, show_thinking=True)
+            try:
+                await run_interactive(
+                    trajectory,
+                    endpoint,
+                    frontend=frontend,
+                    environment=environment,
+                    max_turns=args.max_turns,
+                    session_store=session_store,
+                    session_id=session_id,
+                    parent_session_id=parent_session_id,
+                    branch_point=branch_point,
+                    confirm_tools=args.confirm_tools,
+                    initial_prompt=initial_prompt,
+                )
+                return 0
+            except KeyboardInterrupt:
+                print("\n\n✅ Agent stopped")
+                return 0
+
+        elif args.frontend == "textual":
+            # Textual-based rich TUI (coming soon)
+            print(
+                "Textual frontend not yet implemented. Use --frontend=tui for now.", file=sys.stderr
             )
-            return 0
-        except KeyboardInterrupt:
-            print("\n\n✅ Agent stopped")
-            return 0
+            return 1
+
+        else:
+            # Default: Python TUI (existing implementation)
+            from rollouts.frontends.tui.interactive_agent import run_interactive_agent
+
+            try:
+                await run_interactive_agent(
+                    trajectory,
+                    endpoint,
+                    environment,
+                    args.max_turns,
+                    session_store,
+                    session_id,
+                    args.theme,
+                    args.debug,
+                    args.debug_layout,
+                    parent_session_id,
+                    branch_point,
+                    args.confirm_tools,
+                    initial_prompt,
+                )
+                return 0
+            except KeyboardInterrupt:
+                print("\n\n✅ Agent stopped")
+                return 0
 
     try:
         return trio.run(async_main)
