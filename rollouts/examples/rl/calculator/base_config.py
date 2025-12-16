@@ -677,12 +677,12 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
         logger.info("Training Complete")
         logger.info("=" * 60)
         if metrics_history:
-            first_loss = metrics_history[0]["loss"]
-            last_loss = metrics_history[-1]["loss"]
+            first_loss = metrics_history[0]["pg_loss"]
+            last_loss = metrics_history[-1]["pg_loss"]
             first_reward = metrics_history[0]["mean_reward"]
             last_reward = metrics_history[-1]["mean_reward"]
-            logger.info(f"First: loss={first_loss:.4f}, mean_reward={first_reward:.3f}")
-            logger.info(f"Last:  loss={last_loss:.4f}, mean_reward={last_reward:.3f}")
+            logger.info(f"First: pg_loss={first_loss:.4f}, mean_reward={first_reward:.3f}")
+            logger.info(f"Last:  pg_loss={last_loss:.4f}, mean_reward={last_reward:.3f}")
 
         return metrics_history
 
