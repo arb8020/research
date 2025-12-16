@@ -49,7 +49,8 @@ Examples:
         help="Remote file (used with --difftool)",
     )
     parser.add_argument(
-        "--staged", "-s",
+        "--staged",
+        "-s",
         action="store_true",
         help="Show staged changes",
     )
@@ -61,41 +62,19 @@ Examples:
 
     args = parser.parse_args()
 
-    # Difftool mode: show unified diff between two files
+    # Difftool mode: show unified diff between two files in our TUI
     if args.difftool and args.ref and args.remote:
-        # Get unified diff
-        result = subprocess.run(["diff", "-u", args.ref, args.remote], capture_output=True, text=True)
-        diff_output = result.stdout
+        from .app import DiffViewer, diff_files
 
-        if not diff_output:
+        diff_text = diff_files(args.ref, args.remote)
+        if not diff_text:
             print("Files are identical.")
             return 0
 
-        # Create vim script to display unified diff
-        vim_script = f'''
-setlocal buftype=nofile bufhidden=wipe noswapfile
-setlocal filetype=diff
-file [diff]\\ {os.path.basename(args.remote)}
-nnoremap <buffer> q :qa!<CR>
-nnoremap <buffer> <Esc> :qa!<CR>
-nnoremap <buffer> ]c /^@@<CR>zt
-nnoremap <buffer> [c ?^@@<CR>zt
-'''
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".vim", delete=False) as f:
-            f.write(vim_script)
-            script_path = f.name
-
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".diff", delete=False) as f:
-            f.write(diff_output)
-            diff_path = f.name
-
-        try:
-            editor = "nvim" if subprocess.run(["which", "nvim"], capture_output=True).returncode == 0 else "vim"
-            subprocess.run([editor, diff_path, "-S", script_path])
-            return 0
-        finally:
-            os.unlink(script_path)
-            os.unlink(diff_path)
+        filename = os.path.basename(args.remote)
+        viewer = DiffViewer(diff_text, filename)
+        viewer.run()
+        return 0
 
     # Get changed files
     files = get_changed_files(ref=args.ref, staged=args.staged)
@@ -105,7 +84,7 @@ nnoremap <buffer> [c ?^@@<CR>zt
         return 0
 
     # Create vim script for file picker + diff viewing
-    vim_script = '''
+    vim_script = """
 " pyvimdiff - git diff file picker
 " Navigation: j/k move, Enter view, h/l prev/next file, q quit
 
@@ -190,7 +169,7 @@ function! PvdNext()
 endfunction
 
 call PvdShowList()
-'''
+"""
 
     # Substitute values
     files_list = "[" + ", ".join(f"'{f}'" for f in files) + "]"
@@ -204,7 +183,11 @@ call PvdShowList()
         script_path = f.name
 
     try:
-        editor = "nvim" if subprocess.run(["which", "nvim"], capture_output=True).returncode == 0 else "vim"
+        editor = (
+            "nvim"
+            if subprocess.run(["which", "nvim"], capture_output=True).returncode == 0
+            else "vim"
+        )
         subprocess.run([editor, "-S", script_path])
         return 0
     finally:
