@@ -19,9 +19,8 @@ Or subclass FunctionalModelTestSuite for custom tests.
 
 from __future__ import annotations
 
-import sys
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 import torch
 from torch import Tensor
@@ -30,6 +29,7 @@ from torch import Tensor
 @dataclass
 class TestResult:
     """Result of a single test."""
+
     name: str
     passed: bool
     max_diff: float
@@ -43,6 +43,7 @@ class TestResult:
 @dataclass
 class TestSuiteResult:
     """Result of running the full test suite."""
+
     total: int
     passed: int
     failed: int
@@ -116,7 +117,7 @@ class FunctionalModelTestSuite:
         with torch.no_grad():
             kwargs = {}
             if attention_mask is not None:
-                kwargs['attention_mask'] = attention_mask
+                kwargs["attention_mask"] = attention_mask
 
             hf_logits = self.hf_model(input_ids, **kwargs).logits
             func_logits = self.functional_forward(input_ids, self.weights, **kwargs)
@@ -132,7 +133,7 @@ class FunctionalModelTestSuite:
                 "shape": tuple(hf_logits.shape),
                 "rtol": rtol,
                 "atol": atol,
-            }
+            },
         )
         self.results.append(result)
         return result
@@ -147,7 +148,9 @@ class FunctionalModelTestSuite:
         """Run test with attention mask, checking only non-padded positions."""
         with torch.no_grad():
             hf_logits = self.hf_model(input_ids, attention_mask=attention_mask).logits
-            func_logits = self.functional_forward(input_ids, self.weights, attention_mask=attention_mask)
+            func_logits = self.functional_forward(
+                input_ids, self.weights, attention_mask=attention_mask
+            )
 
         # Calculate diff only at non-padded positions
         mask_expanded = attention_mask.unsqueeze(-1).expand_as(hf_logits)
@@ -164,7 +167,7 @@ class FunctionalModelTestSuite:
             details={
                 "shape": tuple(hf_logits.shape),
                 "threshold": diff_threshold,
-            }
+            },
         )
         self.results.append(result)
         return result
@@ -213,8 +216,9 @@ class FunctionalModelTestSuite:
         print(f"  {result}")
 
         # High token IDs (near vocab boundary)
-        vocab_size = self.weights.get("model.embed_tokens.weight",
-                                       self.weights.get("transformer.wte.weight")).shape[0]
+        vocab_size = self.weights.get(
+            "model.embed_tokens.weight", self.weights.get("transformer.wte.weight")
+        ).shape[0]
         high_start = max(1, vocab_size - 1000)
         input_ids = torch.randint(high_start, vocab_size, (1, 16), device=self.device)
         result = self.run_test("high_token_ids", input_ids)
@@ -278,7 +282,9 @@ class FunctionalModelTestSuite:
                 func_logits = self.functional_forward(input_ids, weights)
 
             # Looser tolerance for fp16/fp32
-            rtol = atol = 1e-3 if dtype == torch.float16 else (1e-4 if dtype == torch.float32 else 1e-5)
+            rtol = atol = (
+                1e-3 if dtype == torch.float16 else (1e-4 if dtype == torch.float32 else 1e-5)
+            )
 
             matches = torch.allclose(hf_logits, func_logits, rtol=rtol, atol=atol)
             max_diff = (hf_logits - func_logits).abs().max().item()

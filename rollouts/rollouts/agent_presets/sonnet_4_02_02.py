@@ -11,7 +11,6 @@ Claude Sonnet 4.5 offers:
 
 from rollouts.agent_presets.base_preset import AgentPresetConfig
 
-
 config = AgentPresetConfig(
     name="sonnet_4",
     model="anthropic/claude-sonnet-4-5-20250929",

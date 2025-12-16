@@ -16,19 +16,13 @@ def debug_on_gpu():
     """Compare each component against HF implementation."""
     import torch
     import torch.nn.functional as F
-    from transformers import AutoModelForCausalLM
-
     from qwen_functional import (
-        rms_norm,
-        compute_rope_embeddings,
         attention,
+        compute_rope_embeddings,
         mlp,
-        qwen_forward,
-        HIDDEN_SIZE,
-        NUM_HEADS,
-        NUM_KV_HEADS,
-        HEAD_DIM,
+        rms_norm,
     )
+    from transformers import AutoModelForCausalLM
 
     print("=" * 60)
     print("Qwen2.5-0.5B Debug - Layer by Layer Comparison")
@@ -97,16 +91,31 @@ def debug_on_gpu():
         hf_k = hf_attn.k_proj(hf_norm)
         hf_v = hf_attn.v_proj(hf_norm)
 
-        my_q = F.linear(hf_norm, weights["model.layers.0.self_attn.q_proj.weight"],
-                        weights["model.layers.0.self_attn.q_proj.bias"])
-        my_k = F.linear(hf_norm, weights["model.layers.0.self_attn.k_proj.weight"],
-                        weights["model.layers.0.self_attn.k_proj.bias"])
-        my_v = F.linear(hf_norm, weights["model.layers.0.self_attn.v_proj.weight"],
-                        weights["model.layers.0.self_attn.v_proj.bias"])
+        my_q = F.linear(
+            hf_norm,
+            weights["model.layers.0.self_attn.q_proj.weight"],
+            weights["model.layers.0.self_attn.q_proj.bias"],
+        )
+        my_k = F.linear(
+            hf_norm,
+            weights["model.layers.0.self_attn.k_proj.weight"],
+            weights["model.layers.0.self_attn.k_proj.bias"],
+        )
+        my_v = F.linear(
+            hf_norm,
+            weights["model.layers.0.self_attn.v_proj.weight"],
+            weights["model.layers.0.self_attn.v_proj.bias"],
+        )
 
-        print(f"  Q proj match: {torch.allclose(hf_q, my_q)}, diff: {(hf_q - my_q).abs().max().item():.2e}")
-        print(f"  K proj match: {torch.allclose(hf_k, my_k)}, diff: {(hf_k - my_k).abs().max().item():.2e}")
-        print(f"  V proj match: {torch.allclose(hf_v, my_v)}, diff: {(hf_v - my_v).abs().max().item():.2e}")
+        print(
+            f"  Q proj match: {torch.allclose(hf_q, my_q)}, diff: {(hf_q - my_q).abs().max().item():.2e}"
+        )
+        print(
+            f"  K proj match: {torch.allclose(hf_k, my_k)}, diff: {(hf_k - my_k).abs().max().item():.2e}"
+        )
+        print(
+            f"  V proj match: {torch.allclose(hf_v, my_v)}, diff: {(hf_v - my_v).abs().max().item():.2e}"
+        )
 
         # Reshape for attention (HF way)
         batch_size, seq_len, _ = hf_norm.shape
@@ -138,13 +147,21 @@ def debug_on_gpu():
             x2 = x[..., x.shape[-1] // 2 :]
             return torch.cat((-x2, x1), dim=-1)
 
-        hf_q_rope = (hf_q_reshaped * cos_unsqueezed) + (hf_rotate_half(hf_q_reshaped) * sin_unsqueezed)
-        hf_k_rope = (hf_k_reshaped * cos_unsqueezed) + (hf_rotate_half(hf_k_reshaped) * sin_unsqueezed)
+        hf_q_rope = (hf_q_reshaped * cos_unsqueezed) + (
+            hf_rotate_half(hf_q_reshaped) * sin_unsqueezed
+        )
+        hf_k_rope = (hf_k_reshaped * cos_unsqueezed) + (
+            hf_rotate_half(hf_k_reshaped) * sin_unsqueezed
+        )
 
         my_q_rope, my_k_rope = my_apply_rope(my_q_reshaped, my_k_reshaped, my_cos, my_sin)
 
-        print(f"  Q after RoPE match: {torch.allclose(hf_q_rope, my_q_rope)}, diff: {(hf_q_rope - my_q_rope).abs().max().item():.2e}")
-        print(f"  K after RoPE match: {torch.allclose(hf_k_rope, my_k_rope)}, diff: {(hf_k_rope - my_k_rope).abs().max().item():.2e}")
+        print(
+            f"  Q after RoPE match: {torch.allclose(hf_q_rope, my_q_rope)}, diff: {(hf_q_rope - my_q_rope).abs().max().item():.2e}"
+        )
+        print(
+            f"  K after RoPE match: {torch.allclose(hf_k_rope, my_k_rope)}, diff: {(hf_k_rope - my_k_rope).abs().max().item():.2e}"
+        )
 
         # Run full HF attention for comparison
         hf_attn_out, _ = model.model.layers[0].self_attn(
@@ -244,12 +261,15 @@ def debug_on_gpu():
 
 if __name__ == "__main__":
     import torch
+
     if torch.cuda.is_available():
         debug_on_gpu()
     else:
         print("No GPU available. Run on remote GPU.")
-        from verify import run_on_gpu
         import argparse
+
+        from verify import run_on_gpu
+
         parser = argparse.ArgumentParser()
         parser.add_argument("--gpu-id", type=str)
         args = parser.parse_args()

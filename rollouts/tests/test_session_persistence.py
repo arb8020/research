@@ -35,12 +35,13 @@ from rollouts import (
 from rollouts.agents import resume_session, run_agent
 from rollouts.store import FileSessionStore
 
-
 # --- Test Environment: Calculator with disableable tools ---
+
 
 @dataclass
 class TestCalculatorEnvironment:
     """Calculator with configurable tool availability."""
+
     current_value: float = 0.0
     disabled_tools: set[str] | None = None
 
@@ -55,7 +56,7 @@ class TestCalculatorEnvironment:
         }
 
     @staticmethod
-    async def deserialize(data: dict) -> 'TestCalculatorEnvironment':
+    async def deserialize(data: dict) -> "TestCalculatorEnvironment":
         return TestCalculatorEnvironment(
             current_value=data.get("current_value", 0.0),
             disabled_tools=set(data.get("disabled_tools", [])),
@@ -69,11 +70,10 @@ class TestCalculatorEnvironment:
                     name="add",
                     description="Add a number to the current value",
                     parameters=ToolFunctionParameter(
-                        type="object",
-                        properties={"value": {"type": "number"}}
+                        type="object", properties={"value": {"type": "number"}}
                     ),
-                    required=["value"]
-                )
+                    required=["value"],
+                ),
             ),
             Tool(
                 type="function",
@@ -81,11 +81,10 @@ class TestCalculatorEnvironment:
                     name="multiply",
                     description="Multiply the current value by a number",
                     parameters=ToolFunctionParameter(
-                        type="object",
-                        properties={"value": {"type": "number"}}
+                        type="object", properties={"value": {"type": "number"}}
                     ),
-                    required=["value"]
-                )
+                    required=["value"],
+                ),
             ),
             Tool(
                 type="function",
@@ -93,8 +92,8 @@ class TestCalculatorEnvironment:
                     name="get_value",
                     description="Get the current value",
                     parameters=ToolFunctionParameter(type="object", properties={}),
-                    required=[]
-                )
+                    required=[],
+                ),
             ),
             Tool(
                 type="function",
@@ -102,11 +101,10 @@ class TestCalculatorEnvironment:
                     name="complete",
                     description="Mark task complete with final answer",
                     parameters=ToolFunctionParameter(
-                        type="object",
-                        properties={"answer": {"type": "number"}}
+                        type="object", properties={"answer": {"type": "number"}}
                     ),
-                    required=["answer"]
-                )
+                    required=["answer"],
+                ),
             ),
         ]
         # Filter out disabled tools
@@ -171,9 +169,11 @@ class TestCalculatorEnvironment:
 
 # --- Mock LLM that follows a script ---
 
+
 @dataclass
 class ScriptedResponse:
     """A scripted LLM response."""
+
     text: str | None = None
     tool_calls: list[tuple[str, dict]] | None = None  # [(name, args), ...]
 
@@ -216,6 +216,7 @@ def make_endpoint(provider: str, model: str) -> Endpoint:
 
 # --- Test Fixtures ---
 
+
 async def run_with_script(
     initial_state: AgentState,
     run_config: RunConfig,
@@ -240,17 +241,18 @@ async def run_with_script(
             content.append(TextContent(text=response.text))
         if response.tool_calls:
             for i, (name, tool_args) in enumerate(response.tool_calls):
-                content.append(ToolCallContent(
-                    id=f"call_{llm.call_count}_{i}",
-                    name=name,
-                    arguments=tool_args,
-                ))
+                content.append(
+                    ToolCallContent(
+                        id=f"call_{llm.call_count}_{i}",
+                        name=name,
+                        arguments=tool_args,
+                    )
+                )
 
         # Create assistant message
         new_message = Message(role="assistant", content=content if content else "")
         new_trajectory = replace(
-            actor.trajectory,
-            messages=actor.trajectory.messages + [new_message]
+            actor.trajectory, messages=actor.trajectory.messages + [new_message]
         )
         return replace(actor, trajectory=new_trajectory)
 
@@ -263,6 +265,7 @@ async def run_with_script(
 
 
 # --- The Integration Test ---
+
 
 async def test_session_persistence_with_model_swap():
     """
@@ -323,7 +326,7 @@ async def test_session_persistence_with_model_swap():
             return state
 
         run_config1 = RunConfig(
-            on_chunk=lambda e: trio.sleep(0),
+            on_chunk=lambda e: trio.lowlevel.checkpoint(),
             session_store=store,
             handle_stop=stop_after_3,
         )
@@ -341,7 +344,9 @@ async def test_session_persistence_with_model_swap():
 
         assert states1[-1].actor.endpoint.provider == "anthropic"
         assert states1[-1].actor.endpoint.model == "claude-3-5-haiku-20241022"
-        print(f"✓ Provider: {states1[-1].actor.endpoint.provider}/{states1[-1].actor.endpoint.model}")
+        print(
+            f"✓ Provider: {states1[-1].actor.endpoint.provider}/{states1[-1].actor.endpoint.model}"
+        )
 
         session1, _ = await store.get(session_id)
         msg_count_after_phase1 = len(session1.messages)
@@ -363,7 +368,9 @@ async def test_session_persistence_with_model_swap():
 
         assert resumed_state2.actor.endpoint.provider == "openai"
         assert resumed_state2.actor.endpoint.model == "gpt-5.1-codex"
-        print(f"✓ Swapped to: {resumed_state2.actor.endpoint.provider}/{resumed_state2.actor.endpoint.model}")
+        print(
+            f"✓ Swapped to: {resumed_state2.actor.endpoint.provider}/{resumed_state2.actor.endpoint.model}"
+        )
 
         tool_names = [t.function.name for t in env2.get_tools()]
         assert "multiply" not in tool_names
@@ -394,7 +401,7 @@ async def test_session_persistence_with_model_swap():
             return state
 
         run_config2 = RunConfig(
-            on_chunk=lambda e: trio.sleep(0),
+            on_chunk=lambda e: trio.lowlevel.checkpoint(),
             session_store=store,
             handle_stop=stop_after_2,
         )
@@ -430,7 +437,9 @@ async def test_session_persistence_with_model_swap():
 
         assert resumed_state3.actor.endpoint.provider == "openai"
         assert resumed_state3.actor.endpoint.model == "gpt-4o"
-        print(f"✓ Swapped to: {resumed_state3.actor.endpoint.provider}/{resumed_state3.actor.endpoint.model}")
+        print(
+            f"✓ Swapped to: {resumed_state3.actor.endpoint.provider}/{resumed_state3.actor.endpoint.model}"
+        )
 
         tool_names3 = [t.function.name for t in env3.get_tools()]
         assert "multiply" in tool_names3
@@ -456,7 +465,7 @@ async def test_session_persistence_with_model_swap():
         ]
 
         run_config3 = RunConfig(
-            on_chunk=lambda e: trio.sleep(0),
+            on_chunk=lambda e: trio.lowlevel.checkpoint(),
             session_store=store,
         )
 

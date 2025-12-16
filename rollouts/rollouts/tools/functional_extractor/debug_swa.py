@@ -37,7 +37,7 @@ def debug_swa():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.float32  # Use float32 for numerical accuracy comparison
 
-    print(f"\nTest config:")
+    print("\nTest config:")
     print(f"  batch_size: {batch_size}")
     print(f"  num_heads: {num_heads}")
     print(f"  seq_len: {seq_len}")
@@ -69,7 +69,7 @@ def debug_swa():
     combined_mask = causal_mask & window_mask
 
     print(f"Reference mask shape: {combined_mask.shape}")
-    print(f"Reference mask (first 8x8):")
+    print("Reference mask (first 8x8):")
     print(combined_mask[:8, :8].int())
 
     # Convert to attention mask format (-inf for masked positions)
@@ -82,9 +82,7 @@ def debug_swa():
 
     # Compute attention with explicit mask
     with torch.no_grad():
-        ref_output = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=attn_mask, is_causal=False
-        )
+        ref_output = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, is_causal=False)
     print(f"Reference output shape: {ref_output.shape}")
 
     # =====================================================
@@ -202,6 +200,7 @@ if __name__ == "__main__":
     if not run_local:
         try:
             import torch
+
             run_local = torch.cuda.is_available()
         except ImportError:
             run_local = False
@@ -215,13 +214,14 @@ if __name__ == "__main__":
 
         # Inline GPU provisioning to avoid import issues
         from dotenv import load_dotenv
+
         load_dotenv()
 
         runpod_key = os.environ.get("RUNPOD_API_KEY")
         assert runpod_key, "RUNPOD_API_KEY not set"
 
-        from broker.client import GPUClient
         from bifrost.client import BifrostClient
+        from broker.client import GPUClient
         from kerbal.python_env import setup_python_env
 
         ssh_key_path = os.environ.get("SSH_KEY_PATH", "~/.ssh/id_ed25519")
@@ -233,7 +233,9 @@ if __name__ == "__main__":
         else:
             print("Provisioning GPU...")
             instance = client.create(
-                query=(client.vram_gb >= 16) & (client.price_per_hour <= 0.5) & (client.manufacturer == "Nvidia"),
+                query=(client.vram_gb >= 16)
+                & (client.price_per_hour <= 0.5)
+                & (client.manufacturer == "Nvidia"),
                 name="debug-swa",
                 cloud_type="secure",
                 container_disk_gb=50,
@@ -269,11 +271,15 @@ if __name__ == "__main__":
 
         # Install rollouts package in editable mode
         print("Installing rollouts package...")
-        bifrost.exec(f"cd {workspace}/rollouts && uv pip install --python {env_state.venv_python} -e .")
+        bifrost.exec(
+            f"cd {workspace}/rollouts && uv pip install --python {env_state.venv_python} -e ."
+        )
 
         # Run remotely
         script = Path(__file__).resolve()
-        git_root = Path(subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip())
+        git_root = Path(
+            subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip()
+        )
         rel_path = script.relative_to(git_root)
         remote_script = f"{workspace}/{rel_path}"
         cmd = f"{env_state.venv_python} {remote_script} --local"

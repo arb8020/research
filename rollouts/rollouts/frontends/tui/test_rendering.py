@@ -3,8 +3,8 @@
 Test TUI rendering logic (no terminal required).
 """
 
+from .components import Markdown, Spacer, Text
 from .tui import Container
-from .components import Text, Spacer, Markdown
 from .utils import visible_width, wrap_text_with_ansi
 
 
@@ -97,7 +97,8 @@ def test_ansi_preservation():
 
 def test_markdown():
     """Test markdown rendering."""
-    md = Markdown("""# Heading
+    md = Markdown(
+        """# Heading
 
 This is **bold** and *italic* text.
 
@@ -107,7 +108,10 @@ This is **bold** and *italic* text.
 ```python
 print("hello")
 ```
-""", padding_x=0, padding_y=0)
+""",
+        padding_x=0,
+        padding_y=0,
+    )
 
     lines = md.render(80)
 

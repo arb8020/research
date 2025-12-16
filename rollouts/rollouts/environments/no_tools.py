@@ -21,27 +21,27 @@ from ..dtypes import AgentState, Message, RunConfig, Tool, ToolCall, ToolFormatt
 class BasicEnvironment:
     """
     Simple environment with no tools - just for clean AI responses.
-    
+
     This environment provides no tools to the AI agent, making it suitable for:
     - Analysis tasks
     - Text generation
     - Single-shot conversations
     - Any scenario where tools would be distracting
-    
+
     The AI will receive prompts and generate text responses without access to
     external tools or functions.
     """
-    
+
     def get_tools(self) -> list[Tool]:
         """Return empty tool list - no tools available."""
         return []
-    
+
     async def serialize(self) -> dict:
         """Serialize environment state (empty for this simple environment)."""
         return {}
-    
+
     @staticmethod
-    async def deserialize(data: dict) -> 'BasicEnvironment':
+    async def deserialize(data: dict) -> "BasicEnvironment":
         """Deserialize environment state."""
         return BasicEnvironment()
 
@@ -60,7 +60,7 @@ class BasicEnvironment:
         return ToolResult(
             tool_call_id=tool_call.id,
             is_error=True,
-            content="No tools available in basic environment"
+            content="No tools available in basic environment",
         )
 
     async def on_assistant_message(self, message: Message, state: AgentState) -> AgentState:

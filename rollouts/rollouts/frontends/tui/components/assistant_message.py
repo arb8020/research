@@ -4,20 +4,18 @@ Assistant message component - displays streaming assistant text and thinking blo
 
 from __future__ import annotations
 
-import json
-from typing import List, Optional, Dict, Any
+from typing import Any
 
+from ..theme import DARK_THEME, RESET, Theme, hex_to_bg
 from ..tui import Component, Container
-from ..theme import Theme, DARK_THEME, hex_to_fg, hex_to_bg, RESET
-from .markdown import Markdown, DefaultMarkdownTheme
+from .markdown import DefaultMarkdownTheme, Markdown
 from .spacer import Spacer
-from .text import Text
 
 
 class AssistantMessage(Component):
     """Component that renders assistant message with text and thinking blocks."""
 
-    def __init__(self, theme: Optional[Theme] = None, debug_layout: bool = False) -> None:
+    def __init__(self, theme: Theme | None = None, debug_layout: bool = False) -> None:
         """Initialize assistant message component."""
         self._theme = theme or DARK_THEME
         self._debug_layout = debug_layout
@@ -27,9 +25,9 @@ class AssistantMessage(Component):
         self._thinking_intensity = "medium"  # minimal, low, medium, high
 
         # Keep references to components for efficient updates
-        self._thinking_md: Optional[Markdown] = None
-        self._text_md: Optional[Markdown] = None
-        self._thinking_spacer: Optional[Spacer] = None
+        self._thinking_md: Markdown | None = None
+        self._text_md: Markdown | None = None
+        self._thinking_spacer: Spacer | None = None
 
     def append_text(self, delta: str) -> None:
         """Append text delta to current text content."""
@@ -40,7 +38,9 @@ class AssistantMessage(Component):
         else:
             # First text delta - add spacer if we have thinking content
             if self._thinking_content and self._thinking_content.strip():
-                self._thinking_spacer = Spacer(1, debug_label="after-thinking", debug_layout=self._debug_layout)
+                self._thinking_spacer = Spacer(
+                    1, debug_label="after-thinking", debug_layout=self._debug_layout
+                )
                 self._content_container.add_child(self._thinking_spacer)
 
             # Create text component without destroying existing thinking component
@@ -111,7 +111,7 @@ class AssistantMessage(Component):
             thinking_text = f"thinking()\n\n{self._thinking_content.strip()}"
 
             # Use theme's thinking_bg_fn if available (MinimalTheme), otherwise default
-            if hasattr(self._theme, 'thinking_bg_fn'):
+            if hasattr(self._theme, "thinking_bg_fn"):
                 bg_fn = self._theme.thinking_bg_fn
             else:
                 bg_fn = lambda x: f"{hex_to_bg(self._theme.tool_pending_bg)}{x}{RESET}"
@@ -127,8 +127,15 @@ class AssistantMessage(Component):
             self._content_container.add_child(self._thinking_md)
 
         # Add spacer between thinking and text response
-        if self._thinking_content and self._thinking_content.strip() and self._text_content and self._text_content.strip():
-            self._content_container.add_child(Spacer(1, debug_label="after-thinking", debug_layout=self._debug_layout))
+        if (
+            self._thinking_content
+            and self._thinking_content.strip()
+            and self._text_content
+            and self._text_content.strip()
+        ):
+            self._content_container.add_child(
+                Spacer(1, debug_label="after-thinking", debug_layout=self._debug_layout)
+            )
 
         # Render text content (if any)
         if self._text_content and self._text_content.strip():
@@ -141,22 +148,27 @@ class AssistantMessage(Component):
             )
             self._content_container.add_child(self._text_md)
 
-    def render(self, width: int) -> List[str]:
+    def render(self, width: int) -> list[str]:
         """Render assistant message."""
         return self._content_container.render(width)
 
-    def debug_state(self) -> Dict[str, Any]:
+    def debug_state(self) -> dict[str, Any]:
         """Return debug state as JSON-serializable dict."""
         return {
             "type": "AssistantMessage",
-            "thinking_content": self._thinking_content[:100] + "..." if len(self._thinking_content) > 100 else self._thinking_content,
+            "thinking_content": self._thinking_content[:100] + "..."
+            if len(self._thinking_content) > 100
+            else self._thinking_content,
             "thinking_content_length": len(self._thinking_content),
-            "text_content": self._text_content[:100] + "..." if len(self._text_content) > 100 else self._text_content,
+            "text_content": self._text_content[:100] + "..."
+            if len(self._text_content) > 100
+            else self._text_content,
             "text_content_length": len(self._text_content),
             "has_thinking_md": self._thinking_md is not None,
             "has_text_md": self._text_md is not None,
             "has_thinking_spacer": self._thinking_spacer is not None,
             "container_children_count": len(self._content_container.children),
-            "container_children_types": [type(child).__name__ for child in self._content_container.children],
+            "container_children_types": [
+                type(child).__name__ for child in self._content_container.children
+            ],
         }
-

@@ -49,6 +49,7 @@ def load_config_from_file(config_path: Path, workspace_root: Path | None = None)
     print(f"📝 Loading config from: {config_path}")
 
     import importlib.util
+
     spec = importlib.util.spec_from_file_location("exp_config", config_path)
     assert spec is not None
     assert spec.loader is not None
@@ -131,9 +132,11 @@ async def run_evaluation(config, result_dir: Path) -> dict:
 
     # Apply global limit if specified
     if config.filters.limit is not None:
-        dataset = dataset[:config.filters.limit]
+        dataset = dataset[: config.filters.limit]
 
-    logger.info(f"total: {len(dataset)} samples from {len(config.dataset.annotation_files)} file(s)")
+    logger.info(
+        f"total: {len(dataset)} samples from {len(config.dataset.annotation_files)} file(s)"
+    )
 
     # Create endpoint - read API key from environment
     api_key = ""
@@ -146,7 +149,9 @@ async def run_evaluation(config, result_dir: Path) -> dict:
 
     if api_key_env_var:
         api_key = os.getenv(api_key_env_var, "")
-        logger.info(f"api key from {api_key_env_var}: {'***' + api_key[-4:] if api_key else 'NOT FOUND'}")
+        logger.info(
+            f"api key from {api_key_env_var}: {'***' + api_key[-4:] if api_key else 'NOT FOUND'}"
+        )
 
     endpoint = Endpoint(
         provider=config.provider,
@@ -181,7 +186,7 @@ async def run_evaluation(config, result_dir: Path) -> dict:
     jsonl_lock = trio.Lock()
     if config.save_jsonl:
         jsonl_path = result_dir / f"{config.experiment_name}_results.jsonl"
-        jsonl_file = open(jsonl_path, 'w')
+        jsonl_file = open(jsonl_path, "w")
         logger.debug(f"writing incremental results to: {jsonl_path}")
         logger.info("")
 
@@ -234,7 +239,7 @@ async def run_evaluation(config, result_dir: Path) -> dict:
                         reward = environment.compute_reward(
                             final_message.content,
                             trajectory.metadata["bbox"],
-                            trajectory.metadata["img_size"]
+                            trajectory.metadata["img_size"],
                         )
 
                 result = {
@@ -321,11 +326,15 @@ async def run_evaluation(config, result_dir: Path) -> dict:
 def main():
     parser = argparse.ArgumentParser(description="Run generic evaluation")
     parser.add_argument("--config", type=Path, required=True, help="Config file path")
-    parser.add_argument("--output", type=Path, help="Output JSON file (optional, overrides default timestamped path)")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="Output JSON file (optional, overrides default timestamped path)",
+    )
     parser.add_argument(
         "--workspace-root",
         type=Path,
-        help="Workspace root for resolving relative paths (e.g., from bifrost deployment)"
+        help="Workspace root for resolving relative paths (e.g., from bifrost deployment)",
     )
 
     args = parser.parse_args()
@@ -375,7 +384,7 @@ def main():
     if config.save_json:
         output_path = args.output or (result_dir / f"{config.experiment_name}_results.json")
 
-        with open(output_path, 'w') as f:
+        with open(output_path, "w") as f:
             json.dump(results_dict, f, indent=2)
 
         logger.info(f"saved results to: {output_path}")

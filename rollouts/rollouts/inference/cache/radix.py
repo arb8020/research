@@ -40,9 +40,7 @@ class RadixKVCache:
     """
 
     def __init__(self, num_blocks: int, block_size: int = 16):
-        raise NotImplementedError(
-            "RadixKVCache not yet implemented. Use PagedKVCache for now."
-        )
+        raise NotImplementedError("RadixKVCache not yet implemented. Use PagedKVCache for now.")
 
     def num_free_blocks(self) -> int:
         raise NotImplementedError

@@ -28,10 +28,9 @@ def test_on_gpu():
         sys.path.insert(0, script_dir)
 
     import torch
-    from transformers import AutoModelForCausalLM
-
     from llama_functional import smollm_forward
     from test_template import run_test_suite
+    from transformers import AutoModelForCausalLM
 
     print("Loading SmolLM2-135M for testing...")
     model = AutoModelForCausalLM.from_pretrained(

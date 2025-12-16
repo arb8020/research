@@ -10,8 +10,8 @@ Key features:
 from collections import deque
 from dataclasses import dataclass, field
 
-import xxhash
 import numpy as np
+import xxhash
 
 
 @dataclass

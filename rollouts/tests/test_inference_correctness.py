@@ -33,10 +33,10 @@ import argparse
 import json
 import os
 import sys
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
 from bifrost import BifrostClient
@@ -245,6 +245,7 @@ if __name__ == "__main__":
 # Node acquisition (same pattern as kerbal/tests/test_integration.py)
 # =============================================================================
 
+
 def get_broker_credentials() -> dict[str, str]:
     """Load broker credentials from environment."""
     credentials = {}
@@ -264,7 +265,7 @@ def acquire_node(
     gpu_query_str: str = "A100",
     ssh_key_path: str = "~/.ssh/id_ed25519",
     provider: str | None = None,
-) -> tuple[BifrostClient, "ClientGPUInstance | None"]:
+) -> tuple[BifrostClient, ClientGPUInstance | None]:
     """Acquire a node for testing."""
     if ssh:
         print(f"Connecting to static node: {ssh}")
@@ -308,6 +309,7 @@ def acquire_node(
 # =============================================================================
 # Test runner
 # =============================================================================
+
 
 def test_correctness(client: BifrostClient, workspace: str) -> bool:
     """Run correctness test on remote GPU."""

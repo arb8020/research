@@ -8,16 +8,16 @@ import torch
 import torch.nn as nn
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from rollouts.inference.sampling import sample_with_logprobs
+from rollouts.inference.scheduler import schedule
 from rollouts.inference.types import (
     EngineConfig,
     SamplingParams,
+    SchedulerConfig,
     Sequence,
     SequenceStatus,
-    SchedulerConfig,
     TrainingSample,
 )
-from rollouts.inference.sampling import sample_with_logprobs
-from rollouts.inference.scheduler import schedule
 
 
 class InferenceEngine:
@@ -111,9 +111,7 @@ class InferenceEngine:
         num_samples_per_prompt: int = 1,
     ) -> list[TrainingSample]:
         """Convenience: generate from text prompts."""
-        token_prompts = [
-            self.tokenizer.encode(p, add_special_tokens=True) for p in prompts
-        ]
+        token_prompts = [self.tokenizer.encode(p, add_special_tokens=True) for p in prompts]
         return self.generate(token_prompts, sampling_params, num_samples_per_prompt)
 
     # ═══════════════════════════════════════════════════
@@ -210,9 +208,7 @@ class InferenceEngine:
     # INTERNAL
     # ═══════════════════════════════════════════════════
 
-    def _pop_seqs_by_id(
-        self, queue: list[Sequence], seq_ids: tuple[int, ...]
-    ) -> list[Sequence]:
+    def _pop_seqs_by_id(self, queue: list[Sequence], seq_ids: tuple[int, ...]) -> list[Sequence]:
         """Remove and return sequences with given IDs from queue."""
         id_set = set(seq_ids)
         popped = [s for s in queue if s.seq_id in id_set]

@@ -5,12 +5,11 @@ Tools: read, write, edit, bash
 Inspired by pi-mono's minimalist approach.
 """
 
+import os
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
-import os
-import subprocess
-import shlex
 
 import httpx
 import markdownify
@@ -26,7 +25,6 @@ from ..dtypes import (
     ToolFunctionParameter,
     ToolResult,
 )
-
 
 MAX_LINES = 2000
 MAX_LINE_LENGTH = 2000
@@ -53,11 +51,12 @@ def expand_path(file_path: str) -> Path:
 
 # ── Tool Formatting Utilities ─────────────────────────────────────────────────
 
+
 def _shorten_path(path: str) -> str:
     """Convert absolute path to tilde notation if in home directory."""
     home = os.path.expanduser("~")
     if path.startswith(home):
-        return "~" + path[len(home):]
+        return "~" + path[len(home) :]
     return path
 
 
@@ -88,6 +87,7 @@ def _get_text_output(result: dict | None) -> str:
 
         # Strip ANSI codes and carriage returns
         import re
+
         text_output = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", text_output)
         text_output = text_output.replace("\r", "")
         return text_output
@@ -96,11 +96,14 @@ def _get_text_output(result: dict | None) -> str:
     if isinstance(content, dict):
         content_list = content.get("content", [])
         if isinstance(content_list, list):
-            text_blocks = [c for c in content_list if isinstance(c, dict) and c.get("type") == "text"]
+            text_blocks = [
+                c for c in content_list if isinstance(c, dict) and c.get("type") == "text"
+            ]
             text_output = "\n".join(c.get("text", "") for c in text_blocks if c.get("text"))
 
             # Strip ANSI codes and carriage returns
             import re
+
             text_output = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", text_output)
             text_output = text_output.replace("\r", "")
             return text_output
@@ -111,6 +114,7 @@ def _get_text_output(result: dict | None) -> str:
 # ── Tool Formatters ───────────────────────────────────────────────────────────
 # These format tool calls for display in the TUI.
 # Signature: (tool_name, args, result, expanded, theme) -> str
+
 
 def format_bash(tool_name: str, args: dict, result: dict | None, expanded: bool, theme=None) -> str:
     """Format bash tool execution."""
@@ -172,7 +176,9 @@ def format_read(tool_name: str, args: dict, result: dict | None, expanded: bool,
     return text
 
 
-def format_write(tool_name: str, args: dict, result: dict | None, expanded: bool, theme=None) -> str:
+def format_write(
+    tool_name: str, args: dict, result: dict | None, expanded: bool, theme=None
+) -> str:
     """Format write tool execution with line numbers and gray styling (like edit)."""
     path = _shorten_path(args.get("file_path") or args.get("path") or "")
     file_content = args.get("content", "")
@@ -188,10 +194,10 @@ def format_write(tool_name: str, args: dict, result: dict | None, expanded: bool
 
         summary = f"Wrote {total_lines} line{'s' if total_lines != 1 else ''} to {path or '...'}"
         text += f"\n⎿ {summary}"
-        
+
         # Calculate line number width for alignment
         line_num_width = len(str(total_lines))
-        
+
         for i, line in enumerate(display_lines, start=1):
             line_num = str(i).rjust(line_num_width)
             formatted_line = f"{line_num}   {_replace_tabs(line)}"
@@ -200,7 +206,7 @@ def format_write(tool_name: str, args: dict, result: dict | None, expanded: bool
                 text += "\n  " + theme.diff_context_fg(formatted_line)
             else:
                 text += "\n  " + formatted_line
-        
+
         if remaining > 0:
             text += f"\n  ... ({remaining} more lines)"
 
@@ -229,9 +235,10 @@ def format_edit(tool_name: str, args: dict, result: dict | None, expanded: bool,
         if diff_str and theme:
             # Count additions and removals using regex to avoid false matches
             import re
+
             diff_lines = diff_str.split("\n")
-            additions = sum(1 for line in diff_lines if re.match(r'^\s*\d+\s+\+\s', line))
-            removals = sum(1 for line in diff_lines if re.match(r'^\s*\d+\s+-\s', line))
+            additions = sum(1 for line in diff_lines if re.match(r"^\s*\d+\s+\+\s", line))
+            removals = sum(1 for line in diff_lines if re.match(r"^\s*\d+\s+-\s", line))
 
             # Build summary like "Updated file.py with 2 additions and 1 removal"
             if is_error:
@@ -255,11 +262,12 @@ def format_edit(tool_name: str, args: dict, result: dict | None, expanded: bool,
                 # The marker (-, +, or space) is right after the line number
                 # We need to check character positions, not just substring match
                 import re
+
                 # Match line number followed by marker (-, +, or spaces)
-                match = re.match(r'^(\s*\d+)\s+([-+])\s', line)
-                if match and match.group(2) == '-':
+                match = re.match(r"^(\s*\d+)\s+([-+])\s", line)
+                if match and match.group(2) == "-":
                     text += "\n  " + theme.diff_removed_fg(line)
-                elif match and match.group(2) == '+':
+                elif match and match.group(2) == "+":
                     text += "\n  " + theme.diff_added_fg(line)
                 else:
                     text += "\n  " + theme.diff_context_fg(line)
@@ -281,7 +289,9 @@ def format_edit(tool_name: str, args: dict, result: dict | None, expanded: bool,
     return text
 
 
-def format_web_fetch(tool_name: str, args: dict, result: dict | None, expanded: bool, theme=None) -> str:
+def format_web_fetch(
+    tool_name: str, args: dict, result: dict | None, expanded: bool, theme=None
+) -> str:
     """Format web_fetch tool execution."""
     url = args.get("url", "")
     prompt = args.get("prompt", "")
@@ -289,7 +299,11 @@ def format_web_fetch(tool_name: str, args: dict, result: dict | None, expanded: 
     # Shorten URL for display
     try:
         parsed = urlparse(url)
-        display_url = f"{parsed.netloc}{parsed.path[:30]}..." if len(parsed.path) > 30 else f"{parsed.netloc}{parsed.path}"
+        display_url = (
+            f"{parsed.netloc}{parsed.path[:30]}..."
+            if len(parsed.path) > 30
+            else f"{parsed.netloc}{parsed.path}"
+        )
     except Exception:
         display_url = url[:50] + "..." if len(url) > 50 else url
 
@@ -300,7 +314,7 @@ def format_web_fetch(tool_name: str, args: dict, result: dict | None, expanded: 
         is_error = result.get("isError", False)
 
         if is_error:
-            text += f"\n⎿ Fetch failed"
+            text += "\n⎿ Fetch failed"
             if output:
                 text += f": {output[:100]}"
         else:
@@ -310,7 +324,7 @@ def format_web_fetch(tool_name: str, args: dict, result: dict | None, expanded: 
             display_lines = lines[:max_lines]
             remaining = len(lines) - max_lines
 
-            text += f"\n⎿ Fetched and processed"
+            text += "\n⎿ Fetched and processed"
             for line in display_lines:
                 text += "\n  " + line[:120]
             if remaining > 0:
@@ -387,11 +401,36 @@ def generate_diff(old_content: str, new_content: str, context_lines: int = 3) ->
     return "\n".join(output)
 
 
+# Tool preset configurations
+TOOL_PRESETS = {
+    "full": ["read", "write", "edit", "bash", "web_fetch"],
+    "readonly": ["read"],
+    "no-write": ["read", "edit", "bash", "web_fetch"],
+}
+
+
 @dataclass
 class LocalFilesystemEnvironment:
-    """Local filesystem environment with read, write, edit, bash tools."""
+    """Local filesystem environment with read, write, edit, bash tools.
+
+    Args:
+        working_dir: Working directory for file operations and bash commands
+        tools: Tool filter - either a preset name ("full", "readonly", "no-write")
+               or a list of tool names (e.g., ["read", "edit"]). Defaults to "full".
+    """
 
     working_dir: Path = field(default_factory=Path.cwd)
+    tools: str | list[str] = "full"
+
+    def __post_init__(self):
+        # Resolve preset name to tool list
+        if isinstance(self.tools, str):
+            if self.tools in TOOL_PRESETS:
+                self._tool_filter = TOOL_PRESETS[self.tools]
+            else:
+                raise ValueError(f"Unknown tool preset: {self.tools}. Available: {list(TOOL_PRESETS.keys())}")
+        else:
+            self._tool_filter = self.tools
 
     def get_name(self) -> str:
         """Return environment name identifier."""
@@ -403,15 +442,18 @@ class LocalFilesystemEnvironment:
         # Shorten home directory to ~
         home = os.path.expanduser("~")
         if cwd.startswith(home):
-            cwd = "~" + cwd[len(home):]
+            cwd = "~" + cwd[len(home) :]
         return {"cwd": cwd}
 
     async def serialize(self) -> dict:
-        return {"working_dir": str(self.working_dir)}
+        return {"working_dir": str(self.working_dir), "tools": self.tools}
 
     @staticmethod
-    async def deserialize(data: dict) -> 'LocalFilesystemEnvironment':
-        return LocalFilesystemEnvironment(working_dir=Path(data["working_dir"]))
+    async def deserialize(data: dict) -> "LocalFilesystemEnvironment":
+        return LocalFilesystemEnvironment(
+            working_dir=Path(data["working_dir"]),
+            tools=data.get("tools", "full"),
+        )
 
     def requires_confirmation(self, tool_call: ToolCall) -> bool:
         """Only bash commands require confirmation by default."""
@@ -435,6 +477,11 @@ class LocalFilesystemEnvironment:
         return formatters.get(tool_name)
 
     def get_tools(self) -> list[Tool]:
+        all_tools = self._get_all_tools()
+        return [t for t in all_tools if t.function.name in self._tool_filter]
+
+    def _get_all_tools(self) -> list[Tool]:
+        """Return all available tools (before filtering)."""
         return [
             # read tool
             Tool(
@@ -445,13 +492,22 @@ class LocalFilesystemEnvironment:
                     parameters=ToolFunctionParameter(
                         type="object",
                         properties={
-                            "path": {"type": "string", "description": "Path to the file to read (relative or absolute)"},
-                            "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed)"},
-                            "limit": {"type": "integer", "description": "Maximum number of lines to read"},
-                        }
+                            "path": {
+                                "type": "string",
+                                "description": "Path to the file to read (relative or absolute)",
+                            },
+                            "offset": {
+                                "type": "integer",
+                                "description": "Line number to start reading from (1-indexed)",
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "Maximum number of lines to read",
+                            },
+                        },
                     ),
-                    required=["path"]
-                )
+                    required=["path"],
+                ),
             ),
             # write tool
             Tool(
@@ -462,12 +518,18 @@ class LocalFilesystemEnvironment:
                     parameters=ToolFunctionParameter(
                         type="object",
                         properties={
-                            "path": {"type": "string", "description": "Path to the file to write (relative or absolute)"},
-                            "content": {"type": "string", "description": "Content to write to the file"},
-                        }
+                            "path": {
+                                "type": "string",
+                                "description": "Path to the file to write (relative or absolute)",
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "Content to write to the file",
+                            },
+                        },
                     ),
-                    required=["path", "content"]
-                )
+                    required=["path", "content"],
+                ),
             ),
             # edit tool
             Tool(
@@ -478,13 +540,22 @@ class LocalFilesystemEnvironment:
                     parameters=ToolFunctionParameter(
                         type="object",
                         properties={
-                            "path": {"type": "string", "description": "Path to the file to edit (relative or absolute)"},
-                            "old_text": {"type": "string", "description": "Exact text to find and replace (must match exactly)"},
-                            "new_text": {"type": "string", "description": "New text to replace the old text with"},
-                        }
+                            "path": {
+                                "type": "string",
+                                "description": "Path to the file to edit (relative or absolute)",
+                            },
+                            "old_text": {
+                                "type": "string",
+                                "description": "Exact text to find and replace (must match exactly)",
+                            },
+                            "new_text": {
+                                "type": "string",
+                                "description": "New text to replace the old text with",
+                            },
+                        },
                     ),
-                    required=["path", "old_text", "new_text"]
-                )
+                    required=["path", "old_text", "new_text"],
+                ),
             ),
             # bash tool
             Tool(
@@ -496,11 +567,14 @@ class LocalFilesystemEnvironment:
                         type="object",
                         properties={
                             "command": {"type": "string", "description": "Bash command to execute"},
-                            "timeout": {"type": "integer", "description": "Timeout in seconds (default: 120)"},
-                        }
+                            "timeout": {
+                                "type": "integer",
+                                "description": "Timeout in seconds (default: 120)",
+                            },
+                        },
                     ),
-                    required=["command"]
-                )
+                    required=["command"],
+                ),
             ),
             # web_fetch tool
             Tool(
@@ -511,12 +585,18 @@ class LocalFilesystemEnvironment:
                     parameters=ToolFunctionParameter(
                         type="object",
                         properties={
-                            "url": {"type": "string", "description": "The URL to fetch (must be valid http/https URL)"},
-                            "prompt": {"type": "string", "description": "What information to extract from the page (e.g., 'summarize this article', 'find the API endpoints')"},
-                        }
+                            "url": {
+                                "type": "string",
+                                "description": "The URL to fetch (must be valid http/https URL)",
+                            },
+                            "prompt": {
+                                "type": "string",
+                                "description": "What information to extract from the page (e.g., 'summarize this article', 'find the API endpoints')",
+                            },
+                        },
                     ),
-                    required=["url", "prompt"]
-                )
+                    required=["url", "prompt"],
+                ),
             ),
         ]
 
@@ -527,8 +607,8 @@ class LocalFilesystemEnvironment:
     async def exec_tool(
         self,
         tool_call: ToolCall,
-        current_state: 'AgentState',
-        run_config: 'RunConfig',
+        current_state: "AgentState",
+        run_config: "RunConfig",
         cancel_scope: trio.CancelScope | None = None,
     ) -> ToolResult:
         """Execute tool call."""
@@ -548,15 +628,10 @@ class LocalFilesystemEnvironment:
                     tool_call_id=tool_call.id,
                     is_error=True,
                     content="",
-                    error=f"Unknown tool: {tool_call.name}"
+                    error=f"Unknown tool: {tool_call.name}",
                 )
         except Exception as e:
-            return ToolResult(
-                tool_call_id=tool_call.id,
-                is_error=True,
-                content="",
-                error=str(e)
-            )
+            return ToolResult(tool_call_id=tool_call.id, is_error=True, content="", error=str(e))
 
     async def _exec_read(self, tool_call: ToolCall) -> ToolResult:
         """Read file contents."""
@@ -571,7 +646,7 @@ class LocalFilesystemEnvironment:
                 tool_call_id=tool_call.id,
                 is_error=True,
                 content="",
-                error=f"File not found: {path_str}"
+                error=f"File not found: {path_str}",
             )
 
         if not abs_path.is_file():
@@ -579,7 +654,7 @@ class LocalFilesystemEnvironment:
                 tool_call_id=tool_call.id,
                 is_error=True,
                 content="",
-                error=f"Not a file: {path_str}"
+                error=f"Not a file: {path_str}",
             )
 
         try:
@@ -589,7 +664,7 @@ class LocalFilesystemEnvironment:
                 tool_call_id=tool_call.id,
                 is_error=True,
                 content="",
-                error=f"Cannot read binary file: {path_str}"
+                error=f"Cannot read binary file: {path_str}",
             )
 
         lines = content.split("\n")
@@ -604,7 +679,7 @@ class LocalFilesystemEnvironment:
                 tool_call_id=tool_call.id,
                 is_error=True,
                 content="",
-                error=f"Offset {offset} is beyond end of file ({len(lines)} lines total)"
+                error=f"Offset {offset} is beyond end of file ({len(lines)} lines total)",
             )
 
         selected_lines = lines[start_line:end_line]
@@ -627,16 +702,14 @@ class LocalFilesystemEnvironment:
             notices.append(f"Some lines were truncated to {MAX_LINE_LENGTH} characters")
         if end_line < len(lines):
             remaining = len(lines) - end_line
-            notices.append(f"{remaining} more lines not shown. Use offset={end_line + 1} to continue")
+            notices.append(
+                f"{remaining} more lines not shown. Use offset={end_line + 1} to continue"
+            )
 
         if notices:
             output_text += f"\n\n... ({'. '.join(notices)})"
 
-        return ToolResult(
-            tool_call_id=tool_call.id,
-            is_error=False,
-            content=output_text
-        )
+        return ToolResult(tool_call_id=tool_call.id, is_error=False, content=output_text)
 
     async def _exec_write(self, tool_call: ToolCall) -> ToolResult:
         """Write content to file."""
@@ -654,7 +727,7 @@ class LocalFilesystemEnvironment:
         return ToolResult(
             tool_call_id=tool_call.id,
             is_error=False,
-            content=f"Successfully wrote {len(content)} bytes to {path_str}"
+            content=f"Successfully wrote {len(content)} bytes to {path_str}",
         )
 
     async def _exec_edit(self, tool_call: ToolCall) -> ToolResult:
@@ -670,7 +743,7 @@ class LocalFilesystemEnvironment:
                 tool_call_id=tool_call.id,
                 is_error=True,
                 content="",
-                error=f"File not found: {path_str}"
+                error=f"File not found: {path_str}",
             )
 
         try:
@@ -680,7 +753,7 @@ class LocalFilesystemEnvironment:
                 tool_call_id=tool_call.id,
                 is_error=True,
                 content="",
-                error=f"Cannot read binary file: {path_str}"
+                error=f"Cannot read binary file: {path_str}",
             )
 
         # Check if old text exists
@@ -689,7 +762,7 @@ class LocalFilesystemEnvironment:
                 tool_call_id=tool_call.id,
                 is_error=True,
                 content="",
-                error=f"Could not find the exact text in {path_str}. The old text must match exactly including all whitespace and newlines."
+                error=f"Could not find the exact text in {path_str}. The old text must match exactly including all whitespace and newlines.",
             )
 
         # Count occurrences
@@ -699,19 +772,19 @@ class LocalFilesystemEnvironment:
                 tool_call_id=tool_call.id,
                 is_error=True,
                 content="",
-                error=f"Found {occurrences} occurrences of the text in {path_str}. The text must be unique. Please provide more context to make it unique."
+                error=f"Found {occurrences} occurrences of the text in {path_str}. The text must be unique. Please provide more context to make it unique.",
             )
 
         # Perform replacement (manual to avoid $ interpretation)
         index = content.find(old_text)
-        new_content = content[:index] + new_text + content[index + len(old_text):]
+        new_content = content[:index] + new_text + content[index + len(old_text) :]
 
         if content == new_content:
             return ToolResult(
                 tool_call_id=tool_call.id,
                 is_error=True,
                 content="",
-                error=f"No changes made to {path_str}. The replacement produced identical content."
+                error=f"No changes made to {path_str}. The replacement produced identical content.",
             )
 
         abs_path.write_text(new_content, encoding="utf-8")
@@ -723,10 +796,12 @@ class LocalFilesystemEnvironment:
             tool_call_id=tool_call.id,
             is_error=False,
             content=f"Successfully replaced text in {path_str}. Changed {len(old_text)} characters to {len(new_text)} characters.",
-            details={"diff": diff_str}
+            details={"diff": diff_str},
         )
 
-    async def _exec_bash(self, tool_call: ToolCall, cancel_scope: trio.CancelScope | None = None) -> ToolResult:
+    async def _exec_bash(
+        self, tool_call: ToolCall, cancel_scope: trio.CancelScope | None = None
+    ) -> ToolResult:
         """Execute bash command."""
         command = tool_call.args["command"]
         timeout = tool_call.args.get("timeout", 120)
@@ -760,13 +835,11 @@ class LocalFilesystemEnvironment:
                     tool_call_id=tool_call.id,
                     is_error=True,
                     content=output or "(no output)",
-                    error=f"Command exited with code {result.returncode}"
+                    error=f"Command exited with code {result.returncode}",
                 )
 
             return ToolResult(
-                tool_call_id=tool_call.id,
-                is_error=False,
-                content=output or "(no output)"
+                tool_call_id=tool_call.id, is_error=False, content=output or "(no output)"
             )
 
         except subprocess.TimeoutExpired:
@@ -774,14 +847,11 @@ class LocalFilesystemEnvironment:
                 tool_call_id=tool_call.id,
                 is_error=True,
                 content="",
-                error=f"Command timed out after {timeout} seconds"
+                error=f"Command timed out after {timeout} seconds",
             )
         except trio.Cancelled:
             return ToolResult(
-                tool_call_id=tool_call.id,
-                is_error=True,
-                content="",
-                error="Command aborted"
+                tool_call_id=tool_call.id, is_error=True, content="", error="Command aborted"
             )
 
     async def _exec_web_fetch(self, tool_call: ToolCall) -> ToolResult:
@@ -799,21 +869,18 @@ class LocalFilesystemEnvironment:
                     tool_call_id=tool_call.id,
                     is_error=True,
                     content="",
-                    error=f"Invalid URL scheme: {parsed.scheme}. Must be http or https."
+                    error=f"Invalid URL scheme: {parsed.scheme}. Must be http or https.",
                 )
             if not parsed.netloc:
                 return ToolResult(
                     tool_call_id=tool_call.id,
                     is_error=True,
                     content="",
-                    error="Invalid URL: missing hostname"
+                    error="Invalid URL: missing hostname",
                 )
         except Exception as e:
             return ToolResult(
-                tool_call_id=tool_call.id,
-                is_error=True,
-                content="",
-                error=f"Invalid URL: {e}"
+                tool_call_id=tool_call.id, is_error=True, content="", error=f"Invalid URL: {e}"
             )
 
         # Upgrade http to https
@@ -829,7 +896,7 @@ class LocalFilesystemEnvironment:
                 return ToolResult(
                     tool_call_id=tool_call.id,
                     is_error=False,
-                    content=f"[Cached] URL: {url}\nPrompt: {prompt}\n\n---\n\n{cached_result['content']}"
+                    content=f"[Cached] URL: {url}\nPrompt: {prompt}\n\n---\n\n{cached_result['content']}",
                 )
 
         # Fetch the URL
@@ -839,10 +906,13 @@ class LocalFilesystemEnvironment:
                 follow_redirects=True,
                 max_redirects=5,
             ) as client:
-                response = await client.get(url, headers={
-                    "User-Agent": "Mozilla/5.0 (compatible; rollouts/1.0)",
-                    "Accept": "text/html, text/markdown, */*",
-                })
+                response = await client.get(
+                    url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (compatible; rollouts/1.0)",
+                        "Accept": "text/html, text/markdown, */*",
+                    },
+                )
                 response.raise_for_status()
 
         except httpx.TimeoutException:
@@ -850,21 +920,18 @@ class LocalFilesystemEnvironment:
                 tool_call_id=tool_call.id,
                 is_error=True,
                 content="",
-                error=f"Request timed out after {WEB_FETCH_TIMEOUT} seconds"
+                error=f"Request timed out after {WEB_FETCH_TIMEOUT} seconds",
             )
         except httpx.HTTPStatusError as e:
             return ToolResult(
                 tool_call_id=tool_call.id,
                 is_error=True,
                 content="",
-                error=f"HTTP {e.response.status_code}: {e.response.reason_phrase}"
+                error=f"HTTP {e.response.status_code}: {e.response.reason_phrase}",
             )
         except httpx.RequestError as e:
             return ToolResult(
-                tool_call_id=tool_call.id,
-                is_error=True,
-                content="",
-                error=f"Request failed: {e}"
+                tool_call_id=tool_call.id, is_error=True, content="", error=f"Request failed: {e}"
             )
 
         # Check content size
@@ -874,7 +941,7 @@ class LocalFilesystemEnvironment:
                 tool_call_id=tool_call.id,
                 is_error=True,
                 content="",
-                error=f"Content too large: {content_length} bytes (max {WEB_FETCH_MAX_SIZE})"
+                error=f"Content too large: {content_length} bytes (max {WEB_FETCH_MAX_SIZE})",
             )
 
         # Decode content
@@ -885,7 +952,7 @@ class LocalFilesystemEnvironment:
                 tool_call_id=tool_call.id,
                 is_error=True,
                 content="",
-                error=f"Failed to decode response: {e}"
+                error=f"Failed to decode response: {e}",
             )
 
         # Convert HTML to markdown if needed
@@ -893,7 +960,7 @@ class LocalFilesystemEnvironment:
         if "text/html" in content_type:
             try:
                 text = markdownify.markdownify(text, heading_style="ATX", strip=["script", "style"])
-            except Exception as e:
+            except Exception:
                 # Fall back to raw text if conversion fails
                 pass
 
@@ -913,5 +980,5 @@ class LocalFilesystemEnvironment:
         return ToolResult(
             tool_call_id=tool_call.id,
             is_error=False,
-            content=f"URL: {url}\nPrompt: {prompt}\n\n---\n\n{text}"
+            content=f"URL: {url}\nPrompt: {prompt}\n\n---\n\n{text}",
         )

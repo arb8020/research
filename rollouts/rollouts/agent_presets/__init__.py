@@ -9,7 +9,7 @@ Usage:
 """
 
 from .base_preset import AgentPresetConfig
-from .loader import load_preset, list_presets
+from .loader import list_presets, load_preset
 
 __all__ = [
     "AgentPresetConfig",

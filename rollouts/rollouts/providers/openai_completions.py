@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import replace
 from typing import Any
 
-import trio
 from openai import AsyncOpenAI
 from openai.types import CompletionUsage
 from openai.types.chat import ChatCompletionMessageParam
@@ -53,7 +51,7 @@ def _message_to_openai(m: Message) -> ChatCompletionMessageParam:
     - Converts ToolCallContent to tool_calls format
     - Converts ImageContent to image_url format
     """
-    
+
     assert m is not None
     assert isinstance(m, Message)
     assert m.role is not None
@@ -94,14 +92,14 @@ def _message_to_openai(m: Message) -> ChatCompletionMessageParam:
                     else:
                         # Base64-encoded image
                         url = f"data:{block.mime_type};base64,{block.data}"
-                    content_parts.append({
-                        "type": "image_url",
-                        "image_url": {"url": url}
-                    })
+                    content_parts.append({"type": "image_url", "image_url": {"url": url}})
                 elif isinstance(block, ThinkingContent):
                     # Convert thinking to text for OpenAI (they don't support thinking)
-                    content_parts.append({"type": "text", "text": f"<thinking>\n{block.thinking}\n</thinking>"})
-            
+                    content_parts.append({
+                        "type": "text",
+                        "text": f"<thinking>\n{block.thinking}\n</thinking>",
+                    })
+
             # If only one text block, use string format; otherwise use array
             if len(content_parts) == 1 and content_parts[0].get("type") == "text":
                 msg["content"] = content_parts[0]["text"]
@@ -111,15 +109,18 @@ def _message_to_openai(m: Message) -> ChatCompletionMessageParam:
             # Assistant messages: extract text blocks, handle thinking, tool calls handled separately
             text_blocks = [b for b in m.content if isinstance(b, TextContent)]
             thinking_blocks = [b for b in m.content if isinstance(b, ThinkingContent)]
-            
+
             # Combine text and thinking into content
             content_parts = []
             for block in text_blocks:
                 content_parts.append({"type": "text", "text": block.text})
             for block in thinking_blocks:
                 # Convert thinking to text (OpenAI chat completions don't support thinking)
-                content_parts.append({"type": "text", "text": f"<thinking>\n{block.thinking}\n</thinking>"})
-            
+                content_parts.append({
+                    "type": "text",
+                    "text": f"<thinking>\n{block.thinking}\n</thinking>",
+                })
+
             if len(content_parts) == 1:
                 msg["content"] = content_parts[0]["text"]
             elif len(content_parts) > 1:
@@ -219,23 +220,23 @@ def _parse_usage(u: CompletionUsage) -> Usage:
 def _parse_completion(resp: Any) -> ChatCompletion:
     """Convert an OpenAI SDK response into the framework `ChatCompletion`."""
     assert resp is not None
-    assert hasattr(resp, 'choices')
-    assert hasattr(resp, 'id')
-    assert hasattr(resp, 'object')
-    assert hasattr(resp, 'created')
-    assert hasattr(resp, 'model')
-    assert hasattr(resp, 'usage')
+    assert hasattr(resp, "choices")
+    assert hasattr(resp, "id")
+    assert hasattr(resp, "object")
+    assert hasattr(resp, "created")
+    assert hasattr(resp, "model")
+    assert hasattr(resp, "usage")
 
     choices = []
     for c in resp.choices:
         assert c is not None
-        assert hasattr(c, 'message')
+        assert hasattr(c, "message")
         tool_calls = []
         if hasattr(c.message, "tool_calls") and c.message.tool_calls:
             for tc in c.message.tool_calls:
                 assert tc is not None
-                assert hasattr(tc, 'id')
-                assert hasattr(tc, 'function')
+                assert hasattr(tc, "id")
+                assert hasattr(tc, "function")
                 tool_calls.append(
                     ToolCall(
                         id=tc.id,
@@ -395,11 +396,7 @@ async def aggregate_stream(
     for idx, tc_buf in sorted(call_buf.items()):
         if tc_buf["name"]:
             try:
-                args = (
-                    json.loads(tc_buf["arguments"])
-                    if tc_buf["arguments"]
-                    else {}
-                )
+                args = json.loads(tc_buf["arguments"]) if tc_buf["arguments"] else {}
                 tool_call = ToolCall(id=tc_buf["id"], name=tc_buf["name"], args=args)
 
                 await on_chunk(
@@ -518,8 +515,9 @@ async def rollout_openai(
     messages = cast(list, params["messages"])
     for i, msg in enumerate(messages):
         content = msg.get("content")
-        assert isinstance(content, (str, list, type(None))), \
+        assert isinstance(content, (str, list, type(None))), (
             f"Message {i} content must be str/list/None, got {type(content)}"
+        )
 
         # Vision messages: content is list of parts with 'type' field
         if isinstance(content, list):
@@ -543,22 +541,20 @@ async def rollout_openai(
         completion = await aggregate_stream(stream, on_chunk)
 
     except Exception as e:
-        # Log error with sanitized request details
-        import json
-
         from openai import BadRequestError, RateLimitError
+
+        from rollouts.store import log_crash
 
         sanitized = sanitize_request_for_logging(params)
 
         # Tiger Style: Fail fast on 400 errors (invalid requests)
         # These indicate bugs in our code, not transient issues
         if isinstance(e, BadRequestError):
-            logger.error(
-                f"OpenAI API 400 Bad Request - Invalid argument in request\n"
-                f"Full sanitized request:\n{json.dumps(sanitized, indent=2)}"
-            )
+            crash_file = log_crash(e, "openai", actor.endpoint.model)
             # Tiger Style: Assertion to fail fast and surface the bug
-            assert False, f"API returned 400 Bad Request: {e}\nThis indicates a bug in request construction. See logs above for full request."
+            assert False, (
+                f"API returned 400 Bad Request: {e}\nCrash details written to: {crash_file}"
+            )
 
         # Tiger Style: Rate limits are operational errors, not bugs
         # Log helpful context but let caller decide whether to retry or fail
@@ -580,7 +576,7 @@ async def rollout_openai(
             raise
 
         # For other errors (network issues, etc), just log and raise
-        msg_list = params.get('messages', [])
+        msg_list = params.get("messages", [])
         msg_count = len(cast(list, msg_list)) if isinstance(msg_list, list) else 0
         logger.error(
             f"OpenAI API call failed: {e}\n"
@@ -590,7 +586,7 @@ async def rollout_openai(
                 "exception": str(e),
                 "request_params": sanitized,
                 "model": actor.endpoint.model,
-            }
+            },
         )
         raise
 

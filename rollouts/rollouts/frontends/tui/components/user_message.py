@@ -4,18 +4,15 @@ User message component - displays user input.
 
 from __future__ import annotations
 
-from typing import List, Optional
-
+from ..theme import DARK_THEME, Theme
 from ..tui import Container
-from ..theme import Theme, DARK_THEME
 from .text import Text
-from .spacer import Spacer
 
 
 class UserMessage(Container):
     """Component that displays a user message."""
 
-    def __init__(self, text: str, is_first: bool = False, theme: Optional[Theme] = None) -> None:
+    def __init__(self, text: str, is_first: bool = False, theme: Theme | None = None) -> None:
         """Initialize user message component.
 
         Args:
@@ -36,4 +33,3 @@ class UserMessage(Container):
             gutter_prefix=self._theme.user_gutter,
         )
         self.add_child(user_text)
-

@@ -200,6 +200,37 @@ class FileSessionStore:
             for msg in session.messages:
                 await f.write(json.dumps(msg.to_dict()) + "\n")
 
+    def get_config_sync(self, session_id: str) -> tuple[dict | None, str | None]:
+        """Sync load of session config (just session.json, not messages).
+
+        Used during CLI arg parsing before async context is available.
+        Returns (config_dict, None) or (None, error).
+        """
+        session_dir = self._session_dir(session_id)
+        if not session_dir.exists():
+            return None, f"Session not found: {session_id}"
+
+        session_file = session_dir / "session.json"
+        if not session_file.exists():
+            return None, f"Session config not found: {session_id}"
+
+        return json.loads(session_file.read_text()), None
+
+    def get_latest_id_sync(self) -> str | None:
+        """Sync get the most recent session ID.
+
+        Used during CLI arg parsing before async context is available.
+        """
+        self._ensure_base_dir()
+        if not self.base_dir.exists():
+            return None
+
+        session_dirs = sorted(self.base_dir.iterdir(), reverse=True)
+        for session_dir in session_dirs:
+            if session_dir.is_dir() and (session_dir / "session.json").exists():
+                return session_dir.name
+        return None
+
     async def get(self, session_id: str) -> tuple[AgentSession | None, str | None]:
         """Load session by ID. Returns (session, None) or (None, error)."""
         session_dir = self._session_dir(session_id)
@@ -380,3 +411,37 @@ class FileSessionStore:
         shutil.rmtree(session_dir)
 
         return None, None
+
+
+def log_crash(
+    error: Exception,
+    provider: str,
+    model: str,
+    *,
+    session_id: str | None = None,
+) -> Path:
+    """Log crash info to ~/.rollouts/crashes/ without dumping full conversation.
+
+    Returns path to the crash file for reference in error messages.
+    """
+    import traceback
+
+    crashes_dir = Path.home() / ".rollouts" / "crashes"
+    crashes_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    random_suffix = os.urandom(3).hex()
+    crash_file = crashes_dir / f"{timestamp}_{random_suffix}.txt"
+
+    crash_info = {
+        "timestamp": datetime.now().isoformat(),
+        "provider": provider,
+        "model": model,
+        "session_id": session_id,
+        "error_type": type(error).__name__,
+        "error_message": str(error),
+        "traceback": traceback.format_exc(),
+    }
+
+    crash_file.write_text(json.dumps(crash_info, indent=2))
+    return crash_file

@@ -5,7 +5,7 @@ LoaderContainer component - holds loader in a fixed position without pushing con
 from __future__ import annotations
 
 import time
-from typing import Callable, List, Optional
+from collections.abc import Callable
 
 from ..tui import Component
 from ..utils import visible_width
@@ -18,8 +18,8 @@ class LoaderContainer(Component):
 
     def __init__(
         self,
-        spinner_color_fn: Optional[Callable[[str], str]] = None,
-        text_color_fn: Optional[Callable[[str], str]] = None,
+        spinner_color_fn: Callable[[str], str] | None = None,
+        text_color_fn: Callable[[str], str] | None = None,
     ) -> None:
         """Initialize loader container.
 
@@ -29,7 +29,7 @@ class LoaderContainer(Component):
         """
         self._spinner_color_fn = spinner_color_fn or (lambda x: x)
         self._text_color_fn = text_color_fn or (lambda x: x)
-        self._loader_text: Optional[str] = None
+        self._loader_text: str | None = None
         self._loader_start_time: float = 0.0
 
     def set_loader(self, text: str) -> None:
@@ -49,7 +49,7 @@ class LoaderContainer(Component):
         """No cached state to invalidate."""
         pass
 
-    def render(self, width: int) -> List[str]:
+    def render(self, width: int) -> list[str]:
         """Render loader with its preceding spacer when active, otherwise render nothing."""
         if not self._loader_text:
             # When no loader, render nothing (no spacer, no loader line)

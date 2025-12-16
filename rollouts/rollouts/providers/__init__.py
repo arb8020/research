@@ -30,8 +30,10 @@ if TYPE_CHECKING:
     from rollouts.dtypes import Actor, StreamEvent
 
 # Type alias for provider streaming functions
+# Note: Actual functions may accept additional kwargs (user_message_for_thinking, turn_idx, etc.)
+# but Callable doesn't support **kwargs, so we use a minimal signature
 ProviderStreamFunction = Callable[
-    ["Actor", Callable[["StreamEvent"], Awaitable[None]]],
+    ...,  # Accept any arguments - actual functions have varying signatures
     Awaitable["Actor"],
 ]
 

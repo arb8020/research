@@ -63,20 +63,15 @@ async def run_calculator_test(provider: str, model: str, api_key: str, api_base:
 
     initial_message = Message(
         role="user",
-        content="Calculate 25 + 17. Use the calculator tools, then call complete_task when done."
+        content="Calculate 25 + 17. Use the calculator tools, then call complete_task when done.",
     )
 
     actor = Actor(
-        trajectory=Trajectory(messages=[initial_message]),
-        endpoint=endpoint,
-        tools=env.get_tools()
+        trajectory=Trajectory(messages=[initial_message]), endpoint=endpoint, tools=env.get_tools()
     )
 
     state = AgentState(actor=actor, environment=env)
-    run_config = RunConfig(
-        on_chunk=stdout_handler,
-        handle_stop=handle_stop_max_turns(10)
-    )
+    run_config = RunConfig(on_chunk=stdout_handler, handle_stop=handle_stop_max_turns(10))
 
     print("Starting agent...")
     print("=" * 60)
@@ -107,7 +102,7 @@ async def test_openai_agent():
         provider="openai",
         model="gpt-4o-mini",
         api_key=api_key,
-        api_base="https://api.openai.com/v1"
+        api_base="https://api.openai.com/v1",
     )
 
 
@@ -122,7 +117,7 @@ async def test_anthropic_agent():
         provider="anthropic",
         model="claude-3-5-haiku-20241022",
         api_key=api_key,
-        api_base="https://api.anthropic.com"
+        api_base="https://api.anthropic.com",
     )
 
 
@@ -137,7 +132,7 @@ async def test_groq_agent():
         provider="groq",
         model="llama-3.3-70b-versatile",
         api_key=api_key,
-        api_base="https://api.groq.com/openai/v1"
+        api_base="https://api.groq.com/openai/v1",
     )
 
 
@@ -156,7 +151,7 @@ async def test_openai_responses_api():
         provider="openai",
         model="gpt-5.1-codex-mini",
         api_key=api_key,
-        api_base="https://api.openai.com/v1"
+        api_base="https://api.openai.com/v1",
     )
 
 
@@ -183,12 +178,12 @@ async def test_google_gemini_agent():
         provider="google",
         model="gemini-2.0-flash-exp",
         api_key=api_key,
-        api_base=""  # Google uses default base URL
+        api_base="",  # Google uses default base URL
     )
 
 
 if __name__ == "__main__":
-    import sys
+
     async def main():
         print("\n=== Testing Real Agents with LLM Providers ===\n")
 
@@ -210,6 +205,7 @@ if __name__ == "__main__":
                 else:
                     print(f"❌ Failed: {e}")
                     import traceback
+
                     traceback.print_exc()
 
         print("\n=== Tests complete ===\n")

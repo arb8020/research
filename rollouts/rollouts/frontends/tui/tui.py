@@ -7,14 +7,12 @@ Ported from pi-mono/packages/tui - same architecture, same visual output.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Protocol, Optional, List
-import os
-import time
 
 from .terminal import Terminal
-from .theme import Theme, DARK_THEME
+from .theme import DARK_THEME, Theme
 from .utils import visible_width
 
 
@@ -22,7 +20,7 @@ class Component(ABC):
     """Base class for all TUI components."""
 
     @abstractmethod
-    def render(self, width: int) -> List[str]:
+    def render(self, width: int) -> list[str]:
         """Render the component to lines for the given viewport width.
 
         Args:
@@ -49,7 +47,7 @@ class Container(Component):
     """A component that contains other components."""
 
     def __init__(self, debug_layout: bool = False) -> None:
-        self.children: List[Component] = []
+        self.children: list[Component] = []
         self._debug_layout = debug_layout
 
     def add_child(self, component: Component) -> None:
@@ -70,9 +68,9 @@ class Container(Component):
         for child in self.children:
             child.invalidate()
 
-    def render(self, width: int) -> List[str]:
+    def render(self, width: int) -> list[str]:
         """Render all children, concatenating their lines."""
-        lines: List[str] = []
+        lines: list[str] = []
         for child in self.children:
             lines.extend(child.render(width))
         return lines
@@ -81,13 +79,19 @@ class Container(Component):
 class TUI(Container):
     """Main class for managing terminal UI with differential rendering."""
 
-    def __init__(self, terminal: Terminal, theme: Optional[Theme] = None, debug: bool = False, debug_layout: bool = False) -> None:
+    def __init__(
+        self,
+        terminal: Terminal,
+        theme: Theme | None = None,
+        debug: bool = False,
+        debug_layout: bool = False,
+    ) -> None:
         super().__init__()
         self._terminal = terminal
         self.theme = theme or DARK_THEME
-        self._previous_lines: List[str] = []
+        self._previous_lines: list[str] = []
         self._previous_width: int = 0
-        self._focused_component: Optional[Component] = None
+        self._focused_component: Component | None = None
         self._render_requested: bool = False
         self._cursor_row: int = 0  # Track where cursor is (0-indexed, relative to our first line)
         self._running: bool = False
@@ -95,10 +99,10 @@ class TUI(Container):
         self._debug_layout = debug_layout
 
         # Loader container - set by InteractiveAgentRunner to render loader in fixed location
-        self._loader_container: Optional[Component] = None
+        self._loader_container: Component | None = None
         self._animation_task_running: bool = False
 
-    def set_focus(self, component: Optional[Component]) -> None:
+    def set_focus(self, component: Component | None) -> None:
         """Set the focused component for input handling."""
         self._focused_component = component
 
@@ -139,19 +143,19 @@ class TUI(Container):
             spinner_color_fn: Function to colorize spinner (unused, kept for API compatibility)
             text_color_fn: Function to colorize text (unused, kept for API compatibility)
         """
-        if self._loader_container and hasattr(self._loader_container, 'set_loader'):
+        if self._loader_container and hasattr(self._loader_container, "set_loader"):
             self._loader_container.set_loader(text)
         self.request_render()
 
     def hide_loader(self) -> None:
         """Hide the loader."""
-        if self._loader_container and hasattr(self._loader_container, 'clear_loader'):
+        if self._loader_container and hasattr(self._loader_container, "clear_loader"):
             self._loader_container.clear_loader()
         self.request_render()
 
     def is_loader_active(self) -> bool:
         """Check if loader is currently showing."""
-        if self._loader_container and hasattr(self._loader_container, 'is_active'):
+        if self._loader_container and hasattr(self._loader_container, "is_active"):
             return self._loader_container.is_active()
         return False
 
@@ -174,7 +178,11 @@ class TUI(Container):
             while self._animation_task_running and self._running:
                 await trio.sleep(0.08)  # 80ms
                 # Only trigger re-render if loader is active
-                if self._loader_container and hasattr(self._loader_container, 'is_active') and self._loader_container.is_active():
+                if (
+                    self._loader_container
+                    and hasattr(self._loader_container, "is_active")
+                    and self._loader_container.is_active()
+                ):
                     self.request_render()
         finally:
             self._animation_task_running = False
@@ -183,7 +191,7 @@ class TUI(Container):
         """Signal the animation loop to stop."""
         self._animation_task_running = False
 
-    def render(self, width: int) -> List[str]:
+    def render(self, width: int) -> list[str]:
         """Render all children with optional debug gutter."""
         # Debug mode: add single-character gutter showing component types
         if self._debug_layout:
@@ -194,38 +202,40 @@ class TUI(Container):
             def get_component_char(component):
                 name = type(component).__name__
                 if name == "Spacer":
-                    if hasattr(component, '_debug_label') and component._debug_label:
+                    if hasattr(component, "_debug_label") and component._debug_label:
                         label = component._debug_label
-                        if 'thinking-to-text' in label:
-                            return '·'  # Spacer between thinking and text
-                        elif 'before-thinking' in label:
-                            return '·'  # Spacer before thinking
-                    return '·'  # Generic spacer
+                        if "thinking-to-text" in label:
+                            return "·"  # Spacer between thinking and text
+                        elif "before-thinking" in label:
+                            return "·"  # Spacer before thinking
+                    return "·"  # Generic spacer
                 elif name == "Container":
-                    return 'C'
+                    return "C"
                 elif name == "UserMessage":
-                    return 'U'
+                    return "U"
                 elif name == "AssistantMessage":
-                    return 'A'
+                    return "A"
                 elif name == "ToolExecution":
-                    return 'T'
+                    return "T"
                 elif name == "Input":
-                    return 'I'
+                    return "I"
                 elif name == "LoaderContainer":
-                    return 'L'
+                    return "L"
                 elif name == "Markdown":
-                    return 'M'
+                    return "M"
                 elif name == "Text":
-                    return 't'
+                    return "t"
                 else:
-                    return '?'
+                    return "?"
 
             def render_with_gutter(component, width, recurse_containers=True):
                 """Recursively render component and its children with gutter."""
                 # Special handling for plain Container: render its children individually
                 # But don't recurse into component containers like UserMessage, AssistantMessage
                 component_name = type(component).__name__
-                is_plain_container = isinstance(component, Container) and component_name == "Container"
+                is_plain_container = (
+                    isinstance(component, Container) and component_name == "Container"
+                )
 
                 if is_plain_container and recurse_containers:
                     result = []
@@ -236,9 +246,9 @@ class TUI(Container):
                     # Render component as a single unit
                     char = get_component_char(component)
                     component_lines = component.render(width)
-                    return [char + ' ' + line for line in component_lines]
+                    return [char + " " + line for line in component_lines]
 
-            all_lines: List[str] = []
+            all_lines: list[str] = []
             for child in self.children:
                 all_lines.extend(render_with_gutter(child, content_width, recurse_containers=True))
 
@@ -331,7 +341,9 @@ class TUI(Container):
 
         # Log when line count changes significantly (new content added)
         if abs(len(new_lines) - len(self._previous_lines)) >= 3:
-            self._debug_log(f"LINE_COUNT_CHANGE prev={len(self._previous_lines)} new={len(new_lines)}")
+            self._debug_log(
+                f"LINE_COUNT_CHANGE prev={len(self._previous_lines)} new={len(new_lines)}"
+            )
             # Dump last 10 lines of new content to see padding
             self._debug_log("=== LAST 10 NEW LINES ===")
             for i, line in enumerate(new_lines[-10:]):
@@ -345,7 +357,9 @@ class TUI(Container):
             if old_line != new_line:
                 if first_changed == -1:
                     first_changed = i
-                    self._debug_log(f"first_changed={i} old={repr(old_line[:80])} new={repr(new_line[:80])}")
+                    self._debug_log(
+                        f"first_changed={i} old={repr(old_line[:80])} new={repr(new_line[:80])}"
+                    )
 
         # No changes
         if first_changed == -1:
@@ -376,7 +390,9 @@ class TUI(Container):
 
         # Move cursor to first changed line
         line_diff = first_changed - self._cursor_row
-        self._debug_log(f"CURSOR_MOVE cursor_row={self._cursor_row} first_changed={first_changed} line_diff={line_diff} total_lines={len(new_lines)} term_height={height}")
+        self._debug_log(
+            f"CURSOR_MOVE cursor_row={self._cursor_row} first_changed={first_changed} line_diff={line_diff} total_lines={len(new_lines)} term_height={height}"
+        )
         if line_diff > 0:
             buffer += f"\x1b[{line_diff}B"  # Move down
         elif line_diff < 0:

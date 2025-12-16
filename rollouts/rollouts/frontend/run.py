@@ -8,6 +8,7 @@ Usage:
     # With custom project:
     python ~/research/rollouts/rollouts/frontend/run.py --project ~/my-agent-project
 """
+
 import sys
 from pathlib import Path
 
@@ -18,4 +19,5 @@ sys.path.insert(0, str(rollouts_root))
 # Server doesn't need trio - it's standalone
 if __name__ == "__main__":
     from rollouts.frontend.server import main
+
     main()

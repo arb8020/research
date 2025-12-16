@@ -49,7 +49,7 @@ class ScreenSpotEnvironment:
         return ToolResult(
             tool_call_id=tool_call.id,
             is_error=True,
-            error="No tools available in ScreenSpot environment"
+            error="No tools available in ScreenSpot environment",
         )
 
     @staticmethod
@@ -72,7 +72,7 @@ class ScreenSpotEnvironment:
                 float(match.group(1)),
                 float(match.group(2)),
                 float(match.group(3)),
-                float(match.group(4))
+                float(match.group(4)),
             ]
             return bbox
 
@@ -123,10 +123,7 @@ class ScreenSpotEnvironment:
 
         # Compute click point from bbox if no explicit point
         if pred_point is None and pred_bbox is not None:
-            pred_point = [
-                (pred_bbox[0] + pred_bbox[2]) / 2,
-                (pred_bbox[1] + pred_bbox[3]) / 2
-            ]
+            pred_point = [(pred_bbox[0] + pred_bbox[2]) / 2, (pred_bbox[1] + pred_bbox[3]) / 2]
 
         # Check format validity
         if pred_point is None:
@@ -137,13 +134,12 @@ class ScreenSpotEnvironment:
             gt_bbox[0] / img_size[0],
             gt_bbox[1] / img_size[1],
             gt_bbox[2] / img_size[0],
-            gt_bbox[3] / img_size[1]
+            gt_bbox[3] / img_size[1],
         ]
 
         # Check if predicted point falls in ground truth box
-        point_in_box = (
-            (gt_bbox_norm[0] <= pred_point[0] <= gt_bbox_norm[2]) and
-            (gt_bbox_norm[1] <= pred_point[1] <= gt_bbox_norm[3])
+        point_in_box = (gt_bbox_norm[0] <= pred_point[0] <= gt_bbox_norm[2]) and (
+            gt_bbox_norm[1] <= pred_point[1] <= gt_bbox_norm[3]
         )
 
         return 1.0 if point_in_box else 0.0

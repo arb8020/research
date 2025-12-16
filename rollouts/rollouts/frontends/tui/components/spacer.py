@@ -4,8 +4,6 @@ Spacer component - adds empty lines for vertical spacing.
 
 from __future__ import annotations
 
-from typing import List
-
 from ..tui import Component
 
 
@@ -17,7 +15,7 @@ class Spacer(Component):
         self._debug_label = debug_label
         self._debug_layout = debug_layout
 
-    def render(self, width: int) -> List[str]:
+    def render(self, width: int) -> list[str]:
         """Render empty lines."""
         # Return empty strings, not space-padded lines
         # This matches pi-mono behavior and avoids overwriting

@@ -48,6 +48,7 @@ class EvalSample:
         metadata: Execution metadata (turns, tokens, status, etc.)
         timestamp: When this sample was evaluated
     """
+
     sample_id: str
     input_data: dict[str, Any]
     trajectory: Trajectory
@@ -64,79 +65,89 @@ class EvalSample:
         score_data = None
         if self.score is not None:
             score_data = {
-                'metrics': [
-                    {'name': m.name, 'value': m.value, 'weight': m.weight, 'metadata': m.metadata}
+                "metrics": [
+                    {"name": m.name, "value": m.value, "weight": m.weight, "metadata": m.metadata}
                     for m in self.score.metrics
                 ],
-                'reward': self.score.reward,
+                "reward": self.score.reward,
             }
 
         data = {
-            'sample_id': self.sample_id,
-            'input_data': self.input_data,
-            'trajectory': json.loads(self.trajectory.to_json()),
-            'agent_states': [],
-            'score': score_data,
-            'metadata': self.metadata,
-            'timestamp': self.timestamp,
+            "sample_id": self.sample_id,
+            "input_data": self.input_data,
+            "trajectory": json.loads(self.trajectory.to_json()),
+            "agent_states": [],
+            "score": score_data,
+            "metadata": self.metadata,
+            "timestamp": self.timestamp,
         }
 
         # Serialize agent states carefully, excluding unpicklable environment objects
         for state in self.agent_states:
             state_dict = {
-                'actor': asdict(state.actor) if hasattr(state.actor, '__dataclass_fields__') else str(state.actor),
-                'environment': None,  # Skip environment - contains unpicklable objects like RLocks
-                'stop': asdict(state.stop) if state.stop and hasattr(state.stop, '__dataclass_fields__') else str(state.stop) if state.stop else None,
-                'turn_idx': state.turn_idx,
-                'pending_tool_calls': [asdict(tc) if hasattr(tc, '__dataclass_fields__') else str(tc) for tc in state.pending_tool_calls],
-                'next_tool_idx': state.next_tool_idx,
-                'timestamp': state.timestamp,
+                "actor": asdict(state.actor)
+                if hasattr(state.actor, "__dataclass_fields__")
+                else str(state.actor),
+                "environment": None,  # Skip environment - contains unpicklable objects like RLocks
+                "stop": asdict(state.stop)
+                if state.stop and hasattr(state.stop, "__dataclass_fields__")
+                else str(state.stop)
+                if state.stop
+                else None,
+                "turn_idx": state.turn_idx,
+                "pending_tool_calls": [
+                    asdict(tc) if hasattr(tc, "__dataclass_fields__") else str(tc)
+                    for tc in state.pending_tool_calls
+                ],
+                "next_tool_idx": state.next_tool_idx,
+                "timestamp": state.timestamp,
             }
-            data['agent_states'].append(state_dict)
+            data["agent_states"].append(state_dict)
 
         # Sanitize all API keys recursively
         data = sanitize_api_keys(data)
         return json.dumps(data, indent=2, default=str)  # default=str handles datetime objects
 
     @staticmethod
-    def from_json(json_str: str) -> 'EvalSample':
+    def from_json(json_str: str) -> "EvalSample":
         """Deserialize from JSON."""
         data = json.loads(json_str)
-        data['trajectory'] = Trajectory.from_json(json.dumps(data['trajectory']))
+        data["trajectory"] = Trajectory.from_json(json.dumps(data["trajectory"]))
 
         # Deserialize Score if present
-        score_data = data.pop('score', None)
+        score_data = data.pop("score", None)
         if score_data is not None:
             metrics = tuple(
                 Metric(
-                    name=m['name'],
-                    value=m['value'],
-                    weight=m.get('weight', 0.0),
-                    metadata=m.get('metadata', {}),
+                    name=m["name"],
+                    value=m["value"],
+                    weight=m.get("weight", 0.0),
+                    metadata=m.get("metadata", {}),
                 )
-                for m in score_data['metrics']
+                for m in score_data["metrics"]
             )
-            data['score'] = Score(metrics=metrics)
+            data["score"] = Score(metrics=metrics)
 
         # Note: Full AgentState deserialization would require complex reconstruction
         # For now, store as simplified data for analysis
-        data['agent_states'] = data.get('agent_states', [])
+        data["agent_states"] = data.get("agent_states", [])
 
         # Only keep expected fields
         return EvalSample(
-            sample_id=data['sample_id'],
-            input_data=data['input_data'],
-            trajectory=data['trajectory'],
-            agent_states=data['agent_states'],
-            score=data.get('score'),
-            metadata=data.get('metadata', {}),
-            timestamp=data.get('timestamp', datetime.now().isoformat()),
+            sample_id=data["sample_id"],
+            input_data=data["input_data"],
+            trajectory=data["trajectory"],
+            agent_states=data["agent_states"],
+            score=data.get("score"),
+            metadata=data.get("metadata", {}),
+            timestamp=data.get("timestamp", datetime.now().isoformat()),
         )
 
 
 @dataclass
 class EvalReport:
     """Summary report for an evaluation run."""
+
     eval_name: str
     dataset_path: str
     total_samples: int
@@ -165,7 +176,7 @@ class EvalReport:
             "summary_metrics": self.summary_metrics,
             "config": self.config,
             "timestamp": self.timestamp,
-            "sample_ids": [s.sample_id for s in self.sample_results]
+            "sample_ids": [s.sample_id for s in self.sample_results],
         }
         # Sanitize API keys in the summary before saving
         summary = sanitize_api_keys(summary)
@@ -191,7 +202,7 @@ class EvalReport:
                 for state in sample.agent_states:
                     # First serialize environment separately to avoid thread handle issues
                     # (Environment may contain SSH connections with unpicklable thread handles)
-                    if state.environment and hasattr(state.environment, 'serialize'):
+                    if state.environment and hasattr(state.environment, "serialize"):
                         env_data = await state.environment.serialize()
                     else:
                         env_data = None
@@ -202,7 +213,7 @@ class EvalReport:
                     state_dict = asdict(temp_state)
 
                     # Add back the serialized environment
-                    state_dict['environment'] = env_data
+                    state_dict["environment"] = env_data
                     states_data.append(state_dict)
 
                 # Sanitize all API keys recursively
@@ -214,11 +225,16 @@ class EvalReport:
                 logger.warning(f"Failed to serialize agent states for {sample.sample_id}: {e}")
                 failed_serializations.append(sample.sample_id)
                 # Save a placeholder file indicating serialization failed
-                states_file.write_text(json.dumps({
-                    "error": "Serialization failed",
-                    "reason": str(e),
-                    "sample_id": sample.sample_id
-                }, indent=2))
+                states_file.write_text(
+                    json.dumps(
+                        {
+                            "error": "Serialization failed",
+                            "reason": str(e),
+                            "sample_id": sample.sample_id,
+                        },
+                        indent=2,
+                    )
+                )
 
         logger.info(f"saved evaluation to {output_dir}")
         logger.info(f"  summary: {report_file}")
@@ -226,7 +242,9 @@ class EvalReport:
         logger.info(f"  trajectories: {trajectories_dir}")
         logger.info(f"  agent states: {states_dir}")
         if failed_serializations:
-            logger.warning(f"  Failed to serialize {len(failed_serializations)} agent states: {failed_serializations[:5]}")
+            logger.warning(
+                f"  Failed to serialize {len(failed_serializations)} agent states: {failed_serializations[:5]}"
+            )
 
 
 def sanitize_api_keys(data: Any) -> Any:
@@ -275,19 +293,16 @@ async def evaluate_sample(
     # Inject sample_data into trajectory metadata for score function access
     initial_trajectory = Trajectory(
         messages=initial_messages,
-        metadata={"sample_data": sample_data}  # Ground truth available to score_fn
+        metadata={"sample_data": sample_data},  # Ground truth available to score_fn
     )
 
     actor = Actor(
         trajectory=initial_trajectory,
         endpoint=endpoint,
-        tools=environment.get_tools() if environment else []
+        tools=environment.get_tools() if environment else [],
     )
 
-    initial_state = AgentState(
-        actor=actor,
-        environment=environment
-    )
+    initial_state = AgentState(actor=actor, environment=environment)
 
     # Use run_config from EvalConfig (or default silent)
     # If user provided run_config, respect it but override show_progress
@@ -299,13 +314,16 @@ async def evaluate_sample(
     else:
         # Determine on_chunk handler based on stream_tokens flag
         # Debug logging
-        has_stream_tokens = hasattr(config, 'stream_tokens')
-        stream_tokens_value = getattr(config, 'stream_tokens', None)
-        logger.debug(f"🔍 Checking stream_tokens: hasattr={has_stream_tokens}, value={stream_tokens_value}")
+        has_stream_tokens = hasattr(config, "stream_tokens")
+        stream_tokens_value = getattr(config, "stream_tokens", None)
+        logger.debug(
+            f"🔍 Checking stream_tokens: hasattr={has_stream_tokens}, value={stream_tokens_value}"
+        )
 
         if has_stream_tokens and stream_tokens_value:
             # Import stdout_handler for streaming
             from rollouts.agents import stdout_handler
+
             on_chunk_handler = stdout_handler
             logger.debug("🔍 Using stdout_handler for token streaming")
         else:
@@ -313,11 +331,10 @@ async def evaluate_sample(
             on_chunk_handler = lambda _: trio.lowlevel.checkpoint()
             logger.debug("🔍 Using silent mode (no token streaming)")
 
-        run_config = RunConfig(
-            on_chunk=on_chunk_handler,
-            show_progress=show_turn_progress
+        run_config = RunConfig(on_chunk=on_chunk_handler, show_progress=show_turn_progress)
+        logger.debug(
+            f"🔍 RunConfig.on_chunk: {on_chunk_handler.__name__ if hasattr(on_chunk_handler, '__name__') else type(on_chunk_handler)}"
         )
-        logger.debug(f"🔍 RunConfig.on_chunk: {on_chunk_handler.__name__ if hasattr(on_chunk_handler, '__name__') else type(on_chunk_handler)}")
 
     # Run agent
     # Tiger Style: Catch operational errors (rate limits, network issues) at boundary
@@ -329,10 +346,12 @@ async def evaluate_sample(
     start_time = time.time()
 
     # Emit sample_start event for frontend live streaming
-    await run_config.on_chunk(StreamChunk(
-        "sample_start",
-        {"sample_id": sample_id, "sample_data": sample_data},
-    ))
+    await run_config.on_chunk(
+        StreamChunk(
+            "sample_start",
+            {"sample_id": sample_id, "sample_data": sample_data},
+        )
+    )
 
     error_message = None
     try:
@@ -348,8 +367,7 @@ async def evaluate_sample(
         final_trajectory = initial_state.actor.trajectory
         # Add error to metadata for analysis
         final_trajectory = replace(
-            final_trajectory,
-            metadata={**final_trajectory.metadata, "error": error_message}
+            final_trajectory, metadata={**final_trajectory.metadata, "error": error_message}
         )
 
     # Build Sample for score function
@@ -365,6 +383,7 @@ async def evaluate_sample(
     score: Score | None = None
     try:
         import inspect
+
         score_result = config.score_fn(final_trajectory, sample)
         if inspect.iscoroutine(score_result):
             score = await score_result
@@ -374,6 +393,7 @@ async def evaluate_sample(
         logger.error(f"❌ SCORE COMPUTATION FAILED: {e}")
         if config.verbose:
             import traceback
+
             logger.error(f"Full traceback:\n{traceback.format_exc()}")
         # Return zero score on error
         score = Score(metrics=(Metric("error", 0.0, weight=1.0, metadata={"error": str(e)}),))
@@ -409,7 +429,7 @@ async def evaluate_sample(
             "duration_seconds": duration_seconds,
             "status": metadata["status"],
             "stop_reason": metadata.get("stop_reason"),
-        }
+        },
     )
 
     if config.verbose and score:
@@ -418,7 +438,7 @@ async def evaluate_sample(
         logger.info(f"  {metric_str}")
 
     # Cleanup environment if it has a cleanup method
-    if environment and hasattr(environment, 'cleanup'):
+    if environment and hasattr(environment, "cleanup"):
         try:
             await environment.cleanup()
         except Exception as e:
@@ -430,14 +450,16 @@ async def evaluate_sample(
         trajectory=final_trajectory,
         agent_states=states,
         score=score,
-        metadata=metadata
+        metadata=metadata,
     )
 
     # Emit sample_end event for frontend live streaming
-    await run_config.on_chunk(StreamChunk(
-        "sample_end",
-        {"sample_id": sample_id, "reward": reward, "metadata": metadata},
-    ))
+    await run_config.on_chunk(
+        StreamChunk(
+            "sample_end",
+            {"sample_id": sample_id, "reward": reward, "metadata": metadata},
+        )
+    )
 
     return eval_sample
 
@@ -495,7 +517,7 @@ async def evaluate(
             disable=False,
             # Show s/sample instead of sample/s for slow operations
             # This makes more sense when each sample takes multiple seconds
-            bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_inv_fmt}]'
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_inv_fmt}]",
         )
 
     if config.max_concurrent == 1:
@@ -516,9 +538,9 @@ async def evaluate(
             if sample_pbar:
                 sample_pbar.update(1)
                 reward = result.score.reward if result.score else 0.0
-                postfix = {'reward': f"{reward:.3f}"}
-                if 'turns_used' in result.metadata:
-                    postfix['turns'] = result.metadata['turns_used']
+                postfix = {"reward": f"{reward:.3f}"}
+                if "turns_used" in result.metadata:
+                    postfix["turns"] = result.metadata["turns_used"]
                 sample_pbar.set_postfix(postfix)
     else:
         # Parallel evaluation with trio nursery - create fresh environment for each sample
@@ -540,18 +562,20 @@ async def evaluate(
             if sample_pbar:
                 sample_pbar.update(1)
                 reward = result.score.reward if result.score else 0.0
-                postfix = {'reward': f"{reward:.3f}"}
-                if 'turns_used' in result.metadata:
-                    postfix['turns'] = result.metadata['turns_used']
+                postfix = {"reward": f"{reward:.3f}"}
+                if "turns_used" in result.metadata:
+                    postfix["turns"] = result.metadata["turns_used"]
                 sample_pbar.set_postfix(postfix)
 
         # Run tasks in parallel with bounded concurrency
         async with trio.open_nursery() as nursery:
             limiter = trio.CapacityLimiter(config.max_concurrent)
             for sample_id, sample_data in samples_to_eval:
+
                 async def run_with_limit(sid=sample_id, sdata=sample_data):
                     async with limiter:
                         await eval_task(sid, sdata)
+
                 nursery.start_soon(run_with_limit)
 
     # Close outer progress bar
@@ -576,7 +600,7 @@ async def evaluate(
             "max_samples": config.max_samples,
             "max_concurrent": config.max_concurrent,
             "evaluation_timestamp": datetime.now().isoformat(),
-        }
+        },
     )
 
     # Save if output directory specified
@@ -652,7 +676,9 @@ def compute_summary_metrics(results: list[EvalSample]) -> dict[str, float]:
     # Add error statistics
     failed_samples = [r for r in results if r.metadata.get("status") == "failed"]
     summary["failed_samples"] = len(failed_samples)
-    summary["success_rate"] = (len(results) - len(failed_samples)) / len(results) if results else 0.0
+    summary["success_rate"] = (
+        (len(results) - len(failed_samples)) / len(results) if results else 0.0
+    )
 
     # Breakdown errors by type
     error_types: dict[str, int] = {}
@@ -680,6 +706,7 @@ def load_jsonl(path: Path) -> Iterator[dict[str, Any]]:
 def load_csv(path: Path) -> Iterator[dict[str, Any]]:
     """Load CSV dataset."""
     import csv
+
     with open(path) as f:
         reader = csv.DictReader(f)
         for row in reader:
@@ -785,7 +812,7 @@ def summarize(results: list[EvalSample]) -> dict[str, float]:
     n = len(rewards)
     mean = sum(rewards) / n
     variance = sum((r - mean) ** 2 for r in rewards) / n
-    std = variance ** 0.5
+    std = variance**0.5
 
     return {
         "mean": mean,

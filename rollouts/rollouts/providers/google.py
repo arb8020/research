@@ -27,7 +27,6 @@ from rollouts.dtypes import (
     ThinkingDelta,
     ThinkingEnd,
     ThinkingStart,
-    Tool,
     ToolCall,
     ToolCallContent,
     ToolCallDelta,
@@ -36,7 +35,7 @@ from rollouts.dtypes import (
     Usage,
 )
 
-from .base import _prepare_messages_for_llm, calculate_cost_from_usage
+from .base import calculate_cost_from_usage
 
 
 async def aggregate_google_stream(
@@ -96,15 +95,19 @@ async def aggregate_google_stream(
                             if current_block:
                                 block_index = len(content_blocks) - 1
                                 if current_block["type"] == "text":
-                                    await on_chunk(TextEnd(
-                                        content_index=block_index,
-                                        content=current_block["text"],
-                                    ))
+                                    await on_chunk(
+                                        TextEnd(
+                                            content_index=block_index,
+                                            content=current_block["text"],
+                                        )
+                                    )
                                 else:
-                                    await on_chunk(ThinkingEnd(
-                                        content_index=block_index,
-                                        content=current_block["thinking"],
-                                    ))
+                                    await on_chunk(
+                                        ThinkingEnd(
+                                            content_index=block_index,
+                                            content=current_block["thinking"],
+                                        )
+                                    )
 
                             # Start new block
                             if is_thinking:
@@ -126,16 +129,20 @@ async def aggregate_google_stream(
                             current_block["thinking"] += part.text
                             if getattr(part, "thoughtSignature", None):
                                 current_block["thinkingSignature"] = part.thoughtSignature
-                            await on_chunk(ThinkingDelta(
-                                content_index=block_index,
-                                delta=part.text,
-                            ))
+                            await on_chunk(
+                                ThinkingDelta(
+                                    content_index=block_index,
+                                    delta=part.text,
+                                )
+                            )
                         else:
                             current_block["text"] += part.text
-                            await on_chunk(TextDelta(
-                                content_index=block_index,
-                                delta=part.text,
-                            ))
+                            await on_chunk(
+                                TextDelta(
+                                    content_index=block_index,
+                                    delta=part.text,
+                                )
+                            )
 
                     # Handle function calls
                     if hasattr(part, "functionCall") and part.functionCall:
@@ -143,23 +150,27 @@ async def aggregate_google_stream(
                         if current_block:
                             block_index = len(content_blocks) - 1
                             if current_block["type"] == "text":
-                                await on_chunk(TextEnd(
-                                    content_index=block_index,
-                                    content=current_block["text"],
-                                ))
+                                await on_chunk(
+                                    TextEnd(
+                                        content_index=block_index,
+                                        content=current_block["text"],
+                                    )
+                                )
                             else:
-                                await on_chunk(ThinkingEnd(
-                                    content_index=block_index,
-                                    content=current_block["thinking"],
-                                ))
+                                await on_chunk(
+                                    ThinkingEnd(
+                                        content_index=block_index,
+                                        content=current_block["thinking"],
+                                    )
+                                )
                             current_block = None
 
                         # Generate unique ID
                         fc = part.functionCall
                         provided_id = getattr(fc, "id", None)
-                        needs_new_id = (
-                            not provided_id
-                            or any(b.get("type") == "toolCall" and b.get("id") == provided_id for b in content_blocks)
+                        needs_new_id = not provided_id or any(
+                            b.get("type") == "toolCall" and b.get("id") == provided_id
+                            for b in content_blocks
                         )
                         if needs_new_id:
                             tool_call_counter += 1
@@ -181,27 +192,33 @@ async def aggregate_google_stream(
                         block_index = len(content_blocks) - 1
 
                         # Emit tool call events
-                        await on_chunk(ToolCallStart(
-                            content_index=block_index,
-                            tool_call_id=tool_call_id,
-                            tool_name=tool_call_block["name"],
-                        ))
-                        await on_chunk(ToolCallDelta(
-                            content_index=block_index,
-                            tool_call_id=tool_call_id,
-                            delta=json.dumps(tool_call_block["arguments"]),
-                            partial_args=tool_call_block["arguments"],
-                        ))
+                        await on_chunk(
+                            ToolCallStart(
+                                content_index=block_index,
+                                tool_call_id=tool_call_id,
+                                tool_name=tool_call_block["name"],
+                            )
+                        )
+                        await on_chunk(
+                            ToolCallDelta(
+                                content_index=block_index,
+                                tool_call_id=tool_call_id,
+                                delta=json.dumps(tool_call_block["arguments"]),
+                                partial_args=tool_call_block["arguments"],
+                            )
+                        )
 
                         tool_call = ToolCall(
                             id=tool_call_id,
                             name=tool_call_block["name"],
                             args=tool_call_block["arguments"],
                         )
-                        await on_chunk(ToolCallEnd(
-                            content_index=block_index,
-                            tool_call=tool_call,
-                        ))
+                        await on_chunk(
+                            ToolCallEnd(
+                                content_index=block_index,
+                                tool_call=tool_call,
+                            )
+                        )
 
         # Handle finish reason
         if candidate and hasattr(candidate, "finishReason") and candidate.finishReason:
@@ -241,15 +258,19 @@ async def aggregate_google_stream(
     if current_block:
         block_index = len(content_blocks) - 1
         if current_block["type"] == "text":
-            await on_chunk(TextEnd(
-                content_index=block_index,
-                content=current_block["text"],
-            ))
+            await on_chunk(
+                TextEnd(
+                    content_index=block_index,
+                    content=current_block["text"],
+                )
+            )
         else:
-            await on_chunk(ThinkingEnd(
-                content_index=block_index,
-                content=current_block["thinking"],
-            ))
+            await on_chunk(
+                ThinkingEnd(
+                    content_index=block_index,
+                    content=current_block["thinking"],
+                )
+            )
 
     # Emit done event
     await on_chunk(StreamDone(finish_reason=finish_reason))
@@ -314,14 +335,13 @@ async def rollout_google(
     try:
         import trio_asyncio
     except ImportError:
-        raise ImportError(
-            "trio-asyncio not installed. Install with: pip install trio-asyncio"
-        )
+        raise ImportError("trio-asyncio not installed. Install with: pip install trio-asyncio")
 
     # Get API key
     api_key = actor.endpoint.api_key
     if not api_key:
         import os
+
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise ValueError(
@@ -331,10 +351,11 @@ async def rollout_google(
 
     # Transform messages for cross-provider compatibility (like pi-ai does)
     from rollouts.transform_messages import transform_messages
+
     transformed_messages = transform_messages(
         actor.trajectory.messages,
         target_provider=actor.endpoint.provider,
-        target_api="google-generative-ai"
+        target_api="google-generative-ai",
     )
 
     # Prepare message conversion outside asyncio context
@@ -351,10 +372,7 @@ async def rollout_google(
                 user_text = "\n".join(b.text for b in text_blocks) if text_blocks else ""
             else:
                 user_text = ""
-            contents.append(types.Content(
-                role="user",
-                parts=[types.Part(text=user_text)]
-            ))
+            contents.append(types.Content(role="user", parts=[types.Part(text=user_text)]))
         elif m.role == "assistant":
             parts = []
             # Tiger Style: Explicit control flow - handle both string and ContentBlock content
@@ -366,17 +384,16 @@ async def rollout_google(
                     if isinstance(block, TextContent):
                         parts.append(types.Part(text=block.text))
                     elif isinstance(block, ToolCallContent):
-                        parts.append(types.Part(
-                            function_call=types.FunctionCall(
-                                name=block.name,
-                                args=block.arguments,
+                        parts.append(
+                            types.Part(
+                                function_call=types.FunctionCall(
+                                    name=block.name,
+                                    args=block.arguments,
+                                )
                             )
-                        ))
+                        )
             if parts:
-                contents.append(types.Content(
-                    role="model",
-                    parts=parts
-                ))
+                contents.append(types.Content(role="model", parts=parts))
         elif m.role == "tool":
             # Extract text from ContentBlocks for tool result
             # Tiger Style: Explicit control flow - handle both string and ContentBlock content
@@ -387,20 +404,26 @@ async def rollout_google(
                 tool_result_text = "\n".join(b.text for b in text_blocks) if text_blocks else ""
             else:
                 tool_result_text = ""
-            contents.append(types.Content(
-                role="user",
-                parts=[types.Part(
-                    function_response=types.FunctionResponse(
-                        name=m.tool_name if m.tool_name else "unknown",
-                        response={"result": tool_result_text}
-                    )
-                )]
-            ))
+            contents.append(
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part(
+                            function_response=types.FunctionResponse(
+                                name=m.tool_name if m.tool_name else "unknown",
+                                response={"result": tool_result_text},
+                            )
+                        )
+                    ],
+                )
+            )
 
     # Build config
     config = types.GenerateContentConfig(
         temperature=actor.endpoint.temperature if hasattr(actor.endpoint, "temperature") else None,
-        max_output_tokens=actor.endpoint.max_tokens if hasattr(actor.endpoint, "max_tokens") else None,
+        max_output_tokens=actor.endpoint.max_tokens
+        if hasattr(actor.endpoint, "max_tokens")
+        else None,
     )
 
     # Add tools if present
@@ -408,15 +431,17 @@ async def rollout_google(
         tools = []
         function_declarations = []
         for tool in actor.tools:
-            function_declarations.append(types.FunctionDeclaration(
-                name=tool.function.name,
-                description=tool.function.description,
-                parameters={
-                    "type": tool.function.parameters.type,
-                    "properties": tool.function.parameters.properties,
-                    "required": tool.function.required,
-                },
-            ))
+            function_declarations.append(
+                types.FunctionDeclaration(
+                    name=tool.function.name,
+                    description=tool.function.description,
+                    parameters={
+                        "type": tool.function.parameters.type,
+                        "properties": tool.function.parameters.properties,
+                        "required": tool.function.required,
+                    },
+                )
+            )
         tools.append(types.Tool(function_declarations=function_declarations))
         config.tools = tools
 
@@ -437,15 +462,12 @@ async def rollout_google(
             return final_message, usage_data
 
         except Exception as e:
-            import json
-
             logger.error(
-                f"Google Generative AI API call failed: {e}\n"
-                f"  Model: {actor.endpoint.model}",
+                f"Google Generative AI API call failed: {e}\n  Model: {actor.endpoint.model}",
                 extra={
                     "exception": str(e),
                     "model": actor.endpoint.model,
-                }
+                },
             )
             raise
 

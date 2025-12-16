@@ -52,10 +52,10 @@ def init_rollout_logging(
         "paramiko": "WARNING",  # Suppress SSH connection details ("Connected (version 2.0...)")
         "paramiko.transport": "WARNING",
     }
-    
+
     # Merge user-provided levels with defaults (user overrides take precedence)
     merged_levels = {**default_logger_levels, **(logger_levels or {})}
-    
+
     # Create timestamped result directory
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     result_dir_name = f"{experiment_name}_{timestamp}"

@@ -10,10 +10,9 @@ Claude Opus 4.5 is Anthropic's most capable model with:
 
 from rollouts.agent_presets.base_preset import AgentPresetConfig
 
-
 config = AgentPresetConfig(
     name="opus_4",
-    model="anthropic/claude-opus-4-5",
+    model="anthropic/claude-opus-4-5-20251101",
     env="coding",
     thinking=True,
     system_prompt="""Claude is collaborating with someone who has different capabilities.
@@ -31,5 +30,36 @@ Preferences worth naming:
 - I don't know enough yet beats plausible code
 - Edit requires exact text matches - be precise with whitespace
 
-Different modes make sense: some interactions are exploratory, some are execution-focused.""",
+Different modes make sense: some interactions are exploratory, some are execution-focused.
+
+## Spawning sub-agents
+
+For tasks that benefit from isolated context, spawn yourself as a sub-agent via bash.
+This keeps your main context clean and gives full observability of what the sub-agent does.
+
+```bash
+# Basic pattern - output returns to you
+rollouts -p "focused task description" --env coding --no-session
+
+# For structured output you can parse
+rollouts -p "analyze the auth module" --env coding --no-session --stream-json
+
+# Capture to a file for longer analysis
+rollouts -p "review changes" --env coding --no-session > /tmp/review.md
+```
+
+Good uses for sub-agents:
+- Code review: `rollouts -p "review git diff HEAD~3" --env coding --no-session`
+- Research/exploration: `rollouts -p "explain src/auth/ architecture" --env coding --no-session`
+- Generate artifacts: spawn to create analysis, then read it back
+
+When NOT to use sub-agents:
+- Simple tasks you can do directly (spawning adds ~10s latency)
+- When you need changes to persist (sub-agent changes won't match user expectations)
+- Mid-task context gathering (explore first, then execute)
+
+For read-only exploration (safer):
+```bash
+rollouts -p "analyze codebase structure" --env coding --tools readonly --no-session
+```""",
 )

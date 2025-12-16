@@ -20,8 +20,8 @@ Usage:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
 
 import torch
 import torch.nn.functional as F
@@ -31,6 +31,7 @@ from torch import Tensor
 @dataclass
 class CapturedInternals:
     """Captured internal values from HF model forward pass."""
+
     position_embeddings: tuple[Tensor, Tensor] | None = None  # (cos, sin)
     attention_mask: Tensor | None = None
     hidden_states_per_layer: list[Tensor] = field(default_factory=list)
@@ -59,15 +60,15 @@ def capture_hf_internals(
     hooks = []
 
     # Detect model type
-    if hasattr(model, 'model'):
+    if hasattr(model, "model"):
         base_model = model.model
     else:
         base_model = model
 
     # Get layers list
-    if hasattr(base_model, 'layers'):
+    if hasattr(base_model, "layers"):
         layers = base_model.layers
-    elif hasattr(base_model, 'h'):  # GPT-2 style
+    elif hasattr(base_model, "h"):  # GPT-2 style
         layers = base_model.h
     else:
         layers = []
@@ -78,11 +79,11 @@ def capture_hf_internals(
 
     # Hook to capture position embeddings and mask from first layer
     def capture_pos_and_mask(module, args, kwargs):
-        if 'position_embeddings' in kwargs and kwargs['position_embeddings'] is not None:
-            pos_emb = kwargs['position_embeddings']
+        if "position_embeddings" in kwargs and kwargs["position_embeddings"] is not None:
+            pos_emb = kwargs["position_embeddings"]
             result.position_embeddings = (pos_emb[0].clone(), pos_emb[1].clone())
-        if 'attention_mask' in kwargs and kwargs['attention_mask'] is not None:
-            mask = kwargs['attention_mask']
+        if "attention_mask" in kwargs and kwargs["attention_mask"] is not None:
+            mask = kwargs["attention_mask"]
             if isinstance(mask, Tensor):
                 result.attention_mask = mask.clone()
         return None
@@ -94,11 +95,16 @@ def capture_hf_internals(
     def make_layer_hook(layer_idx: int):
         def hook(module, input, output):
             if isinstance(input, tuple) and len(input) > 0:
-                result.layer_inputs[layer_idx] = input[0].clone() if isinstance(input[0], Tensor) else None
+                result.layer_inputs[layer_idx] = (
+                    input[0].clone() if isinstance(input[0], Tensor) else None
+                )
             if isinstance(output, tuple) and len(output) > 0:
-                result.layer_outputs[layer_idx] = output[0].clone() if isinstance(output[0], Tensor) else None
+                result.layer_outputs[layer_idx] = (
+                    output[0].clone() if isinstance(output[0], Tensor) else None
+                )
             elif isinstance(output, Tensor):
                 result.layer_outputs[layer_idx] = output.clone()
+
         return hook
 
     for idx in capture_layers:
@@ -109,7 +115,7 @@ def capture_hf_internals(
     with torch.no_grad():
         kwargs = {}
         if attention_mask is not None:
-            kwargs['attention_mask'] = attention_mask
+            kwargs["attention_mask"] = attention_mask
         _ = model(input_ids, **kwargs)
 
     # Clean up hooks
@@ -141,7 +147,7 @@ def compare_tensors(
 
     if not result["shape_match"]:
         result["matches"] = False
-        result["max_diff"] = float('inf')
+        result["max_diff"] = float("inf")
         return result
 
     diff = (t1 - t2).abs()
@@ -216,7 +222,7 @@ class DebugSession:
     def test_embeddings(self, input_ids: Tensor) -> dict:
         """Test that embedding layer matches."""
         # HF embeddings
-        if hasattr(self.hf_model, 'model'):
+        if hasattr(self.hf_model, "model"):
             hf_embed = self.hf_model.model.embed_tokens(input_ids)
         else:
             hf_embed = self.hf_model.embed_tokens(input_ids)
@@ -264,7 +270,11 @@ class DebugSession:
         if compute_rope_fn is not None:
             # Compute functional position embeddings
             seq_len = input_ids.shape[1]
-            positions = torch.arange(seq_len, device=self.device).unsqueeze(0).expand(input_ids.shape[0], -1)
+            positions = (
+                torch.arange(seq_len, device=self.device)
+                .unsqueeze(0)
+                .expand(input_ids.shape[0], -1)
+            )
 
             func_cos, func_sin = compute_rope_fn(positions, dtype=self.dtype)
 
@@ -272,7 +282,9 @@ class DebugSession:
             result["sin_comparison"] = compare_tensors(hf_sin, func_sin, name="sin")
 
             # Check if matches
-            result["matches"] = result["cos_comparison"]["matches"] and result["sin_comparison"]["matches"]
+            result["matches"] = (
+                result["cos_comparison"]["matches"] and result["sin_comparison"]["matches"]
+            )
 
             # If not matching, show first few values
             if not result["matches"]:
@@ -333,7 +345,7 @@ class DebugSession:
         with torch.no_grad():
             kwargs = {}
             if attention_mask is not None:
-                kwargs['attention_mask'] = attention_mask
+                kwargs["attention_mask"] = attention_mask
 
             hf_out = self.hf_model(input_ids, **kwargs).logits
             func_out = self.functional_forward(input_ids, self.weights, **kwargs)
@@ -376,7 +388,9 @@ class DebugSession:
             if layer_forward_fn is not None and layer_idx in captured.layer_inputs:
                 # Run functional layer
                 hf_input = captured.layer_inputs[layer_idx]
-                cos, sin = captured.position_embeddings if captured.position_embeddings else (None, None)
+                cos, sin = (
+                    captured.position_embeddings if captured.position_embeddings else (None, None)
+                )
 
                 with torch.no_grad():
                     func_output = layer_forward_fn(
@@ -400,7 +414,7 @@ def print_comparison_report(comparison: dict, verbose: bool = True):
     """Pretty-print a comparison result."""
     name = comparison.get("name", "comparison")
     matches = comparison.get("matches", False)
-    max_diff = comparison.get("max_diff", float('inf'))
+    max_diff = comparison.get("max_diff", float("inf"))
 
     status = "PASS" if matches else "FAIL"
     symbol = "✓" if matches else "✗"

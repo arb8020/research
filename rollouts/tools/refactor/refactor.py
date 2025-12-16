@@ -3,18 +3,12 @@
 Multi-file AI refactoring tool.
 
 Usage:
-    python -m tools.refactor.refactor <file> [model]
-
-Models:
-    s  = Claude Sonnet (medium thinking)
-    S  = Claude Sonnet (high thinking)
-    g  = GPT-5.1 (medium)
-    G  = GPT-5.1 (high)
-    i  = Gemini 3 (medium)
-    I  = Gemini 3 (high)
+    python -m tools.refactor.refactor <file> --model anthropic/claude-sonnet-4-5-20250929
+    python -m tools.refactor.refactor <file> --model openai/gpt-5.1 --thinking high
+    python -m tools.refactor.refactor <file> --dry-run
 
 Example:
-    python -m tools.refactor.refactor main.py s
+    python -m tools.refactor.refactor main.py --model anthropic/claude-sonnet-4-5-20250929
 """
 
 import argparse
@@ -23,52 +17,31 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from .imports import collect_context, detect_language
-from .commands import parse_commands, apply_commands
+from .blocks import BlockState, build_block_state, estimate_tokens, format_blocks
+from .commands import apply_commands, parse_commands
+from .imports import collect_context
 
+# Default model
+DEFAULT_MODEL = "anthropic/claude-sonnet-4-5-20250929"
 
-# Model aliases (matching Victor's convention)
-MODELS = {
-    # Claude Sonnet
-    "s": ("anthropic", "claude-sonnet-4-5-20250929", "medium"),
-    "s-": ("anthropic", "claude-sonnet-4-5-20250929", "low"),
-    "s+": ("anthropic", "claude-sonnet-4-5-20250929", "high"),
-    "S": ("anthropic", "claude-sonnet-4-5-20250929", "high"),
-
-    # Claude Opus
-    "o": ("anthropic", "claude-opus-4-1-20250805", "medium"),
-    "O": ("anthropic", "claude-opus-4-1-20250805", "high"),
-
-    # GPT-5.1
-    "g": ("openai", "gpt-5.1", "medium"),
-    "g-": ("openai", "gpt-5.1", "low"),
-    "g+": ("openai", "gpt-5.1", "high"),
-    "G": ("openai", "gpt-5.1", "high"),
-
-    # Gemini 3
-    "i": ("google", "gemini-3-pro-preview", "medium"),
-    "i-": ("google", "gemini-3-pro-preview", "low"),
-    "i+": ("google", "gemini-3-pro-preview", "high"),
-    "I": ("google", "gemini-3-pro-preview", "high"),
-}
+# Compaction threshold (tokens)
+COMPACTION_THRESHOLD = 32000
 
 
 SYSTEM_PROMPT = """You are a code refactoring assistant. Analyze the provided files and perform the requested refactoring.
 
+The files are split into blocks. Each block is marked with '!N' where N is the block ID.
+
 Output your changes using these commands:
 
-1. To create or overwrite a file:
+1. To create a new file:
 <write file="path/to/file.py">
 complete file contents here
 </write>
 
-2. To modify part of a file (search and replace):
-<patch file="path/to/file.py">
-<<<<<<< SEARCH
-exact text to find
-=======
-replacement text
->>>>>>>
+2. To replace a specific block by ID:
+<patch id=N>
+new block contents
 </patch>
 
 3. To delete a file:
@@ -76,25 +49,57 @@ replacement text
 
 Rules:
 - Output ONLY the commands, no explanations
+- Use block IDs for patches (e.g., <patch id=5>)
+- The block ID markers (!N) are NOT part of the actual file content
 - Use relative paths from the workspace root
-- For patches, the SEARCH text must match exactly (including whitespace)
 - Make minimal changes to accomplish the task
 """
 
 
-def build_prompt(context: dict[str, str], task: str) -> str:
-    """Build the prompt from context and task."""
-    lines = ["You're a code editor.", "", "Files:", ""]
+COMPACTION_PROMPT = """You are a code context optimizer. Your job is to identify which blocks are NOT relevant to the task.
 
-    for file_path, content in context.items():
-        lines.append(f"=== {file_path} ===")
-        lines.append(content)
-        lines.append("")
+The files below are split into blocks marked with '!N'. The task is described at the end.
 
+Output <omit>N</omit> for each block ID that is NOT needed to complete the task.
+Be aggressive - omit anything that isn't directly relevant.
+Do NOT omit blocks that:
+- Contain the task description
+- Define functions/classes that will be modified
+- Are imported by relevant code
+
+Output only <omit> commands, nothing else.
+"""
+
+
+def build_prompt(block_state: BlockState, task: str, omit_ids: set[int] | None = None) -> str:
+    """Build the prompt from blocks and task."""
+    lines = [
+        "You're a code editor.",
+        "",
+        "Files are split into blocks. Each block is marked with '!id'.",
+        "These markers are NOT part of the file; they identify blocks for patching.",
+        "",
+    ]
+
+    lines.append(format_blocks(block_state, omit_ids))
+
+    lines.append("")
     lines.append("TASK:")
     lines.append(task)
     lines.append("")
-    lines.append("Output <write>, <patch>, or <delete> commands to complete the task.")
+    lines.append("Output <write>, <patch id=N>, or <delete> commands to complete the task.")
+
+    return "\n".join(lines)
+
+
+def build_compaction_prompt(block_state: BlockState, task: str) -> str:
+    """Build the compaction prompt."""
+    lines = [format_blocks(block_state)]
+    lines.append("")
+    lines.append("TASK:")
+    lines.append(task)
+    lines.append("")
+    lines.append("Output <omit>N</omit> for each irrelevant block ID.")
 
     return "\n".join(lines)
 
@@ -104,7 +109,7 @@ def extract_task_from_file(content: str) -> tuple[str, str]:
     Extract task from trailing comments in file.
     Returns (body_without_task, task_text).
     """
-    lines = content.rstrip().split('\n')
+    lines = content.rstrip().split("\n")
 
     # Find trailing comment block
     task_lines = []
@@ -118,10 +123,10 @@ def extract_task_from_file(content: str) -> tuple[str, str]:
         is_comment = False
         comment_text = ""
 
-        for prefix in ('#', '//', '--'):
+        for prefix in ("#", "//", "--"):
             if stripped.startswith(prefix):
                 is_comment = True
-                comment_text = stripped[len(prefix):].strip()
+                comment_text = stripped[len(prefix) :].strip()
                 break
 
         if is_comment:
@@ -137,7 +142,7 @@ def extract_task_from_file(content: str) -> tuple[str, str]:
         raise ValueError("File must end with a comment block describing the task")
 
     task = "\n".join(reversed(task_lines))
-    body = "\n".join(lines[:idx + 1])
+    body = "\n".join(lines[: idx + 1])
 
     return body, task
 
@@ -160,7 +165,9 @@ def get_api_key(vendor: str) -> str:
     if config_path.exists():
         return config_path.read_text().strip()
 
-    raise ValueError(f"No API key found for {vendor}. Set ${env_var} or create ~/.config/{vendor}.token")
+    raise ValueError(
+        f"No API key found for {vendor}. Set ${env_var} or create ~/.config/{vendor}.token"
+    )
 
 
 def call_anthropic(prompt: str, model: str, thinking: str, api_key: str) -> str:
@@ -194,7 +201,7 @@ def call_anthropic(prompt: str, model: str, thinking: str, api_key: str) -> str:
     # Extract text from response
     text_parts = []
     for block in response.content:
-        if hasattr(block, 'text'):
+        if hasattr(block, "text"):
             text_parts.append(block.text)
 
     return "\n".join(text_parts)
@@ -289,30 +296,61 @@ def save_log(
     (history_dir / f"{timestamp}-{base_name}-response.txt").write_text(response)
 
 
+def parse_model_spec(model_spec: str) -> tuple[str, str]:
+    """Parse 'provider/model' format into (vendor, model)."""
+    if "/" not in model_spec:
+        raise ValueError(f"Model must be in 'provider/model' format, got: {model_spec}")
+
+    vendor, model = model_spec.split("/", 1)
+    return vendor, model
+
+
+def parse_omit_commands(response: str) -> set[int]:
+    """Parse <omit>N</omit> commands from compaction response."""
+    import re
+
+    omit_ids = set()
+
+    for match in re.finditer(r"<omit>(\d+)</omit>", response):
+        omit_ids.add(int(match.group(1)))
+
+    # Also support ranges: <omit>5-10</omit>
+    for match in re.finditer(r"<omit>(\d+)-(\d+)</omit>", response):
+        start, end = int(match.group(1)), int(match.group(2))
+        omit_ids.update(range(start, end + 1))
+
+    return omit_ids
+
+
 def refactor(
     file_path: str,
-    model_spec: str = "s",
+    model: str = DEFAULT_MODEL,
+    thinking: str = "medium",
     dry_run: bool = False,
+    no_compact: bool = False,
 ) -> None:
     """
     Main refactor function.
 
     Args:
         file_path: Path to the file to refactor
-        model_spec: Model specification (s, S, g, G, i, I, etc.)
+        model: Model in "provider/model" format (e.g., "anthropic/claude-sonnet-4-5-20250929")
+        thinking: Thinking level (none, low, medium, high)
         dry_run: If True, print prompt instead of calling API
+        no_compact: If True, skip compaction even if over threshold
     """
     file_path = Path(file_path).resolve()
     workspace_root = Path.cwd().resolve()
 
-    # Resolve model
-    if model_spec not in MODELS:
-        print(f"Unknown model: {model_spec}")
-        print(f"Available: {', '.join(MODELS.keys())}")
+    # Parse model spec
+    try:
+        vendor, model_name = parse_model_spec(model)
+    except ValueError as e:
+        print(f"Error: {e}")
         sys.exit(1)
 
-    vendor, model, thinking = MODELS[model_spec]
-    print(f"model: {vendor}:{model}:{thinking}")
+    print(f"model: {vendor}/{model_name}")
+    print(f"thinking: {thinking}")
 
     # Read file and extract task
     content = file_path.read_text()
@@ -333,13 +371,54 @@ def refactor(
     rel_path = str(file_path.relative_to(workspace_root))
     context[rel_path] = body
 
-    # Build prompt
-    prompt = build_prompt(context, task)
-    token_estimate = len(prompt) // 4  # Rough estimate
+    # Build block state
+    block_state = build_block_state(context)
+    print(f"blocks: {len(block_state.blocks)}")
+
+    # Estimate tokens
+    full_prompt = build_prompt(block_state, task)
+    token_estimate = estimate_tokens(full_prompt)
     print(f"tokens: ~{token_estimate}")
 
     # Save log directory
     log_dir = Path.home() / ".ai"
+
+    # Compaction pass (if needed)
+    omit_ids: set[int] = set()
+    has_imports = len(context) > 1
+
+    if not no_compact and has_imports and token_estimate >= COMPACTION_THRESHOLD:
+        print(f"\n** Compacting (>{COMPACTION_THRESHOLD} tokens)... **")
+
+        compact_prompt = build_compaction_prompt(block_state, task)
+
+        if not dry_run:
+            # Use low thinking for compaction (fast)
+            compact_response = call_llm(compact_prompt, vendor, model_name, "low")
+            omit_ids = parse_omit_commands(compact_response)
+
+            # Recalculate tokens
+            compacted_prompt = build_prompt(block_state, task, omit_ids)
+            new_token_estimate = estimate_tokens(compacted_prompt)
+            savings = token_estimate - new_token_estimate
+            pct = (savings / token_estimate * 100) if token_estimate > 0 else 0
+
+            print(f"omitted: {len(omit_ids)} blocks")
+            print(f"tokens: ~{new_token_estimate} (saved {savings}, {pct:.0f}%)")
+
+            save_log(log_dir, compact_prompt, compact_response, str(file_path) + ".compact", model)
+    else:
+        reasons = []
+        if no_compact:
+            reasons.append("--no-compact")
+        elif not has_imports:
+            reasons.append("single file")
+        elif token_estimate < COMPACTION_THRESHOLD:
+            reasons.append(f"under {COMPACTION_THRESHOLD} tokens")
+        print(f"compaction: skipped ({', '.join(reasons)})")
+
+    # Build final prompt
+    prompt = build_prompt(block_state, task, omit_ids)
 
     if dry_run:
         print("\n=== DRY RUN - PROMPT ===")
@@ -348,8 +427,8 @@ def refactor(
         return
 
     # Call LLM
-    print("\nCalling AI...")
-    response = call_llm(prompt, vendor, model, thinking)
+    print("\n** Calling AI... **")
+    response = call_llm(prompt, vendor, model_name, thinking)
 
     # Save logs
     save_log(log_dir, prompt, response, str(file_path), model)
@@ -364,8 +443,8 @@ def refactor(
 
     print(f"\nApplying {len(commands)} commands...")
 
-    # Apply commands
-    results = apply_commands(commands, workspace_root)
+    # Apply commands (with block state for block-based patches)
+    results = apply_commands(commands, workspace_root, block_state)
 
     for result in results:
         status = "✓" if result.success else "✗"
@@ -375,14 +454,51 @@ def refactor(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Multi-file AI refactoring tool")
-    parser.add_argument("file", help="File to refactor (must end with task comment)")
-    parser.add_argument("model", nargs="?", default="s", help="Model spec (s, S, g, G, i, I)")
-    parser.add_argument("--dry-run", action="store_true", help="Print prompt without calling API")
+    parser = argparse.ArgumentParser(
+        description="Multi-file AI refactoring tool",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+    python -m tools.refactor.refactor main.py
+    python -m tools.refactor.refactor main.py --model openai/gpt-5.1
+    python -m tools.refactor.refactor main.py --thinking high
+    python -m tools.refactor.refactor main.py --dry-run
+        """,
+    )
+    parser.add_argument(
+        "file",
+        help="File to refactor (must end with task comment)",
+    )
+    parser.add_argument(
+        "--model",
+        "-m",
+        type=str,
+        default=DEFAULT_MODEL,
+        help=f'Model in "provider/model" format (default: {DEFAULT_MODEL})',
+    )
+    parser.add_argument(
+        "--thinking",
+        "-t",
+        type=str,
+        choices=["none", "low", "medium", "high"],
+        default="medium",
+        help="Thinking level (default: medium)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        "-n",
+        action="store_true",
+        help="Print prompt without calling API",
+    )
+    parser.add_argument(
+        "--no-compact",
+        action="store_true",
+        help="Skip compaction pass even if over token threshold",
+    )
 
     args = parser.parse_args()
 
-    refactor(args.file, args.model, args.dry_run)
+    refactor(args.file, args.model, args.thinking, args.dry_run, args.no_compact)
 
 
 if __name__ == "__main__":

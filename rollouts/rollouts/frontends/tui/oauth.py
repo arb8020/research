@@ -41,6 +41,7 @@ DEFAULT_TOKEN_PATH = Path.home() / ".rollouts" / "oauth" / "anthropic.json"
 @dataclass
 class OAuthTokens:
     """OAuth token pair with metadata."""
+
     access_token: str
     refresh_token: str
     expires_at: float  # Unix timestamp in milliseconds
@@ -105,6 +106,7 @@ class TokenStorage:
 
 class OAuthError(Exception):
     """OAuth-related error."""
+
     pass
 
 
@@ -144,6 +146,7 @@ class OAuthClient:
             base_url = "https://claude.ai/oauth/authorize"
 
         from urllib.parse import urlencode
+
         params = {
             "code": "true",
             "client_id": CLIENT_ID,
@@ -278,14 +281,12 @@ def is_logged_in() -> bool:
 
 async def login() -> OAuthTokens:
     """Interactive login flow."""
-    import readline
-    import sys
 
     client = get_oauth_client()
 
     url = client.get_authorize_url("max")
 
-    print(f"\n🔐 Open this URL in your browser to log in:")
+    print("\n🔐 Open this URL in your browser to log in:")
     print(f"\n   {url}\n")
     print("After authorizing, you'll see a page with a code.")
     print("Copy the ENTIRE code (including any # and text after it).\n")

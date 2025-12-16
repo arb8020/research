@@ -29,7 +29,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    import torch
     from torch import Tensor
 
 
@@ -143,22 +142,26 @@ def get_weight_info(model: Any, pattern: str = "") -> list[WeightInfo]:
 
     for name, param in model.named_parameters():
         if compiled_pattern is None or compiled_pattern.search(name):
-            results.append(WeightInfo(
-                name=name,
-                shape=tuple(param.shape),
-                dtype=str(param.dtype),
-                device=str(param.device),
-            ))
+            results.append(
+                WeightInfo(
+                    name=name,
+                    shape=tuple(param.shape),
+                    dtype=str(param.dtype),
+                    device=str(param.device),
+                )
+            )
 
     # Also check buffers (like positional embeddings that aren't parameters)
     for name, buffer in model.named_buffers():
         if compiled_pattern is None or compiled_pattern.search(name):
-            results.append(WeightInfo(
-                name=name,
-                shape=tuple(buffer.shape),
-                dtype=str(buffer.dtype),
-                device=str(buffer.device),
-            ))
+            results.append(
+                WeightInfo(
+                    name=name,
+                    shape=tuple(buffer.shape),
+                    dtype=str(buffer.dtype),
+                    device=str(buffer.device),
+                )
+            )
 
     assert len(results) > 0 or pattern, "Model has no weights (this shouldn't happen)"
 
@@ -213,10 +216,7 @@ def capture_intermediate(
     # Get shape(s) of output
     if isinstance(captured_output, tuple):
         # Some layers return tuples (hidden_states, attention_weights, etc.)
-        output_shape = [
-            tuple(t.shape) if hasattr(t, "shape") else None
-            for t in captured_output
-        ]
+        output_shape = [tuple(t.shape) if hasattr(t, "shape") else None for t in captured_output]
     else:
         output_shape = tuple(captured_output.shape)
 

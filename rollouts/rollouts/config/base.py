@@ -119,7 +119,9 @@ class BaseModelConfig:
         actual_api_key_env_var = self.api_key_env_var
 
         if inferred_provider != self.provider:
-            print(f"⚠️  Provider mismatch: config says '{self.provider}' but model '{self.model_name}' suggests '{inferred_provider}'")
+            print(
+                f"⚠️  Provider mismatch: config says '{self.provider}' but model '{self.model_name}' suggests '{inferred_provider}'"
+            )
             print(f"   Auto-correcting to use provider: {inferred_provider}")
             actual_provider = inferred_provider
 
@@ -284,7 +286,7 @@ class BaseEvaluationConfig:
             verbose=self.verbose,
             show_progress=self.show_progress,
             stream_tokens=self.stream_tokens,  # Pass through streaming config
-            run_config=self.run_config,         # Pass through custom run config
+            run_config=self.run_config,  # Pass through custom run config
         )
 
 
@@ -333,7 +335,7 @@ class BaseOutputConfig:
         """
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        with open(path, 'w') as f:
+        with open(path, "w") as f:
             json.dump(asdict(config), f, indent=2, default=str)
 
     @staticmethod

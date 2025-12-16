@@ -20,11 +20,11 @@ TODO: Add CLI commands for applying changes from worktree:
   - Consider: detect if user's dir is a git repo and offer git-native workflow
 """
 
+import os
+import shutil
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-import os
-import subprocess
-import shutil
 
 import trio
 
@@ -38,7 +38,6 @@ from ..dtypes import (
     ToolFunctionParameter,
     ToolResult,
 )
-
 
 MAX_LINES = 2000
 MAX_LINE_LENGTH = 2000
@@ -54,7 +53,7 @@ def _shorten_path(path: str, working_dir: Path) -> str:
         pass
     home = os.path.expanduser("~")
     if path.startswith(home):
-        return "~" + path[len(home):]
+        return "~" + path[len(home) :]
     return path
 
 
@@ -89,7 +88,7 @@ class GitWorktreeEnvironment:
         cwd = str(self.working_dir)
         home = os.path.expanduser("~")
         if cwd.startswith(home):
-            cwd = "~" + cwd[len(home):]
+            cwd = "~" + cwd[len(home) :]
         info["cwd"] = cwd
 
         if self._current_branch:
@@ -126,8 +125,15 @@ class GitWorktreeEnvironment:
             main_branch = await self._get_main_branch()
 
             await self._run_git(
-                ["worktree", "add", "-b", self._current_branch, str(self._worktree_path), main_branch],
-                cwd=self._bare_repo
+                [
+                    "worktree",
+                    "add",
+                    "-b",
+                    self._current_branch,
+                    str(self._worktree_path),
+                    main_branch,
+                ],
+                cwd=self._bare_repo,
             )
 
     async def _create_initial_commit(self) -> None:
@@ -148,25 +154,21 @@ class GitWorktreeEnvironment:
             # Add and commit
             await self._run_git(["add", "-A"], cwd=temp_worktree)
             await self._run_git(
-                ["commit", "-m", "Initial snapshot", "--allow-empty"],
-                cwd=temp_worktree
+                ["commit", "-m", "Initial snapshot", "--allow-empty"], cwd=temp_worktree
             )
 
             # Push to bare repo
             await self._run_git(
-                ["remote", "add", "origin", str(self._bare_repo)],
-                cwd=temp_worktree
+                ["remote", "add", "origin", str(self._bare_repo)], cwd=temp_worktree
             )
-            await self._run_git(
-                ["push", "-u", "origin", "main"],
-                cwd=temp_worktree
-            )
+            await self._run_git(["push", "-u", "origin", "main"], cwd=temp_worktree)
         finally:
             # Clean up temp worktree
             shutil.rmtree(temp_worktree, ignore_errors=True)
 
     async def _copy_working_dir_to(self, dest: Path) -> None:
         """Copy working directory contents to dest, excluding .rollouts and .git."""
+
         def should_copy(src: Path) -> bool:
             name = src.name
             # Skip our own directory and user's git
@@ -193,10 +195,7 @@ class GitWorktreeEnvironment:
     async def _get_main_branch(self) -> str:
         """Get the main branch name from bare repo."""
         try:
-            result = await self._run_git(
-                ["symbolic-ref", "--short", "HEAD"],
-                cwd=self._bare_repo
-            )
+            result = await self._run_git(["symbolic-ref", "--short", "HEAD"], cwd=self._bare_repo)
             return result.strip() or "main"
         except Exception:
             return "main"
@@ -256,7 +255,7 @@ class GitWorktreeEnvironment:
         }
 
     @staticmethod
-    async def deserialize(data: dict) -> 'GitWorktreeEnvironment':
+    async def deserialize(data: dict) -> "GitWorktreeEnvironment":
         """Restore environment from serialized state."""
         env = GitWorktreeEnvironment(working_dir=Path(data["working_dir"]))
 
@@ -283,7 +282,8 @@ class GitWorktreeEnvironment:
     def get_tool_formatter(self, tool_name: str):
         """Return formatter for the given tool."""
         # Reuse formatters from coding.py
-        from .coding import format_bash, format_read, format_write, format_edit
+        from .coding import format_bash, format_edit, format_read, format_write
+
         formatters = {
             "bash": format_bash,
             "read": format_read,
@@ -304,12 +304,15 @@ class GitWorktreeEnvironment:
                         type="object",
                         properties={
                             "path": {"type": "string", "description": "Path to the file to read"},
-                            "offset": {"type": "integer", "description": "Line number to start from (1-indexed)"},
+                            "offset": {
+                                "type": "integer",
+                                "description": "Line number to start from (1-indexed)",
+                            },
                             "limit": {"type": "integer", "description": "Max lines to read"},
-                        }
+                        },
                     ),
-                    required=["path"]
-                )
+                    required=["path"],
+                ),
             ),
             Tool(
                 type="function",
@@ -321,10 +324,10 @@ class GitWorktreeEnvironment:
                         properties={
                             "path": {"type": "string", "description": "Path to the file"},
                             "content": {"type": "string", "description": "Content to write"},
-                        }
+                        },
                     ),
-                    required=["path", "content"]
-                )
+                    required=["path", "content"],
+                ),
             ),
             Tool(
                 type="function",
@@ -337,10 +340,10 @@ class GitWorktreeEnvironment:
                             "path": {"type": "string", "description": "Path to the file"},
                             "old_text": {"type": "string", "description": "Exact text to find"},
                             "new_text": {"type": "string", "description": "Replacement text"},
-                        }
+                        },
                     ),
-                    required=["path", "old_text", "new_text"]
-                )
+                    required=["path", "old_text", "new_text"],
+                ),
             ),
             Tool(
                 type="function",
@@ -351,11 +354,14 @@ class GitWorktreeEnvironment:
                         type="object",
                         properties={
                             "command": {"type": "string", "description": "Command to execute"},
-                            "timeout": {"type": "integer", "description": "Timeout in seconds (default: 120)"},
-                        }
+                            "timeout": {
+                                "type": "integer",
+                                "description": "Timeout in seconds (default: 120)",
+                            },
+                        },
                     ),
-                    required=["command"]
-                )
+                    required=["command"],
+                ),
             ),
         ]
 
@@ -400,15 +406,10 @@ class GitWorktreeEnvironment:
                     tool_call_id=tool_call.id,
                     is_error=True,
                     content="",
-                    error=f"Unknown tool: {tool_call.name}"
+                    error=f"Unknown tool: {tool_call.name}",
                 )
         except Exception as e:
-            return ToolResult(
-                tool_call_id=tool_call.id,
-                is_error=True,
-                content="",
-                error=str(e)
-            )
+            return ToolResult(tool_call_id=tool_call.id, is_error=True, content="", error=str(e))
 
     def _resolve_path(self, path_str: str, work_dir: Path) -> Path:
         """Resolve path relative to work_dir or as absolute."""
@@ -435,7 +436,7 @@ class GitWorktreeEnvironment:
                 tool_call_id=tool_call.id,
                 is_error=True,
                 content="",
-                error=f"File not found: {path_str}"
+                error=f"File not found: {path_str}",
             )
 
         if not abs_path.is_file():
@@ -443,7 +444,7 @@ class GitWorktreeEnvironment:
                 tool_call_id=tool_call.id,
                 is_error=True,
                 content="",
-                error=f"Not a file: {path_str}"
+                error=f"Not a file: {path_str}",
             )
 
         try:
@@ -453,7 +454,7 @@ class GitWorktreeEnvironment:
                 tool_call_id=tool_call.id,
                 is_error=True,
                 content="",
-                error=f"Cannot read binary file: {path_str}"
+                error=f"Cannot read binary file: {path_str}",
             )
 
         lines = content.split("\n")
@@ -466,7 +467,7 @@ class GitWorktreeEnvironment:
                 tool_call_id=tool_call.id,
                 is_error=True,
                 content="",
-                error=f"Offset {offset} beyond end of file ({len(lines)} lines)"
+                error=f"Offset {offset} beyond end of file ({len(lines)} lines)",
             )
 
         selected_lines = lines[start_line:end_line]
@@ -485,11 +486,7 @@ class GitWorktreeEnvironment:
             remaining = len(lines) - end_line
             output_text += f"\n\n... ({remaining} more lines)"
 
-        return ToolResult(
-            tool_call_id=tool_call.id,
-            is_error=False,
-            content=output_text
-        )
+        return ToolResult(tool_call_id=tool_call.id, is_error=False, content=output_text)
 
     async def _exec_write(self, tool_call: ToolCall, work_dir: Path) -> ToolResult:
         """Write content to file."""
@@ -503,7 +500,7 @@ class GitWorktreeEnvironment:
         return ToolResult(
             tool_call_id=tool_call.id,
             is_error=False,
-            content=f"Wrote {len(content)} bytes to {path_str}"
+            content=f"Wrote {len(content)} bytes to {path_str}",
         )
 
     async def _exec_edit(self, tool_call: ToolCall, work_dir: Path) -> ToolResult:
@@ -521,7 +518,7 @@ class GitWorktreeEnvironment:
                 tool_call_id=tool_call.id,
                 is_error=True,
                 content="",
-                error=f"File not found: {path_str}"
+                error=f"File not found: {path_str}",
             )
 
         try:
@@ -531,7 +528,7 @@ class GitWorktreeEnvironment:
                 tool_call_id=tool_call.id,
                 is_error=True,
                 content="",
-                error=f"Cannot read binary file: {path_str}"
+                error=f"Cannot read binary file: {path_str}",
             )
 
         if old_text not in content:
@@ -539,7 +536,7 @@ class GitWorktreeEnvironment:
                 tool_call_id=tool_call.id,
                 is_error=True,
                 content="",
-                error=f"Text not found in {path_str}"
+                error=f"Text not found in {path_str}",
             )
 
         occurrences = content.count(old_text)
@@ -548,19 +545,16 @@ class GitWorktreeEnvironment:
                 tool_call_id=tool_call.id,
                 is_error=True,
                 content="",
-                error=f"Found {occurrences} occurrences - text must be unique"
+                error=f"Found {occurrences} occurrences - text must be unique",
             )
 
         # Replace
         index = content.find(old_text)
-        new_content = content[:index] + new_text + content[index + len(old_text):]
+        new_content = content[:index] + new_text + content[index + len(old_text) :]
 
         if content == new_content:
             return ToolResult(
-                tool_call_id=tool_call.id,
-                is_error=True,
-                content="",
-                error="No changes made"
+                tool_call_id=tool_call.id, is_error=True, content="", error="No changes made"
             )
 
         abs_path.write_text(new_content, encoding="utf-8")
@@ -571,14 +565,11 @@ class GitWorktreeEnvironment:
             tool_call_id=tool_call.id,
             is_error=False,
             content=f"Edited {path_str}",
-            details={"diff": diff_str}
+            details={"diff": diff_str},
         )
 
     async def _exec_bash(
-        self,
-        tool_call: ToolCall,
-        work_dir: Path,
-        cancel_scope: trio.CancelScope | None = None
+        self, tool_call: ToolCall, work_dir: Path, cancel_scope: trio.CancelScope | None = None
     ) -> ToolResult:
         """Execute bash command."""
         command = tool_call.args["command"]
@@ -611,13 +602,11 @@ class GitWorktreeEnvironment:
                     tool_call_id=tool_call.id,
                     is_error=True,
                     content=output or "(no output)",
-                    error=f"Exit code {result.returncode}"
+                    error=f"Exit code {result.returncode}",
                 )
 
             return ToolResult(
-                tool_call_id=tool_call.id,
-                is_error=False,
-                content=output or "(no output)"
+                tool_call_id=tool_call.id, is_error=False, content=output or "(no output)"
             )
 
         except subprocess.TimeoutExpired:
@@ -625,12 +614,7 @@ class GitWorktreeEnvironment:
                 tool_call_id=tool_call.id,
                 is_error=True,
                 content="",
-                error=f"Timeout after {timeout}s"
+                error=f"Timeout after {timeout}s",
             )
         except trio.Cancelled:
-            return ToolResult(
-                tool_call_id=tool_call.id,
-                is_error=True,
-                content="",
-                error="Aborted"
-            )
+            return ToolResult(tool_call_id=tool_call.id, is_error=True, content="", error="Aborted")

@@ -26,11 +26,13 @@ class BaseConfig:
 def test_inference(config: BaseConfig) -> list[dict]:
     """Run inference test with the given config."""
     import logging
+
     import torch
 
-    # Local imports to avoid loading torch on import
-    from rollouts.inference import InferenceEngine, EngineConfig, SamplingParams
     from rollouts._logging import setup_logging
+
+    # Local imports to avoid loading torch on import
+    from rollouts.inference import EngineConfig, InferenceEngine, SamplingParams
 
     setup_logging(level="INFO", use_color=True)
     logger = logging.getLogger(__name__)
@@ -90,7 +92,9 @@ def test_inference(config: BaseConfig) -> list[dict]:
 
         logger.info(f"\n[{prompt_idx}.{sample_idx}] {config.prompts[prompt_idx]}")
         logger.info(f"  -> {completion_text}")
-        logger.info(f"  tokens={len(sample.completion_tokens)}, finish={sample.finish_reason}, mean_logprob={result['mean_logprob']:.3f}")
+        logger.info(
+            f"  tokens={len(sample.completion_tokens)}, finish={sample.finish_reason}, mean_logprob={result['mean_logprob']:.3f}"
+        )
 
     logger.info("=" * 50)
     logger.info(f"Generated {len(samples)} samples")
@@ -109,21 +113,21 @@ def run_remote(script_path: str, keep_alive: bool = False, gpu_id: str | None = 
         gpu_id: Reuse existing GPU instance ID (skips provisioning)
     """
     import os
-    from pathlib import Path
 
-    from broker.client import GPUClient
-    from bifrost.client import BifrostClient
     from dotenv import load_dotenv
+
+    from bifrost.client import BifrostClient
+    from broker.client import GPUClient
 
     load_dotenv()
 
     # Get script path relative to git root
     import subprocess
+
     script = Path(script_path).resolve()
-    git_root = Path(subprocess.check_output(
-        ['git', 'rev-parse', '--show-toplevel'],
-        text=True
-    ).strip())
+    git_root = Path(
+        subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip()
+    )
     rel_path = script.relative_to(git_root)
 
     # Provision or reuse GPU

@@ -61,9 +61,7 @@ def _apply_inline_thinking_template(
     return inline_thinking.format(thinking=thinking_content, content=content)
 
 
-def _message_to_anthropic(
-    m: Message, inline_thinking: str | None = None
-) -> dict[str, Any]:
+def _message_to_anthropic(m: Message, inline_thinking: str | None = None) -> dict[str, Any]:
     """Convert a `Message` into Anthropic's streaming-compatible schema.
 
     Handles new ContentBlock-based message structure:
@@ -82,6 +80,7 @@ def _message_to_anthropic(
     # Tiger Style: Use assertions for programmer errors (bugs in our code)
     if not m.content:
         import logging
+
         logger = logging.getLogger(__name__)
         logger.error(f"❌ Empty message content detected! Role: {m.role}")
         logger.error("   This usually means prepare_messages() is using the wrong dataset field.")
@@ -101,7 +100,9 @@ def _message_to_anthropic(
         return msg
 
     # Handle ContentBlock list (structured messages with text/thinking/tools/images)
-    assert isinstance(m.content, list), f"content must be str or list[ContentBlock], got {type(m.content)}"
+    assert isinstance(m.content, list), (
+        f"content must be str or list[ContentBlock], got {type(m.content)}"
+    )
 
     content_blocks = []
 
@@ -114,7 +115,7 @@ def _message_to_anthropic(
             if not block.thinking_signature or block.thinking_signature.strip() == "":
                 content_blocks.append({
                     "type": "text",
-                    "text": f"<thinking>\n{block.thinking}\n</thinking>"
+                    "text": f"<thinking>\n{block.thinking}\n</thinking>",
                 })
             else:
                 thinking_block = {"type": "thinking", "thinking": block.thinking}
@@ -136,7 +137,7 @@ def _message_to_anthropic(
                     "source": {
                         "type": "url",
                         "url": block.data,
-                    }
+                    },
                 })
             else:
                 # Base64-encoded image
@@ -146,7 +147,7 @@ def _message_to_anthropic(
                         "type": "base64",
                         "media_type": block.mime_type,
                         "data": block.data,
-                    }
+                    },
                 })
 
     # If we have multiple blocks or any non-text blocks, use array format
@@ -346,7 +347,6 @@ async def aggregate_anthropic_stream(
 
     final_content_blocks: list = []
 
-
     # Reconstruct content blocks in order from the content_blocks tracking dict
     # Sort by index to maintain order
     for index in sorted(content_blocks.keys()):
@@ -447,16 +447,17 @@ async def rollout_anthropic(
         }
     if actor.endpoint.api_base:
         # Anthropic SDK adds /v1 automatically, so remove it if present
-        base_url = actor.endpoint.api_base.rstrip('/v1').rstrip('/')
+        base_url = actor.endpoint.api_base.rstrip("/v1").rstrip("/")
         client_kwargs["base_url"] = base_url
     client = AsyncAnthropic(**client_kwargs)
 
     # Transform messages for cross-provider compatibility (like pi-ai does)
     from rollouts.transform_messages import transform_messages
+
     transformed_messages = transform_messages(
         actor.trajectory.messages,
         target_provider=actor.endpoint.provider,
-        target_api="anthropic-messages"
+        target_api="anthropic-messages",
     )
 
     # Strip details before sending to LLM
@@ -464,7 +465,6 @@ async def rollout_anthropic(
 
     system_prompt = None
     messages = []
-
 
     for m in llm_messages:
         if m.role == "system":
@@ -480,18 +480,16 @@ async def rollout_anthropic(
                 tool_result_text = "\n".join(b.text for b in text_blocks) if text_blocks else ""
             else:
                 tool_result_text = ""
-            messages.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": m.tool_call_id,
-                            "content": tool_result_text,
-                        }
-                    ],
-                }
-            )
+            messages.append({
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": m.tool_call_id,
+                        "content": tool_result_text,
+                    }
+                ],
+            })
         else:
             messages.append(_message_to_anthropic(m, inline_thinking))
 
@@ -531,9 +529,9 @@ async def rollout_anthropic(
     if system_prompt:
         logger.debug(f"System prompt length: {len(system_prompt)} chars")
         logger.debug(f"System prompt preview: {system_prompt[:200]}...")
-    for i, msg in enumerate(params['messages']):
-        role = msg.get('role', 'unknown')
-        content = msg.get('content', '')
+    for i, msg in enumerate(params["messages"]):
+        role = msg.get("role", "unknown")
+        content = msg.get("content", "")
         if isinstance(content, str):
             logger.debug(f"Message {i} ({role}): {len(content)} chars - {content[:100]}...")
         elif isinstance(content, list):
@@ -565,34 +563,33 @@ async def rollout_anthropic(
             # Tiger Style: Fail fast on 400 errors (invalid requests)
             # These indicate bugs in our code or invalid configuration, not transient issues
             import anthropic
-            import json
+
+            from rollouts.store import log_crash
 
             if isinstance(e, anthropic.BadRequestError):
-                sanitized = sanitize_request_for_logging(params)
-                logger.error(
-                    f"Anthropic API 400 Bad Request - Invalid argument in request\n"
-                    f"Full sanitized request:\n{json.dumps(sanitized, indent=2)}"
-                )
+                crash_file = log_crash(e, "anthropic", actor.endpoint.model)
                 # Fail immediately - don't retry configuration errors
-                assert False, f"API returned 400 Bad Request: {e}\nThis indicates invalid configuration or a bug in request construction. See logs above for full request."
+                assert False, (
+                    f"API returned 400 Bad Request: {e}\nCrash details written to: {crash_file}"
+                )
 
             # Fail fast on authentication errors - these won't resolve with retries
             if isinstance(e, anthropic.AuthenticationError):
-                raise RuntimeError(f"Authentication failed: {e}\nCheck your API key or OAuth token.")
+                raise RuntimeError(
+                    f"Authentication failed: {e}\nCheck your API key or OAuth token."
+                )
 
             # Fail fast on ValueError - these are programming errors (e.g., empty message)
             if isinstance(e, ValueError):
                 raise
 
-            print(
-                f"🔄 Anthropic API error (attempt {attempt + 1}/{max_retries + 1}): {str(e)}"
-            )
+            print(f"🔄 Anthropic API error (attempt {attempt + 1}/{max_retries + 1}): {str(e)}")
             if attempt == 0:  # Log detailed error info on first attempt
                 print(f"   Endpoint model: {actor.endpoint.model}")
                 print(f"   Endpoint api_base: {actor.endpoint.api_base}")
 
             if attempt < max_retries:
-                delay = base_delay * (2 ** attempt)
+                delay = base_delay * (2**attempt)
                 print(f"   Retrying in {delay}s...")
                 await trio.sleep(delay)
                 continue
@@ -605,7 +602,7 @@ async def rollout_anthropic(
                     "request_params": sanitized,
                     "model": actor.endpoint.model,
                     "max_retries": max_retries,
-                }
+                },
             )
             raise
 

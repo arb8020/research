@@ -6,11 +6,10 @@ Run with: python -m frontends.tui.demo
 """
 
 import time
-import sys
 
+from .components import Spacer, Text
 from .terminal import ProcessTerminal
 from .tui import TUI, Container
-from .components import Text, Spacer
 
 
 # ANSI color helpers
@@ -46,14 +45,20 @@ def main():
 
     # Add some content
     content = Container()
-    content.add_child(Text(
-        "This is a " + bold("simple demo") + " of the TUI system.\n"
-        "It supports " + cyan("ANSI colors") + ", " + bold("bold text") + ", and word wrapping.\n\n"
-        "The differential rendering engine only redraws lines that have changed, "
-        "making updates efficient and flicker-free.",
-        padding_x=1,
-        padding_y=0,
-    ))
+    content.add_child(
+        Text(
+            "This is a " + bold("simple demo") + " of the TUI system.\n"
+            "It supports "
+            + cyan("ANSI colors")
+            + ", "
+            + bold("bold text")
+            + ", and word wrapping.\n\n"
+            "The differential rendering engine only redraws lines that have changed, "
+            "making updates efficient and flicker-free.",
+            padding_x=1,
+            padding_y=0,
+        )
+    )
     ui.add_child(content)
 
     ui.add_child(Spacer(1))
@@ -69,9 +74,7 @@ def main():
 
         # Animate counter to show differential rendering
         for i in range(10):
-            counter_text.set_text(
-                f"Counter: {green(str(i))} " + yellow("(updating every 0.5s)")
-            )
+            counter_text.set_text(f"Counter: {green(str(i))} " + yellow("(updating every 0.5s)"))
             ui.request_render()
             time.sleep(0.5)
 
