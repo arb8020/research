@@ -196,12 +196,12 @@ class SGLangEngine:
         # Tiger Style: assert preconditions
         assert checkpoint_path, "checkpoint_path cannot be empty"
 
-        # Delegate to fine-grained function
-        return await update_sglang_weights_from_disk(
-            self.base_url,
-            checkpoint_path,
-            timeout=self.timeout,
-        )
+        # Delegate to fine-grained function with timeout
+        with trio.fail_after(self.timeout):
+            return await update_sglang_weights_from_disk(
+                self.base_url,
+                checkpoint_path,
+            )
 
 
 @dataclass
@@ -237,12 +237,12 @@ class VLLMEngine:
         # Tiger Style: assert preconditions
         assert checkpoint_path, "checkpoint_path cannot be empty"
 
-        # Delegate to fine-grained function
-        return await update_vllm_weights_from_disk(
-            self.base_url,
-            checkpoint_path,
-            timeout=self.timeout,
-        )
+        # Delegate to fine-grained function with timeout
+        with trio.fail_after(self.timeout):
+            return await update_vllm_weights_from_disk(
+                self.base_url,
+                checkpoint_path,
+            )
 
 
 # ══════════════════════════════════════════════════════════════

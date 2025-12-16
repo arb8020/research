@@ -19,7 +19,7 @@ Usage:
     python examples/rl/calculator/grpo_01_01.py --gpu-id runpod:abc123
 """
 
-from base_config import RLConfig, train, run_remote
+from base_config import RLConfig, run_remote, train
 
 # Base config - all defaults
 config = RLConfig()

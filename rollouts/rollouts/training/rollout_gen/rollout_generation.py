@@ -60,7 +60,9 @@ def generate_rollout_batches(
 
         # Call user-provided rollout function
         samples = config.generate_fn(prompts, **rollout_kwargs)
-        assert isinstance(samples, list), f"generate_fn must return list[Sample], got {type(samples)}"
+        assert isinstance(samples, list), (
+            f"generate_fn must return list[Sample], got {type(samples)}"
+        )
         assert len(samples) > 0, "generate_fn must return non-empty sample list"
 
         # Apply optional transforms (pure function)
@@ -127,8 +129,9 @@ def convert_to_batch(
     """
     # Tiger Style: Assert preconditions
     assert len(samples) > 0, "Cannot convert empty sample list to batch"
-    assert all(len(s.tokens) == len(s.loss_mask) for s in samples), \
+    assert all(len(s.tokens) == len(s.loss_mask) for s in samples), (
         "All samples must have matching token/loss_mask lengths"
+    )
 
     # Extract fields (pure function)
     tokens, loss_masks, rewards = extract_sample_fields(samples)
@@ -136,8 +139,9 @@ def convert_to_batch(
     metadata = build_batch_metadata(samples, epoch_id, step_id)
 
     # Tiger Style: Assert postconditions
-    assert len(tokens) == len(loss_masks) == len(rewards) == len(response_lengths), \
+    assert len(tokens) == len(loss_masks) == len(rewards) == len(response_lengths), (
         "All batch fields must have same length"
+    )
 
     return RolloutBatch(
         tokens=tokens,

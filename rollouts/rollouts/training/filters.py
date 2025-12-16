@@ -115,8 +115,9 @@ def check_response_diversity(samples: list[Sample], min_unique_ratio: float = 0.
         False  # 1 unique / 4 total = 25% < 50%
     """
     assert len(samples) > 0, "samples required"
-    assert 0.0 <= min_unique_ratio <= 1.0, \
+    assert 0.0 <= min_unique_ratio <= 1.0, (
         f"min_unique_ratio must be in [0,1], got {min_unique_ratio}"
+    )
 
     responses = [sample.response for sample in samples]
     unique_count = len(set(responses))
@@ -126,9 +127,7 @@ def check_response_diversity(samples: list[Sample], min_unique_ratio: float = 0.
 
 
 def check_reasonable_length(
-    samples: list[Sample],
-    min_tokens: int = 10,
-    max_tokens: int = 2048
+    samples: list[Sample], min_tokens: int = 10, max_tokens: int = 2048
 ) -> bool:
     """Keep if average response length is reasonable.
 
@@ -155,8 +154,9 @@ def check_reasonable_length(
     """
     assert len(samples) > 0, "samples required"
     assert min_tokens > 0, f"min_tokens must be positive, got {min_tokens}"
-    assert max_tokens >= min_tokens, \
+    assert max_tokens >= min_tokens, (
         f"max_tokens ({max_tokens}) must be >= min_tokens ({min_tokens})"
+    )
 
     total_tokens = sum(len(sample.tokens) for sample in samples)
     avg_length = total_tokens / len(samples)
@@ -220,9 +220,8 @@ def check_quality_and_diversity(samples: list[Sample]) -> bool:
         >>> check_quality_and_diversity(samples)
         False  # Has variance but NO diversity (same response)
     """
-    return (
-        check_reward_nonzero_std(samples)
-        and check_response_diversity(samples, min_unique_ratio=0.5)
+    return check_reward_nonzero_std(samples) and check_response_diversity(
+        samples, min_unique_ratio=0.5
     )
 
 
@@ -242,6 +241,7 @@ def make_threshold_filter(threshold: float) -> callable:
         >>> strict_filter = make_threshold_filter(0.8)
         >>> lenient_filter = make_threshold_filter(0.3)
     """
+
     def filter_fn(samples: list[Sample]) -> bool:
         return check_min_reward(samples, threshold=threshold)
 
@@ -262,6 +262,7 @@ def make_length_filter(min_tokens: int, max_tokens: int) -> callable:
         >>> short_filter = make_length_filter(5, 100)
         >>> long_filter = make_length_filter(100, 2048)
     """
+
     def filter_fn(samples: list[Sample]) -> bool:
         return check_reasonable_length(samples, min_tokens, max_tokens)
 

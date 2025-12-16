@@ -50,6 +50,7 @@ class MetricsLogger(Protocol):
 # JSONL Logger (Default, no dependencies)
 # ══════════════════════════════════════════════════════════════
 
+
 @dataclass
 class JSONLLogger:
     """JSONL metrics logger (default, no dependencies).
@@ -93,8 +94,9 @@ class JSONLLogger:
 
         # Tiger: Assert metric values are numeric
         for key, value in metrics.items():
-            assert isinstance(value, (int, float)), \
+            assert isinstance(value, (int, float)), (
                 f"Metric '{key}' must be numeric, got {type(value)}"
+            )
 
         # Tiger: Bounded - prevent unbounded growth
         if self._line_count >= self.max_lines:
@@ -125,6 +127,7 @@ class JSONLLogger:
 # W&B Logger (Optional, requires wandb package)
 # ══════════════════════════════════════════════════════════════
 
+
 @dataclass
 class WandbLogger:
     """Weights & Biases logger (optional, requires wandb package).
@@ -143,11 +146,10 @@ class WandbLogger:
     def __post_init__(self):
         try:
             import wandb
+
             self.wandb = wandb
         except ImportError:
-            raise ImportError(
-                "wandb not installed. Install with: pip install wandb"
-            )
+            raise ImportError("wandb not installed. Install with: pip install wandb")
 
         # Initialize W&B run
         self.run = self.wandb.init(
@@ -169,6 +171,7 @@ class WandbLogger:
 # ══════════════════════════════════════════════════════════════
 # Composite Logger (Casey: redundancy - multiple backends)
 # ══════════════════════════════════════════════════════════════
+
 
 @dataclass
 class CompositeLogger:
@@ -201,6 +204,7 @@ class CompositeLogger:
 # ══════════════════════════════════════════════════════════════
 # Helper: Compute statistics from JSONL (Casey: no retention)
 # ══════════════════════════════════════════════════════════════
+
 
 def compute_stats_from_jsonl(
     metrics_file: Path,
@@ -236,7 +240,7 @@ def compute_stats_from_jsonl(
 
     mean = sum(values) / len(values)
     variance = sum((x - mean) ** 2 for x in values) / len(values)
-    std = variance ** 0.5
+    std = variance**0.5
 
     return {
         "mean": mean,

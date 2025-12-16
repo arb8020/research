@@ -27,64 +27,84 @@ def __getattr__(name: str):
     # Backends (need torch)
     if name == "PyTorchTrainingBackend":
         from rollouts.training.backends import PyTorchTrainingBackend
+
         return PyTorchTrainingBackend
     if name == "TrainingBackend":
         from rollouts.training.backends.protocol import TrainingBackend
+
         return TrainingBackend
 
     # Training loops (need torch)
     if name == "run_sft_training":
         from rollouts.training.loops import run_sft_training
+
         return run_sft_training
     if name == "run_rl_training":
         from rollouts.training.loops import run_rl_training
+
         return run_rl_training
 
     # Datasets
     if name == "DataBuffer":
         from rollouts.training.datasets import DataBuffer
+
         return DataBuffer
     if name == "load_sft_dataset":
         from rollouts.training.datasets import load_sft_dataset
+
         return load_sft_dataset
 
     # Filters
     if name in (
-        "check_any_success", "check_min_reward", "check_quality_and_diversity",
-        "check_reasonable_length", "check_response_diversity", "check_reward_nonzero_std",
-        "make_length_filter", "make_threshold_filter",
+        "check_any_success",
+        "check_min_reward",
+        "check_quality_and_diversity",
+        "check_reasonable_length",
+        "check_response_diversity",
+        "check_reward_nonzero_std",
+        "make_length_filter",
+        "make_threshold_filter",
     ):
         from rollouts.training import filters
+
         return getattr(filters, name)
 
     # Metrics
     if name == "JSONLLogger":
         from rollouts.training.metrics import JSONLLogger
+
         return JSONLLogger
     if name == "MetricsLogger":
         from rollouts.training.metrics import MetricsLogger
+
         return MetricsLogger
 
     # Rollout generation
     if name == "AsyncRolloutManager":
         from rollouts.training.rollout_gen import AsyncRolloutManager
+
         return AsyncRolloutManager
     if name == "generate_rollout_batches":
         from rollouts.training.rollout_gen import generate_rollout_batches
+
         return generate_rollout_batches
 
     # Agent integration
     if name == "agent_rollout_to_sample":
         from rollouts.training.agent_integration import agent_rollout_to_sample
+
         return agent_rollout_to_sample
     if name == "generate_rollout_batch":
         from rollouts.training.agent_integration import generate_rollout_batch
+
         return generate_rollout_batch
     if name == "trajectory_to_sample":
         from rollouts.training.agent_integration import trajectory_to_sample
+
         return trajectory_to_sample
 
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     # Loops

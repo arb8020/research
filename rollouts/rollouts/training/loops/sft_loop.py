@@ -133,7 +133,7 @@ def collate_batch(
         batch_samples = samples[start_idx:end_idx]
     else:
         # Wrap around to beginning
-        batch_samples = samples[start_idx:] + samples[:end_idx - len(samples)]
+        batch_samples = samples[start_idx:] + samples[: end_idx - len(samples)]
 
     # Collate (pure function)
     return prepare_sft_batch(batch_samples)
@@ -193,5 +193,7 @@ def prepare_sft_batch(samples: list[Sample]) -> dict[str, Any]:
         "labels": torch.tensor(flat_tokens, dtype=torch.long).unsqueeze(0),  # [1, total_tokens]
         "loss_mask": torch.tensor(flat_masks, dtype=torch.float).unsqueeze(0),  # [1, total_tokens]
         "cu_seqlens": torch.tensor(cu_seqlens, dtype=torch.long),  # [batch_size + 1]
-        "position_ids": torch.tensor(flat_position_ids, dtype=torch.long).unsqueeze(0),  # [1, total_tokens]
+        "position_ids": torch.tensor(flat_position_ids, dtype=torch.long).unsqueeze(
+            0
+        ),  # [1, total_tokens]
     }

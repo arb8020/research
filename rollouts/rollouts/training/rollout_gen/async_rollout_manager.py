@@ -170,6 +170,7 @@ class AsyncRolloutManager:
         Returns:
             List of generated samples (len = len(prompts) * n_samples_per_prompt)
         """
+
         # Create tasks for parallel generation
         async def generate_for_prompt(prompt: str | dict[str, Any]) -> list[Sample]:
             """Generate n samples for a single prompt."""
@@ -287,9 +288,7 @@ class AsyncRolloutManager:
         self._step_count = state["step_count"]
 
         # Restore partial samples (SLIME feature!)
-        self.partial_samples = [
-            Sample.from_dict(s) for s in state.get("partial_samples", [])
-        ]
+        self.partial_samples = [Sample.from_dict(s) for s in state.get("partial_samples", [])]
 
 
 # ────────────────────── Convenience Function ──────────────────────

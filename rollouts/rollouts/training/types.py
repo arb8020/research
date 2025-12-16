@@ -7,7 +7,7 @@ Inspired by SLIME's Sample dataclass + Tinker's loss weights + Miles unified Sam
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Generic, TypeVar
 
 import trio
 
@@ -212,6 +212,7 @@ class RolloutConfig:
             >>> assert d["batch_size"] == 32
         """
         from dataclasses import asdict
+
         data = asdict(self)
         # Remove non-serializable functions
         data.pop("generate_fn", None)
@@ -288,6 +289,7 @@ class SFTTrainingConfig:
             >>> assert d["num_steps"] == 1000
         """
         from dataclasses import asdict
+
         return asdict(self)
 
     @staticmethod
@@ -347,6 +349,7 @@ class RLTrainingConfig:
             >>> assert d["num_steps"] == 1000
         """
         from dataclasses import asdict
+
         return asdict(self)
 
     @staticmethod
@@ -369,9 +372,11 @@ class RLTrainingConfig:
 
 # ────────────────────── Futures (Tinker) ──────────────────────
 
+T = TypeVar("T")
+
 
 @dataclass
-class TrainFuture[T]:
+class TrainFuture(Generic[T]):
     """Future for training operations (Tinker-inspired).
 
     Enables pipelining: submit work, wait later.
@@ -429,7 +434,7 @@ class TrainFuture[T]:
 
 
 @dataclass
-class ImmediateTrainFuture[T]:
+class ImmediateTrainFuture(Generic[T]):
     """Immediate future that's already completed (synchronous operations).
 
     For operations that complete immediately (like FSDP forward/backward),

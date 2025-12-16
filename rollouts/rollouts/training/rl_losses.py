@@ -45,7 +45,7 @@ def grpo_loss(
     batch_size, seq_len, vocab_size = logits.shape
     target_log_probs = log_probs.gather(
         dim=-1,
-        index=labels.unsqueeze(-1)  # [batch, seq_len, 1]
+        index=labels.unsqueeze(-1),  # [batch, seq_len, 1]
     ).squeeze(-1)  # [batch, seq_len]
 
     # Apply loss mask and sum over sequence
@@ -95,10 +95,7 @@ def ppo_loss(
 
     # Get log probs for target tokens
     batch_size, seq_len, vocab_size = logits.shape
-    target_log_probs = log_probs.gather(
-        dim=-1,
-        index=labels.unsqueeze(-1)
-    ).squeeze(-1)
+    target_log_probs = log_probs.gather(dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
 
     # Apply loss mask and average over sequence
     masked_log_probs = target_log_probs * loss_mask
