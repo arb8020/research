@@ -114,6 +114,7 @@ class RolloutManager:
         assert len(prompts) == self.config.batch_size, "Buffer must return requested batch size"
 
         # Call user-provided rollout function
+        assert self.config.generate_fn is not None, "generate_fn must be provided"
         samples = self.config.generate_fn(prompts, **self.rollout_kwargs)
         assert isinstance(samples, list), (
             f"generate_fn must return list[Sample], got {type(samples)}"

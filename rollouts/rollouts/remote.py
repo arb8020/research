@@ -69,7 +69,7 @@ def acquire_node(
     provider: str | None = None,
     container_disk_gb: int = 100,
     ssh_timeout: int = 600,
-) -> tuple["BifrostClient", "ClientGPUInstance | None"]:
+) -> tuple[BifrostClient, ClientGPUInstance | None]:
     """Acquire a node for remote execution.
 
     Three modes (mutually exclusive):
@@ -125,7 +125,7 @@ def acquire_node(
         assert instance, f"Instance not found: {node_id}"
 
         print(f"  GPU: {instance.gpu_count}x {instance.gpu_type}")
-        print(f"  Waiting for SSH...")
+        print("  Waiting for SSH...")
         instance.wait_until_ssh_ready(timeout=ssh_timeout)
 
         key_path = broker.get_ssh_key_path(node_provider)
@@ -164,7 +164,7 @@ def acquire_node(
         print(f"  Instance ID: {instance.provider}:{instance.id}")
         print(f"  GPU: {instance.gpu_count}x {instance.gpu_type}")
         print(f"  Price: ${instance.price_per_hour:.2f}/hr")
-        print(f"  Waiting for SSH...")
+        print("  Waiting for SSH...")
 
         if not instance.wait_until_ssh_ready(timeout=ssh_timeout):
             instance.terminate()
@@ -183,7 +183,7 @@ def acquire_node(
 
 
 def release_node(
-    instance: "ClientGPUInstance | None",
+    instance: ClientGPUInstance | None,
     keep_alive: bool = False,
 ) -> None:
     """Release a node after use.
@@ -246,7 +246,13 @@ def add_remote_args(parser) -> None:
     node_group.add_argument("--provision", action="store_true", help="Provision new instance")
 
     # Common options
-    parser.add_argument("--keep-alive", action="store_true", help="Don't terminate instance after completion")
-    parser.add_argument("--gpu-type", default="A100", help="GPU type for provisioning (default: A100)")
+    parser.add_argument(
+        "--keep-alive", action="store_true", help="Don't terminate instance after completion"
+    )
+    parser.add_argument(
+        "--gpu-type", default="A100", help="GPU type for provisioning (default: A100)"
+    )
     parser.add_argument("--gpu-count", type=int, default=1, help="Number of GPUs (default: 1)")
-    parser.add_argument("--provider", help="Cloud provider (runpod, lambdalabs, vast, primeintellect)")
+    parser.add_argument(
+        "--provider", help="Cloud provider (runpod, lambdalabs, vast, primeintellect)"
+    )

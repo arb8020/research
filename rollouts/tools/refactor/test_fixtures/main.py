@@ -1,12 +1,14 @@
 """Main module - entry point."""
+
 from .helpers import helper_function
 from .utils import format_output
-from .config import DEFAULT_TIMEOUT
+
 
 def main():
     result = helper_function(42)
     output = format_output(result)
     print(output)
+
 
 if __name__ == "__main__":
     main()

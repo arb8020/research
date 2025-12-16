@@ -13,8 +13,8 @@ import trio
 from rollouts import (
     Message,
     ToolCallContent,
-    transform_messages,
 )
+from rollouts.transform_messages import transform_messages
 
 
 @pytest.mark.trio

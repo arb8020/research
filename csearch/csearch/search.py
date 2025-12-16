@@ -1,7 +1,10 @@
 """Search functions - pure functions that return results."""
 
 from csearch.types import SearchOptions, SearchResult
-from csearch.backends.tree_sitter import search_definitions_tree_sitter, search_references_tree_sitter
+from csearch.backends.tree_sitter import (
+    search_definitions_tree_sitter,
+    search_references_tree_sitter,
+)
 from csearch.backends.ctags import search_definitions_ctags
 
 

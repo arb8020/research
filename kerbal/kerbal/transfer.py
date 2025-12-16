@@ -41,7 +41,7 @@ def push_code(
     Example:
         workspace = push_code(client, "dev/integration_training")
     """
-    assert bifrost is not None, "BifrostClient instance required"
+    assert client is not None, "BifrostClient instance required"
 
     logger.debug(f"pushing code from {local_path}...")
 
@@ -75,7 +75,7 @@ def sync_results(
     Example:
         sync_results(client, "results/exp_123", "./local_results")
     """
-    assert bifrost is not None, "BifrostClient instance required"
+    assert client is not None, "BifrostClient instance required"
     assert remote_path, "remote path required"
     assert local_path, "local path required"
 

@@ -5,14 +5,16 @@ Supports common datasets for SFT and RL training.
 """
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 try:
-    from datasets import load_dataset
+    from datasets import Dataset, load_dataset
 
     HAS_DATASETS = True
 except ImportError:
     HAS_DATASETS = False
+    Dataset = None  # type: ignore[misc,assignment]
+    load_dataset = None  # type: ignore[misc,assignment]
 
 from rollouts.training.types import Sample
 
@@ -78,6 +80,10 @@ def load_sft_dataset(
         dataset = load_dataset(dataset_name, subset, split=split)
     else:
         dataset = load_dataset(dataset_name, split=split)
+
+    # Narrow type - we expect a Dataset, not IterableDataset/DatasetDict
+    assert isinstance(dataset, Dataset), f"Expected Dataset, got {type(dataset)}"
+    dataset = cast(Dataset, dataset)
 
     if max_samples is not None:
         dataset = dataset.select(range(min(max_samples, len(dataset))))
@@ -255,6 +261,10 @@ def load_rl_prompts(
     # Load dataset
     dataset = load_dataset(dataset_name, split=split)
 
+    # Narrow type - we expect a Dataset, not IterableDataset/DatasetDict
+    assert isinstance(dataset, Dataset), f"Expected Dataset, got {type(dataset)}"
+    dataset = cast(Dataset, dataset)
+
     if max_prompts is not None:
         dataset = dataset.select(range(min(max_prompts, len(dataset))))
 
@@ -327,6 +337,10 @@ def load_dataset_with_answers(
     logger.info(f"Loading dataset with answers: {dataset_name} (split={split})")
 
     dataset = load_dataset(dataset_name, split=split)
+
+    # Narrow type - we expect a Dataset, not IterableDataset/DatasetDict
+    assert isinstance(dataset, Dataset), f"Expected Dataset, got {type(dataset)}"
+    dataset = cast(Dataset, dataset)
 
     if max_samples is not None:
         dataset = dataset.select(range(min(max_samples, len(dataset))))

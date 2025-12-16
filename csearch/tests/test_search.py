@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from csearch.types import Location, SearchResult, SearchOptions
+from csearch.types import Location, SearchResult
 
 
 def test_location_str():

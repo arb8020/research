@@ -29,8 +29,8 @@ from rollouts import (
     get_api_type,
     rollout,
     stdout_handler,
-    transform_messages,
 )
+from rollouts.transform_messages import transform_messages
 
 
 @pytest.mark.trio

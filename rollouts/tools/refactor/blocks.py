@@ -12,16 +12,18 @@ from pathlib import Path
 @dataclass
 class Block:
     """A block of non-empty lines."""
+
     id: int
     file: str
     content: str
     start_line: int  # 0-indexed
-    end_line: int    # exclusive
+    end_line: int  # exclusive
 
 
 @dataclass
 class BlockState:
     """State of all blocks across files."""
+
     blocks: list[Block]
     block_map: dict[int, Block]  # id -> Block
 
@@ -38,17 +40,17 @@ def split_into_blocks(content: str) -> list[tuple[str, int, int]]:
 
     Returns list of (block_content, start_line, end_line).
     """
-    lines = content.split('\n')
+    lines = content.split("\n")
     blocks = []
 
     current_block_lines = []
     current_start = 0
 
     for i, line in enumerate(lines):
-        if line.strip() == '':
+        if line.strip() == "":
             # Blank line - end current block if any
             if current_block_lines:
-                block_content = '\n'.join(current_block_lines)
+                block_content = "\n".join(current_block_lines)
                 blocks.append((block_content, current_start, i))
                 current_block_lines = []
         else:
@@ -59,7 +61,7 @@ def split_into_blocks(content: str) -> list[tuple[str, int, int]]:
 
     # Don't forget last block
     if current_block_lines:
-        block_content = '\n'.join(current_block_lines)
+        block_content = "\n".join(current_block_lines)
         blocks.append((block_content, current_start, len(lines)))
 
     return blocks
@@ -78,13 +80,15 @@ def build_block_state(context: dict[str, str]) -> BlockState:
         file_blocks = split_into_blocks(content)
 
         for block_content, start_line, end_line in file_blocks:
-            blocks.append(Block(
-                id=block_id,
-                file=file_path,
-                content=block_content,
-                start_line=start_line,
-                end_line=end_line,
-            ))
+            blocks.append(
+                Block(
+                    id=block_id,
+                    file=file_path,
+                    content=block_content,
+                    start_line=start_line,
+                    end_line=end_line,
+                )
+            )
             block_id += 1
 
     block_map = {b.id: b for b in blocks}
@@ -123,17 +127,17 @@ def format_blocks(block_state: BlockState, omit_ids: set[int] | None = None) -> 
         # File header
         if block.file != current_file:
             if current_file is not None:
-                lines.append('')  # Blank line between files
-            lines.append(f'./{block.file}:')
-            lines.append('')
+                lines.append("")  # Blank line between files
+            lines.append(f"./{block.file}:")
+            lines.append("")
             current_file = block.file
 
         # Block with ID marker
-        lines.append(f'!{block.id}')
+        lines.append(f"!{block.id}")
         lines.append(block.content)
-        lines.append('')
+        lines.append("")
 
-    return '\n'.join(lines)
+    return "\n".join(lines)
 
 
 def apply_block_patch(
@@ -158,14 +162,14 @@ def apply_block_patch(
     except OSError as e:
         return False, f"Failed to read {block.file}: {e}"
 
-    lines = full_content.split('\n')
+    lines = full_content.split("\n")
 
     # Replace the block's lines with new content
-    new_lines = new_content.split('\n')
-    result_lines = lines[:block.start_line] + new_lines + lines[block.end_line:]
+    new_lines = new_content.split("\n")
+    result_lines = lines[: block.start_line] + new_lines + lines[block.end_line :]
 
     try:
-        file_path.write_text('\n'.join(result_lines))
+        file_path.write_text("\n".join(result_lines))
     except OSError as e:
         return False, f"Failed to write {block.file}: {e}"
 

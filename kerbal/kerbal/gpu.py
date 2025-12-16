@@ -130,7 +130,7 @@ def wait_for_gpus(
         if not success:
             print(f"GPUs not available: {err}")
     """
-    assert bifrost is not None, "BifrostClient instance required"
+    assert client is not None, "BifrostClient instance required"
     assert gpu_ids, "gpu_ids list required"
     assert timeout_sec > 0, "timeout_sec must be positive"
     assert poll_interval_sec > 0, "poll_interval_sec must be positive"

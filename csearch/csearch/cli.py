@@ -121,7 +121,9 @@ def index(
             else:
                 typer.echo(f"  Ctags: {ctags_stats['tags']} tags")
         else:
-            typer.echo("  Ctags: not available (install universal-ctags for broader language support)")
+            typer.echo(
+                "  Ctags: not available (install universal-ctags for broader language support)"
+            )
 
 
 if __name__ == "__main__":

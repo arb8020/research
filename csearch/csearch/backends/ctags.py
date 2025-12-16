@@ -58,7 +58,8 @@ def build_ctags_index(root: Path) -> dict:
                 "ctags",
                 "-R",
                 "--fields=+n",  # include line numbers
-                "-f", str(tags_path),
+                "-f",
+                str(tags_path),
                 ".",  # use relative path from cwd
             ],
             capture_output=True,
@@ -126,12 +127,14 @@ def parse_tags_file(tags_path: Path, query: str) -> list[dict]:
                     # Single char kind like 'f' for function, 'c' for class
                     kind = expand_ctags_kind(part[0])
 
-            results.append({
-                "name": name,
-                "path": file_path,
-                "line": line_num,
-                "kind": kind,
-            })
+            results.append(
+                {
+                    "name": name,
+                    "path": file_path,
+                    "line": line_num,
+                    "kind": kind,
+                }
+            )
 
     return results
 
