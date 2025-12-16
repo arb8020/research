@@ -60,7 +60,7 @@ class DatasetConfig:
 class ModelConfig:
     """Model configuration."""
 
-    name: str = "Qwen/Qwen2.5-0.5B-Instruct"
+    name: str = "Qwen/Qwen3-0.6B"
     dtype: str = "bfloat16"
 
 
