@@ -677,6 +677,11 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
                 }
                 metrics_history.append(step_metrics)
 
+                # Emit structured metrics for TUI sparklines
+                # Using a dedicated "metrics" logger so TUI can route to metrics pane
+                metrics_logger = logging.getLogger("metrics")
+                metrics_logger.info("metrics", extra=step_metrics)
+
                 if (step + 1) % config.log_every == 0:
                     # Log with more informative metrics
                     pg_loss = accumulated_metrics.get("pg_loss", loss)
