@@ -396,6 +396,33 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
     logger.info(f"  Started SGLang in tmux session '{tmux_session}'")
     logger.info(f"  To attach: tmux attach -t {tmux_session}")
 
+    # Start tailing SGLang log immediately (so we see startup logs in TUI)
+    import threading
+
+    def tail_sglang_log():
+        """Tail SGLang log and emit as JSONL."""
+        try:
+            # Wait for log file to exist
+            for _ in range(30):
+                if sglang_log.exists():
+                    break
+                time.sleep(0.1)
+
+            with open(sglang_log) as f:
+                while True:
+                    line = f.readline()
+                    if line:
+                        line = line.strip()
+                        if line:
+                            print(json.dumps({"logger": "sglang", "message": line}), flush=True)
+                    else:
+                        time.sleep(0.1)
+        except Exception:
+            pass  # File closed or thread killed
+
+    sglang_tailer = threading.Thread(target=tail_sglang_log, daemon=True)
+    sglang_tailer.start()
+
     # Wait for server to be ready
     health_url = f"http://localhost:{inference_port}/health"
     server_ready = False
@@ -427,29 +454,6 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
         raise RuntimeError("SGLang server failed to start within 2 minutes")
 
     logger.info(f"SGLang ready at http://localhost:{inference_port}")
-
-    # Start tailing SGLang log in background (emits JSONL for TUI)
-    import threading
-
-    def tail_sglang_log():
-        """Tail SGLang log and emit as JSONL."""
-        try:
-            with open(sglang_log) as f:
-                # Start from end of file (don't replay startup logs)
-                f.seek(0, 2)
-                while True:
-                    line = f.readline()
-                    if line:
-                        line = line.strip()
-                        if line:
-                            print(json.dumps({"logger": "sglang", "message": line}), flush=True)
-                    else:
-                        time.sleep(0.1)
-        except Exception:
-            pass  # File closed or thread killed
-
-    sglang_tailer = threading.Thread(target=tail_sglang_log, daemon=True)
-    sglang_tailer.start()
 
     try:
         # ─────────────────────────────────────────────────────────────────────
