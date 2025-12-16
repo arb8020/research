@@ -16,7 +16,7 @@ from typing import Any
 
 import trio
 
-from rollouts.agents import Actor, AgentState, RunConfig, run_agent
+from rollouts.agents import Actor, AgentState, RunConfig, handle_stop_max_turns, run_agent
 from rollouts.dtypes import Endpoint, Message, Trajectory
 from rollouts.training.types import Sample
 
@@ -80,11 +80,10 @@ async def agent_rollout_to_sample(
     state = AgentState(
         actor=actor,
         environment=environment,
-        max_turns=max_turns,
     )
 
     # 5. Run agent (multi-turn execution with tools!)
-    run_config = _silent_run_config()
+    run_config = _silent_run_config(max_turns=max_turns)
     states = await run_agent(state, run_config)
     final_state = states[-1]
 
@@ -337,17 +336,23 @@ def _msg_to_dict(msg: Message) -> dict[str, Any]:
     }
 
 
-def _silent_run_config() -> RunConfig:
+def _silent_run_config(max_turns: int = 10) -> RunConfig:
     """Create silent RunConfig for training (no stdout spam).
 
     Based on clicker pattern - don't print during training loops.
 
+    Args:
+        max_turns: Maximum number of agent turns before stopping
+
     Returns:
-        RunConfig with no-op chunk handler
+        RunConfig with no-op chunk handler and max_turns stop handler
     """
 
     async def noop_chunk(chunk):
         """No-op chunk handler (silent mode)."""
         pass
 
-    return RunConfig(on_chunk=noop_chunk)
+    return RunConfig(
+        on_chunk=noop_chunk,
+        handle_stop=handle_stop_max_turns(max_turns),
+    )
