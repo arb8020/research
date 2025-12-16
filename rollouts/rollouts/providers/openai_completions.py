@@ -60,8 +60,10 @@ def _message_to_openai(m: Message) -> ChatCompletionMessageParam:
 
     # Validate message content - catch empty messages early
     # Tiger Style: Use assertions for programmer errors (bugs in our code)
+    # Note: assistant messages can have empty content if tool calls failed to parse
     tool_calls = m.get_tool_calls()
-    if not m.content and not tool_calls and m.role != "tool":
+    if not m.content and not tool_calls and m.role == "user":
+        # Only crash on empty user messages - that's definitely a bug
         logger.error(f"❌ Empty message content detected! Role: {m.role}")
         logger.error("   This usually means prepare_messages() is using the wrong dataset field.")
         logger.error(f"   Message object: {m}")
@@ -70,6 +72,11 @@ def _message_to_openai(m: Message) -> ChatCompletionMessageParam:
             f"Check that prepare_messages() is using the correct dataset field name. "
             f"Common issue: using 'prompt' when dataset has 'problem_description'."
         )
+    elif not m.content and not tool_calls and m.role == "assistant":
+        # Empty assistant message - likely from failed tool call parsing
+        # Add placeholder to prevent downstream errors
+        logger.warning(f"Empty assistant message detected - adding placeholder")
+        m = Message(role="assistant", content="[No response generated]")
 
     msg: dict[str, Any] = {"role": m.role}
 
