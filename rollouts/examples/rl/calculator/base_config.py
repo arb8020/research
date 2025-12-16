@@ -309,8 +309,15 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
     from rollouts.training.types import RolloutConfig
     from rollouts.training.weight_sync import SGLangEngine, sync_weights_to_engines
 
-    # Setup logging
-    setup_logging(level="INFO", use_color=True)
+    # Setup logging (suppress noisy HTTP client logs)
+    setup_logging(
+        level="INFO",
+        use_color=True,
+        logger_levels={
+            "httpx": "WARNING",
+            "httpcore": "WARNING",
+        },
+    )
     logger = logging.getLogger(__name__)
 
     logger.info("=" * 60)
