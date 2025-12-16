@@ -343,6 +343,7 @@ async def _train_async(config: RLConfig) -> list[dict[str, Any]]:
         "--host", "0.0.0.0",
         "--port", str(inference_port),
         "--trust-remote-code",
+        "--tool-call-parser", "qwen25",  # Enable function calling for Qwen2.5
     ]
 
     # Multi-GPU: add tensor parallel size if more than 1 GPU
