@@ -315,6 +315,8 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
 
                 if "moe_in" in moe_captures:
                     hf_intermediates[f"moe_{i}_input"] = moe_captures["moe_in"].cpu()
+                if "gate_in" in moe_captures:
+                    hf_intermediates[f"gate_{i}_input"] = moe_captures["gate_in"].cpu()
                 if "gate_out" in moe_captures:
                     gate_out = moe_captures["gate_out"]
                     if isinstance(gate_out, tuple):
@@ -412,6 +414,15 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
                         bias_key = f"{prefix}.gate.e_score_correction_bias"
                         print(f"      e_score_correction_bias shape: {weights_gpu[bias_key].shape}")
                         print(f"      e_score_correction_bias sample: {weights_gpu[bias_key][:5].tolist()}")
+                        print(f"      hf_moe_input shape: {hf_moe_input.shape}")
+                        print(f"      hf_moe_input sample: {hf_moe_input[0, 0, :5].tolist()}")
+                        # Also check gate_input if captured
+                        if f"gate_{i}_input" in hf_intermediates:
+                            gate_in = hf_intermediates[f"gate_{i}_input"].cuda()
+                            print(f"      gate_input shape: {gate_in.shape}")
+                            print(f"      gate_input sample: {gate_in[0, :5].tolist()}")  # gate_in is already flattened
+                            moe_vs_gate_diff = (hf_moe_input.view(-1, hf_moe_input.shape[-1]) - gate_in).abs().max().item()
+                            print(f"      moe_in vs gate_in diff: {moe_vs_gate_diff:.2e}")
                         func_topk_idx, func_topk_weights = moe_router(
                             hf_moe_input.view(-1, hf_moe_input.shape[-1]),
                             router_weight=weights_gpu[f"{prefix}.gate.weight"],
