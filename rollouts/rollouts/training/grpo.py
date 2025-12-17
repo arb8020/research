@@ -96,7 +96,7 @@ def grpo_train(
     config: GRPOConfig,
     prompts: list[dict[str, Any]],
     score_fn: Callable[[Sample], Score],
-    environment_cls: type[Environment],
+    environment_cls: "type[Environment]",
     metadata_key: str | None = None,
 ) -> dict[str, Any]:
     """Run GRPO training.
@@ -132,7 +132,7 @@ async def _grpo_train_async(
     config: GRPOConfig,
     prompts: list[dict[str, Any]],
     score_fn: Callable[[Sample], Score],
-    environment_cls: type[Environment],
+    environment_cls: "type[Environment]",
     metadata_key: str | None = None,
 ) -> dict[str, Any]:
     """Async GRPO training implementation."""
