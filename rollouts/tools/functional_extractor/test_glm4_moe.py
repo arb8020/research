@@ -118,6 +118,29 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = False) -> None:  # n
 
     print(f"HF model ready with {num_layers} layers (original: {original_num_layers})")
 
+    # Capture layer-by-layer outputs from HF if debugging
+    hf_intermediates = {}
+    if layer_by_layer:
+        print("Capturing HF layer outputs...")
+        # Capture embedding
+        hf_intermediates["embed"] = model.model.embed_tokens(input_ids.cuda()).cpu()
+
+        # Capture each layer output
+        hidden = hf_intermediates["embed"].cuda()
+        # Need position embeddings for RoPE
+        from glm4_moe_functional import compute_rope_embeddings
+        positions = torch.arange(input_ids.shape[1], device="cuda").unsqueeze(0)
+        cos, sin = compute_rope_embeddings(positions, dtype=hidden.dtype)
+
+        for i in range(num_layers):
+            layer_out = model.model.layers[i](hidden, position_embeddings=(cos, sin))
+            hidden = layer_out[0] if isinstance(layer_out, tuple) else layer_out
+            hf_intermediates[f"layer_{i}"] = hidden.cpu()
+            print(f"  Layer {i}: {hidden.shape}, sample={hidden[0,0,:3].tolist()}")
+
+        # Capture final norm
+        hf_intermediates["norm"] = model.model.norm(hidden).cpu()
+
     with torch.no_grad():
         hf_logits = model(input_ids.cuda()).logits.cpu()  # Save to CPU
 
@@ -136,6 +159,44 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = False) -> None:  # n
     weights_gpu = {k: v.cuda() for k, v in weights_cpu.items()}
     del weights_cpu
     gc.collect()
+
+    # Layer-by-layer comparison if debugging
+    if layer_by_layer and hf_intermediates:
+        import torch.nn.functional as F
+        from glm4_moe_functional import (
+            compute_rope_embeddings,
+            rms_norm,
+            transformer_layer,
+        )
+
+        print("\nComparing layer-by-layer...")
+
+        # Compare embeddings
+        func_embed = F.embedding(input_ids.cuda(), weights_gpu["model.embed_tokens.weight"])
+        embed_diff = (hf_intermediates["embed"].cuda() - func_embed).abs().max().item()
+        print(f"  Embeddings: max_diff={embed_diff:.2e} [{'PASS' if embed_diff < 1e-4 else 'FAIL'}]")
+
+        if embed_diff >= 1e-4:
+            print("    STOPPING: Embeddings diverged")
+        else:
+            # Compare each layer
+            hidden = func_embed
+            positions = torch.arange(input_ids.shape[1], device="cuda").unsqueeze(0)
+            cos, sin = compute_rope_embeddings(positions, dtype=hidden.dtype)
+
+            for i in range(num_layers):
+                hidden = transformer_layer(hidden, weights_gpu, i, cos, sin)
+                hf_hidden = hf_intermediates[f"layer_{i}"].cuda()
+                layer_diff = (hf_hidden - hidden).abs().max().item()
+                layer_type = "dense" if i < FIRST_K_DENSE_REPLACE else "MoE"
+                status = "PASS" if layer_diff < 1e-4 else "FAIL"
+                print(f"  Layer {i} ({layer_type}): max_diff={layer_diff:.2e} [{status}]")
+
+                if layer_diff >= 1e-4:
+                    print(f"    STOPPING: Layer {i} diverged")
+                    print(f"    HF sample: {hf_hidden[0,0,:5].tolist()}")
+                    print(f"    Func sample: {hidden[0,0,:5].tolist()}")
+                    break
 
     with torch.no_grad():
         func_logits = glm4_moe_forward(input_ids.cuda(), weights_gpu, num_layers=num_layers).cpu()
