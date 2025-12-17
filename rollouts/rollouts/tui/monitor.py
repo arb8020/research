@@ -161,6 +161,23 @@ class TrainingMonitor:
         else:
             return "training"
 
+    def feed_line(self, raw: str) -> None:
+        """Feed a single line to the monitor (for use with kerbal callback).
+
+        Casey: Continuous granularity - can be called from external streaming.
+
+        Args:
+            raw: Raw log line (JSONL or plain text)
+        """
+        if not raw.strip():
+            return
+
+        log_line = self.parse_jsonl_line(raw.strip())
+        if log_line:
+            pane_name = self.route_log_line(log_line)
+            self.panes[pane_name].add_line(log_line)
+            self._needs_redraw = True
+
     def parse_jsonl_line(self, raw: str) -> LogLine | None:
         """Parse a JSONL line into LogLine."""
         try:

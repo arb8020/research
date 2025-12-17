@@ -134,11 +134,59 @@ def run_remote(
             if not success:
                 print(f"Training failed: {err} (exit code: {exit_code})")
         elif use_tui:
-            # TODO: integrate with TUI monitor
-            # For now, fall back to raw streaming
-            print("-" * 50)
-            success, exit_code, err = stream_log_until_complete(bifrost, monitor_config)
-            print("-" * 50)
+            # Route output through TUI monitor
+            import threading
+            import time
+
+            from rollouts.tui.monitor import TrainingMonitor
+
+            monitor = TrainingMonitor()
+            lines_queue: list[str] = []
+            streaming_done = threading.Event()
+            stream_result: tuple[bool, int | None, str | None] = (False, None, None)
+
+            def collect_lines():
+                """Stream logs in background, queue lines for TUI."""
+                nonlocal stream_result
+
+                def queue_line(line: str):
+                    lines_queue.append(line)
+
+                stream_result = stream_log_until_complete(
+                    bifrost, monitor_config, on_line=queue_line
+                )
+                streaming_done.set()
+
+            # Start streaming in background thread
+            collector = threading.Thread(target=collect_lines, daemon=True)
+            collector.start()
+
+            # Run TUI with line feeding (main thread)
+            monitor._running = True
+            monitor.terminal.start(on_input=lambda x: None, on_resize=monitor._on_resize)
+
+            try:
+                while monitor._running and not streaming_done.is_set():
+                    # Feed queued lines to monitor
+                    while lines_queue:
+                        raw_line = lines_queue.pop(0)
+                        monitor.feed_line(raw_line)
+
+                    # Handle keyboard input
+                    data = monitor.terminal.read_input()
+                    if data:
+                        monitor._handle_input(data)
+
+                    # Render if needed
+                    if monitor._needs_redraw:
+                        monitor._render()
+                        monitor._needs_redraw = False
+
+                    time.sleep(0.05)
+            finally:
+                monitor.terminal.stop()
+
+            success, exit_code, err = stream_result
             if not success:
                 print(f"Training failed: {err} (exit code: {exit_code})")
         else:
