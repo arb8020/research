@@ -1,54 +1,28 @@
-#!/usr/bin/env python3
-"""Calculator GRPO - Base config.
+"""Calculator GRPO baseline experiment.
 
-Naming: grpo_01_01.py
-- grpo: GRPO algorithm
-- 01: experiment ID
-- 01: parent ID (self = base config)
-
-10 steps, small batch. Integration test for RL loop.
-
-Usage:
-    # Local (requires CUDA + inference server running)
+Run with:
     python examples/rl/calculator/grpo_01_01.py
-
-    # Remote (provisions GPU automatically)
-    python examples/rl/calculator/grpo_01_01.py --remote
-
-    # Reuse existing GPU
-    python examples/rl/calculator/grpo_01_01.py --gpu-id runpod:abc123
 """
 
-from base_config import InferenceConfig, RLConfig, TrainerConfig, run_remote, train
+from examples.rl.calculator.base_config import train
 
-# 2-GPU config: GPU 0 for inference, GPU 1 for training
-config = RLConfig(
-    inference=InferenceConfig(gpu_ids=(0,)),
-    trainer=TrainerConfig(gpu_ids=(1,)),
+from rollouts.training.grpo import GRPOConfig
+
+# Calculator GRPO config
+config = GRPOConfig(
+    experiment_name="calculator_grpo_01",
+    model_name="Qwen/Qwen3-0.6B",
+    num_steps=10,
+    checkpoint_every=5,
+    batch_size=4,
+    n_samples_per_prompt=4,
+    temperature=0.7,
+    lr=1e-5,
+    max_seq_len=2048,
+    max_tokens=512,
+    max_turns=10,  # Multi-turn for tool use
 )
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Calculator GRPO training")
-    parser.add_argument("--remote", action="store_true", help="Run on remote GPU")
-    parser.add_argument("--keep-alive", action="store_true", help="Keep GPU after completion")
-    parser.add_argument("--gpu-id", type=str, help="Reuse existing GPU instance ID")
-    parser.add_argument("--tui", action="store_true", help="Show TUI monitor for logs")
-    parser.add_argument("--tui-debug", action="store_true", help="Print raw JSONL (debug TUI input)")
-    args = parser.parse_args()
-
-    if args.remote or args.gpu_id:
-        run_remote(
-            __file__,
-            keep_alive=args.keep_alive,
-            gpu_id=args.gpu_id,
-            use_tui=args.tui,
-            tui_debug=args.tui_debug,
-        )
-    else:
-        metrics = train(config)
-        if metrics:
-            # Basic sanity check: training should produce some reward signal
-            print(f"\nFinal mean_reward: {metrics[-1]['mean_reward']:.3f}")
-            print("PASSED" if len(metrics) == config.num_steps else "INCOMPLETE")
+    results = train(config=config, max_samples=12)
+    print(f"Training complete. {len(results.get('metrics_history', []))} steps")
