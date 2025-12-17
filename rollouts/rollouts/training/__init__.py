@@ -119,6 +119,16 @@ def __getattr__(name: str):
 
         return getattr(losses, name)
 
+    # GRPO training
+    if name == "GRPOConfig":
+        from rollouts.training.grpo import GRPOConfig
+
+        return GRPOConfig
+    if name == "grpo_train":
+        from rollouts.training.grpo import grpo_train
+
+        return grpo_train
+
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -168,4 +178,7 @@ __all__ = [
     "ppo_loss",
     "LossOutput",
     "compute_group_advantages",
+    # GRPO training
+    "GRPOConfig",
+    "grpo_train",
 ]

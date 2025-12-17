@@ -1,5 +1,8 @@
 https://mariozechner.at/posts/2025-11-30-pi-coding-agent/#toc_3
 
+https://github.com/letta-ai/letta-code.git
+
+[ ] tui mode for training job has hella lag on sglang pane
 
 [x] context handoff
 [x] aborts

@@ -12,7 +12,7 @@ Tiger Style: Pure functions, explicit transformations, all parameters visible.
 Casey Muratori: Both high-level (coarse) and low-level (fine) APIs.
 """
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import trio
 
@@ -26,6 +26,9 @@ from rollouts.dtypes import (
     Trajectory,
 )
 from rollouts.training.types import Sample, Status
+
+if TYPE_CHECKING:
+    from rollouts.dtypes import Environment
 
 
 def _content_to_str(content: str | list | None) -> str:
@@ -64,12 +67,13 @@ def _content_to_str(content: str | list | None) -> str:
     else:
         return ""
 
+
 # ──────────────────────── High-Level API (Coarse-Grained) ────────────────────
 
 
 async def agent_rollout_to_sample(
-    prompt: str,
-    environment_cls,  # User's Environment class (e.g., CalculatorEnvironment)
+    prompt: str | list[dict[str, str]],
+    environment_cls: type[Environment],
     endpoint: Endpoint,
     tokenizer: Any,  # HuggingFace tokenizer
     max_turns: int = 10,
@@ -80,8 +84,9 @@ async def agent_rollout_to_sample(
     Based on clicker/run_rollouts.py:46-120 pattern.
 
     Args:
-        prompt: Initial user message
-        environment_cls: Environment class to instantiate
+        prompt: Either a string (becomes user message) or list of message dicts
+                [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}]
+        environment_cls: Environment class to instantiate (e.g., CalculatorEnvironment, BasicEnvironment)
         endpoint: LLM endpoint (provider, model, etc.)
         tokenizer: HuggingFace tokenizer for building loss_mask
         max_turns: Max agent turns
@@ -90,19 +95,27 @@ async def agent_rollout_to_sample(
     Returns:
         Sample with loss_mask (1.0 for assistant, 0.0 for tool/user)
 
-    Example:
+    Example (string prompt):
         >>> from rollouts.environments.calculator import CalculatorEnvironment
-        >>> from rollouts.dtypes import Endpoint
-        >>>
-        >>> endpoint = Endpoint(provider="sglang", model="Qwen/Qwen2.5-7B-Instruct")
         >>> sample = await agent_rollout_to_sample(
         ...     prompt="What is 5 + 3?",
         ...     environment_cls=CalculatorEnvironment,
         ...     endpoint=endpoint,
         ...     tokenizer=my_tokenizer,
-        ...     max_turns=10,
         ... )
-        >>> assert sample.loss_mask  # Has per-token weights
+
+    Example (messages with system prompt):
+        >>> from rollouts.environments.no_tools import BasicEnvironment
+        >>> messages = [
+        ...     {"role": "system", "content": "You are a math tutor."},
+        ...     {"role": "user", "content": "What is 5 + 3?"},
+        ... ]
+        >>> sample = await agent_rollout_to_sample(
+        ...     prompt=messages,
+        ...     environment_cls=BasicEnvironment,
+        ...     endpoint=endpoint,
+        ...     tokenizer=my_tokenizer,
+        ... )
     """
     assert prompt, "prompt required"
     assert environment_cls is not None, "environment_cls required"
@@ -110,9 +123,13 @@ async def agent_rollout_to_sample(
     assert tokenizer is not None, "tokenizer required"
     assert max_turns > 0, f"max_turns must be positive, got {max_turns}"
 
-    # 1. Create initial trajectory (clicker pattern)
-    initial_message = Message(role="user", content=prompt)
-    trajectory = Trajectory(messages=[initial_message])
+    # 1. Create initial trajectory from prompt (string or messages)
+    if isinstance(prompt, str):
+        initial_messages = [Message(role="user", content=prompt)]
+    else:
+        # Convert list of dicts to Message objects
+        initial_messages = [Message(role=m["role"], content=m["content"]) for m in prompt]
+    trajectory = Trajectory(messages=initial_messages)
 
     # 2. Create actor
     actor = Actor(trajectory=trajectory, endpoint=endpoint)
@@ -139,7 +156,6 @@ async def agent_rollout_to_sample(
     )
 
     # Tiger Style: Assert invariants
-    assert sample.prompt == prompt, "prompt should match"
     assert len(sample.loss_mask) == len(sample.tokens), "loss_mask must match tokens"
     assert sample.response, "response should not be empty after agent execution"
 
@@ -148,7 +164,7 @@ async def agent_rollout_to_sample(
 
 async def generate_rollout_batch(
     prompts: list[str],
-    environment_cls,
+    environment_cls: type[Environment],
     endpoint: Endpoint,
     tokenizer: Any,
     max_turns: int = 10,
@@ -261,10 +277,26 @@ def trajectory_to_sample(
     assert tokenizer is not None, "tokenizer required"
     assert len(trajectory.messages) > 0, "trajectory has no messages"
 
-    # Extract prompt (first user message)
-    prompt_msg = trajectory.messages[0]
-    assert prompt_msg.role == "user", f"first message should be user, got {prompt_msg.role}"
-    prompt = _content_to_str(prompt_msg.content)
+    # Extract prompt (all messages before first assistant response)
+    # This handles both simple "user" prompts and "system + user" prompts
+    prompt_messages = []
+    for msg in trajectory.messages:
+        if msg.role == "assistant":
+            break
+        prompt_messages.append(msg)
+
+    assert len(prompt_messages) > 0, "trajectory must have at least one prompt message"
+
+    # For backwards compatibility, if single user message, return as string
+    # Otherwise return the full prompt messages as string (applied chat template)
+    if len(prompt_messages) == 1 and prompt_messages[0].role == "user":
+        prompt = _content_to_str(prompt_messages[0].content)
+    else:
+        prompt = tokenizer.apply_chat_template(
+            [_msg_to_dict(m) for m in prompt_messages],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
 
     # Apply chat template to full trajectory (HuggingFace format)
     full_text = tokenizer.apply_chat_template(
@@ -283,8 +315,8 @@ def trajectory_to_sample(
         tokenizer=tokenizer,
     )
 
-    # Extract response (everything after initial prompt)
-    response_messages = trajectory.messages[1:]
+    # Extract response (everything after prompt messages)
+    response_messages = trajectory.messages[len(prompt_messages) :]
     response = (
         tokenizer.apply_chat_template(
             [_msg_to_dict(m) for m in response_messages],
