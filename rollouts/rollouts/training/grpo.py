@@ -225,6 +225,7 @@ async def _grpo_train_async(
         # 2. Setup training backend
         # ─────────────────────────────────────────────────────────────────────
         gpu_rank = config.trainer_gpu_ids[0]
+        device = f"cuda:{gpu_rank}"
         backend = create_pytorch_backend(
             model_name=config.model_name,
             checkpoint_dir=output_dir,
