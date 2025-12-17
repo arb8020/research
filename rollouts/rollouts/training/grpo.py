@@ -50,6 +50,7 @@ class GRPOConfig:
     dtype: str = "bfloat16"
 
     # Inference server
+    inference_backend: str = "sglang"  # "sglang" or "vllm"
     inference_port: int = 30000
     inference_gpu_ids: tuple[int, ...] = (0,)
     mem_fraction: float = 0.7
@@ -135,10 +136,8 @@ async def _grpo_train_async(
     metadata_key: str | None = None,
 ) -> dict[str, Any]:
     """Async GRPO training implementation."""
-    import subprocess
     from datetime import datetime, timezone
 
-    import httpx
     import torch
 
     from rollouts._logging import setup_logging
@@ -149,7 +148,7 @@ async def _grpo_train_async(
     from rollouts.training.losses import compute_group_advantages, grpo_loss
     from rollouts.training.rollout_gen.async_rollout_manager import AsyncRolloutManager
     from rollouts.training.types import RolloutConfig
-    from rollouts.training.weight_sync import SGLangEngine
+    from rollouts.training.weight_sync import SGLangEngine, VLLMEngine
 
     # Setup logging
     setup_logging(
@@ -169,6 +168,7 @@ async def _grpo_train_async(
     logger.info(f"GRPO Training: {run_name}")
     logger.info("=" * 60)
     logger.info(f"Model: {config.model_name}")
+    logger.info(f"Backend: {config.inference_backend}")
     logger.info(f"Steps: {config.num_steps}")
     logger.info(f"Batch: {config.batch_size} prompts x {config.n_samples_per_prompt} samples")
     logger.info(f"Output: {output_dir}")
@@ -176,41 +176,40 @@ async def _grpo_train_async(
     config.save(output_dir / "config.json")
 
     # ─────────────────────────────────────────────────────────────────────────
-    # 1. Launch inference server (SGLang)
+    # 1. Launch inference server (SGLang or vLLM)
     # ─────────────────────────────────────────────────────────────────────────
-    inference_port = config.inference_port
+    if config.inference_backend == "sglang":
+        inference_engine = SGLangEngine(
+            model_name=config.model_name,
+            port=config.inference_port,
+            gpu_ids=config.inference_gpu_ids,
+            output_dir=output_dir,
+            dtype=config.dtype,
+            mem_fraction=config.mem_fraction,
+        )
+    elif config.inference_backend == "vllm":
+        inference_engine = VLLMEngine(
+            model_name=config.model_name,
+            port=config.inference_port,
+            gpu_ids=config.inference_gpu_ids,
+            output_dir=output_dir,
+            dtype=config.dtype,
+            gpu_memory_utilization=config.mem_fraction,
+        )
+    else:
+        msg = f"Unknown inference backend: {config.inference_backend}"
+        raise ValueError(msg)
+
     gpu_str = ",".join(str(g) for g in config.inference_gpu_ids)
-    sglang_log = output_dir / "sglang.log"
+    logger.info(f"Launching {inference_engine.name} on GPU {gpu_str}...")
 
-    sglang_cmd = (
-        f"CUDA_VISIBLE_DEVICES={gpu_str} "
-        f"python -m sglang.launch_server "
-        f"--model-path {config.model_name} "
-        f"--port {inference_port} "
-        f"--dtype {config.dtype} "
-        f"--mem-fraction-static {config.mem_fraction} "
-        f">> {sglang_log} 2>&1"
-    )
-
-    logger.info(f"Launching SGLang on GPU {gpu_str}...")
-    sglang_proc = subprocess.Popen(sglang_cmd, shell=True, start_new_session=True)
-
-    # Wait for server
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        for attempt in range(120):
-            try:
-                resp = await client.get(f"http://localhost:{inference_port}/health")
-                if resp.status_code == 200:
-                    logger.info(f"SGLang ready after {attempt + 1}s")
-                    break
-            except Exception:
-                pass
-            await trio.sleep(1.0)
-        else:
-            sglang_proc.terminate()
-            raise RuntimeError(f"SGLang failed to start. Check {sglang_log}")
+    inference_proc = inference_engine.launch()
+    inference_engine.start_log_tailer()  # Emit JSONL to stdout for TUI
 
     try:
+        await inference_engine.wait_until_ready()
+        logger.info(f"{inference_engine.name} ready")
+
         # ─────────────────────────────────────────────────────────────────────
         # 2. Setup training backend
         # ─────────────────────────────────────────────────────────────────────
@@ -230,7 +229,7 @@ async def _grpo_train_async(
         endpoint = Endpoint(
             provider="openai",
             model=config.model_name,
-            api_base=f"http://localhost:{inference_port}/v1",
+            api_base=inference_engine.api_base,
             temperature=config.temperature,
             max_tokens=config.max_tokens,
         )
@@ -276,8 +275,6 @@ async def _grpo_train_async(
             generate_fn=generate_fn,
             score_fn=score_fn,
         )
-
-        inference_engine = SGLangEngine(base_url=f"http://localhost:{inference_port}")
 
         # ─────────────────────────────────────────────────────────────────────
         # 4. Training loop
@@ -397,8 +394,8 @@ async def _grpo_train_async(
                     backend.save_checkpoint(ckpt_dir)
                     logger.info(f"Saved checkpoint: {ckpt_dir}")
 
-                    logger.info("Syncing weights to SGLang...")
-                    await inference_engine.update_weights_from_disk(str(ckpt_dir))
+                    logger.info(f"Syncing weights to {inference_engine.name}...")
+                    await inference_engine.update_weights_from_checkpoint(str(ckpt_dir))
                     logger.info("Weight sync complete")
 
         # Final summary
@@ -417,6 +414,6 @@ async def _grpo_train_async(
         return {"metrics_history": metrics_history}
 
     finally:
-        logger.info("Shutting down SGLang...")
-        sglang_proc.terminate()
-        logger.info(f"Logs: {sglang_log}")
+        logger.info(f"Shutting down {inference_engine.name}...")
+        inference_engine.shutdown(inference_proc)
+        logger.info(f"Logs: {inference_engine.log_path}")
