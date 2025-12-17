@@ -432,6 +432,10 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
                             if not same_experts:
                                 print(f"        HF experts: {hf_topk_idx[0].tolist()}")
                                 print(f"        Func experts: {func_topk_idx[0].tolist()}")
+                                # Debug: check bias at those indices
+                                bias = weights_gpu[bias_key]
+                                print(f"        Bias at HF experts: {[bias[idx].item() for idx in hf_topk_idx[0].tolist()]}")
+                                print(f"        Bias at Func experts: {[bias[idx].item() for idx in func_topk_idx[0].tolist()]}")
 
                             # Compare routing weights
                             weight_diff = (hf_topk_weights - func_topk_weights).abs().max().item()
