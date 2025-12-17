@@ -73,7 +73,7 @@ def _content_to_str(content: str | list | None) -> str:
 
 async def agent_rollout_to_sample(
     prompt: str | list[dict[str, str]],
-    environment_cls: type[Environment],
+    environment_cls: "type[Environment]",
     endpoint: Endpoint,
     tokenizer: Any,  # HuggingFace tokenizer
     max_turns: int = 10,
@@ -164,7 +164,7 @@ async def agent_rollout_to_sample(
 
 async def generate_rollout_batch(
     prompts: list[str],
-    environment_cls: type[Environment],
+    environment_cls: "type[Environment]",
     endpoint: Endpoint,
     tokenizer: Any,
     max_turns: int = 10,
