@@ -18,6 +18,9 @@ def run_remote(
 ) -> None:
     """Run training script on remote GPU via broker/bifrost.
 
+    Uses tmux + log file pattern for reliable logging even on crashes.
+    Based on kerbal/wafer_stuff patterns.
+
     Args:
         script_path: Absolute path to the training script (__file__)
         keep_alive: Keep GPU after completion
@@ -29,6 +32,8 @@ def run_remote(
 
     from bifrost.client import BifrostClient
     from broker.client import GPUClient
+    from kerbal.tmux import start_tmux_session
+    from kerbal.job_monitor import LogStreamConfig, stream_log_until_complete
 
     load_dotenv()
 
@@ -79,100 +84,95 @@ def run_remote(
         workspace = bifrost.push("~/.bifrost/workspaces/rollouts-rl", bootstrap_cmd=bootstrap)
         print("Code deployed")
 
-        # Run training (PYTHONUNBUFFERED=1 for real-time output)
-        print("Running training...")
+        # Run training in tmux with log file (survives SSH disconnects, captures crashes)
+        print("Starting training in tmux...")
+        training_log = f"{workspace}/training.log"
         env_vars = "PYTHONUNBUFFERED=1"
         if use_tui or tui_debug:
             env_vars += " ROLLOUTS_JSON_LOGS=true"
-        cmd = f"cd {workspace}/rollouts && {env_vars} uv run python {script_rel_path}"
-        print(f"Running: {cmd}")
+        cmd = f"{env_vars} uv run python {script_rel_path}"
+        print(f"Command: {cmd}")
+
+        session_name = "rl-training"
+        session, err = start_tmux_session(
+            client=bifrost,
+            session_name=session_name,
+            command=cmd,
+            workspace=f"{workspace}/rollouts",
+            log_file=training_log,
+            capture_exit_code=True,
+        )
+        if err:
+            print(f"Failed to start tmux session: {err}")
+            return
+
+        print(f"Training started in tmux session: {session}")
+        print(f"Log file: {training_log}")
+
+        # Stream logs until complete
+        monitor_config = LogStreamConfig(
+            session_name=session_name,
+            log_file=training_log,
+            timeout_sec=7200,  # 2 hours
+            poll_interval_sec=1.0,
+        )
 
         if tui_debug:
-            # Just print raw JSONL for debugging
+            # Just print raw output (stream_log_until_complete prints to stdout)
             print("-" * 50)
-            for line in bifrost.exec_stream(cmd):
-                print(line, flush=True)
+            success, exit_code, err = stream_log_until_complete(bifrost, monitor_config)
             print("-" * 50)
+            if not success:
+                print(f"Training failed: {err} (exit code: {exit_code})")
         elif use_tui:
-            # Route output through TUI monitor
-            from rollouts.tui.monitor import TrainingMonitor
-
-            monitor = TrainingMonitor()
-
-            def feed_monitor():
-                """Feed lines to monitor in background."""
-                import threading
-                import time
-
-                lines_queue: list[str] = []
-                done = threading.Event()
-
-                def collect_lines():
-                    try:
-                        for line in bifrost.exec_stream(cmd):
-                            lines_queue.append(line)
-                    finally:
-                        done.set()
-
-                collector = threading.Thread(target=collect_lines, daemon=True)
-                collector.start()
-
-                # Run TUI with line feeding
-                monitor._running = True
-                monitor.terminal.start(on_input=lambda x: None, on_resize=monitor._on_resize)
-
-                try:
-                    while monitor._running and not done.is_set():
-                        # Feed queued lines
-                        while lines_queue:
-                            raw_line = lines_queue.pop(0)
-                            log_line = monitor.parse_jsonl_line(raw_line)
-                            if log_line:
-                                pane_name = monitor.route_log_line(log_line)
-                                monitor.panes[pane_name].add_line(log_line)
-                                monitor._needs_redraw = True
-
-                        # Handle keyboard input
-                        data = monitor.terminal.read_input()
-                        if data:
-                            monitor._handle_input(data)
-
-                        # Render if needed
-                        if monitor._needs_redraw:
-                            monitor._render()
-                            monitor._needs_redraw = False
-
-                        time.sleep(0.05)
-                finally:
-                    monitor.terminal.stop()
-
-            feed_monitor()
+            # TODO: integrate with TUI monitor
+            # For now, fall back to raw streaming
+            print("-" * 50)
+            success, exit_code, err = stream_log_until_complete(bifrost, monitor_config)
+            print("-" * 50)
+            if not success:
+                print(f"Training failed: {err} (exit code: {exit_code})")
         else:
             print("-" * 50)
-            for line in bifrost.exec_stream(cmd):
-                print(line, flush=True)
+            success, exit_code, err = stream_log_until_complete(bifrost, monitor_config)
             print("-" * 50)
+            if not success:
+                print(f"Training failed: {err} (exit code: {exit_code})")
 
     except KeyboardInterrupt:
         print("\n\nInterrupted! Syncing logs before exit...")
 
     finally:
-        # Always sync results/logs (even on ctrl+c)
+        # Always sync results/logs (even on ctrl+c or crash)
         print("\nSyncing results...")
         local_results = Path("results/rl")
         local_results.mkdir(parents=True, exist_ok=True)
 
+        # Always sync the main training log (captures early crashes)
+        try:
+            result = bifrost.download_files(
+                remote_path=f"{workspace}/training.log",
+                local_path=str(local_results / "training.log"),
+                recursive=False,
+            )
+            if result and result.success:
+                print("  Synced: training.log")
+        except Exception:
+            pass
+
         # Sync all timestamped run directories (logs + config, NOT checkpoints)
-        remote_base = "results/rl"
+        remote_base = f"{workspace}/rollouts/results/rl"
         files_to_sync = [
             "config.json",
             "rollouts.jsonl",
             "sglang.log",
+            "vllm.log",
         ]
 
         # List remote directories to find timestamped runs
         try:
-            ls_output = bifrost.exec(f"ls -1 {remote_base}")
+            ls_result = bifrost.exec(f"ls -1 {remote_base} 2>/dev/null || true")
+            ls_output = ls_result.stdout if hasattr(ls_result, 'stdout') else str(ls_result)
             remote_dirs = [d.strip() for d in ls_output.split("\n") if d.strip()]
         except Exception:
             remote_dirs = []
