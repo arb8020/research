@@ -66,10 +66,20 @@ def download_partial_weights(num_layers: int) -> dict:
             filename="model-00093-of-00093.safetensors",
         )
         with safe_open(shard_path, framework="pt", device="cpu") as f:
-            for key in f.keys():
+            keys = list(f.keys())
+            # Find model.norm.weight - might have slightly different name
+            norm_keys = [k for k in keys if "norm" in k.lower() and "layer" not in k.lower()]
+            print(f"    Available norm keys in shard 93: {norm_keys[:5]}...")
+            for key in keys:
                 if key == "model.norm.weight":
                     weights[key] = f.get_tensor(key)
+                    print(f"    Found and loaded: {key}")
                     break
+            else:
+                # Try alternate names
+                if "model.final_layernorm.weight" in keys:
+                    weights["model.norm.weight"] = f.get_tensor("model.final_layernorm.weight")
+                    print("    Loaded model.final_layernorm.weight as model.norm.weight")
 
     return weights
 
