@@ -265,6 +265,12 @@ def moe_router(
 
     if debug:
         print(f"      [moe_router] scores_for_choice sample: {router_logits_for_choice[0, :5].tolist()}")
+        print(f"      [moe_router] hidden_states dtype: {hidden_states.dtype}")
+        print(f"      [moe_router] router_weight dtype: {router_weight.dtype}")
+        print(f"      [moe_router] e_score_correction_bias dtype: {e_score_correction_bias.dtype}")
+        print(f"      [moe_router] router_logits dtype: {router_logits.dtype}")
+        print(f"      [moe_router] router_probs dtype: {router_probs.dtype}")
+        print(f"      [moe_router] scores_for_choice dtype: {router_logits_for_choice.dtype}")
 
     # Group-based selection: split experts into groups, pick top-k groups first
     # Shape: (batch*seq, n_group, experts_per_group)
