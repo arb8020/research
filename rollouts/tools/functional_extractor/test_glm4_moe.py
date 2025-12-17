@@ -423,12 +423,27 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
                             print(f"      gate_input sample: {gate_in[0, :5].tolist()}")  # gate_in is already flattened
                             moe_vs_gate_diff = (hf_moe_input.view(-1, hf_moe_input.shape[-1]) - gate_in).abs().max().item()
                             print(f"      moe_in vs gate_in diff: {moe_vs_gate_diff:.2e}")
+                        # Call functional router
                         func_topk_idx, func_topk_weights = moe_router(
                             hf_moe_input.view(-1, hf_moe_input.shape[-1]),
                             router_weight=weights_gpu[f"{prefix}.gate.weight"],
                             e_score_correction_bias=weights_gpu[bias_key],
                             debug=True,
                         )
+
+                        # Also directly call HF's gate to verify input is correct
+                        with torch.no_grad():
+                            # We need to run HF model to use its gate - can't do this after deleting model
+                            # Instead, manually replicate HF's gate forward
+                            hf_hidden = hf_moe_input.view(-1, hf_moe_input.shape[-1])
+                            hf_router_logits = torch.nn.functional.linear(
+                                hf_hidden.float(),
+                                weights_gpu[f"{prefix}.gate.weight"].float()
+                            )
+                            hf_scores = hf_router_logits.sigmoid()
+                            hf_scores_for_choice = hf_scores + weights_gpu[bias_key]
+                            direct_topk_idx = torch.topk(hf_scores_for_choice, k=8, dim=-1, sorted=False)[1]
+                            print(f"      Direct HF-style topk: {direct_topk_idx[0].sort()[0].tolist()}")
 
                         # Compare topk indices if captured
                         if f"moe_{i}_topk_idx" in hf_intermediates:
