@@ -73,8 +73,9 @@ def download_partial_weights(num_layers: int) -> dict:
     return weights
 
 
-def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = False) -> None:  # noqa: PLR0915
+def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # noqa: PLR0915
     """Run verification test on GPU."""
+    # NOTE: layer_by_layer defaults to True for debugging - remote execution doesn't pass CLI args
     import gc
     import os
 
