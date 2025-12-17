@@ -139,7 +139,6 @@ async def _grpo_train_async(
     from datetime import datetime, timezone
 
     import torch
-
     from transformers import AutoTokenizer
 
     from rollouts._logging import setup_logging
