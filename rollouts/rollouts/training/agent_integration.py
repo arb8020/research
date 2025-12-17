@@ -327,6 +327,10 @@ def trajectory_to_sample(
         else ""
     )
 
+    # Build metadata with raw messages for debugging/export
+    full_metadata = metadata.copy() if metadata else {}
+    full_metadata["messages"] = [_msg_to_dict(m) for m in trajectory.messages]
+
     # Tiger Style: Explicit construction
     sample = Sample(
         prompt=prompt,
@@ -334,7 +338,7 @@ def trajectory_to_sample(
         tokens=tokens,
         loss_mask=loss_mask,
         reward=0.0,  # Will be computed by score_fn later
-        metadata=metadata or {},
+        metadata=full_metadata,
         status=Status.COMPLETED,
     )
 
