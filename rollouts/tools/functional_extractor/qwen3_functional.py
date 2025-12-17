@@ -166,7 +166,7 @@ def repeat_kv(hidden_states: Tensor, n_rep: int) -> Tensor:
     return hidden_states.reshape(batch, num_kv_heads * n_rep, seq_len, head_dim)
 
 
-def attention(
+def attention(  # noqa: PLR0913
     hidden_states: Tensor,
     q_weight: Tensor,
     k_weight: Tensor,
@@ -357,8 +357,6 @@ def create_causal_mask(
     # If all values are 1 (no padding), use is_causal=True path for better numerical match
     if attention_mask.all():
         return None
-
-    batch_size = attention_mask.shape[0]
 
     # Create causal mask: (1, 1, seq_len, seq_len)
     # Lower triangular = True (attend), upper triangular = False (mask)

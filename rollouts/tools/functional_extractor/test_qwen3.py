@@ -15,7 +15,7 @@ import argparse
 import sys
 
 
-def test_on_gpu():
+def test_on_gpu() -> None:  # noqa: PLR0915
     """Run full verification test on GPU."""
     import os
     import sys
@@ -59,7 +59,7 @@ def test_on_gpu():
         matches = torch.allclose(original_logits, functional_logits, rtol=1e-5, atol=1e-5)
         max_diff = (original_logits - functional_logits).abs().max().item()
 
-        batch, seq_len, vocab = original_logits.shape
+        batch, seq_len, _ = original_logits.shape
         status = "PASS" if matches else "FAIL"
         print(f"  {name}: batch={batch}, seq={seq_len}, max_diff={max_diff:.2e} [{status}]")
 
@@ -170,7 +170,7 @@ def test_on_gpu():
             original_logits = model(input_ids, attention_mask=attention_mask).logits
             functional_logits = qwen3_forward(input_ids, weights, attention_mask=attention_mask)
 
-        batch_size, seq_len, vocab_size = original_logits.shape
+        batch_size, seq_len, _ = original_logits.shape
 
         # Calculate diff only at non-padded positions
         mask_expanded = attention_mask.unsqueeze(-1).expand_as(original_logits)
@@ -225,7 +225,7 @@ def test_on_gpu():
         sys.exit(1)
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Test functional Qwen3 implementation")
     parser.add_argument("--remote", action="store_true", help="Run on remote GPU")
     parser.add_argument("--gpu-id", type=str, help="Reuse existing GPU instance")
