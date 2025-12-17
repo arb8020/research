@@ -70,6 +70,7 @@ class LogStreamConfig:
 def stream_log_until_complete(
     client: "BifrostClient",
     config: LogStreamConfig,
+    on_line: Callable[[str], None] | None = None,
 ) -> tuple[bool, int | None, str | None]:
     """Stream remote log file in real-time until job completes.
 
@@ -77,11 +78,14 @@ def stream_log_until_complete(
     Uses position-tracked tailing for efficient streaming.
 
     Casey: Granular operation - just stream and monitor, nothing else.
+    Casey: Continuous granularity - on_line callback for custom handling.
     Tiger Style: < 70 lines, explicit control flow, tuple return.
 
     Args:
         client: BifrostClient instance
         config: Log streaming configuration
+        on_line: Optional callback for each line. If None, prints to stdout.
+                 Signature: (line: str) -> None
 
     Returns:
         (success, exit_code, error_message)
@@ -89,7 +93,7 @@ def stream_log_until_complete(
         - exit_code=int if job exited (0 = success)
         - error_message=str if failed or timeout
 
-    Example:
+    Example (default - prints to stdout):
         config = LogStreamConfig(
             session_name="training-job",
             log_file="/workspace/train.log",
@@ -98,6 +102,14 @@ def stream_log_until_complete(
         success, exit_code, err = stream_log_until_complete(client, config)
         if not success:
             print(f"Job failed: {err} (exit code: {exit_code})")
+
+    Example (with callback - e.g., feed to TUI):
+        def feed_tui(line: str):
+            monitor.parse_and_route(line)
+
+        success, exit_code, err = stream_log_until_complete(
+            client, config, on_line=feed_tui
+        )
     """
     assert client is not None, "BifrostClient required"
     assert config.session_name, "session_name required"
@@ -110,7 +122,7 @@ def stream_log_until_complete(
     logger.info(f"timeout: {config.timeout_sec}s")
 
     # Stream log and wait for completion
-    success, exit_code, err = _stream_and_wait(client, config)
+    success, exit_code, err = _stream_and_wait(client, config, on_line)
 
     if not success:
         logger.error(f"❌ Job failed: {err}")
@@ -123,6 +135,7 @@ def stream_log_until_complete(
 def _stream_and_wait(
     client: "BifrostClient",
     config: LogStreamConfig,
+    on_line: Callable[[str], None] | None = None,
 ) -> tuple[bool, int | None, str | None]:
     """Core streaming loop with position tracking.
 
@@ -142,8 +155,12 @@ def _stream_and_wait(
         if err:
             logger.warning(f"⚠️  Log tail failed: {err}")
         elif new_content:
-            # Print immediately with flush for real-time feedback
-            print(new_content, end="", flush=True)
+            # Route content to callback or stdout
+            if on_line is not None:
+                for line in new_content.splitlines():
+                    on_line(line)
+            else:
+                print(new_content, end="", flush=True)
             last_position = new_pos
 
             # Check for stop marker if configured
