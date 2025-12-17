@@ -136,6 +136,7 @@ async def _grpo_train_async(
     metadata_key: str | None = None,
 ) -> dict[str, Any]:
     """Async GRPO training implementation."""
+    import os
     from datetime import datetime, timezone
 
     import torch
@@ -151,18 +152,18 @@ async def _grpo_train_async(
     from rollouts.training.types import RolloutConfig
     from rollouts.training.weight_sync import SGLangEngine, VLLMEngine
 
-    # Setup logging
+    # Setup logging (JSON format when TUI is active)
+    use_json_logs = os.environ.get("ROLLOUTS_JSON_LOGS", "").lower() == "true"
     setup_logging(
         level="INFO",
-        use_color=True,
+        use_json=use_json_logs,
+        use_color=not use_json_logs,
         logger_levels={"httpx": "WARNING", "httpcore": "WARNING"},
     )
     logger = logging.getLogger(__name__)
 
     # Create output directory
     # Use ROLLOUTS_RUN_NAME if provided (from run_remote), otherwise generate timestamp
-    import os
-
     run_name = os.environ.get("ROLLOUTS_RUN_NAME")
     if run_name:
         # Remote run - run_remote already created the directory
