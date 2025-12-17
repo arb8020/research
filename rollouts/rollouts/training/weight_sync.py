@@ -1,21 +1,26 @@
-"""Weight synchronization for inference engines (D5).
+"""Inference engine lifecycle management.
 
-Stateless functions for syncing checkpoints to SGLang/vLLM servers.
+Abstracts SGLang/vLLM server lifecycle: launch, health check, log tailing, weight sync.
 
 Key design principles (from SLIME + code style guides):
 - Casey Muratori: Fine-grained immediate mode + coarse-grained convenience
 - Tiger Style: Assert preconditions, no hidden state
 - Sean Goedecke: Stateless coordination, boring patterns
-- SLIME: Weight version tracking lives in Training Backend (D6), not here!
 
 Architecture:
-- Fine-grained: update_sglang_weights_from_disk(), update_vllm_weights_from_disk()
-- Protocol: InferenceEngine (minimal, just update_weights_from_checkpoint)
+- Protocol: InferenceEngine with full lifecycle (launch, health, logs, weight sync)
 - Adapters: SGLangEngine, VLLMEngine implement protocol
-- Orchestration: sync_weights_to_engines() coordinates parallel sync
+- Fine-grained functions for each operation
 """
 
-from dataclasses import dataclass
+from __future__ import annotations
+
+import json
+import subprocess
+import threading
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 import httpx
@@ -127,17 +132,69 @@ async def update_vllm_weights_from_disk(
 
 
 class InferenceEngine(Protocol):
-    """Minimal protocol for inference engines that support weight updates.
+    """Protocol for inference engines with full lifecycle management.
 
     Tiger Style: This is JUST a type annotation (Protocol), not a base class.
     No inheritance! Just duck typing.
 
-    Casey Muratori: Minimal coupling - only one method needed.
-
-    Removed from original design doc:
-    - async def offload() -> None  # SGLang/vLLM don't have this
-    - async def reload() -> None   # SGLang/vLLM don't have this
+    Lifecycle:
+    1. launch() -> subprocess.Popen  # Start the server
+    2. start_log_tailer() -> Thread  # Tail logs as JSONL to stdout
+    3. wait_until_ready() -> None    # Block until health check passes
+    4. update_weights_from_checkpoint() -> dict  # Sync weights
+    5. shutdown() -> None            # Terminate the server
     """
+
+    @property
+    def name(self) -> str:
+        """Engine name for logging (e.g., 'sglang', 'vllm')."""
+        ...
+
+    @property
+    def log_path(self) -> Path:
+        """Path to server log file."""
+        ...
+
+    @property
+    def health_url(self) -> str:
+        """URL for health check endpoint."""
+        ...
+
+    @property
+    def api_base(self) -> str:
+        """Base URL for OpenAI-compatible API (e.g., 'http://localhost:30000/v1')."""
+        ...
+
+    def build_launch_cmd(self) -> str:
+        """Build the shell command to launch the server."""
+        ...
+
+    def launch(self) -> subprocess.Popen:
+        """Launch the inference server as a subprocess.
+
+        Returns:
+            subprocess.Popen handle for the server process
+        """
+        ...
+
+    def start_log_tailer(self) -> threading.Thread:
+        """Start a daemon thread that tails logs and emits JSONL to stdout.
+
+        Returns:
+            The started daemon thread
+        """
+        ...
+
+    async def wait_until_ready(self, max_wait: float = 120.0) -> None:
+        """Wait until the server is ready (health check passes).
+
+        Args:
+            max_wait: Max seconds to wait before raising RuntimeError
+
+        Raises:
+            RuntimeError: If server doesn't become ready within max_wait
+        """
+        ...
 
     async def update_weights_from_checkpoint(
         self,
@@ -153,6 +210,14 @@ class InferenceEngine(Protocol):
         """
         ...
 
+    def shutdown(self, proc: subprocess.Popen) -> None:
+        """Shutdown the inference server.
+
+        Args:
+            proc: The Popen handle returned by launch()
+        """
+        ...
+
 
 # ══════════════════════════════════════════════════════════════
 # Adapters (Casey Muratori: redundancy - multiple ways to do same thing)
@@ -161,88 +226,274 @@ class InferenceEngine(Protocol):
 
 @dataclass
 class SGLangEngine:
-    """SGLang inference engine adapter.
+    """SGLang inference engine with full lifecycle management.
 
     Implements InferenceEngine protocol for SGLang servers.
-    No inheritance! Just implements the protocol methods.
-
-    Attributes:
-        base_url: SGLang server URL (e.g. "http://localhost:30000")
-        timeout: HTTP request timeout in seconds
 
     Example:
-        >>> engine = SGLangEngine("http://localhost:30000")
-        >>> response = await engine.update_weights_from_checkpoint("/ckpt/step_100")
-        >>> assert response["success"]
+        >>> engine = SGLangEngine(
+        ...     model_name="Qwen/Qwen3-0.6B",
+        ...     port=30000,
+        ...     gpu_ids=(0,),
+        ...     output_dir=Path("results/rl/run_001"),
+        ... )
+        >>> proc = engine.launch()
+        >>> engine.start_log_tailer()  # Emits JSONL to stdout for TUI
+        >>> await engine.wait_until_ready()
+        >>> # ... use engine ...
+        >>> await engine.update_weights_from_checkpoint("/ckpt/step_100")
+        >>> engine.shutdown(proc)
     """
 
-    base_url: str
+    model_name: str
+    port: int
+    gpu_ids: tuple[int, ...]
+    output_dir: Path
+    dtype: str = "bfloat16"
+    mem_fraction: float = 0.7
     timeout: float = 300.0
+    _log_file: Path = field(init=False)
+
+    def __post_init__(self) -> None:
+        self._log_file = self.output_dir / "sglang.log"
+
+    @property
+    def name(self) -> str:
+        return "sglang"
+
+    @property
+    def log_path(self) -> Path:
+        return self._log_file
+
+    @property
+    def health_url(self) -> str:
+        return f"http://localhost:{self.port}/health"
+
+    @property
+    def api_base(self) -> str:
+        return f"http://localhost:{self.port}/v1"
+
+    @property
+    def base_url(self) -> str:
+        """Base URL without /v1 suffix (for weight sync API)."""
+        return f"http://localhost:{self.port}"
+
+    def build_launch_cmd(self) -> str:
+        """Build SGLang launch command."""
+        gpu_str = ",".join(str(g) for g in self.gpu_ids)
+        return (
+            f"CUDA_VISIBLE_DEVICES={gpu_str} "
+            f"python -m sglang.launch_server "
+            f"--model-path {self.model_name} "
+            f"--port {self.port} "
+            f"--dtype {self.dtype} "
+            f"--mem-fraction-static {self.mem_fraction} "
+            f">> {self._log_file} 2>&1"
+        )
+
+    def launch(self) -> subprocess.Popen:
+        """Launch SGLang server as subprocess."""
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        cmd = self.build_launch_cmd()
+        return subprocess.Popen(cmd, shell=True, start_new_session=True)
+
+    def start_log_tailer(self) -> threading.Thread:
+        """Start daemon thread that tails SGLang logs as JSONL."""
+
+        def tail_log() -> None:
+            try:
+                # Wait for log file to exist
+                for _ in range(30):
+                    if self._log_file.exists():
+                        break
+                    time.sleep(0.1)
+
+                with open(self._log_file) as f:
+                    while True:
+                        line = f.readline()
+                        if line:
+                            line = line.strip()
+                            if line:
+                                print(
+                                    json.dumps({"logger": "sglang", "message": line}),
+                                    flush=True,
+                                )
+                        else:
+                            time.sleep(0.1)
+            except Exception:
+                pass  # File closed or thread killed
+
+        thread = threading.Thread(target=tail_log, daemon=True)
+        thread.start()
+        return thread
+
+    async def wait_until_ready(self, max_wait: float = 120.0) -> None:
+        """Wait until SGLang health check passes."""
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            for _attempt in range(int(max_wait)):
+                try:
+                    resp = await client.get(self.health_url)
+                    if resp.status_code == 200:
+                        return
+                except Exception:
+                    pass
+                await trio.sleep(1.0)
+
+        msg = f"SGLang failed to start after {max_wait}s. Check {self._log_file}"
+        raise RuntimeError(msg)
 
     async def update_weights_from_checkpoint(
         self,
         checkpoint_path: str,
     ) -> dict[str, Any]:
-        """Update SGLang server weights from checkpoint.
-
-        Delegates to fine-grained function (Casey: granularity).
-
-        Args:
-            checkpoint_path: Path to checkpoint directory
-
-        Returns:
-            Response dict from SGLang
-        """
-        # Tiger Style: assert preconditions
+        """Update SGLang server weights from checkpoint."""
         assert checkpoint_path, "checkpoint_path cannot be empty"
 
-        # Delegate to fine-grained function with timeout
         with trio.fail_after(self.timeout):
             return await update_sglang_weights_from_disk(
                 self.base_url,
                 checkpoint_path,
             )
 
+    def shutdown(self, proc: subprocess.Popen) -> None:
+        """Terminate the SGLang server process."""
+        proc.terminate()
+
 
 @dataclass
 class VLLMEngine:
-    """vLLM inference engine adapter.
+    """vLLM inference engine with full lifecycle management.
 
     Implements InferenceEngine protocol for vLLM servers.
 
-    Attributes:
-        base_url: vLLM server URL (e.g. "http://localhost:30001")
-        timeout: HTTP request timeout in seconds
-
     Example:
-        >>> engine = VLLMEngine("http://localhost:30001")
-        >>> response = await engine.update_weights_from_checkpoint("/ckpt/step_100")
+        >>> engine = VLLMEngine(
+        ...     model_name="Qwen/Qwen3-0.6B",
+        ...     port=30001,
+        ...     gpu_ids=(0,),
+        ...     output_dir=Path("results/rl/run_001"),
+        ... )
+        >>> proc = engine.launch()
+        >>> engine.start_log_tailer()  # Emits JSONL to stdout for TUI
+        >>> await engine.wait_until_ready()
+        >>> # ... use engine ...
+        >>> await engine.update_weights_from_checkpoint("/ckpt/step_100")
+        >>> engine.shutdown(proc)
     """
 
-    base_url: str
+    model_name: str
+    port: int
+    gpu_ids: tuple[int, ...]
+    output_dir: Path
+    dtype: str = "bfloat16"
+    gpu_memory_utilization: float = 0.7
     timeout: float = 300.0
+    _log_file: Path = field(init=False)
+
+    def __post_init__(self) -> None:
+        self._log_file = self.output_dir / "vllm.log"
+
+    @property
+    def name(self) -> str:
+        return "vllm"
+
+    @property
+    def log_path(self) -> Path:
+        return self._log_file
+
+    @property
+    def health_url(self) -> str:
+        return f"http://localhost:{self.port}/health"
+
+    @property
+    def api_base(self) -> str:
+        return f"http://localhost:{self.port}/v1"
+
+    @property
+    def base_url(self) -> str:
+        """Base URL without /v1 suffix (for weight sync API)."""
+        return f"http://localhost:{self.port}"
+
+    def build_launch_cmd(self) -> str:
+        """Build vLLM launch command."""
+        gpu_str = ",".join(str(g) for g in self.gpu_ids)
+        return (
+            f"CUDA_VISIBLE_DEVICES={gpu_str} "
+            f"python -m vllm.entrypoints.openai.api_server "
+            f"--model {self.model_name} "
+            f"--port {self.port} "
+            f"--dtype {self.dtype} "
+            f"--gpu-memory-utilization {self.gpu_memory_utilization} "
+            f">> {self._log_file} 2>&1"
+        )
+
+    def launch(self) -> subprocess.Popen:
+        """Launch vLLM server as subprocess."""
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        cmd = self.build_launch_cmd()
+        return subprocess.Popen(cmd, shell=True, start_new_session=True)
+
+    def start_log_tailer(self) -> threading.Thread:
+        """Start daemon thread that tails vLLM logs as JSONL."""
+
+        def tail_log() -> None:
+            try:
+                # Wait for log file to exist
+                for _ in range(30):
+                    if self._log_file.exists():
+                        break
+                    time.sleep(0.1)
+
+                with open(self._log_file) as f:
+                    while True:
+                        line = f.readline()
+                        if line:
+                            line = line.strip()
+                            if line:
+                                print(
+                                    json.dumps({"logger": "vllm", "message": line}),
+                                    flush=True,
+                                )
+                        else:
+                            time.sleep(0.1)
+            except Exception:
+                pass  # File closed or thread killed
+
+        thread = threading.Thread(target=tail_log, daemon=True)
+        thread.start()
+        return thread
+
+    async def wait_until_ready(self, max_wait: float = 120.0) -> None:
+        """Wait until vLLM health check passes."""
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            for _attempt in range(int(max_wait)):
+                try:
+                    resp = await client.get(self.health_url)
+                    if resp.status_code == 200:
+                        return
+                except Exception:
+                    pass
+                await trio.sleep(1.0)
+
+        msg = f"vLLM failed to start after {max_wait}s. Check {self._log_file}"
+        raise RuntimeError(msg)
 
     async def update_weights_from_checkpoint(
         self,
         checkpoint_path: str,
     ) -> dict[str, Any]:
-        """Update vLLM server weights from checkpoint.
-
-        Args:
-            checkpoint_path: Path to checkpoint directory
-
-        Returns:
-            Response dict from vLLM
-        """
-        # Tiger Style: assert preconditions
+        """Update vLLM server weights from checkpoint."""
         assert checkpoint_path, "checkpoint_path cannot be empty"
 
-        # Delegate to fine-grained function with timeout
         with trio.fail_after(self.timeout):
             return await update_vllm_weights_from_disk(
                 self.base_url,
                 checkpoint_path,
             )
+
+    def shutdown(self, proc: subprocess.Popen) -> None:
+        """Terminate the vLLM server process."""
+        proc.terminate()
 
 
 # ══════════════════════════════════════════════════════════════
@@ -289,7 +540,7 @@ async def sync_weights_to_engines(
 
     async with trio.open_nursery() as nursery:
 
-        async def sync_one(engine: InferenceEngine):
+        async def sync_one(engine: InferenceEngine) -> None:
             """Sync to single engine and append result."""
             response = await engine.update_weights_from_checkpoint(checkpoint_path)
             results.append(response)
