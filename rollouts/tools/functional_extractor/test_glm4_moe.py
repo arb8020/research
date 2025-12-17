@@ -474,7 +474,7 @@ def main() -> None:
     parser.add_argument("--gpu-id", type=str, help="Reuse existing GPU instance")
     parser.add_argument("--keep-alive", action="store_true", help="Keep GPU alive after test")
     parser.add_argument("--num-layers", type=int, default=5, help="Number of layers to test")
-    parser.add_argument("--layer-by-layer", action="store_true", help="Test each layer individually")
+    parser.add_argument("--layer-by-layer", action="store_true", default=True, help="Test each layer individually")
     args = parser.parse_args()
 
     if args.remote:
