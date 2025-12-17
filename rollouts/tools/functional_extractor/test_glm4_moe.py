@@ -270,11 +270,58 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
         positions = torch.arange(input_ids.shape[1], device="cuda").unsqueeze(0)
         cos, sin = compute_rope_embeddings(positions, dtype=hidden.dtype)
 
+        from glm4_moe_functional import FIRST_K_DENSE_REPLACE
+
         for i in range(num_layers):
             layer_out = model.model.layers[i](hidden, position_embeddings=(cos, sin))
             hidden = layer_out[0] if isinstance(layer_out, tuple) else layer_out
             hf_intermediates[f"layer_{i}"] = hidden.cpu()
             print(f"  Layer {i}: {hidden.shape}, sample={hidden[0, 0, :3].tolist()}")
+
+            # Capture MoE subcomponent outputs for the first MoE layer (layer 3)
+            if i == FIRST_K_DENSE_REPLACE:
+                moe = model.model.layers[i].mlp
+                # Get the input to MoE (after attention + residual + post_attention_layernorm)
+                # We need to recompute this from the layer input
+                layer_i_input = hf_intermediates[f"layer_{i-1}"].cuda() if i > 0 else hf_intermediates["embed"].cuda()
+
+                # Get post-attention hidden states
+                hf_layer = model.model.layers[i]
+                attn_input = hf_layer.input_layernorm(layer_i_input)
+
+                # Capture attention output
+                hf_attn_out = None
+                def capture_attn(module, inp, out):
+                    nonlocal hf_attn_out
+                    hf_attn_out = out[0] if isinstance(out, tuple) else out
+                attn_hook = hf_layer.self_attn.register_forward_hook(capture_attn)
+                _ = hf_layer.self_attn(attn_input, position_embeddings=(cos, sin))
+                attn_hook.remove()
+
+                post_attn = layer_i_input + hf_attn_out
+                moe_input = hf_layer.post_attention_layernorm(post_attn)
+
+                # Capture router output
+                router_logits = moe.gate(moe_input)
+                hf_topk_idx, hf_topk_weights = moe.route_tokens_to_experts(router_logits)
+
+                # Capture shared expert output
+                shared_out = moe.shared_experts(moe_input)
+
+                # Capture routed expert output
+                routed_out = moe.experts(
+                    moe_input.view(-1, moe_input.shape[-1]),
+                    hf_topk_idx,
+                    hf_topk_weights
+                ).view_as(moe_input)
+
+                hf_intermediates[f"moe_{i}_input"] = moe_input.cpu()
+                hf_intermediates[f"moe_{i}_router_logits"] = router_logits.cpu()
+                hf_intermediates[f"moe_{i}_topk_idx"] = hf_topk_idx.cpu()
+                hf_intermediates[f"moe_{i}_topk_weights"] = hf_topk_weights.cpu()
+                hf_intermediates[f"moe_{i}_shared_out"] = shared_out.cpu()
+                hf_intermediates[f"moe_{i}_routed_out"] = routed_out.cpu()
+                print(f"    Captured MoE subcomponents for layer {i}")
 
         # Capture final norm
         hf_intermediates["norm"] = model.model.norm(hidden).cpu()
@@ -284,12 +331,18 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
 
     print(f"HF logits shape: {hf_logits.shape}")
 
-    # Move weights to GPU for functional forward (before deleting model for debug)
+    # Free GPU memory from HF model before loading weights
+    del model
+    gc.collect()
+    torch.cuda.empty_cache()
+    print("HF model deleted, GPU memory freed")
+
+    # Move weights to GPU for functional forward
     weights_gpu = {k: v.cuda() for k, v in weights_cpu.items()}
     del weights_cpu
     gc.collect()
 
-    # === Phase 2: Run functional implementation (with MoE debug while model still available) ===
+    # === Phase 2: Run functional implementation ===
     print("\n### Phase 2: Functional Implementation ###")
 
     # Layer-by-layer comparison if debugging
@@ -333,18 +386,87 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
                     print(f"    HF sample: {hf_hidden[0, 0, :5].tolist()}")
                     print(f"    Func sample: {hidden[0, 0, :5].tolist()}")
 
-                    # Debug MoE layer while model is still available
-                    if i >= FIRST_K_DENSE_REPLACE:
-                        # Get the post-attention hidden state for MoE debug
-                        # We need to extract this from the layer input
-                        debug_moe_layer(model, weights_gpu, layer_input, i, cos, sin)
-                    break
+                    # Debug MoE subcomponents using captured HF outputs
+                    if i >= FIRST_K_DENSE_REPLACE and f"moe_{i}_input" in hf_intermediates:
+                        print(f"\n    ### Debugging MoE Layer {i} ###")
+                        from glm4_moe_functional import (
+                            moe_router,
+                            expert_forward,
+                            dense_mlp,
+                            N_ROUTED_EXPERTS,
+                        )
 
-    # Now delete HF model
-    del model
-    gc.collect()
-    torch.cuda.empty_cache()
-    print("\nHF model deleted, GPU memory freed")
+                        prefix = f"model.layers.{i}.mlp"
+
+                        # Compare MoE input (should match since it's from post_attention_layernorm)
+                        hf_moe_input = hf_intermediates[f"moe_{i}_input"].cuda()
+
+                        # Compare router logits
+                        hf_router_logits = hf_intermediates[f"moe_{i}_router_logits"].cuda()
+                        func_router_logits = F.linear(
+                            hf_moe_input.view(-1, hf_moe_input.shape[-1]).float(),
+                            weights_gpu[f"{prefix}.gate.weight"].float()
+                        )
+                        router_diff = (hf_router_logits.view(-1, N_ROUTED_EXPERTS) - func_router_logits).abs().max().item()
+                        print(f"      Router logits: max_diff={router_diff:.2e}")
+
+                        # Compare routing decisions
+                        hf_topk_idx = hf_intermediates[f"moe_{i}_topk_idx"].cuda()
+                        hf_topk_weights = hf_intermediates[f"moe_{i}_topk_weights"].cuda()
+                        func_topk_idx, func_topk_weights = moe_router(
+                            hf_moe_input.view(-1, hf_moe_input.shape[-1]),
+                            router_weight=weights_gpu[f"{prefix}.gate.weight"],
+                            e_score_correction_bias=weights_gpu[f"{prefix}.gate.e_score_correction_bias"],
+                        )
+
+                        # Check if same experts selected
+                        hf_sorted = hf_topk_idx.sort(dim=-1)[0]
+                        func_sorted = func_topk_idx.sort(dim=-1)[0]
+                        same_experts = (hf_sorted == func_sorted).all().item()
+                        print(f"      Same experts selected: {same_experts}")
+                        if not same_experts:
+                            print(f"        HF experts: {hf_topk_idx[0].tolist()}")
+                            print(f"        Func experts: {func_topk_idx[0].tolist()}")
+
+                        # Compare routing weights
+                        weight_diff = (hf_topk_weights - func_topk_weights).abs().max().item()
+                        print(f"      Router weights: max_diff={weight_diff:.2e}")
+
+                        # Compare shared expert
+                        hf_shared = hf_intermediates[f"moe_{i}_shared_out"].cuda()
+                        func_shared = dense_mlp(
+                            hf_moe_input,
+                            gate_weight=weights_gpu[f"{prefix}.shared_experts.gate_proj.weight"],
+                            up_weight=weights_gpu[f"{prefix}.shared_experts.up_proj.weight"],
+                            down_weight=weights_gpu[f"{prefix}.shared_experts.down_proj.weight"],
+                        )
+                        shared_diff = (hf_shared - func_shared).abs().max().item()
+                        print(f"      Shared expert: max_diff={shared_diff:.2e}")
+
+                        # Compare routed experts
+                        hf_routed = hf_intermediates[f"moe_{i}_routed_out"].cuda()
+                        expert_gate_weights = [weights_gpu[f"{prefix}.experts.{j}.gate_proj.weight"] for j in range(N_ROUTED_EXPERTS)]
+                        expert_up_weights = [weights_gpu[f"{prefix}.experts.{j}.up_proj.weight"] for j in range(N_ROUTED_EXPERTS)]
+                        expert_down_weights = [weights_gpu[f"{prefix}.experts.{j}.down_proj.weight"] for j in range(N_ROUTED_EXPERTS)]
+
+                        func_routed = expert_forward(
+                            hf_moe_input.view(-1, hf_moe_input.shape[-1]),
+                            func_topk_idx,
+                            func_topk_weights,
+                            expert_gate_weights,
+                            expert_up_weights,
+                            expert_down_weights,
+                        ).view_as(hf_routed)
+                        routed_diff = (hf_routed - func_routed).abs().max().item()
+                        print(f"      Routed experts: max_diff={routed_diff:.2e}")
+
+                        # Compare final MoE output
+                        hf_moe_out = hf_routed + hf_shared
+                        func_moe_out = func_routed + func_shared
+                        moe_diff = (hf_moe_out - func_moe_out).abs().max().item()
+                        print(f"      Final MoE output: max_diff={moe_diff:.2e}")
+
+                    break
 
     with torch.no_grad():
         func_logits = glm4_moe_forward(input_ids.cuda(), weights_gpu, num_layers=num_layers).cpu()
