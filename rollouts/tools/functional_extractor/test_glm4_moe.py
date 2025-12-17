@@ -70,6 +70,9 @@ def download_partial_weights(num_layers: int) -> dict:
             # Find model.norm.weight - might have slightly different name
             norm_keys = [k for k in keys if "norm" in k.lower() and "layer" not in k.lower()]
             print(f"    Available norm keys in shard 93: {norm_keys[:5]}...")
+            # Print all keys that aren't layer weights
+            non_layer_keys = [k for k in keys if "layers." not in k]
+            print(f"    Non-layer keys in shard 93: {non_layer_keys}")
             for key in keys:
                 if key == "model.norm.weight":
                     weights[key] = f.get_tensor(key)
