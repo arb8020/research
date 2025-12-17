@@ -75,7 +75,7 @@ class GRPOConfig:
     checkpoint_every: int = 20
 
     # Output
-    output_dir: str = "/tmp/rollouts_rl"
+    output_dir: str = "results/rl"
     experiment_name: str = "grpo"
 
     def save(self, path: Path | str) -> None:
@@ -136,6 +136,7 @@ async def _grpo_train_async(
 ) -> dict[str, Any]:
     """Async GRPO training implementation."""
     import subprocess
+    from datetime import datetime, timezone
 
     import httpx
     import torch
@@ -158,16 +159,20 @@ async def _grpo_train_async(
     )
     logger = logging.getLogger(__name__)
 
+    # Create timestamped output directory
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    run_name = f"{config.experiment_name}_{timestamp}"
+    output_dir = Path(config.output_dir) / run_name
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     logger.info("=" * 60)
-    logger.info(f"GRPO Training: {config.experiment_name}")
+    logger.info(f"GRPO Training: {run_name}")
     logger.info("=" * 60)
     logger.info(f"Model: {config.model_name}")
     logger.info(f"Steps: {config.num_steps}")
     logger.info(f"Batch: {config.batch_size} prompts x {config.n_samples_per_prompt} samples")
+    logger.info(f"Output: {output_dir}")
 
-    # Output directory
-    output_dir = Path(config.output_dir) / config.experiment_name
-    output_dir.mkdir(parents=True, exist_ok=True)
     config.save(output_dir / "config.json")
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -277,7 +282,10 @@ async def _grpo_train_async(
         # ─────────────────────────────────────────────────────────────────────
         # 4. Training loop
         # ─────────────────────────────────────────────────────────────────────
+        import json
+
         metrics_history = []
+        rollouts_file = output_dir / "rollouts.jsonl"
 
         async with AsyncRolloutManager(data_buffer, rollout_config) as rollout_manager:
             for step in range(config.num_steps):
@@ -289,6 +297,18 @@ async def _grpo_train_async(
                 if not batch.tokens:
                     logger.warning("No successful rollouts, skipping step")
                     continue
+
+                # Save rollouts to JSONL (for debugging/analysis)
+                with open(rollouts_file, "a") as f:
+                    for sample in batch.samples:
+                        record = {
+                            "step": step + 1,
+                            "prompt": sample.prompt,
+                            "response": sample.response,
+                            "reward": sample.reward,
+                            "metadata": sample.metadata,
+                        }
+                        f.write(json.dumps(record) + "\n")
 
                 # Compute group-wise advantages (the "G" in GRPO)
                 rewards = batch.rewards

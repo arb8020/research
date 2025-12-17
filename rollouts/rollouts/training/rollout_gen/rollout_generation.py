@@ -150,6 +150,7 @@ def convert_to_batch(
         rewards=rewards,
         response_lengths=response_lengths,
         group_indices=group_indices,
+        samples=samples,
         metadata=metadata,
     )
 

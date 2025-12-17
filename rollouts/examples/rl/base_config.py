@@ -166,8 +166,8 @@ def run_remote(
         remote_base = "results/rl"
         files_to_sync = [
             "config.json",
-            "training.jsonl",
-            "sglang_server.log",
+            "rollouts.jsonl",
+            "sglang.log",
         ]
 
         # List remote directories to find timestamped runs

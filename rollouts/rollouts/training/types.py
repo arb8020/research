@@ -147,6 +147,7 @@ class RolloutBatch:
         rewards: List of rewards
         response_lengths: List of response lengths
         group_indices: Group index for each sample (for GRPO advantage computation)
+        samples: Original Sample objects (for logging/debugging)
         metadata: Optional batch metadata
 
     Example:
@@ -164,6 +165,7 @@ class RolloutBatch:
     rewards: list[float]
     response_lengths: list[int]
     group_indices: list[int] = field(default_factory=list)
+    samples: list[Sample] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
