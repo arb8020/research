@@ -409,10 +409,13 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
                         hf_moe_input = hf_intermediates[f"moe_{i}_input"].cuda()
 
                         # Compute functional routing
+                        bias_key = f"{prefix}.gate.e_score_correction_bias"
+                        print(f"      e_score_correction_bias shape: {weights_gpu[bias_key].shape}")
+                        print(f"      e_score_correction_bias sample: {weights_gpu[bias_key][:5].tolist()}")
                         func_topk_idx, func_topk_weights = moe_router(
                             hf_moe_input.view(-1, hf_moe_input.shape[-1]),
                             router_weight=weights_gpu[f"{prefix}.gate.weight"],
-                            e_score_correction_bias=weights_gpu[f"{prefix}.gate.e_score_correction_bias"],
+                            e_score_correction_bias=weights_gpu[bias_key],
                         )
 
                         # Compare topk indices if captured
