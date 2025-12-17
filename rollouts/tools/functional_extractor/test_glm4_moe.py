@@ -60,29 +60,15 @@ def download_partial_weights(num_layers: int) -> dict:
     # But for partial testing, we can create a dummy or skip the final forward
     # Actually, let's check if model.norm.weight is in one of our shards
     if "model.norm.weight" not in weights:
-        print("  Downloading final norm weight from last shard...")
+        # model.norm.weight is in shard 92 (not 93!)
+        print("  Downloading final norm weight from shard 92...")
         shard_path = hf_hub_download(
             "zai-org/GLM-4.5",
-            filename="model-00093-of-00093.safetensors",
+            filename="model-00092-of-00093.safetensors",
         )
         with safe_open(shard_path, framework="pt", device="cpu") as f:
-            keys = list(f.keys())
-            # Find model.norm.weight - might have slightly different name
-            norm_keys = [k for k in keys if "norm" in k.lower() and "layer" not in k.lower()]
-            print(f"    Available norm keys in shard 93: {norm_keys[:5]}...")
-            # Print all keys that aren't layer weights
-            non_layer_keys = [k for k in keys if "layers." not in k]
-            print(f"    Non-layer keys in shard 93: {non_layer_keys}")
-            for key in keys:
-                if key == "model.norm.weight":
-                    weights[key] = f.get_tensor(key)
-                    print(f"    Found and loaded: {key}")
-                    break
-            else:
-                # Try alternate names
-                if "model.final_layernorm.weight" in keys:
-                    weights["model.norm.weight"] = f.get_tensor("model.final_layernorm.weight")
-                    print("    Loaded model.final_layernorm.weight as model.norm.weight")
+            weights["model.norm.weight"] = f.get_tensor("model.norm.weight")
+            print("    Loaded model.norm.weight")
 
     return weights
 
