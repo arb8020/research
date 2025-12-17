@@ -235,6 +235,8 @@ async def _grpo_train_async(
             learning_rate=config.lr,
             weight_decay=config.weight_decay,
             loss_fn=lambda logits, batch: grpo_loss(logits, batch),
+            num_minibatches=config.num_minibatches,
+            max_grad_norm=config.max_grad_norm,
         )
         tokenizer = AutoTokenizer.from_pretrained(config.model_name)
         if tokenizer.pad_token is None:
@@ -355,34 +357,24 @@ async def _grpo_train_async(
                 labels = input_ids.clone()
                 loss_mask = torch.tensor(batch_loss_masks, device=device)
 
-                # Training step with gradient accumulation
-                batch_size = input_ids.size(0)
-                num_minibatches = min(config.num_minibatches, batch_size)
-                minibatch_size = batch_size // num_minibatches
+                # Training step (Tinker pattern: backend handles minibatching internally)
+                training_batch = {
+                    "input_ids": input_ids,
+                    "labels": labels,
+                    "loss_mask": loss_mask,
+                    "advantages": advantages,
+                }
 
-                accumulated_metrics: dict[str, float] = {}
-                for mb_idx in range(num_minibatches):
-                    start = mb_idx * minibatch_size
-                    end = start + minibatch_size
+                # forward_backward handles gradient accumulation via trainer_config
+                fb_future = backend.forward_backward(training_batch)
+                fb_metrics = await fb_future.result()
 
-                    mb_batch = {
-                        "input_ids": input_ids[start:end],
-                        "labels": labels[start:end],
-                        "loss_mask": loss_mask[start:end],
-                        "advantages": advantages[start:end],
-                    }
+                # optim_step clips gradients and updates weights
+                optim_future = backend.optim_step()
+                optim_metrics = await optim_future.result()
 
-                    is_last = mb_idx == num_minibatches - 1
-                    mb_metrics = backend.forward_backward(
-                        mb_batch,
-                        accumulation_steps=num_minibatches,
-                        step_optimizer=is_last,
-                    )
-
-                    for k, v in mb_metrics.items():
-                        accumulated_metrics[k] = (
-                            accumulated_metrics.get(k, 0.0) + v / num_minibatches
-                        )
+                # Merge metrics from both calls
+                accumulated_metrics = {**fb_metrics, **optim_metrics}
 
                 pg_loss = accumulated_metrics.get("pg_loss", 0.0)
                 entropy = accumulated_metrics.get("entropy", 0.0)
@@ -405,8 +397,7 @@ async def _grpo_train_async(
 
                 # Checkpoint and sync weights
                 if (step + 1) % config.checkpoint_every == 0:
-                    ckpt_dir = output_dir / f"checkpoint_{step + 1}"
-                    backend.save_checkpoint(ckpt_dir)
+                    ckpt_dir = await backend.save_checkpoint(step + 1, accumulated_metrics)
                     logger.info(f"Saved checkpoint: {ckpt_dir}")
 
                     logger.info(f"Syncing weights to {inference_engine.name}...")

@@ -339,6 +339,8 @@ def create_pytorch_backend(
     adam_betas: tuple[float, float] = (0.9, 0.95),
     weight_decay: float = 0.0,
     loss_fn: Callable | None = None,
+    num_minibatches: int | None = None,
+    max_grad_norm: float | None = 1.0,
 ) -> PyTorchTrainingBackend:
     """Create PyTorch backend with sensible defaults (Tier 2 convenience).
 
@@ -347,6 +349,7 @@ def create_pytorch_backend(
     - Creating AdamW optimizer
     - Setting up loss function
     - Device placement
+    - Gradient accumulation (via num_minibatches)
 
     Args:
         model_name: HuggingFace model ID (e.g., "Qwen/Qwen2.5-0.5B")
@@ -358,6 +361,10 @@ def create_pytorch_backend(
         adam_betas: (beta1, beta2) for AdamW (default: (0.9, 0.95))
         weight_decay: L2 regularization (default: 0.0)
         loss_fn: Optional custom loss function (default: cross-entropy)
+        num_minibatches: Split batch into this many pieces for gradient accumulation.
+            If None, processes full batch at once (no accumulation).
+        max_grad_norm: Clip gradients to this norm. If None, no clipping.
+            Default: 1.0 (standard practice for language models)
 
     Returns:
         Ready-to-use PyTorchTrainingBackend
@@ -374,6 +381,7 @@ def create_pytorch_backend(
         >>> # Ready to train!
         >>> future = backend.forward_backward(batch)
         >>> metrics = await future.result()
+        >>> await backend.optim_step().result()  # Apply gradients
     """
     # Tier 1: Parse dtype
     torch_dtype = parse_dtype(dtype)
@@ -403,6 +411,14 @@ def create_pytorch_backend(
         else torch.device(device_type)
     )
 
+    # Create trainer config for gradient accumulation
+    from rollouts.training.types import TrainerConfig
+
+    trainer_config = TrainerConfig(
+        num_minibatches=num_minibatches,
+        max_grad_norm=max_grad_norm,
+    )
+
     # Tier 0: Assemble backend
     return PyTorchTrainingBackend(
         model=model,
@@ -410,6 +426,7 @@ def create_pytorch_backend(
         loss_fn=loss_fn,
         checkpoint_dir=checkpoint_dir,
         device=device,
+        trainer_config=trainer_config,
     )
 
 
