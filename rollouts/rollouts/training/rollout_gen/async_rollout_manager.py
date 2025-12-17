@@ -97,7 +97,8 @@ class AsyncRolloutManager:
             RuntimeError: If abort requested mid-generation
         """
         # Step 1: Calculate batch sizes
-        target_size = self.config.batch_size
+        # batch_size = number of prompts, total samples = batch_size * n_samples_per_prompt
+        target_size = self.config.batch_size * self.config.n_samples_per_prompt
         over_sample_size = int(target_size * self.config.over_sampling_factor)
 
         collected_samples: list[Sample] = []
