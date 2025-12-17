@@ -52,7 +52,7 @@ def download_partial_weights(num_layers: int) -> dict:
             filename=shard_name,
         )
 
-        with safe_open(shard_path, framework="pt", device="cuda:0") as f:
+        with safe_open(shard_path, framework="pt", device="cpu") as f:
             for key in f.keys():
                 weights[key] = f.get_tensor(key)
 
@@ -65,7 +65,7 @@ def download_partial_weights(num_layers: int) -> dict:
             "zai-org/GLM-4.5",
             filename="model-00093-of-00093.safetensors",
         )
-        with safe_open(shard_path, framework="pt", device="cuda:0") as f:
+        with safe_open(shard_path, framework="pt", device="cpu") as f:
             for key in f.keys():
                 if key == "model.norm.weight":
                     weights[key] = f.get_tensor(key)
@@ -76,6 +76,7 @@ def download_partial_weights(num_layers: int) -> dict:
 
 def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = False) -> None:  # noqa: PLR0915
     """Run verification test on GPU."""
+    import gc
     import os
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -87,7 +88,7 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = False) -> None:  # n
         FIRST_K_DENSE_REPLACE,
         glm4_moe_forward,
     )
-    from transformers import AutoConfig, AutoModelForCausalLM
+    from transformers import AutoConfig
 
     print("=" * 60)
     print(f"GLM-4.5 MoE Functional Implementation Test ({num_layers} layers)")
@@ -97,34 +98,65 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = False) -> None:  # n
     shards_needed = num_layers + 1  # +1 for embeddings in shard 1
     print(f"\nWill download shards 1-{shards_needed} + shard 93 (~{estimate_download_size(shards_needed)} GB)")
 
-    # Download only the weights we need
-    weights = download_partial_weights(num_layers)
-    print(f"Loaded {len(weights)} weight tensors")
+    # Download weights to CPU first
+    weights_cpu = download_partial_weights(num_layers)
+    print(f"Loaded {len(weights_cpu)} weight tensors to CPU")
 
-    # Load model with only required layers for HF comparison
-    print("\nLoading HuggingFace model for comparison...")
+    # Test inputs (on CPU for now)
+    input_ids = torch.tensor([[1, 2, 3, 4, 5]])
+
+    # === Phase 1: Run HuggingFace model ===
+    print("\n### Phase 1: HuggingFace Model ###")
     config = AutoConfig.from_pretrained("zai-org/GLM-4.5", trust_remote_code=True)
     original_num_layers = config.num_hidden_layers
     config.num_hidden_layers = num_layers
 
-    # Use from_config to create empty model, then load our weights
     from transformers import Glm4MoeForCausalLM
     model = Glm4MoeForCausalLM(config)
-
-    # Load our partial weights into the model
-    model.load_state_dict(weights, strict=False)
+    model.load_state_dict(weights_cpu, strict=False)
     model = model.to(torch.bfloat16).cuda()
     model.eval()
 
-    print(f"Model ready with {num_layers} layers (original: {original_num_layers})")
+    print(f"HF model ready with {num_layers} layers (original: {original_num_layers})")
 
-    # Test inputs
-    input_ids = torch.tensor([[1, 2, 3, 4, 5]], device="cuda:0")
+    with torch.no_grad():
+        hf_logits = model(input_ids.cuda()).logits.cpu()  # Save to CPU
 
-    if layer_by_layer:
-        test_layer_by_layer(model, weights, input_ids, num_layers)
+    print(f"HF logits shape: {hf_logits.shape}")
+
+    # Free GPU memory
+    del model
+    gc.collect()
+    torch.cuda.empty_cache()
+    print("HF model deleted, GPU memory freed")
+
+    # === Phase 2: Run functional implementation ===
+    print("\n### Phase 2: Functional Implementation ###")
+
+    # Move weights to GPU for functional forward
+    weights_gpu = {k: v.cuda() for k, v in weights_cpu.items()}
+    del weights_cpu
+    gc.collect()
+
+    with torch.no_grad():
+        func_logits = glm4_moe_forward(input_ids.cuda(), weights_gpu, num_layers=num_layers).cpu()
+
+    print(f"Func logits shape: {func_logits.shape}")
+
+    # === Phase 3: Compare ===
+    print("\n### Results ###")
+    matches = torch.allclose(hf_logits, func_logits, rtol=1e-4, atol=1e-4)
+    max_diff = (hf_logits - func_logits).abs().max().item()
+
+    status = "PASS" if matches else "FAIL"
+    print(f"  Full forward: max_diff={max_diff:.2e} [{status}]")
+
+    if not matches:
+        print(f"\n  HF logits sample: {hf_logits[0, 0, :5]}")
+        print(f"  Func logits sample: {func_logits[0, 0, :5]}")
+        sys.exit(1)
     else:
-        test_full_forward(model, weights, input_ids, num_layers)
+        print("\n  SUCCESS: Functional implementation matches HuggingFace!")
 
 
 def estimate_download_size(shards: int) -> float:
