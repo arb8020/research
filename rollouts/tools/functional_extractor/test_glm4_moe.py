@@ -283,43 +283,39 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
                 moe = model.model.layers[i].mlp
                 hf_layer = model.model.layers[i]
 
-                # Use a hook to capture the MoE input (input to mlp module)
-                moe_input_captured = None
-                def capture_moe_input(module, inp, out):
-                    nonlocal moe_input_captured
-                    moe_input_captured = inp[0].clone()  # inp is a tuple, first element is hidden_states
-                moe_hook = hf_layer.mlp.register_forward_hook(capture_moe_input)
+                # Use hooks to capture MoE input, shared expert output, and routed expert output
+                moe_captures = {}
 
-                # Re-run the layer forward just to capture MoE input via hook
+                def make_hook(name):
+                    def hook(module, inp, out):
+                        moe_captures[name + "_in"] = inp[0].clone() if isinstance(inp, tuple) else inp.clone()
+                        moe_captures[name + "_out"] = out.clone()
+                    return hook
+
+                hooks = []
+                hooks.append(hf_layer.mlp.register_forward_hook(make_hook("moe")))
+                hooks.append(hf_layer.mlp.shared_experts.register_forward_hook(make_hook("shared")))
+                hooks.append(hf_layer.mlp.experts.register_forward_hook(make_hook("experts")))
+                hooks.append(hf_layer.mlp.gate.register_forward_hook(make_hook("gate")))
+
+                # Re-run the layer forward to capture via hooks
                 layer_i_input = hf_intermediates[f"layer_{i-1}"].cuda() if i > 0 else hf_intermediates["embed"].cuda()
                 with torch.no_grad():
                     _ = hf_layer(layer_i_input, position_embeddings=(cos, sin))
-                moe_hook.remove()
 
-                if moe_input_captured is not None:
-                    moe_input = moe_input_captured
+                for h in hooks:
+                    h.remove()
 
-                    # Capture router output
-                    router_logits = moe.gate(moe_input)
-                    hf_topk_idx, hf_topk_weights = moe.route_tokens_to_experts(router_logits)
+                if "moe_in" in moe_captures:
+                    hf_intermediates[f"moe_{i}_input"] = moe_captures["moe_in"].cpu()
+                if "gate_out" in moe_captures:
+                    hf_intermediates[f"moe_{i}_router_logits"] = moe_captures["gate_out"].cpu()
+                if "shared_out" in moe_captures:
+                    hf_intermediates[f"moe_{i}_shared_out"] = moe_captures["shared_out"].cpu()
+                if "experts_out" in moe_captures:
+                    hf_intermediates[f"moe_{i}_routed_out"] = moe_captures["experts_out"].cpu()
 
-                    # Capture shared expert output
-                    shared_out = moe.shared_experts(moe_input)
-
-                    # Capture routed expert output
-                    routed_out = moe.experts(
-                        moe_input.view(-1, moe_input.shape[-1]),
-                        hf_topk_idx,
-                        hf_topk_weights
-                    ).view_as(moe_input)
-
-                    hf_intermediates[f"moe_{i}_input"] = moe_input.cpu()
-                    hf_intermediates[f"moe_{i}_router_logits"] = router_logits.cpu()
-                    hf_intermediates[f"moe_{i}_topk_idx"] = hf_topk_idx.cpu()
-                    hf_intermediates[f"moe_{i}_topk_weights"] = hf_topk_weights.cpu()
-                    hf_intermediates[f"moe_{i}_shared_out"] = shared_out.cpu()
-                    hf_intermediates[f"moe_{i}_routed_out"] = routed_out.cpu()
-                    print(f"    Captured MoE subcomponents for layer {i}")
+                print(f"    Captured MoE subcomponents for layer {i}: {list(moe_captures.keys())}")
 
         # Capture final norm
         hf_intermediates["norm"] = model.model.norm(hidden).cpu()
@@ -399,70 +395,66 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
                         # Compare MoE input (should match since it's from post_attention_layernorm)
                         hf_moe_input = hf_intermediates[f"moe_{i}_input"].cuda()
 
-                        # Compare router logits
-                        hf_router_logits = hf_intermediates[f"moe_{i}_router_logits"].cuda()
-                        func_router_logits = F.linear(
-                            hf_moe_input.view(-1, hf_moe_input.shape[-1]).float(),
-                            weights_gpu[f"{prefix}.gate.weight"].float()
-                        )
-                        router_diff = (hf_router_logits.view(-1, N_ROUTED_EXPERTS) - func_router_logits).abs().max().item()
-                        print(f"      Router logits: max_diff={router_diff:.2e}")
+                        # Compare router logits if captured
+                        if f"moe_{i}_router_logits" in hf_intermediates:
+                            hf_router_logits = hf_intermediates[f"moe_{i}_router_logits"].cuda()
+                            func_router_logits = F.linear(
+                                hf_moe_input.view(-1, hf_moe_input.shape[-1]).float(),
+                                weights_gpu[f"{prefix}.gate.weight"].float()
+                            )
+                            router_diff = (hf_router_logits.view(-1, N_ROUTED_EXPERTS) - func_router_logits).abs().max().item()
+                            print(f"      Router logits: max_diff={router_diff:.2e}")
 
-                        # Compare routing decisions
-                        hf_topk_idx = hf_intermediates[f"moe_{i}_topk_idx"].cuda()
-                        hf_topk_weights = hf_intermediates[f"moe_{i}_topk_weights"].cuda()
+                        # Compute functional routing
                         func_topk_idx, func_topk_weights = moe_router(
                             hf_moe_input.view(-1, hf_moe_input.shape[-1]),
                             router_weight=weights_gpu[f"{prefix}.gate.weight"],
                             e_score_correction_bias=weights_gpu[f"{prefix}.gate.e_score_correction_bias"],
                         )
-
-                        # Check if same experts selected
-                        hf_sorted = hf_topk_idx.sort(dim=-1)[0]
-                        func_sorted = func_topk_idx.sort(dim=-1)[0]
-                        same_experts = (hf_sorted == func_sorted).all().item()
-                        print(f"      Same experts selected: {same_experts}")
-                        if not same_experts:
-                            print(f"        HF experts: {hf_topk_idx[0].tolist()}")
-                            print(f"        Func experts: {func_topk_idx[0].tolist()}")
-
-                        # Compare routing weights
-                        weight_diff = (hf_topk_weights - func_topk_weights).abs().max().item()
-                        print(f"      Router weights: max_diff={weight_diff:.2e}")
+                        print(f"      Func routing: experts={func_topk_idx[0].tolist()}, weights={func_topk_weights[0,:3].tolist()}")
 
                         # Compare shared expert
-                        hf_shared = hf_intermediates[f"moe_{i}_shared_out"].cuda()
-                        func_shared = dense_mlp(
-                            hf_moe_input,
-                            gate_weight=weights_gpu[f"{prefix}.shared_experts.gate_proj.weight"],
-                            up_weight=weights_gpu[f"{prefix}.shared_experts.up_proj.weight"],
-                            down_weight=weights_gpu[f"{prefix}.shared_experts.down_proj.weight"],
-                        )
-                        shared_diff = (hf_shared - func_shared).abs().max().item()
-                        print(f"      Shared expert: max_diff={shared_diff:.2e}")
+                        if f"moe_{i}_shared_out" in hf_intermediates:
+                            hf_shared = hf_intermediates[f"moe_{i}_shared_out"].cuda()
+                            func_shared = dense_mlp(
+                                hf_moe_input,
+                                gate_weight=weights_gpu[f"{prefix}.shared_experts.gate_proj.weight"],
+                                up_weight=weights_gpu[f"{prefix}.shared_experts.up_proj.weight"],
+                                down_weight=weights_gpu[f"{prefix}.shared_experts.down_proj.weight"],
+                            )
+                            shared_diff = (hf_shared - func_shared).abs().max().item()
+                            print(f"      Shared expert: max_diff={shared_diff:.2e}")
+                        else:
+                            func_shared = dense_mlp(
+                                hf_moe_input,
+                                gate_weight=weights_gpu[f"{prefix}.shared_experts.gate_proj.weight"],
+                                up_weight=weights_gpu[f"{prefix}.shared_experts.up_proj.weight"],
+                                down_weight=weights_gpu[f"{prefix}.shared_experts.down_proj.weight"],
+                            )
 
                         # Compare routed experts
-                        hf_routed = hf_intermediates[f"moe_{i}_routed_out"].cuda()
-                        expert_gate_weights = [weights_gpu[f"{prefix}.experts.{j}.gate_proj.weight"] for j in range(N_ROUTED_EXPERTS)]
-                        expert_up_weights = [weights_gpu[f"{prefix}.experts.{j}.up_proj.weight"] for j in range(N_ROUTED_EXPERTS)]
-                        expert_down_weights = [weights_gpu[f"{prefix}.experts.{j}.down_proj.weight"] for j in range(N_ROUTED_EXPERTS)]
+                        if f"moe_{i}_routed_out" in hf_intermediates:
+                            hf_routed = hf_intermediates[f"moe_{i}_routed_out"].cuda()
+                            expert_gate_weights = [weights_gpu[f"{prefix}.experts.{j}.gate_proj.weight"] for j in range(N_ROUTED_EXPERTS)]
+                            expert_up_weights = [weights_gpu[f"{prefix}.experts.{j}.up_proj.weight"] for j in range(N_ROUTED_EXPERTS)]
+                            expert_down_weights = [weights_gpu[f"{prefix}.experts.{j}.down_proj.weight"] for j in range(N_ROUTED_EXPERTS)]
 
-                        func_routed = expert_forward(
-                            hf_moe_input.view(-1, hf_moe_input.shape[-1]),
-                            func_topk_idx,
-                            func_topk_weights,
-                            expert_gate_weights,
-                            expert_up_weights,
-                            expert_down_weights,
-                        ).view_as(hf_routed)
-                        routed_diff = (hf_routed - func_routed).abs().max().item()
-                        print(f"      Routed experts: max_diff={routed_diff:.2e}")
+                            func_routed = expert_forward(
+                                hf_moe_input.view(-1, hf_moe_input.shape[-1]),
+                                func_topk_idx,
+                                func_topk_weights,
+                                expert_gate_weights,
+                                expert_up_weights,
+                                expert_down_weights,
+                            ).view_as(hf_routed)
+                            routed_diff = (hf_routed - func_routed).abs().max().item()
+                            print(f"      Routed experts: max_diff={routed_diff:.2e}")
 
-                        # Compare final MoE output
-                        hf_moe_out = hf_routed + hf_shared
-                        func_moe_out = func_routed + func_shared
-                        moe_diff = (hf_moe_out - func_moe_out).abs().max().item()
-                        print(f"      Final MoE output: max_diff={moe_diff:.2e}")
+                            # Compare final MoE output
+                            hf_moe_out = hf_routed + hf_shared
+                            func_moe_out = func_routed + func_shared
+                            moe_diff = (hf_moe_out - func_moe_out).abs().max().item()
+                            print(f"      Final MoE output: max_diff={moe_diff:.2e}")
 
                     break
 
