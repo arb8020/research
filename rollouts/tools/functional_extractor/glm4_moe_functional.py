@@ -70,8 +70,8 @@ FIRST_K_DENSE_REPLACE = 3  # Layers 0, 1, 2 use dense MLP
 N_ROUTED_EXPERTS = 160
 N_SHARED_EXPERTS = 1
 NUM_EXPERTS_PER_TOK = 8
-N_GROUP = 8
-TOPK_GROUP = 4
+N_GROUP = 1  # GLM-4.5 uses n_group=1, NOT 8 like DeepSeek
+TOPK_GROUP = 1  # GLM-4.5 uses topk_group=1, NOT 4 like DeepSeek
 ROUTED_SCALING_FACTOR = 2.5
 NORM_TOPK_PROB = True
 
