@@ -140,10 +140,12 @@ async def _grpo_train_async(
 
     import torch
 
+    from transformers import AutoTokenizer
+
     from rollouts._logging import setup_logging
     from rollouts.dtypes import Endpoint
     from rollouts.training.agent_integration import agent_rollout_to_sample
-    from rollouts.training.backends.pytorch import PyTorchTrainingBackend
+    from rollouts.training.backends.pytorch_factory import create_pytorch_backend
     from rollouts.training.datasets.data_buffer import DataBuffer
     from rollouts.training.losses import compute_group_advantages, grpo_loss
     from rollouts.training.rollout_gen.async_rollout_manager import AsyncRolloutManager
@@ -213,17 +215,20 @@ async def _grpo_train_async(
         # ─────────────────────────────────────────────────────────────────────
         # 2. Setup training backend
         # ─────────────────────────────────────────────────────────────────────
-        device = f"cuda:{config.trainer_gpu_ids[0]}"
-        backend = PyTorchTrainingBackend.from_pretrained(
+        gpu_rank = config.trainer_gpu_ids[0]
+        backend = create_pytorch_backend(
             model_name=config.model_name,
-            device=device,
+            checkpoint_dir=output_dir,
+            device_type="cuda",
             dtype=config.dtype,
-            lr=config.lr,
+            gpu_rank=gpu_rank,
+            learning_rate=config.lr,
             weight_decay=config.weight_decay,
-            max_grad_norm=config.max_grad_norm,
             loss_fn=lambda logits, batch: grpo_loss(logits, batch),
         )
-        tokenizer = backend.tokenizer
+        tokenizer = AutoTokenizer.from_pretrained(config.model_name)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
 
         # Create endpoint for agent rollouts
         endpoint = Endpoint(
