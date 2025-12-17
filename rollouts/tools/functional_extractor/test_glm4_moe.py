@@ -21,6 +21,59 @@ import argparse
 import sys
 
 
+def download_partial_weights(num_layers: int) -> dict:
+    """Download only the shards needed for testing num_layers.
+
+    Shard mapping for GLM-4.5:
+    - Shard 1: embed_tokens + layer 0 (3.75 GB)
+    - Shard 2: layer 1 (0.65 GB)
+    - Shard 3: layer 2 (0.65 GB)
+    - Shard 4+: MoE layers 3+ (7.87 GB each)
+    """
+    from huggingface_hub import hf_hub_download
+    from safetensors import safe_open
+    import torch
+
+    # Determine which shards we need
+    # Layer 0 -> shard 1, Layer 1 -> shard 2, etc.
+    # But we also need the final norm weight which is in the last shard
+    shards_needed = num_layers + 1  # +1 because layer 0 is in shard 1
+
+    print(f"\nDownloading shards 1-{shards_needed} for {num_layers} layers...")
+
+    weights = {}
+
+    for shard_idx in range(1, shards_needed + 1):
+        shard_name = f"model-{shard_idx:05d}-of-00093.safetensors"
+        print(f"  Downloading {shard_name}...")
+
+        shard_path = hf_hub_download(
+            "zai-org/GLM-4.5",
+            filename=shard_name,
+        )
+
+        with safe_open(shard_path, framework="pt", device="cuda:0") as f:
+            for key in f.keys():
+                weights[key] = f.get_tensor(key)
+
+    # Also need the final norm weight - it's in shard 93
+    # But for partial testing, we can create a dummy or skip the final forward
+    # Actually, let's check if model.norm.weight is in one of our shards
+    if "model.norm.weight" not in weights:
+        print("  Downloading final norm weight from last shard...")
+        shard_path = hf_hub_download(
+            "zai-org/GLM-4.5",
+            filename="model-00093-of-00093.safetensors",
+        )
+        with safe_open(shard_path, framework="pt", device="cuda:0") as f:
+            for key in f.keys():
+                if key == "model.norm.weight":
+                    weights[key] = f.get_tensor(key)
+                    break
+
+    return weights
+
+
 def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = False) -> None:  # noqa: PLR0915
     """Run verification test on GPU."""
     import os
@@ -41,30 +94,29 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = False) -> None:  # n
     print("=" * 60)
 
     # Determine which shards we need
-    # Shard 1: embed + layer 0, Shard 2: layer 1, Shard 3: layer 2, Shard 4+: MoE layers
-    shards_needed = min(num_layers + 1, 93)  # +1 for embeddings in shard 1
-    print(f"\nWill download shards 1-{shards_needed} (~{estimate_download_size(shards_needed)} GB)")
+    shards_needed = num_layers + 1  # +1 for embeddings in shard 1
+    print(f"\nWill download shards 1-{shards_needed} + shard 93 (~{estimate_download_size(shards_needed)} GB)")
 
-    # Load model with only required layers
-    print("\nLoading model configuration...")
+    # Download only the weights we need
+    weights = download_partial_weights(num_layers)
+    print(f"Loaded {len(weights)} weight tensors")
+
+    # Load model with only required layers for HF comparison
+    print("\nLoading HuggingFace model for comparison...")
     config = AutoConfig.from_pretrained("zai-org/GLM-4.5", trust_remote_code=True)
-
-    # Modify config to only load num_layers
     original_num_layers = config.num_hidden_layers
     config.num_hidden_layers = num_layers
 
-    print(f"Loading model with {num_layers} layers (original: {original_num_layers})...")
-    model = AutoModelForCausalLM.from_pretrained(
-        "zai-org/GLM-4.5",
-        config=config,
-        torch_dtype=torch.bfloat16,
-        device_map="auto",
-        trust_remote_code=True,
-    )
+    # Use from_config to create empty model, then load our weights
+    from transformers import Glm4MoeForCausalLM
+    model = Glm4MoeForCausalLM(config)
+
+    # Load our partial weights into the model
+    model.load_state_dict(weights, strict=False)
+    model = model.to(torch.bfloat16).cuda()
     model.eval()
 
-    weights = dict(model.state_dict())
-    print(f"Loaded {len(weights)} weight tensors")
+    print(f"Model ready with {num_layers} layers (original: {original_num_layers})")
 
     # Test inputs
     input_ids = torch.tensor([[1, 2, 3, 4, 5]], device="cuda:0")
