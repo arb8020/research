@@ -138,16 +138,21 @@ class InferenceEngine(Protocol):
     No inheritance! Just duck typing.
 
     Lifecycle:
-    1. launch() -> subprocess.Popen  # Start the server
+    1. launch() -> str               # Start server in tmux, return session name
     2. start_log_tailer() -> Thread  # Tail logs as JSONL to stdout
     3. wait_until_ready() -> None    # Block until health check passes
     4. update_weights_from_checkpoint() -> dict  # Sync weights
-    5. shutdown() -> None            # Terminate the server
+    5. shutdown() -> None            # Kill tmux session
     """
 
     @property
     def name(self) -> str:
         """Engine name for logging (e.g., 'sglang', 'vllm')."""
+        ...
+
+    @property
+    def session_name(self) -> str:
+        """Tmux session name for this engine."""
         ...
 
     @property
@@ -169,11 +174,11 @@ class InferenceEngine(Protocol):
         """Build the shell command to launch the server."""
         ...
 
-    def launch(self) -> subprocess.Popen:
-        """Launch the inference server as a subprocess.
+    def launch(self) -> str:
+        """Launch the inference server in a tmux session.
 
         Returns:
-            subprocess.Popen handle for the server process
+            The tmux session name (for shutdown)
         """
         ...
 
@@ -210,12 +215,8 @@ class InferenceEngine(Protocol):
         """
         ...
 
-    def shutdown(self, proc: subprocess.Popen) -> None:
-        """Shutdown the inference server.
-
-        Args:
-            proc: The Popen handle returned by launch()
-        """
+    def shutdown(self) -> None:
+        """Shutdown the inference server (kill tmux session)."""
         ...
 
 
@@ -229,6 +230,7 @@ class SGLangEngine:
     """SGLang inference engine with full lifecycle management.
 
     Implements InferenceEngine protocol for SGLang servers.
+    Launches server in tmux for reliability (survives parent process crashes).
 
     Example:
         >>> engine = SGLangEngine(
@@ -237,12 +239,12 @@ class SGLangEngine:
         ...     gpu_ids=(0,),
         ...     output_dir=Path("results/rl/run_001"),
         ... )
-        >>> proc = engine.launch()
+        >>> engine.launch()
         >>> engine.start_log_tailer()  # Emits JSONL to stdout for TUI
         >>> await engine.wait_until_ready()
         >>> # ... use engine ...
         >>> await engine.update_weights_from_checkpoint("/ckpt/step_100")
-        >>> engine.shutdown(proc)
+        >>> engine.shutdown()
     """
 
     model_name: str
@@ -253,13 +255,19 @@ class SGLangEngine:
     mem_fraction: float = 0.7
     timeout: float = 300.0
     _log_file: Path = field(init=False)
+    _session_name: str = field(init=False)
 
     def __post_init__(self) -> None:
         self._log_file = self.output_dir / "sglang.log"
+        self._session_name = f"sglang-{self.port}"
 
     @property
     def name(self) -> str:
         return "sglang"
+
+    @property
+    def session_name(self) -> str:
+        return self._session_name
 
     @property
     def log_path(self) -> Path:
@@ -279,23 +287,55 @@ class SGLangEngine:
         return f"http://localhost:{self.port}"
 
     def build_launch_cmd(self) -> str:
-        """Build SGLang launch command."""
+        """Build SGLang launch command (without redirection - tmux handles that)."""
         gpu_str = ",".join(str(g) for g in self.gpu_ids)
         return (
             f"CUDA_VISIBLE_DEVICES={gpu_str} "
             f"python -m sglang.launch_server "
             f"--model-path {self.model_name} "
+            f"--host 0.0.0.0 "
             f"--port {self.port} "
             f"--dtype {self.dtype} "
             f"--mem-fraction-static {self.mem_fraction} "
-            f">> {self._log_file} 2>&1"
+            f"--trust-remote-code"
         )
 
-    def launch(self) -> subprocess.Popen:
-        """Launch SGLang server as subprocess."""
+    def launch(self) -> str:
+        """Launch SGLang server in tmux session.
+
+        Uses tmux for reliability - survives parent process crashes.
+        Logs are piped to a file for tailing.
+
+        Returns:
+            The tmux session name
+        """
         self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Kill existing session if present
+        subprocess.run(
+            ["tmux", "kill-session", "-t", self._session_name],
+            capture_output=True,
+        )
+
+        # Kill any orphaned processes using our GPUs
+        for gpu_id in self.gpu_ids:
+            subprocess.run(
+                f"nvidia-smi --id={gpu_id} --query-compute-apps=pid --format=csv,noheader | xargs -r kill -9",
+                shell=True,
+                capture_output=True,
+            )
+
+        # Build command with log piping
         cmd = self.build_launch_cmd()
-        return subprocess.Popen(cmd, shell=True, start_new_session=True)
+        full_cmd = f"{cmd} 2>&1 | tee {self._log_file}"
+
+        # Launch in tmux
+        subprocess.run(
+            ["tmux", "new-session", "-d", "-s", self._session_name, full_cmd],
+            check=True,
+        )
+
+        return self._session_name
 
     def start_log_tailer(self) -> threading.Thread:
         """Start daemon thread that tails SGLang logs as JSONL."""
@@ -327,10 +367,23 @@ class SGLangEngine:
         thread.start()
         return thread
 
+    def _is_session_alive(self) -> bool:
+        """Check if tmux session is still running."""
+        result = subprocess.run(
+            ["tmux", "has-session", "-t", self._session_name],
+            capture_output=True,
+        )
+        return result.returncode == 0
+
     async def wait_until_ready(self, max_wait: float = 120.0) -> None:
         """Wait until SGLang health check passes."""
         async with httpx.AsyncClient(timeout=5.0) as client:
             for _attempt in range(int(max_wait)):
+                # Check if tmux session crashed
+                if not self._is_session_alive():
+                    msg = f"SGLang server crashed during startup! Check {self._log_file}"
+                    raise RuntimeError(msg)
+
                 try:
                     resp = await client.get(self.health_url)
                     if resp.status_code == 200:
@@ -355,9 +408,12 @@ class SGLangEngine:
                 checkpoint_path,
             )
 
-    def shutdown(self, proc: subprocess.Popen) -> None:
-        """Terminate the SGLang server process."""
-        proc.terminate()
+    def shutdown(self) -> None:
+        """Kill the tmux session running SGLang."""
+        subprocess.run(
+            ["tmux", "kill-session", "-t", self._session_name],
+            capture_output=True,
+        )
 
 
 @dataclass
@@ -365,6 +421,7 @@ class VLLMEngine:
     """vLLM inference engine with full lifecycle management.
 
     Implements InferenceEngine protocol for vLLM servers.
+    Launches server in tmux for reliability (survives parent process crashes).
 
     Example:
         >>> engine = VLLMEngine(
@@ -373,12 +430,12 @@ class VLLMEngine:
         ...     gpu_ids=(0,),
         ...     output_dir=Path("results/rl/run_001"),
         ... )
-        >>> proc = engine.launch()
+        >>> engine.launch()
         >>> engine.start_log_tailer()  # Emits JSONL to stdout for TUI
         >>> await engine.wait_until_ready()
         >>> # ... use engine ...
         >>> await engine.update_weights_from_checkpoint("/ckpt/step_100")
-        >>> engine.shutdown(proc)
+        >>> engine.shutdown()
     """
 
     model_name: str
@@ -389,13 +446,19 @@ class VLLMEngine:
     gpu_memory_utilization: float = 0.7
     timeout: float = 300.0
     _log_file: Path = field(init=False)
+    _session_name: str = field(init=False)
 
     def __post_init__(self) -> None:
         self._log_file = self.output_dir / "vllm.log"
+        self._session_name = f"vllm-{self.port}"
 
     @property
     def name(self) -> str:
         return "vllm"
+
+    @property
+    def session_name(self) -> str:
+        return self._session_name
 
     @property
     def log_path(self) -> Path:
@@ -415,23 +478,55 @@ class VLLMEngine:
         return f"http://localhost:{self.port}"
 
     def build_launch_cmd(self) -> str:
-        """Build vLLM launch command."""
+        """Build vLLM launch command (without redirection - tmux handles that)."""
         gpu_str = ",".join(str(g) for g in self.gpu_ids)
         return (
             f"CUDA_VISIBLE_DEVICES={gpu_str} "
             f"python -m vllm.entrypoints.openai.api_server "
             f"--model {self.model_name} "
+            f"--host 0.0.0.0 "
             f"--port {self.port} "
             f"--dtype {self.dtype} "
             f"--gpu-memory-utilization {self.gpu_memory_utilization} "
-            f">> {self._log_file} 2>&1"
+            f"--trust-remote-code"
         )
 
-    def launch(self) -> subprocess.Popen:
-        """Launch vLLM server as subprocess."""
+    def launch(self) -> str:
+        """Launch vLLM server in tmux session.
+
+        Uses tmux for reliability - survives parent process crashes.
+        Logs are piped to a file for tailing.
+
+        Returns:
+            The tmux session name
+        """
         self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Kill existing session if present
+        subprocess.run(
+            ["tmux", "kill-session", "-t", self._session_name],
+            capture_output=True,
+        )
+
+        # Kill any orphaned processes using our GPUs
+        for gpu_id in self.gpu_ids:
+            subprocess.run(
+                f"nvidia-smi --id={gpu_id} --query-compute-apps=pid --format=csv,noheader | xargs -r kill -9",
+                shell=True,
+                capture_output=True,
+            )
+
+        # Build command with log piping
         cmd = self.build_launch_cmd()
-        return subprocess.Popen(cmd, shell=True, start_new_session=True)
+        full_cmd = f"{cmd} 2>&1 | tee {self._log_file}"
+
+        # Launch in tmux
+        subprocess.run(
+            ["tmux", "new-session", "-d", "-s", self._session_name, full_cmd],
+            check=True,
+        )
+
+        return self._session_name
 
     def start_log_tailer(self) -> threading.Thread:
         """Start daemon thread that tails vLLM logs as JSONL."""
@@ -463,10 +558,23 @@ class VLLMEngine:
         thread.start()
         return thread
 
+    def _is_session_alive(self) -> bool:
+        """Check if tmux session is still running."""
+        result = subprocess.run(
+            ["tmux", "has-session", "-t", self._session_name],
+            capture_output=True,
+        )
+        return result.returncode == 0
+
     async def wait_until_ready(self, max_wait: float = 120.0) -> None:
         """Wait until vLLM health check passes."""
         async with httpx.AsyncClient(timeout=5.0) as client:
             for _attempt in range(int(max_wait)):
+                # Check if tmux session crashed
+                if not self._is_session_alive():
+                    msg = f"vLLM server crashed during startup! Check {self._log_file}"
+                    raise RuntimeError(msg)
+
                 try:
                     resp = await client.get(self.health_url)
                     if resp.status_code == 200:
@@ -491,9 +599,12 @@ class VLLMEngine:
                 checkpoint_path,
             )
 
-    def shutdown(self, proc: subprocess.Popen) -> None:
-        """Terminate the vLLM server process."""
-        proc.terminate()
+    def shutdown(self) -> None:
+        """Kill the tmux session running vLLM."""
+        subprocess.run(
+            ["tmux", "kill-session", "-t", self._session_name],
+            capture_output=True,
+        )
 
 
 # ══════════════════════════════════════════════════════════════

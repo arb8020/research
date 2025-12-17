@@ -96,7 +96,7 @@ def grpo_train(
     config: GRPOConfig,
     prompts: list[dict[str, Any]],
     score_fn: Callable[[Sample], Score],
-    environment_cls: "type[Environment]",
+    environment_cls: type[Environment],
     metadata_key: str | None = None,
 ) -> dict[str, Any]:
     """Run GRPO training.
@@ -132,7 +132,7 @@ async def _grpo_train_async(
     config: GRPOConfig,
     prompts: list[dict[str, Any]],
     score_fn: Callable[[Sample], Score],
-    environment_cls: "type[Environment]",
+    environment_cls: type[Environment],
     metadata_key: str | None = None,
 ) -> dict[str, Any]:
     """Async GRPO training implementation."""
@@ -203,7 +203,7 @@ async def _grpo_train_async(
     gpu_str = ",".join(str(g) for g in config.inference_gpu_ids)
     logger.info(f"Launching {inference_engine.name} on GPU {gpu_str}...")
 
-    inference_proc = inference_engine.launch()
+    inference_engine.launch()
     inference_engine.start_log_tailer()  # Emit JSONL to stdout for TUI
 
     try:
@@ -296,7 +296,7 @@ async def _grpo_train_async(
                     continue
 
                 # Save rollouts to JSONL (for debugging/analysis)
-                with open(rollouts_file, "a") as f:
+                with open(rollouts_file, "a") as f:  # noqa: ASYNC230
                     for sample in batch.samples:
                         record = {
                             "step": step + 1,
@@ -415,5 +415,5 @@ async def _grpo_train_async(
 
     finally:
         logger.info(f"Shutting down {inference_engine.name}...")
-        inference_engine.shutdown(inference_proc)
+        inference_engine.shutdown()
         logger.info(f"Logs: {inference_engine.log_path}")
