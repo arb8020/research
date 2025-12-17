@@ -288,8 +288,15 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
 
                 def make_hook(name):
                     def hook(module, inp, out):
-                        moe_captures[name + "_in"] = inp[0].clone() if isinstance(inp, tuple) else inp.clone()
-                        moe_captures[name + "_out"] = out.clone()
+                        if isinstance(inp, tuple) and len(inp) > 0:
+                            moe_captures[name + "_in"] = inp[0].clone() if hasattr(inp[0], 'clone') else inp[0]
+                        elif hasattr(inp, 'clone'):
+                            moe_captures[name + "_in"] = inp.clone()
+                        if isinstance(out, tuple):
+                            # gate returns (topk_indices, topk_weights)
+                            moe_captures[name + "_out"] = tuple(x.clone() if hasattr(x, 'clone') else x for x in out)
+                        elif hasattr(out, 'clone'):
+                            moe_captures[name + "_out"] = out.clone()
                     return hook
 
                 hooks = []
@@ -309,7 +316,13 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
                 if "moe_in" in moe_captures:
                     hf_intermediates[f"moe_{i}_input"] = moe_captures["moe_in"].cpu()
                 if "gate_out" in moe_captures:
-                    hf_intermediates[f"moe_{i}_router_logits"] = moe_captures["gate_out"].cpu()
+                    gate_out = moe_captures["gate_out"]
+                    if isinstance(gate_out, tuple):
+                        # gate returns (topk_indices, topk_weights)
+                        hf_intermediates[f"moe_{i}_topk_idx"] = gate_out[0].cpu()
+                        hf_intermediates[f"moe_{i}_topk_weights"] = gate_out[1].cpu()
+                    else:
+                        hf_intermediates[f"moe_{i}_router_logits"] = gate_out.cpu()
                 if "shared_out" in moe_captures:
                     hf_intermediates[f"moe_{i}_shared_out"] = moe_captures["shared_out"].cpu()
                 if "experts_out" in moe_captures:
@@ -395,23 +408,43 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
                         # Compare MoE input (should match since it's from post_attention_layernorm)
                         hf_moe_input = hf_intermediates[f"moe_{i}_input"].cuda()
 
-                        # Compare router logits if captured
-                        if f"moe_{i}_router_logits" in hf_intermediates:
-                            hf_router_logits = hf_intermediates[f"moe_{i}_router_logits"].cuda()
-                            func_router_logits = F.linear(
-                                hf_moe_input.view(-1, hf_moe_input.shape[-1]).float(),
-                                weights_gpu[f"{prefix}.gate.weight"].float()
-                            )
-                            router_diff = (hf_router_logits.view(-1, N_ROUTED_EXPERTS) - func_router_logits).abs().max().item()
-                            print(f"      Router logits: max_diff={router_diff:.2e}")
-
                         # Compute functional routing
                         func_topk_idx, func_topk_weights = moe_router(
                             hf_moe_input.view(-1, hf_moe_input.shape[-1]),
                             router_weight=weights_gpu[f"{prefix}.gate.weight"],
                             e_score_correction_bias=weights_gpu[f"{prefix}.gate.e_score_correction_bias"],
                         )
-                        print(f"      Func routing: experts={func_topk_idx[0].tolist()}, weights={func_topk_weights[0,:3].tolist()}")
+
+                        # Compare topk indices if captured
+                        if f"moe_{i}_topk_idx" in hf_intermediates:
+                            hf_topk_idx = hf_intermediates[f"moe_{i}_topk_idx"].cuda()
+                            hf_topk_weights = hf_intermediates[f"moe_{i}_topk_weights"].cuda()
+
+                            # Check if same experts are selected
+                            hf_sorted = hf_topk_idx.sort(dim=-1)[0]
+                            func_sorted = func_topk_idx.sort(dim=-1)[0]
+                            same_experts = (hf_sorted == func_sorted).all().item()
+                            print(f"      Same experts selected: {same_experts}")
+                            if not same_experts:
+                                print(f"        HF experts: {hf_topk_idx[0].tolist()}")
+                                print(f"        Func experts: {func_topk_idx[0].tolist()}")
+
+                            # Compare routing weights
+                            weight_diff = (hf_topk_weights - func_topk_weights).abs().max().item()
+                            print(f"      Router weights diff: max_diff={weight_diff:.2e}")
+                            print(f"        HF weights sample: {hf_topk_weights[0,:3].tolist()}")
+                            print(f"        Func weights sample: {func_topk_weights[0,:3].tolist()}")
+                        else:
+                            # Compare router logits if captured (older style)
+                            if f"moe_{i}_router_logits" in hf_intermediates:
+                                hf_router_logits = hf_intermediates[f"moe_{i}_router_logits"].cuda()
+                                func_router_logits = F.linear(
+                                    hf_moe_input.view(-1, hf_moe_input.shape[-1]).float(),
+                                    weights_gpu[f"{prefix}.gate.weight"].float()
+                                )
+                                router_diff = (hf_router_logits.view(-1, N_ROUTED_EXPERTS) - func_router_logits).abs().max().item()
+                                print(f"      Router logits: max_diff={router_diff:.2e}")
+                            print(f"      Func routing: experts={func_topk_idx[0].tolist()}, weights={func_topk_weights[0,:3].tolist()}")
 
                         # Compare shared expert
                         if f"moe_{i}_shared_out" in hf_intermediates:
