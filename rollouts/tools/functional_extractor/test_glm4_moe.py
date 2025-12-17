@@ -32,7 +32,6 @@ def download_partial_weights(num_layers: int) -> dict:
     """
     from huggingface_hub import hf_hub_download
     from safetensors import safe_open
-    import torch
 
     # Determine which shards we need
     # Layer 0 -> shard 1, Layer 1 -> shard 2, etc.
@@ -73,6 +72,140 @@ def download_partial_weights(num_layers: int) -> dict:
     return weights
 
 
+def debug_moe_layer(hf_model, weights_gpu, layer_input, layer_idx: int, cos, sin) -> None:
+    """Debug MoE layer to find exact divergence point.
+
+    Note: layer_input is the input to the FULL layer (before attention).
+    We need to run attention first to get the MoE input.
+    """
+    import torch
+    import torch.nn.functional as F
+    from glm4_moe_functional import (
+        N_ROUTED_EXPERTS,
+        attention,
+        dense_mlp,
+        expert_forward,
+        moe_router,
+        rms_norm,
+    )
+
+    print(f"\n  ### Debugging MoE Layer {layer_idx} ###")
+    prefix = f"model.layers.{layer_idx}.mlp"
+    hf_layer = hf_model.model.layers[layer_idx]
+    hf_moe = hf_layer.mlp
+
+    # First, compute the MoE input by running attention
+    # MoE input = post_attention_layernorm(layer_input + attention(input_layernorm(layer_input)))
+    with torch.no_grad():
+        residual = layer_input
+        normed = rms_norm(
+            layer_input, weights_gpu[f"model.layers.{layer_idx}.input_layernorm.weight"]
+        )
+        attn_out = attention(
+            normed,
+            q_weight=weights_gpu[f"model.layers.{layer_idx}.self_attn.q_proj.weight"],
+            q_bias=weights_gpu[f"model.layers.{layer_idx}.self_attn.q_proj.bias"],
+            k_weight=weights_gpu[f"model.layers.{layer_idx}.self_attn.k_proj.weight"],
+            k_bias=weights_gpu[f"model.layers.{layer_idx}.self_attn.k_proj.bias"],
+            v_weight=weights_gpu[f"model.layers.{layer_idx}.self_attn.v_proj.weight"],
+            v_bias=weights_gpu[f"model.layers.{layer_idx}.self_attn.v_proj.bias"],
+            o_weight=weights_gpu[f"model.layers.{layer_idx}.self_attn.o_proj.weight"],
+            q_norm_weight=weights_gpu[f"model.layers.{layer_idx}.self_attn.q_norm.weight"],
+            k_norm_weight=weights_gpu[f"model.layers.{layer_idx}.self_attn.k_norm.weight"],
+            cos=cos,
+            sin=sin,
+        )
+        post_attn = residual + attn_out
+        # This is the input to post_attention_layernorm
+        moe_input_normed = rms_norm(
+            post_attn, weights_gpu[f"model.layers.{layer_idx}.post_attention_layernorm.weight"]
+        )
+
+    # Now debug using moe_input_normed
+    hidden_states = moe_input_normed
+    batch_size, seq_len, hidden_size = hidden_states.shape
+    hidden_flat = hidden_states.view(-1, hidden_size)
+
+    with torch.no_grad():
+        # Compare router outputs
+        hf_router_logits = hf_moe.gate(hidden_states)
+        func_router_logits = F.linear(
+            hidden_flat.float(), weights_gpu[f"{prefix}.gate.weight"].float()
+        )
+        router_diff = (
+            (hf_router_logits.view(-1, N_ROUTED_EXPERTS) - func_router_logits).abs().max().item()
+        )
+        print(f"    Router logits: max_diff={router_diff:.2e}")
+
+        # Compare routing decisions
+        hf_topk_idx, hf_topk_weights = hf_moe.route_tokens_to_experts(hf_router_logits)
+        func_topk_idx, func_topk_weights = moe_router(
+            hidden_flat,
+            router_weight=weights_gpu[f"{prefix}.gate.weight"],
+            e_score_correction_bias=weights_gpu[f"{prefix}.gate.e_score_correction_bias"],
+        )
+
+        # Check if same experts are selected
+        hf_sorted = hf_topk_idx.sort(dim=-1)[0]
+        func_sorted = func_topk_idx.sort(dim=-1)[0]
+        same_experts = (hf_sorted == func_sorted).all().item()
+        print(f"    Same experts selected: {same_experts}")
+        if not same_experts:
+            print(f"      HF experts: {hf_topk_idx[0].tolist()}")
+            print(f"      Func experts: {func_topk_idx[0].tolist()}")
+
+        # Compare routing weights
+        weight_diff = (hf_topk_weights - func_topk_weights).abs().max().item()
+        print(f"    Router weights: max_diff={weight_diff:.2e}")
+        print(f"      HF weights sample: {hf_topk_weights[0, :3].tolist()}")
+        print(f"      Func weights sample: {func_topk_weights[0, :3].tolist()}")
+
+        # Compare shared expert output
+        hf_shared_out = hf_moe.shared_experts(hidden_states)
+        func_shared_out = dense_mlp(
+            hidden_states,
+            gate_weight=weights_gpu[f"{prefix}.shared_experts.gate_proj.weight"],
+            up_weight=weights_gpu[f"{prefix}.shared_experts.up_proj.weight"],
+            down_weight=weights_gpu[f"{prefix}.shared_experts.down_proj.weight"],
+        )
+        shared_diff = (hf_shared_out - func_shared_out).abs().max().item()
+        print(f"    Shared expert: max_diff={shared_diff:.2e}")
+
+        # Compare routed expert output
+        expert_gate_weights = [
+            weights_gpu[f"{prefix}.experts.{i}.gate_proj.weight"] for i in range(N_ROUTED_EXPERTS)
+        ]
+        expert_up_weights = [
+            weights_gpu[f"{prefix}.experts.{i}.up_proj.weight"] for i in range(N_ROUTED_EXPERTS)
+        ]
+        expert_down_weights = [
+            weights_gpu[f"{prefix}.experts.{i}.down_proj.weight"] for i in range(N_ROUTED_EXPERTS)
+        ]
+
+        func_routed_out = expert_forward(
+            hidden_flat,
+            func_topk_idx,
+            func_topk_weights,
+            expert_gate_weights,
+            expert_up_weights,
+            expert_down_weights,
+        ).view(batch_size, seq_len, hidden_size)
+
+        # Get HF routed output by capturing it
+        hf_routed_out = hf_moe.experts(hidden_flat, hf_topk_idx, hf_topk_weights).view(
+            batch_size, seq_len, hidden_size
+        )
+
+        routed_diff = (hf_routed_out - func_routed_out).abs().max().item()
+        print(f"    Routed experts: max_diff={routed_diff:.2e}")
+
+        # Compare final output
+        hf_final = hf_routed_out + hf_shared_out
+        func_final = func_routed_out + func_shared_out
+        final_diff = (hf_final - func_final).abs().max().item()
+        print(f"    Final MoE output: max_diff={final_diff:.2e}")
+
+
 def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # noqa: PLR0915
     """Run verification test on GPU."""
     # NOTE: layer_by_layer defaults to True for debugging - remote execution doesn't pass CLI args
@@ -96,7 +229,9 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
 
     # Determine which shards we need
     shards_needed = num_layers + 1  # +1 for embeddings in shard 1
-    print(f"\nWill download shards 1-{shards_needed} + shard 93 (~{estimate_download_size(shards_needed)} GB)")
+    print(
+        f"\nWill download shards 1-{shards_needed} + shard 93 (~{estimate_download_size(shards_needed)} GB)"
+    )
 
     # Download weights to CPU first
     weights_cpu = download_partial_weights(num_layers)
@@ -112,6 +247,7 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
     config.num_hidden_layers = num_layers
 
     from transformers import Glm4MoeForCausalLM
+
     model = Glm4MoeForCausalLM(config)
     model.load_state_dict(weights_cpu, strict=False)
     model = model.to(torch.bfloat16).cuda()
@@ -130,6 +266,7 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
         hidden = hf_intermediates["embed"].cuda()
         # Need position embeddings for RoPE
         from glm4_moe_functional import compute_rope_embeddings
+
         positions = torch.arange(input_ids.shape[1], device="cuda").unsqueeze(0)
         cos, sin = compute_rope_embeddings(positions, dtype=hidden.dtype)
 
@@ -137,7 +274,7 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
             layer_out = model.model.layers[i](hidden, position_embeddings=(cos, sin))
             hidden = layer_out[0] if isinstance(layer_out, tuple) else layer_out
             hf_intermediates[f"layer_{i}"] = hidden.cpu()
-            print(f"  Layer {i}: {hidden.shape}, sample={hidden[0,0,:3].tolist()}")
+            print(f"  Layer {i}: {hidden.shape}, sample={hidden[0, 0, :3].tolist()}")
 
         # Capture final norm
         hf_intermediates["norm"] = model.model.norm(hidden).cpu()
@@ -147,26 +284,19 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
 
     print(f"HF logits shape: {hf_logits.shape}")
 
-    # Free GPU memory
-    del model
-    gc.collect()
-    torch.cuda.empty_cache()
-    print("HF model deleted, GPU memory freed")
-
-    # === Phase 2: Run functional implementation ===
-    print("\n### Phase 2: Functional Implementation ###")
-
-    # Move weights to GPU for functional forward
+    # Move weights to GPU for functional forward (before deleting model for debug)
     weights_gpu = {k: v.cuda() for k, v in weights_cpu.items()}
     del weights_cpu
     gc.collect()
+
+    # === Phase 2: Run functional implementation (with MoE debug while model still available) ===
+    print("\n### Phase 2: Functional Implementation ###")
 
     # Layer-by-layer comparison if debugging
     if layer_by_layer and hf_intermediates:
         import torch.nn.functional as F
         from glm4_moe_functional import (
             compute_rope_embeddings,
-            rms_norm,
             transformer_layer,
         )
 
@@ -175,7 +305,9 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
         # Compare embeddings
         func_embed = F.embedding(input_ids.cuda(), weights_gpu["model.embed_tokens.weight"])
         embed_diff = (hf_intermediates["embed"].cuda() - func_embed).abs().max().item()
-        print(f"  Embeddings: max_diff={embed_diff:.2e} [{'PASS' if embed_diff < 1e-4 else 'FAIL'}]")
+        print(
+            f"  Embeddings: max_diff={embed_diff:.2e} [{'PASS' if embed_diff < 1e-4 else 'FAIL'}]"
+        )
 
         if embed_diff >= 1e-4:
             print("    STOPPING: Embeddings diverged")
@@ -186,6 +318,9 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
             cos, sin = compute_rope_embeddings(positions, dtype=hidden.dtype)
 
             for i in range(num_layers):
+                # Get input hidden state for this layer (before the layer)
+                layer_input = hidden.clone()
+
                 hidden = transformer_layer(hidden, weights_gpu, i, cos, sin)
                 hf_hidden = hf_intermediates[f"layer_{i}"].cuda()
                 layer_diff = (hf_hidden - hidden).abs().max().item()
@@ -195,9 +330,21 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
 
                 if layer_diff >= 1e-4:
                     print(f"    STOPPING: Layer {i} diverged")
-                    print(f"    HF sample: {hf_hidden[0,0,:5].tolist()}")
-                    print(f"    Func sample: {hidden[0,0,:5].tolist()}")
+                    print(f"    HF sample: {hf_hidden[0, 0, :5].tolist()}")
+                    print(f"    Func sample: {hidden[0, 0, :5].tolist()}")
+
+                    # Debug MoE layer while model is still available
+                    if i >= FIRST_K_DENSE_REPLACE:
+                        # Get the post-attention hidden state for MoE debug
+                        # We need to extract this from the layer input
+                        debug_moe_layer(model, weights_gpu, layer_input, i, cos, sin)
                     break
+
+    # Now delete HF model
+    del model
+    gc.collect()
+    torch.cuda.empty_cache()
+    print("\nHF model deleted, GPU memory freed")
 
     with torch.no_grad():
         func_logits = glm4_moe_forward(input_ids.cuda(), weights_gpu, num_layers=num_layers).cpu()
@@ -234,9 +381,9 @@ def estimate_download_size(shards: int) -> float:
 
 
 def test_full_forward(
-    model: "AutoModelForCausalLM",
+    model: AutoModelForCausalLM,
     weights: dict,
-    input_ids: "torch.Tensor",
+    input_ids: torch.Tensor,
     num_layers: int,
 ) -> None:
     """Test full forward pass."""
@@ -278,9 +425,9 @@ def test_full_forward(
 
 
 def test_layer_by_layer(
-    model: "AutoModelForCausalLM",
+    model: AutoModelForCausalLM,
     weights: dict,
-    input_ids: "torch.Tensor",
+    input_ids: torch.Tensor,
     num_layers: int,
 ) -> None:
     """Test each layer individually to find divergence point."""
@@ -370,12 +517,12 @@ def test_layer_by_layer(
 
 
 def debug_layer(
-    model: "AutoModelForCausalLM",
+    model: AutoModelForCausalLM,
     weights: dict,
     layer_idx: int,
-    hidden_states: "torch.Tensor",
-    cos: "torch.Tensor",
-    sin: "torch.Tensor",
+    hidden_states: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
 ) -> None:
     """Debug a specific layer to find component divergence."""
     import torch
@@ -435,7 +582,9 @@ def debug_layer(
 
         # Post-attention layernorm
         hf_post_normed = hf_layer.post_attention_layernorm(hf_post_attn)
-        func_post_normed = rms_norm(func_post_attn, weights[f"{prefix}.post_attention_layernorm.weight"])
+        func_post_normed = rms_norm(
+            func_post_attn, weights[f"{prefix}.post_attention_layernorm.weight"]
+        )
         post_norm_diff = (hf_post_normed - func_post_normed).abs().max().item()
         print(f"    post_attention_layernorm: max_diff={post_norm_diff:.2e}")
 
@@ -474,7 +623,9 @@ def main() -> None:
     parser.add_argument("--gpu-id", type=str, help="Reuse existing GPU instance")
     parser.add_argument("--keep-alive", action="store_true", help="Keep GPU alive after test")
     parser.add_argument("--num-layers", type=int, default=5, help="Number of layers to test")
-    parser.add_argument("--layer-by-layer", action="store_true", default=True, help="Test each layer individually")
+    parser.add_argument(
+        "--layer-by-layer", action="store_true", default=True, help="Test each layer individually"
+    )
     args = parser.parse_args()
 
     if args.remote:
