@@ -160,10 +160,19 @@ async def _grpo_train_async(
     )
     logger = logging.getLogger(__name__)
 
-    # Create timestamped output directory
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    run_name = f"{config.experiment_name}_{timestamp}"
-    output_dir = Path(config.output_dir) / run_name
+    # Create output directory
+    # Use ROLLOUTS_RUN_NAME if provided (from run_remote), otherwise generate timestamp
+    import os
+
+    run_name = os.environ.get("ROLLOUTS_RUN_NAME")
+    if run_name:
+        # Remote run - run_remote already created the directory
+        output_dir = Path(config.output_dir) / run_name
+    else:
+        # Local run - generate timestamped name
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        run_name = f"{config.experiment_name}_{timestamp}"
+        output_dir = Path(config.output_dir) / run_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info("=" * 60)

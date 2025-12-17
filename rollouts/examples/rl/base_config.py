@@ -6,6 +6,7 @@ Provides run_remote() for deploying any RL training script to a remote GPU.
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -32,10 +33,14 @@ def run_remote(
 
     from bifrost.client import BifrostClient
     from broker.client import GPUClient
-    from kerbal.tmux import start_tmux_session
     from kerbal.job_monitor import LogStreamConfig, stream_log_until_complete
+    from kerbal.tmux import start_tmux_session
 
     load_dotenv()
+
+    # Generate run name upfront so all logs go to the same place
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    run_name = f"run_{timestamp}"
 
     # Get credentials
     runpod_key = os.getenv("RUNPOD_API_KEY")
@@ -84,10 +89,14 @@ def run_remote(
         workspace = bifrost.push("~/.bifrost/workspaces/rollouts-rl", bootstrap_cmd=bootstrap)
         print("Code deployed")
 
-        # Run training in tmux with log file (survives SSH disconnects, captures crashes)
-        print("Starting training in tmux...")
-        training_log = f"{workspace}/training.log"
-        env_vars = "PYTHONUNBUFFERED=1"
+        # Create run output directory and set up training log
+        remote_output_dir = f"{workspace}/rollouts/results/rl/{run_name}"
+        bifrost.exec(f"mkdir -p {remote_output_dir}")
+        training_log = f"{remote_output_dir}/training.log"
+
+        # Build command with run name passed via env var
+        print(f"Starting training run: {run_name}")
+        env_vars = f"PYTHONUNBUFFERED=1 ROLLOUTS_RUN_NAME={run_name}"
         if use_tui or tui_debug:
             env_vars += " ROLLOUTS_JSON_LOGS=true"
         cmd = f"{env_vars} uv run python {script_rel_path}"
@@ -146,52 +155,29 @@ def run_remote(
         # Always sync results/logs (even on ctrl+c or crash)
         print("\nSyncing results...")
         local_results = Path("results/rl")
-        local_results.mkdir(parents=True, exist_ok=True)
+        local_run_dir = local_results / run_name
+        local_run_dir.mkdir(parents=True, exist_ok=True)
 
-        # Always sync the main training log (captures early crashes)
-        try:
-            result = bifrost.download_files(
-                remote_path=f"{workspace}/training.log",
-                local_path=str(local_results / "training.log"),
-                recursive=False,
-            )
-            if result and result.success:
-                print("  Synced: training.log")
-        except Exception:
-            pass
-
-        # Sync all timestamped run directories (logs + config, NOT checkpoints)
-        remote_base = f"{workspace}/rollouts/results/rl"
+        # Sync all run artifacts from the single run directory
         files_to_sync = [
+            "training.log",
             "config.json",
             "rollouts.jsonl",
             "sglang.log",
             "vllm.log",
         ]
 
-        # List remote directories to find timestamped runs
-        try:
-            ls_result = bifrost.exec(f"ls -1 {remote_base} 2>/dev/null || true")
-            ls_output = ls_result.stdout if hasattr(ls_result, 'stdout') else str(ls_result)
-            remote_dirs = [d.strip() for d in ls_output.split("\n") if d.strip()]
-        except Exception:
-            remote_dirs = []
-
-        for remote_dir in remote_dirs:
-            local_run_dir = local_results / remote_dir
-            local_run_dir.mkdir(parents=True, exist_ok=True)
-
-            for filename in files_to_sync:
-                try:
-                    result = bifrost.download_files(
-                        remote_path=f"{remote_base}/{remote_dir}/{filename}",
-                        local_path=str(local_run_dir / filename),
-                        recursive=False,
-                    )
-                    if result and result.success:
-                        print(f"  Synced: {remote_dir}/{filename}")
-                except Exception:
-                    pass
+        for filename in files_to_sync:
+            try:
+                result = bifrost.download_files(
+                    remote_path=f"{remote_output_dir}/{filename}",
+                    local_path=str(local_run_dir / filename),
+                    recursive=False,
+                )
+                if result and result.success:
+                    print(f"  Synced: {run_name}/{filename}")
+            except Exception:
+                pass
 
         if not keep_alive:
             print(f"\nTerminating instance {instance.provider}:{instance.id}...")
