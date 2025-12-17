@@ -416,6 +416,7 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
                             hf_moe_input.view(-1, hf_moe_input.shape[-1]),
                             router_weight=weights_gpu[f"{prefix}.gate.weight"],
                             e_score_correction_bias=weights_gpu[bias_key],
+                            debug=True,
                         )
 
                         # Compare topk indices if captured

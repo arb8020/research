@@ -237,6 +237,7 @@ def moe_router(
     topk_group: int = TOPK_GROUP,
     routed_scaling_factor: float = ROUTED_SCALING_FACTOR,
     norm_topk_prob: bool = NORM_TOPK_PROB,
+    debug: bool = False,
 ) -> tuple[Tensor, Tensor]:
     """Route tokens to experts using sigmoid + group-based top-k selection.
 
@@ -249,12 +250,21 @@ def moe_router(
         topk_indices: (batch * seq_len, num_experts_per_tok)
         topk_weights: (batch * seq_len, num_experts_per_tok)
     """
+    if debug:
+        print(f"      [moe_router] n_group={n_group}, topk_group={topk_group}")
+
     # Compute router logits and apply sigmoid
     router_logits = F.linear(hidden_states.float(), router_weight.float())
     router_probs = router_logits.sigmoid()
 
+    if debug:
+        print(f"      [moe_router] router_probs sample: {router_probs[0, :5].tolist()}")
+
     # Add correction bias for expert selection
     router_logits_for_choice = router_probs + e_score_correction_bias
+
+    if debug:
+        print(f"      [moe_router] scores_for_choice sample: {router_logits_for_choice[0, :5].tolist()}")
 
     # Group-based selection: split experts into groups, pick top-k groups first
     # Shape: (batch*seq, n_group, experts_per_group)
