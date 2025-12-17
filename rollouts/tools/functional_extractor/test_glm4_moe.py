@@ -281,47 +281,45 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
             # Capture MoE subcomponent outputs for the first MoE layer (layer 3)
             if i == FIRST_K_DENSE_REPLACE:
                 moe = model.model.layers[i].mlp
-                # Get the input to MoE (after attention + residual + post_attention_layernorm)
-                # We need to recompute this from the layer input
-                layer_i_input = hf_intermediates[f"layer_{i-1}"].cuda() if i > 0 else hf_intermediates["embed"].cuda()
-
-                # Get post-attention hidden states
                 hf_layer = model.model.layers[i]
-                attn_input = hf_layer.input_layernorm(layer_i_input)
 
-                # Capture attention output
-                hf_attn_out = None
-                def capture_attn(module, inp, out):
-                    nonlocal hf_attn_out
-                    hf_attn_out = out[0] if isinstance(out, tuple) else out
-                attn_hook = hf_layer.self_attn.register_forward_hook(capture_attn)
-                _ = hf_layer.self_attn(attn_input, position_embeddings=(cos, sin))
-                attn_hook.remove()
+                # Use a hook to capture the MoE input (input to mlp module)
+                moe_input_captured = None
+                def capture_moe_input(module, inp, out):
+                    nonlocal moe_input_captured
+                    moe_input_captured = inp[0].clone()  # inp is a tuple, first element is hidden_states
+                moe_hook = hf_layer.mlp.register_forward_hook(capture_moe_input)
 
-                post_attn = layer_i_input + hf_attn_out
-                moe_input = hf_layer.post_attention_layernorm(post_attn)
+                # Re-run the layer forward just to capture MoE input via hook
+                layer_i_input = hf_intermediates[f"layer_{i-1}"].cuda() if i > 0 else hf_intermediates["embed"].cuda()
+                with torch.no_grad():
+                    _ = hf_layer(layer_i_input, position_embeddings=(cos, sin))
+                moe_hook.remove()
 
-                # Capture router output
-                router_logits = moe.gate(moe_input)
-                hf_topk_idx, hf_topk_weights = moe.route_tokens_to_experts(router_logits)
+                if moe_input_captured is not None:
+                    moe_input = moe_input_captured
 
-                # Capture shared expert output
-                shared_out = moe.shared_experts(moe_input)
+                    # Capture router output
+                    router_logits = moe.gate(moe_input)
+                    hf_topk_idx, hf_topk_weights = moe.route_tokens_to_experts(router_logits)
 
-                # Capture routed expert output
-                routed_out = moe.experts(
-                    moe_input.view(-1, moe_input.shape[-1]),
-                    hf_topk_idx,
-                    hf_topk_weights
-                ).view_as(moe_input)
+                    # Capture shared expert output
+                    shared_out = moe.shared_experts(moe_input)
 
-                hf_intermediates[f"moe_{i}_input"] = moe_input.cpu()
-                hf_intermediates[f"moe_{i}_router_logits"] = router_logits.cpu()
-                hf_intermediates[f"moe_{i}_topk_idx"] = hf_topk_idx.cpu()
-                hf_intermediates[f"moe_{i}_topk_weights"] = hf_topk_weights.cpu()
-                hf_intermediates[f"moe_{i}_shared_out"] = shared_out.cpu()
-                hf_intermediates[f"moe_{i}_routed_out"] = routed_out.cpu()
-                print(f"    Captured MoE subcomponents for layer {i}")
+                    # Capture routed expert output
+                    routed_out = moe.experts(
+                        moe_input.view(-1, moe_input.shape[-1]),
+                        hf_topk_idx,
+                        hf_topk_weights
+                    ).view_as(moe_input)
+
+                    hf_intermediates[f"moe_{i}_input"] = moe_input.cpu()
+                    hf_intermediates[f"moe_{i}_router_logits"] = router_logits.cpu()
+                    hf_intermediates[f"moe_{i}_topk_idx"] = hf_topk_idx.cpu()
+                    hf_intermediates[f"moe_{i}_topk_weights"] = hf_topk_weights.cpu()
+                    hf_intermediates[f"moe_{i}_shared_out"] = shared_out.cpu()
+                    hf_intermediates[f"moe_{i}_routed_out"] = routed_out.cpu()
+                    print(f"    Captured MoE subcomponents for layer {i}")
 
         # Capture final norm
         hf_intermediates["norm"] = model.model.norm(hidden).cpu()
