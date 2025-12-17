@@ -336,12 +336,14 @@ def main() -> None:
         from tools.functional_extractor.config import DeploymentConfig
         from tools.functional_extractor.verify import run_on_gpu
 
-        # GLM-4.5 needs more VRAM - estimate based on layers
+        # GLM-4.5 needs more VRAM and disk - estimate based on layers
         vram_needed = 24 if args.num_layers <= 3 else 48 if args.num_layers <= 5 else 80
+        # Model weights + HF cache + PyTorch needs ~50GB minimum
+        disk_needed = 100
 
         run_on_gpu(
             script_path=__file__,
-            deployment=DeploymentConfig(vram_gb=vram_needed),
+            deployment=DeploymentConfig(vram_gb=vram_needed, container_disk=disk_needed),
             gpu_id=args.gpu_id,
             keep_alive=args.keep_alive or bool(args.gpu_id),
         )
