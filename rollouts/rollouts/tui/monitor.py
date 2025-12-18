@@ -11,9 +11,10 @@ Usage:
     tail -f training.jsonl | python -m rollouts.tui.monitor
 
 Keybindings:
-    1/2/3   - Switch to pane (training/sglang/metrics)
+    1/2/3/4 - Switch to pane (training/sglang/metrics/traces)
     j/k     - Scroll down/up (or switch charts on metrics pane)
     g/G     - Go to top/bottom
+    Enter   - Open trace viewer (when on traces pane)
     q       - Quit
 
 TODO: Support viewing old runs via results directory
@@ -34,6 +35,7 @@ from collections import deque
 from dataclasses import dataclass, field
 
 from .terminal import Terminal
+from .traces import StepPicker, TraceData
 
 # Colors (ANSI)
 DIM = "\x1b[90m"
@@ -132,14 +134,15 @@ class Pane:
 class TrainingMonitor:
     """Multi-pane TUI for monitoring training logs."""
 
-    def __init__(self) -> None:
+    def __init__(self, rollouts_path: str | None = None) -> None:
         self.terminal = Terminal(use_alternate_screen=True)
         self.panes = {
             "training": Pane(name="Training"),
             "sglang": Pane(name="SGLang"),
             "metrics": Pane(name="Metrics"),
+            "traces": Pane(name="Traces"),
         }
-        self.pane_order = ["training", "sglang", "metrics"]
+        self.pane_order = ["training", "sglang", "metrics", "traces"]
         self.active_pane = "training"
         self._running = False
         self._needs_redraw = True
@@ -149,6 +152,10 @@ class TrainingMonitor:
         self._metrics: dict[str, deque[float]] = {}
         self._current_step = 0
         self._selected_metric = 0  # Index of currently viewed metric chart
+
+        # Traces viewer
+        self._rollouts_path = rollouts_path  # Path to rollouts.jsonl
+        self._trace_data: TraceData | None = None
 
     def route_log_line(self, line: LogLine) -> str:
         """Route log line to appropriate pane based on logger name."""
@@ -312,14 +319,20 @@ class TrainingMonitor:
         elif data == "3":
             self.active_pane = "metrics"
             self._needs_redraw = True
+        elif data == "4":
+            self.active_pane = "traces"
+            self._needs_redraw = True
+
+        # Open trace viewer when on traces pane
+        elif data in ("\r", "\n") and self.active_pane == "traces":
+            self._open_trace_viewer()
+            return
 
         # Scrolling - metrics pane scrolls through charts, others scroll logs
         elif data in ("j", "\x1b[B"):  # Down
             if self.active_pane == "metrics" and self._metrics:
                 # Scroll to next metric chart
-                self._selected_metric = min(
-                    self._selected_metric + 1, len(self._metrics) - 1
-                )
+                self._selected_metric = min(self._selected_metric + 1, len(self._metrics) - 1)
             else:
                 pane.scroll_down(1, content_height)
             self._needs_redraw = True
@@ -355,6 +368,33 @@ class TrainingMonitor:
             time.sleep(0.01)
         return None
 
+    def _open_trace_viewer(self) -> None:
+        """Open the hierarchical trace viewer."""
+        # Reload trace data from file
+        if self._rollouts_path:
+            self._trace_data = TraceData.from_jsonl(self._rollouts_path)
+
+        if not self._trace_data or not self._trace_data.steps:
+            # Add message to traces pane
+            self.panes["traces"].add_line(
+                LogLine(
+                    logger="traces",
+                    message="No rollouts found. Waiting for training...",
+                    level="WARNING",
+                )
+            )
+            self._needs_redraw = True
+            return
+
+        # Stop terminal, launch picker, restart terminal
+        self.terminal.stop()
+
+        picker = StepPicker(self._trace_data)
+        picker.run()
+
+        self.terminal.start(on_input=lambda x: None, on_resize=self._on_resize)
+        self._needs_redraw = True
+
     def _render(self) -> None:
         width = self.terminal.columns
         height = self.terminal.rows
@@ -367,7 +407,7 @@ class TrainingMonitor:
         # Tab bar
         output.append(self._render_tab_bar(width))
 
-        # Content - special handling for metrics pane
+        # Content - special handling for metrics and traces panes
         if self.active_pane == "metrics" and self._metrics:
             # Use plotext chart (takes most of the space)
             chart_height = min(content_height - 5, 15)  # Leave room for log lines
@@ -381,6 +421,11 @@ class TrainingMonitor:
 
             for log_line in visible_lines:
                 output.append(self._render_log_line(log_line, width))
+
+        elif self.active_pane == "traces":
+            # Traces pane shows summary and prompt to open viewer
+            output.extend(self._render_traces_summary(width, content_height))
+
         else:
             # Normal pane rendering
             pane = self.panes[self.active_pane]
@@ -467,7 +512,9 @@ class TrainingMonitor:
 
         # Title shows metric name and navigation hint
         current_val = values[-1] if values else 0
-        plt.title(f"{metric_name}: {current_val:.4f}  ({self._selected_metric + 1}/{total_metrics})")
+        plt.title(
+            f"{metric_name}: {current_val:.4f}  ({self._selected_metric + 1}/{total_metrics})"
+        )
         plt.xlabel(f"Step (latest: {self._current_step})")
         plt.plotsize(width - 2, height)
         plt.theme("dark")
@@ -476,13 +523,65 @@ class TrainingMonitor:
         chart_str = plt.build()
         return chart_str.split("\n")
 
+    def _render_traces_summary(self, width: int, height: int) -> list[str]:
+        """Render traces pane summary."""
+        lines = []
+
+        # Reload trace data if we have a path
+        if self._rollouts_path:
+            self._trace_data = TraceData.from_jsonl(self._rollouts_path)
+
+        if not self._trace_data or not self._trace_data.steps:
+            lines.append("")
+            lines.append(f"  {DIM}No rollouts found.{RESET}")
+            lines.append(f"  {DIM}Waiting for training to generate rollouts...{RESET}")
+            if self._rollouts_path:
+                lines.append("")
+                lines.append(f"  {DIM}Path: {self._rollouts_path}{RESET}")
+            return lines
+
+        # Summary stats
+        total_steps = len(self._trace_data.steps)
+        total_rollouts = sum(s.num_rollouts for s in self._trace_data.steps)
+        total_groups = sum(len(s.groups) for s in self._trace_data.steps)
+
+        lines.append("")
+        lines.append(f"  {BOLD}Rollout Traces{RESET}")
+        lines.append("")
+        lines.append(f"  {CYAN}Steps:{RESET}    {total_steps}")
+        lines.append(f"  {CYAN}Groups:{RESET}   {total_groups}")
+        lines.append(f"  {CYAN}Rollouts:{RESET} {total_rollouts}")
+        lines.append("")
+
+        # Show recent steps as preview
+        lines.append(f"  {DIM}Recent steps:{RESET}")
+        recent = self._trace_data.steps[-5:]  # Last 5 steps
+        for step in recent:
+            reward_color = (
+                GREEN if step.avg_reward > 0.5 else YELLOW if step.avg_reward > 0 else RED
+            )
+            lines.append(
+                f"    Step {step.step:>3}: avg_reward={reward_color}{step.avg_reward:.3f}{RESET}  "
+                f"({len(step.groups)} groups, {step.num_rollouts} rollouts)"
+            )
+
+        lines.append("")
+        lines.append(f"  {DIM}Press Enter to open trace viewer{RESET}")
+
+        return lines
+
     def _render_tab_bar(self, width: int) -> str:
         """Render tab bar showing all panes."""
         tabs = []
         for i, name in enumerate(self.pane_order):
             pane = self.panes[name]
             num = str(i + 1)
-            count = len(pane.lines)
+
+            # For traces pane, show rollout count instead of log line count
+            if name == "traces" and self._trace_data:
+                count = sum(s.num_rollouts for s in self._trace_data.steps)
+            else:
+                count = len(pane.lines)
 
             if name == self.active_pane:
                 tabs.append(f"{BOLD}{WHITE}[{num}] {pane.name} ({count}){RESET}")
@@ -490,7 +589,7 @@ class TrainingMonitor:
                 tabs.append(f"{DIM}[{num}] {pane.name} ({count}){RESET}")
 
         tab_str = "  ".join(tabs)
-        padding = width - len("[1] Training (0)  [2] SGLang (0)  [3] Metrics (0)")
+        padding = width - len("[1] Training (0)  [2] SGLang (0)  [3] Metrics (0)  [4] Traces (0)")
         return f"{BG_HEADER} {tab_str}{' ' * max(0, padding)}{RESET}"
 
     def _render_log_line(self, line: LogLine, width: int) -> str:
@@ -516,17 +615,25 @@ class TrainingMonitor:
         pane = self.panes[self.active_pane]
         content_height = self.terminal.rows - 3
 
-        # Different hints for metrics pane (j/k scrolls charts, not logs)
+        # Different hints for each pane type
         if self.active_pane == "metrics" and self._metrics:
-            hints = "1/2/3:pane  j/k:chart  q:quit"
+            hints = "1/2/3/4:pane  j/k:chart  q:quit"
+        elif self.active_pane == "traces":
+            hints = "1/2/3/4:pane  Enter:view traces  q:quit"
         else:
-            hints = "1/2/3:pane  j/k:scroll  gg/G:top/end  q:quit"
+            hints = "1/2/3/4:pane  j/k:scroll  gg/G:top/end  q:quit"
 
-        # Scroll position (or metric position for metrics pane)
+        # Position indicator depends on pane type
         if self.active_pane == "metrics" and self._metrics:
             metric_names = sorted(self._metrics.keys())
             total_metrics = len(metric_names)
             pos = f"chart {self._selected_metric + 1}/{total_metrics}"
+        elif self.active_pane == "traces":
+            if self._trace_data and self._trace_data.steps:
+                total_rollouts = sum(s.num_rollouts for s in self._trace_data.steps)
+                pos = f"{total_rollouts} rollouts"
+            else:
+                pos = "0 rollouts"
         elif len(pane.lines) > 0:
             total = len(pane.lines)
             pos = f"{pane.scroll + 1}-{min(pane.scroll + content_height, total)}/{total}"
@@ -546,7 +653,17 @@ class TrainingMonitor:
 
 def main() -> None:
     """Entry point for CLI."""
-    monitor = TrainingMonitor()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Training monitor TUI")
+    parser.add_argument(
+        "--rollouts",
+        type=str,
+        help="Path to rollouts.jsonl file for trace viewing",
+    )
+    args = parser.parse_args()
+
+    monitor = TrainingMonitor(rollouts_path=args.rollouts)
     monitor.run()
 
 
