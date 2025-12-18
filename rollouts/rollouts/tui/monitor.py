@@ -154,7 +154,7 @@ class TrainingMonitor:
         """Route log line to appropriate pane based on logger name."""
         logger = line.logger.lower()
 
-        if "sglang" in logger:
+        if "sglang" in logger or "vllm" in logger:
             return "sglang"
         elif "metrics" in logger:
             return "metrics"
