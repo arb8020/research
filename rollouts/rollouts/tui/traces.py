@@ -259,6 +259,8 @@ class TraceViewer:
     def __init__(self, rollout: Rollout) -> None:
         self.rollout = rollout
         self.scroll = 0
+        self.h_scroll = 0  # Horizontal scroll
+        self.wrap = True  # Wrap mode (False = truncate + h-scroll)
         self.terminal = Terminal(use_alternate_screen=True)
         self._running = False
         self._needs_redraw = True
@@ -318,6 +320,25 @@ class TraceViewer:
         elif data == "G":
             self.scroll = max_scroll
             self._needs_redraw = True
+        # Horizontal scrolling
+        elif data in ("h", "\x1b[D"):  # Left
+            self.h_scroll = max(0, self.h_scroll - 20)
+            self.wrap = False
+            if self.h_scroll == 0:
+                self.wrap = True
+            self._needs_redraw = True
+        elif data in ("l", "\x1b[C"):  # Right
+            self.h_scroll += 20
+            self.wrap = False
+            self._needs_redraw = True
+        elif data == "0":  # Beginning
+            self.h_scroll = 0
+            self._needs_redraw = True
+        elif data == "w":  # Toggle wrap
+            self.wrap = not self.wrap
+            if self.wrap:
+                self.h_scroll = 0
+            self._needs_redraw = True
 
     def _wait_for_char(self, timeout: float = 0.5) -> str | None:
         start = time.time()
@@ -362,14 +383,25 @@ class TraceViewer:
         # Header
         output.append(self._render_header(width))
 
-        # Content
+        # Content - either wrap or truncate based on mode
         visible = self._rendered_lines[self.scroll : self.scroll + content_height]
         for ln in visible:
-            # Truncate to width
-            display_ln = ln
-            if len(display_ln) > width:
-                display_ln = display_ln[: width - 3] + "..."
-            output.append(display_ln + " " * max(0, width - len(display_ln)))
+            if self.wrap:
+                # Wrap long lines
+                while ln and len(output) < content_height + 1:
+                    chunk = ln[: width - 1]
+                    ln = ln[width - 1 :]
+                    output.append(chunk + " " * max(0, width - len(chunk)))
+                if not ln:
+                    continue
+            else:
+                # Truncate with h-scroll
+                display_ln = ln
+                if self.h_scroll > 0:
+                    display_ln = display_ln[self.h_scroll :] if self.h_scroll < len(display_ln) else ""
+                if len(display_ln) > width - 1:
+                    display_ln = display_ln[: width - 4] + "..."
+                output.append(display_ln + " " * max(0, width - len(display_ln)))
 
         # Pad
         while len(output) < height - 1:
@@ -391,7 +423,8 @@ class TraceViewer:
         return f"{BG_HEADER}{BOLD}{left}{RESET}{BG_HEADER}{' ' * max(0, padding)}{right}{RESET}"
 
     def _render_footer(self, width: int) -> str:
-        hints = "j/k:scroll  gg/G:top/end  q:back"
+        wrap_hint = "w:truncate" if self.wrap else "h/l:scroll  w:wrap"
+        hints = f"j/k:scroll  {wrap_hint}  q:back"
         total = len(self._rendered_lines)
         pos = f"{self.scroll + 1}/{total}" if total > 0 else "0/0"
 
