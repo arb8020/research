@@ -104,7 +104,9 @@ class Pane:
     name: str
     lines: deque[LogLine] = field(default_factory=lambda: deque(maxlen=10000))
     scroll: int = 0
+    h_scroll: int = 0  # Horizontal scroll offset
     auto_scroll: bool = True  # Follow tail
+    wrap: bool = True  # Wrap lines (False = truncate + h-scroll)
 
     def add_line(self, line: LogLine) -> None:
         self.lines.append(line)
@@ -122,6 +124,17 @@ class Pane:
         # Re-enable auto scroll if at bottom
         if self.scroll >= max_scroll:
             self.auto_scroll = True
+
+    def scroll_left(self, n: int = 10) -> None:
+        self.h_scroll = max(0, self.h_scroll - n)
+        self.wrap = False  # Disable wrap when h-scrolling
+        # Re-enable wrap if back to start
+        if self.h_scroll == 0:
+            self.wrap = True
+
+    def scroll_right(self, n: int = 10) -> None:
+        self.h_scroll += n
+        self.wrap = False  # Disable wrap when h-scrolling
 
     def scroll_to_top(self) -> None:
         self.scroll = 0
@@ -389,6 +402,24 @@ class TrainingMonitor:
             pane.scroll_to_bottom(content_height)
             self._needs_redraw = True
 
+        # Horizontal scrolling (only in truncate mode)
+        elif data in ("h", "\x1b[D"):  # Left
+            pane.scroll_left(20)
+            self._needs_redraw = True
+        elif data in ("l", "\x1b[C"):  # Right
+            pane.scroll_right(20)
+            self._needs_redraw = True
+        elif data == "0":  # Beginning of line
+            pane.h_scroll = 0
+            self._needs_redraw = True
+
+        # Toggle wrap mode
+        elif data == "w":
+            pane.wrap = not pane.wrap
+            if pane.wrap:
+                pane.h_scroll = 0  # Reset h-scroll when enabling wrap
+            self._needs_redraw = True
+
     def _wait_for_char(self, timeout: float = 0.5) -> str | None:
         start = time.time()
         while time.time() - start < timeout:
@@ -450,7 +481,7 @@ class TrainingMonitor:
             visible_lines = list(pane.lines)[-remaining_height:]  # Show most recent
 
             for log_line in visible_lines:
-                output.append(self._render_log_line(log_line, width))
+                output.extend(self._render_log_line(log_line, width, pane.h_scroll, pane.wrap))
 
         elif self.active_pane == "traces":
             # Traces pane shows summary and prompt to open viewer
@@ -462,7 +493,11 @@ class TrainingMonitor:
             visible_lines = list(pane.lines)[pane.scroll : pane.scroll + content_height]
 
             for log_line in visible_lines:
-                output.append(self._render_log_line(log_line, width))
+                rendered = self._render_log_line(log_line, width, pane.h_scroll, pane.wrap)
+                output.extend(rendered)
+                # Stop if we've filled the content area
+                if len(output) >= content_height + 1:  # +1 for tab bar
+                    break
 
         # Pad with empty lines
         while len(output) < height - 1:
@@ -622,8 +657,20 @@ class TrainingMonitor:
         padding = width - len("[1] Training (0)  [2] SGLang (0)  [3] Metrics (0)  [4] Traces (0)")
         return f"{BG_HEADER} {tab_str}{' ' * max(0, padding)}{RESET}"
 
-    def _render_log_line(self, line: LogLine, width: int) -> str:
-        """Render a single log line."""
+    def _render_log_line(
+        self, line: LogLine, width: int, h_scroll: int = 0, wrap: bool = True
+    ) -> list[str]:
+        """Render a single log line, returning multiple lines if wrapping.
+
+        Args:
+            line: The log line to render
+            width: Terminal width
+            h_scroll: Horizontal scroll offset (only used when wrap=False)
+            wrap: If True, wrap long lines. If False, truncate and allow h-scroll.
+
+        Returns:
+            List of rendered lines (1 if truncating, possibly more if wrapping)
+        """
         # Color by level
         level_color = {
             "DEBUG": DIM,
@@ -633,12 +680,23 @@ class TrainingMonitor:
             "CRITICAL": RED + BOLD,
         }.get(line.level, WHITE)
 
-        # Truncate message to fit
         msg = line.message
-        if len(msg) > width - 1:
-            msg = msg[: width - 4] + "..."
 
-        return f"{level_color}{msg}{RESET}"
+        if wrap:
+            # Wrap mode: split long lines into multiple
+            lines = []
+            while msg:
+                chunk = msg[:width - 1]
+                msg = msg[width - 1:]
+                lines.append(f"{level_color}{chunk}{RESET}")
+            return lines if lines else [f"{level_color}{RESET}"]
+        else:
+            # Truncate mode: apply h-scroll and truncate
+            if h_scroll > 0:
+                msg = msg[h_scroll:] if h_scroll < len(msg) else ""
+            if len(msg) > width - 1:
+                msg = msg[: width - 4] + "..."
+            return [f"{level_color}{msg}{RESET}"]
 
     def _render_footer(self, width: int) -> str:
         """Render footer with keybindings and scroll position."""
@@ -651,7 +709,8 @@ class TrainingMonitor:
         elif self.active_pane == "traces":
             hints = "1/2/3/4:pane  Enter:view traces  q:quit"
         else:
-            hints = "1/2/3/4:pane  j/k:scroll  gg/G:top/end  q:quit"
+            wrap_hint = "w:truncate" if pane.wrap else "h/l:scroll  w:wrap"
+            hints = f"1/2/3/4:pane  j/k:scroll  {wrap_hint}  q:quit"
 
         # Position indicator depends on pane type
         if self.active_pane == "metrics" and self._metrics:
