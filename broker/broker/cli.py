@@ -1116,5 +1116,48 @@ def cleanup(
         raise typer.Exit(1)
 
 
+@app.command()
+def logs(
+    ctx: typer.Context,
+    pod_id: str = typer.Argument(..., help="RunPod pod ID"),
+):
+    """Fetch system logs from a RunPod pod.
+
+    This uses a separate Chrome debug instance to authenticate with RunPod's
+    internal API. On first run, it will launch Chrome - log into RunPod console
+    once, then logs will work automatically.
+
+    Example:
+        broker logs 2ymw46y21mcz4f
+    """
+    from broker.runpod_logs import fetch_pod_logs, is_chrome_debug_running, launch_chrome_debug
+
+    if not is_chrome_debug_running():
+        logger.info("launching Chrome debug instance...")
+        launch_chrome_debug()
+        console.print(
+            "[yellow]Chrome debug instance launched.[/yellow]\n"
+            "Please log into RunPod console: https://console.runpod.io\n"
+            "Then run this command again."
+        )
+        raise typer.Exit(0)
+
+    result = fetch_pod_logs(pod_id)
+
+    if "error" in result:
+        console.print(f"[red]{result['error']}[/red]")
+        raise typer.Exit(1)
+
+    if ctx.obj["json"]:
+        print(json.dumps(result, indent=2))
+    else:
+        # Pretty print logs
+        if isinstance(result, list):
+            for entry in result:
+                console.print(entry)
+        else:
+            console.print(result)
+
+
 if __name__ == "__main__":
     app()
