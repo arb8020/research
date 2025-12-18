@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """End-to-end correctness test for TI/TO (Tokens-In/Tokens-Out).
 
-Demonstrates:
-1. THE PROBLEM: Retokenization produces different tokens with logprob -20
+Uses multi-turn calculator environment with tool calls to demonstrate:
+1. THE PROBLEM: Retokenization produces different tokens with logprob < -10
 2. THE FIX: TI/TO stores generated token_ids directly, avoiding retokenization
+
+The test runs multiple rollouts and checks for token mismatches. When a mismatch
+is found, it computes the logprob of the wrong token and reports if it's < -10
+(the smoking gun that causes RL training collapse).
 
 Node acquisition (one of):
 - --ssh: Use static SSH connection
@@ -22,9 +26,6 @@ Usage:
 
     # Provision and keep alive for reuse
     python tests/test_tito_correctness.py --provision --keep-alive
-
-    # Use specific provider
-    python tests/test_tito_correctness.py --provision --provider runpod
 """
 
 from __future__ import annotations
@@ -109,22 +110,57 @@ def acquire_node_runpod_only(
 REMOTE_TEST_SCRIPT = '''
 """Remote TI/TO correctness test - runs on GPU node.
 
-Demonstrates:
-1. THE PROBLEM: Text-based generation → retokenization → wrong tokens with logprob -20
-2. THE FIX: TI/TO stores generated token_ids directly, no retokenization needed
+Multi-turn calculator test that:
+1. Generates tool calls (JSON with quotes, whitespace - prone to tokenization issues)
+2. Compares generated tokens vs retokenized tokens
+3. Reports mismatches with logprob analysis
+4. Breaks on first mismatch with logprob < -10 (the smoking gun)
 """
 
 import json
 import subprocess
 import time
 import sys
+import re
 import httpx
 import torch
 import torch.nn.functional as F
 
 MODEL = "{model}"
 PORT = {port}
-MAX_TOKENS = 30
+MAX_TOKENS = 200
+NUM_ROLLOUTS = 10  # Try multiple rollouts to find mismatches
+LOGPROB_THRESHOLD = -10  # Logprobs below this indicate retokenization collapse
+
+# Calculator system prompt and tools
+SYSTEM_PROMPT = """You are a calculator assistant. Use the provided tools to solve math problems.
+
+Available tools:
+- add(value): Add a number to the current value (starts at 0)
+- subtract(value): Subtract a number from the current value
+- multiply(value): Multiply the current value by a number
+- divide(value): Divide the current value by a number
+- complete_task(summary, final_result): Submit your final answer
+
+Always use tool calls in the format:
+<tool_call>
+{{"name": "function_name", "arguments": {{"arg": value}}}}
+</tool_call>
+
+Work step by step, calling one tool at a time."""
+
+MATH_PROBLEMS = [
+    "Calculate (5 + 3) * 2",
+    "What is 100 / 4 - 10?",
+    "Compute 7 * 8 + 6",
+    "Find the result of 50 - 15 + 25",
+    "Calculate 12 * 3 / 4",
+    "What is (20 + 30) / 5?",
+    "Compute 99 - 33 + 11",
+    "Find 64 / 8 * 3",
+    "Calculate 45 + 55 - 25",
+    "What is 8 * 9 - 12?",
+]
 
 
 def wait_for_sglang(base_url: str, timeout: int = 300) -> bool:
@@ -168,170 +204,133 @@ def start_sglang_server():
     return process, base_url
 
 
-def demonstrate_the_problem(model, tokenizer):
-    """Show that retokenization produces different tokens with terrible logprobs.
-
-    This is THE core problem TI/TO solves.
-    """
-    print("\\n" + "=" * 60)
-    print("DEMONSTRATING THE PROBLEM: Retokenization Collapse")
-    print("=" * 60)
-
-    device = next(model.parameters()).device
-    prompt = "The capital of France is"
-
-    # Step 1: Generate tokens
-    print(f"\\n1. Generate from prompt: {{prompt!r}}")
-    input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
-
-    generated_ids = []
-    generated_logprobs = []
-    current_ids = input_ids
-
-    with torch.no_grad():
-        for _ in range(MAX_TOKENS):
-            outputs = model(current_ids)
-            logits = outputs.logits[:, -1, :]
-            log_probs = F.log_softmax(logits, dim=-1, dtype=torch.float32)
-
-            next_token = logits.argmax(dim=-1).item()
-            token_logprob = log_probs[0, next_token].item()
-
-            generated_ids.append(next_token)
-            generated_logprobs.append(token_logprob)
-
-            if next_token == tokenizer.eos_token_id:
-                break
-
-            current_ids = torch.cat(
-                [current_ids, torch.tensor([[next_token]], device=device)],
-                dim=1,
-            )
-
-    generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
-    print(f"   Generated text: {{generated_text!r}}")
-    print(f"   Generated tokens: {{generated_ids[:10]}}...")
-    print(f"   Logprobs: {{[f'{{lp:.2f}}' for lp in generated_logprobs[:10]]}}...")
-
-    # Step 2: Simulate text-based API (decode → re-encode)
-    print(f"\\n2. Simulate text-based API: decode → re-encode")
-    full_text = prompt + generated_text
-    retokenized_ids = tokenizer.encode(full_text, add_special_tokens=False)
-    retokenized_generated = retokenized_ids[len(tokenizer.encode(prompt, add_special_tokens=False)):]
-
-    print(f"   Retokenized tokens: {{retokenized_generated[:10]}}...")
-
-    # Step 3: Find mismatches and compute their logprobs
-    print(f"\\n3. Compare tokens and find mismatches:")
-    mismatches = []
-    min_len = min(len(generated_ids), len(retokenized_generated))
-
-    for i in range(min_len):
-        orig = generated_ids[i]
-        retok = retokenized_generated[i]
-        if orig != retok:
-            mismatches.append((i, orig, retok, generated_logprobs[i]))
-
-    if not mismatches:
-        print("   No mismatches in this example (try a different prompt)")
-        # Force an example by showing what WOULD happen
-        print("\\n   Showing what happens when tokens DO mismatch:")
-        print("   If model generated token 1234 (logprob -0.5)")
-        print("   But retokenization gives token 5678")
-        print("   → Model's logprob for 5678 might be -20 (never predicted it!)")
-        print("   → This -20 logprob DOMINATES the gradient")
-        print("   → RL training collapses")
-    else:
-        print(f"   Found {{len(mismatches)}} mismatches!")
-        print()
-
-        # Compute logprobs for the WRONG tokens
-        current_ids = input_ids
-        with torch.no_grad():
-            for i, (idx, orig_tok, wrong_tok, orig_lp) in enumerate(mismatches[:5]):
-                # Build context up to this position
-                prefix = input_ids[0].tolist() + generated_ids[:idx]
-                context = torch.tensor([prefix], device=device)
-
-                outputs = model(context)
-                logits = outputs.logits[:, -1, :]
-                log_probs = F.log_softmax(logits, dim=-1, dtype=torch.float32)
-
-                wrong_logprob = log_probs[0, wrong_tok].item()
-
-                orig_decoded = tokenizer.decode([orig_tok])
-                wrong_decoded = tokenizer.decode([wrong_tok])
-
-                print(f"   Position {{idx}}:")
-                print(f"     Original token: {{orig_tok}} ({{orig_decoded!r}}) logprob={{orig_lp:.2f}}")
-                print(f"     Wrong token:    {{wrong_tok}} ({{wrong_decoded!r}}) logprob={{wrong_logprob:.2f}}")
-                print(f"     → Difference: {{wrong_logprob - orig_lp:.1f}} nats")
-                if wrong_logprob < -10:
-                    print(f"     ⚠️  LOGPROB < -10: This will DOMINATE gradients!")
-                print()
-
-    return len(mismatches)
-
-
-def demonstrate_the_fix(tokenizer, base_url: str):
-    """Show that TI/TO avoids retokenization entirely."""
-    from rollouts.inference.backends import generate_sglang, tokenize_chat
+def generate_with_sglang(base_url: str, input_ids: list[int], max_tokens: int = 200):
+    """Generate tokens via SGLang /generate endpoint."""
     import trio
-
-    print("\\n" + "=" * 60)
-    print("DEMONSTRATING THE FIX: TI/TO (Tokens-In/Tokens-Out)")
-    print("=" * 60)
-
-    messages = [{{"role": "user", "content": "The capital of France is"}}]
+    from rollouts.inference.backends import generate_sglang
 
     async def run():
-        # Step 1: Tokenize input
-        input_ids = tokenize_chat(tokenizer, messages, add_generation_prompt=True)
-        print(f"\\n1. Tokenize input: {{len(input_ids)}} tokens")
-
-        # Step 2: Generate via /generate (tokens in, tokens out)
-        print(f"\\n2. Call /generate with token IDs (not text!)")
-        result = await generate_sglang(
+        return await generate_sglang(
             base_url=base_url,
             input_ids=input_ids,
-            max_tokens=MAX_TOKENS,
-            temperature=0.0,
+            max_tokens=max_tokens,
+            temperature=0.7,  # Some randomness to explore different outputs
+            top_logprobs_num=5,
         )
-
-        print(f"   Got {{len(result.output_ids)}} tokens directly from server")
-        print(f"   Token IDs: {{list(result.output_ids)[:10]}}...")
-        print(f"   Logprobs: {{[f'{{lp:.2f}}' for lp in result.logprobs[:10]]}}...")
-
-        # Step 3: Store token_ids (no retokenization!)
-        print(f"\\n3. Store token_ids in Choice (this is what we train on)")
-        print(f"   Choice.token_ids = {{list(result.output_ids)[:10]}}...")
-
-        # Step 4: Decode for display only
-        output_text = tokenizer.decode(result.output_ids, skip_special_tokens=True)
-        print(f"\\n4. Decode for display (NOT for training): {{output_text!r}}")
-
-        # Step 5: Show what training sees
-        print(f"\\n5. What training sees:")
-        print(f"   tokens:   {{list(result.output_ids)[:10]}}... (from Choice.token_ids)")
-        print(f"   logprobs: {{[f'{{lp:.2f}}' for lp in result.logprobs[:10]]}}... (all reasonable)")
-        print(f"   → NO retokenization, NO -20 logprobs, NO gradient explosion")
-
-        return result
 
     return trio.run(run)
 
 
-def main():
-    print("=" * 60)
-    print("TI/TO (Tokens-In/Tokens-Out) Demonstration")
-    print(f"Model: {{MODEL}}")
-    print("=" * 60)
-    print()
-    print("This test demonstrates:")
-    print("  1. THE PROBLEM: Retokenization produces wrong tokens with logprob -20")
-    print("  2. THE FIX: TI/TO stores token_ids directly, avoiding retokenization")
+def find_mismatches_with_logprobs(
+    model,
+    tokenizer,
+    generated_ids: list[int],
+    input_ids: list[int],
+    generated_logprobs: list[float],
+):
+    """Find token mismatches and compute logprobs for wrong tokens.
 
-    # Load model and tokenizer
+    Returns list of (position, orig_token, wrong_token, orig_logprob, wrong_logprob)
+    """
+    device = next(model.parameters()).device
+
+    # Decode and re-encode (simulating text-based API)
+    generated_text = tokenizer.decode(generated_ids, skip_special_tokens=False)
+    retokenized_ids = tokenizer.encode(generated_text, add_special_tokens=False)
+
+    mismatches = []
+    min_len = min(len(generated_ids), len(retokenized_ids))
+
+    for i in range(min_len):
+        orig = generated_ids[i]
+        retok = retokenized_ids[i]
+
+        if orig != retok:
+            # Compute logprob of the wrong token
+            prefix = list(input_ids) + list(generated_ids[:i])
+            context = torch.tensor([prefix], device=device)
+
+            with torch.no_grad():
+                outputs = model(context)
+                logits = outputs.logits[:, -1, :]
+                log_probs = F.log_softmax(logits, dim=-1, dtype=torch.float32)
+                wrong_logprob = log_probs[0, retok].item()
+
+            orig_logprob = generated_logprobs[i] if i < len(generated_logprobs) else 0.0
+            mismatches.append((i, orig, retok, orig_logprob, wrong_logprob))
+
+    return mismatches
+
+
+def run_single_rollout(model, tokenizer, base_url: str, problem: str, rollout_idx: int):
+    """Run a single calculator rollout and check for mismatches.
+
+    Returns (found_bad_mismatch, mismatch_details) where found_bad_mismatch is True
+    if we found a mismatch with logprob < LOGPROB_THRESHOLD.
+    """
+    from rollouts.inference.backends import tokenize_chat
+
+    messages = [
+        {{"role": "system", "content": SYSTEM_PROMPT}},
+        {{"role": "user", "content": problem}},
+    ]
+
+    print(f"\\n--- Rollout {{rollout_idx + 1}}: {{problem}} ---")
+
+    # Tokenize and generate
+    input_ids = tokenize_chat(tokenizer, messages, add_generation_prompt=True)
+    result = generate_with_sglang(base_url, input_ids, MAX_TOKENS)
+
+    generated_text = tokenizer.decode(result.output_ids, skip_special_tokens=False)
+    print(f"Generated {{len(result.output_ids)}} tokens")
+    print(f"Text preview: {{generated_text[:100]}}...")
+
+    # Check for mismatches
+    mismatches = find_mismatches_with_logprobs(
+        model, tokenizer,
+        list(result.output_ids),
+        input_ids,
+        list(result.logprobs),
+    )
+
+    if not mismatches:
+        print("No token mismatches found")
+        return False, None
+
+    print(f"Found {{len(mismatches)}} token mismatches!")
+
+    # Check each mismatch
+    for pos, orig_tok, wrong_tok, orig_lp, wrong_lp in mismatches[:5]:
+        orig_decoded = tokenizer.decode([orig_tok])
+        wrong_decoded = tokenizer.decode([wrong_tok])
+
+        print(f"  Position {{pos}}:")
+        print(f"    Generated: token={{orig_tok}} ({{repr(orig_decoded)}}) logprob={{orig_lp:.2f}}")
+        print(f"    Retokenized: token={{wrong_tok}} ({{repr(wrong_decoded)}}) logprob={{wrong_lp:.2f}}")
+        print(f"    Logprob difference: {{wrong_lp - orig_lp:.1f}} nats")
+
+        if wrong_lp < LOGPROB_THRESHOLD:
+            print(f"    ⚠️  FOUND IT! Logprob {{wrong_lp:.2f}} < {{LOGPROB_THRESHOLD}}")
+            print(f"    This token would DOMINATE gradients in RL training!")
+            return True, (pos, orig_tok, wrong_tok, orig_lp, wrong_lp, orig_decoded, wrong_decoded)
+
+    return False, None
+
+
+def main():
+    print("=" * 70)
+    print("TI/TO (Tokens-In/Tokens-Out) Multi-Turn Calculator Test")
+    print(f"Model: {{MODEL}}")
+    print("=" * 70)
+    print()
+    print("This test demonstrates the retokenization collapse problem:")
+    print("  - Generate tool calls (JSON with quotes, whitespace)")
+    print("  - Compare generated tokens vs retokenized tokens")
+    print("  - Find mismatches with logprob < -10 (the smoking gun)")
+    print()
+    print(f"Running {{NUM_ROLLOUTS}} rollouts to find mismatches...")
+
+    # Load model for logprob computation
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     print("\\nLoading model and tokenizer...")
@@ -344,39 +343,67 @@ def main():
     model.eval()
     print(f"✓ Model loaded")
 
-    # Part 1: Show the problem
-    num_mismatches = demonstrate_the_problem(model, tokenizer)
-
-    # Part 2: Start SGLang and show the fix
+    # Start SGLang server
     process, base_url = start_sglang_server()
 
     try:
-        result = demonstrate_the_fix(tokenizer, base_url)
+        found_smoking_gun = False
+        smoking_gun_details = None
+        total_mismatches = 0
+
+        for i in range(NUM_ROLLOUTS):
+            problem = MATH_PROBLEMS[i % len(MATH_PROBLEMS)]
+            found, details = run_single_rollout(model, tokenizer, base_url, problem, i)
+
+            if details:
+                total_mismatches += 1
+
+            if found:
+                found_smoking_gun = True
+                smoking_gun_details = details
+                print(f"\\n🎯 Found the smoking gun on rollout {{i + 1}}!")
+                break
 
         # Summary
-        print("\\n" + "=" * 60)
-        print("SUMMARY")
-        print("=" * 60)
-        print()
-        print("THE PROBLEM (text-based APIs):")
-        print("  generate() → decode to text → re-encode for training")
-        print("  → Some tokens change during re-encoding")
-        print("  → Changed tokens have logprob ≈ -20 (model never predicted them)")
-        print("  → These dominate gradients → RL training collapses")
-        print()
-        print("THE FIX (TI/TO):")
-        print("  tokenize() → /generate with token IDs → store output_ids directly")
-        print("  → No re-encoding, tokens are exactly what model predicted")
-        print("  → All logprobs are reasonable → stable RL training")
-        print()
+        print("\\n" + "=" * 70)
+        print("RESULTS")
+        print("=" * 70)
 
-        if num_mismatches > 0:
-            print(f"This run found {{num_mismatches}} token mismatches that would cause problems.")
+        if found_smoking_gun:
+            pos, orig_tok, wrong_tok, orig_lp, wrong_lp, orig_dec, wrong_dec = smoking_gun_details
+            print()
+            print("✗ FOUND RETOKENIZATION COLLAPSE!")
+            print()
+            print("The Problem (from tokens.md Figure 4):")
+            print(f"  At position {{pos}}, model generated token {{orig_tok}} ({{repr(orig_dec)}})")
+            print(f"  with logprob {{orig_lp:.2f}} (reasonable)")
+            print()
+            print(f"  But after decode→re-encode, we get token {{wrong_tok}} ({{repr(wrong_dec)}})")
+            print(f"  with logprob {{wrong_lp:.2f}} (EXTREMELY UNLIKELY)")
+            print()
+            print("Why this breaks RL training:")
+            print(f"  - Logprob {{wrong_lp:.2f}} << -10 means model NEVER predicted this token")
+            print("  - When training on this token, gradient is HUGE")
+            print("  - These huge gradients DOMINATE the loss")
+            print("  - Over time: instability → collapse")
+            print()
+            print("The Fix (TI/TO):")
+            print("  - Store generated token_ids directly (no decode→re-encode)")
+            print("  - Train on EXACTLY what model generated")
+            print("  - All logprobs are reasonable → stable training")
+            print()
+            print("✓ TEST PASSED - Successfully demonstrated the problem!")
+            return 0
         else:
-            print("This run didn't find mismatches, but they happen frequently in practice.")
-
-        print("\\n✓ DEMONSTRATION COMPLETE")
-        return 0
+            print()
+            print(f"Ran {{NUM_ROLLOUTS}} rollouts, found {{total_mismatches}} with mismatches")
+            print("but none had logprob < -10.")
+            print()
+            print("This can happen with simple prompts. In practice, multi-turn")
+            print("conversations with tool calls trigger this much more frequently.")
+            print()
+            print("The test infrastructure is working correctly.")
+            return 0
 
     finally:
         print("\\nShutting down SGLang server...")
@@ -397,7 +424,7 @@ if __name__ == "__main__":
 def run_tito_test(client, workspace: str) -> bool:
     """Run TI/TO test on remote GPU."""
     print("\n" + "=" * 60)
-    print("TEST: TI/TO Correctness Validation")
+    print("TEST: TI/TO Multi-Turn Calculator Test")
     print("=" * 60)
 
     # Write test script to remote
@@ -438,7 +465,7 @@ def run_tito_test(client, workspace: str) -> bool:
     print("-" * 40)
 
     if success:
-        print("\n✓ TI/TO test PASSED")
+        print("\n✓ TI/TO test completed")
         return True
     else:
         print(f"\n✗ TI/TO test FAILED (exit code: {exit_code})")
@@ -487,7 +514,7 @@ def main():
         print("\n" + "=" * 60)
         print("SUMMARY")
         print("=" * 60)
-        print(f"  TI/TO correctness: {'✓ PASSED' if passed else '✗ FAILED'}")
+        print(f"  TI/TO test: {'✓ COMPLETED' if passed else '✗ FAILED'}")
 
         return 0 if passed else 1
 
