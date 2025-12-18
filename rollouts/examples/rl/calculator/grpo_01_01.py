@@ -26,6 +26,9 @@ config = GRPOConfig(
     max_seq_len=2048,
     max_tokens=512,
     max_turns=10,
+    # Use separate GPUs for inference and training to avoid OOM
+    inference_gpu_ids=(0,),
+    trainer_gpu_ids=(1,),
 )
 
 if __name__ == "__main__":
