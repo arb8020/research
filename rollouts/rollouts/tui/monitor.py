@@ -33,6 +33,7 @@ import sys
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from .terminal import Terminal
 from .traces import StepPicker, TraceData
@@ -222,9 +223,16 @@ class TrainingMonitor:
                     extra=data,
                 )
 
+            # Auto-detect rollouts path from "Output: /path/to/dir" log messages
+            message = data.get("message", "")
+            if message.startswith("Output: ") and not self._rollouts_path:
+                output_dir = message[8:].strip()
+                rollouts_path = Path(output_dir) / "rollouts.jsonl"
+                self._rollouts_path = str(rollouts_path)
+
             return LogLine(
                 logger=data.get("logger", "unknown"),
-                message=data.get("message", raw),
+                message=message or raw,
                 level=data.get("level", "INFO"),
                 extra={k: v for k, v in data.items() if k not in ("logger", "message", "level")},
             )
