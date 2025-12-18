@@ -147,6 +147,7 @@ class RolloutBatch:
         rewards: List of rewards
         response_lengths: List of response lengths
         group_indices: Group index for each sample (for GRPO advantage computation)
+        rollout_log_probs: List of per-token logprobs from rollout policy (for TI/TO off-policy correction)
         samples: Original Sample objects (for logging/debugging)
         metadata: Optional batch metadata
 
@@ -165,6 +166,7 @@ class RolloutBatch:
     rewards: list[float]
     response_lengths: list[int]
     group_indices: list[int] = field(default_factory=list)
+    rollout_log_probs: list[list[float]] | None = None  # For TI/TO off-policy correction
     samples: list[Sample] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 

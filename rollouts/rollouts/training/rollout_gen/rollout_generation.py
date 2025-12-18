@@ -137,6 +137,7 @@ def convert_to_batch(
     tokens, loss_masks, rewards = extract_sample_fields(samples)
     response_lengths = compute_response_lengths(loss_masks)
     group_indices = extract_group_indices(samples)
+    rollout_log_probs = extract_rollout_log_probs(samples)
     metadata = build_batch_metadata(samples, epoch_id, step_id)
 
     # Tiger Style: Assert postconditions
@@ -150,6 +151,7 @@ def convert_to_batch(
         rewards=rewards,
         response_lengths=response_lengths,
         group_indices=group_indices,
+        rollout_log_probs=rollout_log_probs,
         samples=samples,
         metadata=metadata,
     )
@@ -185,6 +187,28 @@ def extract_group_indices(samples: list[Sample]) -> list[int]:
         List of group indices (one per sample)
     """
     return [s.group_index if s.group_index is not None else i for i, s in enumerate(samples)]
+
+
+def extract_rollout_log_probs(samples: list[Sample]) -> list[list[float]] | None:
+    """Extract rollout logprobs from samples (for TI/TO off-policy correction).
+
+    Only returns non-None if ALL samples have rollout_log_probs.
+
+    Args:
+        samples: List of Sample objects
+
+    Returns:
+        List of per-token logprob lists, or None if not available
+    """
+    # Check if any sample has rollout logprobs
+    if not any(s.rollout_log_probs for s in samples):
+        return None
+
+    # If some have it but not all, we can't use it for off-policy correction
+    if not all(s.rollout_log_probs for s in samples):
+        return None
+
+    return [list(s.rollout_log_probs) for s in samples]
 
 
 def compute_response_lengths(loss_masks: list[list[float]]) -> list[int]:
