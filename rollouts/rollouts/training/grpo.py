@@ -148,6 +148,7 @@ async def _grpo_train_async(
     from rollouts.training.backends.pytorch_factory import create_pytorch_backend
     from rollouts.training.datasets.data_buffer import DataBuffer
     from rollouts.training.losses import compute_group_advantages, grpo_loss
+    from rollouts.training.metrics import JSONLLogger
     from rollouts.training.rollout_gen.async_rollout_manager import AsyncRolloutManager
     from rollouts.training.types import RolloutConfig
     from rollouts.training.weight_sync import SGLangEngine, VLLMEngine
@@ -185,6 +186,9 @@ async def _grpo_train_async(
     logger.info(f"Output: {output_dir}")
 
     config.save(output_dir / "config.json")
+
+    # Initialize metrics logger (structured JSONL for TUI/analysis)
+    metrics_logger = JSONLLogger(output_dir)
 
     # ─────────────────────────────────────────────────────────────────────────
     # 1. Launch inference server (SGLang or vLLM)
@@ -313,6 +317,7 @@ async def _grpo_train_async(
                     continue
 
                 # Save rollouts to JSONL (for debugging/analysis)
+                # Rich format matching run_eval.py output
                 with open(rollouts_file, "a") as f:  # noqa: ASYNC230
                     for sample in batch.samples:
                         record = {
@@ -320,7 +325,18 @@ async def _grpo_train_async(
                             "prompt": sample.prompt,
                             "response": sample.response,
                             "reward": sample.reward,
-                            "metadata": sample.metadata,
+                            "status": sample.status.value,
+                            "group_index": sample.group_index,
+                            # Extract agent execution info from metadata
+                            "turns": sample.metadata.get("turns"),
+                            "stop_reason": sample.metadata.get("stop_reason"),
+                            "messages": sample.metadata.get("messages"),
+                            # Keep remaining metadata (ground_truth, etc.)
+                            "metadata": {
+                                k: v
+                                for k, v in sample.metadata.items()
+                                if k not in ("turns", "stop_reason", "messages")
+                            },
                         }
                         f.write(json.dumps(record) + "\n")
 
@@ -379,15 +395,17 @@ async def _grpo_train_async(
                 pg_loss = accumulated_metrics.get("pg_loss", 0.0)
                 entropy = accumulated_metrics.get("entropy", 0.0)
 
-                # Log
+                # Log metrics
                 step_metrics = {
-                    "step": step + 1,
                     "mean_reward": mean_reward,
                     "num_samples": len(rewards),
                     "num_groups": num_groups,
                     **accumulated_metrics,
                 }
-                metrics_history.append(step_metrics)
+                metrics_history.append({"step": step + 1, **step_metrics})
+
+                # Write to structured metrics.jsonl (for TUI/analysis)
+                metrics_logger.log(step_metrics, step=step + 1)
 
                 if (step + 1) % config.log_every == 0:
                     logger.info(
@@ -416,6 +434,9 @@ async def _grpo_train_async(
             last_loss = metrics_history[-1].get("pg_loss", 0.0)
             logger.info(f"First: reward={first_reward:.3f}, pg_loss={first_loss:.4f}")
             logger.info(f"Last:  reward={last_reward:.3f}, pg_loss={last_loss:.4f}")
+
+        # Finalize metrics logger
+        metrics_logger.finish()
 
         return {"metrics_history": metrics_history}
 
