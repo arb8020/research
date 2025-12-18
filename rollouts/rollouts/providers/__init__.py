@@ -24,7 +24,12 @@ from .base import (
 from .google import aggregate_google_stream, rollout_google
 from .openai_completions import aggregate_stream, rollout_openai
 from .openai_responses import aggregate_openai_responses_stream, rollout_openai_responses
-from .sglang import rollout_sglang, rollout_sglang_streaming, rollout_sglang_token_level
+from .sglang import (
+    rollout_sglang,
+    rollout_sglang_streaming,
+    rollout_sglang_token_level,
+    rollout_vllm_token_level,
+)
 
 if TYPE_CHECKING:
     from rollouts.dtypes import Actor, StreamEvent
@@ -73,6 +78,7 @@ __all__ = [
     "rollout_sglang",
     "rollout_sglang_streaming",
     "rollout_sglang_token_level",
+    "rollout_vllm_token_level",
     # Aggregate functions
     "aggregate_anthropic_stream",
     "aggregate_google_stream",
