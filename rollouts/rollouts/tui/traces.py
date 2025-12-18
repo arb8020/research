@@ -123,7 +123,7 @@ class TraceData:
         if not path.exists():
             return cls()
 
-        # Group by step, then by prompt (group_id)
+        # Group by step, then by group_index (or hash of prompt as fallback)
         step_groups: dict[int, dict[int, list[dict]]] = defaultdict(lambda: defaultdict(list))
 
         with open(path) as f:
@@ -133,9 +133,11 @@ class TraceData:
                 try:
                     record = json.loads(line)
                     step = record.get("step", 0)
-                    # Use prompt hash as group_id if not provided
-                    prompt = record.get("prompt", "")
-                    group_id = hash(prompt) % 10000  # Simple grouping by prompt
+                    # Use group_index if available (new format), else hash prompt
+                    group_id = record.get("group_index")
+                    if group_id is None:
+                        prompt = record.get("prompt", "")
+                        group_id = hash(str(prompt)) % 10000
                     step_groups[step][group_id].append(record)
                 except json.JSONDecodeError:
                     continue
@@ -152,17 +154,16 @@ class TraceData:
                 rollouts = []
 
                 for i, record in enumerate(records):
-                    # Extract messages from metadata
+                    # Extract messages - check top-level first (new format), then metadata (old format)
                     messages = []
-                    metadata = record.get("metadata", {})
-                    if "messages" in metadata:
-                        for msg in metadata["messages"]:
-                            messages.append(
-                                Message(
-                                    role=msg.get("role", "unknown"),
-                                    content=msg.get("content", ""),
-                                )
+                    raw_messages = record.get("messages") or record.get("metadata", {}).get("messages", [])
+                    for msg in raw_messages:
+                        messages.append(
+                            Message(
+                                role=msg.get("role", "unknown"),
+                                content=msg.get("content", ""),
                             )
+                        )
 
                     rollouts.append(
                         Rollout(
