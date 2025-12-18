@@ -412,7 +412,9 @@ def run_tito_test(client, workspace: str) -> bool:
     print("\n1. Submitting TI/TO test job...")
     job = submit(
         client,
-        command=f"PYTHONPATH={workspace}:$PYTHONPATH python {script_path}",
+        # The workspace is at git root (/research), rollouts package is at /research/rollouts
+        # So we need {workspace}/rollouts on PYTHONPATH to find rollouts.inference.backends
+        command=f"PYTHONPATH={workspace}/rollouts:$PYTHONPATH python {script_path}",
         workspace=workspace,
         gpu_ids=[0],
         deps=DependencyConfig(
