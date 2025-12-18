@@ -599,6 +599,7 @@ class Choice(JsonSerializable):
     finish_reason: str
     logprobs: Logprobs | None = None
     stop_reason: Any | None = None
+    token_ids: tuple[int, ...] | None = None  # Generated token IDs for TI/TO
 
 
 @dataclass(frozen=True)

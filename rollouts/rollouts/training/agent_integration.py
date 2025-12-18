@@ -298,15 +298,8 @@ def trajectory_to_sample(
             add_generation_prompt=True,
         )
 
-    # Apply chat template to full trajectory (HuggingFace format)
-    full_text = tokenizer.apply_chat_template(
-        [_msg_to_dict(m) for m in trajectory.messages],
-        tokenize=False,
-        add_generation_prompt=False,
-    )
-
-    # Tokenize full conversation
-    tokens = tokenizer.encode(full_text, add_special_tokens=True)
+    # Check if we have stored token_ids from TI/TO (avoids retokenization)
+    tokens = _extract_tokens_from_trajectory(trajectory, tokenizer)
 
     # Build loss mask (1.0 for assistant, 0.0 for tool/user)
     loss_mask = _compute_loss_mask(
@@ -352,6 +345,88 @@ def trajectory_to_sample(
 
 
 # ──────────────────────── Helpers ─────────────────────────────────────────────
+
+
+def _extract_tokens_from_trajectory(
+    trajectory: Trajectory,
+    tokenizer: Any,
+) -> list[int]:
+    """Extract tokens from trajectory, using stored token_ids when available.
+
+    TI/TO (Tokens-In/Tokens-Out): If the trajectory was generated using
+    rollout_sglang_token_level or similar, the actual generated token_ids
+    are stored in Choice.token_ids. We use those directly to avoid
+    retokenization, which can cause RL training collapse.
+
+    Falls back to retokenization if no stored token_ids are available
+    (e.g., for text-based providers like OpenAI API).
+
+    Args:
+        trajectory: Trajectory with messages and completions
+        tokenizer: HuggingFace tokenizer
+
+    Returns:
+        Token IDs for the full conversation
+    """
+    from rollouts.inference.backends import (
+        tokenize_chat,
+        tokenize_message_with_delimiter,
+        compute_suffix_ids,
+        append_suffix_with_overlap,
+    )
+
+    # Check if ANY completion has stored token_ids
+    has_stored_tokens = any(
+        c.choices and c.choices[0].token_ids
+        for c in trajectory.completions
+    )
+
+    if not has_stored_tokens:
+        # Fallback: retokenize (old behavior)
+        # This path is used for text-based providers (OpenAI, Anthropic, etc.)
+        full_text = tokenizer.apply_chat_template(
+            [_msg_to_dict(m) for m in trajectory.messages],
+            tokenize=False,
+            add_generation_prompt=False,
+        )
+        return tokenizer.encode(full_text, add_special_tokens=True)
+
+    # TI/TO path: build tokens from stored token_ids
+    suffix_ids = compute_suffix_ids(tokenizer)
+    all_ids: list[int] = []
+    assistant_idx = 0  # Track which completion we're on
+
+    for i, msg in enumerate(trajectory.messages):
+        msg_dict = _msg_to_dict(msg)
+
+        if msg_dict["role"] == "assistant":
+            # Use stored token_ids from completion
+            if assistant_idx < len(trajectory.completions):
+                completion = trajectory.completions[assistant_idx]
+                if completion.choices and completion.choices[0].token_ids:
+                    stored_ids = list(completion.choices[0].token_ids)
+                    all_ids.extend(stored_ids)
+                    # Append suffix for next turn
+                    all_ids = append_suffix_with_overlap(all_ids, suffix_ids)
+                    assistant_idx += 1
+                    continue
+
+            # No stored token_ids for this assistant message, tokenize it
+            if i == 0:
+                msg_ids = tokenize_chat(tokenizer, [msg_dict])
+            else:
+                msg_ids = tokenize_message_with_delimiter(tokenizer, msg_dict)
+            all_ids.extend(msg_ids)
+            assistant_idx += 1
+        else:
+            # User/system/tool message - tokenize normally
+            if i == 0:
+                msg_ids = tokenize_chat(tokenizer, [msg_dict])
+            else:
+                msg_ids = tokenize_message_with_delimiter(tokenizer, msg_dict)
+            all_ids.extend(msg_ids)
+
+    return all_ids
 
 
 def _compute_loss_mask(
