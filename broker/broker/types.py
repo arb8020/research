@@ -300,6 +300,8 @@ class ProvisionRequest:
     template_id: str | None = None  # RunPod template ID (e.g., "runpod-torch-v280")
     # Provider-specific data (e.g., Vast.ai needs price from raw offer data)
     raw_data: dict[str, Any] | None = None
+    # CUDA version constraint - ensures node has compatible driver
+    min_cuda_version: str | None = None  # e.g., "12.1" or "12.8"
 
 
 @dataclass

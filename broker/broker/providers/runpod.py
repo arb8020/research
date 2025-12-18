@@ -451,6 +451,11 @@ def provision_instance(
         "env": env_vars,
     }
 
+    # Add CUDA version constraint if specified
+    # This ensures the node has a driver compatible with the requested CUDA version
+    if request.min_cuda_version:
+        pod_input["minCudaVersion"] = request.min_cuda_version
+
     # Add template ID if specified (takes precedence over imageName)
     # Templates are pre-configured with optimized settings for multi-GPU deployments
     if request.template_id:
