@@ -228,7 +228,9 @@ class TrainingMonitor:
             if message.startswith("Output: ") and not self._rollouts_path:
                 output_dir = message[8:].strip()
                 rollouts_path = Path(output_dir) / "rollouts.jsonl"
-                self._rollouts_path = str(rollouts_path)
+                # Only set if the path exists (won't work for remote runs)
+                if rollouts_path.exists():
+                    self._rollouts_path = str(rollouts_path)
 
             return LogLine(
                 logger=data.get("logger", "unknown"),
