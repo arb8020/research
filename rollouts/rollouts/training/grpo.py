@@ -70,6 +70,11 @@ class GRPOConfig:
     temperature: float = 0.8
     max_turns: int = 1  # For multi-turn environments
 
+    # TI/TO (Tokens-In/Tokens-Out) - avoids retokenization collapse
+    # When True, uses token-level generation via /generate endpoint
+    # and stores rollout logprobs for off-policy correction
+    use_tito: bool = False
+
     # Training loop
     num_steps: int = 100
     log_every: int = 1
@@ -261,33 +266,94 @@ async def _grpo_train_async(
         logger.info(f"Dataset: {len(prompts)} prompts")
         data_buffer = DataBuffer(prompts=prompts)
 
-        # Generation function using unified agent infrastructure
-        async def generate_fn(batch_prompts: list[dict], **kwargs: Any) -> list:
-            """Generate samples using agent_rollout_to_sample."""
-            results = []
-            for prompt_data in batch_prompts:
-                messages = prompt_data["messages"]
+        # Generation function - TI/TO or standard agent rollouts
+        if config.use_tito:
+            # TI/TO mode: Use token-level providers directly
+            # This avoids retokenization issues that cause RL training collapse
+            from rollouts.inference.backends import compute_suffix_ids
+            from rollouts.providers import rollout_sglang_token_level, rollout_vllm_token_level
 
-                # Extract metadata (everything except "messages")
-                if metadata_key:
-                    metadata = {metadata_key: prompt_data.get(metadata_key)}
-                else:
-                    metadata = {k: v for k, v in prompt_data.items() if k != "messages"}
+            suffix_ids = compute_suffix_ids(tokenizer)
+            tito_provider = (
+                rollout_sglang_token_level
+                if config.inference_backend == "sglang"
+                else rollout_vllm_token_level
+            )
 
-                try:
-                    sample = await agent_rollout_to_sample(
-                        prompt=messages,
-                        environment_cls=environment_cls,
-                        endpoint=endpoint,
-                        tokenizer=tokenizer,
-                        max_turns=config.max_turns,
-                        metadata=metadata,
-                    )
-                    results.append(sample)
-                except Exception as e:
-                    logger.warning(f"Rollout failed: {e}")
+            async def generate_fn(batch_prompts: list[dict], **kwargs: Any) -> list:
+                """Generate samples using TI/TO (token-level) providers."""
+                from rollouts.dtypes import Actor, Message, Trajectory
+                from rollouts.training.types import Sample, Status
 
-            return results
+                results = []
+                for prompt_data in batch_prompts:
+                    messages = prompt_data["messages"]
+                    if metadata_key:
+                        metadata = {metadata_key: prompt_data.get(metadata_key)}
+                    else:
+                        metadata = {k: v for k, v in prompt_data.items() if k != "messages"}
+
+                    try:
+                        # Build initial trajectory from messages
+                        initial_messages = [
+                            Message(role=m["role"], content=m["content"]) for m in messages
+                        ]
+                        trajectory = Trajectory(messages=initial_messages)
+                        actor = Actor(trajectory=trajectory, endpoint=endpoint)
+
+                        # Single-turn TI/TO rollout (multi-turn support via agent loop later)
+                        async def noop_chunk(chunk):
+                            pass
+
+                        updated_actor = await tito_provider(
+                            actor,
+                            noop_chunk,
+                            tokenizer=tokenizer,
+                            suffix_ids=suffix_ids,
+                        )
+
+                        # Extract sample from trajectory
+                        sample = _trajectory_to_sample_tito(
+                            trajectory=updated_actor.trajectory,
+                            tokenizer=tokenizer,
+                            metadata=metadata,
+                        )
+                        results.append(sample)
+                    except Exception as e:
+                        logger.warning(f"TI/TO rollout failed: {e}")
+                        import traceback
+
+                        logger.debug(traceback.format_exc())
+
+                return results
+        else:
+            # Standard mode: Use unified agent infrastructure
+            async def generate_fn(batch_prompts: list[dict], **kwargs: Any) -> list:
+                """Generate samples using agent_rollout_to_sample."""
+                results = []
+                for prompt_data in batch_prompts:
+                    messages = prompt_data["messages"]
+
+                    # Extract metadata (everything except "messages")
+                    if metadata_key:
+                        metadata = {metadata_key: prompt_data.get(metadata_key)}
+                    else:
+                        metadata = {k: v for k, v in prompt_data.items() if k != "messages"}
+
+                    try:
+                        sample = await agent_rollout_to_sample(
+                            prompt=messages,
+                            environment_cls=environment_cls,
+                            endpoint=endpoint,
+                            tokenizer=tokenizer,
+                            max_turns=config.max_turns,
+                            metadata=metadata,
+                        )
+                        results.append(sample)
+                    except Exception as e:
+                        logger.warning(f"Rollout failed: {e}")
+
+                return results
 
         rollout_config = RolloutConfig(
             batch_size=config.batch_size,
@@ -362,7 +428,10 @@ async def _grpo_train_async(
 
                 batch_tokens = []
                 batch_loss_masks = []
-                for toks, mask in zip(batch.tokens, batch.loss_masks, strict=True):
+                batch_rollout_logprobs = []
+                has_rollout_logprobs = batch.rollout_log_probs is not None
+
+                for i, (toks, mask) in enumerate(zip(batch.tokens, batch.loss_masks, strict=True)):
                     toks_truncated = list(toks[:max_len])
                     mask_truncated = list(mask[:max_len])
                     pad_len = max_len - len(toks_truncated)
@@ -370,6 +439,12 @@ async def _grpo_train_async(
                     mask_padded = mask_truncated + [0.0] * pad_len
                     batch_tokens.append(toks_padded)
                     batch_loss_masks.append(mask_padded)
+
+                    # Handle rollout logprobs for TI/TO off-policy correction
+                    if has_rollout_logprobs:
+                        rlp = list(batch.rollout_log_probs[i][:max_len])
+                        rlp_padded = rlp + [0.0] * (max_len - len(rlp))
+                        batch_rollout_logprobs.append(rlp_padded)
 
                 input_ids = torch.tensor(batch_tokens, device=device)
                 labels = input_ids.clone()
@@ -382,6 +457,14 @@ async def _grpo_train_async(
                     "loss_mask": loss_mask,
                     "advantages": advantages,
                 }
+
+                # Add old_logprobs for TI/TO off-policy correction (sequence-level)
+                if has_rollout_logprobs:
+                    # Compute sequence-level logprobs: sum of per-token logprobs where mask > 0
+                    rollout_logprobs_tensor = torch.tensor(batch_rollout_logprobs, device=device)
+                    # Sequence-level = sum of token logprobs (mean would also work)
+                    seq_rollout_logprobs = (rollout_logprobs_tensor * loss_mask).sum(dim=1) / loss_mask.sum(dim=1).clamp(min=1.0)
+                    training_batch["old_logprobs"] = seq_rollout_logprobs
 
                 # forward_backward handles gradient accumulation via trainer_config
                 fb_future = backend.forward_backward(training_batch)
@@ -453,3 +536,123 @@ async def _grpo_train_async(
         logger.info(f"Shutting down {inference_engine.name}...")
         inference_engine.shutdown()
         logger.info(f"Logs: {inference_engine.log_path}")
+
+
+# ──────────────────────── TI/TO Helpers ───────────────────────────────────────
+
+
+def _trajectory_to_sample_tito(
+    trajectory: Any,
+    tokenizer: Any,
+    metadata: dict[str, Any] | None = None,
+) -> "Sample":
+    """Convert TI/TO trajectory to training sample with stored tokens and logprobs.
+
+    This function is specialized for TI/TO mode where:
+    - token_ids are stored directly in Choice (no retokenization needed)
+    - logprobs are stored in Logprobs.content as per-token Logprob objects
+
+    Args:
+        trajectory: Trajectory with completions containing token_ids and logprobs
+        tokenizer: HuggingFace tokenizer
+        metadata: Optional metadata
+
+    Returns:
+        Sample with tokens, loss_mask, and rollout_log_probs
+    """
+    from rollouts.training.types import Sample, Status
+
+    assert trajectory is not None
+    assert tokenizer is not None
+    assert len(trajectory.messages) > 0
+
+    # Extract prompt (messages before first assistant)
+    prompt_messages = []
+    for msg in trajectory.messages:
+        if msg.role == "assistant":
+            break
+        prompt_messages.append(msg)
+
+    prompt = tokenizer.apply_chat_template(
+        [{"role": m.role, "content": _get_message_content(m)} for m in prompt_messages],
+        tokenize=False,
+        add_generation_prompt=True,
+    )
+
+    # Extract tokens and logprobs from completions
+    all_tokens: list[int] = []
+    all_logprobs: list[float] = []
+    loss_mask: list[float] = []
+
+    # First, tokenize the prompt
+    prompt_ids = tokenizer.encode(prompt, add_special_tokens=True)
+    all_tokens.extend(prompt_ids)
+    loss_mask.extend([0.0] * len(prompt_ids))  # Don't train on prompt
+    all_logprobs.extend([0.0] * len(prompt_ids))  # Placeholder for prompt tokens
+
+    # Extract tokens and logprobs from each completion
+    for completion in trajectory.completions:
+        if not completion.choices:
+            continue
+
+        choice = completion.choices[0]
+
+        # Use stored token_ids
+        if choice.token_ids:
+            token_ids = list(choice.token_ids)
+            all_tokens.extend(token_ids)
+            loss_mask.extend([1.0] * len(token_ids))  # Train on completion tokens
+
+            # Extract logprobs from Logprobs.content
+            if choice.logprobs and choice.logprobs.content:
+                for logprob_item in choice.logprobs.content:
+                    all_logprobs.append(logprob_item.logprob)
+            else:
+                # No logprobs stored, use placeholder
+                all_logprobs.extend([0.0] * len(token_ids))
+
+    # Extract response text
+    response_messages = trajectory.messages[len(prompt_messages) :]
+    response = (
+        tokenizer.apply_chat_template(
+            [{"role": m.role, "content": _get_message_content(m)} for m in response_messages],
+            tokenize=False,
+            add_generation_prompt=False,
+        )
+        if response_messages
+        else ""
+    )
+
+    return Sample(
+        prompt=prompt,
+        response=response,
+        tokens=all_tokens,
+        loss_mask=loss_mask,
+        rollout_log_probs=all_logprobs,
+        reward=0.0,  # Will be computed by score_fn
+        metadata=metadata or {},
+        status=Status.COMPLETED,
+    )
+
+
+def _get_message_content(msg: Any) -> str:
+    """Extract text content from a Message."""
+    from rollouts.dtypes import TextContent, ThinkingContent
+
+    content = msg.content
+    if isinstance(content, str):
+        return content
+    elif isinstance(content, list):
+        text_parts = []
+        for block in content:
+            if isinstance(block, TextContent):
+                text_parts.append(block.text)
+            elif isinstance(block, ThinkingContent):
+                text_parts.append(block.thinking)
+            elif isinstance(block, dict):
+                if block.get("type") == "text":
+                    text_parts.append(block.get("text", ""))
+                elif block.get("type") == "thinking":
+                    text_parts.append(block.get("thinking", ""))
+        return "".join(text_parts)
+    return str(content) if content else ""

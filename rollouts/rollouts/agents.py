@@ -393,6 +393,10 @@ async def rollout(
     turn_idx: int = 0,
     inline_thinking: str | None = None,
     cancel_scope: trio.CancelScope | None = None,
+    *,
+    use_tito: bool = False,
+    tokenizer: Any | None = None,
+    suffix_ids: tuple[int, ...] | None = None,
 ) -> Actor:
     """Route to appropriate provider function using unified API type abstraction.
 
@@ -408,6 +412,9 @@ async def rollout(
         turn_idx: Anthropic-specific parameter for turn tracking
         inline_thinking: Anthropic-specific parameter for thinking template
         cancel_scope: Optional Trio cancel scope for graceful cancellation
+        use_tito: Enable TI/TO (token-level) generation for RL training
+        tokenizer: HuggingFace tokenizer (required if use_tito=True)
+        suffix_ids: Pre-computed suffix tokens for multi-turn (computed if None)
 
     Returns:
         Updated actor with new message in trajectory
@@ -416,6 +423,35 @@ async def rollout(
     assert on_chunk is not None
     assert callable(on_chunk)
 
+    # TI/TO mode: use token-level providers directly
+    if use_tito:
+        assert tokenizer is not None, "tokenizer is required when use_tito=True"
+
+        from rollouts.inference.backends import compute_suffix_ids
+        from rollouts.providers import rollout_sglang_token_level, rollout_vllm_token_level
+
+        # Compute suffix_ids if not provided
+        if suffix_ids is None:
+            suffix_ids = tuple(compute_suffix_ids(tokenizer))
+
+        # Route to appropriate token-level provider based on endpoint
+        # SGLang uses /generate, vLLM uses /v1/completions
+        provider = actor.endpoint.provider
+        if provider in ("sglang",):
+            provider_func = rollout_sglang_token_level
+        else:
+            # Default to vLLM-style for openai/vllm providers
+            provider_func = rollout_vllm_token_level
+
+        new_actor = await provider_func(
+            actor,
+            on_chunk,
+            tokenizer=tokenizer,
+            suffix_ids=list(suffix_ids),
+        )
+        return new_actor
+
+    # Standard mode: use text-based providers
     from rollouts.providers import get_provider_function
 
     provider = actor.endpoint.provider
@@ -493,6 +529,9 @@ async def run_agent_step(
         state.turn_idx,
         rcfg.inline_thinking,
         cancel_scope=rcfg.cancel_scope,
+        use_tito=rcfg.use_tito,
+        tokenizer=rcfg.tokenizer,
+        suffix_ids=rcfg.suffix_ids,
     )
 
     # DEBUG: Log what rollout returned
