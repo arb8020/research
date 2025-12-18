@@ -372,6 +372,147 @@ def trajectory_to_sample(
     return sample
 
 
+def trajectory_to_samples(
+    trajectory: Trajectory,
+    tokenizer: Any,
+    strategy: str = "interleaved",
+    metadata: dict[str, Any] | None = None,
+) -> list[Sample]:
+    """Convert agent trajectory → training sample(s) based on strategy.
+
+    Args:
+        trajectory: Agent trajectory (messages from run_agent)
+        tokenizer: HuggingFace tokenizer
+        strategy: "interleaved" (one sample) or "branching" (one per assistant turn)
+        metadata: Optional metadata
+
+    Returns:
+        List of Samples
+
+    Strategies:
+        - interleaved: Full conversation as one sequence. Efficient (prefix sharing
+          possible at training time) but may have retokenization edge cases.
+        - branching: Each assistant turn becomes a separate training sample.
+          Input = prompt + history up to that turn. Output = that turn's response.
+          Safer for complex chat templates, mirrors deployment exactly.
+
+    Example:
+        >>> trajectory = Trajectory(messages=[
+        ...     Message(role="user", content="What is 5+3?"),
+        ...     Message(role="assistant", content="Let me calculate"),
+        ...     Message(role="tool", content="8"),
+        ...     Message(role="assistant", content="The answer is 8"),
+        ... ])
+        >>> # Interleaved: 1 sample with full conversation
+        >>> samples = trajectory_to_samples(trajectory, tokenizer, "interleaved")
+        >>> len(samples)
+        1
+        >>> # Branching: 2 samples (one per assistant turn)
+        >>> samples = trajectory_to_samples(trajectory, tokenizer, "branching")
+        >>> len(samples)
+        2
+    """
+    assert strategy in ("interleaved", "branching"), f"Unknown strategy: {strategy}"
+
+    if strategy == "interleaved":
+        return [trajectory_to_sample(trajectory, tokenizer, metadata)]
+
+    # Branching: one sample per assistant turn
+    return _branching_trajectory_to_samples(trajectory, tokenizer, metadata)
+
+
+def _branching_trajectory_to_samples(
+    trajectory: Trajectory,
+    tokenizer: Any,
+    metadata: dict[str, Any] | None = None,
+) -> list[Sample]:
+    """Convert trajectory to samples using branching strategy.
+
+    Each assistant turn becomes a separate sample:
+    - Input: tokenized history up to (but not including) that assistant turn
+    - Output: that assistant turn's tokens (from TI/TO if available)
+    - Loss mask: 0 for input, 1 for output
+
+    This mirrors deployed usage exactly - each generation is independent.
+    """
+    from rollouts.inference.backends import tokenize_chat
+    from rollouts.training.types import Sample, Status
+
+    samples = []
+    completion_idx = 0
+
+    for msg_idx, msg in enumerate(trajectory.messages):
+        if msg.role != "assistant":
+            continue
+
+        # Get completion for this assistant turn
+        if completion_idx >= len(trajectory.completions):
+            break
+        completion = trajectory.completions[completion_idx]
+        completion_idx += 1
+
+        # Input = all messages before this assistant turn
+        input_messages = trajectory.messages[:msg_idx]
+        if not input_messages:
+            # First message is assistant (unusual but handle it)
+            input_ids = []
+        else:
+            input_ids = tokenize_chat(
+                tokenizer,
+                [_msg_to_dict(m) for m in input_messages],
+                add_generation_prompt=True,
+            )
+
+        # Output tokens - prefer stored token_ids (TI/TO), fallback to retokenize
+        if completion.choices and completion.choices[0].token_ids:
+            output_ids = list(completion.choices[0].token_ids)
+            # Extract logprobs if available
+            if completion.choices[0].logprobs and completion.choices[0].logprobs.content:
+                rollout_logprobs = [lp.logprob for lp in completion.choices[0].logprobs.content]
+            else:
+                rollout_logprobs = None
+        else:
+            # Fallback: retokenize this assistant message
+            output_ids = tokenizer.encode(
+                _content_to_str(msg.content),
+                add_special_tokens=False,
+            )
+            rollout_logprobs = None
+
+        # Full sequence
+        tokens = input_ids + output_ids
+        loss_mask = [0.0] * len(input_ids) + [1.0] * len(output_ids)
+
+        # Build metadata for this turn
+        turn_metadata = metadata.copy() if metadata else {}
+        turn_metadata["turn_index"] = msg_idx
+        turn_metadata["messages"] = [_msg_to_dict(m) for m in trajectory.messages[:msg_idx + 1]]
+
+        sample = Sample(
+            prompt=tokenizer.apply_chat_template(
+                [_msg_to_dict(m) for m in input_messages],
+                tokenize=False,
+                add_generation_prompt=True,
+            ) if input_messages else "",
+            response=_content_to_str(msg.content),
+            tokens=tokens,
+            loss_mask=loss_mask,
+            rollout_log_probs=rollout_logprobs,
+            reward=0.0,  # Will be computed by score_fn later
+            metadata=turn_metadata,
+            status=Status.COMPLETED,
+        )
+
+        # Assert postconditions
+        assert len(sample.tokens) == len(sample.loss_mask), (
+            f"tokens ({len(sample.tokens)}) != loss_mask ({len(sample.loss_mask)})"
+        )
+
+        samples.append(sample)
+
+    return samples
+
+
 # ──────────────────────── Helpers ─────────────────────────────────────────────
 
 

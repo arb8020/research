@@ -75,6 +75,11 @@ class GRPOConfig:
     # and stores rollout logprobs for off-policy correction
     use_tito: bool = False
 
+    # Trajectory strategy for multi-turn rollouts
+    # - "interleaved": Full conversation as one sequence (efficient, prefix sharing)
+    # - "branching": Each assistant turn is a separate sample (safer, mirrors deployment)
+    trajectory_strategy: str = "interleaved"  # Literal["interleaved", "branching"]
+
     # Training loop
     num_steps: int = 100
     log_every: int = 1
@@ -312,13 +317,14 @@ async def _grpo_train_async(
                             suffix_ids=suffix_ids,
                         )
 
-                        # Extract sample from trajectory
-                        sample = _trajectory_to_sample_tito(
+                        # Extract sample(s) from trajectory based on strategy
+                        samples = _trajectory_to_samples_tito(
                             trajectory=updated_actor.trajectory,
                             tokenizer=tokenizer,
+                            strategy=config.trajectory_strategy,
                             metadata=metadata,
                         )
-                        results.append(sample)
+                        results.extend(samples)
                     except Exception as e:
                         logger.warning(f"TI/TO rollout failed: {e}")
                         import traceback
@@ -541,12 +547,13 @@ async def _grpo_train_async(
 # ──────────────────────── TI/TO Helpers ───────────────────────────────────────
 
 
-def _trajectory_to_sample_tito(
+def _trajectory_to_samples_tito(
     trajectory: Any,
     tokenizer: Any,
+    strategy: str = "interleaved",
     metadata: dict[str, Any] | None = None,
-) -> "Sample":
-    """Convert TI/TO trajectory to training sample with stored tokens and logprobs.
+) -> list["Sample"]:
+    """Convert TI/TO trajectory to training sample(s) based on strategy.
 
     This function is specialized for TI/TO mode where:
     - token_ids are stored directly in Choice (no retokenization needed)
@@ -555,11 +562,26 @@ def _trajectory_to_sample_tito(
     Args:
         trajectory: Trajectory with completions containing token_ids and logprobs
         tokenizer: HuggingFace tokenizer
+        strategy: "interleaved" (one sample) or "branching" (one per assistant turn)
         metadata: Optional metadata
 
     Returns:
-        Sample with tokens, loss_mask, and rollout_log_probs
+        List of Samples with tokens, loss_mask, and rollout_log_probs
     """
+    assert strategy in ("interleaved", "branching"), f"Unknown strategy: {strategy}"
+
+    if strategy == "interleaved":
+        return [_trajectory_to_sample_tito_interleaved(trajectory, tokenizer, metadata)]
+    else:
+        return _trajectory_to_samples_tito_branching(trajectory, tokenizer, metadata)
+
+
+def _trajectory_to_sample_tito_interleaved(
+    trajectory: Any,
+    tokenizer: Any,
+    metadata: dict[str, Any] | None = None,
+) -> "Sample":
+    """Convert TI/TO trajectory to single sample (interleaved strategy)."""
     from rollouts.training.types import Sample, Status
 
     assert trajectory is not None
@@ -633,6 +655,91 @@ def _trajectory_to_sample_tito(
         metadata=metadata or {},
         status=Status.COMPLETED,
     )
+
+
+def _trajectory_to_samples_tito_branching(
+    trajectory: Any,
+    tokenizer: Any,
+    metadata: dict[str, Any] | None = None,
+) -> list["Sample"]:
+    """Convert TI/TO trajectory to samples using branching strategy.
+
+    Each assistant turn becomes a separate sample:
+    - Input: tokenized history up to (but not including) that assistant turn
+    - Output: that assistant turn's token_ids (from TI/TO)
+    - Loss mask: 0 for input, 1 for output
+
+    This mirrors deployed usage exactly - each generation is independent.
+    """
+    from rollouts.training.types import Sample, Status
+
+    assert trajectory is not None
+    assert tokenizer is not None
+
+    samples = []
+    completion_idx = 0
+
+    for msg_idx, msg in enumerate(trajectory.messages):
+        if msg.role != "assistant":
+            continue
+
+        # Get completion for this assistant turn
+        if completion_idx >= len(trajectory.completions):
+            break
+        completion = trajectory.completions[completion_idx]
+        completion_idx += 1
+
+        if not completion.choices:
+            continue
+        choice = completion.choices[0]
+        if not choice.token_ids:
+            continue
+
+        # Input = all messages before this assistant turn
+        input_messages = trajectory.messages[:msg_idx]
+        if input_messages:
+            prompt_text = tokenizer.apply_chat_template(
+                [{"role": m.role, "content": _get_message_content(m)} for m in input_messages],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            input_ids = tokenizer.encode(prompt_text, add_special_tokens=True)
+        else:
+            prompt_text = ""
+            input_ids = []
+
+        # Output tokens from stored token_ids (TI/TO)
+        output_ids = list(choice.token_ids)
+
+        # Extract logprobs if available
+        if choice.logprobs and choice.logprobs.content:
+            output_logprobs = [lp.logprob for lp in choice.logprobs.content]
+        else:
+            output_logprobs = [0.0] * len(output_ids)
+
+        # Full sequence
+        tokens = input_ids + output_ids
+        loss_mask = [0.0] * len(input_ids) + [1.0] * len(output_ids)
+        all_logprobs = [0.0] * len(input_ids) + output_logprobs
+
+        # Build metadata for this turn
+        turn_metadata = metadata.copy() if metadata else {}
+        turn_metadata["turn_index"] = msg_idx
+
+        sample = Sample(
+            prompt=prompt_text,
+            response=_get_message_content(msg),
+            tokens=tokens,
+            loss_mask=loss_mask,
+            rollout_log_probs=all_logprobs,
+            reward=0.0,  # Will be computed by score_fn
+            metadata=turn_metadata,
+            status=Status.COMPLETED,
+        )
+
+        samples.append(sample)
+
+    return samples
 
 
 def _get_message_content(msg: Any) -> str:
