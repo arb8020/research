@@ -25,6 +25,7 @@ from .google import aggregate_google_stream, rollout_google
 from .openai_completions import aggregate_stream, rollout_openai
 from .openai_responses import aggregate_openai_responses_stream, rollout_openai_responses
 from .sglang import (
+    parse_tool_calls,
     rollout_sglang,
     rollout_sglang_streaming,
     rollout_sglang_token_level,
@@ -91,6 +92,7 @@ __all__ = [
     "VLLMErrorType",
     "add_cache_control_to_last_content",
     "calculate_cost_from_usage",
+    "parse_tool_calls",
     "sanitize_request_for_logging",
     "StreamEvent",
 ]
