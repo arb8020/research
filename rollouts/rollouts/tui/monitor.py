@@ -166,6 +166,8 @@ class TrainingMonitor:
             return "sglang"
         elif "metrics" in logger:
             return "metrics"
+        elif "rollout" in logger:
+            return "traces"
         else:
             return "training"
 
@@ -190,6 +192,24 @@ class TrainingMonitor:
         """Parse a JSONL line into LogLine."""
         try:
             data = json.loads(raw)
+
+            # Check if this is a rollout entry (has step + prompt + response)
+            message = data.get("message", "")
+            if message == "rollout" and "step" in data and "prompt" in data:
+                # Add to trace data for traces pane
+                if self._trace_data is None:
+                    self._trace_data = TraceData()
+                self._trace_data.add_record(data)
+
+                # Return a summary line for the training pane
+                step = data.get("step", 0)
+                reward = data.get("reward", 0.0)
+                return LogLine(
+                    logger="rollout",
+                    message=f"[step {step}] reward={reward:.3f}",
+                    level="INFO",
+                    extra=data,
+                )
 
             # Check if this is a metrics entry (has step + numeric values)
             if "step" in data and any(
