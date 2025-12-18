@@ -215,7 +215,7 @@ async def _grpo_train_async(
     logger.info(f"Launching {inference_engine.name} on GPU {gpu_str}...")
 
     inference_engine.launch()
-    inference_engine.start_log_tailer()  # Emit JSONL to stdout for TUI
+    inference_engine.start_log_tailer()  # Route logs via Python logging
 
     try:
         await inference_engine.wait_until_ready()
