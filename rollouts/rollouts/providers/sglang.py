@@ -1,9 +1,14 @@
 """vLLM/SGLang provider implementation.
 
-Three modes available:
+Five modes available:
 - rollout_sglang: Non-streaming, uses httpx directly
 - rollout_sglang_streaming: Streaming via OpenAI SDK, with ToolCallError handling
-- rollout_sglang_token_level: (stub) Direct sglang_router integration for advanced use cases
+- rollout_sglang_token_level: Token-level TI/TO via SGLang's /generate endpoint
+- rollout_vllm_token_level: Token-level TI/TO via vLLM's /v1/completions endpoint
+
+Token-level modes (TI/TO) avoid retokenization issues that cause RL training collapse.
+They pass token IDs directly to the inference server, store generated token_ids in
+Choice, and decode to text for the agent interface.
 
 See radixark/miles for reference token-level implementation:
 https://github.com/radixark/miles/blob/main/miles/rollout/sglang_rollout.py
@@ -94,6 +99,7 @@ def _build_vllm_params(actor: Actor) -> dict:
 @dataclass
 class ConformResult:
     """Result of conforming tool calls - includes both successes and errors."""
+
     tool_calls: list[dict]
     errors: list[dict]  # [{id, name, error, raw_arguments}, ...]
 
@@ -306,7 +312,7 @@ async def rollout_sglang_streaming(
     # Normalize base URL for OpenAI SDK (needs /v1 suffix, not /v1/chat/completions)
     api_base = actor.endpoint.api_base.rstrip("/")
     if api_base.endswith("/v1/chat/completions"):
-        api_base = api_base[:-len("/chat/completions")]
+        api_base = api_base[: -len("/chat/completions")]
     elif not api_base.endswith("/v1"):
         api_base = api_base + "/v1"
 
@@ -391,12 +397,12 @@ async def rollout_sglang_token_level(
 
     Reference: radixark/miles/rollout/sglang_rollout.py
     """
-    from dataclasses import replace
     import time
+    from dataclasses import replace
 
     from rollouts.dtypes import (
-        Choice,
         ChatCompletion,
+        Choice,
         Logprob,
         Logprobs,
         Message,
@@ -405,11 +411,10 @@ async def rollout_sglang_token_level(
         Usage,
     )
     from rollouts.inference.backends import (
-        generate_sglang,
-        tokenize_chat,
-        append_suffix_with_overlap,
         compute_suffix_ids,
+        generate_sglang,
         log_token_mismatch,
+        tokenize_chat,
     )
 
     assert actor is not None
@@ -461,11 +466,14 @@ async def rollout_sglang_token_level(
     if tool_calls:
         content = [
             TextContent(text=generated_text),
-            *[ToolCallContent(
-                id=tc["id"],
-                name=tc["name"],
-                arguments=tc["args"],
-            ) for tc in tool_calls],
+            *[
+                ToolCallContent(
+                    id=tc["id"],
+                    name=tc["name"],
+                    arguments=tc["args"],
+                )
+                for tc in tool_calls
+            ],
         ]
     else:
         content = generated_text
@@ -474,18 +482,20 @@ async def rollout_sglang_token_level(
 
     # Build Logprobs from result
     logprob_content = []
-    for i, (token_id, lp) in enumerate(zip(result.output_ids, result.logprobs)):
+    for i, (token_id, lp) in enumerate(zip(result.output_ids, result.logprobs, strict=False)):
         token_str = tokenizer.decode([token_id])
         token_bytes = list(token_str.encode("utf-8"))
         top_lps = []
         if result.top_logprobs and i < len(result.top_logprobs):
             top_lps = list(result.top_logprobs[i].values())
-        logprob_content.append(Logprob(
-            token=token_str,
-            logprob=lp,
-            bytes=token_bytes,
-            top_logprobs=top_lps,
-        ))
+        logprob_content.append(
+            Logprob(
+                token=token_str,
+                logprob=lp,
+                bytes=token_bytes,
+                top_logprobs=top_lps,
+            )
+        )
 
     # Build Choice with token_ids
     choice = Choice(
@@ -526,6 +536,170 @@ async def rollout_sglang_token_level(
     return replace(actor, trajectory=new_trajectory)
 
 
+async def rollout_vllm_token_level(
+    actor: Actor,
+    on_chunk: Callable[[StreamEvent], Awaitable[None]],
+    **kwargs: Any,
+) -> Actor:
+    """Token-level vLLM rollout using /v1/completions with prompt_token_ids.
+
+    Uses TI/TO (Tokens-In/Tokens-Out) to avoid retokenization issues that
+    cause RL training collapse. Same pattern as rollout_sglang_token_level
+    but hits vLLM's /v1/completions endpoint instead.
+
+    Args:
+        actor: Current actor state with endpoint and trajectory
+        on_chunk: Callback for streaming events (not used for token-level)
+        **kwargs: Must include:
+            - tokenizer: HuggingFace tokenizer for the model
+            - suffix_ids (optional): Pre-computed suffix tokens for multi-turn
+
+    Returns:
+        Updated actor with new message and token_ids stored in Choice
+    """
+    import time
+
+    from rollouts.dtypes import (
+        ChatCompletion,
+        Choice,
+        Logprob,
+        Logprobs,
+        Message,
+        TextContent,
+        ToolCallContent,
+        Usage,
+    )
+    from rollouts.inference.backends import (
+        compute_suffix_ids,
+        generate_vllm,
+        log_token_mismatch,
+        tokenize_chat,
+    )
+
+    assert actor is not None
+    assert actor.endpoint is not None
+    assert actor.trajectory is not None
+
+    # Get tokenizer from kwargs (required)
+    tokenizer = kwargs.get("tokenizer")
+    assert tokenizer is not None, "tokenizer is required for token-level rollout"
+
+    # Get or compute suffix_ids for multi-turn
+    suffix_ids = kwargs.get("suffix_ids")
+    if suffix_ids is None:
+        suffix_ids = compute_suffix_ids(tokenizer)
+
+    # Build input_ids from trajectory (reuse same helper as SGLang)
+    input_ids = _build_input_ids_from_trajectory(
+        actor.trajectory,
+        tokenizer,
+        suffix_ids,
+    )
+
+    # Normalize base URL
+    api_base = actor.endpoint.api_base.rstrip("/")
+    if api_base.endswith("/v1/chat/completions"):
+        api_base = api_base[: -len("/chat/completions")]
+    elif not api_base.endswith("/v1"):
+        api_base = api_base + "/v1"
+    # Strip trailing /v1 since generate_vllm adds it
+    if api_base.endswith("/v1"):
+        api_base = api_base[: -len("/v1")]
+
+    # Call /v1/completions with token IDs
+    result = await generate_vllm(
+        base_url=api_base,
+        input_ids=input_ids,
+        max_tokens=actor.endpoint.max_tokens,
+        temperature=actor.endpoint.temperature,
+        timeout=actor.endpoint.timeout,
+    )
+
+    # Decode generated tokens to text
+    generated_text = tokenizer.decode(result.output_ids, skip_special_tokens=True)
+
+    # Parse tool calls from generated text if tools are available
+    tool_calls = []
+    if actor.tools:
+        tool_calls = _parse_tool_calls_from_text(generated_text)
+
+    # Build Message from decoded text
+    if tool_calls:
+        content = [
+            TextContent(text=generated_text),
+            *[
+                ToolCallContent(
+                    id=tc["id"],
+                    name=tc["name"],
+                    arguments=tc["args"],
+                )
+                for tc in tool_calls
+            ],
+        ]
+    else:
+        content = generated_text
+
+    message = Message(role="assistant", content=content)
+
+    # Build Logprobs from result
+    logprob_content = []
+    for i, (token_id, lp) in enumerate(zip(result.output_ids, result.logprobs, strict=False)):
+        token_str = tokenizer.decode([token_id])
+        token_bytes = list(token_str.encode("utf-8"))
+        top_lps = []
+        if result.top_logprobs and i < len(result.top_logprobs):
+            # vLLM returns dict with string keys, convert if needed
+            top_lp_dict = result.top_logprobs[i]
+            if isinstance(top_lp_dict, dict):
+                top_lps = list(top_lp_dict.values())
+        logprob_content.append(
+            Logprob(
+                token=token_str,
+                logprob=lp,
+                bytes=token_bytes,
+                top_logprobs=top_lps,
+            )
+        )
+
+    # Build Choice with token_ids
+    choice = Choice(
+        index=0,
+        message=message,
+        finish_reason=result.finish_reason,
+        logprobs=Logprobs(content=logprob_content),
+        token_ids=result.output_ids,  # Store the actual token IDs!
+    )
+
+    # Build ChatCompletion
+    completion = ChatCompletion(
+        id=f"chatcmpl-vllm-tito-{int(time.time())}",
+        object="chat.completion",
+        created=int(time.time()),
+        model=actor.endpoint.model,
+        usage=Usage(
+            prompt_tokens=len(input_ids),
+            completion_tokens=len(result.output_ids),
+            total_tokens=len(input_ids) + len(result.output_ids),
+        ),
+        choices=[choice],
+    )
+
+    # Debug: check if our tokens match what chat template would produce
+    all_messages = actor.trajectory.messages + [message]
+    reference_ids = tokenize_chat(tokenizer, [_msg_to_dict(m) for m in all_messages])
+    our_full_ids = input_ids + list(result.output_ids)
+    log_token_mismatch(our_full_ids, reference_ids, tokenizer, context="rollout_vllm_token_level")
+
+    # Update trajectory
+    new_trajectory = replace(
+        actor.trajectory,
+        messages=actor.trajectory.messages + [message],
+        completions=actor.trajectory.completions + [completion],
+    )
+
+    return replace(actor, trajectory=new_trajectory)
+
+
 def _build_input_ids_from_trajectory(
     trajectory: Any,
     tokenizer: Any,
@@ -540,25 +714,13 @@ def _build_input_ids_from_trajectory(
     This avoids retokenization of previous assistant responses.
     """
     from rollouts.inference.backends import (
-        tokenize_chat,
         append_suffix_with_overlap,
+        tokenize_chat,
     )
 
     # Check if we have stored token_ids from previous completions
     if trajectory.completions:
         # Build from stored tokens
-        input_ids: list[int] = []
-
-        # Get the initial prompt tokens (everything before first completion)
-        # We need to figure out how many messages were in the initial prompt
-        num_completions = len(trajectory.completions)
-        # Messages alternate: prompt, response, prompt, response, ...
-        # So initial prompt is messages[0], then completion[0] added messages[1], etc.
-
-        # For now, simpler approach: tokenize all messages up to (but not including)
-        # the last assistant message, then append stored token_ids for completions
-        # that have them
-
         # Find messages that are user/system (prompts) vs assistant (completions)
         # and use stored token_ids for assistant messages when available
         all_ids: list[int] = []
@@ -587,6 +749,7 @@ def _build_input_ids_from_trajectory(
             else:
                 # Use prefix trick for delimiter
                 from rollouts.inference.backends import tokenize_message_with_delimiter
+
                 msg_ids = tokenize_message_with_delimiter(tokenizer, msg_dict)
 
             all_ids.extend(msg_ids)
@@ -627,15 +790,54 @@ def _msg_to_dict(msg: Any) -> dict[str, str]:
 
 
 def _parse_tool_calls_from_text(text: str) -> list[dict]:
-    """Parse tool calls from generated text.
+    """Parse tool calls from generated text using Hermes format.
 
-    This is a stub - proper implementation would depend on the model's
-    tool call format (e.g., <tool_call>...</tool_call> tags).
+    Hermes models (used by Qwen2.5, Llama, etc.) output tool calls as:
+        <tool_call>
+        {"name": "function_name", "arguments": {"arg": "value"}}
+        </tool_call>
 
-    For now, returns empty list. Tool call parsing should be handled
-    by the chat template or a separate parser.
+    Multiple tool calls appear as separate XML blocks:
+        <tool_call>{...}</tool_call><tool_call>{...}</tool_call>
+
+    Args:
+        text: Generated text that may contain tool calls
+
+    Returns:
+        List of parsed tool calls: [{"id": str, "name": str, "args": dict}, ...]
+
+    Reference: https://github.com/NousResearch/Hermes-Function-Calling
     """
-    # TODO: Implement tool call parsing based on model format
-    # This would parse things like:
-    # <tool_call>{"name": "foo", "arguments": {...}}</tool_call>
-    return []
+    import re
+    import time
+
+    tool_calls = []
+
+    # Match <tool_call>...</tool_call> blocks
+    # Use DOTALL to match newlines within the block
+    pattern = r"<tool_call>\s*(.*?)\s*</tool_call>"
+    matches = re.findall(pattern, text, re.DOTALL)
+
+    for i, match in enumerate(matches):
+        try:
+            # Parse the JSON content
+            data = json.loads(match)
+
+            # Hermes format: {"name": str, "arguments": dict}
+            name = data.get("name", "")
+            arguments = data.get("arguments", {})
+
+            # Generate unique ID for the tool call
+            tool_call_id = f"call_{int(time.time())}_{i}"
+
+            tool_calls.append({
+                "id": tool_call_id,
+                "name": name,
+                "args": arguments if isinstance(arguments, dict) else {},
+            })
+        except json.JSONDecodeError as e:
+            # Log but don't crash - model might have malformed output
+            logger.warning(f"Failed to parse tool call JSON: {e}. Content: {match[:100]}")
+            continue
+
+    return tool_calls
