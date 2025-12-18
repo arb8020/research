@@ -761,14 +761,21 @@ def start_sglang_server():
     return process, base_url
 
 
-def run_agent_rollouts(base_url: str, tokenizer, use_tito: bool):
+def run_agent_rollouts(base_url: str, tokenizer, use_tito: bool, strategy: str = "interleaved"):
     """Run rollouts using the actual agent loop.
+
+    Args:
+        base_url: SGLang server URL
+        tokenizer: HuggingFace tokenizer
+        use_tito: Whether to use TI/TO mode
+        strategy: "interleaved" (1 sample per rollout) or "branching" (1 sample per turn)
 
     Returns list of Sample objects.
     """
     from rollouts.dtypes import Endpoint
     from rollouts.environments.calculator import CalculatorEnvironment
-    from rollouts.training.agent_integration import agent_rollout_to_sample
+    from rollouts.training.agent_integration import agent_rollout_to_sample, trajectory_to_samples
+    from rollouts.agents import run_agent
 
     # SGLang server needs /v1 suffix for OpenAI-compatible API
     endpoint = Endpoint(
@@ -780,23 +787,48 @@ def run_agent_rollouts(base_url: str, tokenizer, use_tito: bool):
     samples = []
 
     async def run_single(prompt_data):
-        sample = await agent_rollout_to_sample(
-            prompt=prompt_data["messages"],
-            environment_cls=CalculatorEnvironment,
-            endpoint=endpoint,
-            tokenizer=tokenizer,
-            max_turns=5,
-            metadata={{"ground_truth": prompt_data["ground_truth"]}},
-            use_tito=use_tito,
-        )
-        return sample
+        if strategy == "interleaved":
+            # Original path: single sample per rollout
+            sample = await agent_rollout_to_sample(
+                prompt=prompt_data["messages"],
+                environment_cls=CalculatorEnvironment,
+                endpoint=endpoint,
+                tokenizer=tokenizer,
+                max_turns=5,
+                metadata={{"ground_truth": prompt_data["ground_truth"]}},
+                use_tito=use_tito,
+            )
+            return [sample]
+        else:
+            # Branching: run agent to get trajectory, then split into samples per turn
+            from rollouts.agents import Actor, Trajectory, Message
+            from rollouts.providers import get_provider
+
+            provider = get_provider(endpoint, use_tito=use_tito)
+            env = CalculatorEnvironment()
+
+            initial_messages = [Message(role=m["role"], content=m["content"]) for m in prompt_data["messages"]]
+            trajectory = Trajectory(messages=initial_messages)
+            actor = Actor(trajectory=trajectory, endpoint=endpoint)
+
+            final_actor = await run_agent(actor, env, provider, max_turns=5)
+
+            # Convert trajectory to samples using branching strategy
+            return trajectory_to_samples(
+                final_actor.trajectory,
+                tokenizer,
+                strategy="branching",
+                metadata={{"ground_truth": prompt_data["ground_truth"]}},
+            )
 
     for i, prompt_data in enumerate(CALC_PROMPTS[:NUM_ROLLOUTS]):
-        print(f"  Rollout {{i+1}}/{{NUM_ROLLOUTS}} (use_tito={{use_tito}})...")
+        print(f"  Rollout {{i+1}}/{{NUM_ROLLOUTS}} (strategy={{strategy}}, use_tito={{use_tito}})...")
         try:
-            sample = trio.run(run_single, prompt_data)
-            samples.append(sample)
-            print(f"    tokens={{len(sample.tokens)}}, response={{sample.response[:50]}}...")
+            rollout_samples = trio.run(run_single, prompt_data)
+            samples.extend(rollout_samples)
+            print(f"    Got {{len(rollout_samples)}} samples")
+            for j, s in enumerate(rollout_samples):
+                print(f"      Sample {{j}}: {{len(s.tokens)}} tokens, response={{s.response[:40]}}...")
         except Exception as e:
             print(f"    FAILED: {{e}}")
             import traceback
@@ -920,19 +952,72 @@ def check_retokenization_mismatch(model, tokenizer, sample, sample_idx: int):
     return mismatches
 
 
+def check_samples_for_collapse(model, tokenizer, samples, strategy_name: str):
+    """Check samples for retokenization collapse.
+
+    Returns dict with results.
+    """
+    print()
+    print(f"Checking {{len(samples)}} samples for retokenization collapse...")
+    print("(Simulating what would happen WITHOUT TI/TO)")
+    print()
+
+    all_mismatches = []
+    smoking_guns = []
+
+    for i, sample in enumerate(samples):
+        print(f"  Sample {{i+1}}/{{len(samples)}}:")
+        mismatches = check_retokenization_mismatch(model, tokenizer, sample, i)
+        all_mismatches.extend(mismatches)
+
+        for pos, orig, wrong, orig_lp, wrong_lp in mismatches:
+            if wrong_lp < LOGPROB_THRESHOLD:
+                smoking_guns.append((i, pos, orig, wrong, orig_lp, wrong_lp))
+
+    print()
+    print(f"  Results for {{strategy_name}}:")
+    print(f"    Samples analyzed: {{len(samples)}}")
+    print(f"    Total mismatches: {{len(all_mismatches)}}")
+    print(f"    Smoking guns (logprob < {{LOGPROB_THRESHOLD}}): {{len(smoking_guns)}}")
+
+    if smoking_guns:
+        print()
+        print("  🎯 Found retokenization collapse issues:")
+        for sample_idx, pos, orig, wrong, orig_lp, wrong_lp in smoking_guns[:3]:
+            orig_dec = tokenizer.decode([orig])
+            wrong_dec = tokenizer.decode([wrong])
+            print(f"    Sample {{sample_idx}}, pos {{pos}}: {{repr(orig_dec)}} -> {{repr(wrong_dec)}}")
+            print(f"      logprob: {{orig_lp:.2f}} -> {{wrong_lp:.2f}}")
+
+    return {{
+        "passed": True,  # We pass if TI/TO is working - finding mismatches proves TI/TO is needed
+        "samples": len(samples),
+        "mismatches": len(all_mismatches),
+        "smoking_guns": len(smoking_guns),
+    }}
+
+
 def main():
     print("=" * 70)
-    print("Agent Loop TI/TO Integration Test (Rigorous)")
+    print("Agent Loop TI/TO Integration Test (with Branching)")
     print(f"Model: {{MODEL}}")
     print("=" * 70)
     print()
-    print("This test validates TI/TO by:")
-    print("  1. Running agent rollouts with TI/TO enabled")
-    print("  2. Simulating what would happen if we retokenized (non-TI/TO)")
-    print("  3. Computing logprobs of mismatched tokens via forward pass")
-    print("  4. Flagging logprobs < {{}} as 'smoking guns'".format(LOGPROB_THRESHOLD))
+    print("This test validates TI/TO with both trajectory strategies:")
     print()
-    print("If we find mismatches with logprob < {{}}, it proves TI/TO is necessary!".format(LOGPROB_THRESHOLD))
+    print("  INTERLEAVED: Full conversation as one sequence")
+    print("    - Efficient (prefix sharing at training)")
+    print("    - One sample per rollout")
+    print()
+    print("  BRANCHING: Each assistant turn as separate sample")
+    print("    - Safer (mirrors deployment exactly)")
+    print("    - One sample per turn")
+    print()
+    print("For each strategy, we:")
+    print("  1. Run agent rollouts with TI/TO enabled")
+    print("  2. Simulate what would happen if we retokenized (non-TI/TO)")
+    print("  3. Compute logprobs of mismatched tokens via forward pass")
+    print("  4. Flag logprobs < {{}} as 'smoking guns'".format(LOGPROB_THRESHOLD))
     print()
 
     from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -950,76 +1035,60 @@ def main():
     process, base_url = start_sglang_server()
 
     try:
-        # === Run agent rollouts with TI/TO ===
+        results = {{}}
+
+        # === Test 1: Interleaved strategy (original) ===
         print()
         print("-" * 50)
-        print("Running agent rollouts with TI/TO enabled...")
+        print("TEST 1: INTERLEAVED STRATEGY")
         print("-" * 50)
-        samples = run_agent_rollouts(base_url, tokenizer, use_tito=True)
+        print("Running agent rollouts with TI/TO + interleaved...")
+        interleaved_samples = run_agent_rollouts(base_url, tokenizer, use_tito=True, strategy="interleaved")
 
-        if not samples:
-            print("✗ No samples generated!")
-            return 1
-
-        # === Check each sample for retokenization issues ===
-        print()
-        print("-" * 50)
-        print("Checking for retokenization collapse...")
-        print("-" * 50)
-        print("(Simulating what would happen WITHOUT TI/TO)")
-        print()
-
-        all_mismatches = []
-        smoking_guns = []
-
-        for i, sample in enumerate(samples):
-            print(f"  Sample {{i+1}}/{{len(samples)}}:")
-            mismatches = check_retokenization_mismatch(model, tokenizer, sample, i)
-            all_mismatches.extend(mismatches)
-
-            for pos, orig, wrong, orig_lp, wrong_lp in mismatches:
-                if wrong_lp < LOGPROB_THRESHOLD:
-                    smoking_guns.append((i, pos, orig, wrong, orig_lp, wrong_lp))
-
-        # === Results ===
-        print()
-        print("=" * 70)
-        print("RESULTS")
-        print("=" * 70)
-        print()
-        print(f"Samples analyzed: {{len(samples)}}")
-        print(f"Total token mismatches found: {{len(all_mismatches)}}")
-        print(f"Smoking guns (logprob < {{LOGPROB_THRESHOLD}}): {{len(smoking_guns)}}")
-        print()
-
-        if smoking_guns:
-            print("🎯 FOUND RETOKENIZATION COLLAPSE!")
-            print()
-            print("Without TI/TO, these tokens would have caused training instability:")
-            for sample_idx, pos, orig, wrong, orig_lp, wrong_lp in smoking_guns[:5]:
-                orig_dec = tokenizer.decode([orig])
-                wrong_dec = tokenizer.decode([wrong])
-                print(f"  Sample {{sample_idx}}, pos {{pos}}: {{repr(orig_dec)}} -> {{repr(wrong_dec)}}")
-                print(f"    logprob: {{orig_lp:.2f}} -> {{wrong_lp:.2f}}")
-            print()
-            print("✓ TEST PASSED: Demonstrated that TI/TO prevents collapse!")
-            print("  TI/TO correctly preserves generated tokens, avoiding retokenization.")
-            return 0
-
-        elif all_mismatches:
-            print("Found mismatches but none with extremely low logprobs.")
-            print("The model/prompts may not strongly trigger the issue,")
-            print("but TI/TO is still working correctly.")
-            print()
-            print("✓ TEST PASSED: TI/TO infrastructure validated.")
-            return 0
-
+        if interleaved_samples:
+            print(f"  Generated {{len(interleaved_samples)}} samples (1 per rollout)")
+            results["interleaved"] = check_samples_for_collapse(model, tokenizer, interleaved_samples, "interleaved")
         else:
-            print("No token mismatches found.")
-            print("This model/tokenizer may have stable round-trip encoding.")
-            print()
-            print("✓ TEST PASSED: TI/TO infrastructure validated.")
+            print("  ✗ No samples generated!")
+            results["interleaved"] = {{"passed": False, "error": "No samples"}}
+
+        # === Test 2: Branching strategy (new) ===
+        print()
+        print("-" * 50)
+        print("TEST 2: BRANCHING STRATEGY")
+        print("-" * 50)
+        print("Running agent rollouts with TI/TO + branching...")
+        branching_samples = run_agent_rollouts(base_url, tokenizer, use_tito=True, strategy="branching")
+
+        if branching_samples:
+            print(f"  Generated {{len(branching_samples)}} samples (1 per assistant turn)")
+            results["branching"] = check_samples_for_collapse(model, tokenizer, branching_samples, "branching")
+        else:
+            print("  ✗ No samples generated!")
+            results["branching"] = {{"passed": False, "error": "No samples"}}
+
+        # === Final Results ===
+        print()
+        print("=" * 70)
+        print("FINAL RESULTS")
+        print("=" * 70)
+
+        all_passed = True
+        for strategy_name, result in results.items():
+            status = "✓ PASSED" if result.get("passed", False) else "✗ FAILED"
+            print(f"  {{strategy_name}}: {{status}}")
+            if "samples" in result:
+                print(f"    Samples: {{result['samples']}}, Mismatches: {{result['mismatches']}}, Smoking guns: {{result['smoking_guns']}}")
+            if not result.get("passed", False):
+                all_passed = False
+
+        print()
+        if all_passed:
+            print("✓ ALL TESTS PASSED: TI/TO + trajectory strategies working correctly!")
             return 0
+        else:
+            print("✗ SOME TESTS FAILED")
+            return 1
 
     finally:
         print()

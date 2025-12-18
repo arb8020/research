@@ -103,6 +103,10 @@ def __getattr__(name: str):
         from rollouts.training.agent_integration import trajectory_to_sample
 
         return trajectory_to_sample
+    if name == "trajectory_to_samples":
+        from rollouts.training.agent_integration import trajectory_to_samples
+
+        return trajectory_to_samples
 
     # Loss functions
     if name in (
@@ -169,6 +173,7 @@ __all__ = [
     "agent_rollout_to_sample",
     "generate_rollout_batch",
     "trajectory_to_sample",
+    "trajectory_to_samples",
     # Loss functions
     "pretrain_loss",
     "sft_loss",
