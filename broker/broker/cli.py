@@ -38,7 +38,7 @@ def main(
     ),
     ssh_key: str | None = typer.Option(None, "--ssh-key", help="Path to SSH private key"),
     quiet: bool = typer.Option(False, "-q", "--quiet", help="Show only warnings and errors"),
-    json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
+    json_output: bool = typer.Option(True, "--json/--rich", help="Output format (JSON default, --rich for tables)"),
     debug: bool = typer.Option(False, "--debug", help="Show debug logs"),
 ):
     """Configure logging and store global options"""
@@ -383,6 +383,11 @@ def create(
     image: str = typer.Option(
         "runpod/pytorch:1.0.0-cu1281-torch280-ubuntu2204", "--image", help="Docker image to use"
     ),
+    min_cuda_version: str | None = typer.Option(
+        None,
+        "--min-cuda-version",
+        help="Minimum CUDA version required (e.g., '12.1', '12.8'). Ensures node has compatible driver.",
+    ),
     name: str | None = typer.Option(None, "--name", help="Instance name"),
     wait_ssh: bool = typer.Option(
         False, "--wait-ssh", help="Wait for SSH to be ready before returning"
@@ -447,7 +452,7 @@ def create(
     else:
         cloud_msg = f" ({cloud_type} cloud)" if cloud_type else ""
         logger.info(f"provisioning instance{cloud_msg}...")
-    instance = client.create(query, image=image, name=name, gpu_count=gpu_count)
+    instance = client.create(query, image=image, name=name, gpu_count=gpu_count, min_cuda_version=min_cuda_version)
 
     if not instance:
         logger.error("✗ Failed to provision instance")
@@ -530,10 +535,10 @@ def list(ctx: typer.Context):
                 [
                     {
                         "id": i.id,
-                        "provider": i.provider,
                         "gpu_type": i.gpu_type,
-                        "status": i.status.value,
                         "price_per_hour": i.price_per_hour,
+                        "status": i.status.value,
+                        "provider": i.provider,
                     }
                     for i in instances
                 ],
