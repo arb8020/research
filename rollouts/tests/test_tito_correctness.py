@@ -33,11 +33,12 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
-from kerbal import submit
-from kerbal.protocol import DependencyConfig
+from kerbal.job_monitor import LogStreamConfig, stream_log_until_complete
+from kerbal.tmux import start_tmux_session
 
 from rollouts.remote import release_node
 
@@ -91,6 +92,7 @@ def acquire_node_runpod_only(
             cloud_type="secure",
             container_disk_gb=100,
             sort=lambda x: x.price_per_hour,
+            min_cuda_version="12.8",
         )
         print(f"  Instance ID: {instance.provider}:{instance.id}")
 
@@ -125,16 +127,16 @@ The boundary tokens are where different tokenizations emerge.
 """
 
 import json
-import subprocess
-import time
 import sys
 import re
-import httpx
+from pathlib import Path
+import trio
 import torch
 import torch.nn.functional as F
 
 MODEL = "{model}"
 PORT = {port}
+OUTPUT_DIR = Path("/tmp/tito-test")
 MAX_TOKENS_PER_TURN = 150
 MAX_TURNS = 5
 NUM_ROLLOUTS = 10
@@ -210,45 +212,35 @@ def parse_tool_call(text: str) -> tuple[str, dict] | None:
         return None
 
 
-def wait_for_sglang(base_url: str, timeout: int = 300) -> bool:
-    """Wait for SGLang server to be ready."""
-    start = time.time()
-    while time.time() - start < timeout:
-        try:
-            resp = httpx.get(f"{{base_url}}/health", timeout=5.0)
-            if resp.status_code == 200:
-                return True
-        except Exception:
-            pass
-        time.sleep(5)
-    return False
-
-
 def start_sglang_server():
-    """Start SGLang server in background."""
-    print(f"Starting SGLang server for {{MODEL}} on port {{PORT}}...")
+    """Start SGLang server using SGLangEngine (handles logging, crash detection)."""
+    from rollouts.training.weight_sync import SGLangEngine
 
-    cmd = [
-        "python", "-m", "sglang.launch_server",
-        "--model-path", MODEL,
-        "--port", str(PORT),
-        "--dtype", "bfloat16",
-    ]
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
+    engine = SGLangEngine(
+        model_name=MODEL,
+        port=PORT,
+        gpu_ids=(0,),
+        output_dir=OUTPUT_DIR,
+        dtype="bfloat16",
+        mem_fraction=0.5,  # Leave room for model forward pass
     )
 
-    base_url = f"http://localhost:{{PORT}}"
-    if not wait_for_sglang(base_url):
-        process.terminate()
-        raise RuntimeError("SGLang server failed to start")
+    print(f"Starting SGLang server for {{MODEL}} on port {{PORT}}...")
+    print(f"Logs: {{engine.log_path}}")
 
-    print(f"✓ SGLang server ready at {{base_url}}")
-    return process, base_url
+    engine.launch()
+    engine.start_log_tailer()
+
+    # Wait for server to be ready (async)
+    async def wait():
+        await engine.wait_until_ready(max_wait=300)
+
+    trio.run(wait)
+
+    print(f"✓ SGLang server ready at {{engine.api_base}}")
+    return engine, engine.base_url
 
 
 def generate_with_sglang(base_url: str, input_ids: list[int], max_tokens: int = 150):
@@ -593,7 +585,7 @@ def main():
     model.eval()
     print(f"✓ Model loaded")
 
-    process, base_url = start_sglang_server()
+    engine, base_url = start_sglang_server()
 
     try:
         found_smoking_gun = False
@@ -662,8 +654,8 @@ def main():
 
     finally:
         print("\\nShutting down SGLang server...")
-        process.terminate()
-        process.wait(timeout=10)
+        engine.shutdown()
+        print(f"Logs available at: {{engine.log_path}}")
 
 
 if __name__ == "__main__":
@@ -698,15 +690,14 @@ This validates the full integration:
 """
 
 import sys
-import subprocess
-import time
-import httpx
+from pathlib import Path
 import trio
 import torch
 import torch.nn.functional as F
 
 MODEL = "{model}"
 PORT = {port}
+OUTPUT_DIR = Path("/tmp/tito-agent-test")
 NUM_ROLLOUTS = 5
 LOGPROB_THRESHOLD = -15.0
 
@@ -720,45 +711,35 @@ CALC_PROMPTS = [
 ]
 
 
-def wait_for_sglang(base_url: str, timeout: int = 300) -> bool:
-    """Wait for SGLang server to be ready."""
-    start = time.time()
-    while time.time() - start < timeout:
-        try:
-            resp = httpx.get(f"{{base_url}}/health", timeout=5.0)
-            if resp.status_code == 200:
-                return True
-        except Exception:
-            pass
-        time.sleep(5)
-    return False
-
-
 def start_sglang_server():
-    """Start SGLang server in background."""
-    print(f"Starting SGLang server for {{MODEL}} on port {{PORT}}...")
+    """Start SGLang server using SGLangEngine (handles logging, crash detection)."""
+    from rollouts.training.weight_sync import SGLangEngine
 
-    cmd = [
-        "python", "-m", "sglang.launch_server",
-        "--model-path", MODEL,
-        "--port", str(PORT),
-        "--dtype", "bfloat16",
-    ]
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
+    engine = SGLangEngine(
+        model_name=MODEL,
+        port=PORT,
+        gpu_ids=(0,),
+        output_dir=OUTPUT_DIR,
+        dtype="bfloat16",
+        mem_fraction=0.5,  # Leave room for model forward pass
     )
 
-    base_url = f"http://localhost:{{PORT}}"
-    if not wait_for_sglang(base_url):
-        process.terminate()
-        raise RuntimeError("SGLang server failed to start")
+    print(f"Starting SGLang server for {{MODEL}} on port {{PORT}}...")
+    print(f"Logs: {{engine.log_path}}")
 
-    print(f"✓ SGLang server ready at {{base_url}}")
-    return process, base_url
+    engine.launch()
+    engine.start_log_tailer()
+
+    # Wait for server to be ready (async)
+    async def wait():
+        await engine.wait_until_ready(max_wait=300)
+
+    trio.run(wait)
+
+    print(f"✓ SGLang server ready at {{engine.api_base}}")
+    return engine, engine.base_url
 
 
 def run_agent_rollouts(base_url: str, tokenizer, use_tito: bool, strategy: str = "interleaved"):
@@ -1032,7 +1013,7 @@ def main():
     model.eval()
     print(f"✓ Model loaded")
 
-    process, base_url = start_sglang_server()
+    engine, base_url = start_sglang_server()
 
     try:
         results = {{}}
@@ -1093,8 +1074,8 @@ def main():
     finally:
         print()
         print("Shutting down SGLang server...")
-        process.terminate()
-        process.wait(timeout=10)
+        engine.shutdown()
+        print(f"Logs available at: {{engine.log_path}}")
 
 
 if __name__ == "__main__":
@@ -1108,7 +1089,10 @@ if __name__ == "__main__":
 
 
 def run_tito_test(client, workspace: str) -> bool:
-    """Run TI/TO test on remote GPU."""
+    """Run TI/TO test on remote GPU.
+
+    Uses tmux + log file pattern (like examples/rl) for reliable logging.
+    """
     print("\n" + "=" * 60)
     print("TEST: TI/TO Multi-Turn Calculator Test")
     print("=" * 60)
@@ -1118,53 +1102,58 @@ def run_tito_test(client, workspace: str) -> bool:
         model=MODEL,
         port=SGLANG_PORT,
     )
-    script_path = f"{workspace}/test_tito_remote.py"
+    script_path = f"{workspace}/rollouts/test_tito_remote.py"
+    log_file = f"{workspace}/rollouts/results/tito-test.log"
+
+    client.exec(f"mkdir -p {workspace}/rollouts/results")
     client.exec(f"cat > {script_path} << 'SCRIPT_EOF'\n{script_content}\nSCRIPT_EOF")
 
-    # Submit job
-    print("\n1. Submitting TI/TO test job...")
-    job = submit(
-        client,
-        # The workspace is at git root (/research), rollouts package is at /research/rollouts
-        # So we need {workspace}/rollouts on PYTHONPATH to find rollouts.inference.backends
-        command=f"PYTHONPATH={workspace}/rollouts:$PYTHONPATH python {script_path}",
-        workspace=workspace,
-        gpu_ids=[0],
-        deps=DependencyConfig(
-            project_name="tito-test",
-            dependencies=[
-                "torch>=2.0",
-                "transformers",
-                "accelerate",  # Required for device_map in transformers
-                "sglang[all]",
-                "httpx",
-                "trio",
-            ],
-        ),
-        job_name="test-tito",
-    )
+    # Start test in tmux session
+    print("\n1. Starting TI/TO test...")
+    cmd = f"PYTHONPATH={workspace}/rollouts:$PYTHONPATH uv run python {script_path}"
 
-    # Stream logs
+    session, err = start_tmux_session(
+        client=client,
+        session_name="tito-test",
+        command=cmd,
+        workspace=f"{workspace}/rollouts",
+        log_file=log_file,
+        capture_exit_code=True,
+    )
+    if err:
+        print(f"Failed to start tmux session: {err}")
+        return False
+
+    print(f"Test started in tmux session: {session}")
+    print(f"Log file: {log_file}")
+
+    # Stream logs until complete
     print("\n2. Running test (streaming logs)...")
     print("-" * 40)
-    success, exit_code = job.stream(timeout_sec=1800)  # 30 min
+    monitor_config = LogStreamConfig(
+        session_name="tito-test",
+        log_file=log_file,
+        timeout_sec=1800,  # 30 min
+        poll_interval_sec=1.0,
+    )
+    success, exit_code, err = stream_log_until_complete(client, monitor_config)
     print("-" * 40)
 
-    if success:
+    if success and exit_code == 0:
         print("\n✓ TI/TO test completed")
         return True
     else:
-        print(f"\n✗ TI/TO test FAILED (exit code: {exit_code})")
+        print(f"\n✗ TI/TO test FAILED (exit code: {exit_code}, error: {err})")
         return False
 
 
 def run_agent_loop_test(client, workspace: str) -> bool:
     """Run agent loop TI/TO integration test on remote GPU.
 
+    Uses tmux + log file pattern (like examples/rl) for reliable logging.
+
     This test validates the full TI/TO integration through:
       agent_rollout_to_sample() -> run_agent() -> rollout() -> token-level providers
-
-    Runs rollouts WITH and WITHOUT TI/TO to compare logprobs.
     """
     print("\n" + "=" * 60)
     print("TEST: Agent Loop TI/TO Integration Test")
@@ -1175,47 +1164,48 @@ def run_agent_loop_test(client, workspace: str) -> bool:
         model=MODEL,
         port=SGLANG_PORT,
     )
-    script_path = f"{workspace}/test_agent_loop_tito.py"
+    script_path = f"{workspace}/rollouts/test_agent_loop_tito.py"
+    log_file = f"{workspace}/rollouts/results/agent-loop-tito-test.log"
+
+    client.exec(f"mkdir -p {workspace}/rollouts/results")
     client.exec(f"cat > {script_path} << 'SCRIPT_EOF'\n{script_content}\nSCRIPT_EOF")
 
-    # Submit job
-    print("\n1. Submitting agent loop TI/TO test job...")
-    job = submit(
-        client,
-        command=f"PYTHONPATH={workspace}/rollouts:$PYTHONPATH python {script_path}",
-        workspace=workspace,
-        gpu_ids=[0],
-        deps=DependencyConfig(
-            project_name="tito-agent-test",
-            dependencies=[
-                "torch>=2.0",
-                "transformers",
-                "accelerate",
-                "sglang[all]",
-                # rollouts package dependencies
-                "openai>=1.0.0",
-                "anthropic>=0.40.0",
-                "dacite>=1.8.0",
-                "aiohttp>=3.9.0",
-                "trio>=0.32.0",
-                "httpx>=0.25.0",
-                "markdownify>=0.11.0",
-            ],
-        ),
-        job_name="test-agent-loop-tito",
-    )
+    # Start test in tmux session
+    print("\n1. Starting agent loop TI/TO test...")
+    cmd = f"PYTHONPATH={workspace}/rollouts:$PYTHONPATH uv run python {script_path}"
 
-    # Stream logs
+    session, err = start_tmux_session(
+        client=client,
+        session_name="agent-loop-tito-test",
+        command=cmd,
+        workspace=f"{workspace}/rollouts",
+        log_file=log_file,
+        capture_exit_code=True,
+    )
+    if err:
+        print(f"Failed to start tmux session: {err}")
+        return False
+
+    print(f"Test started in tmux session: {session}")
+    print(f"Log file: {log_file}")
+
+    # Stream logs until complete
     print("\n2. Running test (streaming logs)...")
     print("-" * 40)
-    success, exit_code = job.stream(timeout_sec=1800)  # 30 min
+    monitor_config = LogStreamConfig(
+        session_name="agent-loop-tito-test",
+        log_file=log_file,
+        timeout_sec=1800,  # 30 min
+        poll_interval_sec=1.0,
+    )
+    success, exit_code, err = stream_log_until_complete(client, monitor_config)
     print("-" * 40)
 
-    if success:
+    if success and exit_code == 0:
         print("\n✓ Agent loop TI/TO test completed")
         return True
     else:
-        print(f"\n✗ Agent loop TI/TO test FAILED (exit code: {exit_code})")
+        print(f"\n✗ Agent loop TI/TO test FAILED (exit code: {exit_code}, error: {err})")
         return False
 
 
@@ -1260,9 +1250,15 @@ def main():
         gpu_type=args.gpu_type,
     )
 
+    workspace = None
     try:
+        # Deploy code with bootstrap (like examples/rl)
         print("\nDeploying code...")
-        workspace = client.push("~/.bifrost/workspaces/rollouts-tito-test")
+        bootstrap = [
+            "cd rollouts && uv python install 3.12 && uv sync --python 3.12",
+            "uv pip install torch transformers accelerate sglang[all] curl_cffi",
+        ]
+        workspace = client.push("~/.bifrost/workspaces/rollouts-tito-test", bootstrap_cmd=bootstrap)
         print(f"Workspace: {workspace}")
 
         results = {}
@@ -1286,7 +1282,38 @@ def main():
         all_passed = all(results.values())
         return 0 if all_passed else 1
 
+    except KeyboardInterrupt:
+        print("\n\nInterrupted! Syncing logs before exit...")
+        return 1
+
     finally:
+        # Sync logs back (even on failure/interrupt)
+        print("\nSyncing logs...")
+        local_results = Path("results/tito-test")
+        local_results.mkdir(parents=True, exist_ok=True)
+
+        if workspace:
+            files_to_sync = [
+                # Test logs
+                (f"{workspace}/rollouts/results/tito-test.log", "tito-test.log"),
+                (f"{workspace}/rollouts/results/agent-loop-tito-test.log", "agent-loop-tito-test.log"),
+                # SGLang logs
+                ("/tmp/tito-test/sglang.log", "sglang-retok.log"),
+                ("/tmp/tito-agent-test/sglang.log", "sglang-agent.log"),
+            ]
+
+            for remote_path, local_name in files_to_sync:
+                try:
+                    result = client.download_files(
+                        remote_path=remote_path,
+                        local_path=str(local_results / local_name),
+                        recursive=False,
+                    )
+                    if result and result.success:
+                        print(f"  Synced: {local_name}")
+                except Exception:
+                    pass
+
         release_node(instance, keep_alive=args.keep_alive)
 
 
