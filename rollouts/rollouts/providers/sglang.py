@@ -373,30 +373,269 @@ async def rollout_sglang_token_level(
     on_chunk: Callable[[StreamEvent], Awaitable[None]],
     **kwargs: Any,
 ) -> Actor:
-    """(STUB) Direct sglang_router integration for token-level control.
+    """Token-level SGLang rollout using /generate endpoint.
 
-    NOT IMPLEMENTED - This is a placeholder for future work.
+    Uses TI/TO (Tokens-In/Tokens-Out) to avoid retokenization issues that
+    cause RL training collapse. Tokenizes messages, calls /generate with
+    input_ids, stores output token_ids directly.
 
-    This mode would use sglang_router directly (not OpenAI-compatible API)
-    for advanced use cases like:
-    - Speculative decoding
-    - Custom sampling strategies
-    - Direct token-level access for RL training
-    - Higher throughput via batched generation
+    Args:
+        actor: Current actor state with endpoint and trajectory
+        on_chunk: Callback for streaming events (not used for token-level)
+        **kwargs: Must include:
+            - tokenizer: HuggingFace tokenizer for the model
+            - suffix_ids (optional): Pre-computed suffix tokens for multi-turn
 
-    Reference implementation:
-        radixark/miles: miles/rollout/sglang_rollout.py
-        - Uses sglang_router.generate() with token IDs
-        - Implements custom sampling params
-        - Supports speculative decoding via sglang_speculative_algorithm
+    Returns:
+        Updated actor with new message and token_ids stored in Choice
 
-    Required dependencies (not currently installed):
-        - sglang_router
-
-    See module docstring for more context.
+    Reference: radixark/miles/rollout/sglang_rollout.py
     """
-    raise NotImplementedError(
-        "Token-level SGLang integration not yet implemented. "
-        "Use rollout_sglang or rollout_sglang_streaming instead. "
-        "See radixark/miles for reference implementation."
+    from dataclasses import replace
+    import time
+
+    from rollouts.dtypes import (
+        Choice,
+        ChatCompletion,
+        Logprob,
+        Logprobs,
+        Message,
+        TextContent,
+        ToolCallContent,
+        Usage,
     )
+    from rollouts.inference.backends import (
+        generate_sglang,
+        tokenize_chat,
+        append_suffix_with_overlap,
+        compute_suffix_ids,
+        log_token_mismatch,
+    )
+
+    assert actor is not None
+    assert actor.endpoint is not None
+    assert actor.trajectory is not None
+
+    # Get tokenizer from kwargs (required)
+    tokenizer = kwargs.get("tokenizer")
+    assert tokenizer is not None, "tokenizer is required for token-level rollout"
+
+    # Get or compute suffix_ids for multi-turn
+    suffix_ids = kwargs.get("suffix_ids")
+    if suffix_ids is None:
+        suffix_ids = compute_suffix_ids(tokenizer)
+
+    # Build input_ids from trajectory
+    # For multi-turn, we use stored token_ids from previous completions
+    input_ids = _build_input_ids_from_trajectory(
+        actor.trajectory,
+        tokenizer,
+        suffix_ids,
+    )
+
+    # Normalize base URL (strip /v1/chat/completions if present)
+    api_base = actor.endpoint.api_base.rstrip("/")
+    if api_base.endswith("/v1/chat/completions"):
+        api_base = api_base[: -len("/v1/chat/completions")]
+    elif api_base.endswith("/v1"):
+        api_base = api_base[: -len("/v1")]
+
+    # Call /generate with token IDs
+    result = await generate_sglang(
+        base_url=api_base,
+        input_ids=input_ids,
+        max_tokens=actor.endpoint.max_tokens,
+        temperature=actor.endpoint.temperature,
+        timeout=actor.endpoint.timeout,
+    )
+
+    # Decode generated tokens to text
+    generated_text = tokenizer.decode(result.output_ids, skip_special_tokens=True)
+
+    # Parse tool calls from generated text if tools are available
+    tool_calls = []
+    if actor.tools:
+        tool_calls = _parse_tool_calls_from_text(generated_text)
+
+    # Build Message from decoded text
+    if tool_calls:
+        content = [
+            TextContent(text=generated_text),
+            *[ToolCallContent(
+                id=tc["id"],
+                name=tc["name"],
+                arguments=tc["args"],
+            ) for tc in tool_calls],
+        ]
+    else:
+        content = generated_text
+
+    message = Message(role="assistant", content=content)
+
+    # Build Logprobs from result
+    logprob_content = []
+    for i, (token_id, lp) in enumerate(zip(result.output_ids, result.logprobs)):
+        token_str = tokenizer.decode([token_id])
+        token_bytes = list(token_str.encode("utf-8"))
+        top_lps = []
+        if result.top_logprobs and i < len(result.top_logprobs):
+            top_lps = list(result.top_logprobs[i].values())
+        logprob_content.append(Logprob(
+            token=token_str,
+            logprob=lp,
+            bytes=token_bytes,
+            top_logprobs=top_lps,
+        ))
+
+    # Build Choice with token_ids
+    choice = Choice(
+        index=0,
+        message=message,
+        finish_reason=result.finish_reason,
+        logprobs=Logprobs(content=logprob_content),
+        token_ids=result.output_ids,  # Store the actual token IDs!
+    )
+
+    # Build ChatCompletion
+    completion = ChatCompletion(
+        id=f"chatcmpl-tito-{int(time.time())}",
+        object="chat.completion",
+        created=int(time.time()),
+        model=actor.endpoint.model,
+        usage=Usage(
+            prompt_tokens=len(input_ids),
+            completion_tokens=len(result.output_ids),
+            total_tokens=len(input_ids) + len(result.output_ids),
+        ),
+        choices=[choice],
+    )
+
+    # Debug: check if our tokens match what chat template would produce
+    all_messages = actor.trajectory.messages + [message]
+    reference_ids = tokenize_chat(tokenizer, [_msg_to_dict(m) for m in all_messages])
+    our_full_ids = input_ids + list(result.output_ids)
+    log_token_mismatch(our_full_ids, reference_ids, tokenizer, context="rollout_sglang_token_level")
+
+    # Update trajectory
+    new_trajectory = replace(
+        actor.trajectory,
+        messages=actor.trajectory.messages + [message],
+        completions=actor.trajectory.completions + [completion],
+    )
+
+    return replace(actor, trajectory=new_trajectory)
+
+
+def _build_input_ids_from_trajectory(
+    trajectory: Any,
+    tokenizer: Any,
+    suffix_ids: list[int],
+) -> list[int]:
+    """Build input_ids from trajectory, using stored token_ids when available.
+
+    For multi-turn, we concatenate:
+    - Previous turns' input_ids + output token_ids + suffix_ids
+    - Current turn's prompt tokens
+
+    This avoids retokenization of previous assistant responses.
+    """
+    from rollouts.inference.backends import (
+        tokenize_chat,
+        append_suffix_with_overlap,
+    )
+
+    # Check if we have stored token_ids from previous completions
+    if trajectory.completions:
+        # Build from stored tokens
+        input_ids: list[int] = []
+
+        # Get the initial prompt tokens (everything before first completion)
+        # We need to figure out how many messages were in the initial prompt
+        num_completions = len(trajectory.completions)
+        # Messages alternate: prompt, response, prompt, response, ...
+        # So initial prompt is messages[0], then completion[0] added messages[1], etc.
+
+        # For now, simpler approach: tokenize all messages up to (but not including)
+        # the last assistant message, then append stored token_ids for completions
+        # that have them
+
+        # Find messages that are user/system (prompts) vs assistant (completions)
+        # and use stored token_ids for assistant messages when available
+        all_ids: list[int] = []
+
+        for i, msg in enumerate(trajectory.messages):
+            msg_dict = _msg_to_dict(msg)
+
+            if msg_dict["role"] == "assistant":
+                # Check if we have stored token_ids for this completion
+                completion_idx = sum(
+                    1 for m in trajectory.messages[:i] if _msg_to_dict(m)["role"] == "assistant"
+                )
+                if completion_idx < len(trajectory.completions):
+                    completion = trajectory.completions[completion_idx]
+                    if completion.choices and completion.choices[0].token_ids:
+                        # Use stored token_ids
+                        stored_ids = list(completion.choices[0].token_ids)
+                        all_ids = append_suffix_with_overlap(all_ids, suffix_ids)
+                        all_ids.extend(stored_ids)
+                        all_ids = append_suffix_with_overlap(all_ids, suffix_ids)
+                        continue
+
+            # No stored token_ids, tokenize this message
+            if i == 0:
+                msg_ids = tokenize_chat(tokenizer, [msg_dict])
+            else:
+                # Use prefix trick for delimiter
+                from rollouts.inference.backends import tokenize_message_with_delimiter
+                msg_ids = tokenize_message_with_delimiter(tokenizer, msg_dict)
+
+            all_ids.extend(msg_ids)
+
+        return all_ids
+
+    else:
+        # First turn - just tokenize all messages
+        msg_dicts = [_msg_to_dict(m) for m in trajectory.messages]
+        return tokenize_chat(tokenizer, msg_dicts, add_generation_prompt=True)
+
+
+def _msg_to_dict(msg: Any) -> dict[str, str]:
+    """Convert Message to dict for tokenization."""
+    from rollouts.dtypes import TextContent, ThinkingContent
+
+    content = msg.content
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        # Extract text from content blocks
+        text_parts = []
+        for block in content:
+            if isinstance(block, TextContent):
+                text_parts.append(block.text)
+            elif isinstance(block, ThinkingContent):
+                text_parts.append(block.thinking)
+            elif isinstance(block, dict):
+                if block.get("type") == "text":
+                    text_parts.append(block.get("text", ""))
+                elif block.get("type") == "thinking":
+                    text_parts.append(block.get("thinking", ""))
+        text = "".join(text_parts)
+    else:
+        text = str(content) if content else ""
+
+    return {"role": msg.role, "content": text}
+
+
+def _parse_tool_calls_from_text(text: str) -> list[dict]:
+    """Parse tool calls from generated text.
+
+    This is a stub - proper implementation would depend on the model's
+    tool call format (e.g., <tool_call>...</tool_call> tags).
+
+    For now, returns empty list. Tool call parsing should be handled
+    by the chat template or a separate parser.
+    """
+    # TODO: Implement tool call parsing based on model format
+    # This would parse things like:
+    # <tool_call>{"name": "foo", "arguments": {...}}</tool_call>
+    return []
