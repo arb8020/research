@@ -15,7 +15,7 @@ Architecture:
 
 from __future__ import annotations
 
-import json
+import logging
 import subprocess
 import threading
 import time
@@ -139,7 +139,7 @@ class InferenceEngine(Protocol):
 
     Lifecycle:
     1. launch() -> str               # Start server in tmux, return session name
-    2. start_log_tailer() -> Thread  # Tail logs as JSONL to stdout
+    2. start_log_tailer() -> Thread  # Tail logs via Python logging
     3. wait_until_ready() -> None    # Block until health check passes
     4. update_weights_from_checkpoint() -> dict  # Sync weights
     5. shutdown() -> None            # Kill tmux session
@@ -240,7 +240,7 @@ class SGLangEngine:
         ...     output_dir=Path("results/rl/run_001"),
         ... )
         >>> engine.launch()
-        >>> engine.start_log_tailer()  # Emits JSONL to stdout for TUI
+        >>> engine.start_log_tailer()  # Routes logs via Python logging
         >>> await engine.wait_until_ready()
         >>> # ... use engine ...
         >>> await engine.update_weights_from_checkpoint("/ckpt/step_100")
@@ -338,7 +338,12 @@ class SGLangEngine:
         return self._session_name
 
     def start_log_tailer(self) -> threading.Thread:
-        """Start daemon thread that tails SGLang logs as JSONL."""
+        """Start daemon thread that tails SGLang logs via Python logging.
+
+        Uses a dedicated 'sglang' logger so logs go through the same
+        formatting as training logs (JSONL when TUI is active).
+        """
+        sglang_logger = logging.getLogger("sglang")
 
         def tail_log() -> None:
             try:
@@ -354,10 +359,7 @@ class SGLangEngine:
                         if line:
                             line = line.strip()
                             if line:
-                                print(
-                                    json.dumps({"logger": "sglang", "message": line}),
-                                    flush=True,
-                                )
+                                sglang_logger.info(line)
                         else:
                             time.sleep(0.1)
             except Exception:
@@ -431,7 +433,7 @@ class VLLMEngine:
         ...     output_dir=Path("results/rl/run_001"),
         ... )
         >>> engine.launch()
-        >>> engine.start_log_tailer()  # Emits JSONL to stdout for TUI
+        >>> engine.start_log_tailer()  # Routes logs via Python logging
         >>> await engine.wait_until_ready()
         >>> # ... use engine ...
         >>> await engine.update_weights_from_checkpoint("/ckpt/step_100")
@@ -529,7 +531,12 @@ class VLLMEngine:
         return self._session_name
 
     def start_log_tailer(self) -> threading.Thread:
-        """Start daemon thread that tails vLLM logs as JSONL."""
+        """Start daemon thread that tails vLLM logs via Python logging.
+
+        Uses a dedicated 'vllm' logger so logs go through the same
+        formatting as training logs (JSONL when TUI is active).
+        """
+        vllm_logger = logging.getLogger("vllm")
 
         def tail_log() -> None:
             try:
@@ -545,10 +552,7 @@ class VLLMEngine:
                         if line:
                             line = line.strip()
                             if line:
-                                print(
-                                    json.dumps({"logger": "vllm", "message": line}),
-                                    flush=True,
-                                )
+                                vllm_logger.info(line)
                         else:
                             time.sleep(0.1)
             except Exception:

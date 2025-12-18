@@ -50,6 +50,8 @@ class JSONFormatter(logging.Formatter):
         always_fields: dict[str, Any] = {
             "message": record.getMessage(),
             "timestamp": dt.datetime.fromtimestamp(record.created, tz=dt.timezone.utc).isoformat(),
+            "logger": record.name,
+            "level": record.levelname,
         }
 
         if record.exc_info is not None:
