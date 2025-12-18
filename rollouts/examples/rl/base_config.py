@@ -66,7 +66,7 @@ def run_remote(
             cloud_type="secure",
             container_disk_gb=100,
             sort=lambda x: x.price_per_hour,
-            min_cuda_version="12.4",  # Ensure compatible driver for PyTorch 2.x
+            min_cuda_version="12.8",  # Ensure compatible driver for PyTorch 2.x
         )
         print(f"Instance: {instance.provider}:{instance.id}")
 
