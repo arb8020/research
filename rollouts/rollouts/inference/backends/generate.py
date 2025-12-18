@@ -125,11 +125,12 @@ async def generate_sglang(
     logprobs = tuple(item[0] for item in output_token_logprobs)
 
     # Extract top-N logprobs if available
+    # SGLang format: [[logprob, token_id, null], ...] per position
     top_logprobs_raw = meta_info.get("output_top_logprobs")
     top_logprobs = None
     if top_logprobs_raw:
         top_logprobs = tuple(
-            {token_id: lp for lp, token_id in position_logprobs}
+            {item[1]: item[0] for item in position_logprobs}  # token_id: logprob
             for position_logprobs in top_logprobs_raw
         )
 
