@@ -1,0 +1,841 @@
+"""Hierarchical trace viewer for training rollouts.
+
+Navigable tree structure:
+    Step → Group (prompt) → Sample (rollout) → Trace (messages)
+
+Based on pyvimdiff pattern: each level is a picker that opens the next level.
+
+Usage:
+    from rollouts.tui.traces import StepPicker, TraceData
+
+    # Load from rollouts.jsonl
+    data = TraceData.from_jsonl("results/rl/run_xxx/rollouts.jsonl")
+    picker = StepPicker(data)
+    picker.run()
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from collections import defaultdict
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from .terminal import Terminal
+
+# Colors (ANSI)
+DIM = "\x1b[90m"
+WHITE = "\x1b[37m"
+CYAN = "\x1b[36m"
+GREEN = "\x1b[32m"
+YELLOW = "\x1b[33m"
+RED = "\x1b[31m"
+MAGENTA = "\x1b[35m"
+BOLD = "\x1b[1m"
+RESET = "\x1b[0m"
+BG_HEADER = "\x1b[48;2;40;44;52m"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Data Types
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class Message:
+    """A single message in a trace."""
+
+    role: str  # "user", "assistant", "tool", "system"
+    content: str
+
+
+@dataclass
+class Rollout:
+    """A single rollout (sample)."""
+
+    step: int
+    group_id: int  # Which prompt group
+    sample_id: int  # Which sample within group
+    prompt: str
+    response: str
+    reward: float
+    messages: list[Message] = field(default_factory=list)
+
+
+@dataclass
+class Group:
+    """A group of rollouts for the same prompt."""
+
+    step: int
+    group_id: int
+    prompt: str
+    rollouts: list[Rollout] = field(default_factory=list)
+
+    @property
+    def avg_reward(self) -> float:
+        if not self.rollouts:
+            return 0.0
+        return sum(r.reward for r in self.rollouts) / len(self.rollouts)
+
+    @property
+    def max_reward(self) -> float:
+        if not self.rollouts:
+            return 0.0
+        return max(r.reward for r in self.rollouts)
+
+    @property
+    def min_reward(self) -> float:
+        if not self.rollouts:
+            return 0.0
+        return min(r.reward for r in self.rollouts)
+
+
+@dataclass
+class Step:
+    """A training step containing multiple groups."""
+
+    step: int
+    groups: list[Group] = field(default_factory=list)
+
+    @property
+    def avg_reward(self) -> float:
+        all_rewards = [r.reward for g in self.groups for r in g.rollouts]
+        if not all_rewards:
+            return 0.0
+        return sum(all_rewards) / len(all_rewards)
+
+    @property
+    def num_rollouts(self) -> int:
+        return sum(len(g.rollouts) for g in self.groups)
+
+
+@dataclass
+class TraceData:
+    """All trace data from a training run."""
+
+    steps: list[Step] = field(default_factory=list)
+
+    @classmethod
+    def from_jsonl(cls, path: str | Path) -> TraceData:
+        """Load trace data from rollouts.jsonl file."""
+        path = Path(path)
+        if not path.exists():
+            return cls()
+
+        # Group by step, then by prompt (group_id)
+        step_groups: dict[int, dict[int, list[dict]]] = defaultdict(lambda: defaultdict(list))
+
+        with open(path) as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                    step = record.get("step", 0)
+                    # Use prompt hash as group_id if not provided
+                    prompt = record.get("prompt", "")
+                    group_id = hash(prompt) % 10000  # Simple grouping by prompt
+                    step_groups[step][group_id].append(record)
+                except json.JSONDecodeError:
+                    continue
+
+        # Build structured data
+        steps = []
+        for step_num in sorted(step_groups.keys()):
+            groups = []
+            for group_id, records in step_groups[step_num].items():
+                if not records:
+                    continue
+
+                prompt = records[0].get("prompt", "")
+                rollouts = []
+
+                for i, record in enumerate(records):
+                    # Extract messages from metadata
+                    messages = []
+                    metadata = record.get("metadata", {})
+                    if "messages" in metadata:
+                        for msg in metadata["messages"]:
+                            messages.append(
+                                Message(
+                                    role=msg.get("role", "unknown"),
+                                    content=msg.get("content", ""),
+                                )
+                            )
+
+                    rollouts.append(
+                        Rollout(
+                            step=step_num,
+                            group_id=group_id,
+                            sample_id=i,
+                            prompt=prompt,
+                            response=record.get("response", ""),
+                            reward=record.get("reward", 0.0),
+                            messages=messages,
+                        )
+                    )
+
+                groups.append(
+                    Group(
+                        step=step_num,
+                        group_id=group_id,
+                        prompt=prompt,
+                        rollouts=rollouts,
+                    )
+                )
+
+            steps.append(Step(step=step_num, groups=groups))
+
+        return cls(steps=steps)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Trace Viewer (deepest level - shows message trace)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TraceViewer:
+    """View a single rollout's message trace."""
+
+    def __init__(self, rollout: Rollout) -> None:
+        self.rollout = rollout
+        self.scroll = 0
+        self.terminal = Terminal(use_alternate_screen=True)
+        self._running = False
+        self._needs_redraw = True
+        self._rendered_lines: list[str] = []
+
+    def run(self) -> None:
+        self._running = True
+        self._render_messages()  # Pre-render message lines
+        self.terminal.start(on_input=lambda x: None, on_resize=self._on_resize)
+
+        try:
+            self._main_loop()
+        finally:
+            self.terminal.stop()
+
+    def _on_resize(self) -> None:
+        self._needs_redraw = True
+
+    def _main_loop(self) -> None:
+        while self._running:
+            if self._needs_redraw:
+                self._render()
+                self._needs_redraw = False
+
+            data = self.terminal.read_input()
+            if data:
+                self._handle_input(data)
+
+            time.sleep(0.01)
+
+    def _handle_input(self, data: str) -> None:
+        if data == "q":
+            self._running = False
+            return
+
+        height = self.terminal.rows
+        content_height = height - 2
+        max_scroll = max(0, len(self._rendered_lines) - content_height)
+
+        if data in ("j", "\x1b[B"):
+            self.scroll = min(max_scroll, self.scroll + 1)
+            self._needs_redraw = True
+        elif data in ("k", "\x1b[A"):
+            self.scroll = max(0, self.scroll - 1)
+            self._needs_redraw = True
+        elif data == "\x04":  # Ctrl+D
+            self.scroll = min(max_scroll, self.scroll + content_height // 2)
+            self._needs_redraw = True
+        elif data == "\x15":  # Ctrl+U
+            self.scroll = max(0, self.scroll - content_height // 2)
+            self._needs_redraw = True
+        elif data == "g":
+            next_char = self._wait_for_char()
+            if next_char == "g":
+                self.scroll = 0
+                self._needs_redraw = True
+        elif data == "G":
+            self.scroll = max_scroll
+            self._needs_redraw = True
+
+    def _wait_for_char(self, timeout: float = 0.5) -> str | None:
+        start = time.time()
+        while time.time() - start < timeout:
+            data = self.terminal.read_input()
+            if data:
+                return data
+            time.sleep(0.01)
+        return None
+
+    def _render_messages(self) -> None:
+        """Pre-render all message lines."""
+        self._rendered_lines = []
+
+        for msg in self.rollout.messages:
+            # Role header
+            role_colors = {
+                "user": CYAN,
+                "assistant": GREEN,
+                "tool": YELLOW,
+                "system": MAGENTA,
+            }
+            color = role_colors.get(msg.role, WHITE)
+            self._rendered_lines.append(f"{color}{BOLD}[{msg.role}]{RESET}")
+
+            # Content (wrap lines)
+            for line in msg.content.split("\n"):
+                self._rendered_lines.append(f"  {line}")
+
+            # Blank line between messages
+            self._rendered_lines.append("")
+
+    def _render(self) -> None:
+        width = self.terminal.columns
+        height = self.terminal.rows
+        content_height = height - 2
+
+        self.terminal.write("\x1b[2J\x1b[H")
+
+        output = []
+
+        # Header
+        output.append(self._render_header(width))
+
+        # Content
+        visible = self._rendered_lines[self.scroll : self.scroll + content_height]
+        for ln in visible:
+            # Truncate to width
+            display_ln = ln
+            if len(display_ln) > width:
+                display_ln = display_ln[: width - 3] + "..."
+            output.append(display_ln + " " * max(0, width - len(display_ln)))
+
+        # Pad
+        while len(output) < height - 1:
+            output.append(" " * width)
+
+        # Footer
+        output.append(self._render_footer(width))
+
+        for i, line in enumerate(output):
+            self.terminal.write(f"\x1b[{i + 1};1H{line}")
+
+    def _render_header(self, width: int) -> str:
+        r = self.rollout
+        reward_color = GREEN if r.reward > 0 else RED if r.reward < 0 else WHITE
+        left = f" Step {r.step} / Group {r.group_id} / Sample {r.sample_id}"
+        right = f"reward: {reward_color}{r.reward:.3f}{RESET}{BG_HEADER} "
+
+        padding = width - len(left) - len(f"reward: {r.reward:.3f} ")
+        return f"{BG_HEADER}{BOLD}{left}{RESET}{BG_HEADER}{' ' * max(0, padding)}{right}{RESET}"
+
+    def _render_footer(self, width: int) -> str:
+        hints = "j/k:scroll  gg/G:top/end  q:back"
+        total = len(self._rendered_lines)
+        pos = f"{self.scroll + 1}/{total}" if total > 0 else "0/0"
+
+        padding = width - len(hints) - len(pos) - 4
+        return (
+            f"{BG_HEADER} {DIM}{hints}{RESET}{BG_HEADER}{' ' * max(0, padding)}{WHITE}{pos} {RESET}"
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Rollout Picker (samples within a group)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class RolloutPicker:
+    """Pick a rollout from a group."""
+
+    def __init__(self, group: Group) -> None:
+        self.group = group
+        self.cursor = 0
+        self.scroll = 0
+        self.terminal = Terminal(use_alternate_screen=True)
+        self._running = False
+        self._needs_redraw = True
+
+    def run(self) -> None:
+        if not self.group.rollouts:
+            return
+
+        self._running = True
+        self.terminal.start(on_input=lambda x: None, on_resize=self._on_resize)
+
+        try:
+            self._main_loop()
+        finally:
+            self.terminal.stop()
+
+    def _on_resize(self) -> None:
+        self._needs_redraw = True
+
+    def _main_loop(self) -> None:
+        while self._running:
+            if self._needs_redraw:
+                self._render()
+                self._needs_redraw = False
+
+            data = self.terminal.read_input()
+            if data:
+                self._handle_input(data)
+
+            time.sleep(0.01)
+
+    def _handle_input(self, data: str) -> None:
+        if data == "q":
+            self._running = False
+            return
+
+        height = self.terminal.rows
+        content_height = height - 2
+
+        if data in ("j", "\x1b[B"):
+            if self.cursor < len(self.group.rollouts) - 1:
+                self.cursor += 1
+                if self.cursor >= self.scroll + content_height:
+                    self.scroll = self.cursor - content_height + 1
+                self._needs_redraw = True
+        elif data in ("k", "\x1b[A"):
+            if self.cursor > 0:
+                self.cursor -= 1
+                if self.cursor < self.scroll:
+                    self.scroll = self.cursor
+                self._needs_redraw = True
+        elif data == "g":
+            next_char = self._wait_for_char()
+            if next_char == "g":
+                self.cursor = 0
+                self.scroll = 0
+                self._needs_redraw = True
+        elif data == "G":
+            self.cursor = len(self.group.rollouts) - 1
+            self.scroll = max(0, self.cursor - content_height + 1)
+            self._needs_redraw = True
+        elif data in ("\r", "\n"):
+            self._open_trace()
+
+    def _wait_for_char(self, timeout: float = 0.5) -> str | None:
+        start = time.time()
+        while time.time() - start < timeout:
+            data = self.terminal.read_input()
+            if data:
+                return data
+            time.sleep(0.01)
+        return None
+
+    def _open_trace(self) -> None:
+        rollout = self.group.rollouts[self.cursor]
+        self.terminal.stop()
+
+        viewer = TraceViewer(rollout)
+        viewer.run()
+
+        self.terminal.start(on_input=lambda x: None, on_resize=self._on_resize)
+        self._needs_redraw = True
+
+    def _render(self) -> None:
+        width = self.terminal.columns
+        height = self.terminal.rows
+        content_height = height - 2
+
+        self.terminal.write("\x1b[2J\x1b[H")
+
+        output = []
+        output.append(self._render_header(width))
+
+        visible = self.group.rollouts[self.scroll : self.scroll + content_height]
+        for i, rollout in enumerate(visible):
+            idx = self.scroll + i
+            output.append(self._render_rollout_line(rollout, idx == self.cursor, width))
+
+        while len(output) < height - 1:
+            output.append(" " * width)
+
+        output.append(self._render_footer(width))
+
+        for i, line in enumerate(output):
+            self.terminal.write(f"\x1b[{i + 1};1H{line}")
+
+    def _render_header(self, width: int) -> str:
+        g = self.group
+        # Truncate prompt for header
+        prompt_preview = g.prompt[:50] + "..." if len(g.prompt) > 50 else g.prompt
+        prompt_preview = prompt_preview.replace("\n", " ")
+        left = f" Step {g.step} / Group {g.group_id}: {prompt_preview}"
+
+        if len(left) > width - 20:
+            left = left[: width - 23] + "..."
+
+        padding = width - len(left)
+        return f"{BG_HEADER}{BOLD}{left}{RESET}{BG_HEADER}{' ' * max(0, padding)}{RESET}"
+
+    def _render_rollout_line(self, r: Rollout, selected: bool, width: int) -> str:
+        cursor = "> " if selected else "  "
+
+        # Reward with color
+        reward_color = GREEN if r.reward > 0.5 else YELLOW if r.reward > 0 else RED
+        reward_str = f"{reward_color}{r.reward:.3f}{RESET}"
+
+        # Response preview
+        response_preview = r.response[:60].replace("\n", " ")
+        if len(r.response) > 60:
+            response_preview += "..."
+
+        if selected:
+            line = f"{BOLD}{cursor}Sample {r.sample_id}  reward={reward_str}  {response_preview}{RESET}"
+        else:
+            line = f"{DIM}{cursor}Sample {r.sample_id}  reward={RESET}{reward_str}{DIM}  {response_preview}{RESET}"
+
+        return line
+
+    def _render_footer(self, width: int) -> str:
+        hints = "j/k:move  Enter:view  q:back"
+        pos = f"{self.cursor + 1}/{len(self.group.rollouts)}"
+
+        padding = width - len(hints) - len(pos) - 4
+        return (
+            f"{BG_HEADER} {DIM}{hints}{RESET}{BG_HEADER}{' ' * max(0, padding)}{WHITE}{pos} {RESET}"
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Group Picker (prompt groups within a step)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class GroupPicker:
+    """Pick a group from a step."""
+
+    def __init__(self, step: Step) -> None:
+        self.step = step
+        self.cursor = 0
+        self.scroll = 0
+        self.terminal = Terminal(use_alternate_screen=True)
+        self._running = False
+        self._needs_redraw = True
+
+    def run(self) -> None:
+        if not self.step.groups:
+            return
+
+        self._running = True
+        self.terminal.start(on_input=lambda x: None, on_resize=self._on_resize)
+
+        try:
+            self._main_loop()
+        finally:
+            self.terminal.stop()
+
+    def _on_resize(self) -> None:
+        self._needs_redraw = True
+
+    def _main_loop(self) -> None:
+        while self._running:
+            if self._needs_redraw:
+                self._render()
+                self._needs_redraw = False
+
+            data = self.terminal.read_input()
+            if data:
+                self._handle_input(data)
+
+            time.sleep(0.01)
+
+    def _handle_input(self, data: str) -> None:
+        if data == "q":
+            self._running = False
+            return
+
+        height = self.terminal.rows
+        content_height = height - 2
+
+        if data in ("j", "\x1b[B"):
+            if self.cursor < len(self.step.groups) - 1:
+                self.cursor += 1
+                if self.cursor >= self.scroll + content_height:
+                    self.scroll = self.cursor - content_height + 1
+                self._needs_redraw = True
+        elif data in ("k", "\x1b[A"):
+            if self.cursor > 0:
+                self.cursor -= 1
+                if self.cursor < self.scroll:
+                    self.scroll = self.cursor
+                self._needs_redraw = True
+        elif data == "g":
+            next_char = self._wait_for_char()
+            if next_char == "g":
+                self.cursor = 0
+                self.scroll = 0
+                self._needs_redraw = True
+        elif data == "G":
+            self.cursor = len(self.step.groups) - 1
+            self.scroll = max(0, self.cursor - content_height + 1)
+            self._needs_redraw = True
+        elif data in ("\r", "\n"):
+            self._open_group()
+
+    def _wait_for_char(self, timeout: float = 0.5) -> str | None:
+        start = time.time()
+        while time.time() - start < timeout:
+            data = self.terminal.read_input()
+            if data:
+                return data
+            time.sleep(0.01)
+        return None
+
+    def _open_group(self) -> None:
+        group = self.step.groups[self.cursor]
+        self.terminal.stop()
+
+        picker = RolloutPicker(group)
+        picker.run()
+
+        self.terminal.start(on_input=lambda x: None, on_resize=self._on_resize)
+        self._needs_redraw = True
+
+    def _render(self) -> None:
+        width = self.terminal.columns
+        height = self.terminal.rows
+        content_height = height - 2
+
+        self.terminal.write("\x1b[2J\x1b[H")
+
+        output = []
+        output.append(self._render_header(width))
+
+        visible = self.step.groups[self.scroll : self.scroll + content_height]
+        for i, group in enumerate(visible):
+            idx = self.scroll + i
+            output.append(self._render_group_line(group, idx == self.cursor, width))
+
+        while len(output) < height - 1:
+            output.append(" " * width)
+
+        output.append(self._render_footer(width))
+
+        for i, line in enumerate(output):
+            self.terminal.write(f"\x1b[{i + 1};1H{line}")
+
+    def _render_header(self, width: int) -> str:
+        s = self.step
+        left = f" Step {s.step} - {len(s.groups)} groups, {s.num_rollouts} rollouts"
+        reward_color = GREEN if s.avg_reward > 0.5 else YELLOW if s.avg_reward > 0 else WHITE
+        right = f"avg reward: {reward_color}{s.avg_reward:.3f}{RESET}{BG_HEADER} "
+
+        padding = width - len(left) - len(f"avg reward: {s.avg_reward:.3f} ")
+        return f"{BG_HEADER}{BOLD}{left}{RESET}{BG_HEADER}{' ' * max(0, padding)}{right}{RESET}"
+
+    def _render_group_line(self, g: Group, selected: bool, width: int) -> str:
+        cursor = "> " if selected else "  "
+
+        # Reward range
+        reward_color = GREEN if g.avg_reward > 0.5 else YELLOW if g.avg_reward > 0 else RED
+        reward_str = f"{reward_color}{g.avg_reward:.3f}{RESET}"
+
+        # Prompt preview
+        prompt_preview = g.prompt[:50].replace("\n", " ")
+        if len(g.prompt) > 50:
+            prompt_preview += "..."
+
+        n_samples = len(g.rollouts)
+
+        if selected:
+            line = f"{BOLD}{cursor}Group {g.group_id}  ({n_samples} samples)  avg={reward_str}  {prompt_preview}{RESET}"
+        else:
+            line = f"{DIM}{cursor}Group {g.group_id}  ({n_samples} samples)  avg={RESET}{reward_str}{DIM}  {prompt_preview}{RESET}"
+
+        return line
+
+    def _render_footer(self, width: int) -> str:
+        hints = "j/k:move  Enter:view  q:back"
+        pos = f"{self.cursor + 1}/{len(self.step.groups)}"
+
+        padding = width - len(hints) - len(pos) - 4
+        return (
+            f"{BG_HEADER} {DIM}{hints}{RESET}{BG_HEADER}{' ' * max(0, padding)}{WHITE}{pos} {RESET}"
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step Picker (top level)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class StepPicker:
+    """Pick a training step."""
+
+    def __init__(self, data: TraceData) -> None:
+        self.data = data
+        self.cursor = 0
+        self.scroll = 0
+        self.terminal = Terminal(use_alternate_screen=True)
+        self._running = False
+        self._needs_redraw = True
+
+    def run(self) -> None:
+        if not self.data.steps:
+            print("No trace data.")
+            return
+
+        self._running = True
+        self.terminal.start(on_input=lambda x: None, on_resize=self._on_resize)
+
+        try:
+            self._main_loop()
+        finally:
+            self.terminal.stop()
+
+    def _on_resize(self) -> None:
+        self._needs_redraw = True
+
+    def _main_loop(self) -> None:
+        while self._running:
+            if self._needs_redraw:
+                self._render()
+                self._needs_redraw = False
+
+            data = self.terminal.read_input()
+            if data:
+                self._handle_input(data)
+
+            time.sleep(0.01)
+
+    def _handle_input(self, data: str) -> None:
+        if data == "q":
+            self._running = False
+            return
+
+        height = self.terminal.rows
+        content_height = height - 2
+
+        if data in ("j", "\x1b[B"):
+            if self.cursor < len(self.data.steps) - 1:
+                self.cursor += 1
+                if self.cursor >= self.scroll + content_height:
+                    self.scroll = self.cursor - content_height + 1
+                self._needs_redraw = True
+        elif data in ("k", "\x1b[A"):
+            if self.cursor > 0:
+                self.cursor -= 1
+                if self.cursor < self.scroll:
+                    self.scroll = self.cursor
+                self._needs_redraw = True
+        elif data == "g":
+            next_char = self._wait_for_char()
+            if next_char == "g":
+                self.cursor = 0
+                self.scroll = 0
+                self._needs_redraw = True
+        elif data == "G":
+            self.cursor = len(self.data.steps) - 1
+            self.scroll = max(0, self.cursor - content_height + 1)
+            self._needs_redraw = True
+        elif data in ("\r", "\n"):
+            self._open_step()
+
+    def _wait_for_char(self, timeout: float = 0.5) -> str | None:
+        start = time.time()
+        while time.time() - start < timeout:
+            data = self.terminal.read_input()
+            if data:
+                return data
+            time.sleep(0.01)
+        return None
+
+    def _open_step(self) -> None:
+        step = self.data.steps[self.cursor]
+        self.terminal.stop()
+
+        picker = GroupPicker(step)
+        picker.run()
+
+        self.terminal.start(on_input=lambda x: None, on_resize=self._on_resize)
+        self._needs_redraw = True
+
+    def _render(self) -> None:
+        width = self.terminal.columns
+        height = self.terminal.rows
+        content_height = height - 2
+
+        self.terminal.write("\x1b[2J\x1b[H")
+
+        output = []
+        output.append(self._render_header(width))
+
+        visible = self.data.steps[self.scroll : self.scroll + content_height]
+        for i, step in enumerate(visible):
+            idx = self.scroll + i
+            output.append(self._render_step_line(step, idx == self.cursor, width))
+
+        while len(output) < height - 1:
+            output.append(" " * width)
+
+        output.append(self._render_footer(width))
+
+        for i, line in enumerate(output):
+            self.terminal.write(f"\x1b[{i + 1};1H{line}")
+
+    def _render_header(self, width: int) -> str:
+        total_rollouts = sum(s.num_rollouts for s in self.data.steps)
+        left = f" Training Steps ({len(self.data.steps)} steps, {total_rollouts} rollouts)"
+        padding = width - len(left)
+        return f"{BG_HEADER}{BOLD}{left}{RESET}{BG_HEADER}{' ' * max(0, padding)}{RESET}"
+
+    def _render_step_line(self, s: Step, selected: bool, width: int) -> str:
+        cursor = "> " if selected else "  "
+
+        # Reward with color
+        reward_color = GREEN if s.avg_reward > 0.5 else YELLOW if s.avg_reward > 0 else RED
+        reward_str = f"{reward_color}{s.avg_reward:.3f}{RESET}"
+
+        # Stats
+        stats = f"{len(s.groups)} groups, {s.num_rollouts} rollouts"
+
+        if selected:
+            line = f"{BOLD}{cursor}Step {s.step:>3}  avg_reward={reward_str}  {stats}{RESET}"
+        else:
+            line = f"{DIM}{cursor}Step {s.step:>3}  avg_reward={RESET}{reward_str}{DIM}  {stats}{RESET}"
+
+        return line
+
+    def _render_footer(self, width: int) -> str:
+        hints = "j/k:move  Enter:view  q:quit"
+        pos = f"{self.cursor + 1}/{len(self.data.steps)}"
+
+        padding = width - len(hints) - len(pos) - 4
+        return (
+            f"{BG_HEADER} {DIM}{hints}{RESET}{BG_HEADER}{' ' * max(0, padding)}{WHITE}{pos} {RESET}"
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CLI Entry Point
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def main() -> None:
+    """CLI entry point."""
+    import sys
+
+    if len(sys.argv) < 2:
+        print("Usage: python -m rollouts.tui.traces <rollouts.jsonl>")
+        sys.exit(1)
+
+    path = sys.argv[1]
+    data = TraceData.from_jsonl(path)
+
+    if not data.steps:
+        print(f"No traces found in {path}")
+        sys.exit(1)
+
+    picker = StepPicker(data)
+    picker.run()
+
+
+if __name__ == "__main__":
+    main()
