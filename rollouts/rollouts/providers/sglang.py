@@ -460,7 +460,9 @@ async def rollout_sglang_token_level(
     # Parse tool calls from generated text if tools are available
     tool_calls = []
     if actor.tools:
-        tool_calls = _parse_tool_calls_from_text(generated_text)
+        tool_call_parser = kwargs.get("tool_call_parser", "hermes")
+        tools_for_parser = [_tool_to_openai(t) for t in actor.tools] if tool_call_parser != "hermes" else None
+        tool_calls = parse_tool_calls(generated_text, tools=tools_for_parser, parser=tool_call_parser)
 
     # Build Message from decoded text
     if tool_calls:
@@ -508,7 +510,7 @@ async def rollout_sglang_token_level(
 
     # Build ChatCompletion
     completion = ChatCompletion(
-        id=f"chatcmpl-tito-{int(time.time())}",
+        id=f"chatcmpl-sglang-tito-{int(time.time())}",
         object="chat.completion",
         created=int(time.time()),
         model=actor.endpoint.model,
@@ -620,7 +622,9 @@ async def rollout_vllm_token_level(
     # Parse tool calls from generated text if tools are available
     tool_calls = []
     if actor.tools:
-        tool_calls = _parse_tool_calls_from_text(generated_text)
+        tool_call_parser = kwargs.get("tool_call_parser", "hermes")
+        tools_for_parser = [_tool_to_openai(t) for t in actor.tools] if tool_call_parser != "hermes" else None
+        tool_calls = parse_tool_calls(generated_text, tools=tools_for_parser, parser=tool_call_parser)
 
     # Build Message from decoded text
     if tool_calls:
@@ -787,8 +791,37 @@ def _msg_to_dict(msg: Any) -> dict[str, str]:
     return {"role": msg.role, "content": text}
 
 
-def _parse_tool_calls_from_text(text: str) -> list[dict]:
-    """Parse tool calls from generated text using Hermes format.
+def parse_tool_calls(
+    text: str,
+    tools: list[dict] | None = None,
+    parser: str = "hermes",
+) -> list[dict]:
+    """Parse tool calls from generated text.
+
+    Args:
+        text: Generated text that may contain tool calls
+        tools: List of tool definitions (required for "sglang" parser)
+        parser: Parser to use:
+            - "hermes": Hermes XML format (default, works with Qwen2.5, Llama, etc.)
+            - "sglang": SGLang's native FunctionCallParser (supports qwen25, llama, etc.)
+            - "qwen25", "llama", etc.: Shorthand for sglang parser with specific model
+
+    Returns:
+        List of parsed tool calls: [{"id": str, "name": str, "args": dict}, ...]
+    """
+    if parser == "hermes":
+        return _parse_tool_calls_hermes(text)
+    elif parser == "sglang" or parser in ("qwen25", "llama", "mistral"):
+        # Use SGLang's native parser
+        sglang_parser_type = parser if parser != "sglang" else "qwen25"
+        return _parse_tool_calls_sglang(text, tools or [], sglang_parser_type)
+    else:
+        logger.warning(f"Unknown tool call parser: {parser}, falling back to hermes")
+        return _parse_tool_calls_hermes(text)
+
+
+def _parse_tool_calls_hermes(text: str) -> list[dict]:
+    """Parse tool calls using Hermes XML format.
 
     Hermes models (used by Qwen2.5, Llama, etc.) output tool calls as:
         <tool_call>
@@ -797,12 +830,6 @@ def _parse_tool_calls_from_text(text: str) -> list[dict]:
 
     Multiple tool calls appear as separate XML blocks:
         <tool_call>{...}</tool_call><tool_call>{...}</tool_call>
-
-    Args:
-        text: Generated text that may contain tool calls
-
-    Returns:
-        List of parsed tool calls: [{"id": str, "name": str, "args": dict}, ...]
 
     Reference: https://github.com/NousResearch/Hermes-Function-Calling
     """
@@ -839,3 +866,85 @@ def _parse_tool_calls_from_text(text: str) -> list[dict]:
             continue
 
     return tool_calls
+
+
+def _parse_tool_calls_sglang(
+    text: str,
+    tools: list[dict],
+    parser_type: str = "qwen25",
+) -> list[dict]:
+    """Parse tool calls using SGLang's native FunctionCallParser.
+
+    Supports multiple parser types: qwen25, llama, mistral, etc.
+    See: https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/function_call
+
+    Args:
+        text: Generated text that may contain tool calls
+        tools: List of tool definitions in OpenAI format
+        parser_type: SGLang parser type (qwen25, llama, mistral, etc.)
+
+    Returns:
+        List of parsed tool calls: [{"id": str, "name": str, "args": dict}, ...]
+    """
+    import time
+
+    try:
+        from sglang.srt.function_call.function_call_parser import FunctionCallParser
+        from sglang.srt.managers.io_struct import Function, Tool
+    except ImportError:
+        logger.warning("sglang not installed, falling back to hermes parser")
+        return _parse_tool_calls_hermes(text)
+
+    if not tools:
+        return []
+
+    # Convert tools to SGLang format
+    tools_list = []
+    for tool in tools:
+        if "function" in tool:
+            tools_list.append(
+                Tool(
+                    function=Function(
+                        name=tool["function"]["name"],
+                        description=tool["function"].get("description", ""),
+                        parameters=tool["function"].get("parameters", {}),
+                    ),
+                    type=tool.get("type", "function"),
+                )
+            )
+
+    if not tools_list:
+        return []
+
+    # Parse using SGLang
+    parser = FunctionCallParser(tools=tools_list, tool_call_parser=parser_type)
+    normal_text, calls = parser.parse_non_stream(text)
+
+    # Convert to our format
+    tool_calls = []
+    for i, call in enumerate(calls):
+        call_dict = call.model_dump() if hasattr(call, "model_dump") else call
+        tool_call_id = f"call_{int(time.time())}_{i}"
+
+        # SGLang returns {"name": str, "parameters": str (JSON)}
+        name = call_dict.get("name", "")
+        params_str = call_dict.get("parameters", "{}")
+
+        try:
+            args = json.loads(params_str) if isinstance(params_str, str) else params_str
+        except json.JSONDecodeError:
+            args = {}
+
+        tool_calls.append({
+            "id": tool_call_id,
+            "name": name,
+            "args": args if isinstance(args, dict) else {},
+        })
+
+    return tool_calls
+
+
+# Keep old name for backwards compatibility
+def _parse_tool_calls_from_text(text: str) -> list[dict]:
+    """Deprecated: Use parse_tool_calls() instead."""
+    return _parse_tool_calls_hermes(text)
