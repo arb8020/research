@@ -575,17 +575,19 @@ def main():
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    print("\\nLoading model and tokenizer...")
+    # Start SGLang FIRST (needs GPU memory)
+    engine, base_url = start_sglang_server()
+
+    # Load model on CPU for logprob computation (SGLang has the GPU)
+    print("\\nLoading model and tokenizer (CPU for logprob computation)...")
     tokenizer = AutoTokenizer.from_pretrained(MODEL)
     model = AutoModelForCausalLM.from_pretrained(
         MODEL,
         torch_dtype=torch.bfloat16,
-        device_map="auto",
+        device_map="cpu",  # CPU to avoid GPU OOM - SGLang has GPU
     )
     model.eval()
-    print(f"✓ Model loaded")
-
-    engine, base_url = start_sglang_server()
+    print(f"✓ Model loaded on CPU")
 
     try:
         found_smoking_gun = False
@@ -1003,17 +1005,19 @@ def main():
 
     from transformers import AutoTokenizer, AutoModelForCausalLM
 
-    print("Loading model and tokenizer...")
+    # Start SGLang FIRST (needs GPU memory)
+    engine, base_url = start_sglang_server()
+
+    # Load model on CPU for logprob computation (SGLang has the GPU)
+    print("Loading model and tokenizer (CPU for logprob computation)...")
     tokenizer = AutoTokenizer.from_pretrained(MODEL)
     model = AutoModelForCausalLM.from_pretrained(
         MODEL,
         torch_dtype=torch.bfloat16,
-        device_map="auto",
+        device_map="cpu",  # CPU to avoid GPU OOM - SGLang has GPU
     )
     model.eval()
-    print(f"✓ Model loaded")
-
-    engine, base_url = start_sglang_server()
+    print(f"✓ Model loaded on CPU")
 
     try:
         results = {{}}
