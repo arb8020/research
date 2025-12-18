@@ -420,6 +420,7 @@ def run_tito_test(client, workspace: str) -> bool:
             dependencies=[
                 "torch>=2.0",
                 "transformers",
+                "accelerate",  # Required for device_map in transformers
                 "sglang[all]",
                 "httpx",
                 "trio",
