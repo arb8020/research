@@ -190,6 +190,63 @@ class TraceData:
 
         return cls(steps=steps)
 
+    def add_record(self, record: dict) -> None:
+        """Add a single rollout record (from log stream)."""
+        step_num = record.get("step", 0)
+        group_id = record.get("group_index")
+        if group_id is None:
+            prompt = record.get("prompt", "")
+            group_id = hash(str(prompt)) % 10000
+
+        # Extract messages
+        messages = []
+        raw_messages = record.get("messages") or record.get("metadata", {}).get("messages", [])
+        for msg in raw_messages:
+            messages.append(
+                Message(
+                    role=msg.get("role", "unknown"),
+                    content=msg.get("content", ""),
+                )
+            )
+
+        # Find or create step
+        step = None
+        for s in self.steps:
+            if s.step == step_num:
+                step = s
+                break
+        if step is None:
+            step = Step(step=step_num, groups=[])
+            self.steps.append(step)
+            self.steps.sort(key=lambda s: s.step)
+
+        # Find or create group
+        group = None
+        for g in step.groups:
+            if g.group_id == group_id:
+                group = g
+                break
+        if group is None:
+            group = Group(
+                step=step_num,
+                group_id=group_id,
+                prompt=record.get("prompt", ""),
+                rollouts=[],
+            )
+            step.groups.append(group)
+
+        # Add rollout
+        rollout = Rollout(
+            step=step_num,
+            group_id=group_id,
+            sample_id=len(group.rollouts),
+            prompt=record.get("prompt", ""),
+            response=record.get("response", ""),
+            reward=record.get("reward", 0.0),
+            messages=messages,
+        )
+        group.rollouts.append(rollout)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Trace Viewer (deepest level - shows message trace)

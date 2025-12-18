@@ -339,6 +339,8 @@ async def _grpo_train_async(
                             },
                         }
                         f.write(json.dumps(record) + "\n")
+                        # Also emit to log stream for TUI (remote runs can't access file)
+                        logger.info("rollout", extra=record)
 
                 # Compute group-wise advantages (the "G" in GRPO)
                 rewards = batch.rewards
