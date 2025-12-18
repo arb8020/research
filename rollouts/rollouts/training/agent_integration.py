@@ -149,10 +149,21 @@ async def agent_rollout_to_sample(
     final_state = states[-1]
 
     # 6. Convert trajectory → Sample (like clicker's sample_prep.py)
+    # Enrich metadata with agent execution info (like run_eval.py)
+    enriched_metadata = {
+        **(metadata or {}),
+        "turns": final_state.turn_idx,
+        "stop_reason": final_state.stop.value if final_state.stop else None,
+        "messages": [
+            {"role": m.role, "content": _content_to_str(m.content)}
+            for m in final_state.actor.trajectory.messages
+        ],
+    }
+
     sample = trajectory_to_sample(
         trajectory=final_state.actor.trajectory,
         tokenizer=tokenizer,
-        metadata=metadata or {},
+        metadata=enriched_metadata,
     )
 
     # Tiger Style: Assert invariants
