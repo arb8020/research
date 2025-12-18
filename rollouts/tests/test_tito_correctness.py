@@ -585,10 +585,9 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(
         MODEL,
         torch_dtype=torch.bfloat16,
-        device_map="auto",
-    )
+    ).to("cuda:0")
     model.eval()
-    print(f"✓ Model loaded")
+    print(f"✓ Model loaded on cuda:0")
 
     try:
         found_smoking_gun = False
@@ -1016,10 +1015,9 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(
         MODEL,
         torch_dtype=torch.bfloat16,
-        device_map="auto",
-    )
+    ).to("cuda:0")
     model.eval()
-    print(f"✓ Model loaded")
+    print(f"✓ Model loaded on cuda:0")
 
     try:
         results = {{}}
