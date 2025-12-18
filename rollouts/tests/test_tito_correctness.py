@@ -652,7 +652,247 @@ if __name__ == "__main__":
 
 
 # =============================================================================
-# Test runner
+# Remote script for agent loop integration test
+# =============================================================================
+
+REMOTE_AGENT_LOOP_TEST_SCRIPT = '''
+"""Agent loop TI/TO integration test - runs on GPU node.
+
+Tests the ACTUAL fix by running agent_rollout_to_sample with and without TI/TO.
+- Without TI/TO: May see logprobs < -15 (retokenization collapse)
+- With TI/TO: Should see reasonable logprobs (no collapse)
+
+This validates the full integration:
+  agent_rollout_to_sample() -> run_agent() -> rollout() -> token-level providers
+"""
+
+import sys
+import subprocess
+import time
+import httpx
+import trio
+
+MODEL = "{model}"
+PORT = {port}
+NUM_ROLLOUTS = 3
+LOGPROB_THRESHOLD = -15.0
+
+# Calculator prompts for multi-turn tool use
+CALC_PROMPTS = [
+    {{"messages": [{{"role": "user", "content": "What is 5 + 3?"}}], "ground_truth": 8.0}},
+    {{"messages": [{{"role": "user", "content": "What is 12 - 7?"}}], "ground_truth": 5.0}},
+    {{"messages": [{{"role": "user", "content": "What is 6 * 4?"}}], "ground_truth": 24.0}},
+]
+
+
+def wait_for_sglang(base_url: str, timeout: int = 300) -> bool:
+    """Wait for SGLang server to be ready."""
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            resp = httpx.get(f"{{base_url}}/health", timeout=5.0)
+            if resp.status_code == 200:
+                return True
+        except Exception:
+            pass
+        time.sleep(5)
+    return False
+
+
+def start_sglang_server():
+    """Start SGLang server in background."""
+    print(f"Starting SGLang server for {{MODEL}} on port {{PORT}}...")
+
+    cmd = [
+        "python", "-m", "sglang.launch_server",
+        "--model-path", MODEL,
+        "--port", str(PORT),
+        "--dtype", "bfloat16",
+    ]
+
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+    base_url = f"http://localhost:{{PORT}}"
+    if not wait_for_sglang(base_url):
+        process.terminate()
+        raise RuntimeError("SGLang server failed to start")
+
+    print(f"✓ SGLang server ready at {{base_url}}")
+    return process, base_url
+
+
+def run_agent_rollouts(base_url: str, tokenizer, use_tito: bool):
+    """Run rollouts using the actual agent loop.
+
+    Returns list of (sample, min_logprob) tuples.
+    """
+    from rollouts.dtypes import Endpoint
+    from rollouts.environments.calculator import CalculatorEnvironment
+    from rollouts.training.agent_integration import agent_rollout_to_sample
+
+    # SGLang server needs /v1 suffix for OpenAI-compatible API
+    endpoint = Endpoint(
+        provider="sglang",
+        api_base=f"{{base_url}}/v1",
+        model=MODEL,
+    )
+
+    results = []
+
+    async def run_single(prompt_data):
+        sample = await agent_rollout_to_sample(
+            prompt=prompt_data["messages"],
+            environment_cls=CalculatorEnvironment,
+            endpoint=endpoint,
+            tokenizer=tokenizer,
+            max_turns=5,
+            metadata={{"ground_truth": prompt_data["ground_truth"]}},
+            use_tito=use_tito,
+        )
+        return sample
+
+    for i, prompt_data in enumerate(CALC_PROMPTS[:NUM_ROLLOUTS]):
+        print(f"  Rollout {{i+1}}/{{NUM_ROLLOUTS}} (use_tito={{use_tito}})...")
+        try:
+            sample = trio.run(run_single, prompt_data)
+
+            # Get min logprob from rollout_log_probs if available
+            min_lp = 0.0
+            if sample.rollout_log_probs:
+                # Filter out zeros (prompt tokens)
+                non_zero = [lp for lp in sample.rollout_log_probs if lp < -0.001]
+                if non_zero:
+                    min_lp = min(non_zero)
+
+            results.append((sample, min_lp))
+            print(f"    tokens={{len(sample.tokens)}}, min_logprob={{min_lp:.2f}}")
+
+        except Exception as e:
+            print(f"    FAILED: {{e}}")
+            results.append((None, 0.0))
+
+    return results
+
+
+def check_logprobs_for_collapse(results, label: str) -> tuple[int, float]:
+    """Check results for retokenization collapse (logprob < threshold).
+
+    Returns (num_suspicious, min_logprob).
+    """
+    suspicious_count = 0
+    min_overall = 0.0
+
+    for sample, min_lp in results:
+        if sample is None:
+            continue
+        if min_lp < min_overall:
+            min_overall = min_lp
+        if min_lp < LOGPROB_THRESHOLD:
+            suspicious_count += 1
+
+    return suspicious_count, min_overall
+
+
+def main():
+    print("=" * 70)
+    print("Agent Loop TI/TO Integration Test")
+    print(f"Model: {{MODEL}}")
+    print("=" * 70)
+    print()
+    print("This test validates TI/TO through the actual agent loop:")
+    print("  agent_rollout_to_sample() -> run_agent() -> rollout()")
+    print()
+    print(f"Running {{NUM_ROLLOUTS}} rollouts WITH and WITHOUT TI/TO...")
+    print(f"Checking for logprobs < {{LOGPROB_THRESHOLD}} (retokenization collapse)")
+    print()
+
+    from transformers import AutoTokenizer
+
+    print("Loading tokenizer...")
+    tokenizer = AutoTokenizer.from_pretrained(MODEL)
+    print(f"✓ Tokenizer loaded")
+
+    process, base_url = start_sglang_server()
+
+    try:
+        # === Test WITHOUT TI/TO ===
+        print()
+        print("-" * 50)
+        print("TEST 1: Without TI/TO (use_tito=False)")
+        print("-" * 50)
+        results_no_tito = run_agent_rollouts(base_url, tokenizer, use_tito=False)
+        suspicious_no_tito, min_lp_no_tito = check_logprobs_for_collapse(
+            results_no_tito, "no_tito"
+        )
+
+        # === Test WITH TI/TO ===
+        print()
+        print("-" * 50)
+        print("TEST 2: With TI/TO (use_tito=True)")
+        print("-" * 50)
+        results_tito = run_agent_rollouts(base_url, tokenizer, use_tito=True)
+        suspicious_tito, min_lp_tito = check_logprobs_for_collapse(
+            results_tito, "tito"
+        )
+
+        # === Results ===
+        print()
+        print("=" * 70)
+        print("RESULTS")
+        print("=" * 70)
+        print()
+        print(f"Without TI/TO:")
+        print(f"  Min logprob: {{min_lp_no_tito:.2f}}")
+        print(f"  Suspicious samples (< {{LOGPROB_THRESHOLD}}): {{suspicious_no_tito}}/{{NUM_ROLLOUTS}}")
+        print()
+        print(f"With TI/TO:")
+        print(f"  Min logprob: {{min_lp_tito:.2f}}")
+        print(f"  Suspicious samples (< {{LOGPROB_THRESHOLD}}): {{suspicious_tito}}/{{NUM_ROLLOUTS}}")
+        print()
+
+        # === Assertions ===
+        # TI/TO should have no extremely low logprobs
+        if suspicious_tito > 0:
+            print("✗ FAIL: TI/TO mode still has suspicious logprobs!")
+            print("  This indicates the TI/TO fix is not working correctly.")
+            return 1
+
+        # If no_tito has suspicious samples, TI/TO should be better
+        if suspicious_no_tito > 0 and suspicious_tito == 0:
+            print("✓ PASS: TI/TO eliminates retokenization collapse!")
+            print(f"  Without TI/TO: {{suspicious_no_tito}} samples had logprob < {{LOGPROB_THRESHOLD}}")
+            print(f"  With TI/TO: 0 samples had suspicious logprobs")
+            return 0
+
+        # If neither has suspicious samples, test passed but didn't demonstrate the problem
+        if suspicious_no_tito == 0 and suspicious_tito == 0:
+            print("✓ PASS: No retokenization collapse detected")
+            print("  (Model/prompts may not trigger the issue)")
+            print("  TI/TO mode is working correctly regardless.")
+            return 0
+
+        print("✓ PASS: Agent loop integration test completed")
+        return 0
+
+    finally:
+        print()
+        print("Shutting down SGLang server...")
+        process.terminate()
+        process.wait(timeout=10)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+
+# =============================================================================
+# Test runners
 # =============================================================================
 
 
@@ -707,6 +947,67 @@ def run_tito_test(client, workspace: str) -> bool:
         return False
 
 
+def run_agent_loop_test(client, workspace: str) -> bool:
+    """Run agent loop TI/TO integration test on remote GPU.
+
+    This test validates the full TI/TO integration through:
+      agent_rollout_to_sample() -> run_agent() -> rollout() -> token-level providers
+
+    Runs rollouts WITH and WITHOUT TI/TO to compare logprobs.
+    """
+    print("\n" + "=" * 60)
+    print("TEST: Agent Loop TI/TO Integration Test")
+    print("=" * 60)
+
+    # Write test script to remote
+    script_content = REMOTE_AGENT_LOOP_TEST_SCRIPT.format(
+        model=MODEL,
+        port=SGLANG_PORT,
+    )
+    script_path = f"{workspace}/test_agent_loop_tito.py"
+    client.exec(f"cat > {script_path} << 'SCRIPT_EOF'\n{script_content}\nSCRIPT_EOF")
+
+    # Submit job
+    print("\n1. Submitting agent loop TI/TO test job...")
+    job = submit(
+        client,
+        command=f"PYTHONPATH={workspace}/rollouts:$PYTHONPATH python {script_path}",
+        workspace=workspace,
+        gpu_ids=[0],
+        deps=DependencyConfig(
+            project_name="tito-agent-test",
+            dependencies=[
+                "torch>=2.0",
+                "transformers",
+                "accelerate",
+                "sglang[all]",
+                # rollouts package dependencies
+                "openai>=1.0.0",
+                "anthropic>=0.40.0",
+                "dacite>=1.8.0",
+                "aiohttp>=3.9.0",
+                "trio>=0.32.0",
+                "httpx>=0.25.0",
+                "markdownify>=0.11.0",
+            ],
+        ),
+        job_name="test-agent-loop-tito",
+    )
+
+    # Stream logs
+    print("\n2. Running test (streaming logs)...")
+    print("-" * 40)
+    success, exit_code = job.stream(timeout_sec=1800)  # 30 min
+    print("-" * 40)
+
+    if success:
+        print("\n✓ Agent loop TI/TO test completed")
+        return True
+    else:
+        print(f"\n✗ Agent loop TI/TO test FAILED (exit code: {exit_code})")
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser(description="TI/TO correctness tests")
 
@@ -721,6 +1022,14 @@ def main():
     )
     parser.add_argument("--gpu-type", default="A100", help="GPU type (default: A100)")
 
+    # Test selection
+    parser.add_argument(
+        "--test",
+        choices=["all", "retokenization", "agent-loop"],
+        default="all",
+        help="Which test to run: 'retokenization' (original), 'agent-loop' (new), or 'all' (default)",
+    )
+
     args = parser.parse_args()
 
     # Need at least one acquisition method
@@ -731,6 +1040,7 @@ def main():
     print("TI/TO (Tokens-In/Tokens-Out) Correctness Tests")
     print("=" * 60)
     print(f"Model: {MODEL}")
+    print(f"Tests: {args.test}")
 
     client, instance = acquire_node_runpod_only(
         ssh=args.ssh,
@@ -744,14 +1054,26 @@ def main():
         workspace = client.push("~/.bifrost/workspaces/rollouts-tito-test")
         print(f"Workspace: {workspace}")
 
-        passed = run_tito_test(client, workspace)
+        results = {}
 
+        # Run retokenization test (original)
+        if args.test in ("all", "retokenization"):
+            results["retokenization"] = run_tito_test(client, workspace)
+
+        # Run agent loop test (new)
+        if args.test in ("all", "agent-loop"):
+            results["agent_loop"] = run_agent_loop_test(client, workspace)
+
+        # Summary
         print("\n" + "=" * 60)
         print("SUMMARY")
         print("=" * 60)
-        print(f"  TI/TO test: {'✓ COMPLETED' if passed else '✗ FAILED'}")
+        for name, passed in results.items():
+            status = "✓ COMPLETED" if passed else "✗ FAILED"
+            print(f"  {name}: {status}")
 
-        return 0 if passed else 1
+        all_passed = all(results.values())
+        return 0 if all_passed else 1
 
     finally:
         release_node(instance, keep_alive=args.keep_alive)

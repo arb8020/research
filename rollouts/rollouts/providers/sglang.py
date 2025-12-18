@@ -513,9 +513,8 @@ async def rollout_sglang_token_level(
         created=int(time.time()),
         model=actor.endpoint.model,
         usage=Usage(
-            prompt_tokens=len(input_ids),
-            completion_tokens=len(result.output_ids),
-            total_tokens=len(input_ids) + len(result.output_ids),
+            input_tokens=len(input_ids),
+            output_tokens=len(result.output_ids),
         ),
         choices=[choice],
     )
@@ -677,9 +676,8 @@ async def rollout_vllm_token_level(
         created=int(time.time()),
         model=actor.endpoint.model,
         usage=Usage(
-            prompt_tokens=len(input_ids),
-            completion_tokens=len(result.output_ids),
-            total_tokens=len(input_ids) + len(result.output_ids),
+            input_tokens=len(input_ids),
+            output_tokens=len(result.output_ids),
         ),
         choices=[choice],
     )
