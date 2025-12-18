@@ -407,6 +407,13 @@ async def _grpo_train_async(
                 # Write to structured metrics.jsonl (for TUI/analysis)
                 metrics_logger.log(step_metrics, step=step + 1)
 
+                # Emit structured metrics for TUI (extra fields become top-level in JSONL)
+                # This allows the TUI to detect and plot metrics
+                logger.info(
+                    "metrics",
+                    extra={"step": step + 1, **step_metrics},
+                )
+
                 if (step + 1) % config.log_every == 0:
                     logger.info(
                         f"Step {step + 1}: reward={mean_reward:.3f} | "
