@@ -114,16 +114,11 @@ def acquire_node(
         credentials = provision.credentials
     else:
         # Default credentials from environment
+        # Only use runpod by default - other providers can be added via GPUQuery.credentials
         runpod_key = os.getenv("RUNPOD_API_KEY")
-        vast_key = os.getenv("VAST_API_KEY")
-        prime_key = os.getenv("PRIME_API_KEY")
 
         if runpod_key:
             credentials["runpod"] = runpod_key
-        if vast_key:
-            credentials["vast"] = vast_key
-        if prime_key:
-            credentials["prime"] = prime_key
 
     assert credentials, "No provider credentials found. Set RUNPOD_API_KEY, VAST_API_KEY, or PRIME_API_KEY"
 
