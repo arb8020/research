@@ -1071,24 +1071,26 @@ def run_tito_test(client: "BifrostClient", workspace: str) -> bool:
         model=MODEL,
         port=SGLANG_PORT,
     )
-    script_path = f"{workspace}/rollouts/test_tito_remote.py"
-    log_file = f"{workspace}/rollouts/results/tito-test.log"
+    rollouts_dir = f"{workspace}/rollouts"
+    script_path = f"{rollouts_dir}/test_tito_remote.py"
+    log_file = f"{rollouts_dir}/results/tito-test.log"
 
-    client.exec(f"mkdir -p {workspace}/rollouts/results")
+    client.exec(f"mkdir -p {rollouts_dir}/results")
     client.exec(f"cat > {script_path} << 'SCRIPT_EOF'\n{script_content}\nSCRIPT_EOF")
 
     # Submit test job using new bifrost API
+    # Use relative path for script since cwd is set to rollouts_dir
     print("\n1. Starting TI/TO test...")
     job = client.submit(
         ProcessSpec(
             command="uv",
-            args=("run", "python", script_path),
-            cwd=f"{workspace}/rollouts",
-            env={"PYTHONPATH": f"{workspace}/rollouts:$PYTHONPATH"},
+            args=("run", "python", "test_tito_remote.py"),
+            cwd=rollouts_dir,
+            env={"PYTHONPATH": f"{rollouts_dir}:$PYTHONPATH"},
         ),
         name="tito-test",
         log_file=log_file,
-        workspace=f"{workspace}/rollouts",
+        workspace=rollouts_dir,
     )
 
     print(f"Test started in tmux session: {job.tmux_session}")
@@ -1127,24 +1129,26 @@ def run_agent_loop_test(client: "BifrostClient", workspace: str) -> bool:
         model=MODEL,
         port=SGLANG_PORT,
     )
-    script_path = f"{workspace}/rollouts/test_agent_loop_tito.py"
-    log_file = f"{workspace}/rollouts/results/agent-loop-tito-test.log"
+    rollouts_dir = f"{workspace}/rollouts"
+    script_path = f"{rollouts_dir}/test_agent_loop_tito.py"
+    log_file = f"{rollouts_dir}/results/agent-loop-tito-test.log"
 
-    client.exec(f"mkdir -p {workspace}/rollouts/results")
+    client.exec(f"mkdir -p {rollouts_dir}/results")
     client.exec(f"cat > {script_path} << 'SCRIPT_EOF'\n{script_content}\nSCRIPT_EOF")
 
     # Submit test job using new bifrost API
+    # Use relative path for script since cwd is set to rollouts_dir
     print("\n1. Starting agent loop TI/TO test...")
     job = client.submit(
         ProcessSpec(
             command="uv",
-            args=("run", "python", script_path),
-            cwd=f"{workspace}/rollouts",
-            env={"PYTHONPATH": f"{workspace}/rollouts:$PYTHONPATH"},
+            args=("run", "python", "test_agent_loop_tito.py"),
+            cwd=rollouts_dir,
+            env={"PYTHONPATH": f"{rollouts_dir}:$PYTHONPATH"},
         ),
         name="agent-loop-tito-test",
         log_file=log_file,
-        workspace=f"{workspace}/rollouts",
+        workspace=rollouts_dir,
     )
 
     print(f"Test started in tmux session: {job.tmux_session}")
