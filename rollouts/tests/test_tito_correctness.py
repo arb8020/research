@@ -248,6 +248,7 @@ def generate_with_sglang(base_url: str, input_ids: list[int], max_tokens: int = 
     import httpx
 
     # Call SGLang /generate directly (simpler than using async backend)
+    # NOTE: return_logprob and top_logprobs_num must be top-level, NOT inside sampling_params
     resp = httpx.post(
         f"{{base_url}}/generate",
         json={{
@@ -255,9 +256,9 @@ def generate_with_sglang(base_url: str, input_ids: list[int], max_tokens: int = 
             "sampling_params": {{
                 "max_new_tokens": max_tokens,
                 "temperature": 0.7,
-                "return_logprob": True,
-                "top_logprobs_num": 5,
             }},
+            "return_logprob": True,
+            "top_logprobs_num": 5,
         }},
         timeout=120.0,
     )
@@ -784,21 +785,37 @@ def run_agent_rollouts(base_url: str, tokenizer, use_tito: bool, strategy: str =
             return [sample]
         else:
             # Branching: run agent to get trajectory, then split into samples per turn
-            from rollouts.agents import Actor, Trajectory, Message
-            from rollouts.providers import get_provider
+            # Mirror the setup from agent_rollout_to_sample but use trajectory_to_samples
+            from rollouts.dtypes import Actor, Trajectory, Message, AgentState, RunConfig
+            from rollouts.agents import handle_stop_max_turns
 
-            provider = get_provider(endpoint, use_tito=use_tito)
-            env = CalculatorEnvironment()
-
+            # 1. Create initial trajectory
             initial_messages = [Message(role=m["role"], content=m["content"]) for m in prompt_data["messages"]]
             trajectory = Trajectory(messages=initial_messages)
             actor = Actor(trajectory=trajectory, endpoint=endpoint)
 
-            final_actor = await run_agent(actor, env, provider, max_turns=5)
+            # 2. Create environment and state
+            env = CalculatorEnvironment()
+            state = AgentState(actor=actor, environment=env)
 
-            # Convert trajectory to samples using branching strategy
+            # 3. Create run config (mirrors _silent_run_config)
+            async def noop_chunk(chunk):
+                pass
+
+            run_config = RunConfig(
+                on_chunk=noop_chunk,
+                handle_stop=handle_stop_max_turns(5),
+                use_tito=use_tito,
+                tokenizer=tokenizer if use_tito else None,
+            )
+
+            # 4. Run agent
+            states = await run_agent(state, run_config)
+            final_state = states[-1]
+
+            # 5. Convert trajectory to samples using branching strategy
             return trajectory_to_samples(
-                final_actor.trajectory,
+                final_state.actor.trajectory,
                 tokenizer,
                 strategy="branching",
                 metadata={{"ground_truth": prompt_data["ground_truth"]}},
