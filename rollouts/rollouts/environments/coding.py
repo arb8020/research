@@ -28,7 +28,7 @@ from ..dtypes import (
 
 MAX_LINES = 2000
 MAX_LINE_LENGTH = 2000
-MAX_OUTPUT_SIZE = 10 * 1024 * 1024  # 10MB
+MAX_OUTPUT_SIZE = 30_000  # 30KB (matches Claude Code's default)
 
 # Web fetch constants
 WEB_FETCH_MAX_SIZE = 10 * 1024 * 1024  # 10MB max download
@@ -830,7 +830,8 @@ class LocalFilesystemEnvironment:
 
             # Truncate if too large
             if len(output) > MAX_OUTPUT_SIZE:
-                output = output[:MAX_OUTPUT_SIZE] + "\n\n... (output truncated)"
+                removed_kb = (len(output) - MAX_OUTPUT_SIZE) // 1024
+                output = output[:MAX_OUTPUT_SIZE] + f"\n\n... [output truncated - {removed_kb}KB removed]"
 
             if result.returncode != 0:
                 return ToolResult(
