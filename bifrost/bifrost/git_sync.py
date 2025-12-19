@@ -143,9 +143,14 @@ def deploy_code(ssh_client: paramiko.SSHClient, config: RemoteConfig, workspace_
         # Create new workspace via git clone
         _create_workspace(ssh_client, workspace_path)
 
+    # Get deployed commit hash for logging
+    stdin, stdout, stderr = ssh_client.exec_command(f"cd {workspace_path} && git rev-parse HEAD")
+    deployed_hash = stdout.read().decode().strip()
+    short_hash = deployed_hash[:7] if deployed_hash else "unknown"
+
     # Assert output
     assert workspace_path, "Failed to deploy code"
-    logger.debug(f"Code deployed to {workspace_path}")
+    logger.info(f"Workspace: {workspace_path} @ {short_hash}")
     return workspace_path
 
 
