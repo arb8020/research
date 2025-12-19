@@ -208,26 +208,39 @@ def create_endpoint(
         else:
             api_base = "https://api.openai.com/v1"
 
-    # For Anthropic: auto-detect OAuth if no API key provided
+    # Explicit auth flow - no silent fallbacks to avoid surprise billing
+    # 1. --api-key flag → use that (user's explicit choice)
+    # 2. No flag + OAuth exists → use OAuth
+    # 3. No flag + no OAuth → ERROR (prompt to login)
     oauth_token = ""
-    if api_key is None and provider == "anthropic":
-        client = get_oauth_client()
-        tokens = client.tokens
-        if tokens:
-            if tokens.is_expired():
-                try:
-                    tokens = trio.run(client.refresh_tokens)
+    if provider == "anthropic":
+        if api_key is not None:
+            # User explicitly passed --api-key, use it
+            print("🔑 Using API key (explicit)", file=sys.stderr)
+        else:
+            # Try OAuth - never silently fall back to ANTHROPIC_API_KEY
+            client = get_oauth_client()
+            tokens = client.tokens
+            if tokens:
+                if tokens.is_expired():
+                    try:
+                        tokens = trio.run(client.refresh_tokens)
+                        oauth_token = tokens.access_token
+                        print("🔐 OAuth token refreshed", file=sys.stderr)
+                    except Exception as e:
+                        print(f"❌ OAuth token expired and refresh failed: {e}", file=sys.stderr)
+                        print("   Run `rollouts login` to re-authenticate, or use --api-key", file=sys.stderr)
+                        sys.exit(1)
+                else:
                     oauth_token = tokens.access_token
-                    print("🔐 OAuth token refreshed", file=sys.stderr)
-                except Exception as e:
-                    print(f"⚠️  OAuth token expired and refresh failed: {e}", file=sys.stderr)
-                    oauth_token = ""
-            else:
-                oauth_token = tokens.access_token
-            if oauth_token:
                 print("🔐 Using OAuth authentication (Claude Pro/Max)", file=sys.stderr)
-        if not oauth_token:
-            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+            else:
+                # No OAuth tokens - require explicit action
+                print("❌ No authentication configured for Anthropic", file=sys.stderr)
+                print("   Run `rollouts login` to authenticate with Claude Pro/Max", file=sys.stderr)
+                print("   Or use --api-key to use API billing", file=sys.stderr)
+                sys.exit(1)
+            api_key = ""  # Ensure no API key when using OAuth
 
     if api_key is None:
         if provider == "openai":
