@@ -222,7 +222,10 @@ if __name__ == "__main__":
 
         from bifrost.client import BifrostClient
         from broker.client import GPUClient
-        from kerbal.python_env import setup_python_env
+
+        # TODO: Migrate to bifrost v2 API - kerbal has been deleted
+        # See bifrost.ProcessSpec + client.submit() for the new pattern
+        raise NotImplementedError("kerbal.python_env has been removed - migrate to bifrost v2 API")
 
         ssh_key_path = os.environ.get("SSH_KEY_PATH", "~/.ssh/id_ed25519")
         client = GPUClient(credentials={"runpod": runpod_key}, ssh_key_path=ssh_key_path)
