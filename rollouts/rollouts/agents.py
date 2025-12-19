@@ -932,47 +932,35 @@ async def run_agent(
             await session_store.append_message(session.session_id, session_msg)
 
     elif session_store and current_state.session_id:
-        # Resuming existing session - sync trajectory with persisted state.
+        # Resuming existing session - persist only NEW messages added after resume.
         #
-        # The session file is the source of truth. When resuming after an interrupt,
-        # the trajectory might be out of sync with the file (messages persisted during
-        # the interrupted run may or may not be in the trajectory depending on timing).
+        # The trajectory is loaded from the session file via resume_session(), so
+        # messages 0..N should match the file. Only messages beyond N are new
+        # (e.g., user input added by interactive agent after resume).
         #
-        # Strategy: Build a merged trajectory from file + any NEW messages in current trajectory.
-        # A message is "new" if it's not already in the file (by content/tool_call_id match).
+        # We compare counts and only persist the "tail" of truly new messages.
+        # To handle edge cases where indices might be off, we also check tool_call_id
+        # to avoid duplicate tool results.
         session, _ = await session_store.get(current_state.session_id)
         if session:
-            # Build set of existing message signatures for dedup
-            existing_signatures: set[str] = set()
-            for msg in session.messages:
-                if msg.role == "tool" and msg.tool_call_id:
-                    existing_signatures.add(f"tool:{msg.tool_call_id}")
-                elif msg.role == "assistant":
-                    # Use first 200 chars of content as signature
-                    existing_signatures.add(f"assistant:{str(msg.content)[:200]}")
-                elif msg.role == "user":
-                    existing_signatures.add(f"user:{str(msg.content)[:200]}")
+            persisted_count = len(session.messages)
+            current_count = len(current_state.actor.trajectory.messages)
 
-            # Find truly new messages in trajectory (not in file)
-            new_messages = []
-            for msg in current_state.actor.trajectory.messages:
-                if msg.role == "tool" and msg.tool_call_id:
-                    sig = f"tool:{msg.tool_call_id}"
-                elif msg.role == "assistant":
-                    sig = f"assistant:{str(msg.content)[:200]}"
-                elif msg.role == "user":
-                    sig = f"user:{str(msg.content)[:200]}"
-                else:
-                    sig = f"{msg.role}:{str(msg.content)[:200]}"
+            if current_count > persisted_count:
+                # Build set of persisted tool_call_ids to avoid duplicating tool results
+                persisted_tool_ids: set[str] = {
+                    msg.tool_call_id
+                    for msg in session.messages
+                    if msg.role == "tool" and msg.tool_call_id
+                }
 
-                if sig not in existing_signatures:
-                    new_messages.append(msg)
-                    existing_signatures.add(sig)  # Don't add same new message twice
-
-            # Persist only the truly new messages
-            for msg in new_messages:
-                session_msg = _message_to_session_message(msg)
-                await session_store.append_message(current_state.session_id, session_msg)
+                # Persist messages beyond the persisted count, skipping any tool results
+                # that somehow got persisted already (handles interrupt race conditions)
+                for msg in current_state.actor.trajectory.messages[persisted_count:]:
+                    if msg.role == "tool" and msg.tool_call_id in persisted_tool_ids:
+                        continue  # Skip duplicate tool result
+                    session_msg = _message_to_session_message(msg)
+                    await session_store.append_message(current_state.session_id, session_msg)
 
     # Notify environment of session start (for setup like git worktrees)
     if current_state.environment and current_state.session_id:
