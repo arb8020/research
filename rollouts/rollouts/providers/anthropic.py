@@ -539,7 +539,22 @@ async def rollout_anthropic(
         "temperature": actor.endpoint.temperature,
     }
 
-    if system_prompt:
+    # For OAuth tokens, we MUST include Claude Code identity prefix
+    # This is required by Anthropic's API for OAuth authentication
+    if actor.endpoint.oauth_token:
+        claude_code_identity = "You are Claude Code, Anthropic's official CLI for Claude."
+        if system_prompt:
+            # Prepend Claude Code identity to existing system prompt
+            params["system"] = [
+                {"type": "text", "text": claude_code_identity, "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}},
+            ]
+        else:
+            # Just the Claude Code identity
+            params["system"] = [
+                {"type": "text", "text": claude_code_identity, "cache_control": {"type": "ephemeral"}},
+            ]
+    elif system_prompt:
         params["system"] = system_prompt
 
     if actor.tools:
