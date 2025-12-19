@@ -5,7 +5,7 @@ Run with:
     python examples/rl/reverse_text/grpo_01_01.py
 
     # Remote (provisions GPU automatically)
-    python examples/rl/reverse_text/grpo_01_01.py --remote
+    python examples/rl/reverse_text/grpo_01_01.py --provision
 
     # Reuse existing GPU
     python examples/rl/reverse_text/grpo_01_01.py --node-id runpod:abc123
@@ -31,14 +31,14 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Reverse Text GRPO training")
-    parser.add_argument("--remote", action="store_true", help="Run on remote GPU")
+    parser.add_argument("--provision", action="store_true", help="Provision new GPU instance")
     parser.add_argument("--keep-alive", action="store_true", help="Keep GPU after completion")
     parser.add_argument("--node-id", type=str, help="Reuse existing instance ID")
     parser.add_argument("--tui", action="store_true", help="Show TUI monitor")
     parser.add_argument("--tui-debug", action="store_true", help="Print raw JSONL")
     args = parser.parse_args()
 
-    if args.remote or args.node_id:
+    if args.provision or args.node_id:
         from examples.rl.base_config import run_remote
 
         run_remote(

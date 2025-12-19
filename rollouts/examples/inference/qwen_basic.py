@@ -8,7 +8,7 @@ Tests:
 
 Usage:
     python examples/inference/qwen_basic.py
-    python examples/inference/qwen_basic.py --remote
+    python examples/inference/qwen_basic.py --provision
 """
 
 from dataclasses import replace
@@ -31,12 +31,12 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--remote", action="store_true", help="Run on remote GPU")
+    parser.add_argument("--provision", action="store_true", help="Provision new GPU instance")
     parser.add_argument("--keep-alive", action="store_true", help="Keep GPU after completion")
     parser.add_argument("--node-id", type=str, help="Reuse existing instance ID")
     args = parser.parse_args()
 
-    if args.remote or args.node_id:
+    if args.provision or args.node_id:
         run_remote(__file__, keep_alive=args.keep_alive, node_id=args.node_id)
     else:
         results = test_inference(config)
