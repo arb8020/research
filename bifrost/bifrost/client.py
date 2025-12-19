@@ -631,6 +631,17 @@ class BifrostClient:
         # Kill existing session if present
         self.exec(f"tmux kill-session -t {session_name} 2>/dev/null || true")
 
+        # Expand tilde in ProcessSpec.cwd if present (ProcessSpec is frozen, so create new one)
+        if spec.cwd and spec.cwd.startswith("~"):
+            expanded_cwd = self.expand_path(spec.cwd)
+            spec = ProcessSpec(
+                command=spec.command,
+                args=spec.args,
+                cwd=expanded_cwd,
+                env=spec.env,
+                cuda_device_ids=spec.cuda_device_ids,
+            )
+
         # Build command from ProcessSpec
         full_cmd = spec.build_command()
 
@@ -734,6 +745,17 @@ class BifrostClient:
 
         # Kill existing session if present
         self.exec(f"tmux kill-session -t {session_name} 2>/dev/null || true")
+
+        # Expand tilde in ProcessSpec.cwd if present (ProcessSpec is frozen, so create new one)
+        if spec.cwd and spec.cwd.startswith("~"):
+            expanded_cwd = self.expand_path(spec.cwd)
+            spec = ProcessSpec(
+                command=spec.command,
+                args=spec.args,
+                cwd=expanded_cwd,
+                env=spec.env,
+                cuda_device_ids=spec.cuda_device_ids,
+            )
 
         # Build command from ProcessSpec
         full_cmd = spec.build_command()
