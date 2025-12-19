@@ -448,6 +448,19 @@ def main() -> int:
         help="Extract goal-directed context from session to stdout (markdown)",
     )
 
+    # Doctor (session repair)
+    parser.add_argument(
+        "--doctor",
+        action="store_true",
+        help="Show session diagnostics (use with --session)",
+    )
+    parser.add_argument(
+        "--trim",
+        type=int,
+        metavar="N",
+        help="Remove last N messages from session (creates new fixed session)",
+    )
+
     args = parser.parse_args()
 
     # --- Non-interactive commands (no endpoint needed) ---
@@ -534,6 +547,87 @@ def main() -> int:
             return 0
 
         return trio.run(export_action)
+
+    # Doctor (session repair/diagnostics)
+    if args.doctor or args.trim is not None:
+        session_store = FileSessionStore()
+
+        async def doctor_action() -> int:
+            # Determine which session to doctor
+            target_session_id: str | None = None
+            if args.session and args.session != "":
+                target_session_id = args.session
+            elif args.continue_session:
+                target_session_id = session_store.get_latest_id_sync()
+            else:
+                # Default to most recent session
+                target_session_id = session_store.get_latest_id_sync()
+
+            if not target_session_id:
+                print("No session found. Use --session <id> to specify.", file=sys.stderr)
+                return 1
+
+            # Load the session
+            session, err = await session_store.get(target_session_id)
+            if err or not session:
+                print(f"Error loading session: {err}", file=sys.stderr)
+                return 1
+
+            # Calculate stats
+            total_chars = sum(
+                len(str(msg.content)) for msg in session.messages
+            )
+            estimated_tokens = total_chars // 4  # rough estimate
+
+            print(f"Session: {session.session_id}")
+            print(f"  Messages: {len(session.messages)}")
+            print(f"  Total chars: {total_chars:,}")
+            print(f"  Est. tokens: {estimated_tokens:,}")
+            print(f"  Status: {session.status.value}")
+            if session.parent_id:
+                print(f"  Parent: {session.parent_id}")
+
+            # Show last few messages summary
+            if session.messages:
+                print("\nLast 5 messages:")
+                for msg in session.messages[-5:]:
+                    content_preview = str(msg.content)[:80].replace("\n", " ")
+                    content_len = len(str(msg.content))
+                    print(f"  [{msg.role}] {content_preview}... ({content_len:,} chars)")
+
+            # Trim if requested
+            if args.trim is not None:
+                if args.trim <= 0:
+                    print("\n--trim must be a positive integer", file=sys.stderr)
+                    return 1
+                if args.trim >= len(session.messages):
+                    print(f"\nCannot trim {args.trim} messages from session with {len(session.messages)} messages", file=sys.stderr)
+                    return 1
+
+                # Create new session with trimmed messages
+                trimmed_messages = session.messages[:-args.trim]
+                branch_point = len(trimmed_messages)
+
+                new_session = await session_store.create(
+                    endpoint=session.endpoint,
+                    environment=session.environment,
+                    parent_id=session.session_id,
+                    branch_point=branch_point,
+                    tags={"doctor": "trimmed", "trimmed_count": str(args.trim)},
+                )
+
+                # Copy trimmed messages to new session
+                for msg in trimmed_messages:
+                    await session_store.append_message(new_session.session_id, msg)
+
+                print(f"\nCreated fixed session: {new_session.session_id}")
+                print(f"  Trimmed {args.trim} messages (kept {len(trimmed_messages)})")
+                print(f"  Parent: {session.session_id}")
+                print(f"\nResume with: rollouts --session {new_session.session_id}")
+
+            return 0
+
+        return trio.run(doctor_action)
 
     # --- Commands requiring endpoint ---
 
