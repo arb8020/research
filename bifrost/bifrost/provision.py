@@ -132,9 +132,12 @@ def acquire_node(
         assert ":" in node_id, f"node_id must be 'provider:instance_id', got: {node_id}"
         provider, instance_id = node_id.split(":", 1)
 
+        print(f"Connecting to existing instance: {node_id}")
         instance = broker.get_instance(instance_id, provider)
         assert instance is not None, f"Instance not found: {node_id}"
 
+        print(f"  GPU: {instance.gpu_count}x {instance.gpu_type}")
+        print("  Waiting for SSH...")
         instance.wait_until_ssh_ready(timeout=ssh_timeout)
 
         key_path = broker.get_ssh_key_path(provider)
@@ -144,6 +147,7 @@ def acquire_node(
     # Mode 3: Provision new instance
     assert provision is not None  # Type narrowing
 
+    print(f"Provisioning new instance ({provision.count}x {provision.type})...")
     instance = broker.create(
         broker.gpu_type.contains(provision.type),
         gpu_count=provision.count,
@@ -153,7 +157,10 @@ def acquire_node(
         sort=lambda x: x.price_per_hour,
         min_cuda_version=provision.min_cuda,
     )
+    print(f"  Instance ID: {instance.provider}:{instance.id}")
+    print(f"  GPU: {instance.gpu_count}x {instance.gpu_type}")
 
+    print("  Waiting for SSH...")
     instance.wait_until_ssh_ready(timeout=ssh_timeout)
 
     key_path = broker.get_ssh_key_path(instance.provider)
