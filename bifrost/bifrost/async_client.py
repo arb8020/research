@@ -1,10 +1,8 @@
 """Bifrost Async SDK - Trio-based async client for remote GPU execution."""
 
-import json
 import logging
 import os
 from collections.abc import AsyncIterator, Callable
-from datetime import datetime
 from pathlib import Path
 
 import asyncssh
@@ -17,19 +15,11 @@ from .types import (
     CopyResult,
     EnvironmentVariables,
     ExecResult,
-    JobError,
-    JobInfo,
-    JobMetadata,
-    JobStatus,
     RemoteConfig,
-    SessionInfo,
     SSHConnection,
     TransferError,
 )
-from .validation import (
-    validate_bootstrap_cmd,
-    validate_poll_interval,
-)
+from .validation import validate_bootstrap_cmd
 
 logger = logging.getLogger(__name__)
 
@@ -414,33 +404,6 @@ class AsyncBifrostClient:
 
         return expanded_workspace_path
 
-    async def deploy(
-        self,
-        command: str,
-        bootstrap_cmd: str | list[str] | None = None,
-        env: EnvironmentVariables | dict[str, str] | None = None,
-    ) -> ExecResult:
-        """Deploy code and execute command.
-
-        Equivalent to: push(bootstrap_cmd) + exec(command, env)
-
-        Args:
-            command: Command to execute
-            bootstrap_cmd: Optional bootstrap command(s) - either single string or list of commands
-            env: Environment variables
-
-        Returns:
-            ExecResult with stdout, stderr, exit_code
-
-        Raises:
-            ConnectionError: SSH connection failed
-            RuntimeError: Deployment failed
-        """
-        workspace_path = await self.push(
-            workspace_path="~/.bifrost/workspace", bootstrap_cmd=bootstrap_cmd
-        )
-        return await self.exec(command, env=env, working_dir=workspace_path)
-
     async def expand_path(self, path: str) -> str:
         """Expand ~ and environment variables in path to absolute path.
 
@@ -468,272 +431,6 @@ class AsyncBifrostClient:
         assert expanded, f"Path expansion returned empty string for: {path}"
 
         return expanded
-
-    async def get_all_jobs(self) -> list[JobInfo]:
-        """
-        Get status of all jobs on the remote instance.
-
-        Returns:
-            List of JobInfo objects for all jobs
-
-        Raises:
-            ConnectionError: SSH connection failed
-        """
-        try:
-            conn = await self._get_connection()
-
-            # Get list of job directories
-            result = await _trio_wrap(conn.run)(
-                "ls -1 ~/.bifrost/jobs/ 2>/dev/null || echo ''", check=False
-            )
-            job_dirs = [d.strip() for d in result.stdout.split("\n") if d.strip()]
-
-            jobs = []
-            for job_id in job_dirs:
-                try:
-                    job_info = await self.get_job_status(job_id)
-                    jobs.append(job_info)
-                except JobError:
-                    # Skip jobs that can't be read
-                    continue
-
-            return jobs
-
-        except Exception as e:
-            if isinstance(e, ConnectionError):
-                raise
-            raise ConnectionError(f"Failed to list jobs: {e}")
-
-    async def get_job_status(self, job_id: str) -> JobInfo:
-        """
-        Get current status of a detached job.
-
-        Args:
-            job_id: Job identifier
-
-        Returns:
-            JobInfo with current status
-
-        Raises:
-            ConnectionError: SSH connection failed
-            JobError: Job not found or status check failed
-        """
-        try:
-            conn = await self._get_connection()
-
-            # Get job metadata
-            metadata_result = await _trio_wrap(conn.run)(
-                f"cat ~/.bifrost/jobs/{job_id}/metadata.json 2>/dev/null", check=False
-            )
-
-            if metadata_result.exit_status != 0:
-                raise JobError(f"Job {job_id} not found")
-
-            metadata_dict = json.loads(metadata_result.stdout)
-            # Parse metadata using frozen dataclass for validation
-            metadata = JobMetadata.from_dict(metadata_dict)
-
-            # Get current status (may be updated from metadata)
-            status_result = await _trio_wrap(conn.run)(
-                f"cat ~/.bifrost/jobs/{job_id}/status 2>/dev/null", check=False
-            )
-            status_str = status_result.stdout.strip()
-
-            # Parse times from metadata
-            start_time = datetime.fromisoformat(metadata.start_time.replace("Z", "+00:00"))
-            end_time = None
-            if metadata.end_time:
-                end_time = datetime.fromisoformat(metadata.end_time.replace("Z", "+00:00"))
-
-            # Calculate runtime
-            runtime_seconds = None
-            if end_time:
-                runtime_seconds = (end_time - start_time).total_seconds()
-            else:
-                runtime_seconds = (datetime.now().astimezone() - start_time).total_seconds()
-
-            return JobInfo(
-                job_id=job_id,
-                status=JobStatus(status_str) if status_str else JobStatus(metadata.status),
-                command=metadata.command,
-                start_time=start_time,
-                end_time=end_time,
-                exit_code=metadata.exit_code,
-                runtime_seconds=runtime_seconds,
-            )
-
-        except json.JSONDecodeError as e:
-            raise JobError(f"Invalid job metadata for {job_id}: {e}")
-        except Exception as e:
-            if isinstance(e, (ConnectionError, JobError)):
-                raise
-            raise JobError(f"Failed to get job status: {e}")
-
-    async def get_logs(self, job_id: str, lines: int = 100, log_type: str = "command") -> str:
-        """Get recent logs from a job.
-
-        Args:
-            job_id: Job identifier
-            lines: Number of lines to retrieve (default: 100)
-            log_type: "command" or "bootstrap"
-
-        Returns:
-            Log content
-
-        Raises:
-            ConnectionError: SSH connection failed
-            JobError: Job not found or logs unavailable
-        """
-        try:
-            conn = await self._get_connection()
-
-            if log_type == "bootstrap":
-                log_file = f"~/.bifrost/jobs/{job_id}/bootstrap.log"
-            else:
-                log_file = f"~/.bifrost/jobs/{job_id}/job.log"
-
-            # Check if log file exists
-            check_result = await _trio_wrap(conn.run)(f"test -f {log_file}", check=False)
-            if check_result.exit_status != 0:
-                raise JobError(f"No {log_type} log found for job {job_id}")
-
-            # Get last N lines
-            result = await _trio_wrap(conn.run)(f"tail -n {lines} {log_file}", check=False)
-
-            if result.exit_status != 0:
-                raise JobError(f"Failed to read logs: {result.stderr}")
-
-            return result.stdout
-
-        except Exception as e:
-            if isinstance(e, (ConnectionError, JobError)):
-                raise
-            raise JobError(f"Failed to get job logs: {e}")
-
-    async def follow_job_logs(self, job_id: str) -> AsyncIterator[str]:
-        """
-        Stream job logs in real-time (like tail -f).
-
-        Args:
-            job_id: Job identifier
-
-        Yields:
-            Log lines as they are written
-
-        Raises:
-            ConnectionError: SSH connection failed
-            JobError: Job not found or logs unavailable
-        """
-        try:
-            conn = await self._get_connection()
-
-            log_file = f"~/.bifrost/jobs/{job_id}/job.log"
-
-            # Use tail -f to follow the log file
-            process = await _trio_wrap(conn.create_process)(f"tail -f {log_file}")
-            try:
-                while True:
-                    try:
-                        line = await _trio_wrap(process.stdout.readline)()
-                        if not line:
-                            break
-                        yield line.rstrip("\n")
-                    except EOFError:
-                        break
-            finally:
-                process.close()
-
-        except Exception as e:
-            if isinstance(e, ConnectionError):
-                raise
-            raise JobError(f"Failed to follow job logs: {e}")
-
-    async def list_sessions(self) -> list[str]:
-        """List all bifrost tmux sessions on remote.
-
-        Returns:
-            List of tmux session names
-        """
-        conn = await self._get_connection()
-
-        result = await _trio_wrap(conn.run)(
-            "tmux list-sessions -F '#{session_name}' 2>/dev/null || echo ''", check=False
-        )
-        if result.exit_status != 0:
-            return []
-
-        sessions = result.stdout.strip().split("\n")
-        # Filter to bifrost sessions only
-        return [s for s in sessions if s.startswith("bifrost-") and s]
-
-    async def get_session_info(self, job_id: str) -> SessionInfo:
-        """Get tmux session information for a job.
-
-        Returns:
-            SessionInfo with session names and attach commands
-        """
-        job = await self.get_job_status(job_id)
-
-        main_session = job.tmux_session or f"bifrost-{job_id}"
-        attach_main = f"ssh {self.ssh.user}@{self.ssh.host} -p {self.ssh.port} -t 'tmux attach -t {main_session}'"
-
-        if job.bootstrap_session:
-            bootstrap_session = job.bootstrap_session
-            attach_bootstrap = f"ssh {self.ssh.user}@{self.ssh.host} -p {self.ssh.port} -t 'tmux attach -t {bootstrap_session}'"
-            return SessionInfo(
-                job_id=job_id,
-                main_session=main_session,
-                attach_main=attach_main,
-                bootstrap_session=bootstrap_session,
-                attach_bootstrap=attach_bootstrap,
-            )
-        else:
-            return SessionInfo(job_id=job_id, main_session=main_session, attach_main=attach_main)
-
-    async def wait_for_completion(
-        self, job_id: str, poll_interval: float = 5.0, timeout: float | None = None
-    ) -> JobInfo:
-        """
-        Wait for a job to complete.
-
-        Args:
-            job_id: Job identifier
-            poll_interval: Seconds between status checks
-            timeout: Optional timeout in seconds
-
-        Returns:
-            Final JobInfo when job is complete
-
-        Raises:
-            JobError: Job failed or timeout exceeded
-            ConnectionError: SSH connection failed
-        """
-        # Validate inputs
-        poll_interval = validate_poll_interval(poll_interval)
-        if timeout is not None:
-            timeout = validate_timeout(int(timeout), min_value=1, max_value=86400)
-
-        # Use trio's structured concurrency for timeout
-        async def _wait_loop():
-            while True:
-                job_info = await self.get_job_status(job_id)
-
-                if job_info.is_complete:
-                    return job_info
-
-                await trio.sleep(poll_interval)
-
-        if timeout:
-            # Use Trio's timeout context manager
-            with trio.move_on_after(timeout) as cancel_scope:
-                result = await _wait_loop()
-
-            if cancel_scope.cancelled_caught:
-                raise JobError(f"Timeout waiting for job {job_id} to complete")
-
-            return result
-        else:
-            return await _wait_loop()
 
     async def copy_files(
         self, remote_path: str, local_path: str, recursive: bool = False

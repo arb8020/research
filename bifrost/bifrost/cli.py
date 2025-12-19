@@ -7,12 +7,12 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
-from rich.table import Table
 from shared.config import create_env_template, discover_ssh_keys, get_ssh_key_path
 from shared.logging_config import setup_logging
 
 from bifrost.client import BifrostClient
-from bifrost.types import JobStatus
+from bifrost.job import job_logs, job_status, job_stream_logs
+from bifrost.types import ProcessSpec
 
 console = Console()
 app = typer.Typer(help="Bifrost - remote GPU execution")
@@ -154,6 +154,9 @@ def push(
     bootstrap_script: str | None = typer.Option(
         None, "--bootstrap-script", help="Path to bootstrap script to upload and execute"
     ),
+    workspace: str = typer.Option(
+        "~/.bifrost/workspace", "--workspace", help="Remote workspace path"
+    ),
 ):
     """Deploy code to remote instance
 
@@ -203,7 +206,7 @@ def push(
     client = BifrostClient(ssh_conn_str, ssh_key_path=ssh_key)
 
     logger.info("deploying code...")
-    workspace_path = client.push(bootstrap_cmd=bootstrap_cmd)
+    workspace_path = client.push(workspace_path=workspace, bootstrap_cmd=bootstrap_cmd)
 
     logger.info(f"code deployed to {workspace_path}")
 
@@ -269,6 +272,9 @@ def deploy(
     bootstrap: list[str] | None = typer.Option(None, "--bootstrap"),
     bootstrap_script: str | None = typer.Option(None, "--bootstrap-script"),
     env: list[str] | None = typer.Option(None, "--env"),
+    workspace: str = typer.Option(
+        "~/.bifrost/workspace", "--workspace", help="Remote workspace path"
+    ),
 ):
     """Deploy code and execute command (convenience: push + exec)"""
     ssh_key = resolve_ssh_key(ctx)
@@ -298,11 +304,14 @@ def deploy(
 
     env_dict = parse_env_vars(env) if env else None
 
-    # Create client and deploy
+    # Create client, deploy code, and execute command
     client = BifrostClient(ssh_conn_str, ssh_key_path=ssh_key)
 
-    logger.info("deploying code and executing command...")
-    result = client.deploy(command, bootstrap_cmd=bootstrap_cmd, env=env_dict)
+    logger.info("deploying code...")
+    workspace_path = client.push(workspace_path=workspace, bootstrap_cmd=bootstrap_cmd)
+
+    logger.info("executing command...")
+    result = client.exec(command, env=env_dict, working_dir=workspace_path)
 
     # Output
     if ctx.obj["json"]:
@@ -336,16 +345,15 @@ def run(
     bootstrap: list[str] | None = typer.Option(None, "--bootstrap"),
     bootstrap_script: str | None = typer.Option(None, "--bootstrap-script"),
     env: list[str] | None = typer.Option(None, "--env"),
-    name: str | None = typer.Option(None, "--name", help="Human-readable job name"),
+    name: str = typer.Option("job", "--name", help="Job name (used for tmux session)"),
+    workspace: str = typer.Option(
+        "~/.bifrost/workspace", "--workspace", help="Remote workspace path"
+    ),
 ):
     """Run command in background (detached mode)
 
-    Job ID generation:
-      - Without --name: random ID (abc123def456)
-      - With --name: name + random (my-job-abc123)
-
     The job will continue running even if SSH disconnects.
-    Use 'bifrost jobs' to monitor and 'bifrost logs' to view output.
+    Use 'bifrost logs' to view output.
     """
     ssh_key = resolve_ssh_key(ctx)
 
@@ -374,93 +382,40 @@ def run(
 
     env_dict = parse_env_vars(env) if env else None
 
-    # Create client and run detached
+    # Create client
     client = BifrostClient(ssh_conn_str, ssh_key_path=ssh_key)
 
+    # Deploy code if bootstrap specified
+    if bootstrap_cmd:
+        logger.info("deploying code...")
+        client.push(workspace_path=workspace, bootstrap_cmd=bootstrap_cmd)
+
+    # Submit job using v2 API
     logger.info("starting detached job...")
-    job_info = client.run_detached(
-        command=command, bootstrap_cmd=bootstrap_cmd, env=env_dict, session_name=name
-    )
+    spec = ProcessSpec(command=command, env=env_dict)
+    job = client.submit(spec=spec, name=name, workspace=workspace)
 
     if ctx.obj["json"]:
         print(
             json.dumps(
                 {
-                    "job_id": job_info.job_id,
-                    "status": job_info.status.value,
-                    "command": job_info.command,
+                    "name": job.name,
+                    "tmux_session": job.tmux_session,
+                    "log_file": job.log_file,
                 },
                 indent=2,
             )
         )
     else:
-        logger.info(f"job {job_info.job_id} started")
-        logger.info(f"monitor: bifrost logs {ssh_connection} {job_info.job_id} --follow")
-
-
-@app.command()
-def jobs(
-    ctx: typer.Context,
-    ssh_connection: str = typer.Argument(...),
-):
-    """List all jobs on remote instance"""
-    ssh_key = resolve_ssh_key(ctx)
-
-    try:
-        user, host, port = parse_ssh_connection(ssh_connection)
-        ssh_conn_str = f"{user}@{host}:{port}"
-    except ValueError as e:
-        logger.error(str(e))
-        raise typer.Exit(1)
-
-    client = BifrostClient(ssh_conn_str, ssh_key_path=ssh_key)
-    jobs_list = client.get_all_jobs()
-
-    if ctx.obj["json"]:
-        print(
-            json.dumps(
-                [
-                    {
-                        "job_id": j.job_id,
-                        "status": j.status.value,
-                        "command": j.command,
-                        "start_time": (j.start_time.isoformat() if j.start_time else None),
-                    }
-                    for j in jobs_list
-                ],
-                indent=2,
-            )
-        )
-    else:
-        if not jobs_list:
-            logger.info("No jobs found")
-            return
-
-        table = Table(title=f"Jobs on {ssh_connection}")
-        table.add_column("Job ID", style="cyan")
-        table.add_column("Status")
-        table.add_column("Command", max_width=40)
-        table.add_column("Runtime")
-
-        for job in jobs_list:
-            status_style = "green" if job.status == JobStatus.COMPLETED else "yellow"
-            runtime = f"{int(job.runtime_seconds)}s" if job.runtime_seconds else "N/A"
-
-            table.add_row(
-                job.job_id,
-                f"[{status_style}]{job.status.value}[/{status_style}]",
-                (job.command[:40] + "..." if len(job.command) > 40 else job.command),
-                runtime,
-            )
-
-        console.print(table)
+        logger.info(f"job '{job.name}' started (session: {job.tmux_session})")
+        logger.info(f"logs: bifrost logs {ssh_connection} {job.name} --follow")
 
 
 @app.command()
 def logs(
     ctx: typer.Context,
     ssh_connection: str = typer.Argument(...),
-    job_id: str = typer.Argument(...),
+    job_name: str = typer.Argument(..., help="Job name (as passed to --name in 'run')"),
     follow: bool = typer.Option(
         False, "-f", "--follow", help="Follow logs in real-time (like tail -f)"
     ),
@@ -478,15 +433,24 @@ def logs(
 
     client = BifrostClient(ssh_conn_str, ssh_key_path=ssh_key)
 
+    # Construct JobInfo from name (v2 API pattern)
+    from bifrost.types import JobInfo
+
+    job = JobInfo(
+        name=job_name,
+        tmux_session=f"bifrost-job-{job_name}",
+        log_file=f"~/.bifrost/logs/{job_name}.log",
+    )
+
     if follow:
-        logger.info(f"following logs for {job_id} (Ctrl+C to exit)...")
+        logger.info(f"following logs for {job_name} (Ctrl+C to exit)...")
         try:
-            for line in client.follow_job_logs(job_id):
+            for line in job_stream_logs(client, job):
                 print(line)
         except KeyboardInterrupt:
             logger.info("stopped following logs")
     else:
-        logs_content = client.get_logs(job_id, lines=lines)
+        logs_content = job_logs(client, job, tail=lines)
         print(logs_content)
 
 

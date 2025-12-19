@@ -427,7 +427,7 @@ def deploy_code_and_dependencies(gpu_instance: Any, ssh_key_path: str) -> str | 
     )
 
     # Deploy code (without bootstrap first)
-    workspace_path = bifrost_client.push()
+    workspace_path = bifrost_client.push(workspace_path="~/.bifrost/workspaces/speedrun")
     print(f"✓ Code deployed to: {workspace_path}")
 
     # Bootstrap: install dependencies (with streaming output)
@@ -453,24 +453,21 @@ def run_training(
 
     Returns 0 on success, 1 on failure.
     """
+    from bifrost.types import ProcessSpec
+
     print("\n[3/4] Starting training...")
 
     command = f"bash examples/speedrun/run.sh --script {script} --gpu-count {gpu_count}"
     print(f"Command: {command}")
 
     if detached:
-        # Use run_detached for background execution
-        job_info = bifrost_client.run_detached(
-            command=command,
-            no_deploy=True,  # Already deployed in step 2
-        )
+        # Use submit() for background execution (v2 API)
+        spec = ProcessSpec(command=command)
+        job = bifrost_client.submit(spec=spec, name="training", workspace=workspace_path)
         print("✓ Training launched in detached mode")
-        print(f"  Job ID: {job_info.job_id}")
+        print(f"  Job: {job.name} (session: {job.tmux_session})")
         print("\nTo monitor the job:")
-        print(f"  bifrost logs {job_info.job_id}")
-        print(f"  bifrost status {job_info.job_id}")
-        print("\nTo download logs later:")
-        print(f"  bifrost download {job_info.job_id} logs/ ./results/")
+        print(f"  bifrost logs <ssh-conn> {job.name} --follow")
         return 0
 
     # Use exec_stream for real-time output
