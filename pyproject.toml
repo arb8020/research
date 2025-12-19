@@ -113,7 +113,6 @@ bifrost = { workspace = true }
 shared = { workspace = true }
 rollouts = { workspace = true }
 miniray = { workspace = true }
-kerbal = { workspace = true }
 kernel-learning = { workspace = true }
 
 [build-system]
@@ -185,7 +184,6 @@ exclude = [
     "references/**",  # Exclude all reference repositories
     "dev/**",  # Exclude all dev experiments
     "rollouts/tests/**",  # Test files (separate type checking pass)
-    "kerbal/tests/**",  # Kerbal test files
     "*_test.py",  # Any test files
     "test_*.py",  # Any test files
 ]

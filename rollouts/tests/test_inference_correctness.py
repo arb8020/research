@@ -445,7 +445,7 @@ def test_correctness(client: BifrostClient, workspace: str) -> bool:
         client,
         command=f"PYTHONPATH={workspace}/rollouts:$PYTHONPATH python {script_path}",
         workspace=workspace,
-        gpu_ids=[0],
+        cuda_device_ids=[0],
         deps=DependencyConfig(
             project_name="correctness-test",
             dependencies=[

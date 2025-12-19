@@ -289,7 +289,7 @@ def check_local_prerequisites() -> tuple[bool, str | None]:
 
 
 def check_gpus_available_local(
-    gpu_ids: list[int],
+    cuda_device_ids: list[int],
     memory_threshold_mb: int = DEFAULT_MEMORY_THRESHOLD_MB,
     util_threshold_pct: int = DEFAULT_UTIL_THRESHOLD_PCT,
 ) -> tuple[bool, str | None]:
@@ -298,7 +298,7 @@ def check_gpus_available_local(
     Tiger Style: Assert preconditions, explicit thresholds.
 
     Args:
-        gpu_ids: List of GPU IDs to check
+        cuda_device_ids: List of GPU IDs to check
         memory_threshold_mb: Memory threshold in MB
         util_threshold_pct: Utilization threshold %
 
@@ -306,11 +306,11 @@ def check_gpus_available_local(
         (True, None) if all GPUs are free
         (False, error_message) if any GPU is busy
     """
-    assert gpu_ids is not None
-    assert isinstance(gpu_ids, list)
-    assert len(gpu_ids) > 0, "Must specify at least one GPU to check"
-    assert all(isinstance(gpu_id, int) for gpu_id in gpu_ids)
-    assert all(gpu_id >= 0 for gpu_id in gpu_ids)
+    assert cuda_device_ids is not None
+    assert isinstance(cuda_device_ids, list)
+    assert len(cuda_device_ids) > 0, "Must specify at least one GPU to check"
+    assert all(isinstance(gpu_id, int) for gpu_id in cuda_device_ids)
+    assert all(gpu_id >= 0 for gpu_id in cuda_device_ids)
     assert memory_threshold_mb > 0
     assert util_threshold_pct >= 0
     assert util_threshold_pct <= 100
@@ -346,7 +346,7 @@ def check_gpus_available_local(
                 continue
 
         # Check if requested GPUs are free
-        for gpu_id in gpu_ids:
+        for gpu_id in cuda_device_ids:
             if gpu_id not in gpu_stats:
                 available = list(gpu_stats.keys())
                 return False, f"GPU {gpu_id} not found (available GPUs: {available})"
@@ -448,7 +448,7 @@ def check_remote_prerequisites(ssh_connection: str, ssh_key: str) -> tuple[bool,
 def check_gpus_available_remote(
     ssh_connection: str,
     ssh_key: str,
-    gpu_ids: list[int],
+    cuda_device_ids: list[int],
     memory_threshold_mb: int = DEFAULT_MEMORY_THRESHOLD_MB,
     util_threshold_pct: int = DEFAULT_UTIL_THRESHOLD_PCT,
 ) -> tuple[bool, str | None]:
@@ -457,7 +457,7 @@ def check_gpus_available_remote(
     Args:
         ssh_connection: SSH connection string
         ssh_key: Path to SSH private key
-        gpu_ids: List of GPU IDs to check
+        cuda_device_ids: List of GPU IDs to check
         memory_threshold_mb: Memory threshold in MB
         util_threshold_pct: Utilization threshold %
 
@@ -496,7 +496,7 @@ def check_gpus_available_remote(
                 continue
 
         # Check if requested GPUs are free
-        for gpu_id in gpu_ids:
+        for gpu_id in cuda_device_ids:
             if gpu_id not in gpu_stats:
                 return (
                     False,

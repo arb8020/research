@@ -379,7 +379,7 @@ class ProcessSpec:
     args: tuple[str, ...] = ()
     cwd: str | None = None
     env: dict[str, str] | None = None
-    gpu_ids: tuple[int, ...] | None = None
+    cuda_device_ids: tuple[int, ...] | None = None
 
     def __post_init__(self):
         assert self.command, "command cannot be empty"
@@ -401,10 +401,10 @@ class ProcessSpec:
             env_prefix = " ".join(f"{k}={shlex.quote(v)}" for k, v in self.env.items())
             full_cmd = f"{env_prefix} {full_cmd}"
 
-        # Add CUDA_VISIBLE_DEVICES if gpu_ids specified
-        if self.gpu_ids is not None:
-            gpu_str = ",".join(str(g) for g in self.gpu_ids)
-            full_cmd = f"CUDA_VISIBLE_DEVICES={gpu_str} {full_cmd}"
+        # Add CUDA_VISIBLE_DEVICES if cuda_device_ids specified
+        if self.cuda_device_ids is not None:
+            devices_str = ",".join(str(d) for d in self.cuda_device_ids)
+            full_cmd = f"CUDA_VISIBLE_DEVICES={devices_str} {full_cmd}"
 
         # Add cd if cwd specified
         if self.cwd:

@@ -52,11 +52,11 @@ class GRPOConfig:
     # Inference server
     inference_backend: str = "sglang"  # "sglang" or "vllm"
     inference_port: int = 30000
-    inference_gpu_ids: tuple[int, ...] = (0,)
+    inference_cuda_device_ids: tuple[int, ...] = (0,)
     mem_fraction: float = 0.7
 
     # Trainer
-    trainer_gpu_ids: tuple[int, ...] = (0,)
+    trainer_cuda_device_ids: tuple[int, ...] = (0,)
     lr: float = 1e-6
     weight_decay: float = 0.0
     max_grad_norm: float = 1.0
@@ -207,7 +207,7 @@ async def _grpo_train_async(
         inference_engine = SGLangEngine(
             model_name=config.model_name,
             port=config.inference_port,
-            gpu_ids=config.inference_gpu_ids,
+            cuda_device_ids=config.inference_cuda_device_ids,
             output_dir=output_dir,
             dtype=config.dtype,
             mem_fraction=config.mem_fraction,
@@ -216,7 +216,7 @@ async def _grpo_train_async(
         inference_engine = VLLMEngine(
             model_name=config.model_name,
             port=config.inference_port,
-            gpu_ids=config.inference_gpu_ids,
+            cuda_device_ids=config.inference_cuda_device_ids,
             output_dir=output_dir,
             dtype=config.dtype,
             gpu_memory_utilization=config.mem_fraction,
@@ -225,7 +225,7 @@ async def _grpo_train_async(
         msg = f"Unknown inference backend: {config.inference_backend}"
         raise ValueError(msg)
 
-    gpu_str = ",".join(str(g) for g in config.inference_gpu_ids)
+    gpu_str = ",".join(str(g) for g in config.inference_cuda_device_ids)
     logger.info(f"Launching {inference_engine.name} on GPU {gpu_str}...")
 
     inference_engine.launch()
@@ -238,7 +238,7 @@ async def _grpo_train_async(
         # ─────────────────────────────────────────────────────────────────────
         # 2. Setup training backend
         # ─────────────────────────────────────────────────────────────────────
-        gpu_rank = config.trainer_gpu_ids[0]
+        gpu_rank = config.trainer_cuda_device_ids[0]
         device = f"cuda:{gpu_rank}"
         backend = create_pytorch_backend(
             model_name=config.model_name,

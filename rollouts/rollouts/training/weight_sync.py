@@ -236,7 +236,7 @@ class SGLangEngine:
         >>> engine = SGLangEngine(
         ...     model_name="Qwen/Qwen3-0.6B",
         ...     port=30000,
-        ...     gpu_ids=(0,),
+        ...     cuda_device_ids=(0,),
         ...     output_dir=Path("results/rl/run_001"),
         ... )
         >>> engine.launch()
@@ -249,7 +249,7 @@ class SGLangEngine:
 
     model_name: str
     port: int
-    gpu_ids: tuple[int, ...]
+    cuda_device_ids: tuple[int, ...]
     output_dir: Path
     dtype: str = "bfloat16"
     mem_fraction: float = 0.7
@@ -288,7 +288,7 @@ class SGLangEngine:
 
     def build_launch_cmd(self) -> str:
         """Build SGLang launch command (without redirection - tmux handles that)."""
-        gpu_str = ",".join(str(g) for g in self.gpu_ids)
+        gpu_str = ",".join(str(g) for g in self.cuda_device_ids)
         return (
             f"CUDA_VISIBLE_DEVICES={gpu_str} "
             f"python -m sglang.launch_server "
@@ -318,7 +318,7 @@ class SGLangEngine:
         )
 
         # Kill any orphaned processes using our GPUs
-        for gpu_id in self.gpu_ids:
+        for gpu_id in self.cuda_device_ids:
             subprocess.run(
                 f"nvidia-smi --id={gpu_id} --query-compute-apps=pid --format=csv,noheader | xargs -r kill -9",
                 shell=True,
@@ -429,7 +429,7 @@ class VLLMEngine:
         >>> engine = VLLMEngine(
         ...     model_name="Qwen/Qwen3-0.6B",
         ...     port=30001,
-        ...     gpu_ids=(0,),
+        ...     cuda_device_ids=(0,),
         ...     output_dir=Path("results/rl/run_001"),
         ... )
         >>> engine.launch()
@@ -442,7 +442,7 @@ class VLLMEngine:
 
     model_name: str
     port: int
-    gpu_ids: tuple[int, ...]
+    cuda_device_ids: tuple[int, ...]
     output_dir: Path
     dtype: str = "bfloat16"
     gpu_memory_utilization: float = 0.7
@@ -481,7 +481,7 @@ class VLLMEngine:
 
     def build_launch_cmd(self) -> str:
         """Build vLLM launch command (without redirection - tmux handles that)."""
-        gpu_str = ",".join(str(g) for g in self.gpu_ids)
+        gpu_str = ",".join(str(g) for g in self.cuda_device_ids)
         return (
             f"CUDA_VISIBLE_DEVICES={gpu_str} "
             f"python -m vllm.entrypoints.openai.api_server "
@@ -511,7 +511,7 @@ class VLLMEngine:
         )
 
         # Kill any orphaned processes using our GPUs
-        for gpu_id in self.gpu_ids:
+        for gpu_id in self.cuda_device_ids:
             subprocess.run(
                 f"nvidia-smi --id={gpu_id} --query-compute-apps=pid --format=csv,noheader | xargs -r kill -9",
                 shell=True,
