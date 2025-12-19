@@ -86,12 +86,12 @@ Three distinct layers with clear boundaries:
 | Job state | ✗ explicit dict | Visible at call sites |
 | Job operations | ✗ pure functions | Take session + state, return result |
 
-### bifrost-v2 Refactor Needed
+### bifrost Refactor Needed
 
-Current bifrost-v2 has `JobHandle` and `ServerHandle` as classes with methods:
+We're adding new types and functions to bifrost. The pattern to follow (not refactoring existing code):
 
 ```python
-# Current (wrong)
+# Wrong pattern (don't do this)
 @dataclass
 class JobHandle:
     _session: BifrostClient  # circular reference back to session
@@ -103,8 +103,8 @@ class JobHandle:
     def logs(self) -> str: ...        # method that just calls _session.exec()
 ```
 
-These handles don't own resources - they just pass `_session` to every method.
-That's a sign they should be frozen data + pure functions:
+Handles that don't own resources - just pass `_session` to every method -
+should be frozen data + pure functions instead:
 
 ```python
 # Refactored (correct)
@@ -140,6 +140,31 @@ Same refactor for `ServerHandle` → `ServerInfo` + functions.
 ### Types (frozen dataclasses)
 
 ```python
+@dataclass(frozen=True)
+class ProcessSpec:
+    """Complete specification of a process to run.
+
+    Immutable - represents what to run, not a running process.
+    Can be serialized, logged, compared.
+
+    Env vars are passed here, not cached on Session.
+    """
+    command: str
+    args: tuple[str, ...] = ()
+    cwd: str | None = None
+    env: frozenset[tuple[str, str]] = frozenset()
+    gpu_ids: tuple[int, ...] | None = None
+
+    def with_env(self, **kwargs) -> "ProcessSpec":
+        """Return new spec with additional env vars."""
+        new_env = dict(self.env) | kwargs
+        return replace(self, env=frozenset(new_env.items()))
+
+    def with_cwd(self, cwd: str) -> "ProcessSpec":
+        """Return new spec with different cwd."""
+        return replace(self, cwd=cwd)
+
+
 @dataclass(frozen=True)
 class GPUQuery:
     """GPU provisioning query."""
@@ -333,14 +358,24 @@ if not keep_alive and instance:
 
 ### Migration order
 
+**Phase A: Refactor bifrost (steps 1-2)**
+
 1. **Extract `acquire_node()`** into `bifrost/provision.py`
    - Handles ssh / node_id / provision tri-modal pattern
    - Returns `(BifrostClient, ClientGPUInstance | None)`
+   - Lives in bifrost (not broker) because it returns a BifrostClient
 
-2. **Refactor `JobHandle` → `JobInfo` + functions** in bifrost-v2
-   - `types.py`: Make `JobInfo` frozen, remove methods
-   - `job.py`: Add `job_status()`, `job_wait()`, `job_stream_logs()`, `job_kill()`
-   - `client.py`: `submit()` returns `JobInfo`
+2. **Add `JobInfo` + functions** to bifrost
+   - Delete legacy `JobInfo` class in `types.py` (v1 job manager API) - not used
+   - `types.py`: Add new frozen `JobInfo` dataclass (name, tmux_session, log_file, workspace)
+   - `types.py`: Add new frozen `ServerInfo` dataclass (same pattern)
+   - `job.py` (new): Add `job_status()`, `job_wait()`, `job_stream_logs()`, `job_kill()`
+   - `server.py` (new): Add `server_is_healthy()`, `server_wait_until_healthy()`, `server_stop()`
+   - `client.py`: Add `submit()` method that returns `JobInfo`, add `serve()` that returns `ServerInfo`
+
+*Validate: run `pytest rollouts/tests/test_tito_correctness.py` and test examples/rl manually.*
+
+**Phase B: Migrate callers (steps 3-4)**
 
 3. **Migrate `tests/test_tito_correctness.py`**
    - Replace kerbal imports with bifrost
@@ -351,8 +386,40 @@ if not keep_alive and instance:
    - Same pattern as tito test
    - This exercises the TUI streaming path
 
-5. **Delete kerbal imports** from codebase
-   - `grep -r "from kerbal" --include="*.py"` should return nothing
+**Phase C: Cleanup (step 5)**
+
+5. **Delete kerbal package**
+   - First: `grep -r "from kerbal" --include="*.py"` should return nothing (imports removed in Phase B)
+   - Then: `rm -rf kerbal/` to delete the package entirely
+
+### Clarifications
+
+**Backwards compatibility**: No deprecation period. All callers are internal (tito test, examples/rl, deploy.py files). Refactor and update callers in the same PR.
+
+**BifrostClient stays a class** with methods for things it owns:
+- `exec()`, `push()`, `download_files()` - use the SSH connection
+- `submit()`, `serve()` - stay as methods, but return frozen `JobInfo`/`ServerInfo`
+
+The extracted functions operate *on* jobs/servers, not *as* them:
+```python
+# BifrostClient methods (owns SSH connection)
+job = session.submit(spec)  # returns JobInfo (frozen)
+session.download_files(...)  # uses SSH connection
+
+# Extracted functions (operate on job, don't own it)
+job_wait(session, job)  # takes session explicitly
+job_status(session, job)
+job_stream_logs(session, job)
+```
+
+**acquire_node location**: `bifrost/provision.py`, not broker, because:
+- Returns `BifrostClient` (bifrost's type)
+- bifrost already imports broker for types
+- Semantics: "provision a node and give me a bifrost session"
+
+**ProcessSpec vs command strings**: `submit()` takes a `ProcessSpec` for structured command building. See `docs/design/bifrost_v2.md` lines 249-272 for the full `ProcessSpec` definition. The existing `run_detached()` takes raw command strings and can stay for simple cases. `submit()` is the new primary API.
+
+**Relationship to bifrost_v2.md**: That doc has the full bifrost design including `ProcessSpec`, layer architecture, and kerbal absorption plan. This doc (infrastructure_layers.md) focuses on the three-layer view (bifrost → miniray → pipeline RL) and the functions-over-classes refactor. The main update to bifrost_v2.md: `JobHandle`/`ServerHandle` should be frozen `JobInfo`/`ServerInfo` + pure functions (not classes with methods).
 
 ---
 
@@ -476,13 +543,15 @@ def check_staleness(sample: dict, current_version: int, max_lag: int) -> bool
 
 ## Migration Path
 
-### Phase 1: Layer 1 (1-2 weeks)
-- [ ] Implement frozen specs + functions in `bifrost/bifrost/job.py`
-- [ ] Migrate one deploy.py to use it
+### Phase 1: Layer 1
+- [ ] Extract `acquire_node()` into `bifrost/provision.py`
+- [ ] Delete legacy job manager API (`JobInfo`, `get_job()`, etc.)
+- [ ] Refactor `JobHandle` → `JobInfo` (frozen) + functions in `job.py`
+- [ ] Refactor `ServerHandle` → `ServerInfo` (frozen) + functions in `server.py`
+- [ ] Migrate tito test and examples/rl to use new API
 - [ ] Deprecate kerbal
-- [ ] Update remaining deploy.py files
 
-### Phase 2: Layer 2 (1-2 weeks)
+### Phase 2: Layer 2
 - [ ] Integrate miniray with Layer 1 for deployment
 - [ ] Multi-node NCCL setup
 - [ ] Test with `examples/rl/base_config.py`
@@ -532,23 +601,50 @@ Rationale: State is visible at call sites. No hidden mutations. Easier to test.
 
 ---
 
-## Files
+## References
 
-**Read:**
-- `dev/outlier-features/deploy.py` - full deploy pattern
-- `dev/speedrun/deploy.py` - exec_stream variant
-- `miniray/` - Heinrich pattern
-- `/tmp/pipelinerl/` - weight sync reference
-- `/tmp/nmoe/nmoe/train.py` - functional style reference
-- `/tmp/nmoe/nmoe/opt.py` - explicit state dict pattern
+### Code Style (why functions over classes)
+- `~/research/docs/code_style/CLASSES_VS_FUNCTIONAL.md` - when to use classes vs functions
+- `~/research/docs/code_style/multiprocessing_heinrich.md` - Heinrich's fork+socketpair pattern
+- `~/research/docs/code_style/casey_muratori_semantic_compression.md` - "don't abstract until 2+ uses"
+
+### nmoe (functional style reference)
+- `/tmp/nmoe/nmoe/train.py:36-160` - `train()` function with explicit state threading
+- `/tmp/nmoe/nmoe/opt.py:146-227` - `build_optimizer()` returns tuple, not class
+- `/tmp/nmoe/nmoe/opt.py:289-331` - `step()` takes explicit state dict, mutates it
+
+### PipelineRL (weight sync patterns for Layer 3)
+- `/tmp/pipelinerl/pipelinerl/vllm1.py:55-97` - `WorkerExtension` for in-flight weight updates
+- `/tmp/pipelinerl/pipelinerl/vllm1.py:100-121` - `WeightUpdateManager` HTTP+NCCL handshake
+- `/tmp/pipelinerl/pipelinerl/actor.py:164-197` - version stamping on samples
+
+### miniray (Heinrich pattern implementation)
+- `miniray/worker.py:206-252` - fork + socketpair Worker class
+- `miniray/worker.py:289-308` - send/recv over socketpair
+- `miniray/remote_worker.py` - TCP version of same pattern
+
+### Current duplication (what we're compressing)
+- `rollouts/tests/test_tito_correctness.py:56-105` - `acquire_node_runpod_only()`
+- `rollouts/tests/test_tito_correctness.py:40-41` - kerbal imports (should be bifrost)
+- `rollouts/examples/rl/base_config.py:36-37` - kerbal imports (should be bifrost)
+- `rollouts/examples/rl/base_config.py:107-114` - `start_tmux_session()` dance
+
+### bifrost (what we're changing)
+- `bifrost/bifrost/types.py:140-161` - Legacy `JobInfo` class (v1 job manager API) - delete entirely
+- `bifrost/bifrost/client.py` - Add `submit()` returning `JobInfo`, add `serve()` returning `ServerInfo`
+- `bifrost/bifrost/client.py` - Delete legacy job manager methods: `get_job()`, `get_all_jobs()`, `submit_job()`, `get_job_status()`
+
+## Files
 
 **Modify (Layer 1):**
 
-bifrost-v2 refactor:
+bifrost changes:
 - `bifrost/bifrost/types.py`:
-  - `JobHandle` → `JobInfo` (frozen, no methods)
-  - `ServerHandle` → `ServerInfo` (frozen, no methods)
-  - Keep `ProcessSpec`, `PythonEnvState` (already correct)
+  - Delete legacy `JobInfo` class (lines 140-161, v1 job manager API)
+  - Add new frozen `JobInfo` dataclass (name, tmux_session, log_file, workspace)
+  - Add new frozen `ServerInfo` dataclass (name, tmux_session, log_file, port, health_endpoint)
+- `bifrost/bifrost/provision.py` (new):
+  - `acquire_node(ssh, node_id, provision) -> tuple[BifrostClient, ClientGPUInstance | None]`
 - `bifrost/bifrost/job.py` (new):
   - `job_status(session, job) -> str`
   - `job_wait(session, job, timeout) -> int`
@@ -563,7 +659,7 @@ bifrost-v2 refactor:
 - `bifrost/bifrost/client.py`:
   - `submit()` returns `JobInfo` not `JobHandle`
   - `serve()` returns `ServerInfo` not `ServerHandle`
-  - Remove `get_job()` method, replace with `job.py` functions
+  - Delete `get_job()`, `get_all_jobs()`, `submit_job()` (v1 job manager API)
 - Deprecate `kerbal/` - functionality absorbed
 
 **Modify (Layer 2):**
