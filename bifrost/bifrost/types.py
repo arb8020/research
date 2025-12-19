@@ -2,19 +2,7 @@
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
-from enum import Enum
 from typing import Any, Optional
-
-
-class JobStatus(Enum):
-    """Job execution status."""
-
-    PENDING = "pending"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    STARTING = "starting"
 
 
 @dataclass
@@ -233,127 +221,8 @@ class EnvironmentVariables:
         return cls(variables=variables)
 
 
-@dataclass(frozen=True)
-class SessionInfo:
-    """Information about tmux sessions for a detached job.
-
-    Provides session names and SSH commands to attach to them.
-    Immutable since session info shouldn't change after creation.
-    """
-
-    job_id: str
-    main_session: str
-    attach_main: str
-    bootstrap_session: str | None = None
-    attach_bootstrap: str | None = None
-
-    def __post_init__(self):
-        # Tiger Style: assert inputs and invariants
-        assert len(self.job_id) > 0, "job_id cannot be empty"
-        assert self.main_session.startswith("bifrost-"), (
-            f"Invalid main session name: {self.main_session}"
-        )
-        assert "ssh" in self.attach_main or "tmux" in self.attach_main, (
-            "attach_main must be SSH or tmux command"
-        )
-
-        # Validate bootstrap session format if present
-        if self.bootstrap_session:
-            assert self.bootstrap_session.endswith("-bootstrap"), (
-                f"Invalid bootstrap session name: {self.bootstrap_session}"
-            )
-            assert self.attach_bootstrap is not None, (
-                "attach_bootstrap required when bootstrap_session present"
-            )
-
-        # Assert output invariant
-        assert self.main_session, "session info validated"
-
-
-@dataclass(frozen=True)
-class JobMetadata:
-    """Metadata for a detached job execution.
-
-    Stored in ~/.bifrost/jobs/{job_id}/metadata.json on remote.
-    Immutable since metadata is write-once, read-many.
-    """
-
-    job_id: str
-    command: str
-    ssh_info: str
-    status: str
-    start_time: str  # ISO 8601 format
-    tmux_session: str
-    worktree_path: str
-    git_commit: str
-    repo_name: str
-    end_time: str | None = None  # ISO 8601 format
-    exit_code: int | None = None
-
-    def __post_init__(self):
-        # Tiger Style: assert all inputs and invariants
-        assert len(self.job_id) > 0, "job_id cannot be empty"
-        assert len(self.command) > 0, "command cannot be empty"
-
-        # Validate status
-        valid_statuses = {"starting", "running", "completed", "failed", "killed"}
-        assert self.status in valid_statuses, (
-            f"Invalid status: {self.status}, must be one of {valid_statuses}"
-        )
-
-        # Validate git commit hash (full SHA-1 or SHA-256)
-        assert len(self.git_commit) in (7, 8, 40, 64), (
-            f"Invalid git commit hash length: {len(self.git_commit)}"
-        )
-
-        # Validate SSH info format
-        assert "@" in self.ssh_info and ":" in self.ssh_info, (
-            f"Invalid ssh_info format: {self.ssh_info}"
-        )
-
-        # Validate exit code range if present
-        if self.exit_code is not None:
-            assert 0 <= self.exit_code <= 255, f"Invalid exit code: {self.exit_code}"
-
-        # Assert output invariant
-        assert self.job_id, "job metadata validated"
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dict for JSON serialization."""
-        return {
-            "job_id": self.job_id,
-            "command": self.command,
-            "ssh_info": self.ssh_info,
-            "status": self.status,
-            "start_time": self.start_time,
-            "end_time": self.end_time,
-            "exit_code": self.exit_code,
-            "tmux_session": self.tmux_session,
-            "worktree_path": self.worktree_path,
-            "git_commit": self.git_commit,
-            "repo_name": self.repo_name,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "JobMetadata":
-        """Create from dict (for JSON deserialization)."""
-        return cls(
-            job_id=data["job_id"],
-            command=data["command"],
-            ssh_info=data["ssh_info"],
-            status=data["status"],
-            start_time=data["start_time"],
-            tmux_session=data["tmux_session"],
-            worktree_path=data["worktree_path"],
-            git_commit=data["git_commit"],
-            repo_name=data["repo_name"],
-            end_time=data.get("end_time"),
-            exit_code=data.get("exit_code"),
-        )
-
-
 # ============================================================================
-# New v2 API Types (functions-over-classes pattern)
+# v2 API Types (functions-over-classes pattern)
 # ============================================================================
 
 

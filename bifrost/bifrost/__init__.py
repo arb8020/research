@@ -35,11 +35,8 @@ from .server import (
 from .types import (
     EnvironmentVariables,
     JobInfo,
-    JobMetadata,
-    JobStatus,
     ProcessSpec,
     ServerInfo,
-    SessionInfo,
     SSHConnection,
 )
 
@@ -47,7 +44,7 @@ __all__ = [
     # Clients
     "BifrostClient",
     "AsyncBifrostClient",
-    # New v2 types (frozen dataclasses)
+    # v2 types (frozen dataclasses)
     "ProcessSpec",
     "JobInfo",
     "ServerInfo",
@@ -68,12 +65,9 @@ __all__ = [
     "server_is_running",
     # Provisioning
     "acquire_node",
-    # Legacy types (for backwards compatibility)
-    "JobStatus",
+    # Shared types
     "SSHConnection",
     "EnvironmentVariables",
-    "SessionInfo",
-    "JobMetadata",
     # Remote filesystem helpers
     "write_file_safe",
     "ensure_dir",

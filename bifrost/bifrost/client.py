@@ -1,11 +1,9 @@
 """Bifrost SDK - Python client for remote GPU execution and job management."""
 
-import json
 import logging
 import os
 import time
 from collections.abc import Callable, Iterator
-from datetime import datetime
 from pathlib import Path
 
 import paramiko
@@ -13,7 +11,6 @@ from shared.retry import retry
 from shared.validation import validate_ssh_key_path, validate_timeout
 
 from . import git_sync
-from .deploy import GitDeployment
 from .types import (
     ConnectionError,
     CopyResult,
@@ -21,21 +18,13 @@ from .types import (
     ExecResult,
     JobError,
     JobInfo,
-    JobMetadata,
-    JobStatus,
     ProcessSpec,
     RemoteConfig,
     ServerInfo,
-    SessionInfo,
     SSHConnection,
     TransferError,
 )
-from .validation import (
-    generate_job_id,
-    validate_bootstrap_cmd,
-    validate_command,
-    validate_poll_interval,
-)
+from .validation import generate_job_id, validate_bootstrap_cmd
 
 logger = logging.getLogger(__name__)
 
@@ -532,33 +521,8 @@ class BifrostClient:
 
         return expanded
 
-    def deploy(
-        self,
-        command: str,
-        bootstrap_cmd: str | list[str] | None = None,
-        env: EnvironmentVariables | dict[str, str] | None = None,
-    ) -> ExecResult:
-        """Deploy code and execute command.
-
-        Equivalent to: push(bootstrap_cmd) + exec(command, env)
-
-        Args:
-            command: Command to execute
-            bootstrap_cmd: Optional bootstrap command(s) - either single string or list of commands
-            env: Environment variables
-
-        Returns:
-            ExecResult with stdout, stderr, exit_code
-
-        Raises:
-            ConnectionError: SSH connection failed
-            RuntimeError: Deployment failed
-        """
-        workspace_path = self.push(bootstrap_cmd)
-        return self.exec(command, env=env, working_dir=workspace_path)
-
     # ========================================================================
-    # New v2 API: submit() and serve() - functions-over-classes pattern
+    # v2 API: submit() and serve() - functions-over-classes pattern
     # ========================================================================
 
     def submit(
@@ -782,343 +746,6 @@ class BifrostClient:
             workspace=workspace,
         )
 
-    # ========================================================================
-    # Legacy API (kept for backwards compatibility)
-    # ========================================================================
-
-    def run_detached(
-        self,
-        command: str,
-        bootstrap_cmd: str | list[str] | None = None,
-        bootstrap_timeout: int = 600,
-        env: EnvironmentVariables | dict[str, str] | None = None,
-        session_name: str | None = None,
-        no_deploy: bool = False,
-    ) -> JobInfo:
-        """Execute command as detached background job.
-
-        Args:
-            command: Command to execute
-            bootstrap_cmd: Optional bootstrap command(s) - either single string or list of commands
-            bootstrap_timeout: Max seconds to wait for bootstrap (default: 600 = 10 min)
-            env: Environment variables
-            session_name: Optional human-readable session name
-            no_deploy: Skip git deployment (legacy)
-
-        Returns:
-            JobInfo with job details and session names
-
-        Raises:
-            ConnectionError: SSH connection failed
-            JobError: Job creation failed
-        """
-        # Validate inputs (validation helpers contain all assertions)
-        command = validate_command(command)
-        validate_timeout(bootstrap_timeout, min_value=1, max_value=3600)
-        if bootstrap_cmd is not None:
-            bootstrap_cmd = validate_bootstrap_cmd(bootstrap_cmd)
-
-        # Convert dict to EnvironmentVariables if needed
-        env_vars = None
-        if env is not None:
-            if isinstance(env, EnvironmentVariables):
-                env_vars = env
-            elif isinstance(env, dict):
-                env_vars = EnvironmentVariables.from_dict(env)
-
-        # Generate job ID
-        job_id = self._generate_job_id(session_name)
-
-        try:
-            if not no_deploy:
-                # Get configured SSH client (with credentials)
-                client = self._get_ssh_client()
-
-                # Use GitDeployment for detached execution
-                deployment = GitDeployment(self.ssh.user, self.ssh.host, self.ssh.port)
-                # Convert EnvironmentVariables to dict for GitDeployment
-                env_dict = env_vars.to_dict() if env_vars else None
-                actual_job_id = deployment.deploy_and_execute_detached(client, command, env_dict)
-
-                # Note: GitDeployment generates its own job_id, we use that one
-                # In Phase 3 full implementation, we'd pass our job_id to it
-                job_id = actual_job_id
-            else:
-                # TODO: Implement legacy detached mode
-                raise JobError("Legacy detached mode not yet implemented in SDK")
-
-            # Construct session names (for Phase 3, approximate them)
-            main_session = f"bifrost-{job_id}"
-            bootstrap_session = f"bifrost-{job_id}-bootstrap" if bootstrap_cmd else None
-
-            # Assert output
-            assert main_session, "Failed to start main session"
-            assert job_id, "Failed to generate job_id"
-
-            # Return job info
-            return JobInfo(
-                job_id=job_id,
-                status=JobStatus.STARTING,
-                command=command,
-                tmux_session=main_session,
-                bootstrap_session=bootstrap_session,
-                start_time=datetime.now(),
-            )
-
-        except Exception as e:
-            raise JobError(f"Failed to create detached job: {e}")
-
-    def get_job_status(self, job_id: str) -> JobInfo:
-        """
-        Get current status of a detached job.
-
-        Args:
-            job_id: Job identifier
-
-        Returns:
-            JobInfo with current status
-
-        Raises:
-            ConnectionError: SSH connection failed
-            JobError: Job not found or status check failed
-        """
-        try:
-            ssh_client = self._get_ssh_client()
-
-            # Get job metadata
-            metadata_cmd = f"cat ~/.bifrost/jobs/{job_id}/metadata.json 2>/dev/null"
-            stdin, stdout, stderr = ssh_client.exec_command(metadata_cmd)
-
-            if stdout.channel.recv_exit_status() != 0:
-                raise JobError(f"Job {job_id} not found")
-
-            metadata_dict = json.loads(stdout.read().decode())
-            # Parse metadata using frozen dataclass for validation
-            metadata = JobMetadata.from_dict(metadata_dict)
-
-            # Get current status (may be updated from metadata)
-            status_cmd = f"cat ~/.bifrost/jobs/{job_id}/status 2>/dev/null"
-            stdin, stdout, stderr = ssh_client.exec_command(status_cmd)
-            status_str = stdout.read().decode().strip()
-
-            # Parse times from metadata
-            start_time = datetime.fromisoformat(metadata.start_time.replace("Z", "+00:00"))
-            end_time = None
-            if metadata.end_time:
-                end_time = datetime.fromisoformat(metadata.end_time.replace("Z", "+00:00"))
-
-            # Calculate runtime
-            runtime_seconds = None
-            if end_time:
-                runtime_seconds = (end_time - start_time).total_seconds()
-            else:
-                runtime_seconds = (datetime.now().astimezone() - start_time).total_seconds()
-
-            return JobInfo(
-                job_id=job_id,
-                status=JobStatus(status_str) if status_str else JobStatus(metadata.status),
-                command=metadata.command,
-                start_time=start_time,
-                end_time=end_time,
-                exit_code=metadata.exit_code,
-                runtime_seconds=runtime_seconds,
-            )
-
-        except json.JSONDecodeError as e:
-            raise JobError(f"Invalid job metadata for {job_id}: {e}")
-        except Exception as e:
-            if isinstance(e, (ConnectionError, JobError)):
-                raise
-            raise JobError(f"Failed to get job status: {e}")
-
-    def get_all_jobs(self) -> list[JobInfo]:
-        """
-        Get status of all jobs on the remote instance.
-
-        Returns:
-            List of JobInfo objects for all jobs
-
-        Raises:
-            ConnectionError: SSH connection failed
-        """
-        try:
-            ssh_client = self._get_ssh_client()
-
-            # Get list of job directories
-            stdin, stdout, stderr = ssh_client.exec_command(
-                "ls -1 ~/.bifrost/jobs/ 2>/dev/null || echo ''"
-            )
-            job_dirs = [d.strip() for d in stdout.read().decode().split("\n") if d.strip()]
-
-            jobs = []
-            for job_id in job_dirs:
-                try:
-                    job_info = self.get_job_status(job_id)
-                    jobs.append(job_info)
-                except JobError:
-                    # Skip jobs that can't be read
-                    continue
-
-            return jobs
-
-        except Exception as e:
-            if isinstance(e, ConnectionError):
-                raise
-            raise ConnectionError(f"Failed to list jobs: {e}")
-
-    def get_logs(self, job_id: str, lines: int = 100, log_type: str = "command") -> str:
-        """Get recent logs from a job.
-
-        Args:
-            job_id: Job identifier
-            lines: Number of lines to retrieve (default: 100)
-            log_type: "command" or "bootstrap"
-
-        Returns:
-            Log content
-
-        Raises:
-            ConnectionError: SSH connection failed
-            JobError: Job not found or logs unavailable
-        """
-        try:
-            ssh_client = self._get_ssh_client()
-
-            if log_type == "bootstrap":
-                log_file = f"~/.bifrost/jobs/{job_id}/bootstrap.log"
-            else:
-                log_file = f"~/.bifrost/jobs/{job_id}/job.log"
-
-            # Check if log file exists
-            stdin, stdout, stderr = ssh_client.exec_command(f"test -f {log_file}")
-            if stdout.channel.recv_exit_status() != 0:
-                raise JobError(f"No {log_type} log found for job {job_id}")
-
-            # Get last N lines
-            tail_cmd = f"tail -n {lines} {log_file}"
-            stdin, stdout, stderr = ssh_client.exec_command(tail_cmd)
-
-            if stdout.channel.recv_exit_status() != 0:
-                error = stderr.read().decode()
-                raise JobError(f"Failed to read logs: {error}")
-
-            return stdout.read().decode()
-
-        except Exception as e:
-            if isinstance(e, (ConnectionError, JobError)):
-                raise
-            raise JobError(f"Failed to get job logs: {e}")
-
-    def follow_job_logs(self, job_id: str) -> Iterator[str]:
-        """
-        Stream job logs in real-time (like tail -f).
-
-        Args:
-            job_id: Job identifier
-
-        Yields:
-            Log lines as they are written
-
-        Raises:
-            ConnectionError: SSH connection failed
-            JobError: Job not found or logs unavailable
-        """
-        try:
-            ssh_client = self._get_ssh_client()
-
-            log_file = f"~/.bifrost/jobs/{job_id}/job.log"
-
-            # Use tail -f to follow the log file
-            tail_cmd = f"tail -f {log_file}"
-            stdin, stdout, stderr = ssh_client.exec_command(tail_cmd)
-
-            # Stream output line by line
-            for line in iter(stdout.readline, ""):
-                yield line.rstrip("\n")
-
-        except Exception as e:
-            if isinstance(e, ConnectionError):
-                raise
-            raise JobError(f"Failed to follow job logs: {e}")
-
-    def list_sessions(self) -> list[str]:
-        """List all bifrost tmux sessions on remote.
-
-        Returns:
-            List of tmux session names
-        """
-        ssh_client = self._get_ssh_client()
-
-        stdin, stdout, stderr = ssh_client.exec_command(
-            "tmux list-sessions -F '#{session_name}' 2>/dev/null || echo ''"
-        )
-        if stdout.channel.recv_exit_status() != 0:
-            return []
-
-        sessions = stdout.read().decode().strip().split("\n")
-        # Filter to bifrost sessions only
-        return [s for s in sessions if s.startswith("bifrost-") and s]
-
-    def get_session_info(self, job_id: str) -> SessionInfo:
-        """Get tmux session information for a job.
-
-        Returns:
-            SessionInfo with session names and attach commands
-        """
-        job = self.get_job_status(job_id)
-
-        main_session = job.tmux_session or f"bifrost-{job_id}"
-        attach_main = f"ssh {self.ssh.user}@{self.ssh.host} -p {self.ssh.port} -t 'tmux attach -t {main_session}'"
-
-        if job.bootstrap_session:
-            bootstrap_session = job.bootstrap_session
-            attach_bootstrap = f"ssh {self.ssh.user}@{self.ssh.host} -p {self.ssh.port} -t 'tmux attach -t {bootstrap_session}'"
-            return SessionInfo(
-                job_id=job_id,
-                main_session=main_session,
-                attach_main=attach_main,
-                bootstrap_session=bootstrap_session,
-                attach_bootstrap=attach_bootstrap,
-            )
-        else:
-            return SessionInfo(job_id=job_id, main_session=main_session, attach_main=attach_main)
-
-    def wait_for_completion(
-        self, job_id: str, poll_interval: float = 5.0, timeout: float | None = None
-    ) -> JobInfo:
-        """
-        Wait for a job to complete.
-
-        Args:
-            job_id: Job identifier
-            poll_interval: Seconds between status checks
-            timeout: Optional timeout in seconds
-
-        Returns:
-            Final JobInfo when job_info is complete
-
-        Raises:
-            JobError: Job failed or timeout exceeded
-            ConnectionError: SSH connection failed
-        """
-        # Validate inputs (validation helpers contain all assertions)
-        poll_interval = validate_poll_interval(poll_interval)
-        if timeout is not None:
-            timeout = validate_timeout(int(timeout), min_value=1, max_value=86400)
-
-        start_time = time.time()
-
-        while True:
-            job_info = self.get_job_status(job_id)
-
-            if job_info.is_complete:
-                return job_info
-
-            # Check timeout
-            if timeout and (time.time() - start_time) > timeout:
-                raise JobError(f"Timeout waiting for job {job_id} to complete")
-
-            time.sleep(poll_interval)
 
     def copy_files(self, remote_path: str, local_path: str, recursive: bool = False) -> CopyResult:
         """
