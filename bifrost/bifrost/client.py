@@ -23,7 +23,9 @@ from .types import (
     JobInfo,
     JobMetadata,
     JobStatus,
+    ProcessSpec,
     RemoteConfig,
+    ServerInfo,
     SessionInfo,
     SSHConnection,
     TransferError,
@@ -554,6 +556,197 @@ class BifrostClient:
         """
         workspace_path = self.push(bootstrap_cmd)
         return self.exec(command, env=env, working_dir=workspace_path)
+
+    # ========================================================================
+    # New v2 API: submit() and serve() - functions-over-classes pattern
+    # ========================================================================
+
+    def submit(
+        self,
+        spec: ProcessSpec,
+        name: str,
+        log_file: str | None = None,
+        workspace: str | None = None,
+    ) -> JobInfo:
+        """Submit a job for execution in a tmux session.
+
+        This is the new v2 API that returns a frozen JobInfo.
+        Use with job_status(), job_wait(), job_logs(), job_kill() functions.
+
+        Args:
+            spec: ProcessSpec defining what to run
+            name: Job name (used for tmux session name)
+            log_file: Path to log file (default: ~/.bifrost/logs/{name}.log)
+            workspace: Working directory (default: last pushed workspace or ~)
+
+        Returns:
+            JobInfo identifier (frozen dataclass)
+
+        Raises:
+            JobError: Job creation failed
+
+        Example:
+            from bifrost import BifrostClient
+            from bifrost.types import ProcessSpec
+            from bifrost.job import job_status, job_wait, job_stream_logs
+
+            client = BifrostClient("root@gpu:22", ssh_key_path="~/.ssh/id_ed25519")
+            job = client.submit(
+                ProcessSpec(command="python", args=("train.py",)),
+                name="training",
+            )
+
+            # Stream logs
+            for line in job_stream_logs(client, job):
+                print(line)
+
+            # Wait for completion
+            exit_code = job_wait(client, job)
+        """
+        assert spec is not None, "ProcessSpec required"
+        assert name, "job name required"
+
+        # Default workspace to last pushed or home
+        if workspace is None:
+            workspace = self._last_workspace or "~"
+
+        # Default log file
+        if log_file is None:
+            log_file = f"~/.bifrost/logs/{name}.log"
+
+        # Ensure log directory exists
+        self.exec(f"mkdir -p $(dirname {log_file})")
+
+        # Build tmux session name
+        session_name = f"bifrost-job-{name}"
+
+        # Kill existing session if present
+        self.exec(f"tmux kill-session -t {session_name} 2>/dev/null || true")
+
+        # Build command from ProcessSpec
+        full_cmd = spec.build_command()
+
+        # Build tmux command with script for reliable logging
+        # - script -efc: run command with exit code capture
+        # - EXIT_CODE marker: for programmatic exit code detection
+        escaped_cmd = full_cmd.replace("'", "'\\''")
+        tmux_cmd = f"tmux new-session -d -s {session_name}"
+        if workspace:
+            tmux_cmd += f" -c {workspace}"
+        tmux_cmd += f" 'script -efc \"{escaped_cmd}\" {log_file}; echo EXIT_CODE: $? >> {log_file}'"
+
+        result = self.exec(tmux_cmd)
+        if result.exit_code != 0:
+            raise JobError(f"Failed to start job {name}: {result.stderr}")
+
+        self.logger.info(f"Job started: {name} (session: {session_name})")
+
+        return JobInfo(
+            name=name,
+            tmux_session=session_name,
+            log_file=log_file,
+            workspace=workspace,
+        )
+
+    def serve(
+        self,
+        spec: ProcessSpec,
+        name: str,
+        port: int,
+        health_endpoint: str = "/health",
+        log_file: str | None = None,
+        workspace: str | None = None,
+    ) -> ServerInfo:
+        """Start a server process in a tmux session.
+
+        This is the new v2 API that returns a frozen ServerInfo.
+        Use with server_is_healthy(), server_wait_until_healthy(), server_stop() functions.
+
+        Args:
+            spec: ProcessSpec defining the server command
+            name: Server name (used for tmux session name)
+            port: Port the server listens on
+            health_endpoint: Health check endpoint path (default: /health)
+            log_file: Path to log file (default: ~/.bifrost/logs/{name}.log)
+            workspace: Working directory (default: last pushed workspace or ~)
+
+        Returns:
+            ServerInfo identifier (frozen dataclass)
+
+        Raises:
+            JobError: Server creation failed
+
+        Example:
+            from bifrost import BifrostClient
+            from bifrost.types import ProcessSpec
+            from bifrost.server import server_wait_until_healthy, server_stop
+
+            client = BifrostClient("root@gpu:22", ssh_key_path="~/.ssh/id_ed25519")
+            server = client.serve(
+                ProcessSpec(
+                    command="python",
+                    args=("-m", "sglang.launch_server", "--model", "meta-llama/Llama-3.1-8B"),
+                ),
+                name="sglang",
+                port=30000,
+            )
+
+            # Wait for server to be healthy
+            if server_wait_until_healthy(client, server, timeout=300):
+                print(f"Server ready at localhost:{server.port}")
+
+            # Stop server when done
+            server_stop(client, server)
+        """
+        assert spec is not None, "ProcessSpec required"
+        assert name, "server name required"
+        assert port > 0, "port must be positive"
+
+        # Default workspace to last pushed or home
+        if workspace is None:
+            workspace = self._last_workspace or "~"
+
+        # Default log file
+        if log_file is None:
+            log_file = f"~/.bifrost/logs/{name}.log"
+
+        # Ensure log directory exists
+        self.exec(f"mkdir -p $(dirname {log_file})")
+
+        # Build tmux session name
+        session_name = f"bifrost-server-{name}"
+
+        # Kill existing session if present
+        self.exec(f"tmux kill-session -t {session_name} 2>/dev/null || true")
+
+        # Build command from ProcessSpec
+        full_cmd = spec.build_command()
+
+        # Build tmux command with script for reliable logging
+        escaped_cmd = full_cmd.replace("'", "'\\''")
+        tmux_cmd = f"tmux new-session -d -s {session_name}"
+        if workspace:
+            tmux_cmd += f" -c {workspace}"
+        tmux_cmd += f" 'script -efc \"{escaped_cmd}\" {log_file}'"
+
+        result = self.exec(tmux_cmd)
+        if result.exit_code != 0:
+            raise JobError(f"Failed to start server {name}: {result.stderr}")
+
+        self.logger.info(f"Server started: {name} (session: {session_name}, port: {port})")
+
+        return ServerInfo(
+            name=name,
+            tmux_session=session_name,
+            log_file=log_file,
+            port=port,
+            health_endpoint=health_endpoint,
+            workspace=workspace,
+        )
+
+    # ========================================================================
+    # Legacy API (kept for backwards compatibility)
+    # ========================================================================
 
     def run_detached(
         self,

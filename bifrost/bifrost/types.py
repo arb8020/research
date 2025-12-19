@@ -137,31 +137,6 @@ class ExecResult:
 
 
 @dataclass
-class JobInfo:
-    """Information about a detached job."""
-
-    job_id: str
-    status: JobStatus
-    command: str
-    tmux_session: str | None = None  # Main command session
-    bootstrap_session: str | None = None  # Bootstrap session (if applicable)
-    start_time: datetime | None = None
-    end_time: datetime | None = None
-    exit_code: int | None = None
-    runtime_seconds: float | None = None
-
-    @property
-    def is_running(self) -> bool:
-        """Check if job is currently running."""
-        return self.status in [JobStatus.RUNNING, JobStatus.STARTING]
-
-    @property
-    def is_complete(self) -> bool:
-        """Check if job has finished (successfully or failed)."""
-        return self.status in [JobStatus.COMPLETED, JobStatus.FAILED]
-
-
-@dataclass
 class CopyResult:
     """Result of a file copy operation."""
 
@@ -375,3 +350,115 @@ class JobMetadata:
             end_time=data.get("end_time"),
             exit_code=data.get("exit_code"),
         )
+
+
+# ============================================================================
+# New v2 API Types (functions-over-classes pattern)
+# ============================================================================
+
+
+@dataclass(frozen=True)
+class ProcessSpec:
+    """Complete specification of a process to run.
+
+    Immutable - represents what to run, not a running process.
+    Can be serialized, logged, compared.
+
+    Env vars are passed here, not cached on Session.
+
+    Example:
+        spec = ProcessSpec(
+            command="python",
+            args=("train.py", "--lr", "0.001"),
+            cwd="/workspace",
+            env={"CUDA_VISIBLE_DEVICES": "0,1"},
+        )
+    """
+
+    command: str
+    args: tuple[str, ...] = ()
+    cwd: str | None = None
+    env: dict[str, str] | None = None
+    gpu_ids: tuple[int, ...] | None = None
+
+    def __post_init__(self):
+        assert self.command, "command cannot be empty"
+        assert isinstance(self.args, tuple), "args must be a tuple"
+
+    def build_command(self) -> str:
+        """Build full command string with proper escaping.
+
+        Returns command string suitable for shell execution.
+        """
+        import shlex
+
+        # Build base command with args
+        cmd_parts = [self.command] + list(self.args)
+        full_cmd = shlex.join(cmd_parts)
+
+        # Add env vars prefix if needed
+        if self.env:
+            env_prefix = " ".join(f"{k}={shlex.quote(v)}" for k, v in self.env.items())
+            full_cmd = f"{env_prefix} {full_cmd}"
+
+        # Add CUDA_VISIBLE_DEVICES if gpu_ids specified
+        if self.gpu_ids is not None:
+            gpu_str = ",".join(str(g) for g in self.gpu_ids)
+            full_cmd = f"CUDA_VISIBLE_DEVICES={gpu_str} {full_cmd}"
+
+        # Add cd if cwd specified
+        if self.cwd:
+            full_cmd = f"cd {shlex.quote(self.cwd)} && {full_cmd}"
+
+        return full_cmd
+
+
+@dataclass(frozen=True)
+class JobInfo:
+    """Immutable job identifier - just data.
+
+    This is the new v2 JobInfo that follows the functions-over-classes pattern.
+    It contains only identifiers, not status. Status comes from job_status().
+
+    Returned by BifrostClient.submit().
+    Used with job_status(), job_wait(), job_logs(), job_kill() functions.
+    """
+
+    name: str
+    tmux_session: str
+    log_file: str | None = None
+    workspace: str | None = None
+
+    def __post_init__(self):
+        assert self.name, "name cannot be empty"
+        assert self.tmux_session, "tmux_session cannot be empty"
+
+
+@dataclass(frozen=True)
+class ServerInfo:
+    """Immutable server identifier - just data.
+
+    This is the new v2 ServerInfo that follows the functions-over-classes pattern.
+    It contains only identifiers, not health status. Status comes from server_is_healthy().
+
+    Returned by BifrostClient.serve().
+    Used with server_is_healthy(), server_wait_until_healthy(), server_stop() functions.
+    """
+
+    name: str
+    tmux_session: str
+    log_file: str | None = None
+    port: int | None = None
+    health_endpoint: str | None = None
+    workspace: str | None = None
+
+    def __post_init__(self):
+        assert self.name, "name cannot be empty"
+        assert self.tmux_session, "tmux_session cannot be empty"
+
+    @property
+    def url(self) -> str | None:
+        """Get server URL if port is known."""
+        if self.port:
+            return f"http://localhost:{self.port}"
+        return None
