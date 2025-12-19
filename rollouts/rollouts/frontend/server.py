@@ -350,16 +350,16 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         if ssh_match:
             config_data["sshTarget"] = ssh_match.group(1)
 
-        # Try to match gpu_ids as a list first
-        gpu_list_match = re.search(r'["\']gpu_ids["\']\s*:\s*\[([^\]]+)\]', config_source)
+        # Try to match cuda_device_ids as a list first
+        gpu_list_match = re.search(r'["\']cuda_device_ids["\']\s*:\s*\[([^\]]+)\]', config_source)
         if not gpu_list_match:
-            gpu_list_match = re.search(r"gpu_ids\s*[:=]\s*\[([^\]]+)\]", config_source)
+            gpu_list_match = re.search(r"cuda_device_ids\s*[:=]\s*\[([^\]]+)\]", config_source)
 
         if gpu_list_match:
             # Parse list of GPU IDs
-            gpu_ids_str = gpu_list_match.group(1)
+            cuda_device_ids_str = gpu_list_match.group(1)
             config_data["gpuIds"] = [
-                int(x.strip()) for x in gpu_ids_str.split(",") if x.strip().isdigit()
+                int(x.strip()) for x in cuda_device_ids_str.split(",") if x.strip().isdigit()
             ]
         else:
             # Fallback to single gpu_id for backwards compatibility
@@ -926,11 +926,11 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         Returns:
             Python source code for config file
         """
-        # Normalize gpu_ids: convert to list if needed
-        if "gpu_ids" in data:
-            gpu_ids = data["gpu_ids"]
-            if not isinstance(gpu_ids, list):
-                data["gpu_ids"] = [gpu_ids]
+        # Normalize cuda_device_ids: convert to list if needed
+        if "cuda_device_ids" in data:
+            cuda_device_ids = data["cuda_device_ids"]
+            if not isinstance(cuda_device_ids, list):
+                data["cuda_device_ids"] = [cuda_device_ids]
 
         # Check if we're building from a base config
         base_name = data.get("baseName")
@@ -1053,26 +1053,26 @@ class DevLoopServer(SimpleHTTPRequestHandler):
                 config_source,
             )
 
-        # Handle both gpu_ids (list) and gpuId (single, backwards compat)
-        if "gpu_ids" in data:
-            gpu_ids = data["gpu_ids"]
-            gpu_ids_str = str(gpu_ids)  # Convert list to string like [0, 1, 2]
+        # Handle both cuda_device_ids (list) and gpuId (single, backwards compat)
+        if "cuda_device_ids" in data:
+            cuda_device_ids = data["cuda_device_ids"]
+            cuda_device_ids_str = str(cuda_device_ids)  # Convert list to string like [0, 1, 2]
 
-            # Try to replace gpu_ids list first
+            # Try to replace cuda_device_ids list first
             config_source = re.sub(
-                r"(gpu_ids\s*[:=]\s*)\[[^\]]*\]", f"\\g<1>{gpu_ids_str}", config_source
+                r"(cuda_device_ids\s*[:=]\s*)\[[^\]]*\]", f"\\g<1>{cuda_device_ids_str}", config_source
             )
             # Also try in dict format
             config_source = re.sub(
-                r'(["\']gpu_ids["\']\s*:\s*)\[[^\]]*\]', f"\\g<1>{gpu_ids_str}", config_source
+                r'(["\']cuda_device_ids["\']\s*:\s*)\[[^\]]*\]', f"\\g<1>{cuda_device_ids_str}", config_source
             )
             # Fallback: replace old gpu_id with first GPU from list
-            if gpu_ids:
+            if cuda_device_ids:
                 config_source = re.sub(
-                    r"(gpu_id\s*[:=]\s*)(\d+)", f"\\g<1>{gpu_ids[0]}", config_source
+                    r"(gpu_id\s*[:=]\s*)(\d+)", f"\\g<1>{cuda_device_ids[0]}", config_source
                 )
                 config_source = re.sub(
-                    r'(["\']gpu_id["\']\s*:\s*)(\d+)', f"\\g<1>{gpu_ids[0]}", config_source
+                    r'(["\']gpu_id["\']\s*:\s*)(\d+)', f"\\g<1>{cuda_device_ids[0]}", config_source
                 )
 
         if "datasetPath" in env_fields:
@@ -1217,7 +1217,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
         # Extract environment-specific fields
         ssh_target = data.get("ssh_target", "")
-        gpu_ids = data.get("gpu_ids", [0])
+        cuda_device_ids = data.get("cuda_device_ids", [0])
         dataset_path = data.get("dataset_path", "datasets/default.json")
 
         # Infer provider and API key env var from model name
@@ -1262,7 +1262,7 @@ class CustomEnvironment:
 
     # Infrastructure settings (passed from environment_config)
     ssh_target: str = ""
-    gpu_ids: List[int] = field(default_factory=lambda: [0])
+    cuda_device_ids: List[int] = field(default_factory=lambda: [0])
     dataset_path: Path = field(default_factory=lambda: Path("datasets/default.json"))
 
     def get_tools(self) -> List[Tool]:
@@ -1324,7 +1324,7 @@ class Config:
     environment_class: type = CustomEnvironment
     environment_config: dict = field(default_factory=lambda: {{
         'ssh_target': '{ssh_target}',
-        'gpu_ids': {gpu_ids},
+        'cuda_device_ids': {cuda_device_ids},
         'dataset_path': Path('{dataset_path}'),
     }})
 
@@ -1368,10 +1368,10 @@ class Config:
 
     @property
     def gpu_id(self) -> int:
-        # Return first GPU from gpu_ids list, or fallback to gpu_id
-        gpu_ids = self.environment_config.get('gpu_ids')
-        if gpu_ids and isinstance(gpu_ids, list) and len(gpu_ids) > 0:
-            return gpu_ids[0]
+        # Return first GPU from cuda_device_ids list, or fallback to gpu_id
+        cuda_device_ids = self.environment_config.get('cuda_device_ids')
+        if cuda_device_ids and isinstance(cuda_device_ids, list) and len(cuda_device_ids) > 0:
+            return cuda_device_ids[0]
         return self.environment_config.get('gpu_id', 0)
 
     @property
@@ -1438,31 +1438,31 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
 
             logger.debug(f"Config file found: {config_path}")
 
-            # GPU preflight check (if config has gpu_ids)
+            # GPU preflight check (if config has cuda_device_ids)
             # Read config to check for GPU requirements
             config_source = config_path.read_text()
             import re
 
-            gpu_ids = []
-            # Try to match gpu_ids as a list first
-            gpu_list_match = re.search(r'["\']gpu_ids["\']\s*:\s*\[([^\]]+)\]', config_source)
+            cuda_device_ids = []
+            # Try to match cuda_device_ids as a list first
+            gpu_list_match = re.search(r'["\']cuda_device_ids["\']\s*:\s*\[([^\]]+)\]', config_source)
             if not gpu_list_match:
-                gpu_list_match = re.search(r"gpu_ids\s*[:=]\s*\[([^\]]+)\]", config_source)
+                gpu_list_match = re.search(r"cuda_device_ids\s*[:=]\s*\[([^\]]+)\]", config_source)
 
             if gpu_list_match:
                 # Parse list of GPU IDs
-                gpu_ids_str = gpu_list_match.group(1)
-                gpu_ids = [int(x.strip()) for x in gpu_ids_str.split(",") if x.strip().isdigit()]
+                cuda_device_ids_str = gpu_list_match.group(1)
+                cuda_device_ids = [int(x.strip()) for x in cuda_device_ids_str.split(",") if x.strip().isdigit()]
             else:
                 # Fallback to single gpu_id
                 gpu_match = re.search(r'["\']gpu_id["\']\s*:\s*(\d+)', config_source)
                 if not gpu_match:
                     gpu_match = re.search(r"gpu_id\s*[:=]\s*(\d+)", config_source)
                 if gpu_match:
-                    gpu_ids = [int(gpu_match.group(1))]
+                    cuda_device_ids = [int(gpu_match.group(1))]
 
             # Check if GPUs are available (simple check using nvidia-smi)
-            if gpu_ids:
+            if cuda_device_ids:
                 try:
                     result = subprocess.run(
                         [
@@ -1493,7 +1493,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                                     continue
 
                         # Check if requested GPUs are free (>1GB used or >5% util = busy)
-                        for gpu_id in gpu_ids:
+                        for gpu_id in cuda_device_ids:
                             if gpu_id in gpu_stats:
                                 stats = gpu_stats[gpu_id]
                                 if stats["memory_mb"] > 1000 or stats["util_pct"] > 5:
@@ -1562,7 +1562,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                     "status": "running",
                     "output_lines": [],
                     "exit_code": None,
-                    "gpu_ids": gpu_ids,
+                    "cuda_device_ids": cuda_device_ids,
                 }
 
             logger.debug(f"Run registered in _active_runs. Total active: {len(_active_runs)}")

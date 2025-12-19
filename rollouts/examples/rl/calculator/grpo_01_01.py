@@ -27,9 +27,9 @@ config = GRPOConfig(
     max_tokens=512,
     max_turns=10,
     # Use same GPU for inference and training (single-GPU setup)
-    # For multi-GPU, use inference_gpu_ids=(0,), trainer_gpu_ids=(1,)
-    inference_gpu_ids=(0,),
-    trainer_gpu_ids=(0,),
+    # For multi-GPU, use inference_cuda_device_ids=(0,), trainer_cuda_device_ids=(1,)
+    inference_cuda_device_ids=(0,),
+    trainer_cuda_device_ids=(0,),
 )
 
 if __name__ == "__main__":

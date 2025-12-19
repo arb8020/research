@@ -44,7 +44,7 @@ class InferenceServerConfig:
     backend: str = "sglang"
     model: str = "Qwen/Qwen2.5-0.5B-Instruct"
     port: int = 30000
-    gpu_id: int = 0
+    cuda_device_id: int = 0
 
 
 @dataclass(frozen=True)

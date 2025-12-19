@@ -169,7 +169,7 @@ def start_sglang_server():
     engine = SGLangEngine(
         model_name=MODEL,
         port=PORT,
-        gpu_ids=(0,),
+        cuda_device_ids=(0,),
         output_dir=OUTPUT_DIR,
         dtype="bfloat16",
         mem_fraction=0.5,  # Leave room for model forward pass
@@ -671,7 +671,7 @@ def start_sglang_server():
     engine = SGLangEngine(
         model_name=MODEL,
         port=PORT,
-        gpu_ids=(0,),
+        cuda_device_ids=(0,),
         output_dir=OUTPUT_DIR,
         dtype="bfloat16",
         mem_fraction=0.5,  # Leave room for model forward pass
