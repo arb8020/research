@@ -31,15 +31,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
-from kerbal.job_monitor import LogStreamConfig, stream_log_until_complete
-from kerbal.tmux import start_tmux_session
 
+from bifrost import GPUQuery, ProcessSpec, acquire_node, job_stream_until_complete
 from rollouts.remote import release_node
 
 if TYPE_CHECKING:
@@ -52,57 +50,7 @@ MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
 SGLANG_PORT = 30000
 
 
-# REMINDER: Only runpod for now - prime/vast not included bc I haven't added credits
-def acquire_node_runpod_only(
-    ssh: str | None = None,
-    node_id: str | None = None,
-    provision: bool = False,
-    gpu_type: str = "A100",
-    gpu_count: int = 1,
-) -> tuple["BifrostClient", "ClientGPUInstance | None"]:
-    """Acquire node using runpod only (like examples/rl/base_config.py)."""
-    from bifrost import BifrostClient
-    from broker import GPUClient
-
-    ssh_key_path = os.path.expanduser("~/.ssh/id_ed25519")
-
-    if ssh:
-        print(f"Connecting to static node: {ssh}")
-        return BifrostClient(ssh, ssh_key_path=ssh_key_path), None
-
-    runpod_key = os.getenv("RUNPOD_API_KEY")
-    assert runpod_key, "RUNPOD_API_KEY required"
-
-    broker = GPUClient(
-        credentials={"runpod": runpod_key},  # Only runpod
-        ssh_key_path=ssh_key_path,
-    )
-
-    if node_id:
-        provider, instance_id = node_id.split(":", 1)
-        print(f"Connecting to existing instance: {node_id}")
-        instance = broker.get_instance(instance_id, provider)
-        assert instance, f"Instance not found: {node_id}"
-    else:
-        assert provision, "Must specify --ssh, --node-id, or --provision"
-        print(f"Provisioning new instance ({gpu_count}x {gpu_type})...")
-        instance = broker.create(
-            broker.gpu_type.contains(gpu_type),
-            gpu_count=gpu_count,
-            cloud_type="secure",
-            container_disk_gb=100,
-            sort=lambda x: x.price_per_hour,
-            min_cuda_version="12.8",
-        )
-        print(f"  Instance ID: {instance.provider}:{instance.id}")
-
-    print(f"  GPU: {instance.gpu_count}x {instance.gpu_type}")
-    print("  Waiting for SSH...")
-    instance.wait_until_ssh_ready(timeout=600)
-
-    key_path = broker.get_ssh_key_path(instance.provider)
-    client = BifrostClient(instance.ssh_connection_string(), ssh_key_path=key_path)
-    return client, instance
+# Node acquisition now uses bifrost.acquire_node() - see main()
 
 
 # =============================================================================
@@ -1109,10 +1057,10 @@ if __name__ == "__main__":
 # =============================================================================
 
 
-def run_tito_test(client, workspace: str) -> bool:
+def run_tito_test(client: "BifrostClient", workspace: str) -> bool:
     """Run TI/TO test on remote GPU.
 
-    Uses tmux + log file pattern (like examples/rl) for reliable logging.
+    Uses bifrost submit() + job_stream_until_complete() for reliable execution.
     """
     print("\n" + "=" * 60)
     print("TEST: TI/TO Multi-Turn Calculator Test")
@@ -1129,35 +1077,29 @@ def run_tito_test(client, workspace: str) -> bool:
     client.exec(f"mkdir -p {workspace}/rollouts/results")
     client.exec(f"cat > {script_path} << 'SCRIPT_EOF'\n{script_content}\nSCRIPT_EOF")
 
-    # Start test in tmux session
+    # Submit test job using new bifrost API
     print("\n1. Starting TI/TO test...")
-    cmd = f"PYTHONPATH={workspace}/rollouts:$PYTHONPATH uv run python {script_path}"
-
-    session, err = start_tmux_session(
-        client=client,
-        session_name="tito-test",
-        command=cmd,
-        workspace=f"{workspace}/rollouts",
+    job = client.submit(
+        ProcessSpec(
+            command="uv",
+            args=("run", "python", script_path),
+            cwd=f"{workspace}/rollouts",
+            env={"PYTHONPATH": f"{workspace}/rollouts:$PYTHONPATH"},
+        ),
+        name="tito-test",
         log_file=log_file,
-        capture_exit_code=True,
+        workspace=f"{workspace}/rollouts",
     )
-    if err:
-        print(f"Failed to start tmux session: {err}")
-        return False
 
-    print(f"Test started in tmux session: {session}")
-    print(f"Log file: {log_file}")
+    print(f"Test started in tmux session: {job.tmux_session}")
+    print(f"Log file: {job.log_file}")
 
     # Stream logs until complete
     print("\n2. Running test (streaming logs)...")
     print("-" * 40)
-    monitor_config = LogStreamConfig(
-        session_name="tito-test",
-        log_file=log_file,
-        timeout_sec=1800,  # 30 min
-        poll_interval_sec=1.0,
+    success, exit_code, err = job_stream_until_complete(
+        client, job, timeout=1800, poll_interval=1.0
     )
-    success, exit_code, err = stream_log_until_complete(client, monitor_config)
     print("-" * 40)
 
     if success and exit_code == 0:
@@ -1168,10 +1110,10 @@ def run_tito_test(client, workspace: str) -> bool:
         return False
 
 
-def run_agent_loop_test(client, workspace: str) -> bool:
+def run_agent_loop_test(client: "BifrostClient", workspace: str) -> bool:
     """Run agent loop TI/TO integration test on remote GPU.
 
-    Uses tmux + log file pattern (like examples/rl) for reliable logging.
+    Uses bifrost submit() + job_stream_until_complete() for reliable execution.
 
     This test validates the full TI/TO integration through:
       agent_rollout_to_sample() -> run_agent() -> rollout() -> token-level providers
@@ -1191,35 +1133,29 @@ def run_agent_loop_test(client, workspace: str) -> bool:
     client.exec(f"mkdir -p {workspace}/rollouts/results")
     client.exec(f"cat > {script_path} << 'SCRIPT_EOF'\n{script_content}\nSCRIPT_EOF")
 
-    # Start test in tmux session
+    # Submit test job using new bifrost API
     print("\n1. Starting agent loop TI/TO test...")
-    cmd = f"PYTHONPATH={workspace}/rollouts:$PYTHONPATH uv run python {script_path}"
-
-    session, err = start_tmux_session(
-        client=client,
-        session_name="agent-loop-tito-test",
-        command=cmd,
-        workspace=f"{workspace}/rollouts",
+    job = client.submit(
+        ProcessSpec(
+            command="uv",
+            args=("run", "python", script_path),
+            cwd=f"{workspace}/rollouts",
+            env={"PYTHONPATH": f"{workspace}/rollouts:$PYTHONPATH"},
+        ),
+        name="agent-loop-tito-test",
         log_file=log_file,
-        capture_exit_code=True,
+        workspace=f"{workspace}/rollouts",
     )
-    if err:
-        print(f"Failed to start tmux session: {err}")
-        return False
 
-    print(f"Test started in tmux session: {session}")
-    print(f"Log file: {log_file}")
+    print(f"Test started in tmux session: {job.tmux_session}")
+    print(f"Log file: {job.log_file}")
 
     # Stream logs until complete
     print("\n2. Running test (streaming logs)...")
     print("-" * 40)
-    monitor_config = LogStreamConfig(
-        session_name="agent-loop-tito-test",
-        log_file=log_file,
-        timeout_sec=1800,  # 30 min
-        poll_interval_sec=1.0,
+    success, exit_code, err = job_stream_until_complete(
+        client, job, timeout=1800, poll_interval=1.0
     )
-    success, exit_code, err = stream_log_until_complete(client, monitor_config)
     print("-" * 40)
 
     if success and exit_code == 0:
@@ -1264,11 +1200,12 @@ def main():
     print(f"Model: {MODEL}")
     print(f"Tests: {args.test}")
 
-    client, instance = acquire_node_runpod_only(
+    # Use bifrost.acquire_node() for tri-modal node acquisition
+    provision_query = GPUQuery(type=args.gpu_type, count=1) if args.provision else None
+    client, instance = acquire_node(
         ssh=args.ssh,
         node_id=args.node_id,
-        provision=args.provision,
-        gpu_type=args.gpu_type,
+        provision=provision_query,
     )
 
     workspace = None
