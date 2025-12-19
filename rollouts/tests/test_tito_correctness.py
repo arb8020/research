@@ -273,7 +273,9 @@ def check_boundary_mismatch(
                 log_probs = F.log_softmax(logits, dim=-1, dtype=torch.float32)
                 wrong_logprob = log_probs[0, retok].item()
 
-            orig_logprob = generated_logprobs[i] if i < len(generated_logprobs) else 0.0
+            orig_lp = generated_logprobs[i] if i < len(generated_logprobs) else 0.0
+            # Handle case where logprob might be a list/tuple (top_logprobs)
+            orig_logprob = orig_lp[0] if isinstance(orig_lp, (list, tuple)) else orig_lp
             at_boundary = i < 5
             mismatches.append((i, orig, retok, orig_logprob, wrong_logprob, at_boundary))
 
@@ -355,7 +357,9 @@ def check_chat_template_mismatch(
                 log_probs = F.log_softmax(logits, dim=-1, dtype=torch.float32)
                 wrong_logprob = log_probs[0, retok].item()
 
-            orig_logprob = generated_logprobs[i] if i < len(generated_logprobs) else 0.0
+            orig_lp = generated_logprobs[i] if i < len(generated_logprobs) else 0.0
+            # Handle case where logprob might be a list/tuple (top_logprobs)
+            orig_logprob = orig_lp[0] if isinstance(orig_lp, (list, tuple)) else orig_lp
             mismatches.append((i, orig, retok, orig_logprob, wrong_logprob, True))  # All are boundary issues
 
     # === Check length mismatch (token merging/splitting) - THE REAL PROBLEM ===
@@ -395,7 +399,9 @@ def check_chat_template_mismatch(
                             logits = outputs.logits[:, -1, :]
                             log_probs = F.log_softmax(logits, dim=-1, dtype=torch.float32)
                             merged_logprob = log_probs[0, ret_tok].item()
-                            orig_logprob = generated_logprobs[i_gen] if i_gen < len(generated_logprobs) else 0.0
+                            orig_lp = generated_logprobs[i_gen] if i_gen < len(generated_logprobs) else 0.0
+                            # Handle case where logprob might be a list/tuple (top_logprobs)
+                            orig_logprob = orig_lp[0] if isinstance(orig_lp, (list, tuple)) else orig_lp
 
                         print(f"      Original first token logprob: {{orig_logprob:.2f}}")
                         print(f"      Merged token logprob: {{merged_logprob:.2f}}")
