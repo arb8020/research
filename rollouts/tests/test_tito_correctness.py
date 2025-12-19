@@ -21,11 +21,11 @@ Usage:
     # Reuse existing broker instance
     python tests/test_tito_correctness.py --node-id runpod:abc123
 
-    # Provision new instance (terminated after test)
+    # Provision new instance (kept alive by default for reuse)
     python tests/test_tito_correctness.py --provision
 
-    # Provision and keep alive for reuse
-    python tests/test_tito_correctness.py --provision --keep-alive
+    # Provision and terminate after test
+    python tests/test_tito_correctness.py --provision --cleanup
 """
 
 from __future__ import annotations
@@ -1240,7 +1240,7 @@ def main():
     node_group.add_argument("--provision", action="store_true", help="Provision new instance")
 
     parser.add_argument(
-        "--keep-alive", action="store_true", help="Don't terminate after completion"
+        "--cleanup", action="store_true", help="Terminate instance after completion (default: keep alive)"
     )
     parser.add_argument("--gpu-type", default="A100", help="GPU type (default: A100)")
 
@@ -1335,7 +1335,7 @@ def main():
                 except Exception:
                     pass
 
-        release_node(instance, keep_alive=args.keep_alive)
+        release_node(instance, keep_alive=not args.cleanup)
 
 
 if __name__ == "__main__":
