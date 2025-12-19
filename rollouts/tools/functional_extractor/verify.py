@@ -186,7 +186,9 @@ def setup_env(handle: GPUHandle, requirements: list[str]) -> str:
     Returns:
         Path to venv python binary
     """
-    from kerbal.python_env import setup_python_env
+    # TODO: Migrate to bifrost v2 API - kerbal has been deleted
+    # See bifrost.ProcessSpec + client.submit() for the new pattern
+    raise NotImplementedError("kerbal.python_env has been removed - migrate to bifrost v2 API")
 
     print("Setting up Python environment...")
 

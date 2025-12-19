@@ -43,8 +43,12 @@ load_dotenv()
 
 from bifrost import BifrostClient
 from broker import GPUClient
-from kerbal import submit
-from kerbal.protocol import DependencyConfig
+
+# TODO: Migrate to bifrost v2 API - kerbal has been deleted
+# See bifrost.ProcessSpec + client.submit() for the new pattern
+# from kerbal import submit
+# from kerbal.protocol import DependencyConfig
+raise NotImplementedError("kerbal has been removed - migrate to bifrost v2 API")
 
 if TYPE_CHECKING:
     from broker.client import ClientGPUInstance
