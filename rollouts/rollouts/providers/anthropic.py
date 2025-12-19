@@ -78,7 +78,8 @@ def _message_to_anthropic(m: Message, inline_thinking: str | None = None) -> dic
 
     # Validate message content - catch empty messages early
     # Tiger Style: Use assertions for programmer errors (bugs in our code)
-    if not m.content:
+    # Note: Empty string content IS valid for tool results (tool returned nothing)
+    if m.content is None or (isinstance(m.content, list) and len(m.content) == 0):
         import logging
 
         logger = logging.getLogger(__name__)
@@ -475,6 +476,11 @@ async def rollout_anthropic(
         base_url = actor.endpoint.api_base.rstrip("/v1").rstrip("/")
         client_kwargs["base_url"] = base_url
     client = AsyncAnthropic(**client_kwargs)
+    if actor.endpoint.oauth_token:
+        # Prevent SDK from sending X-Api-Key header alongside OAuth Bearer token.
+        # The SDK auto-reads ANTHROPIC_API_KEY from env, which causes both headers
+        # to be sent, resulting in API key billing instead of OAuth billing.
+        client.api_key = None
 
     # Transform messages for cross-provider compatibility (like pi-ai does)
     from rollouts.transform_messages import transform_messages
