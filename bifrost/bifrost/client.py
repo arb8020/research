@@ -610,9 +610,17 @@ class BifrostClient:
         if workspace is None:
             workspace = self._last_workspace or "~"
 
+        # Expand tilde in workspace path - tmux -c doesn't expand ~ like bash does
+        if workspace.startswith("~"):
+            workspace = self.expand_path(workspace)
+
         # Default log file
         if log_file is None:
             log_file = f"~/.bifrost/logs/{name}.log"
+
+        # Expand tilde in log_file for the same reason
+        if log_file.startswith("~"):
+            log_file = self.expand_path(log_file)
 
         # Ensure log directory exists
         self.exec(f"mkdir -p $(dirname {log_file})")
@@ -706,9 +714,17 @@ class BifrostClient:
         if workspace is None:
             workspace = self._last_workspace or "~"
 
+        # Expand tilde in workspace path - tmux -c doesn't expand ~ like bash does
+        if workspace.startswith("~"):
+            workspace = self.expand_path(workspace)
+
         # Default log file
         if log_file is None:
             log_file = f"~/.bifrost/logs/{name}.log"
+
+        # Expand tilde in log_file for the same reason
+        if log_file.startswith("~"):
+            log_file = self.expand_path(log_file)
 
         # Ensure log directory exists
         self.exec(f"mkdir -p $(dirname {log_file})")
