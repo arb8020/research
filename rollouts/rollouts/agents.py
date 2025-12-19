@@ -932,33 +932,15 @@ async def run_agent(
             await session_store.append_message(session.session_id, session_msg)
 
     elif session_store and current_state.session_id:
-        # Resuming existing session - persist only NEW messages added after resume.
-        #
-        # The trajectory is loaded from the session file via resume_session(), so
-        # messages 0..N should match the file. Only messages beyond N are new
-        # (e.g., user input added by interactive agent after resume).
-        #
-        # We compare counts and only persist the "tail" of truly new messages.
-        # To handle edge cases where indices might be off, we also check tool_call_id
-        # to avoid duplicate tool results.
+        # Resuming existing session - check for messages added since last persist
+        # (e.g., user added a new message before calling run_agent)
         session, _ = await session_store.get(current_state.session_id)
         if session:
             persisted_count = len(session.messages)
             current_count = len(current_state.actor.trajectory.messages)
-
             if current_count > persisted_count:
-                # Build set of persisted tool_call_ids to avoid duplicating tool results
-                persisted_tool_ids: set[str] = {
-                    msg.tool_call_id
-                    for msg in session.messages
-                    if msg.role == "tool" and msg.tool_call_id
-                }
-
-                # Persist messages beyond the persisted count, skipping any tool results
-                # that somehow got persisted already (handles interrupt race conditions)
+                # Persist the gap messages
                 for msg in current_state.actor.trajectory.messages[persisted_count:]:
-                    if msg.role == "tool" and msg.tool_call_id in persisted_tool_ids:
-                        continue  # Skip duplicate tool result
                     session_msg = _message_to_session_message(msg)
                     await session_store.append_message(current_state.session_id, session_msg)
 
