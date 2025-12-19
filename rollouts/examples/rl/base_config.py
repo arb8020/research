@@ -5,7 +5,6 @@ Provides run_remote() for deploying any RL training script to a remote GPU.
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,8 +18,7 @@ def run_remote(
 ) -> None:
     """Run training script on remote GPU via broker/bifrost.
 
-    Uses tmux + log file pattern for reliable logging even on crashes.
-    Based on kerbal/wafer_stuff patterns.
+    Uses bifrost submit() + job_stream_until_complete() for reliable execution.
 
     Args:
         script_path: Absolute path to the training script (__file__)
@@ -31,10 +29,7 @@ def run_remote(
     """
     from dotenv import load_dotenv
 
-    from bifrost.client import BifrostClient
-    from broker.client import GPUClient
-    from kerbal.job_monitor import LogStreamConfig, stream_log_until_complete
-    from kerbal.tmux import start_tmux_session
+    from bifrost import GPUQuery, ProcessSpec, acquire_node, job_stream_until_complete
 
     load_dotenv()
 
@@ -42,43 +37,26 @@ def run_remote(
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     run_name = f"run_{timestamp}"
 
-    # Get credentials
-    runpod_key = os.getenv("RUNPOD_API_KEY")
-    ssh_key_path = os.path.expanduser("~/.ssh/id_ed25519")
-
-    assert runpod_key, "RUNPOD_API_KEY required for remote execution"
-
-    client_gpu = GPUClient(
-        credentials={"runpod": runpod_key},
-        ssh_key_path=ssh_key_path,
-    )
-
-    # Get or provision GPU
+    # Acquire node using bifrost's tri-modal pattern
     if gpu_id:
-        provider, instance_id = gpu_id.split(":", 1)
-        instance = client_gpu.get_instance(instance_id, provider)
-        assert instance, f"Instance not found: {gpu_id}"
+        # Reuse existing instance
+        bifrost, instance = acquire_node(node_id=gpu_id)
+        print(f"Connected to existing instance: {gpu_id}")
     else:
+        # Provision new instance
         print("Provisioning 2x GPU...")
-        instance = client_gpu.create(
-            client_gpu.gpu_type.contains("A100") | client_gpu.gpu_type.contains("4090"),
-            gpu_count=2,
-            cloud_type="secure",
-            container_disk_gb=100,
-            sort=lambda x: x.price_per_hour,
-            min_cuda_version="12.8",  # Ensure compatible driver for PyTorch 2.x
+        bifrost, instance = acquire_node(
+            provision=GPUQuery(type="A100", count=2, min_cuda="12.8")
         )
-        print(f"Instance: {instance.provider}:{instance.id}")
-
-    print("Waiting for SSH...")
-    instance.wait_until_ssh_ready(timeout=600)
-
-    key_path = client_gpu.get_ssh_key_path(instance.provider)
-    bifrost = BifrostClient(instance.ssh_connection_string(), ssh_key_path=key_path)
+        if instance:
+            print(f"Instance: {instance.provider}:{instance.id}")
 
     # Compute relative path from repo root
     repo_root = Path(__file__).parent.parent.parent  # examples/rl/base_config.py -> repo root
     script_rel_path = Path(script_path).relative_to(repo_root)
+
+    workspace = None
+    remote_output_dir = None
 
     try:
         # Deploy code with bootstrap
@@ -95,42 +73,34 @@ def run_remote(
         bifrost.exec(f"mkdir -p {remote_output_dir}")
         training_log = f"{remote_output_dir}/training.log"
 
-        # Build command with run name passed via env var
-        print(f"Starting training run: {run_name}")
-        env_vars = f"PYTHONUNBUFFERED=1 ROLLOUTS_RUN_NAME={run_name}"
+        # Build environment variables
+        env_vars = {"PYTHONUNBUFFERED": "1", "ROLLOUTS_RUN_NAME": run_name}
         if use_tui or tui_debug:
-            env_vars += " ROLLOUTS_JSON_LOGS=true"
-        cmd = f"{env_vars} uv run python {script_rel_path}"
-        print(f"Command: {cmd}")
+            env_vars["ROLLOUTS_JSON_LOGS"] = "true"
 
-        session_name = "rl-training"
-        session, err = start_tmux_session(
-            client=bifrost,
-            session_name=session_name,
-            command=cmd,
+        # Submit training job using new bifrost API
+        print(f"Starting training run: {run_name}")
+        job = bifrost.submit(
+            ProcessSpec(
+                command="uv",
+                args=("run", "python", str(script_rel_path)),
+                cwd=f"{workspace}/rollouts",
+                env=env_vars,
+            ),
+            name="rl-training",
+            log_file=training_log,
             workspace=f"{workspace}/rollouts",
-            log_file=training_log,
-            capture_exit_code=True,
         )
-        if err:
-            print(f"Failed to start tmux session: {err}")
-            return
 
-        print(f"Training started in tmux session: {session}")
-        print(f"Log file: {training_log}")
-
-        # Stream logs until complete
-        monitor_config = LogStreamConfig(
-            session_name=session_name,
-            log_file=training_log,
-            timeout_sec=7200,  # 2 hours
-            poll_interval_sec=1.0,
-        )
+        print(f"Training started in tmux session: {job.tmux_session}")
+        print(f"Log file: {job.log_file}")
 
         if tui_debug:
-            # Just print raw output (stream_log_until_complete prints to stdout)
+            # Just print raw output
             print("-" * 50)
-            success, exit_code, err = stream_log_until_complete(bifrost, monitor_config)
+            success, exit_code, err = job_stream_until_complete(
+                bifrost, job, timeout=7200, poll_interval=1.0
+            )
             print("-" * 50)
             if not success:
                 print(f"Training failed: {err} (exit code: {exit_code})")
@@ -153,8 +123,8 @@ def run_remote(
                 def queue_line(line: str):
                     lines_queue.append(line)
 
-                stream_result = stream_log_until_complete(
-                    bifrost, monitor_config, on_line=queue_line
+                stream_result = job_stream_until_complete(
+                    bifrost, job, on_line=queue_line, timeout=7200, poll_interval=1.0
                 )
                 streaming_done.set()
 
@@ -192,7 +162,9 @@ def run_remote(
                 print(f"Training failed: {err} (exit code: {exit_code})")
         else:
             print("-" * 50)
-            success, exit_code, err = stream_log_until_complete(bifrost, monitor_config)
+            success, exit_code, err = job_stream_until_complete(
+                bifrost, job, timeout=7200, poll_interval=1.0
+            )
             print("-" * 50)
             if not success:
                 print(f"Training failed: {err} (exit code: {exit_code})")
@@ -208,29 +180,31 @@ def run_remote(
         local_run_dir.mkdir(parents=True, exist_ok=True)
 
         # Sync all run artifacts from the single run directory
-        files_to_sync = [
-            "training.log",
-            "config.json",
-            "rollouts.jsonl",
-            "sglang.log",
-            "vllm.log",
-        ]
+        if remote_output_dir:
+            files_to_sync = [
+                "training.log",
+                "config.json",
+                "rollouts.jsonl",
+                "sglang.log",
+                "vllm.log",
+            ]
 
-        for filename in files_to_sync:
-            try:
-                result = bifrost.download_files(
-                    remote_path=f"{remote_output_dir}/{filename}",
-                    local_path=str(local_run_dir / filename),
-                    recursive=False,
-                )
-                if result and result.success:
-                    print(f"  Synced: {run_name}/{filename}")
-            except Exception:
-                pass
+            for filename in files_to_sync:
+                try:
+                    result = bifrost.download_files(
+                        remote_path=f"{remote_output_dir}/{filename}",
+                        local_path=str(local_run_dir / filename),
+                        recursive=False,
+                    )
+                    if result and result.success:
+                        print(f"  Synced: {run_name}/{filename}")
+                except Exception:
+                    pass
 
-        if not keep_alive:
-            print(f"\nTerminating instance {instance.provider}:{instance.id}...")
-            instance.terminate()
-        else:
-            print(f"\nInstance kept alive: {instance.provider}:{instance.id}")
-            print(f"Reuse with: --gpu-id {instance.provider}:{instance.id}")
+        if instance:
+            if not keep_alive:
+                print(f"\nTerminating instance {instance.provider}:{instance.id}...")
+                instance.terminate()
+            else:
+                print(f"\nInstance kept alive: {instance.provider}:{instance.id}")
+                print(f"Reuse with: --gpu-id {instance.provider}:{instance.id}")
