@@ -104,13 +104,13 @@ def test_inference(config: BaseConfig) -> list[dict]:
     return results
 
 
-def run_remote(script_path: str, keep_alive: bool = False, gpu_id: str | None = None):
+def run_remote(script_path: str, keep_alive: bool = False, node_id: str | None = None):
     """Run script on remote GPU via broker/bifrost.
 
     Args:
         script_path: Path to the script (__file__ from caller)
         keep_alive: Keep GPU running after completion
-        gpu_id: Reuse existing GPU instance ID (skips provisioning)
+        node_id: Reuse existing instance ID (skips provisioning)
     """
     import os
 
@@ -139,11 +139,11 @@ def run_remote(script_path: str, keep_alive: bool = False, gpu_id: str | None = 
     gpu = None
 
     try:
-        if gpu_id:
-            print(f"Reusing GPU: {gpu_id}")
-            gpu = client.get_instance(gpu_id, provider="runpod")
+        if node_id:
+            print(f"Reusing instance: {node_id}")
+            gpu = client.get_instance(node_id, provider="runpod")
             if not gpu:
-                print(f"GPU {gpu_id} not found (is it still running?)")
+                print(f"GPU {node_id} not found (is it still running?)")
                 return
             keep_alive = True
         else:
@@ -193,10 +193,10 @@ def run_remote(script_path: str, keep_alive: bool = False, gpu_id: str | None = 
         if keep_alive:
             print()
             print("=" * 50)
-            print(f"GPU kept alive: {gpu.id}")
+            print(f"Instance kept alive: {gpu.id}")
             print(f"SSH: {gpu.ssh_connection_string()}")
             print()
-            print(f"Rerun with:   --gpu-id {gpu.id}")
+            print(f"Rerun with:   --node-id {gpu.id}")
             print(f"Terminate:    broker terminate {gpu.id}")
             print("=" * 50)
         else:

@@ -690,11 +690,10 @@ async def process_pending_tools(
         )
 
         # Add tool result message
+        # Always include content - it has structured stdout/stderr even on error
         result_message = Message(
             role="tool",
-            content=tool_result.content
-            if not tool_result.is_error
-            else f"Error: {tool_result.error}",
+            content=tool_result.content,
             tool_call_id=tool_call.id,
             details=tool_result.details,  # Include UI-only structured data
         )
@@ -933,17 +932,47 @@ async def run_agent(
             await session_store.append_message(session.session_id, session_msg)
 
     elif session_store and current_state.session_id:
-        # Resuming existing session - check for messages added since last persist
-        # (e.g., user added a new message before calling run_agent)
+        # Resuming existing session - sync trajectory with persisted state.
+        #
+        # The session file is the source of truth. When resuming after an interrupt,
+        # the trajectory might be out of sync with the file (messages persisted during
+        # the interrupted run may or may not be in the trajectory depending on timing).
+        #
+        # Strategy: Build a merged trajectory from file + any NEW messages in current trajectory.
+        # A message is "new" if it's not already in the file (by content/tool_call_id match).
         session, _ = await session_store.get(current_state.session_id)
         if session:
-            persisted_count = len(session.messages)
-            current_count = len(current_state.actor.trajectory.messages)
-            if current_count > persisted_count:
-                # Persist the gap messages
-                for msg in current_state.actor.trajectory.messages[persisted_count:]:
-                    session_msg = _message_to_session_message(msg)
-                    await session_store.append_message(current_state.session_id, session_msg)
+            # Build set of existing message signatures for dedup
+            existing_signatures: set[str] = set()
+            for msg in session.messages:
+                if msg.role == "tool" and msg.tool_call_id:
+                    existing_signatures.add(f"tool:{msg.tool_call_id}")
+                elif msg.role == "assistant":
+                    # Use first 200 chars of content as signature
+                    existing_signatures.add(f"assistant:{str(msg.content)[:200]}")
+                elif msg.role == "user":
+                    existing_signatures.add(f"user:{str(msg.content)[:200]}")
+
+            # Find truly new messages in trajectory (not in file)
+            new_messages = []
+            for msg in current_state.actor.trajectory.messages:
+                if msg.role == "tool" and msg.tool_call_id:
+                    sig = f"tool:{msg.tool_call_id}"
+                elif msg.role == "assistant":
+                    sig = f"assistant:{str(msg.content)[:200]}"
+                elif msg.role == "user":
+                    sig = f"user:{str(msg.content)[:200]}"
+                else:
+                    sig = f"{msg.role}:{str(msg.content)[:200]}"
+
+                if sig not in existing_signatures:
+                    new_messages.append(msg)
+                    existing_signatures.add(sig)  # Don't add same new message twice
+
+            # Persist only the truly new messages
+            for msg in new_messages:
+                session_msg = _message_to_session_message(msg)
+                await session_store.append_message(current_state.session_id, session_msg)
 
     # Notify environment of session start (for setup like git worktrees)
     if current_state.environment and current_state.session_id:

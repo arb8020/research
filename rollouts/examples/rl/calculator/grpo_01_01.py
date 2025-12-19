@@ -8,7 +8,7 @@ Run with:
     python examples/rl/calculator/grpo_01_01.py --remote
 
     # Reuse existing GPU
-    python examples/rl/calculator/grpo_01_01.py --gpu-id runpod:abc123
+    python examples/rl/calculator/grpo_01_01.py --node-id runpod:abc123
 """
 
 from examples.rl.calculator.base_config import train
@@ -38,18 +38,18 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Calculator GRPO training")
     parser.add_argument("--remote", action="store_true", help="Run on remote GPU")
     parser.add_argument("--keep-alive", action="store_true", help="Keep GPU after completion")
-    parser.add_argument("--gpu-id", type=str, help="Reuse existing GPU instance ID")
+    parser.add_argument("--node-id", type=str, help="Reuse existing instance ID")
     parser.add_argument("--tui", action="store_true", help="Show TUI monitor")
     parser.add_argument("--tui-debug", action="store_true", help="Print raw JSONL")
     args = parser.parse_args()
 
-    if args.remote or args.gpu_id:
+    if args.remote or args.node_id:
         from examples.rl.base_config import run_remote
 
         run_remote(
             __file__,
             keep_alive=args.keep_alive,
-            gpu_id=args.gpu_id,
+            node_id=args.node_id,
             use_tui=args.tui,
             tui_debug=args.tui_debug,
         )

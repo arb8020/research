@@ -460,6 +460,11 @@ def main() -> int:
         metavar="N",
         help="Remove last N messages from session (creates new fixed session)",
     )
+    parser.add_argument(
+        "--fix",
+        action="store_true",
+        help="Auto-fix detected issues (duplicate tool results, etc.)",
+    )
 
     args = parser.parse_args()
 
@@ -549,7 +554,7 @@ def main() -> int:
         return trio.run(export_action)
 
     # Doctor (session repair/diagnostics)
-    if args.doctor or args.trim is not None:
+    if args.doctor or args.trim is not None or args.fix:
         session_store = FileSessionStore()
 
         async def doctor_action() -> int:
@@ -586,6 +591,92 @@ def main() -> int:
             print(f"  Status: {session.status.value}")
             if session.parent_id:
                 print(f"  Parent: {session.parent_id}")
+
+            # Diagnose issues
+            issues: list[tuple[str, str, list[int]]] = []  # (issue_type, description, affected_indices)
+
+            # Check for duplicate tool results
+            tool_result_ids: dict[str, list[int]] = {}
+            for i, msg in enumerate(session.messages):
+                if msg.role == "tool" and msg.tool_call_id:
+                    if msg.tool_call_id not in tool_result_ids:
+                        tool_result_ids[msg.tool_call_id] = []
+                    tool_result_ids[msg.tool_call_id].append(i)
+
+            duplicate_results = {k: v for k, v in tool_result_ids.items() if len(v) > 1}
+            if duplicate_results:
+                for tool_id, indices in duplicate_results.items():
+                    issues.append((
+                        "duplicate_tool_result",
+                        f"Tool result '{tool_id[:20]}...' appears {len(indices)} times at messages {indices}",
+                        indices[1:],  # Keep first, remove rest
+                    ))
+
+            # Check for orphaned tool results (no matching tool_use)
+            tool_call_ids: set[str] = set()
+            for msg in session.messages:
+                if msg.role == "assistant" and isinstance(msg.content, list):
+                    for block in msg.content:
+                        if isinstance(block, dict) and block.get("type") == "toolCall":
+                            tool_call_ids.add(block.get("id", ""))
+
+            for i, msg in enumerate(session.messages):
+                if msg.role == "tool" and msg.tool_call_id:
+                    if msg.tool_call_id not in tool_call_ids:
+                        issues.append((
+                            "orphaned_tool_result",
+                            f"Tool result '{msg.tool_call_id[:20]}...' at message {i} has no matching tool_use",
+                            [i],
+                        ))
+
+            # Check for oversized messages
+            for i, msg in enumerate(session.messages):
+                content_len = len(str(msg.content))
+                if content_len > 100_000:  # 100KB
+                    issues.append((
+                        "oversized_message",
+                        f"Message {i} ({msg.role}) is {content_len:,} chars ({content_len // 4:,} est. tokens)",
+                        [i],
+                    ))
+
+            if issues:
+                print(f"\n⚠️  Found {len(issues)} issue(s):")
+                for issue_type, desc, _ in issues:
+                    print(f"  [{issue_type}] {desc}")
+
+            # Auto-fix if requested
+            if args.fix and issues:
+                # Collect indices to remove (duplicates, not oversized - those need --trim)
+                indices_to_remove: set[int] = set()
+                for issue_type, _, affected in issues:
+                    if issue_type in ("duplicate_tool_result", "orphaned_tool_result"):
+                        indices_to_remove.update(affected)
+
+                if indices_to_remove:
+                    # Create new session with fixed messages
+                    fixed_messages = [
+                        msg for i, msg in enumerate(session.messages)
+                        if i not in indices_to_remove
+                    ]
+
+                    new_session = await session_store.create(
+                        endpoint=session.endpoint,
+                        environment=session.environment,
+                        parent_id=session.session_id,
+                        branch_point=len(fixed_messages),
+                        tags={"doctor": "fixed", "removed_indices": str(sorted(indices_to_remove))},
+                    )
+
+                    for msg in fixed_messages:
+                        await session_store.append_message(new_session.session_id, msg)
+
+                    print(f"\nCreated fixed session: {new_session.session_id}")
+                    print(f"  Removed {len(indices_to_remove)} message(s) at indices: {sorted(indices_to_remove)}")
+                    print(f"  Parent: {session.session_id}")
+                    print(f"\nResume with: rollouts --session {new_session.session_id}")
+                    return 0
+                else:
+                    print("\nNo auto-fixable issues found. Use --trim N for oversized messages.")
 
             # Show last few messages summary
             if session.messages:

@@ -12,7 +12,7 @@ from pathlib import Path
 def run_remote(
     script_path: str,
     keep_alive: bool = False,
-    gpu_id: str | None = None,
+    node_id: str | None = None,
     use_tui: bool = False,
     tui_debug: bool = False,
 ) -> None:
@@ -23,7 +23,7 @@ def run_remote(
     Args:
         script_path: Absolute path to the training script (__file__)
         keep_alive: Keep GPU after completion
-        gpu_id: Reuse existing GPU instance (format: "provider:instance_id")
+        node_id: Reuse existing instance (format: "provider:instance_id")
         use_tui: Show TUI monitor for logs
         tui_debug: Print raw JSONL instead of TUI (for debugging)
     """
@@ -38,10 +38,10 @@ def run_remote(
     run_name = f"run_{timestamp}"
 
     # Acquire node using bifrost's tri-modal pattern
-    if gpu_id:
+    if node_id:
         # Reuse existing instance
-        bifrost, instance = acquire_node(node_id=gpu_id)
-        print(f"Connected to existing instance: {gpu_id}")
+        bifrost, instance = acquire_node(node_id=node_id)
+        print(f"Connected to existing instance: {node_id}")
     else:
         # Provision new instance
         print("Provisioning 2x GPU...")
@@ -207,4 +207,4 @@ def run_remote(
                 instance.terminate()
             else:
                 print(f"\nInstance kept alive: {instance.provider}:{instance.id}")
-                print(f"Reuse with: --gpu-id {instance.provider}:{instance.id}")
+                print(f"Reuse with: --node-id {instance.provider}:{instance.id}")
