@@ -26,11 +26,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--remote", action="store_true", help="Run on remote GPU")
     parser.add_argument("--keep-alive", action="store_true", help="Keep GPU after completion")
-    parser.add_argument("--gpu-id", type=str, help="Reuse existing GPU instance ID")
+    parser.add_argument("--node-id", type=str, help="Reuse existing instance ID")
     args = parser.parse_args()
 
-    if args.remote or args.gpu_id:
-        run_remote(__file__, keep_alive=args.keep_alive, gpu_id=args.gpu_id)
+    if args.remote or args.node_id:
+        run_remote(__file__, keep_alive=args.keep_alive, node_id=args.node_id)
     else:
         metrics = train(config)
         if metrics:
