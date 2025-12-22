@@ -129,7 +129,7 @@ EVAL_PANES = (
     PaneConfig.create("Eval", ["eval", "kernelbench", "research"]),
     PaneConfig.create("Modal", ["modal"]),
     PaneConfig.create("Metrics", ["metrics"], is_metrics=True),
-    PaneConfig.create("Agent", ["agent", "rollout"], is_traces=True),
+    PaneConfig.create("Agent", ["agent", "agents", "rollout", "rollouts"]),
 )
 
 
