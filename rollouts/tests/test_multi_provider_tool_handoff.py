@@ -20,7 +20,6 @@ import os
 
 import pytest
 import trio
-from rollouts.transform_messages import transform_messages
 
 from rollouts import (
     Actor,
@@ -35,6 +34,7 @@ from rollouts import (
     run_agent,
     stdout_handler,
 )
+from rollouts.transform_messages import transform_messages
 
 
 def get_endpoint(provider: str, model: str, api_key: str, api_base: str = "") -> Endpoint:

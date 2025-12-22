@@ -288,7 +288,6 @@ async def _grpo_train_async(
             async def generate_fn(batch_prompts: list[dict], **kwargs: Any) -> list:
                 """Generate samples using TI/TO (token-level) providers."""
                 from rollouts.dtypes import Actor, Message, Trajectory
-                from rollouts.training.types import Sample, Status
 
                 results = []
                 for prompt_data in batch_prompts:
@@ -552,7 +551,7 @@ def _trajectory_to_samples_tito(
     tokenizer: Any,
     strategy: str = "interleaved",
     metadata: dict[str, Any] | None = None,
-) -> list["Sample"]:
+) -> list[Sample]:
     """Convert TI/TO trajectory to training sample(s) based on strategy.
 
     This function is specialized for TI/TO mode where:
@@ -580,7 +579,7 @@ def _trajectory_to_sample_tito_interleaved(
     trajectory: Any,
     tokenizer: Any,
     metadata: dict[str, Any] | None = None,
-) -> "Sample":
+) -> Sample:
     """Convert TI/TO trajectory to single sample (interleaved strategy)."""
     from rollouts.training.types import Sample, Status
 
@@ -661,7 +660,7 @@ def _trajectory_to_samples_tito_branching(
     trajectory: Any,
     tokenizer: Any,
     metadata: dict[str, Any] | None = None,
-) -> list["Sample"]:
+) -> list[Sample]:
     """Convert TI/TO trajectory to samples using branching strategy.
 
     Each assistant turn becomes a separate sample:

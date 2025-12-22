@@ -5,8 +5,8 @@ Uses read_module_source() to get the actual forward() implementation.
 """
 from __future__ import annotations
 
-import sys
 import os
+import sys
 
 # Add parent dir to path
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -17,6 +17,7 @@ if script_dir not in sys.path:
 def main():
     import torch
     from transformers import AutoConfig, AutoModelForCausalLM
+
     from tools import read_module_source
 
     print("Loading GLM-4.5 config...")

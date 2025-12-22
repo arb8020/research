@@ -122,6 +122,18 @@ MODELS: dict[Provider, dict[str, ModelMetadata]] = {
             context_window=128000,
             max_tokens=16384,
         ),
+        "gpt-5.2-2025-12-11": ModelMetadata(
+            id="gpt-5.2-2025-12-11",
+            name="GPT-5.2",
+            provider="openai",
+            api="openai-responses",
+            base_url="https://api.openai.com/v1",
+            reasoning=True,
+            input_types=["text", "image"],
+            cost=ModelCost(input=5.0, output=15.0, cache_read=1.25, cache_write=1.25),
+            context_window=400000,
+            max_tokens=32768,
+        ),
         "o1": ModelMetadata(
             id="o1",
             name="o1",

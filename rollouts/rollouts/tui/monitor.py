@@ -97,6 +97,42 @@ class LogLine:
     extra: dict = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class PaneConfig:
+    """Configuration for a monitor pane."""
+
+    name: str
+    route_patterns: tuple[str, ...]  # logger name patterns to match (lowercase)
+    is_metrics: bool = False  # show sparklines/charts instead of logs
+    is_traces: bool = False  # show trace viewer
+
+    @classmethod
+    def create(
+        cls,
+        name: str,
+        patterns: list[str],
+        is_metrics: bool = False,
+        is_traces: bool = False,
+    ) -> "PaneConfig":
+        return cls(name, tuple(p.lower() for p in patterns), is_metrics, is_traces)
+
+
+# Preset pane configurations
+RL_TRAINING_PANES = (
+    PaneConfig.create("Training", ["training", "grpo", "sft"]),
+    PaneConfig.create("SGLang", ["sglang", "vllm"]),
+    PaneConfig.create("Metrics", ["metrics"], is_metrics=True),
+    PaneConfig.create("Traces", ["rollout"], is_traces=True),
+)
+
+EVAL_PANES = (
+    PaneConfig.create("Eval", ["eval", "kernelbench", "research"]),
+    PaneConfig.create("Modal", ["modal"]),
+    PaneConfig.create("Metrics", ["metrics"], is_metrics=True),
+    PaneConfig.create("Agent", ["agent", "rollout"], is_traces=True),
+)
+
+
 @dataclass
 class Pane:
     """A scrollable log pane."""
@@ -148,16 +184,21 @@ class Pane:
 class TrainingMonitor:
     """Multi-pane TUI for monitoring training logs."""
 
-    def __init__(self, rollouts_path: str | None = None) -> None:
+    def __init__(
+        self,
+        rollouts_path: str | None = None,
+        pane_configs: tuple[PaneConfig, ...] | None = None,
+    ) -> None:
         self.terminal = Terminal(use_alternate_screen=True)
-        self.panes = {
-            "training": Pane(name="Training"),
-            "sglang": Pane(name="SGLang"),
-            "metrics": Pane(name="Metrics"),
-            "traces": Pane(name="Traces"),
-        }
-        self.pane_order = ["training", "sglang", "metrics", "traces"]
-        self.active_pane = "training"
+
+        # Use provided pane configs or default to RL training panes
+        self.pane_configs = pane_configs or RL_TRAINING_PANES
+
+        # Create panes from configs
+        self.panes = {cfg.name.lower(): Pane(name=cfg.name) for cfg in self.pane_configs}
+        self.pane_order = [cfg.name.lower() for cfg in self.pane_configs]
+        self.active_pane = self.pane_order[0]
+
         self._running = False
         self._needs_redraw = True
         self._stdin_buffer = ""
@@ -171,18 +212,23 @@ class TrainingMonitor:
         self._rollouts_path = rollouts_path  # Path to rollouts.jsonl
         self._trace_data: TraceData | None = None
 
+    def _get_active_pane_config(self) -> PaneConfig:
+        """Get the PaneConfig for the currently active pane."""
+        for cfg in self.pane_configs:
+            if cfg.name.lower() == self.active_pane:
+                return cfg
+        return self.pane_configs[0]
+
     def route_log_line(self, line: LogLine) -> str:
         """Route log line to appropriate pane based on logger name."""
-        logger = line.logger.lower()
+        logger_lower = line.logger.lower()
 
-        if "sglang" in logger or "vllm" in logger:
-            return "sglang"
-        elif "metrics" in logger:
-            return "metrics"
-        elif "rollout" in logger:
-            return "traces"
-        else:
-            return "training"
+        for cfg in self.pane_configs:
+            if any(pattern in logger_lower for pattern in cfg.route_patterns):
+                return cfg.name.lower()
+
+        # Default to first pane
+        return self.pane_order[0]
 
     def feed_line(self, raw: str) -> None:
         """Feed a single line to the monitor (for use with kerbal callback).
@@ -345,6 +391,7 @@ class TrainingMonitor:
 
     def _handle_input(self, data: str) -> None:
         pane = self.panes[self.active_pane]
+        pane_config = self._get_active_pane_config()
         content_height = self.terminal.rows - 3  # header + footer + tab bar
 
         # Quit
@@ -352,35 +399,29 @@ class TrainingMonitor:
             self._running = False
             return
 
-        # Pane switching
-        if data == "1":
-            self.active_pane = "training"
-            self._needs_redraw = True
-        elif data == "2":
-            self.active_pane = "sglang"
-            self._needs_redraw = True
-        elif data == "3":
-            self.active_pane = "metrics"
-            self._needs_redraw = True
-        elif data == "4":
-            self.active_pane = "traces"
-            self._needs_redraw = True
+        # Pane switching (1-9 for up to 9 panes)
+        if data in "123456789":
+            idx = int(data) - 1
+            if idx < len(self.pane_order):
+                self.active_pane = self.pane_order[idx]
+                self._needs_redraw = True
+            return
 
         # Open trace viewer when on traces pane
-        elif data in ("\r", "\n") and self.active_pane == "traces":
+        if data in ("\r", "\n") and pane_config.is_traces:
             self._open_trace_viewer()
             return
 
         # Scrolling - metrics pane scrolls through charts, others scroll logs
-        elif data in ("j", "\x1b[B"):  # Down
-            if self.active_pane == "metrics" and self._metrics:
+        if data in ("j", "\x1b[B"):  # Down
+            if pane_config.is_metrics and self._metrics:
                 # Scroll to next metric chart
                 self._selected_metric = min(self._selected_metric + 1, len(self._metrics) - 1)
             else:
                 pane.scroll_down(1, content_height)
             self._needs_redraw = True
         elif data in ("k", "\x1b[A"):  # Up
-            if self.active_pane == "metrics" and self._metrics:
+            if pane_config.is_metrics and self._metrics:
                 # Scroll to previous metric chart
                 self._selected_metric = max(self._selected_metric - 1, 0)
             else:
@@ -460,6 +501,7 @@ class TrainingMonitor:
         width = self.terminal.columns
         height = self.terminal.rows
         content_height = height - 3  # tab bar + header + footer
+        pane_config = self._get_active_pane_config()
 
         self.terminal.clear_screen()
 
@@ -469,7 +511,7 @@ class TrainingMonitor:
         output.append(self._render_tab_bar(width))
 
         # Content - special handling for metrics and traces panes
-        if self.active_pane == "metrics" and self._metrics:
+        if pane_config.is_metrics and self._metrics:
             # Use plotext chart (takes most of the space)
             chart_height = min(content_height - 5, 15)  # Leave room for log lines
             chart_lines = self._render_plotext_chart(width, chart_height)
@@ -483,7 +525,7 @@ class TrainingMonitor:
             for log_line in visible_lines:
                 output.extend(self._render_log_line(log_line, width, pane.h_scroll, pane.wrap))
 
-        elif self.active_pane == "traces":
+        elif pane_config.is_traces:
             # Traces pane shows summary and prompt to open viewer
             output.extend(self._render_traces_summary(width, content_height))
 
@@ -701,23 +743,31 @@ class TrainingMonitor:
     def _render_footer(self, width: int) -> str:
         """Render footer with keybindings and scroll position."""
         pane = self.panes[self.active_pane]
+        pane_config = self._get_active_pane_config()
         content_height = self.terminal.rows - 3
 
+        # Build pane switching hint based on number of panes
+        num_panes = len(self.pane_order)
+        if num_panes <= 4:
+            pane_hint = "/".join(str(i + 1) for i in range(num_panes)) + ":pane"
+        else:
+            pane_hint = f"1-{num_panes}:pane"
+
         # Different hints for each pane type
-        if self.active_pane == "metrics" and self._metrics:
-            hints = "1/2/3/4:pane  j/k:chart  q:quit"
-        elif self.active_pane == "traces":
-            hints = "1/2/3/4:pane  Enter:view traces  q:quit"
+        if pane_config.is_metrics and self._metrics:
+            hints = f"{pane_hint}  j/k:chart  q:quit"
+        elif pane_config.is_traces:
+            hints = f"{pane_hint}  Enter:view traces  q:quit"
         else:
             wrap_hint = "w:truncate" if pane.wrap else "h/l:scroll  w:wrap"
-            hints = f"1/2/3/4:pane  j/k:scroll  {wrap_hint}  q:quit"
+            hints = f"{pane_hint}  j/k:scroll  {wrap_hint}  q:quit"
 
         # Position indicator depends on pane type
-        if self.active_pane == "metrics" and self._metrics:
+        if pane_config.is_metrics and self._metrics:
             metric_names = sorted(self._metrics.keys())
             total_metrics = len(metric_names)
             pos = f"chart {self._selected_metric + 1}/{total_metrics}"
-        elif self.active_pane == "traces":
+        elif pane_config.is_traces:
             if self._trace_data and self._trace_data.steps:
                 total_rollouts = sum(s.num_rollouts for s in self._trace_data.steps)
                 pos = f"{total_rollouts} rollouts"
@@ -740,6 +790,12 @@ class TrainingMonitor:
         )
 
 
+PANE_PRESETS = {
+    "rl": RL_TRAINING_PANES,
+    "eval": EVAL_PANES,
+}
+
+
 def main() -> None:
     """Entry point for CLI."""
     import argparse
@@ -750,9 +806,17 @@ def main() -> None:
         type=str,
         help="Path to rollouts.jsonl file for trace viewing",
     )
+    parser.add_argument(
+        "--preset",
+        type=str,
+        choices=list(PANE_PRESETS.keys()),
+        default="rl",
+        help="Pane layout preset: rl (default) or eval",
+    )
     args = parser.parse_args()
 
-    monitor = TrainingMonitor(rollouts_path=args.rollouts)
+    pane_configs = PANE_PRESETS[args.preset]
+    monitor = TrainingMonitor(rollouts_path=args.rollouts, pane_configs=pane_configs)
     monitor.run()
 
 

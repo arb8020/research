@@ -68,11 +68,11 @@ class Theme:
     input_gutter: str = "> "  # Input box prefix
 
     # Markdown
-    md_heading: str = "#f0c674"  # Golden
+    md_heading: str = "#ffffff"  # White (Claude Code style - just bold)
     md_link: str = "#81a2be"
     md_link_url: str = "#666666"
-    md_code: str = "#ffff00"
-    md_code_block: str = "#ffff00"
+    md_code: str = "#b1b9f9"  # Lavender (Claude Code style)
+    md_code_block: str = "#b1b9f9"  # Lavender (Claude Code style)
     md_code_border: str = "#666666"
     md_quote: str = "#cccccc"
     md_quote_border: str = "#00d7ff"

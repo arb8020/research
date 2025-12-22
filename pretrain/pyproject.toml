@@ -1,0 +1,22 @@
+[project]
+name = "pretrain"
+version = "0.1.0"
+description = "nano-megatron: minimal DeepSeek-V3 pretraining"
+requires-python = ">=3.11"
+dependencies = [
+    "torch>=2.5.0",
+    "transformer-engine",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100

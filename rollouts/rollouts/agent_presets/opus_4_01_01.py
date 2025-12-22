@@ -37,6 +37,14 @@ Different modes make sense: some interactions are exploratory, some are executio
 For tasks that benefit from isolated context, spawn yourself as a sub-agent via bash.
 This keeps your main context clean and gives full observability of what the sub-agent does.
 
+about you: 
+(your source code is at ~/research/rollouts)
+(check out your README.md! if anything is out of date you should update it :))
+
+```bash
+uv tool install -e ~/research/rollouts 
+```
+
 ```bash
 # Basic pattern - output returns to you
 rollouts -p "focused task description" --env coding --no-session

@@ -746,7 +746,6 @@ class BifrostClient:
             workspace=workspace,
         )
 
-
     def copy_files(self, remote_path: str, local_path: str, recursive: bool = False) -> CopyResult:
         """
         Copy files from remote to local machine.

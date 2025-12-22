@@ -999,6 +999,37 @@ async def run_agent(
                 current_state, "final", run_config, current_state.session_id
             )
 
+            # Add "interrupted" tool results for any pending tool calls
+            # This ensures session state is valid on resume (every tool call has a result)
+            if current_state.pending_tool_calls:
+                interrupted_messages = []
+                for tool_call in current_state.pending_tool_calls[current_state.next_tool_idx :]:
+                    interrupted_msg = Message(
+                        role="tool",
+                        content="[interrupted]",
+                        tool_call_id=tool_call.id,
+                    )
+                    interrupted_messages.append(interrupted_msg)
+
+                    # Persist to session store
+                    if session_store and current_state.session_id:
+                        session_msg = _message_to_session_message(interrupted_msg)
+                        await session_store.append_message(current_state.session_id, session_msg)
+
+                # Update in-memory trajectory so TUI has valid state
+                if interrupted_messages:
+                    updated_trajectory = replace(
+                        current_state.actor.trajectory,
+                        messages=current_state.actor.trajectory.messages + interrupted_messages,
+                    )
+                    current_state = replace(
+                        current_state,
+                        actor=replace(current_state.actor, trajectory=updated_trajectory),
+                        pending_tool_calls=[],  # Clear pending since we added results
+                    )
+                    # Update the state in the list we're returning
+                    states[-1] = current_state
+
             # Save session with aborted status
             if session_store and current_state.session_id:
                 env_state = None

@@ -11,7 +11,7 @@ from shared.config import create_env_template, discover_ssh_keys, get_ssh_key_pa
 from shared.logging_config import setup_logging
 
 from bifrost.client import BifrostClient
-from bifrost.job import job_logs, job_status, job_stream_logs
+from bifrost.job import job_logs, job_stream_logs
 from bifrost.types import ProcessSpec
 
 console = Console()

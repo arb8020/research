@@ -152,17 +152,8 @@ class ProcessSpec:
     command: str
     args: tuple[str, ...] = ()
     cwd: str | None = None
-    env: frozenset[tuple[str, str]] = frozenset()
+    env: dict[str, str] = field(default_factory=dict)  # dict for ergonomics
     gpu_ids: tuple[int, ...] | None = None
-
-    def with_env(self, **kwargs) -> "ProcessSpec":
-        """Return new spec with additional env vars."""
-        new_env = dict(self.env) | kwargs
-        return replace(self, env=frozenset(new_env.items()))
-
-    def with_cwd(self, cwd: str) -> "ProcessSpec":
-        """Return new spec with different cwd."""
-        return replace(self, cwd=cwd)
 
 
 @dataclass(frozen=True)
@@ -420,6 +411,20 @@ job_stream_logs(session, job)
 **ProcessSpec vs command strings**: `submit()` takes a `ProcessSpec` for structured command building. See `docs/design/bifrost_v2.md` lines 249-272 for the full `ProcessSpec` definition. The existing `run_detached()` takes raw command strings and can stay for simple cases. `submit()` is the new primary API.
 
 **Relationship to bifrost_v2.md**: That doc has the full bifrost design including `ProcessSpec`, layer architecture, and kerbal absorption plan. This doc (infrastructure_layers.md) focuses on the three-layer view (bifrost → miniray → pipeline RL) and the functions-over-classes refactor. The main update to bifrost_v2.md: `JobHandle`/`ServerHandle` should be frozen `JobInfo`/`ServerInfo` + pure functions (not classes with methods).
+
+**JobInfo is identifier-only**: The new frozen `JobInfo` contains only identifiers (name, tmux_session, log_file, workspace). Status comes from calling `job_status(session, job)`. No cached state on the dataclass.
+
+**submit() replaces run_detached()**: Same underlying tmux mechanism, better interface. `run_detached()` can stay temporarily for backwards compat but `submit()` is the new API.
+
+**ProcessSpec.env uses dict[str, str]**: The `frozenset[tuple[str, str]]` in bifrost_v2.md was over-engineered. Use regular dict for ergonomics - frozen dataclass + dict is fine.
+
+**GPUQuery defined in bifrost/provision.py**: It's a bifrost concern (what you want) not a broker concern (how to get it). `acquire_node()` internally calls broker APIs.
+
+**Phase A validation**: Phase A just adds new API. Validation = imports work without error. The tito test validation happens after Phase B migrates the test to use new API.
+
+**Jobs and servers together**: Both `submit()` → `JobInfo` and `serve()` → `ServerInfo` are in scope for Phase A. Same pattern, both used by tito test and RL examples.
+
+**Delete legacy methods after grep**: Run `grep -rn "get_job_status\|get_all_jobs\|submit_job" --include="*.py"` first. If only defined (not called), delete.
 
 ---
 

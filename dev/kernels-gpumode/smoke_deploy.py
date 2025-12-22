@@ -35,8 +35,9 @@ import logging
 import sys
 from pathlib import Path
 
-from bifrost.client import BifrostClient
 from kerbal import DependencyConfig, setup_script_deps
+
+from bifrost.client import BifrostClient
 
 # Import shared logging
 from shared.logging_config import setup_logging

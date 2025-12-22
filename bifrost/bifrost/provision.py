@@ -53,7 +53,7 @@ def acquire_node(
     provision: GPUQuery | None = None,
     ssh_key_path: str | None = None,
     ssh_timeout: int = 600,
-) -> tuple["BifrostClient", "ClientGPUInstance | None"]:
+) -> tuple[BifrostClient, ClientGPUInstance | None]:
     """Acquire a node and return a BifrostClient.
 
     Tri-modal acquisition:

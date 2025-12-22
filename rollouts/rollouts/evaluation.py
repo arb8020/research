@@ -7,7 +7,7 @@ Tiger Style: Pure functions, explicit configuration, no hidden state.
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -19,129 +19,21 @@ from .agents import run_agent
 from .dtypes import (
     Actor,
     AgentState,
-    Endpoint,
     Environment,
     EvalConfig,
-    Message,
     Metric,
     RunConfig,
-    Sample,
     Score,
     StreamChunk,
     Trajectory,
 )
 from .progress import tqdm
+from .training.types import Sample
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class EvalSample:
-    """A single evaluation sample with its result.
-
-    Attributes:
-        sample_id: Unique identifier for this sample
-        input_data: Raw input data from dataset
-        trajectory: Full agent execution trace
-        agent_states: List of agent states from run_agent
-        score: Structured score with metrics breakdown
-        metadata: Execution metadata (turns, tokens, status, etc.)
-        timestamp: When this sample was evaluated
-    """
-
-    sample_id: str
-    input_data: dict[str, Any]
-    trajectory: Trajectory
-    agent_states: list[AgentState]
-    score: Score | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
-
-    def to_json(self) -> str:
-        """Serialize to JSON."""
-        # Manually construct dict to avoid deep copying unpicklable objects (e.g., RLocks in environments)
-
-        # Serialize Score if present
-        score_data = None
-        if self.score is not None:
-            score_data = {
-                "metrics": [
-                    {"name": m.name, "value": m.value, "weight": m.weight, "metadata": m.metadata}
-                    for m in self.score.metrics
-                ],
-                "reward": self.score.reward,
-            }
-
-        data = {
-            "sample_id": self.sample_id,
-            "input_data": self.input_data,
-            "trajectory": json.loads(self.trajectory.to_json()),
-            "agent_states": [],
-            "score": score_data,
-            "metadata": self.metadata,
-            "timestamp": self.timestamp,
-        }
-
-        # Serialize agent states carefully, excluding unpicklable environment objects
-        for state in self.agent_states:
-            state_dict = {
-                "actor": asdict(state.actor)
-                if hasattr(state.actor, "__dataclass_fields__")
-                else str(state.actor),
-                "environment": None,  # Skip environment - contains unpicklable objects like RLocks
-                "stop": asdict(state.stop)
-                if state.stop and hasattr(state.stop, "__dataclass_fields__")
-                else str(state.stop)
-                if state.stop
-                else None,
-                "turn_idx": state.turn_idx,
-                "pending_tool_calls": [
-                    asdict(tc) if hasattr(tc, "__dataclass_fields__") else str(tc)
-                    for tc in state.pending_tool_calls
-                ],
-                "next_tool_idx": state.next_tool_idx,
-                "timestamp": state.timestamp,
-            }
-            data["agent_states"].append(state_dict)
-
-        # Sanitize all API keys recursively
-        data = sanitize_api_keys(data)
-        return json.dumps(data, indent=2, default=str)  # default=str handles datetime objects
-
-    @staticmethod
-    def from_json(json_str: str) -> "EvalSample":
-        """Deserialize from JSON."""
-        data = json.loads(json_str)
-        data["trajectory"] = Trajectory.from_json(json.dumps(data["trajectory"]))
-
-        # Deserialize Score if present
-        score_data = data.pop("score", None)
-        if score_data is not None:
-            metrics = tuple(
-                Metric(
-                    name=m["name"],
-                    value=m["value"],
-                    weight=m.get("weight", 0.0),
-                    metadata=m.get("metadata", {}),
-                )
-                for m in score_data["metrics"]
-            )
-            data["score"] = Score(metrics=metrics)
-
-        # Note: Full AgentState deserialization would require complex reconstruction
-        # For now, store as simplified data for analysis
-        data["agent_states"] = data.get("agent_states", [])
-
-        # Only keep expected fields
-        return EvalSample(
-            sample_id=data["sample_id"],
-            input_data=data["input_data"],
-            trajectory=data["trajectory"],
-            agent_states=data["agent_states"],
-            score=data.get("score"),
-            metadata=data.get("metadata", {}),
-            timestamp=data.get("timestamp", datetime.now().isoformat()),
-        )
+# EvalSample deleted - use Sample from training.types instead
 
 
 @dataclass
@@ -152,7 +44,7 @@ class EvalReport:
     dataset_path: str
     total_samples: int
     summary_metrics: dict[str, float]
-    sample_results: list[EvalSample]
+    sample_results: list[Sample]
     config: dict[str, Any]
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
@@ -165,8 +57,10 @@ class EvalReport:
         samples_dir = output_dir / "samples"
         samples_dir.mkdir(exist_ok=True)
         for sample in self.sample_results:
-            sample_file = samples_dir / f"{sample.sample_id}.json"
-            sample_file.write_text(sample.to_json())
+            sample_file = samples_dir / f"{sample.id}.json"
+            sample_dict = sample.to_dict()
+            sample_dict = sanitize_api_keys(sample_dict)
+            sample_file.write_text(json.dumps(sample_dict, indent=2, default=str))
 
         # Save summary report
         summary = {
@@ -176,7 +70,7 @@ class EvalReport:
             "summary_metrics": self.summary_metrics,
             "config": self.config,
             "timestamp": self.timestamp,
-            "sample_ids": [s.sample_id for s in self.sample_results],
+            "sample_ids": [s.id for s in self.sample_results],
         }
         # Sanitize API keys in the summary before saving
         summary = sanitize_api_keys(summary)
@@ -187,64 +81,14 @@ class EvalReport:
         trajectories_dir = output_dir / "trajectories"
         trajectories_dir.mkdir(exist_ok=True)
         for sample in self.sample_results:
-            traj_file = trajectories_dir / f"{sample.sample_id}.jsonl"
-            Trajectory.save_jsonl([sample.trajectory], str(traj_file))
-
-        # Save agent states separately for detailed analysis
-        states_dir = output_dir / "agent_states"
-        states_dir.mkdir(exist_ok=True)
-        failed_serializations = []
-        for sample in self.sample_results:
-            states_file = states_dir / f"{sample.sample_id}.json"
-            try:
-                # Serialize agent states using environment's serialize() method
-                states_data = []
-                for state in sample.agent_states:
-                    # First serialize environment separately to avoid thread handle issues
-                    # (Environment may contain SSH connections with unpicklable thread handles)
-                    if state.environment and hasattr(state.environment, "serialize"):
-                        env_data = await state.environment.serialize()
-                    else:
-                        env_data = None
-
-                    # Create a temporary state without environment to avoid asdict() issues
-                    # with unpicklable objects (e.g., thread handles in SSH connections)
-                    temp_state = replace(state, environment=None)
-                    state_dict = asdict(temp_state)
-
-                    # Add back the serialized environment
-                    state_dict["environment"] = env_data
-                    states_data.append(state_dict)
-
-                # Sanitize all API keys recursively
-                states_data = sanitize_api_keys(states_data)
-                states_file.write_text(json.dumps(states_data, indent=2, default=str))
-            except (TypeError, ValueError) as e:
-                # Some environments contain unpicklable objects (e.g., thread locks)
-                # Log warning but don't fail the entire evaluation
-                logger.warning(f"Failed to serialize agent states for {sample.sample_id}: {e}")
-                failed_serializations.append(sample.sample_id)
-                # Save a placeholder file indicating serialization failed
-                states_file.write_text(
-                    json.dumps(
-                        {
-                            "error": "Serialization failed",
-                            "reason": str(e),
-                            "sample_id": sample.sample_id,
-                        },
-                        indent=2,
-                    )
-                )
+            if sample.trajectory:
+                traj_file = trajectories_dir / f"{sample.id}.jsonl"
+                Trajectory.save_jsonl([sample.trajectory], str(traj_file))
 
         logger.info(f"saved evaluation to {output_dir}")
         logger.info(f"  summary: {report_file}")
         logger.info(f"  samples: {samples_dir}")
         logger.info(f"  trajectories: {trajectories_dir}")
-        logger.info(f"  agent states: {states_dir}")
-        if failed_serializations:
-            logger.warning(
-                f"  Failed to serialize {len(failed_serializations)} agent states: {failed_serializations[:5]}"
-            )
 
 
 def sanitize_api_keys(data: Any) -> Any:
@@ -266,11 +110,9 @@ def sanitize_api_keys(data: Any) -> Any:
 async def evaluate_sample(
     sample_data: dict[str, Any],
     sample_id: str,
-    prepare_messages: Callable[[dict[str, Any]], list[Message]],
-    environment: Environment | None,
-    endpoint: Endpoint,
     config: EvalConfig,
-) -> EvalSample:
+    environment: Environment | None = None,
+) -> Sample:
     """Evaluate a single sample - analogous to run_agent_step.
 
     This is the atomic unit of evaluation that can be easily parallelized.
@@ -279,16 +121,14 @@ async def evaluate_sample(
     Args:
         sample_data: The raw sample data
         sample_id: Unique identifier for this sample
-        prepare_messages: Function to create initial messages
+        config: Evaluation configuration (includes endpoint, template/prepare_messages)
         environment: Fresh Environment instance for this sample (None for tool-free eval)
-        endpoint: LLM endpoint
-        config: Evaluation configuration
 
     Returns:
-        EvalSample with trajectory and computed metrics
+        Sample with trajectory, score, and computed reward
     """
-    # Prepare initial state
-    initial_messages = prepare_messages(sample_data)
+    # Prepare initial messages from sample
+    initial_messages = config.prepare_messages(sample_data)
 
     # Inject sample_data into trajectory metadata for score function access
     initial_trajectory = Trajectory(
@@ -298,7 +138,7 @@ async def evaluate_sample(
 
     actor = Actor(
         trajectory=initial_trajectory,
-        endpoint=endpoint,
+        endpoint=config.endpoint,
         tools=environment.get_tools() if environment else [],
     )
 
@@ -328,7 +168,10 @@ async def evaluate_sample(
             logger.debug("🔍 Using stdout_handler for token streaming")
         else:
             # Silent mode (default)
-            on_chunk_handler = lambda _: trio.lowlevel.checkpoint()
+            async def silent_chunk_handler(_: object) -> None:
+                await trio.lowlevel.checkpoint()
+
+            on_chunk_handler = silent_chunk_handler
             logger.debug("🔍 Using silent mode (no token streaming)")
 
         run_config = RunConfig(on_chunk=on_chunk_handler, show_progress=show_turn_progress)
@@ -370,36 +213,33 @@ async def evaluate_sample(
             final_trajectory, metadata={**final_trajectory.metadata, "error": error_message}
         )
 
-    # Build Sample for score function
+    # Build Sample with trajectory for score function
     sample = Sample(
         id=sample_id,
         input=sample_data,
         ground_truth=sample_data.get("ground_truth") or sample_data.get("answer"),
+        trajectory=final_trajectory,
         metadata=sample_data.get("metadata", {}),
     )
 
-    # Compute score (Trajectory, Sample) -> Score
+    # Compute score: (Sample) -> Score
     # Support both sync and async score functions
     score: Score | None = None
     try:
         import inspect
 
-        score_result = config.score_fn(final_trajectory, sample)
+        score_result = config.score_fn(sample)
         if inspect.iscoroutine(score_result):
             score = await score_result
         else:
             score = score_result
     except Exception as e:
-        logger.error(f"❌ SCORE COMPUTATION FAILED: {e}")
-        if config.verbose:
-            import traceback
-
-            logger.error(f"Full traceback:\n{traceback.format_exc()}")
+        logger.exception(f"❌ SCORE COMPUTATION FAILED: {e}")
         # Return zero score on error
         score = Score(metrics=(Metric("error", 0.0, weight=1.0, metadata={"error": str(e)}),))
 
     # Add execution metadata
-    metadata = {
+    exec_metadata = {
         "turns_used": states[-1].turn_idx,
         "stop_reason": str(states[-1].stop) if states[-1].stop else None,
         "total_tokens": sum(len(m.content or "") for m in final_trajectory.messages),
@@ -407,28 +247,28 @@ async def evaluate_sample(
 
     # Include error if agent execution failed
     if error_message:
-        metadata["error"] = error_message
-        metadata["status"] = "failed"
+        exec_metadata["error"] = error_message
+        exec_metadata["status"] = "failed"
     else:
-        metadata["status"] = "success"
+        exec_metadata["status"] = "success"
 
     # Compute duration
     duration_seconds = time.time() - start_time
-    metadata["duration_seconds"] = duration_seconds
+    exec_metadata["duration_seconds"] = duration_seconds
 
     # Structured logging for sample completion (always logged at INFO level)
     reward = score.reward if score else 0.0
     logger.info(
         f"Sample {sample_id} completed: reward={reward:.3f}, "
-        f"turns={metadata['turns_used']}, duration={duration_seconds:.2f}s, "
-        f"status={metadata['status']}",
+        f"turns={exec_metadata['turns_used']}, duration={duration_seconds:.2f}s, "
+        f"status={exec_metadata['status']}",
         extra={
             "sample_id": sample_id,
             "reward": reward,
-            "turns": metadata["turns_used"],
+            "turns": exec_metadata["turns_used"],
             "duration_seconds": duration_seconds,
-            "status": metadata["status"],
-            "stop_reason": metadata.get("stop_reason"),
+            "status": exec_metadata["status"],
+            "stop_reason": exec_metadata.get("stop_reason"),
         },
     )
 
@@ -444,33 +284,25 @@ async def evaluate_sample(
         except Exception as e:
             logger.warning(f"Environment cleanup failed for {sample_id}: {e}")
 
-    eval_sample = EvalSample(
-        sample_id=sample_id,
-        input_data=sample_data,
-        trajectory=final_trajectory,
-        agent_states=states,
-        score=score,
-        metadata=metadata,
-    )
+    # Update sample with score and reward
+    sample.score = score
+    sample.reward = score.reward if score else 0.0
+    sample.metadata = {**sample.metadata, **exec_metadata}
 
     # Emit sample_end event for frontend live streaming
     await run_config.on_chunk(
         StreamChunk(
             "sample_end",
-            {"sample_id": sample_id, "reward": reward, "metadata": metadata},
+            {"sample_id": sample_id, "reward": reward, "metadata": exec_metadata},
         )
     )
 
-    return eval_sample
+    return sample
 
 
 async def evaluate(
     dataset: Iterator[dict[str, Any]],
-    prepare_messages: Callable[[dict[str, Any]], list[Message]],
-    endpoint: Endpoint,
     config: EvalConfig,
-    dataset_path: str = "unknown",
-    environment_factory: Callable[[dict[str, Any]], Awaitable[Environment]] | None = None,
 ) -> EvalReport:
     """Run evaluation on a dataset - analogous to run_agent.
 
@@ -479,23 +311,26 @@ async def evaluate(
 
     Args:
         dataset: Iterator of sample dictionaries
-        prepare_messages: Function to create initial messages from sample
-        endpoint: LLM endpoint configuration
-        config: Evaluation configuration
-        dataset_path: Path/name of dataset for logging
-        environment_factory: Optional async factory function that takes sample_data and returns
-                           a fresh Environment instance. Example: `async def factory(sample): return MyEnv(sample)`
-                           If None, samples run without environment (tool-free evaluation).
+        config: Evaluation configuration (includes endpoint, template/prepare_messages,
+                environment_factory, score_fn, and execution settings)
 
     Returns:
         EvalReport with results and summary metrics
+
+    Example:
+        >>> config = EvalConfig(
+        ...     endpoint=Endpoint(provider="openai", model="gpt-4o-mini"),
+        ...     score_fn=my_score_fn,
+        ...     template=PromptTemplate(system="...", user_template="{question}"),
+        ... )
+        >>> report = await evaluate(dataset, config)
     """
     # Collect samples to evaluate
     samples_to_eval = []
     for i, sample_data in enumerate(dataset):
         if config.max_samples and len(samples_to_eval) >= config.max_samples:
             break
-        sample_id = config.sample_id_fn(i, sample_data)
+        sample_id = f"sample_{i:04d}"
         samples_to_eval.append((sample_id, sample_data))
 
     if config.verbose:
@@ -523,14 +358,12 @@ async def evaluate(
     if config.max_concurrent == 1:
         # Sequential evaluation - create fresh environment for each sample
         for sample_id, sample_data in samples_to_eval:
-            env = await environment_factory(sample_data) if environment_factory else None
+            env = await config.environment_factory(sample_data) if config.environment_factory else None
             result = await evaluate_sample(
                 sample_data=sample_data,
                 sample_id=sample_id,
-                prepare_messages=prepare_messages,
-                environment=env,
-                endpoint=endpoint,
                 config=config,
+                environment=env,
             )
             results.append(result)
 
@@ -547,14 +380,12 @@ async def evaluate(
         results = []
 
         async def eval_task(sample_id: str, sample_data: dict[str, Any]) -> None:
-            env = await environment_factory(sample_data) if environment_factory else None
+            env = await config.environment_factory(sample_data) if config.environment_factory else None
             result = await evaluate_sample(
                 sample_data=sample_data,
                 sample_id=sample_id,
-                prepare_messages=prepare_messages,
-                environment=env,
-                endpoint=endpoint,
                 config=config,
+                environment=env,
             )
             results.append(result)
 
@@ -572,7 +403,9 @@ async def evaluate(
             limiter = trio.CapacityLimiter(config.max_concurrent)
             for sample_id, sample_data in samples_to_eval:
 
-                async def run_with_limit(sid=sample_id, sdata=sample_data):
+                async def run_with_limit(
+                    sid: str = sample_id, sdata: dict[str, Any] = sample_data
+                ) -> None:
                     async with limiter:
                         await eval_task(sid, sdata)
 
@@ -587,11 +420,11 @@ async def evaluate(
 
     # Create report
     # Sanitize endpoint config to exclude sensitive data
-    endpoint_config = sanitize_api_keys(asdict(endpoint))
+    endpoint_config = sanitize_api_keys(asdict(config.endpoint))
 
     report = EvalReport(
         eval_name=config.eval_name,
-        dataset_path=dataset_path,
+        dataset_path=config.eval_name,  # Use eval_name as dataset identifier
         total_samples=len(results),
         summary_metrics=summary_metrics,
         sample_results=results,
@@ -624,7 +457,7 @@ async def evaluate(
     return report
 
 
-def compute_summary_metrics(results: list[EvalSample]) -> dict[str, float]:
+def compute_summary_metrics(results: list[Sample]) -> dict[str, float]:
     """Compute summary statistics from results using Score.
 
     Aggregates metrics from Score objects across all results.
@@ -716,21 +549,27 @@ def load_csv(path: Path) -> Iterator[dict[str, Any]]:
 # Convenience function for simple evaluation
 async def simple_evaluate(
     dataset_path: Path,
-    prepare_messages: Callable[[dict[str, Any]], list[Message]],
-    environment_factory: Callable[[], Environment],
-    endpoint: Endpoint,
     config: EvalConfig,
 ) -> EvalReport:
     """Simple evaluation interface for common cases.
 
-    Auto-detects dataset format and provides sensible defaults.
+    Auto-detects dataset format (.jsonl or .csv) and runs evaluation.
 
     Args:
         dataset_path: Path to dataset file (.jsonl or .csv)
-        prepare_messages: Function to create initial messages from sample
-        environment_factory: Factory function returning fresh Environment instances
-        endpoint: LLM endpoint configuration
-        config: Evaluation configuration
+        config: Evaluation configuration (includes endpoint, template/prepare_messages,
+                environment_factory, score_fn, etc.)
+
+    Returns:
+        EvalReport with results and summary metrics
+
+    Example:
+        >>> config = EvalConfig(
+        ...     endpoint=Endpoint(...),
+        ...     score_fn=my_score_fn,
+        ...     template=PromptTemplate(system="...", user_template="{question}"),
+        ... )
+        >>> report = await simple_evaluate(Path("data.jsonl"), config)
     """
     # Auto-detect dataset format
     if dataset_path.suffix == ".jsonl":
@@ -740,30 +579,23 @@ async def simple_evaluate(
     else:
         raise ValueError(f"Unsupported format: {dataset_path.suffix}")
 
-    return await evaluate(
-        dataset=dataset,
-        prepare_messages=prepare_messages,
-        environment_factory=environment_factory,
-        endpoint=endpoint,
-        config=config,
-        dataset_path=str(dataset_path),
-    )
+    return await evaluate(dataset, config)
 
 
 # ── Analysis Helpers ──────────────────────────────────────────────────────────
 
 
 def group_by(
-    results: list[EvalSample],
-    key: Callable[[EvalSample], str],
-) -> dict[str, list[EvalSample]]:
+    results: list[Sample],
+    key: Callable[[Sample], str],
+) -> dict[str, list[Sample]]:
     """Group evaluation results by a key function.
 
     Pure function for slicing results by metadata.
 
     Examples:
         >>> by_difficulty = group_by(results, key=lambda r: r.metadata["difficulty"])
-        >>> by_category = group_by(results, key=lambda r: r.input_data.get("category", "unknown"))
+        >>> by_category = group_by(results, key=lambda r: r.input.get("category", "unknown"))
 
     Args:
         results: List of evaluation samples
@@ -772,7 +604,7 @@ def group_by(
     Returns:
         Dict mapping group keys to lists of samples
     """
-    groups: dict[str, list[EvalSample]] = {}
+    groups: dict[str, list[Sample]] = {}
     for result in results:
         k = key(result)
         if k not in groups:
@@ -781,7 +613,7 @@ def group_by(
     return groups
 
 
-def summarize(results: list[EvalSample]) -> dict[str, float]:
+def summarize(results: list[Sample]) -> dict[str, float]:
     """Compute summary statistics for a list of evaluation results.
 
     Pure function for aggregating metrics.

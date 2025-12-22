@@ -170,6 +170,8 @@ ignore = [
     "E501",    # Line too long (handled by formatter)
     "ANN401",  # Dynamically typed expressions (Any) are disallowed
     "F822",    # Undefined name in __all__ (false positive for lazy imports via __getattr__)
+    # Deferred - requires creating exception class hierarchy (TODO: implement later)
+    "TRY003",  # raise-vanilla-args (exception messages at raise site)
 ]
 
 [tool.ruff.lint.pylint]

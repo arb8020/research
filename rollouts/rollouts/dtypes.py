@@ -132,6 +132,11 @@ class JsonSerializable:
 
     Tiger Style: Pure serialization, no I/O side effects.
     Caller controls where the JSON goes (file, network, memory, etc.).
+
+    TODO: Consider replacing inheritance with standalone functions:
+        def to_json(obj: Any) -> str: return json.dumps(asdict(obj), ensure_ascii=False)
+        def from_json(cls: type[T], s: str) -> T: return dacite.from_dict(cls, json.loads(s))
+    This would eliminate the base class and make each dataclass independent.
     """
 
     def to_json(self) -> str:
@@ -312,7 +317,7 @@ class ToolResultReceived(JsonSerializable):
     """Emitted when a tool execution result is received"""
 
     tool_call_id: str
-    content: str
+    content: str | list["ContentBlock"]  # Forward ref - ContentBlock defined later
     is_error: bool = False
     error: str | None = None
     details: dict[str, Any] | None = None  # UI-only structured data (e.g., diff for edit tool)
@@ -851,7 +856,7 @@ class StopReason(Enum):
 class ToolResult(JsonSerializable):
     tool_call_id: str = ""
     is_error: bool = False
-    content: str = ""
+    content: str | list[ContentBlock] = ""
     error: str | None = None
     stop_reason: StopReason | None = None
     # UI-only structured data (stripped before LLM)
@@ -1185,11 +1190,14 @@ class Score:
 # Sample is unified in training.types - import here for backward compatibility
 from rollouts.training.types import Sample
 
-# Score function: pure transform from (Trajectory, Sample) -> Score
+# Score function: pure transform from Sample -> Score
+# Sample has trajectory, ground_truth, input, etc. - access via sample.trajectory
 # Supports both sync and async (for external verifiers that need network calls)
-ScoreFn = (
-    Callable[["Trajectory", Sample], Score] | Callable[["Trajectory", Sample], Awaitable[Score]]
-)
+ScoreFn = Callable[[Sample], Score] | Callable[[Sample], Awaitable[Score]]
+
+# Type aliases for EvalConfig
+PrepareMessagesFn = Callable[[dict[str, Any]], list[Message]]
+EnvironmentFactory = Callable[[dict[str, Any]], Awaitable["Environment"]]
 
 
 @dataclass(frozen=True)
@@ -1199,31 +1207,34 @@ class EvalConfig:
     Tiger Style: All configuration explicit, immutable, composable.
 
     Example:
-        >>> def my_score_fn(traj: Trajectory, sample: Sample) -> Score:
-        ...     correct = check_correctness(traj, sample.ground_truth)
-        ...     return Score(metrics=(
-        ...         Metric("correct", 1.0 if correct else 0.0, weight=1.0),
-        ...         Metric("turns", len(traj.messages), weight=0),
-        ...     ))
-        >>>
+        >>> def prepare_messages(sample: dict) -> list[Message]:
+        ...     return [
+        ...         Message(role="system", content="You are a math tutor."),
+        ...         Message(role="user", content=sample["question"]),
+        ...     ]
         >>> config = EvalConfig(
+        ...     endpoint=Endpoint(provider="openai", model="gpt-4o-mini"),
         ...     score_fn=my_score_fn,
-        ...     run_config=RunConfig(handle_stop=handle_stop_max_turns(10)),
+        ...     prepare_messages=prepare_messages,
         ...     max_concurrent=4,
         ... )
+        >>> report = await evaluate(dataset, config)
     """
 
-    # Required: how to compute score (Trajectory, Sample) -> Score
+    # Required
+    endpoint: "Endpoint"
     score_fn: ScoreFn
+    prepare_messages: PrepareMessagesFn
+
+    # Environment (optional - for tool-using agents)
+    environment_factory: EnvironmentFactory | None = None
 
     # Agent execution
-    run_config: RunConfig | None = None  # If None, use silent default
+    # TODO: Require run_config explicitly instead of constructing hidden default when None
+    run_config: RunConfig | None = None
 
     # Dataset control
     max_samples: int | None = None  # If None, evaluate all
-    sample_id_fn: Callable[[int, dict[str, Any]], str] = field(
-        default_factory=lambda: lambda i, _: f"sample_{i:04d}"
-    )
 
     # Parallelization
     max_concurrent: int = 1
@@ -1233,6 +1244,7 @@ class EvalConfig:
     eval_name: str = "evaluation"
 
     # Logging
+    # TODO: Consider consolidating verbose/show_progress/stream_tokens into single output mode
     verbose: bool = True
     show_progress: bool = False  # Enable sample-level progress tracking
     stream_tokens: bool = False  # Stream LLM tokens to stdout (used if run_config is None)
