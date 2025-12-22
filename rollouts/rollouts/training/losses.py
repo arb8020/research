@@ -16,7 +16,6 @@ This module provides:
 import torch
 import torch.nn.functional as F
 
-
 # Type alias for loss function return type
 LossOutput = tuple[torch.Tensor, dict[str, float]]
 

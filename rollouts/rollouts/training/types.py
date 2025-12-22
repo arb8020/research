@@ -7,9 +7,12 @@ Inspired by SLIME's Sample dataclass + Tinker's loss weights + Miles unified Sam
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 import trio
+
+if TYPE_CHECKING:
+    from rollouts.dtypes import Score, Trajectory
 
 
 class Status(Enum):
@@ -25,10 +28,10 @@ class Status(Enum):
 class Sample:
     """Unified sample type for evaluation, rollouts, and training.
 
-    One Sample type for the entire pipeline (Miles pattern):
-    - Evaluation: id, input, ground_truth
-    - Rollouts: prompt, response, reward
-    - Training: tokens, loss_mask
+    Overcomplete: optional fields for different use cases (Miles pattern).
+    - Evaluation: trajectory, score, ground_truth populated
+    - Training: tokens, loss_mask, reward populated
+    - Both: all fields available
 
     Transparent @dataclass (Casey Muratori: no opacity).
     All fields are public and accessible. No getters/setters.
@@ -39,20 +42,23 @@ class Sample:
         index: Global sample index (position in dataset)
         group_index: Group ID for GRPO (n samples per prompt)
 
-        # Input (evaluation/rollouts)
+        # Input
         input: Raw input data dict (evaluation datasets)
         prompt: Input prompt (str or chat messages) for generation
         ground_truth: Expected answer for evaluation
 
-        # Generated (rollouts)
-        response: Generated response text
+        # Generated
+        trajectory: Full execution trace (multi-turn agent rollout)
+
+        # Training-specific
         tokens: Tokenized representation
         response_length: Length of response in tokens
-
-        # Training
         loss_mask: Per-token loss weights (0.0 = no loss, 1.0 = compute loss)
         reward: Reward signal for RL
         rollout_log_probs: Logprobs from rollout model (off-policy correction)
+
+        # Evaluation-specific
+        score: Computed score with metrics breakdown
 
         # Status and metadata
         status: Sample processing status
@@ -63,13 +69,15 @@ class Sample:
         ...     id="math_001",
         ...     input={"question": "What is 2+2?"},
         ...     ground_truth="4",
+        ...     trajectory=trajectory,  # from run_agent()
+        ...     score=score,  # from score_fn()
         ... )
 
     Example (training):
         >>> sample = Sample(
         ...     id="train_001",
         ...     prompt="What is 2+2?",
-        ...     response="4",
+        ...     trajectory=trajectory,
         ...     tokens=[1, 2, 3, 4],
         ...     loss_mask=[0.0, 0.0, 1.0, 1.0],
         ...     reward=1.0,
@@ -81,24 +89,65 @@ class Sample:
     index: int | None = None
     group_index: int | None = None
 
-    # Input (evaluation uses input dict, rollouts use prompt)
+    # Input
     input: dict[str, Any] = field(default_factory=dict)
     prompt: str | list[dict[str, str]] = ""
     ground_truth: Any | None = None
 
-    # Generated (may be empty before generation)
-    response: str = ""
+    # Generated
+    trajectory: "Trajectory | None" = None
+
+    # Training-specific
     tokens: list[int] = field(default_factory=list)
     response_length: int = 0
-
-    # Training
     loss_mask: list[float] = field(default_factory=list)
     reward: float = 0.0
     rollout_log_probs: list[float] | None = None
 
+    # Evaluation-specific
+    score: "Score | None" = None
+
     # Status and metadata
     status: Status = Status.PENDING
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def response(self) -> str:
+        """Extract final assistant response from trajectory.
+
+        Returns empty string if no trajectory or no assistant messages.
+        Handles both Message objects and dict representations (after deserialization).
+        """
+        if not self.trajectory or not self.trajectory.messages:
+            return ""
+        for msg in reversed(self.trajectory.messages):
+            # Handle both Message objects and dicts (from deserialization)
+            role = msg.role if hasattr(msg, "role") else msg.get("role")
+            content = msg.content if hasattr(msg, "content") else msg.get("content")
+
+            if role == "assistant":
+                if isinstance(content, str):
+                    return content
+                if content is None:
+                    continue
+                # Handle content blocks - extract text
+                from rollouts.dtypes import TextContent, ThinkingContent
+
+                parts = []
+                for block in content:
+                    if isinstance(block, TextContent):
+                        parts.append(block.text)
+                    elif isinstance(block, ThinkingContent):
+                        # Include thinking in response for training
+                        parts.append(block.thinking)
+                    elif isinstance(block, dict):
+                        # Deserialized content block
+                        if block.get("type") == "text":
+                            parts.append(block.get("text", ""))
+                        elif block.get("type") == "thinking":
+                            parts.append(block.get("thinking", ""))
+                return "".join(parts)
+        return ""
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict for serialization.
@@ -107,12 +156,31 @@ class Sample:
             Dict representation
 
         Example:
-            >>> sample = Sample(id="001", prompt="Q", response="A")
+            >>> sample = Sample(id="001", prompt="Q")
             >>> d = sample.to_dict()
             >>> assert "prompt" in d
         """
-        d = self.__dict__.copy()
-        d["status"] = self.status.value
+        import json
+
+        from rollouts.dtypes import Trajectory
+
+        d: dict[str, Any] = {}
+        for key, value in self.__dict__.items():
+            if key == "status":
+                d[key] = value.value
+            elif key == "trajectory" and isinstance(value, Trajectory):
+                # Trajectory uses to_json() -> str, so parse it
+                d[key] = json.loads(value.to_json())
+            elif key == "score" and value is not None:
+                # Score is frozen dataclass with metrics tuple
+                d[key] = {
+                    "metrics": [
+                        {"name": m.name, "value": m.value, "weight": m.weight, "metadata": m.metadata}
+                        for m in value.metrics
+                    ]
+                }
+            else:
+                d[key] = value
         return d
 
     @staticmethod
@@ -126,12 +194,28 @@ class Sample:
             Sample instance
 
         Example:
-            >>> d = {"id": "001", "prompt": "Q", "response": "A", "status": "completed"}
+            >>> d = {"id": "001", "prompt": "Q", "status": "completed"}
             >>> sample = Sample.from_dict(d)
         """
+        from rollouts.dtypes import Metric, Score, Trajectory
+
         data = data.copy()
         if "status" in data:
             data["status"] = Status(data["status"])
+        if "trajectory" in data and data["trajectory"] is not None:
+            data["trajectory"] = Trajectory.from_dict(data["trajectory"])
+        if "score" in data and data["score"] is not None:
+            score_data = data["score"]
+            metrics = tuple(
+                Metric(
+                    name=m["name"],
+                    value=m["value"],
+                    weight=m.get("weight", 1.0),
+                    metadata=m.get("metadata", {}),
+                )
+                for m in score_data["metrics"]
+            )
+            data["score"] = Score(metrics=metrics)
         return Sample(**data)
 
 

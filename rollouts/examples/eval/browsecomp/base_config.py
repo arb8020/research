@@ -274,13 +274,19 @@ def create_browsecomp_score_fn(grader_endpoint: Endpoint):
     """Create score function with grader endpoint bound.
 
     Returns an async score function compatible with rollouts EvalConfig.
+    Sample has trajectory via sample.trajectory.
     """
 
-    async def browsecomp_score_fn(trajectory: Trajectory, sample: Any) -> Score:
+    async def browsecomp_score_fn(sample: Any) -> Score:
         """Score function for BrowseComp.
 
         Uses LLM-as-judge to grade the response.
+        Sample has trajectory via sample.trajectory.
         """
+        trajectory = sample.trajectory
+        if trajectory is None:
+            return Score(metrics=(Metric("correct", 0.0, weight=1.0, metadata={"error": "no trajectory"}),))
+
         question = sample.input.get("question", "")
         correct_answer = sample.ground_truth or sample.input.get("answer", "")
 
@@ -382,7 +388,7 @@ async def _run_eval(config: BrowseCompConfig) -> dict[str, Any]:
     logger.info(f"Grader: {config.grader.provider}/{config.grader.model}")
     logger.info(f"Max turns: {config.run.max_turns}")
 
-    # Prepare messages function
+    # Prepare messages function (custom formatting with QUERY_TEMPLATE)
     def prepare_messages(sample_data: dict) -> list[Message]:
         question = sample_data["question"]
         return [
@@ -390,9 +396,12 @@ async def _run_eval(config: BrowseCompConfig) -> dict[str, Any]:
             Message(role="user", content=QUERY_TEMPLATE.format(question=question)),
         ]
 
+    async def silent_handler(_: object) -> None:
+        await trio.lowlevel.checkpoint()
+
     # Allow multiple turns for browsing
     run_config = RunConfig(
-        on_chunk=lambda _: trio.lowlevel.checkpoint(),
+        on_chunk=silent_handler,
         handle_stop=handle_stop_max_turns(config.run.max_turns),
     )
 
@@ -400,27 +409,24 @@ async def _run_eval(config: BrowseCompConfig) -> dict[str, Any]:
     score_fn = create_browsecomp_score_fn(grader_endpoint)
 
     # Environment factory for browsing tools
-    async def environment_factory(sample_data: dict):
+    async def environment_factory(sample_data: dict) -> BrowsingEnvironment:
         return BrowsingEnvironment()
 
+    # Use new simplified API with prepare_messages (custom formatting)
     eval_config = EvalConfig(
-        eval_name=config.output.experiment_name,
+        endpoint=endpoint,
         score_fn=score_fn,
+        prepare_messages=prepare_messages,  # Custom formatting with QUERY_TEMPLATE
+        environment_factory=environment_factory,
         max_samples=config.dataset.max_samples,
         max_concurrent=config.run.max_concurrent,
         verbose=config.run.verbose,
         output_dir=config.output.output_dir,
+        eval_name=config.output.experiment_name,
         run_config=run_config,
     )
 
-    report = await evaluate(
-        dataset=iter(dataset),
-        prepare_messages=prepare_messages,
-        endpoint=endpoint,
-        config=eval_config,
-        dataset_path="browsecomp",
-        environment_factory=environment_factory,
-    )
+    report = await evaluate(iter(dataset), eval_config)
 
     # Return metrics
     accuracy = report.summary_metrics.get("mean_correct", 0.0)

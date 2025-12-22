@@ -6,6 +6,18 @@ Components:
 - terminal: Terminal abstraction (raw mode, input handling)
 """
 
-from rollouts.tui.monitor import TrainingMonitor
+from rollouts.tui.monitor import (
+    TrainingMonitor,
+    PaneConfig,
+    RL_TRAINING_PANES,
+    EVAL_PANES,
+    PANE_PRESETS,
+)
 
-__all__ = ["TrainingMonitor"]
+__all__ = [
+    "TrainingMonitor",
+    "PaneConfig",
+    "RL_TRAINING_PANES",
+    "EVAL_PANES",
+    "PANE_PRESETS",
+]

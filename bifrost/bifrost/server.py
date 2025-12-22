@@ -43,7 +43,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def server_is_healthy(session: "BifrostClient", server: "ServerInfo") -> bool:
+def server_is_healthy(session: BifrostClient, server: ServerInfo) -> bool:
     """Check if server is responding to health checks.
 
     If health_endpoint is configured, makes HTTP request to check.
@@ -75,8 +75,8 @@ def server_is_healthy(session: "BifrostClient", server: "ServerInfo") -> bool:
 
 
 def server_wait_until_healthy(
-    session: "BifrostClient",
-    server: "ServerInfo",
+    session: BifrostClient,
+    server: ServerInfo,
     timeout: float = 300,
     poll_interval: float = 5.0,
 ) -> bool:
@@ -112,7 +112,7 @@ def server_wait_until_healthy(
     return False
 
 
-def server_logs(session: "BifrostClient", server: "ServerInfo", tail: int = 100) -> str:
+def server_logs(session: BifrostClient, server: ServerInfo, tail: int = 100) -> str:
     """Get recent server logs.
 
     Args:
@@ -130,7 +130,7 @@ def server_logs(session: "BifrostClient", server: "ServerInfo", tail: int = 100)
     return result.stdout
 
 
-def server_stop(session: "BifrostClient", server: "ServerInfo") -> None:
+def server_stop(session: BifrostClient, server: ServerInfo) -> None:
     """Stop a running server.
 
     Terminates the tmux session for this server.
@@ -143,7 +143,7 @@ def server_stop(session: "BifrostClient", server: "ServerInfo") -> None:
     logger.info(f"Stopped server: {server.name}")
 
 
-def server_is_running(session: "BifrostClient", server: "ServerInfo") -> bool:
+def server_is_running(session: BifrostClient, server: ServerInfo) -> bool:
     """Check if server process is running (tmux session alive).
 
     Different from server_is_healthy - this just checks if process exists,

@@ -351,11 +351,13 @@ def trajectory_to_sample(
     # Build metadata with raw messages for debugging/export
     full_metadata = metadata.copy() if metadata else {}
     full_metadata["messages"] = [_msg_to_dict(m) for m in trajectory.messages]
+    # Store response text in metadata for training (since response is now a property from trajectory)
+    full_metadata["response_text"] = response
 
     # Tiger Style: Explicit construction
     sample = Sample(
         prompt=prompt,
-        response=response,
+        trajectory=trajectory,  # Store full trajectory - response property extracts from this
         tokens=tokens,
         loss_mask=loss_mask,
         reward=0.0,  # Will be computed by score_fn later
@@ -538,10 +540,10 @@ def _extract_tokens_from_trajectory(
         Token IDs for the full conversation
     """
     from rollouts.inference.backends import (
+        append_suffix_with_overlap,
+        compute_suffix_ids,
         tokenize_chat,
         tokenize_message_with_delimiter,
-        compute_suffix_ids,
-        append_suffix_with_overlap,
     )
 
     # Check if ANY completion has stored token_ids

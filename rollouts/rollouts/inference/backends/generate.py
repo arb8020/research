@@ -40,7 +40,6 @@ from typing import TYPE_CHECKING
 import httpx
 
 if TYPE_CHECKING:
-    import torch
     from transformers import PreTrainedModel
 
 
@@ -322,7 +321,7 @@ def generate_hf(
         top_logprobs_list.append(
             {
                 int(tok): float(lp)
-                for tok, lp in zip(topk.indices[0].tolist(), topk.values[0].tolist())
+                for tok, lp in zip(topk.indices[0].tolist(), topk.values[0].tolist(), strict=False)
             }
         )
 

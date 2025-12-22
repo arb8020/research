@@ -306,7 +306,7 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
                 hooks.append(hf_layer.mlp.gate.register_forward_hook(make_hook("gate")))
 
                 # Re-run the layer forward to capture via hooks
-                layer_i_input = hf_intermediates[f"layer_{i-1}"].cuda() if i > 0 else hf_intermediates["embed"].cuda()
+                layer_i_input = hf_intermediates[f"layer_{i - 1}"].cuda() if i > 0 else hf_intermediates["embed"].cuda()
                 with torch.no_grad():
                     _ = hf_layer(layer_i_input, position_embeddings=(cos, sin))
 
@@ -399,10 +399,10 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
                     if i >= FIRST_K_DENSE_REPLACE and f"moe_{i}_input" in hf_intermediates:
                         print(f"\n    ### Debugging MoE Layer {i} ###")
                         from glm4_moe_functional import (
-                            moe_router,
-                            expert_forward,
-                            dense_mlp,
                             N_ROUTED_EXPERTS,
+                            dense_mlp,
+                            expert_forward,
+                            moe_router,
                         )
 
                         prefix = f"model.layers.{i}.mlp"
@@ -466,8 +466,8 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
                             # Compare routing weights
                             weight_diff = (hf_topk_weights - func_topk_weights).abs().max().item()
                             print(f"      Router weights diff: max_diff={weight_diff:.2e}")
-                            print(f"        HF weights sample: {hf_topk_weights[0,:3].tolist()}")
-                            print(f"        Func weights sample: {func_topk_weights[0,:3].tolist()}")
+                            print(f"        HF weights sample: {hf_topk_weights[0, :3].tolist()}")
+                            print(f"        Func weights sample: {func_topk_weights[0, :3].tolist()}")
                         else:
                             # Compare router logits if captured (older style)
                             if f"moe_{i}_router_logits" in hf_intermediates:
@@ -478,7 +478,7 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
                                 )
                                 router_diff = (hf_router_logits.view(-1, N_ROUTED_EXPERTS) - func_router_logits).abs().max().item()
                                 print(f"      Router logits: max_diff={router_diff:.2e}")
-                            print(f"      Func routing: experts={func_topk_idx[0].tolist()}, weights={func_topk_weights[0,:3].tolist()}")
+                            print(f"      Func routing: experts={func_topk_idx[0].tolist()}, weights={func_topk_weights[0, :3].tolist()}")
 
                         # Compare shared expert
                         if f"moe_{i}_shared_out" in hf_intermediates:

@@ -42,7 +42,6 @@ from rollouts.remote import release_node
 
 if TYPE_CHECKING:
     from bifrost import BifrostClient
-    from broker.client import ClientGPUInstance
 
 load_dotenv()
 
@@ -1063,7 +1062,7 @@ if __name__ == "__main__":
 # =============================================================================
 
 
-def run_tito_test(client: "BifrostClient", workspace: str) -> bool:
+def run_tito_test(client: BifrostClient, workspace: str) -> bool:
     """Run TI/TO test on remote GPU.
 
     Uses bifrost submit() + job_stream_until_complete() for reliable execution.
@@ -1118,7 +1117,7 @@ def run_tito_test(client: "BifrostClient", workspace: str) -> bool:
         return False
 
 
-def run_agent_loop_test(client: "BifrostClient", workspace: str) -> bool:
+def run_agent_loop_test(client: BifrostClient, workspace: str) -> bool:
     """Run agent loop TI/TO integration test on remote GPU.
 
     Uses bifrost submit() + job_stream_until_complete() for reliable execution.

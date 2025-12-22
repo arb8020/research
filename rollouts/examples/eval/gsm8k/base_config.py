@@ -377,14 +377,19 @@ def gsm8k_score_fn(sample: Any) -> Score:
     )
 
 
-def gsm8k_tool_score_fn(trajectory: Any, sample: Any) -> Score:
+def gsm8k_tool_score_fn(sample: Any) -> Score:
     """Score function for GSM8K with calculator tools (multi-turn mode).
 
     Extracts answer from complete_task tool call or tool results.
+    Sample has trajectory via sample.trajectory.
     """
     import json
 
     from rollouts.dtypes import Metric, Score
+
+    trajectory = sample.trajectory
+    if trajectory is None:
+        return Score(metrics=(Metric("correct", 0.0, weight=1.0, metadata={"error": "no trajectory"}),))
 
     # Sample is a dataclass with .ground_truth and .input dict
     ground_truth = sample.ground_truth or sample.input.get("answer")
@@ -496,9 +501,16 @@ def _get_endpoint(config: GSM8KConfig) -> Endpoint:
     )
 
 
-def _single_turn_score_fn(trajectory: Trajectory, sample: Sample) -> Score:
-    """Score function for single-turn GSM8K using rollouts evaluation types."""
+def _single_turn_score_fn(sample: Sample) -> Score:
+    """Score function for single-turn GSM8K using rollouts evaluation types.
+
+    Sample has trajectory via sample.trajectory.
+    """
     from rollouts.dtypes import Metric, Score
+
+    trajectory = sample.trajectory
+    if trajectory is None:
+        return Score(metrics=(Metric("correct", 0.0, weight=1.0, metadata={"error": "no trajectory"}),))
 
     # Get ground truth from sample
     ground_truth = sample.ground_truth or sample.input.get("answer")
@@ -561,42 +573,37 @@ async def _eval_single_turn(config: GSM8KConfig) -> dict[str, Any]:
     dataset = load_samples_from_config(config.dataset)
     logger.info(f"Dataset: {len(dataset)} samples")
 
-    # Create endpoint
-    endpoint = _get_endpoint(config)
-
-    # Prepare messages function
-    def prepare_messages(sample_data: dict) -> list[Message]:
-        return [
-            Message(role="system", content=SINGLE_TURN_SYSTEM_PROMPT),
-            Message(role="user", content=sample_data["prompt"]),
-        ]
-
     # Single-turn: stop after 1 turn (use max_turns from config, default 1 for single-turn)
     max_turns = 1 if not config.run.use_tools else config.run.max_turns
+
+    async def silent_handler(_: object) -> None:
+        await trio.lowlevel.checkpoint()
+
     run_config = RunConfig(
-        on_chunk=lambda _: trio.lowlevel.checkpoint(),
+        on_chunk=silent_handler,
         handle_stop=handle_stop_max_turns(max_turns),
     )
 
-    # Use rollouts evaluation framework
+    def prepare_messages(sample: dict[str, Any]) -> list[Message]:
+        return [
+            Message(role="system", content=SINGLE_TURN_SYSTEM_PROMPT),
+            Message(role="user", content=sample["prompt"]),
+        ]
+
+    # Use rollouts evaluation framework with new simplified API
     eval_config = EvalConfig(
-        eval_name=config.output.experiment_name,
+        endpoint=_get_endpoint(config),
         score_fn=_single_turn_score_fn,
+        prepare_messages=prepare_messages,
         max_samples=config.dataset.max_samples,
         max_concurrent=config.run.max_concurrent,
         verbose=config.run.verbose,
         output_dir=config.output.output_dir,
+        eval_name=config.output.experiment_name,
         run_config=run_config,
     )
 
-    report = await evaluate(
-        dataset=iter(dataset),
-        prepare_messages=prepare_messages,
-        endpoint=endpoint,
-        config=eval_config,
-        dataset_path="gsm8k",
-        environment_factory=None,  # No tools for single-turn
-    )
+    report = await evaluate(iter(dataset), eval_config)
 
     # Return metrics in expected format
     accuracy = report.summary_metrics.get("mean_correct", 0.0)
@@ -630,43 +637,39 @@ async def _eval_multi_turn(config: GSM8KConfig) -> dict[str, Any]:
     dataset = load_samples_from_config(config.dataset)
     logger.info(f"Dataset: {len(dataset)} samples")
 
-    # Create endpoint
-    endpoint = _get_endpoint(config)
-
-    # Prepare for evaluation framework
-    def prepare_messages(sample_data: dict) -> list[Message]:
-        return [
-            Message(role="system", content=MULTI_TURN_SYSTEM_PROMPT),
-            Message(role="user", content=sample_data["prompt"]),
-        ]
-
     async def environment_factory(sample_data: dict) -> CalculatorEnvironment:
         return CalculatorEnvironment()
 
+    async def silent_handler(_: object) -> None:
+        await trio.lowlevel.checkpoint()
+
     # Multi-turn with max_turns limit
     run_config = RunConfig(
-        on_chunk=lambda _: trio.lowlevel.checkpoint(),
+        on_chunk=silent_handler,
         handle_stop=handle_stop_max_turns(config.run.max_turns),
     )
 
+    def prepare_messages(sample: dict[str, Any]) -> list[Message]:
+        return [
+            Message(role="system", content=MULTI_TURN_SYSTEM_PROMPT),
+            Message(role="user", content=sample["prompt"]),
+        ]
+
+    # Use rollouts evaluation framework with new simplified API
     eval_config = EvalConfig(
-        eval_name=config.output.experiment_name,
+        endpoint=_get_endpoint(config),
         score_fn=gsm8k_tool_score_fn,
+        prepare_messages=prepare_messages,
+        environment_factory=environment_factory,
         max_samples=config.dataset.max_samples,
         max_concurrent=config.run.max_concurrent,
         verbose=config.run.verbose,
         output_dir=config.output.output_dir,
+        eval_name=config.output.experiment_name,
         run_config=run_config,
     )
 
-    report = await evaluate(
-        dataset=iter(dataset),
-        prepare_messages=prepare_messages,
-        endpoint=endpoint,
-        config=eval_config,
-        dataset_path="gsm8k",
-        environment_factory=environment_factory,
-    )
+    report = await evaluate(iter(dataset), eval_config)
 
     logger.info("=" * 60)
     logger.info("Evaluation Complete")

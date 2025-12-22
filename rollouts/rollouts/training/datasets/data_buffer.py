@@ -446,26 +446,28 @@ def load_samples_from_list(
     return samples
 
 
-# ────────────────────── Backwards Compatibility ──────────────────────
-# TODO: Remove after migration
+# ────────────────────── Legacy Class (TODO: migrate callers) ──────────────────────
 
 
 @dataclass
 class DataBuffer:
-    """DEPRECATED: Use BufferState + get_samples() instead.
+    """Stateful wrapper for backwards compatibility.
 
-    This class wrapper exists for backwards compatibility.
-    Will be removed in a future version.
-
-    Example migration:
-        # Old:
+    TODO: Migrate callers to use BufferState + get_samples() instead:
+        # Old (stateful class):
         buffer = DataBuffer(prompts=["Q1", "Q2"])
         batch = buffer.get_prompts(2)
 
-        # New:
+        # New (functional):
         samples = load_samples_from_list(["Q1", "Q2"])
         state = BufferState(seed=42)
         batch, state = get_samples_flat(samples, state, n=2)
+
+    Callers to migrate:
+        - rollouts/training/grpo.py
+        - rollouts/training/rollout_gen/async_rollout_manager.py
+        - rollouts/training/rollout_gen/rollout_generation.py
+        - rollouts/training/loops/rl_loop.py
     """
 
     prompts: list[str | dict[str, Any]]
@@ -474,7 +476,6 @@ class DataBuffer:
     seed: int = 42
 
     def __post_init__(self):
-        """Convert prompts to samples internally."""
         self._samples = load_samples_from_list(self.prompts)
         self._state = BufferState(
             epoch_id=self.epoch_id,
@@ -490,37 +491,11 @@ class DataBuffer:
         return [s.prompt for s in samples]
 
     def save_state(self) -> dict[str, Any]:
-        """Save buffer state for checkpointing."""
         return state_to_dict(self._state)
 
     def load_state(self, state: dict[str, Any]):
-        """Restore buffer state from checkpoint."""
         self._state = state_from_dict(state)
         self.epoch_id = self._state.epoch_id
         self.sample_offset = self._state.sample_offset
 
 
-def load_prompts_from_jsonl(
-    path: Path,
-    prompt_key: str = "prompt",
-    limit: int | None = None,
-) -> list[str | dict[str, Any]]:
-    """DEPRECATED: Use load_samples_from_jsonl instead."""
-    samples = load_samples_from_jsonl(path, prompt_key, limit=limit)
-    return [s.prompt for s in samples]
-
-
-def load_prompts_from_list(prompts: list[str]) -> list[str]:
-    """DEPRECATED: Use load_samples_from_list instead."""
-    return prompts
-
-
-def create_buffer_from_jsonl(
-    path: Path,
-    prompt_key: str = "prompt",
-    limit: int | None = None,
-    seed: int = 42,
-) -> DataBuffer:
-    """DEPRECATED: Use load_samples_from_jsonl + BufferState instead."""
-    prompts = load_prompts_from_jsonl(path, prompt_key, limit)
-    return DataBuffer(prompts=prompts, seed=seed)

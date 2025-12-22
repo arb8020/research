@@ -33,7 +33,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-
 # ============================================================================
 # PDEATHSIG - Child dies when parent dies (Linux only)
 # ============================================================================

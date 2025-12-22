@@ -47,7 +47,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def job_status(session: "BifrostClient", job: "JobInfo") -> str:
+def job_status(session: BifrostClient, job: JobInfo) -> str:
     """Check job status.
 
     Args:
@@ -62,7 +62,7 @@ def job_status(session: "BifrostClient", job: "JobInfo") -> str:
     return "running" if result.exit_code == 0 else "completed"
 
 
-def job_exit_code(session: "BifrostClient", job: "JobInfo") -> int | None:
+def job_exit_code(session: BifrostClient, job: JobInfo) -> int | None:
     """Get job exit code from log file.
 
     Looks for "EXIT_CODE: N" marker written by tmux wrapper.
@@ -90,8 +90,8 @@ def job_exit_code(session: "BifrostClient", job: "JobInfo") -> int | None:
 
 
 def job_wait(
-    session: "BifrostClient",
-    job: "JobInfo",
+    session: BifrostClient,
+    job: JobInfo,
     timeout: float | None = None,
     poll_interval: float = 2.0,
 ) -> int:
@@ -129,7 +129,7 @@ def job_wait(
         time.sleep(poll_interval)
 
 
-def job_logs(session: "BifrostClient", job: "JobInfo", tail: int = 100) -> str:
+def job_logs(session: BifrostClient, job: JobInfo, tail: int = 100) -> str:
     """Get recent job logs.
 
     Args:
@@ -148,8 +148,8 @@ def job_logs(session: "BifrostClient", job: "JobInfo", tail: int = 100) -> str:
 
 
 def job_stream_logs(
-    session: "BifrostClient",
-    job: "JobInfo",
+    session: BifrostClient,
+    job: JobInfo,
     timeout: float | None = None,
     poll_interval: float = 2.0,
 ) -> Iterator[str]:
@@ -211,8 +211,8 @@ def job_stream_logs(
 
 
 def job_stream_until_complete(
-    session: "BifrostClient",
-    job: "JobInfo",
+    session: BifrostClient,
+    job: JobInfo,
     on_line: Callable[[str], None] | None = None,
     timeout: float = 3600,
     poll_interval: float = 2.0,
@@ -264,7 +264,7 @@ def job_stream_until_complete(
         return False, exit_code, f"Exit code {exit_code}"
 
 
-def job_kill(session: "BifrostClient", job: "JobInfo") -> None:
+def job_kill(session: BifrostClient, job: JobInfo) -> None:
     """Kill a running job.
 
     Terminates the tmux session for this job.
@@ -278,7 +278,7 @@ def job_kill(session: "BifrostClient", job: "JobInfo") -> None:
 
 
 def _tail_log_from_position(
-    session: "BifrostClient",
+    session: BifrostClient,
     log_file: str,
     last_position: int,
 ) -> tuple[str, int]:

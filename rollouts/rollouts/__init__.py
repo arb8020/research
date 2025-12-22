@@ -45,11 +45,14 @@ if TYPE_CHECKING:
         EndpointConfig,
         Environment,
         EnvironmentConfig,
+        EnvironmentFactory,
+        EvalConfig,
         ImageContent,
         Logprob,
         Logprobs,
         Message,
         Metric,
+        PrepareMessagesFn,
         RunConfig,
         Sample,
         Score,
@@ -73,7 +76,7 @@ if TYPE_CHECKING:
         default_confirm_tool,
     )
     from .environments import BasicEnvironment, CalculatorEnvironment, NoToolsEnvironment
-    from .evaluation import EvalReport, EvalSample, evaluate, group_by, summarize
+    from .evaluation import EvalReport, evaluate, group_by, summarize
     from .export import session_to_html, session_to_markdown
     from .models import (
         ApiType,
@@ -163,13 +166,15 @@ _LAZY_IMPORTS = {
     "Score": (".dtypes", "Score"),
     "Sample": (".dtypes", "Sample"),
     "ScoreFn": (".dtypes", "ScoreFn"),
+    "EvalConfig": (".dtypes", "EvalConfig"),
+    "PrepareMessagesFn": (".dtypes", "PrepareMessagesFn"),
+    "EnvironmentFactory": (".dtypes", "EnvironmentFactory"),
     # environments
     "BasicEnvironment": (".environments", "BasicEnvironment"),
     "CalculatorEnvironment": (".environments", "CalculatorEnvironment"),
     "NoToolsEnvironment": (".environments", "NoToolsEnvironment"),
     # evaluation
     "evaluate": (".evaluation", "evaluate"),
-    "EvalSample": (".evaluation", "EvalSample"),
     "EvalReport": (".evaluation", "EvalReport"),
     "group_by": (".evaluation", "group_by"),
     "summarize": (".evaluation", "summarize"),
@@ -225,6 +230,10 @@ __all__ = [
     "ToolCall",
     "ToolResult",
     "Trajectory",
+    # Eval types
+    "EvalConfig",
+    "PrepareMessagesFn",
+    "EnvironmentFactory",
     # ContentBlock types
     "ContentBlock",
     "TextContent",
@@ -285,7 +294,6 @@ __all__ = [
     "ModelCost",
     # Evaluation
     "evaluate",
-    "EvalSample",
     "EvalReport",
     "group_by",
     "summarize",

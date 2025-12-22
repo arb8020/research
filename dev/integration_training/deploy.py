@@ -22,9 +22,6 @@ from pathlib import Path
 from base_config import Config
 from dotenv import load_dotenv
 
-# Import bifrost for deployment
-from bifrost.client import BifrostClient
-
 # Import kerbal for dependency management and deployment patterns
 from kerbal import (
     DependencyConfig,
@@ -36,6 +33,9 @@ from kerbal.job_monitor import (
     LogStreamConfig,
     stream_log_until_complete,
 )
+
+# Import bifrost for deployment
+from bifrost.client import BifrostClient
 
 # Import shared logging
 from shared.logging_config import setup_logging
