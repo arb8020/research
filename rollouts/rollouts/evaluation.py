@@ -272,6 +272,25 @@ async def evaluate_sample(
         },
     )
 
+    # Emit rollout record for TUI trace viewer (matches grpo.py format)
+    messages = [
+        {"role": m.role, "content": m.content if isinstance(m.content, str) else str(m.content)}
+        for m in final_trajectory.messages
+    ]
+    logger.info(
+        "rollout",
+        extra={
+            "step": sample_id,
+            "prompt": messages[0]["content"] if messages else "",
+            "response": messages[-1]["content"] if len(messages) > 1 else "",
+            "reward": reward,
+            "status": exec_metadata["status"],
+            "turns": exec_metadata["turns_used"],
+            "stop_reason": exec_metadata.get("stop_reason"),
+            "messages": messages,
+        },
+    )
+
     if config.verbose and score:
         # Print metrics from Score
         metric_str = ", ".join(f"{m.name}={m.value:.3f}" for m in score.metrics[:3])
