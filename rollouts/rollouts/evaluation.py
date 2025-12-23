@@ -212,10 +212,21 @@ async def evaluate_sample(
     start_time = time.time()
 
     # Emit sample_start event for frontend live streaming
+    # Include initial_messages so streaming handlers can display them
     await run_config.on_chunk(
         StreamChunk(
             "sample_start",
-            {"sample_id": sample_id, "sample_data": sample_data},
+            {
+                "sample_id": sample_id,
+                "sample_data": sample_data,
+                "messages": [
+                    {
+                        "role": m.role,
+                        "content": m.content if isinstance(m.content, str) else str(m.content),
+                    }
+                    for m in initial_messages
+                ],
+            },
         )
     )
 
@@ -400,7 +411,11 @@ async def evaluate(
     if config.max_concurrent == 1:
         # Sequential evaluation - create fresh environment for each sample
         for sample_id, sample_data in samples_to_eval:
-            env = await config.environment_factory(sample_data) if config.environment_factory else None
+            env = (
+                await config.environment_factory(sample_data)
+                if config.environment_factory
+                else None
+            )
             result = await evaluate_sample(
                 sample_data=sample_data,
                 sample_id=sample_id,
@@ -422,7 +437,11 @@ async def evaluate(
         results = []
 
         async def eval_task(sample_id: str, sample_data: dict[str, Any]) -> None:
-            env = await config.environment_factory(sample_data) if config.environment_factory else None
+            env = (
+                await config.environment_factory(sample_data)
+                if config.environment_factory
+                else None
+            )
             result = await evaluate_sample(
                 sample_data=sample_data,
                 sample_id=sample_id,

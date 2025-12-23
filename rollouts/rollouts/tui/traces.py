@@ -158,7 +158,9 @@ class TraceData:
                 for i, record in enumerate(records):
                     # Extract messages - check top-level first (new format), then metadata (old format)
                     messages = []
-                    raw_messages = record.get("messages") or record.get("metadata", {}).get("messages", [])
+                    raw_messages = record.get("messages") or record.get("metadata", {}).get(
+                        "messages", []
+                    )
                     for msg in raw_messages:
                         messages.append(
                             Message(
@@ -373,6 +375,49 @@ class TraceViewer:
             if self.wrap:
                 self.h_scroll = 0
             self._needs_redraw = True
+        elif data == "v":  # Open in neovim
+            self._open_in_nvim()
+            self._needs_redraw = True
+
+    def _open_in_nvim(self) -> None:
+        """Open trace content in neovim for full vim navigation."""
+        import os
+        import subprocess
+        import tempfile
+
+        content = self._get_plain_text()
+
+        fd, path = tempfile.mkstemp(suffix=".md")
+        os.write(fd, content.encode())
+        os.close(fd)
+
+        self.terminal.stop()
+
+        try:
+            init_cmd = " | ".join([
+                "set filetype=markdown",
+                "set number",
+                "set cursorline",
+                "set nomodifiable",
+                "nnoremap <silent> q :qa!<CR>",
+                "set laststatus=2",
+                "set statusline=%f\\ [TRACE]\\ %l/%L",
+            ])
+            subprocess.run(["nvim", "-R", f"+{init_cmd}", path])
+        finally:
+            os.unlink(path)
+            self.terminal.start(on_input=lambda x: None, on_resize=self._on_resize)
+
+    def _get_plain_text(self) -> str:
+        """Get trace content as plain text."""
+        lines = []
+        for msg in self.rollout.messages:
+            lines.append(f"# [{msg.role}]")
+            lines.append("")
+            for line in msg.content.split("\n"):
+                lines.append(line)
+            lines.append("")
+        return "\n".join(lines)
 
     def _wait_for_char(self, timeout: float = 0.5) -> str | None:
         start = time.time()
@@ -432,7 +477,9 @@ class TraceViewer:
                 # Truncate with h-scroll
                 display_ln = ln
                 if self.h_scroll > 0:
-                    display_ln = display_ln[self.h_scroll :] if self.h_scroll < len(display_ln) else ""
+                    display_ln = (
+                        display_ln[self.h_scroll :] if self.h_scroll < len(display_ln) else ""
+                    )
                 if len(display_ln) > width - 1:
                     display_ln = display_ln[: width - 4] + "..."
                 output.append(display_ln + " " * max(0, width - len(display_ln)))
@@ -458,7 +505,7 @@ class TraceViewer:
 
     def _render_footer(self, width: int) -> str:
         wrap_hint = "w:truncate" if self.wrap else "h/l:scroll  w:wrap"
-        hints = f"j/k:scroll  {wrap_hint}  q:back"
+        hints = f"j/k:scroll  {wrap_hint}  v:nvim  q:back"
         total = len(self._rendered_lines)
         pos = f"{self.scroll + 1}/{total}" if total > 0 else "0/0"
 
@@ -621,6 +668,74 @@ class TraceStreamingViewer:
             if self.wrap:
                 self.h_scroll = 0
             self._needs_redraw = True
+        elif data == "v":  # Open in neovim (with streaming)
+            self._open_in_nvim()
+            self._needs_redraw = True
+
+    def _get_plain_text(self) -> str:
+        """Get trace content as plain text for nvim."""
+        lines = []
+        for msg in self._get_messages():
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+            lines.append(f"[{role}]")
+            lines.append("")
+            for line in content.split("\n"):
+                lines.append(line)
+            lines.append("")
+        return "\n".join(lines)
+
+    def _open_in_nvim(self) -> None:
+        """Open streaming trace in neovim with auto-reload."""
+        import os
+        import subprocess
+        import tempfile
+        import threading
+
+        content = self._get_plain_text()
+
+        fd, path = tempfile.mkstemp(suffix=".md")
+        os.write(fd, content.encode())
+        os.close(fd)
+
+        self.terminal.stop()
+
+        stop_streaming = threading.Event()
+        last_hash = [hash(content)]  # Use list to allow mutation in closure
+
+        def stream_updates() -> None:
+            while not stop_streaming.is_set() and self._is_streaming:
+                new_content = self._get_plain_text()
+                new_hash = hash(new_content)
+                if new_hash != last_hash[0]:
+                    with open(path, "w") as f:
+                        f.write(new_content)
+                    last_hash[0] = new_hash
+                time.sleep(0.1)
+
+        thread = threading.Thread(target=stream_updates, daemon=True)
+        thread.start()
+
+        try:
+            init_cmd = " | ".join([
+                "set filetype=markdown",
+                "set number",
+                "set cursorline",
+                "set nomodifiable",
+                "set autoread",
+                # Timer-based auto-reload (every 200ms, even while scrolling)
+                "let g:stream_timer = timer_start(200, {-> execute('silent! checktime')}, {'repeat': -1})",
+                "autocmd FileChangedShellPost * set modifiable | silent! %d | silent! read | 1d | set nomodifiable | normal! G",
+                "nnoremap <silent> q :call timer_stop(g:stream_timer) \\| qa!<CR>",
+                "set laststatus=2",
+                "set statusline=%f\\ [STREAMING]\\ %l/%L",
+                "normal! G",
+            ])
+            subprocess.run(["nvim", "-R", f"+{init_cmd}", path])
+        finally:
+            stop_streaming.set()
+            os.unlink(path)
+            self.terminal.start(on_input=lambda x: None, on_resize=self._on_resize)
 
     def _wait_for_char(self, timeout: float = 0.5) -> str | None:
         start = time.time()
@@ -631,23 +746,33 @@ class TraceStreamingViewer:
             time.sleep(0.01)
         return None
 
+    def _get_messages(self) -> list[dict]:
+        """Get messages from data."""
+        messages = self.data.get("messages") or self.data.get("metadata", {}).get("messages")
+        if messages is None:
+            raise ValueError(f"No messages in rollout data. Keys: {list(self.data.keys())}")
+        return messages
+
     def _render_content(self) -> None:
         """Render content lines from current data."""
         self._rendered_lines = []
 
-        prompt = self.data.get("prompt", "")
-        response = self.data.get("response", "")
+        role_colors = {
+            "user": CYAN,
+            "assistant": GREEN,
+            "tool": YELLOW,
+            "system": MAGENTA,
+        }
 
-        # User message (prompt)
-        self._rendered_lines.append(f"{CYAN}{BOLD}[user]{RESET}")
-        for line in prompt.split("\n"):
-            self._rendered_lines.append(f"  {line}")
-        self._rendered_lines.append("")
+        for msg in self._get_messages():
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+            color = role_colors.get(role, WHITE)
 
-        # Assistant message (response)
-        self._rendered_lines.append(f"{GREEN}{BOLD}[assistant]{RESET}")
-        for line in response.split("\n"):
-            self._rendered_lines.append(f"  {line}")
+            self._rendered_lines.append(f"{color}{BOLD}[{role}]{RESET}")
+            for line in content.split("\n"):
+                self._rendered_lines.append(f"  {line}")
+            self._rendered_lines.append("")
 
     def _render(self) -> None:
         width = self.terminal.columns
@@ -671,7 +796,9 @@ class TraceStreamingViewer:
             else:
                 display_ln = ln
                 if self.h_scroll > 0:
-                    display_ln = display_ln[self.h_scroll :] if self.h_scroll < len(display_ln) else ""
+                    display_ln = (
+                        display_ln[self.h_scroll :] if self.h_scroll < len(display_ln) else ""
+                    )
                 if len(display_ln) > width - 1:
                     display_ln = display_ln[: width - 4] + "..."
                 output.append(display_ln + " " * max(0, width - len(display_ln)))
@@ -701,7 +828,7 @@ class TraceStreamingViewer:
 
     def _render_footer(self, width: int) -> str:
         wrap_hint = "w:truncate" if self.wrap else "h/l:scroll  w:wrap"
-        hints = f"j/k:scroll  {wrap_hint}  q:back"
+        hints = f"j/k:scroll  {wrap_hint}  v:nvim  q:back"
         total = len(self._rendered_lines)
         pos = f"{self.scroll + 1}/{total}" if total > 0 else "0/0"
         if self.auto_scroll and self._is_streaming:
@@ -811,6 +938,7 @@ class RolloutPicker:
                 "response": rollout.response,
                 "reward": rollout.reward,
                 "status": "streaming",
+                "messages": [{"role": m.role, "content": m.content} for m in rollout.messages],
             }
             viewer = TraceStreamingViewer(
                 sample_id=rollout.sample_id_str,
@@ -883,7 +1011,9 @@ class RolloutPicker:
         if selected:
             line = f"{BOLD}{cursor}{sample_label}  {status_str}  {response_preview}{RESET}"
         else:
-            line = f"{DIM}{cursor}{sample_label}  {RESET}{status_str}{DIM}  {response_preview}{RESET}"
+            line = (
+                f"{DIM}{cursor}{sample_label}  {RESET}{status_str}{DIM}  {response_preview}{RESET}"
+            )
 
         return line
 
