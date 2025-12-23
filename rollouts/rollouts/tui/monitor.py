@@ -147,8 +147,8 @@ class Pane:
     def add_line(self, line: LogLine) -> None:
         self.lines.append(line)
         if self.auto_scroll:
-            # Keep scroll at bottom
-            self.scroll = max(0, len(self.lines) - 1)
+            # Keep scroll at bottom - use large value, render will clamp to valid range
+            self.scroll = len(self.lines)
 
     def scroll_up(self, n: int = 1) -> None:
         self.scroll = max(0, self.scroll - n)
@@ -542,7 +542,10 @@ class TrainingMonitor:
         else:
             # Normal pane rendering
             pane = self.panes[self.active_pane]
-            visible_lines = list(pane.lines)[pane.scroll : pane.scroll + content_height]
+            # Clamp scroll to valid range
+            max_scroll = max(0, len(pane.lines) - content_height)
+            effective_scroll = min(pane.scroll, max_scroll)
+            visible_lines = list(pane.lines)[effective_scroll : effective_scroll + content_height]
 
             for log_line in visible_lines:
                 rendered = self._render_log_line(log_line, width, pane.h_scroll, pane.wrap)
