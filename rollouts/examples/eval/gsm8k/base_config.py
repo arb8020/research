@@ -19,9 +19,14 @@ import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import trio
+
+if TYPE_CHECKING:
+    from rollouts.dtypes import Endpoint, Score
+    from rollouts.training.datasets.data_buffer import DataBuffer
+    from rollouts.training.types import Sample
 
 # ──────────────────────── Config Dataclasses ────────────────────────────────
 

@@ -14,7 +14,7 @@ Features:
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import trio
 
@@ -51,7 +51,8 @@ class TextualFrontend:
         self.show_tool_details = show_tool_details
 
         # Textual app (initialized in start())
-        self._app: RolloutsTextualApp | None = None
+        # Type is App subclass defined in start() - use Any to avoid forward ref issues
+        self._app: Any = None
         self._app_task: asyncio.Task | None = None
 
         # Input coordination
@@ -70,7 +71,7 @@ class TextualFrontend:
         try:
             from textual.app import App, ComposeResult
             from textual.binding import Binding
-            from textual.containers import Container, Horizontal, Vertical, VerticalScroll
+            from textual.containers import Horizontal, Vertical, VerticalScroll
             from textual.widgets import Footer, Header, Input, Markdown, Static
         except ImportError:
             raise ImportError(
@@ -333,7 +334,7 @@ class TextualFrontend:
             case ToolCallEnd(tool_call=tc):
                 await self._app.add_tool_call(tc.name, dict(tc.args))
 
-            case ToolResultReceived(tool_call_id=_, content=content, is_error=is_error):
+            case ToolResultReceived(tool_call_id=_, content=_, is_error=_):
                 # Tool results are shown inline with tool calls
                 pass
 

@@ -32,7 +32,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 from typing import TYPE_CHECKING
@@ -425,50 +424,9 @@ def acquire_node(
 
 def test_correctness(client: BifrostClient, workspace: str) -> bool:
     """Run correctness test on remote GPU."""
-    print("\n" + "=" * 60)
-    print("TEST: Correctness validation (vLLM methodology)")
-    print("=" * 60)
-
-    # Write test script to remote
-    script_content = REMOTE_TEST_SCRIPT.format(
-        model=MODEL,
-        prompts=json.dumps(TEST_PROMPTS),
-        max_tokens=MAX_TOKENS,
-        num_logprobs=NUM_LOGPROBS,
-    )
-    script_path = f"{workspace}/test_correctness_remote.py"
-    client.exec(f"cat > {script_path} << 'SCRIPT_EOF'\n{script_content}\nSCRIPT_EOF")
-
-    # Submit job
-    print("\n1. Submitting correctness test job...")
-    job = submit(
-        client,
-        command=f"PYTHONPATH={workspace}/rollouts:$PYTHONPATH python {script_path}",
-        workspace=workspace,
-        cuda_device_ids=[0],
-        deps=DependencyConfig(
-            project_name="correctness-test",
-            dependencies=[
-                "torch>=2.0",
-                "transformers",
-                "accelerate",
-            ],
-        ),
-        job_name="test-correctness",
-    )
-
-    # Stream logs
-    print("\n2. Running test (streaming logs)...")
-    print("-" * 40)
-    success, exit_code = job.stream(timeout_sec=1800)  # 30 min
-    print("-" * 40)
-
-    if success:
-        print("\n✓ Correctness test PASSED")
-        return True
-    else:
-        print(f"\n✗ Correctness test FAILED (exit code: {exit_code})")
-        return False
+    # TODO: Migrate to bifrost v2 API - kerbal has been deleted
+    # See bifrost.ProcessSpec + client.submit() for the new pattern
+    raise NotImplementedError("kerbal.submit has been removed - migrate to bifrost v2 API")
 
 
 def main():

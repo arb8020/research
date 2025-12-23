@@ -21,7 +21,7 @@ async def example_main():
     renderer = AgentRenderer(tui)
 
     # Create run config with renderer as on_chunk handler
-    run_config = RunConfig(
+    _run_config = RunConfig(
         on_chunk=renderer.handle_event,
         # ... other config options
     )

@@ -15,7 +15,6 @@ Usage:
 from __future__ import annotations
 
 import os
-import sys
 
 
 def debug_swa():
@@ -209,8 +208,6 @@ if __name__ == "__main__":
         debug_swa()
     else:
         print("No local GPU. Running on remote GPU...")
-        import subprocess
-        from pathlib import Path
 
         # Inline GPU provisioning to avoid import issues
         from dotenv import load_dotenv
@@ -220,79 +217,7 @@ if __name__ == "__main__":
         runpod_key = os.environ.get("RUNPOD_API_KEY")
         assert runpod_key, "RUNPOD_API_KEY not set"
 
-        from bifrost.client import BifrostClient
-        from broker.client import GPUClient
 
         # TODO: Migrate to bifrost v2 API - kerbal has been deleted
         # See bifrost.ProcessSpec + client.submit() for the new pattern
         raise NotImplementedError("kerbal.python_env has been removed - migrate to bifrost v2 API")
-
-        ssh_key_path = os.environ.get("SSH_KEY_PATH", "~/.ssh/id_ed25519")
-        client = GPUClient(credentials={"runpod": runpod_key}, ssh_key_path=ssh_key_path)
-
-        if args.gpu_id:
-            print(f"Reusing GPU: {args.gpu_id}")
-            instance = client.get_instance(args.gpu_id, provider="runpod")
-        else:
-            print("Provisioning GPU...")
-            instance = client.create(
-                query=(client.vram_gb >= 16)
-                & (client.price_per_hour <= 0.5)
-                & (client.manufacturer == "Nvidia"),
-                name="debug-swa",
-                cloud_type="secure",
-                container_disk_gb=50,
-            )
-
-        if not instance:
-            print("Failed to provision GPU")
-            sys.exit(1)
-
-        print(f"GPU ready: {instance.id}")
-        if not instance.wait_until_ssh_ready(timeout=180):
-            print("SSH timeout")
-            client.terminate_instance(instance.id, instance.provider)
-            sys.exit(1)
-
-        print(f"SSH: {instance.ssh_connection_string()}")
-        bifrost = BifrostClient(instance.ssh_connection_string(), ssh_key_path)
-        workspace = bifrost.expand_path("~/.bifrost/workspaces/debug-swa")
-
-        # Deploy code
-        print("Deploying code...")
-        os.environ["BIFROST_SKIP_BOOTSTRAP"] = "1"
-        bifrost.push(workspace_path=workspace)
-
-        # Setup env with kerbal
-        print("Setting up Python environment...")
-        env_state = setup_python_env(
-            client=bifrost,
-            workspace=workspace,
-            requirements=["torch", "transformers", "xxhash"],
-            python_version=">=3.10",
-        )
-
-        # Install rollouts package in editable mode
-        print("Installing rollouts package...")
-        bifrost.exec(
-            f"cd {workspace}/rollouts && uv pip install --python {env_state.venv_python} -e ."
-        )
-
-        # Run remotely
-        script = Path(__file__).resolve()
-        git_root = Path(
-            subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip()
-        )
-        rel_path = script.relative_to(git_root)
-        remote_script = f"{workspace}/{rel_path}"
-        cmd = f"{env_state.venv_python} {remote_script} --local"
-
-        print(f"Running: {cmd}")
-        print("-" * 50)
-        for line in bifrost.exec_stream(cmd):
-            print(line)
-        print("-" * 50)
-
-        print(f"\nGPU kept alive: {instance.id}")
-        print(f"Rerun with:   --gpu-id {instance.id}")
-        print(f"Terminate:    broker terminate {instance.id}")

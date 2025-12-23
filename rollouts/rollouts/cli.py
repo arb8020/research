@@ -878,7 +878,7 @@ def main() -> int:
 
     # Create environment
     environment = None
-    git_env_needs_setup = False
+    _git_env_needs_setup = False
     if args.env == "calculator":
         environment = CalculatorEnvironment()
     elif args.env == "coding":
@@ -894,7 +894,8 @@ def main() -> int:
         environment = LocalFilesystemEnvironment(working_dir=working_dir, tools=tools)
     elif args.env == "git":
         environment = GitWorktreeEnvironment(working_dir=working_dir)
-        git_env_needs_setup = True  # Will call setup() after we have session_id
+        # TODO: git env setup was planned but not implemented yet
+        # git_env_needs_setup = True  # Will call setup() after we have session_id
 
     session_store = FileSessionStore() if not args.no_session else None
     system_prompt = args.system_prompt or SYSTEM_PROMPTS.get(args.env, SYSTEM_PROMPTS["none"])

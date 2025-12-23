@@ -189,8 +189,6 @@ async def _train_async(config: BaseConfig) -> list[dict]:
     tokenizer = load_tokenizer(config.model_name)
 
     logger.info("Loading data...")
-    # Load raw samples from config, then convert to SFT format
-    raw_samples = load_samples_from_config(config.dataset)
     # Convert to SFT dataset format (tokenized with loss masks)
     samples = load_sft_dataset(
         config.dataset.hf_dataset if config.dataset.source == "hf" else config.dataset.path,

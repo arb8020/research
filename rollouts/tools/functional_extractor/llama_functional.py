@@ -331,7 +331,7 @@ def create_causal_mask(
     if attention_mask.all():
         return None
 
-    batch_size = attention_mask.shape[0]
+    _batch_size = attention_mask.shape[0]
 
     # Create causal mask: (1, 1, seq_len, seq_len)
     causal_mask = torch.tril(torch.ones(seq_len, seq_len, device=device, dtype=torch.bool))

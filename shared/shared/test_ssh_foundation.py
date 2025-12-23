@@ -8,6 +8,7 @@ actual SSH connections.
 
 import asyncio
 import os
+import sys
 
 from shared.ssh_foundation import (
     SSHConnectionInfo,
@@ -163,20 +164,20 @@ async def test_async_patterns():
 
     # These will fail to connect but should not crash with syntax errors
     try:
-        result = await client.aconnect(conn_info)
+        _result = await client.aconnect(conn_info)  # noqa: F841 - testing error handling
         # Expected to fail - no real SSH server
     except Exception as e:
         print(f"   ✅ aconnect() handles connection failure gracefully: {type(e).__name__}")
 
     try:
-        result = await client.aexec_command("echo test")
+        _result = await client.aexec_command("echo test")  # noqa: F841 - testing error handling
         # Expected to fail - no connection
     except Exception as e:
         print(f"   ✅ aexec_command() handles no-connection gracefully: {type(e).__name__}")
 
     # Test convenience async function
     try:
-        result = await execute_command_async(conn_info, "echo test")
+        _result = await execute_command_async(conn_info, "echo test")
         # Expected to fail but shouldn't crash
     except Exception as e:
         print(f"   ✅ execute_command_async() handles failure gracefully: {type(e).__name__}")

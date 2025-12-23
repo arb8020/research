@@ -142,6 +142,16 @@ line-length = 100
 target-version = "py310"
 preview = true  # Required for PLR1702 (too-many-nested-blocks)
 
+# Exclude dev/ from linting - experimental scripts with sys.path hacks, not proper packages.
+# TODO: Revisit when dev/ structure stabilizes (may become examples/ or get removed)
+exclude = [
+    "dev/**",
+    "scripts/**",  # One-off scripts with hardcoded paths
+    "cutlass/**",  # External vendored code
+    "cutlass_repo/**",  # External vendored code
+    "worktrees/**",  # Git worktrees (copies of repo)
+]
+
 [tool.ruff.lint]
 select = [
     "E",       # pycodestyle errors

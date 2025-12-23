@@ -61,6 +61,8 @@ class Rollout:
     response: str
     reward: float
     messages: list[Message] = field(default_factory=list)
+    is_streaming: bool = False  # True if still receiving updates
+    sample_id_str: str = ""  # Original string sample ID for matching updates
 
 
 @dataclass
@@ -191,8 +193,15 @@ class TraceData:
         return cls(steps=steps)
 
     def add_record(self, record: dict) -> None:
-        """Add a single rollout record (from log stream)."""
-        step_num = record.get("step", 0)
+        """Add or update a rollout record (from log stream).
+
+        For streaming rollouts, updates existing rollout if sample_id matches.
+        """
+        sample_id_str = str(record.get("step", ""))  # The string ID like "sample_0003"
+        status = record.get("status", "")
+        is_streaming = status == "streaming"
+
+        # Use prompt hash as group_id
         group_id = record.get("group_index")
         if group_id is None:
             prompt = record.get("prompt", "")
@@ -208,6 +217,20 @@ class TraceData:
                     content=msg.get("content", ""),
                 )
             )
+
+        # Check if we already have this rollout (for streaming updates)
+        existing_rollout = self.find_rollout_by_sample_id(sample_id_str)
+        if existing_rollout:
+            # Update existing rollout
+            existing_rollout.response = record.get("response", "")
+            existing_rollout.reward = record.get("reward", 0.0)
+            existing_rollout.messages = messages
+            existing_rollout.is_streaming = is_streaming
+            return
+
+        # Create new rollout - need to find/create step and group first
+        # Use 0 as step_num since we're using sample_id_str for identification
+        step_num = 0
 
         # Find or create step
         step = None
@@ -235,7 +258,7 @@ class TraceData:
             )
             step.groups.append(group)
 
-        # Add rollout
+        # Add new rollout
         rollout = Rollout(
             step=step_num,
             group_id=group_id,
@@ -244,8 +267,19 @@ class TraceData:
             response=record.get("response", ""),
             reward=record.get("reward", 0.0),
             messages=messages,
+            is_streaming=is_streaming,
+            sample_id_str=sample_id_str,
         )
         group.rollouts.append(rollout)
+
+    def find_rollout_by_sample_id(self, sample_id_str: str) -> Rollout | None:
+        """Find a rollout by its string sample ID."""
+        for step in self.steps:
+            for group in step.groups:
+                for rollout in group.rollouts:
+                    if rollout.sample_id_str == sample_id_str:
+                        return rollout
+        return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -435,6 +469,251 @@ class TraceViewer:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Streaming Trace Viewer (live updating)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TraceStreamingViewer:
+    """View a streaming rollout with live token updates.
+
+    Similar to TraceViewer but polls a line queue for updates and
+    auto-scrolls as new content arrives.
+    """
+
+    def __init__(
+        self,
+        sample_id: str,
+        initial_data: dict,
+        line_queue: list[str],
+    ) -> None:
+        """Initialize streaming viewer.
+
+        Args:
+            sample_id: The sample ID to watch for updates
+            initial_data: Initial rollout data dict with prompt, response, etc.
+            line_queue: Shared list that receives new JSONL lines (from background thread)
+        """
+        self.sample_id = sample_id
+        self.data = initial_data.copy()
+        self.line_queue = line_queue
+
+        self.scroll = 0
+        self.h_scroll = 0
+        self.wrap = True
+        self.auto_scroll = True  # Follow tail
+        self.terminal = Terminal(use_alternate_screen=True)
+        self._running = False
+        self._needs_redraw = True
+        self._is_streaming = True  # Still receiving updates
+        self._rendered_lines: list[str] = []
+        self._last_response_len = 0
+
+    def run(self) -> None:
+        self._running = True
+        self._render_content()
+        self.terminal.start(on_input=lambda x: None, on_resize=self._on_resize)
+
+        try:
+            self._main_loop()
+        finally:
+            self.terminal.stop()
+
+    def _on_resize(self) -> None:
+        self._needs_redraw = True
+
+    def _main_loop(self) -> None:
+        while self._running:
+            # Drain line queue and check for updates to our sample
+            self._process_queue()
+
+            # Re-render content if response changed
+            if len(self.data.get("response", "")) != self._last_response_len:
+                self._render_content()
+                self._last_response_len = len(self.data.get("response", ""))
+                self._needs_redraw = True
+
+                # Auto-scroll to bottom if enabled
+                if self.auto_scroll:
+                    height = self.terminal.rows
+                    content_height = height - 2
+                    max_scroll = max(0, len(self._rendered_lines) - content_height)
+                    self.scroll = max_scroll
+
+            if self._needs_redraw:
+                self._render()
+                self._needs_redraw = False
+
+            data = self.terminal.read_input()
+            if data:
+                self._handle_input(data)
+
+            time.sleep(0.02)  # 50fps for smooth streaming
+
+    def _process_queue(self) -> None:
+        """Process queued lines, looking for updates to our sample."""
+        while self.line_queue:
+            raw_line = self.line_queue.pop(0)
+            if not raw_line.strip():
+                continue
+
+            try:
+                data = json.loads(raw_line)
+                message = data.get("message", "")
+                step = data.get("step", "")
+
+                # Check if this is a rollout update for our sample
+                if message == "rollout" and str(step) == str(self.sample_id):
+                    self.data = data
+                    status = data.get("status", "")
+                    if status != "streaming":
+                        self._is_streaming = False
+            except json.JSONDecodeError:
+                pass
+
+    def _handle_input(self, data: str) -> None:
+        if data == "q":
+            self._running = False
+            return
+
+        height = self.terminal.rows
+        content_height = height - 2
+        max_scroll = max(0, len(self._rendered_lines) - content_height)
+
+        if data in ("j", "\x1b[B"):
+            self.scroll = min(max_scroll, self.scroll + 1)
+            self.auto_scroll = self.scroll >= max_scroll
+            self._needs_redraw = True
+        elif data in ("k", "\x1b[A"):
+            self.scroll = max(0, self.scroll - 1)
+            self.auto_scroll = False
+            self._needs_redraw = True
+        elif data == "\x04":  # Ctrl+D
+            self.scroll = min(max_scroll, self.scroll + content_height // 2)
+            self.auto_scroll = self.scroll >= max_scroll
+            self._needs_redraw = True
+        elif data == "\x15":  # Ctrl+U
+            self.scroll = max(0, self.scroll - content_height // 2)
+            self.auto_scroll = False
+            self._needs_redraw = True
+        elif data == "g":
+            next_char = self._wait_for_char()
+            if next_char == "g":
+                self.scroll = 0
+                self.auto_scroll = False
+                self._needs_redraw = True
+        elif data == "G":
+            self.scroll = max_scroll
+            self.auto_scroll = True
+            self._needs_redraw = True
+        elif data in ("h", "\x1b[D"):
+            self.h_scroll = max(0, self.h_scroll - 20)
+            self.wrap = self.h_scroll == 0
+            self._needs_redraw = True
+        elif data in ("l", "\x1b[C"):
+            self.h_scroll += 20
+            self.wrap = False
+            self._needs_redraw = True
+        elif data == "0":
+            self.h_scroll = 0
+            self._needs_redraw = True
+        elif data == "w":
+            self.wrap = not self.wrap
+            if self.wrap:
+                self.h_scroll = 0
+            self._needs_redraw = True
+
+    def _wait_for_char(self, timeout: float = 0.5) -> str | None:
+        start = time.time()
+        while time.time() - start < timeout:
+            data = self.terminal.read_input()
+            if data:
+                return data
+            time.sleep(0.01)
+        return None
+
+    def _render_content(self) -> None:
+        """Render content lines from current data."""
+        self._rendered_lines = []
+
+        prompt = self.data.get("prompt", "")
+        response = self.data.get("response", "")
+
+        # User message (prompt)
+        self._rendered_lines.append(f"{CYAN}{BOLD}[user]{RESET}")
+        for line in prompt.split("\n"):
+            self._rendered_lines.append(f"  {line}")
+        self._rendered_lines.append("")
+
+        # Assistant message (response)
+        self._rendered_lines.append(f"{GREEN}{BOLD}[assistant]{RESET}")
+        for line in response.split("\n"):
+            self._rendered_lines.append(f"  {line}")
+
+    def _render(self) -> None:
+        width = self.terminal.columns
+        height = self.terminal.rows
+        content_height = height - 2
+
+        self.terminal.write("\x1b[2J\x1b[H")
+
+        output = []
+        output.append(self._render_header(width))
+
+        visible = self._rendered_lines[self.scroll : self.scroll + content_height]
+        for ln in visible:
+            if self.wrap:
+                while ln and len(output) < content_height + 1:
+                    chunk = ln[: width - 1]
+                    ln = ln[width - 1 :]
+                    output.append(chunk + " " * max(0, width - len(chunk)))
+                if not ln:
+                    continue
+            else:
+                display_ln = ln
+                if self.h_scroll > 0:
+                    display_ln = display_ln[self.h_scroll :] if self.h_scroll < len(display_ln) else ""
+                if len(display_ln) > width - 1:
+                    display_ln = display_ln[: width - 4] + "..."
+                output.append(display_ln + " " * max(0, width - len(display_ln)))
+
+        while len(output) < height - 1:
+            output.append(" " * width)
+
+        output.append(self._render_footer(width))
+
+        for i, line in enumerate(output):
+            self.terminal.write(f"\x1b[{i + 1};1H{line}")
+
+    def _render_header(self, width: int) -> str:
+        sample_id = self.sample_id
+        char_count = len(self.data.get("response", ""))
+
+        if self._is_streaming:
+            status = f"{YELLOW}● STREAMING{RESET}{BG_HEADER}"
+        else:
+            reward = self.data.get("reward", 0.0)
+            reward_color = GREEN if reward > 0 else RED if reward < 0 else WHITE
+            status = f"{reward_color}reward: {reward:.3f}{RESET}{BG_HEADER}"
+
+        left = f" [{sample_id}] {status} ({char_count} chars)"
+        padding = width - len(f" [{sample_id}]  STREAMING ({char_count} chars)")
+        return f"{BG_HEADER}{BOLD}{left}{RESET}{BG_HEADER}{' ' * max(0, padding)}{RESET}"
+
+    def _render_footer(self, width: int) -> str:
+        wrap_hint = "w:truncate" if self.wrap else "h/l:scroll  w:wrap"
+        hints = f"j/k:scroll  {wrap_hint}  q:back"
+        total = len(self._rendered_lines)
+        pos = f"{self.scroll + 1}/{total}" if total > 0 else "0/0"
+        if self.auto_scroll and self._is_streaming:
+            pos += " [FOLLOW]"
+
+        padding = width - len(hints) - len(pos) - 6
+        return (
+            f"{BG_HEADER} {DIM}{hints}{RESET}{BG_HEADER}{' ' * max(0, padding)}{WHITE}{pos} {RESET}"
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Rollout Picker (samples within a group)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -442,8 +721,9 @@ class TraceViewer:
 class RolloutPicker:
     """Pick a rollout from a group."""
 
-    def __init__(self, group: Group) -> None:
+    def __init__(self, group: Group, line_queue: list[str] | None = None) -> None:
         self.group = group
+        self.line_queue = line_queue
         self.cursor = 0
         self.scroll = 0
         self.terminal = Terminal(use_alternate_screen=True)
@@ -523,7 +803,23 @@ class RolloutPicker:
         rollout = self.group.rollouts[self.cursor]
         self.terminal.stop()
 
-        viewer = TraceViewer(rollout)
+        # Use streaming viewer for streaming rollouts (if we have a line queue)
+        if rollout.is_streaming and self.line_queue is not None:
+            initial_data = {
+                "step": rollout.sample_id_str,
+                "prompt": rollout.prompt,
+                "response": rollout.response,
+                "reward": rollout.reward,
+                "status": "streaming",
+            }
+            viewer = TraceStreamingViewer(
+                sample_id=rollout.sample_id_str,
+                initial_data=initial_data,
+                line_queue=self.line_queue,
+            )
+        else:
+            viewer = TraceViewer(rollout)
+
         viewer.run()
 
         self.terminal.start(on_input=lambda x: None, on_resize=self._on_resize)
@@ -568,19 +864,26 @@ class RolloutPicker:
     def _render_rollout_line(self, r: Rollout, selected: bool, width: int) -> str:
         cursor = "> " if selected else "  "
 
-        # Reward with color
-        reward_color = GREEN if r.reward > 0.5 else YELLOW if r.reward > 0 else RED
-        reward_str = f"{reward_color}{r.reward:.3f}{RESET}"
+        # Show streaming indicator or reward
+        if r.is_streaming:
+            char_count = len(r.response)
+            status_str = f"{YELLOW}● streaming ({char_count} chars){RESET}"
+        else:
+            reward_color = GREEN if r.reward > 0.5 else YELLOW if r.reward > 0 else RED
+            status_str = f"reward={reward_color}{r.reward:.3f}{RESET}"
 
         # Response preview
-        response_preview = r.response[:60].replace("\n", " ")
-        if len(r.response) > 60:
+        response_preview = r.response[:50].replace("\n", " ")
+        if len(r.response) > 50:
             response_preview += "..."
 
+        # Use sample_id_str if available, otherwise sample_id
+        sample_label = r.sample_id_str if r.sample_id_str else f"Sample {r.sample_id}"
+
         if selected:
-            line = f"{BOLD}{cursor}Sample {r.sample_id}  reward={reward_str}  {response_preview}{RESET}"
+            line = f"{BOLD}{cursor}{sample_label}  {status_str}  {response_preview}{RESET}"
         else:
-            line = f"{DIM}{cursor}Sample {r.sample_id}  reward={RESET}{reward_str}{DIM}  {response_preview}{RESET}"
+            line = f"{DIM}{cursor}{sample_label}  {RESET}{status_str}{DIM}  {response_preview}{RESET}"
 
         return line
 
@@ -602,8 +905,9 @@ class RolloutPicker:
 class GroupPicker:
     """Pick a group from a step."""
 
-    def __init__(self, step: Step) -> None:
+    def __init__(self, step: Step, line_queue: list[str] | None = None) -> None:
         self.step = step
+        self.line_queue = line_queue
         self.cursor = 0
         self.scroll = 0
         self.terminal = Terminal(use_alternate_screen=True)
@@ -683,7 +987,7 @@ class GroupPicker:
         group = self.step.groups[self.cursor]
         self.terminal.stop()
 
-        picker = RolloutPicker(group)
+        picker = RolloutPicker(group, line_queue=self.line_queue)
         picker.run()
 
         self.terminal.start(on_input=lambda x: None, on_resize=self._on_resize)
@@ -760,8 +1064,9 @@ class GroupPicker:
 class StepPicker:
     """Pick a training step."""
 
-    def __init__(self, data: TraceData) -> None:
+    def __init__(self, data: TraceData, line_queue: list[str] | None = None) -> None:
         self.data = data
+        self.line_queue = line_queue
         self.cursor = 0
         self.scroll = 0
         self.terminal = Terminal(use_alternate_screen=True)
@@ -842,7 +1147,7 @@ class StepPicker:
         step = self.data.steps[self.cursor]
         self.terminal.stop()
 
-        picker = GroupPicker(step)
+        picker = GroupPicker(step, line_queue=self.line_queue)
         picker.run()
 
         self.terminal.start(on_input=lambda x: None, on_resize=self._on_resize)

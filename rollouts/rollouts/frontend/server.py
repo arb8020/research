@@ -668,7 +668,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             return
 
         env_module = env_match.group(1)
-        env_class = env_match.group(2)
+        _env_class = env_match.group(2)  # Available for class-specific handling
 
         # Convert module path to file path
         module_parts = env_module.split(".")
@@ -719,7 +719,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             return
 
         env_module = env_match.group(1)
-        env_class = env_match.group(2)
+        _env_class = env_match.group(2)  # Available for class-specific handling
 
         # Convert module path to file path
         module_parts = env_module.split(".")

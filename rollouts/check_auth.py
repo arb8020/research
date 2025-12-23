@@ -237,8 +237,9 @@ def main():
     if args.test_api_key:
         test_api_key_path()
 
-    if args.test_json:
-        test_with_json_mode()
+    # TODO: test_with_json_mode was removed - remove this flag or reimplement
+    # if args.test_json:
+    #     test_with_json_mode()
 
     print("\n" + "=" * 70)
     sys.exit(0 if oauth_ok else 1)

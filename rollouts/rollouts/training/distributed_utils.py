@@ -14,13 +14,10 @@ import torch.distributed as dist
 
 try:
     from torch.distributed.distributed_c10d import (
-        Backend,
-        PrefixStore,
         Store,
         _new_process_group_helper,
         _world,
         default_pg_timeout,
-        rendezvous,
     )
 except ImportError:
     # Fallback for older PyTorch versions

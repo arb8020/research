@@ -128,7 +128,7 @@ async def test_timeout():
         # Test command that should timeout
         try:
             with trio.move_on_after(2) as cancel_scope:
-                result = await client.exec("sleep 10")
+                _result = await client.exec("sleep 10")  # noqa: F841 - testing timeout
 
             if cancel_scope.cancelled_caught:
                 print("✓ Timeout worked correctly (command was cancelled)")

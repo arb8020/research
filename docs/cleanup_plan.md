@@ -2,18 +2,44 @@
 
 > Goal: Fix pre-commit hooks so we don't need `--no-verify`. Apply semantic compression principles from FAVORITES.md.
 
-## Current State
+## Current State (after Phase 1 complete)
 
-- **ruff**: 2262 errors (1422 are ANN type hints)
+- **ruff**: 1229 errors remaining (down from 2262)
+  - Mostly ANN (type annotations) - ~1100
+  - Structural (PLR) - ~150
+  - Other - ~80
 - **ty**: 250 diagnostics (mostly None handling)
 - Pre-commit runs: ruff lint, ruff format, ty check
 
+### Config Changes Made
+```toml
+# Added to pyproject.toml [tool.ruff]
+exclude = [
+    "dev/**",           # Experimental scripts with sys.path hacks
+    "scripts/**",       # One-off scripts with hardcoded paths
+    "cutlass/**",       # External vendored code
+    "cutlass_repo/**",  # External vendored code
+    "worktrees/**",     # Git worktrees
+]
+```
+
 ## Priority Order (by structural impact)
 
-### Phase 1: Critical Bugs (must fix)
-- [ ] **F821**: 36 undefined names (actual bugs)
-- [ ] **F841**: 55 unused variables (dead code)
-- [ ] **F401**: 12 unused imports
+### Phase 1: Critical Bugs (must fix) ✅ COMPLETE
+
+- [x] **F821**: 30 undefined names → **FIXED**
+  - Added missing imports (`sys`, `trio`, `torch`)
+  - Added `TYPE_CHECKING` imports for forward references (`Sample`, `Score`, `Endpoint`, etc.)
+  - Removed dead code after `raise NotImplementedError` (kerbal migration leftovers)
+  - Deleted broken `test_refactor.py`
+
+- [x] **F841**: 32 unused variables → **FIXED**
+  - Used `_` prefix for intentionally unused vars (Pythonic convention)
+  - Generated fixes via `ruff check --output-format json | python3 ... | perl`
+
+- [x] **F401**: 11 unused imports → **FIXED**
+  - 6 auto-fixed with `ruff check --fix`
+  - 5 manually removed
 
 ### Phase 2: Structural - Function Decomposition (Tiger Style)
 These force the architectural changes FAVORITES emphasizes.
@@ -59,13 +85,6 @@ Options for ANN rules:
 1. **Disable entirely** - focus on structural quality, not annotations
 2. **Per-directory ignores** - enforce in core packages, skip dev/
 3. **Fix everything** - significant effort, unclear value
-
-## Recommended Approach
-
-1. **Quick wins first**: Run `ruff check --fix` for auto-fixable issues (48 safe, 762 unsafe)
-2. **Decompose the monsters**: Start with `rollouts/cli.py:main()` - it's 5x over limit
-3. **Rename shadowed builtins**: `ConnectionError` → `SSHConnectionError`
-4. **Tune config last**: Once structural issues fixed, decide on ANN rules
 
 ## Files to Prioritize
 

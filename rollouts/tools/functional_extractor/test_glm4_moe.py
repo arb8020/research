@@ -19,6 +19,11 @@ from __future__ import annotations
 
 import argparse
 import sys
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import torch
+    from transformers import AutoModelForCausalLM
 
 
 def download_partial_weights(num_layers: int) -> dict:
@@ -280,7 +285,7 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
 
             # Capture MoE subcomponent outputs for the first MoE layer (layer 3)
             if i == FIRST_K_DENSE_REPLACE:
-                moe = model.model.layers[i].mlp
+                _moe = model.model.layers[i].mlp
                 hf_layer = model.model.layers[i]
 
                 # Use hooks to capture MoE input, shared expert output, and routed expert output
@@ -381,7 +386,7 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
 
             for i in range(num_layers):
                 # Get input hidden state for this layer (before the layer)
-                layer_input = hidden.clone()
+                _layer_input = hidden.clone()
 
                 hidden = transformer_layer(hidden, weights_gpu, i, cos, sin)
                 hf_hidden = hf_intermediates[f"layer_{i}"].cuda()

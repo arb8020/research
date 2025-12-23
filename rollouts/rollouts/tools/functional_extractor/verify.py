@@ -190,22 +190,6 @@ def setup_env(handle: GPUHandle, requirements: list[str]) -> str:
     # See bifrost.ProcessSpec + client.submit() for the new pattern
     raise NotImplementedError("kerbal.python_env has been removed - migrate to bifrost v2 API")
 
-    print("Setting up Python environment...")
-
-    # Create workspace directory
-    handle.bifrost.exec(f"mkdir -p {handle.workspace}")
-
-    # Use kerbal to setup environment
-    env_state = setup_python_env(
-        client=handle.bifrost,
-        workspace=handle.workspace,
-        requirements=requirements,
-        python_version=">=3.10",
-    )
-
-    print(f"Python environment ready: {env_state.venv_python}")
-    return env_state.venv_python
-
 
 def run_on_gpu(
     script_path: str,

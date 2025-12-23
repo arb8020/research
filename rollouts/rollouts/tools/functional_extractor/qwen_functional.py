@@ -360,7 +360,7 @@ def create_causal_mask(
     if attention_mask.all():
         return None
 
-    batch_size = attention_mask.shape[0]
+    _batch_size = attention_mask.shape[0]
 
     # Create causal mask: (1, 1, seq_len, seq_len)
     # Lower triangular = True (attend), upper triangular = False (mask)
