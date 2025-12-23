@@ -2,8 +2,10 @@ from ..dtypes import Environment
 from .binary_search import BinarySearchEnvironment
 from .calculator import CalculatorEnvironment
 from .coding import LocalFilesystemEnvironment
+from .compose import ComposedEnvironment, compose
 from .git_worktree import GitWorktreeEnvironment
 from .no_tools import BasicEnvironment, NoToolsEnvironment
+from .repl import MessageParsingREPLEnvironment, REPLEnvironment
 
 __all__ = [
     "Environment",
@@ -14,10 +16,14 @@ __all__ = [
     "LocalFilesystemEnvironment",
     "GitWorktreeEnvironment",
     "BrowsingEnvironment",
+    "REPLEnvironment",
+    "MessageParsingREPLEnvironment",
+    "ComposedEnvironment",
+    "compose",
 ]
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> type:
     """Lazy imports for environments with heavy dependencies."""
     if name == "BrowsingEnvironment":
         from .browsing import BrowsingEnvironment

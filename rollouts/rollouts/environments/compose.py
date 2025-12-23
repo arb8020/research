@@ -1,0 +1,226 @@
+"""
+Environment composition for combining multiple environments.
+
+Allows combining tools from different environments into a single environment.
+For example, combining LocalFilesystemEnvironment with REPLEnvironment to get
+both file tools and RLM capabilities.
+
+Usage:
+    env = compose(
+        LocalFilesystemEnvironment(working_dir=Path.cwd()),
+        REPLEnvironment(context=huge_doc, sub_endpoint=endpoint),
+    )
+    # Tools: read, write, edit, bash, repl, llm_query, final_answer
+"""
+
+from dataclasses import dataclass, field
+from typing import Any
+
+import trio
+
+from ..dtypes import (
+    AgentState,
+    Environment,
+    Message,
+    RunConfig,
+    Tool,
+    ToolCall,
+    ToolResult,
+)
+
+
+@dataclass
+class ComposedEnvironment:
+    """Compose multiple environments into one.
+
+    This merges tools from all environments and routes exec_tool calls
+    to the appropriate environment based on tool name.
+
+    TODO: Environment compatibility validation
+    ------------------------------------
+    Not all environments compose well. Known issues to handle:
+
+    1. STATE CONFLICTS: Environments may have conflicting state assumptions.
+       - Example: Two environments both trying to manage working_dir
+       - Example: REPLEnvironment's namespace vs another env's namespace
+       - Mitigation: Add explicit conflict detection in __post_init__
+
+    2. ON_ASSISTANT_MESSAGE ORDERING: When multiple environments implement
+       on_assistant_message, the order matters. Currently we chain them,
+       but this may cause issues:
+       - Example: REPLEnvironment parses ```repl blocks, another env parses ```sql
+       - Example: One env stops early, preventing others from running
+       - Mitigation: Consider parallel execution or explicit ordering config
+
+    3. SERIALIZATION: Each environment serializes independently, but there's
+       no guarantee the combined state is coherent on restore.
+       - Mitigation: Add version/compatibility checks in deserialize
+
+    4. TOOL NAME COLLISIONS: Currently we raise on collision, but some tools
+       might intentionally want to override others.
+       - Mitigation: Add override=True option or namespacing (env.tool_name)
+
+    5. CONFIRMATION LOGIC: requires_confirmation may conflict if environments
+       have different security models.
+       - Mitigation: Union (any env requiring confirmation) vs intersection
+
+    For now, this is experimental and works for simple cases like
+    LocalFilesystemEnvironment + REPLEnvironment.
+    """
+
+    environments: list[Environment]
+    _tool_to_env: dict[str, Environment] = field(default_factory=dict, repr=False)
+    _initialized: bool = field(default=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self._initialized:
+            return
+        self._initialized = True
+
+        # Build routing table: tool_name -> environment
+        for env in self.environments:
+            for tool in env.get_tools():
+                name = tool.function.name
+                if name in self._tool_to_env:
+                    existing_env = self._tool_to_env[name]
+                    raise ValueError(
+                        f"Tool name collision: '{name}' is provided by both "
+                        f"{type(existing_env).__name__} and {type(env).__name__}. "
+                        f"Consider using different environments or namespacing tools."
+                    )
+                self._tool_to_env[name] = env
+
+    def get_name(self) -> str:
+        names = [env.get_name() for env in self.environments if hasattr(env, "get_name")]
+        return "+".join(names) if names else "composed"
+
+    def get_status_info(self) -> dict[str, str] | None:
+        """Merge status info from all environments."""
+        combined: dict[str, str] = {}
+        for env in self.environments:
+            if hasattr(env, "get_status_info"):
+                info = env.get_status_info()
+                if info:
+                    # TODO: Handle key collisions in status info
+                    combined.update(info)
+        return combined if combined else None
+
+    def get_tools(self) -> list[Tool]:
+        """Return union of all tools from composed environments."""
+        tools = []
+        for env in self.environments:
+            tools.extend(env.get_tools())
+        return tools
+
+    def requires_confirmation(self, tool_call: ToolCall) -> bool:
+        """Check if any environment requires confirmation for this tool.
+
+        Uses union semantics: if ANY environment requires confirmation, confirm.
+        """
+        env = self._tool_to_env.get(tool_call.name)
+        if env is None:
+            return False
+        return env.requires_confirmation(tool_call)
+
+    def get_tool_formatter(self, tool_name: str) -> Any:
+        """Get formatter from the environment that owns this tool."""
+        env = self._tool_to_env.get(tool_name)
+        if env is None:
+            return None
+        if hasattr(env, "get_tool_formatter"):
+            return env.get_tool_formatter(tool_name)
+        return None
+
+    async def on_session_start(self, session_id: str) -> None:
+        """Notify all environments of session start."""
+        for env in self.environments:
+            if hasattr(env, "on_session_start"):
+                await env.on_session_start(session_id)
+
+    async def on_assistant_message(self, message: Message, state: AgentState) -> AgentState:
+        """Chain on_assistant_message through all environments.
+
+        TODO: This chains sequentially. Consider:
+        - Parallel execution for independent environments
+        - Explicit ordering configuration
+        - Early-exit vs continue-after-stop semantics
+        """
+        current_state = state
+        for env in self.environments:
+            if hasattr(env, "on_assistant_message"):
+                current_state = await env.on_assistant_message(message, current_state)
+                # TODO: Should we continue after one env signals stop?
+                # Current behavior: stop chaining, return immediately
+                if current_state.stop:
+                    break
+        return current_state
+
+    async def exec_tool(
+        self,
+        tool_call: ToolCall,
+        current_state: AgentState,
+        run_config: RunConfig,
+        cancel_scope: trio.CancelScope | None = None,
+    ) -> ToolResult:
+        """Route tool execution to the appropriate environment."""
+        env = self._tool_to_env.get(tool_call.name)
+        if env is None:
+            return ToolResult(
+                tool_call_id=tool_call.id,
+                is_error=True,
+                content="",
+                error=f"Unknown tool: {tool_call.name}",
+            )
+        return await env.exec_tool(tool_call, current_state, run_config, cancel_scope)
+
+    async def serialize(self) -> dict[str, Any]:
+        """Serialize all composed environments."""
+        return {
+            "env_kind": "composed",
+            "version": "1.0.0",
+            "environments": [await env.serialize() for env in self.environments],
+        }
+
+    @staticmethod
+    async def deserialize(data: dict[str, Any]) -> "ComposedEnvironment":
+        """Deserialize composed environment.
+
+        TODO: This requires a registry of environment types to deserialize
+        each sub-environment correctly. For now, raises NotImplementedError.
+        """
+        raise NotImplementedError(
+            "ComposedEnvironment.deserialize requires environment type registry. "
+            "See TODO in compose.py for details."
+        )
+        # Future implementation would look like:
+        # environments = []
+        # for env_data in data["environments"]:
+        #     env_cls = ENVIRONMENT_REGISTRY[env_data["env_kind"]]
+        #     environments.append(await env_cls.deserialize(env_data))
+        # return ComposedEnvironment(environments=environments)
+
+
+def compose(*environments: Environment) -> ComposedEnvironment:
+    """Compose multiple environments into one.
+
+    Example:
+        env = compose(
+            LocalFilesystemEnvironment(working_dir=Path.cwd()),
+            REPLEnvironment(context=huge_doc),
+        )
+
+    Args:
+        *environments: Environments to compose
+
+    Returns:
+        ComposedEnvironment with merged tools
+
+    Raises:
+        ValueError: If tool names collide between environments
+    """
+    if len(environments) == 0:
+        raise ValueError("compose() requires at least one environment")
+    if len(environments) == 1:
+        # No need to wrap single environment
+        return environments[0]  # type: ignore
+    return ComposedEnvironment(environments=list(environments))

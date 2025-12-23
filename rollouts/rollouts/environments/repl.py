@@ -183,7 +183,7 @@ class REPLEnvironment:
     _final_answer: str | None = None
     _initialized: bool = False
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not self._initialized:
             self._namespace = _create_namespace(
                 context=self.context,
@@ -272,7 +272,7 @@ class REPLEnvironment:
     def requires_confirmation(self, tool_call: ToolCall) -> bool:
         return False
 
-    def get_tool_formatter(self, tool_name: str):
+    def get_tool_formatter(self, tool_name: str) -> None:
         # Could add custom formatters for REPL output
         return None
 
@@ -392,16 +392,18 @@ class REPLEnvironment:
         """
         # TODO: Implement proper async bridge
         # Could use trio.from_thread.run or similar
-        return f"[llm_query not available inside exec - use llm_query tool instead]"
+        return "[llm_query not available inside exec - use llm_query tool instead]"
 
     def _sync_rlm_query(self, prompt: str) -> str:
         """Synchronous rlm_query for use inside REPL code."""
-        return f"[rlm_query not available inside exec - use llm_query tool with recursive=True instead]"
+        return (
+            "[rlm_query not available inside exec - use llm_query tool with recursive=True instead]"
+        )
 
     async def _async_llm_query(self, prompt: str) -> str:
         """Make a simple LLM call (not recursive)."""
-        from ..providers import get_provider_function
         from ..dtypes import Actor, Trajectory
+        from ..providers import get_provider_function
 
         assert self.sub_endpoint is not None
 
@@ -414,9 +416,10 @@ class REPLEnvironment:
         # Collect response
         response_text = ""
 
-        async def collect_response(event):
+        async def collect_response(event: Any) -> None:
             nonlocal response_text
             from ..dtypes import TextDelta
+
             if isinstance(event, TextDelta):
                 response_text += event.delta
 
@@ -447,9 +450,11 @@ class REPLEnvironment:
 
         # Create agent state
         actor = Actor(
-            trajectory=Trajectory(messages=[
-                Message(role="user", content="Process the context and provide your answer."),
-            ]),
+            trajectory=Trajectory(
+                messages=[
+                    Message(role="user", content="Process the context and provide your answer."),
+                ]
+            ),
             endpoint=self.sub_endpoint,
             tools=child_env.get_tools(),
         )
@@ -465,7 +470,7 @@ class REPLEnvironment:
             session_store=None,  # Don't persist child sessions
         )
 
-        states = await run_agent(child_state, child_run_config)
+        await run_agent(child_state, child_run_config)
 
         # Return final answer from child
         return child_env._final_answer or "(no answer from recursive RLM)"
@@ -535,13 +540,15 @@ class MessageParsingREPLEnvironment(REPLEnvironment):
         # Check for FINAL(answer) or FINAL_VAR(varname)
         final_match = re.search(r"FINAL\(([^)]+)\)", content)
         if final_match:
-            self._final_answer = final_match.group(1).strip().strip('"\'')
+            self._final_answer = final_match.group(1).strip().strip("\"'")
             return replace(state, stop=StopReason.TASK_COMPLETED)
 
         final_var_match = re.search(r"FINAL_VAR\((\w+)\)", content)
         if final_var_match:
             var_name = final_var_match.group(1)
-            self._final_answer = str(self._namespace.get(var_name, f"Variable '{var_name}' not found"))
+            self._final_answer = str(
+                self._namespace.get(var_name, f"Variable '{var_name}' not found")
+            )
             return replace(state, stop=StopReason.TASK_COMPLETED)
 
         # Extract ```repl or ```python code blocks

@@ -129,6 +129,7 @@ class CLIConfig:
     tools: str | None = None
     cwd: str | None = None
     confirm_tools: bool = False
+    context: str | None = None  # For REPL environments
 
     # Session
     continue_session: bool = False
@@ -212,9 +213,11 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--env",
         type=str,
-        choices=["none", "calculator", "coding", "git"],
         default=PARSER_DEFAULTS["env"],
-        help="Environment with tools: none, calculator, coding, git (default: none)",
+        help=(
+            "Environment with tools. Options: none, calculator, coding, git, repl, repl_blocks. "
+            "Compose with '+': coding+repl, git+repl (default: none)"
+        ),
     )
     parser.add_argument(
         "--tools",
@@ -238,6 +241,18 @@ def create_parser() -> argparse.ArgumentParser:
         "--confirm-tools",
         action="store_true",
         help="Require confirmation before executing tools",
+    )
+    parser.add_argument(
+        "--context",
+        type=str,
+        default=None,
+        help="Context string for REPL environments (alternative to --context-file)",
+    )
+    parser.add_argument(
+        "--context-file",
+        type=str,
+        default=None,
+        help="Path to file containing context for REPL environments",
     )
 
     # Session management
@@ -1038,6 +1053,42 @@ def create_environment(config: CLIConfig) -> tuple[Environment | None, bool]:
             )
         return MessageParsingREPLEnvironment(context=context, sub_endpoint=config.endpoint), True
 
+    # Composed environments: coding+repl, git+repl, etc.
+    # TODO: Consider auto-composition when --context is provided with coding/git envs
+    # For now, explicit composition via comma-separated env names
+    if "+" in config.env:
+        from rollouts.environments.compose import compose
+        from rollouts.environments.repl import REPLEnvironment
+
+        env_names = config.env.split("+")
+        environments = []
+
+        for env_name in env_names:
+            if env_name == "coding":
+                environments.append(
+                    LocalFilesystemEnvironment(
+                        working_dir=config.working_dir, tools=config.tools or "full"
+                    )
+                )
+            elif env_name == "git":
+                environments.append(GitWorktreeEnvironment(working_dir=config.working_dir))
+            elif env_name == "repl":
+                context = config.context or ""
+                if not context:
+                    print(
+                        "Warning: No context provided for REPL environment. "
+                        "Use --context or --context-file to provide input.",
+                        file=sys.stderr,
+                    )
+                environments.append(REPLEnvironment(context=context, sub_endpoint=config.endpoint))
+            elif env_name == "calculator":
+                environments.append(CalculatorEnvironment())
+            else:
+                print(f"Unknown environment in composition: {env_name}", file=sys.stderr)
+                return None, False
+
+        return compose(*environments), True
+
     return None, True
 
 
@@ -1268,6 +1319,15 @@ def main() -> int:
     args = parser.parse_args()
 
     # Build config from parsed args
+    # Handle context from --context or --context-file
+    context = args.context
+    if args.context_file:
+        try:
+            context = Path(args.context_file).read_text()
+        except Exception as e:
+            print(f"Error reading context file: {e}", file=sys.stderr)
+            return 1
+
     config = CLIConfig(
         model=args.model,
         api_base=args.api_base,
@@ -1277,6 +1337,7 @@ def main() -> int:
         tools=args.tools,
         cwd=args.cwd,
         confirm_tools=args.confirm_tools,
+        context=context,
         continue_session=args.continue_session,
         session=args.session,
         no_session=args.no_session,
