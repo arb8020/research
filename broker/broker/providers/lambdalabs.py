@@ -391,10 +391,6 @@ def _parse_instance_to_gpu_instance(
     price_cents = instance_type.get("price_cents_per_hour", 0)
     price_per_hour = price_cents / 100.0
 
-    # Extract region
-    region = instance_data.get("region", {})
-    region_name = region.get("name", "unknown")
-
     # Extract name (Lambda Labs might not have a name field)
     name = instance_data.get("name", f"lambda-{instance_type_name}-{instance_id[:8]}")
 

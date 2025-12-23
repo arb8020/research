@@ -18,13 +18,18 @@ Usage:
     server_info, error = await deploy_sglang_server(config)
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import subprocess
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import trio
+
+if TYPE_CHECKING:
+    from rollouts.dtypes import Endpoint
 
 logger = logging.getLogger(__name__)
 

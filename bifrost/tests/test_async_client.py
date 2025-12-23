@@ -40,7 +40,7 @@ async def test_parallel_operations_with_nursery():
         await trio.sleep(duration)
         return f"Task {task_id} completed"
 
-    results = []
+    _results = []  # Currently unused, kept for future test assertions
 
     async with trio.open_nursery() as nursery:
         # Start multiple tasks in parallel
@@ -62,7 +62,7 @@ async def test_timeout_with_trio():
 
     # Use trio's move_on_after for timeouts
     with trio.move_on_after(0.1) as cancel_scope:
-        result = await slow_task()
+        _result = await slow_task()  # noqa: F841 - intentionally unused, testing timeout
 
     # Task was cancelled due to timeout
     assert cancel_scope.cancelled_caught

@@ -294,7 +294,7 @@ def format_web_fetch(
 ) -> str:
     """Format web_fetch tool execution."""
     url = args.get("url", "")
-    prompt = args.get("prompt", "")
+    _prompt = args.get("prompt", "")  # Available for future display use
 
     # Shorten URL for display
     try:

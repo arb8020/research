@@ -206,7 +206,7 @@ class Markdown(Component):
 
             # Calculate which lines are padding vs content
             num_top_padding = len(top_lines)
-            num_bottom_padding = len(bottom_lines)
+            _num_bottom_padding = len(bottom_lines)
             num_content = len(content_lines)
 
             new_result = []
@@ -301,7 +301,7 @@ class Markdown(Component):
 
             # Unordered list
             if re.match(r"^[-*+] ", line):
-                bullet = line[0]
+                _bullet = line[0]
                 content = line[2:]
                 lines.append(self._theme.list_bullet("- ") + self._render_inline(content))
                 continue

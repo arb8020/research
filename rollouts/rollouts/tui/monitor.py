@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .terminal import Terminal
-from .traces import StepPicker, TraceData
+from .traces import StepPicker, TraceData, TraceStreamingViewer
 
 # Colors (ANSI)
 DIM = "\x1b[90m"
@@ -188,6 +188,7 @@ class TrainingMonitor:
         self,
         rollouts_path: str | None = None,
         pane_configs: tuple[PaneConfig, ...] | None = None,
+        line_queue: list[str] | None = None,
     ) -> None:
         self.terminal = Terminal(use_alternate_screen=True)
 
@@ -211,6 +212,9 @@ class TrainingMonitor:
         # Traces viewer
         self._rollouts_path = rollouts_path  # Path to rollouts.jsonl
         self._trace_data: TraceData | None = None
+
+        # Line queue for passing to streaming viewer (shared with caller)
+        self._line_queue = line_queue
 
     def _get_active_pane_config(self) -> PaneConfig:
         """Get the PaneConfig for the currently active pane."""
@@ -255,20 +259,31 @@ class TrainingMonitor:
             # Check if this is a rollout entry (has step + prompt + response)
             message = data.get("message", "")
             if message == "rollout" and "step" in data and "prompt" in data:
-                # Add to trace data for traces pane
+                status = data.get("status", "")
+
+                # Add to trace data (handles both streaming and completed)
                 if self._trace_data is None:
                     self._trace_data = TraceData()
                 self._trace_data.add_record(data)
 
-                # Return a summary line for the training pane
+                # Return a summary line for the traces pane log
                 step = data.get("step", 0)
                 reward = data.get("reward", 0.0)
-                return LogLine(
-                    logger="rollout",
-                    message=f"[step {step}] reward={reward:.3f}",
-                    level="INFO",
-                    extra=data,
-                )
+                response_len = len(data.get("response", ""))
+                if status == "streaming":
+                    return LogLine(
+                        logger="rollout",
+                        message=f"[{step}] streaming... ({response_len} chars)",
+                        level="INFO",
+                        extra=data,
+                    )
+                else:
+                    return LogLine(
+                        logger="rollout",
+                        message=f"[{step}] done ({response_len} chars) reward={reward:.3f}",
+                        level="INFO",
+                        extra=data,
+                    )
 
             # Check if this is a metrics entry (has step + numeric values)
             if "step" in data and any(
@@ -471,13 +486,8 @@ class TrainingMonitor:
         return None
 
     def _open_trace_viewer(self) -> None:
-        """Open the hierarchical trace viewer."""
-        # Reload trace data from file
-        if self._rollouts_path:
-            self._trace_data = TraceData.from_jsonl(self._rollouts_path)
-
+        """Open trace viewer picker."""
         if not self._trace_data or not self._trace_data.steps:
-            # Add message to traces pane
             self.panes["traces"].add_line(
                 LogLine(
                     logger="traces",
@@ -488,10 +498,10 @@ class TrainingMonitor:
             self._needs_redraw = True
             return
 
-        # Stop terminal, launch picker, restart terminal
         self.terminal.stop()
 
-        picker = StepPicker(self._trace_data)
+        # Pass line_queue to picker for streaming support
+        picker = StepPicker(self._trace_data, line_queue=self._line_queue)
         picker.run()
 
         self.terminal.start(on_input=lambda x: None, on_resize=self._on_resize)
@@ -634,46 +644,63 @@ class TrainingMonitor:
         """Render traces pane summary."""
         lines = []
 
-        # Reload trace data if we have a path
-        if self._rollouts_path:
-            self._trace_data = TraceData.from_jsonl(self._rollouts_path)
-
         if not self._trace_data or not self._trace_data.steps:
             lines.append("")
             lines.append(f"  {DIM}No rollouts found.{RESET}")
-            lines.append(f"  {DIM}Waiting for training to generate rollouts...{RESET}")
+            lines.append(f"  {DIM}Waiting for evaluation to start...{RESET}")
             if self._rollouts_path:
                 lines.append("")
                 lines.append(f"  {DIM}Path: {self._rollouts_path}{RESET}")
             return lines
 
-        # Summary stats
-        total_steps = len(self._trace_data.steps)
-        total_rollouts = sum(s.num_rollouts for s in self._trace_data.steps)
-        total_groups = sum(len(s.groups) for s in self._trace_data.steps)
+        # Count streaming vs completed
+        streaming_count = 0
+        completed_count = 0
+        for step in self._trace_data.steps:
+            for group in step.groups:
+                for rollout in group.rollouts:
+                    if rollout.is_streaming:
+                        streaming_count += 1
+                    else:
+                        completed_count += 1
+
+        total_rollouts = streaming_count + completed_count
 
         lines.append("")
         lines.append(f"  {BOLD}Rollout Traces{RESET}")
         lines.append("")
-        lines.append(f"  {CYAN}Steps:{RESET}    {total_steps}")
-        lines.append(f"  {CYAN}Groups:{RESET}   {total_groups}")
-        lines.append(f"  {CYAN}Rollouts:{RESET} {total_rollouts}")
+
+        if streaming_count > 0:
+            lines.append(f"  {YELLOW}● Streaming:{RESET} {streaming_count}")
+        lines.append(f"  {CYAN}Completed:{RESET}  {completed_count}")
+        lines.append(f"  {DIM}Total:{RESET}      {total_rollouts}")
         lines.append("")
 
-        # Show recent steps as preview
-        lines.append(f"  {DIM}Recent steps:{RESET}")
-        recent = self._trace_data.steps[-5:]  # Last 5 steps
-        for step in recent:
-            reward_color = (
-                GREEN if step.avg_reward > 0.5 else YELLOW if step.avg_reward > 0 else RED
-            )
-            lines.append(
-                f"    Step {step.step:>3}: avg_reward={reward_color}{step.avg_reward:.3f}{RESET}  "
-                f"({len(step.groups)} groups, {step.num_rollouts} rollouts)"
-            )
+        # Show recent rollouts as preview
+        lines.append(f"  {DIM}Recent:{RESET}")
+        recent_rollouts = []
+        for step in self._trace_data.steps:
+            for group in step.groups:
+                for rollout in group.rollouts:
+                    recent_rollouts.append(rollout)
+        recent_rollouts = recent_rollouts[-5:]  # Last 5
+
+        for rollout in recent_rollouts:
+            if rollout.is_streaming:
+                char_count = len(rollout.response)
+                lines.append(
+                    f"    {YELLOW}●{RESET} [{rollout.sample_id_str}] {YELLOW}streaming{RESET} ({char_count} chars)"
+                )
+            else:
+                reward_color = (
+                    GREEN if rollout.reward > 0.5 else YELLOW if rollout.reward > 0 else RED
+                )
+                lines.append(
+                    f"    [{rollout.sample_id_str}] {reward_color}{rollout.reward:.3f}{RESET}"
+                )
 
         lines.append("")
-        lines.append(f"  {DIM}Press Enter to open trace viewer{RESET}")
+        lines.append(f"  {DIM}Press Enter to browse traces{RESET}")
 
         return lines
 

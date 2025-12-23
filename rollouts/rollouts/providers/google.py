@@ -472,7 +472,7 @@ async def rollout_google(
             raise
 
     # Run the asyncio function from trio context using trio-asyncio loop
-    async with trio_asyncio.open_loop() as loop:
+    async with trio_asyncio.open_loop() as _loop:
         final_message, usage_data = await trio_asyncio.aio_as_trio(_call_google_in_asyncio)()
 
     # Build completion object with granular token breakdown

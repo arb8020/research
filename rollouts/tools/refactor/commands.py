@@ -5,9 +5,15 @@ Parses <write>, <patch>, and <delete> commands from AI responses
 and applies them to the filesystem.
 """
 
+from __future__ import annotations
+
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .blocks import BlockState
 
 
 @dataclass

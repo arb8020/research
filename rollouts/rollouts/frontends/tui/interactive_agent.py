@@ -38,6 +38,8 @@ from .tui import TUI
 if TYPE_CHECKING:
     from rollouts.store import SessionStore
 
+    from .components.status_line import StatusLine
+
 
 class InteractiveAgentRunner:
     """Interactive agent runner with TUI."""

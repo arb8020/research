@@ -5,7 +5,7 @@ All providers must implement the ProviderProtocol to ensure consistent behavior.
 """
 
 import logging
-from typing import Optional, Protocol
+from typing import Protocol
 
 logger = logging.getLogger(__name__)
 

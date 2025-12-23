@@ -25,7 +25,7 @@ def test_on_gpu():
     # We need <repo> in sys.path so "from tools.functional_extractor import ..." works
     script_dir = os.path.dirname(os.path.abspath(__file__))  # functional_extractor/
     tools_dir = os.path.dirname(script_dir)  # tools/
-    repo_dir = os.path.dirname(tools_dir)  # <repo> (rollouts/)
+    _repo_dir = os.path.dirname(tools_dir)  # <repo> (rollouts/)
 
     # Add the functional_extractor dir itself to path for direct import
     if script_dir not in sys.path:

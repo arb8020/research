@@ -6,6 +6,8 @@ Reward computation happens in evaluation script after generation.
 
 import re
 
+import trio
+
 from rollouts.dtypes import AgentState, Message, Tool, ToolCall, ToolResult
 
 

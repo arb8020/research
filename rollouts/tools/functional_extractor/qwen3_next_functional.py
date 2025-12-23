@@ -298,7 +298,7 @@ def gated_delta_net(
 
     num_heads = A_log.shape[0]  # 32
     expand_size = conv1d_weight.shape[0]  # 8192
-    head_dim = expand_size // num_heads  # 256
+    _head_dim = expand_size // num_heads  # 256
     qkvz_size = in_proj_qkvz.shape[0]  # 12288 = 3 * expand_size (q, k, v, z packed differently)
 
     # Compute A from A_log (negative to ensure stability)
@@ -311,9 +311,9 @@ def gated_delta_net(
 
     # Split qkvz - the exact split depends on implementation
     # From shape 12288 = 3 * 4096, likely q, kv, z each 4096
-    q_size = expand_size // 2  # 4096
-    kv_size = expand_size // 2  # 4096
-    z_size = expand_size  # 4096 (but qkvz is 12288, so this needs adjustment)
+    _q_size = expand_size // 2  # 4096
+    _kv_size = expand_size // 2  # 4096
+    _z_size = expand_size  # 4096 (but qkvz is 12288, so this needs adjustment)
 
     # Actually from 12288: could be q(4096) + k(4096) + v(4096) = 12288
     third = qkvz_size // 3

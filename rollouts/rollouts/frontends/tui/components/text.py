@@ -260,7 +260,7 @@ class Text(Component):
 
             # Calculate which lines are padding vs content
             num_top_padding = len(top_lines)
-            num_bottom_padding = len(bottom_lines)
+            _num_bottom_padding = len(bottom_lines)
             num_content = len(content_lines)
 
             new_result = []
