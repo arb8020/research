@@ -10,10 +10,9 @@ from typing import Any
 
 import trio
 
-from rollouts.agents import run_agent
+from rollouts.agents import rollout
 from rollouts.dtypes import (
     Actor,
-    AgentState,
     Endpoint,
     Environment,
     RunConfig,
@@ -79,26 +78,21 @@ async def evaluate_single_sample(
         tools=environment.get_tools() if environment else [],
     )
 
-    # Build initial state
-    state = AgentState(actor=actor, environment=environment)
-
-    # Use provided run_config or create silent one
-    if run_config is None:
-        run_config = RunConfig(on_chunk=_silent_chunk_handler)
-
-    # Run agent
+    # Run single rollout (no agent loop - just one LLM call)
     try:
-        states = await run_agent(state, run_config)
-        final_trajectory = states[-1].actor.trajectory
+        result_actor = await rollout(actor, on_chunk=_silent_chunk_handler)
+        final_trajectory = result_actor.trajectory
     except Exception as e:
         logger.warning(f"Sample {seed} failed: {e}")
         return 0.0
 
     # Build Sample for score function
+    # Try common ground truth field names
+    ground_truth = sample.get("ground_truth") or sample.get("answer") or sample.get("label")
     eval_sample = Sample(
         id=f"seed_{seed}",
         input=sample,
-        ground_truth=sample.get("ground_truth") or sample.get("answer"),
+        ground_truth=ground_truth,
         trajectory=final_trajectory,
     )
 
@@ -111,7 +105,10 @@ async def evaluate_single_sample(
     else:
         score = score_result
 
-    return score.reward
+    # Handle both Score objects and raw floats
+    if hasattr(score, "reward"):
+        return score.reward
+    return float(score)
 
 
 async def evaluate_template(

@@ -59,6 +59,7 @@ class Sample:
 
         # Evaluation-specific
         score: Computed score with metrics breakdown
+        environment_state: Serialized environment state (for agentic evals)
 
         # Status and metadata
         status: Sample processing status
@@ -106,6 +107,9 @@ class Sample:
 
     # Evaluation-specific
     score: "Score | None" = None
+
+    # Environment state (serialized, for agentic evals with stateful environments)
+    environment_state: dict[str, Any] | None = None
 
     # Status and metadata
     status: Status = Status.PENDING
@@ -175,7 +179,12 @@ class Sample:
                 # Score is frozen dataclass with metrics tuple
                 d[key] = {
                     "metrics": [
-                        {"name": m.name, "value": m.value, "weight": m.weight, "metadata": m.metadata}
+                        {
+                            "name": m.name,
+                            "value": m.value,
+                            "weight": m.weight,
+                            "metadata": m.metadata,
+                        }
                         for m in value.metrics
                     ]
                 }

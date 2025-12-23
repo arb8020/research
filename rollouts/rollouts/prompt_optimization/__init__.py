@@ -56,15 +56,17 @@ Example (Level 3 - full control):
     ... )
 """
 
-# Types
 # Protocol
 from .adapter import GEPAAdapter
 
 # Adapters
 from .adapters import SinglePromptAdapter
 
-# Mid/High level
+# Reflective mutation (engine.py)
 from .engine import gepa_iteration, optimize_prompt, run_gepa
+
+# Evolutionary (gepa.py)
+from .gepa import run_evolutionary_gepa
 
 # Low-level operations (for advanced use)
 from .operations import (
@@ -77,14 +79,32 @@ from .operations import (
 
 # State (for advanced use)
 from .state import GEPAState
-from .types import Candidate, EvaluationBatch, GEPAConfig, GEPAResult
+
+# Types
+from .types import (
+    # Reflective mutation types
+    Candidate,
+    EvaluationBatch,
+    # Evolutionary types
+    EvolutionaryConfig,
+    GenerationStats,
+    GEPAConfig,
+    GEPAResult,
+    OptimizationResult,
+    PromptTemplate,
+)
 
 __all__ = [
-    # Types
+    # Reflective mutation types
     "Candidate",
     "EvaluationBatch",
     "GEPAConfig",
     "GEPAResult",
+    # Evolutionary types
+    "EvolutionaryConfig",
+    "GenerationStats",
+    "OptimizationResult",
+    "PromptTemplate",
     # Protocol
     "GEPAAdapter",
     # State
@@ -95,11 +115,12 @@ __all__ = [
     "update_pareto_front",
     "dominates",
     "sample_minibatch",
-    # Mid-level
+    # Reflective mutation
     "gepa_iteration",
-    # High-level
     "run_gepa",
     "optimize_prompt",
+    # Evolutionary
+    "run_evolutionary_gepa",
     # Adapters
     "SinglePromptAdapter",
 ]

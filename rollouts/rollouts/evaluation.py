@@ -247,12 +247,21 @@ async def evaluate_sample(
             final_trajectory, metadata={**final_trajectory.metadata, "error": error_message}
         )
 
+    # Serialize environment state for score function (agentic evals)
+    env_state = None
+    if states[-1].environment is not None:
+        try:
+            env_state = await states[-1].environment.serialize()
+        except Exception as e:
+            logger.warning(f"Failed to serialize environment state: {e}")
+
     # Build Sample with trajectory for score function
     sample = Sample(
         id=sample_id,
         input=sample_data,
         ground_truth=sample_data.get("ground_truth") or sample_data.get("answer"),
         trajectory=final_trajectory,
+        environment_state=env_state,
         metadata=sample_data.get("metadata", {}),
     )
 
@@ -323,8 +332,7 @@ async def evaluate_sample(
         return str(content) if content else ""
 
     messages = [
-        {"role": m.role, "content": extract_text(m.content)}
-        for m in final_trajectory.messages
+        {"role": m.role, "content": extract_text(m.content)} for m in final_trajectory.messages
     ]
     logger.info(
         "rollout",

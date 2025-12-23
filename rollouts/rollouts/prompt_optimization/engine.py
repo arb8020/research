@@ -101,10 +101,10 @@ async def gepa_iteration(
     new_sum = sum(new_eval.scores)
 
     if new_sum > old_sum:
-        logger.debug(f"Accepted mutation: {old_sum:.3f} -> {new_sum:.3f}")
+        logger.info(f"  Accepted: minibatch score {old_sum:.2f} -> {new_sum:.2f}")
         return new_candidate
 
-    logger.debug(f"Rejected mutation: {old_sum:.3f} -> {new_sum:.3f}")
+    logger.info(f"  Rejected: minibatch score {old_sum:.2f} -> {new_sum:.2f}")
     return None
 
 
@@ -159,8 +159,9 @@ async def run_gepa(
 
     # Main loop
     while state.total_evaluations < config.max_evaluations:
-        logger.debug(
-            f"Iteration {iteration}, evaluations: {state.total_evaluations}/{config.max_evaluations}"
+        logger.info(
+            f"Iteration {iteration}: {state.total_evaluations}/{config.max_evaluations} evals, "
+            f"candidates={len(state.candidates)}, front={len(state.pareto_front)}"
         )
 
         new_candidate = await gepa_iteration(state, adapter, trainset, reflection_endpoint, config)

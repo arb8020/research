@@ -1,16 +1,98 @@
-"""GEPA v2 types.
+"""GEPA types.
 
 Frozen dataclasses for data that doesn't change.
 Following Casey Muratori: transparent, no hidden state.
+
+Two GEPA variants:
+1. Reflective mutation (engine.py): Uses Candidate, EvaluationBatch, GEPAConfig, GEPAResult
+2. Evolutionary (gepa.py): Uses PromptTemplate, EvolutionaryConfig, GenerationStats, OptimizationResult
 """
 
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 from typing import Any
 
 # A candidate is a dict mapping component names to their text
 # For single-prompt optimization: {"system": "You are a classifier..."}
 # For RAG: {"query_rewriter": "...", "answer_gen": "...", ...}
 Candidate = dict[str, str]
+
+
+# ─── Evolutionary GEPA Types ───────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class FewShotExample:
+    """A single few-shot example with input and output."""
+
+    input: str
+    output: str
+
+
+@dataclass
+class PromptTemplate:
+    """A prompt template with system prompt, user template, and optional few-shot examples.
+
+    Mutable because score gets set after evaluation.
+    """
+
+    system: str
+    user_template: str
+    few_shot_examples: tuple[FewShotExample, ...] = ()
+    generation: int = 0
+    score: float | None = None
+    id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
+
+    def format_user(self, sample: dict[str, Any]) -> str:
+        """Format user template with sample fields."""
+        return self.user_template.format(**sample)
+
+
+@dataclass(frozen=True)
+class EvolutionaryConfig:
+    """Configuration for evolutionary GEPA optimization.
+
+    Synth.ai example config:
+        population_size=12, generations=20, children_per_gen=6
+    """
+
+    # Population
+    population_size: int = 12
+    generations: int = 20
+    elite_size: int = 4  # Top N kept each generation
+
+    # Reproduction rates
+    mutation_rate: float = 0.7
+    crossover_rate: float = 0.2  # Remaining is clone+mutate
+
+    # Evaluation
+    train_seeds: tuple[int, ...] = (0, 1, 2, 3, 4)  # Indices into dataset for training eval
+    val_seeds: tuple[int, ...] | None = None  # Indices for final validation
+
+    # Concurrency
+    max_concurrent: int = 10
+
+
+@dataclass(frozen=True)
+class GenerationStats:
+    """Statistics for one generation of evolutionary optimization."""
+
+    generation: int
+    best_score: float
+    mean_score: float
+    std_score: float
+    num_evaluated: int
+    best_template_id: str
+
+
+@dataclass(frozen=True)
+class OptimizationResult:
+    """Result of evolutionary GEPA optimization."""
+
+    best_template: PromptTemplate
+    final_population: tuple[PromptTemplate, ...]
+    history: tuple[GenerationStats, ...]
+    total_evaluations: int
 
 
 @dataclass(frozen=True)
