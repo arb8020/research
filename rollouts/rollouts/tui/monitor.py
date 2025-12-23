@@ -256,8 +256,29 @@ class TrainingMonitor:
         try:
             data = json.loads(raw)
 
-            # Check if this is a rollout entry (has step + prompt + response)
+            # Check if this is a stream_event entry (forwarded StreamEvent)
             message = data.get("message", "")
+            if message == "stream_event" and "event_type" in data:
+                sample_id = data.get("sample_id", "")
+                event_type = data.get("event_type", "")
+                event_data = data.get("event", {})
+
+                # Forward to trace data for streaming display
+                if self._trace_data is None:
+                    self._trace_data = TraceData()
+                self._trace_data.handle_stream_event(sample_id, event_type, event_data)
+                self._needs_redraw = True
+
+                # Return a summary for the log pane
+                return LogLine(
+                    logger="stream",
+                    message=f"[{sample_id}] {event_type}",
+                    level="DEBUG",
+                    extra=data,
+                )
+
+            # Check if this is a rollout entry (has step + prompt + response)
+            # This is the final record emitted by evaluation.py with complete trajectory
             if message == "rollout" and "step" in data and "prompt" in data:
                 status = data.get("status", "")
 
