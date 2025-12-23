@@ -19,9 +19,9 @@ if TYPE_CHECKING:
 
 from .dtypes import (
     AgentSession,
-    EndpointConfig,
+    Endpoint,
     EnvironmentConfig,
-    SessionMessage,
+    Message,
     SessionStatus,
 )
 
@@ -46,7 +46,7 @@ class SessionStore(Protocol):
     # Core CRUD
     async def create(
         self,
-        endpoint: EndpointConfig,
+        endpoint: Endpoint,
         environment: EnvironmentConfig,
         parent_id: str | None = None,
         branch_point: int | None = None,
@@ -71,7 +71,7 @@ class SessionStore(Protocol):
         ...
 
     # Streaming append
-    async def append_message(self, session_id: str, message: SessionMessage) -> None:
+    async def append_message(self, session_id: str, message: Message) -> None:
         """Append message to trajectory (streaming, append-only)."""
         ...
 
@@ -148,7 +148,7 @@ class FileSessionStore:
 
     async def create(
         self,
-        endpoint: EndpointConfig,
+        endpoint: Endpoint,
         environment: EnvironmentConfig,
         parent_id: str | None = None,
         branch_point: int | None = None,
@@ -241,14 +241,14 @@ class FileSessionStore:
         session_data = await self._read_json(session_dir / "session.json")
 
         # Load messages.jsonl
-        messages: list[SessionMessage] = []
+        messages: list[Message] = []
         messages_file = session_dir / "messages.jsonl"
         if messages_file.exists():
             async with await trio.open_file(messages_file, "r") as f:
                 async for line in f:
                     line = line.strip()
                     if line:
-                        messages.append(SessionMessage.from_dict(json.loads(line)))
+                        messages.append(Message.from_json(line))
 
         return AgentSession.from_dict(session_data, messages), None
 
@@ -285,23 +285,18 @@ class FileSessionStore:
 
         return None, None
 
-    async def append_message(self, session_id: str, message: SessionMessage) -> None:
+    async def append_message(self, session_id: str, message: Message) -> None:
         """Append message to trajectory (streaming, append-only)."""
         session_dir = self._session_dir(session_id)
         messages_file = session_dir / "messages.jsonl"
 
         # Add timestamp if not present
         if message.timestamp is None:
-            message = SessionMessage(
-                role=message.role,
-                content=message.content,
-                tool_call_id=message.tool_call_id,
-                timestamp=datetime.now().isoformat(),
-            )
+            message = replace(message, timestamp=datetime.now().isoformat())
 
         # Append-only (streaming safe)
         async with await trio.open_file(messages_file, "a") as f:
-            await f.write(json.dumps(message.to_dict()) + "\n")
+            await f.write(message.to_json() + "\n")
 
     async def list(
         self,
