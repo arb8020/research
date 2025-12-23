@@ -375,9 +375,11 @@ class TraceViewer:
             if self.wrap:
                 self.h_scroll = 0
             self._needs_redraw = True
-        elif data == "v":  # Open in neovim
-            self._open_in_nvim()
-            self._needs_redraw = True
+        # TODO: nvim integration disabled - breaks terminal state when TUI is in raw mode
+        # Need to investigate proper terminal mode switching or run nvim in separate tmux pane
+        # elif data == "v":  # Open in neovim
+        #     self._open_in_nvim()
+        #     self._needs_redraw = True
 
     def _open_in_nvim(self) -> None:
         """Open trace content in neovim for full vim navigation."""
@@ -505,7 +507,7 @@ class TraceViewer:
 
     def _render_footer(self, width: int) -> str:
         wrap_hint = "w:truncate" if self.wrap else "h/l:scroll  w:wrap"
-        hints = f"j/k:scroll  {wrap_hint}  v:nvim  q:back"
+        hints = f"j/k:scroll  {wrap_hint}  q:back"
         total = len(self._rendered_lines)
         pos = f"{self.scroll + 1}/{total}" if total > 0 else "0/0"
 
@@ -668,9 +670,10 @@ class TraceStreamingViewer:
             if self.wrap:
                 self.h_scroll = 0
             self._needs_redraw = True
-        elif data == "v":  # Open in neovim (with streaming)
-            self._open_in_nvim()
-            self._needs_redraw = True
+        # TODO: nvim integration disabled - breaks terminal state when TUI is in raw mode
+        # elif data == "v":  # Open in neovim (with streaming)
+        #     self._open_in_nvim()
+        #     self._needs_redraw = True
 
     def _get_plain_text(self) -> str:
         """Get trace content as plain text for nvim."""
@@ -828,7 +831,7 @@ class TraceStreamingViewer:
 
     def _render_footer(self, width: int) -> str:
         wrap_hint = "w:truncate" if self.wrap else "h/l:scroll  w:wrap"
-        hints = f"j/k:scroll  {wrap_hint}  v:nvim  q:back"
+        hints = f"j/k:scroll  {wrap_hint}  q:back"
         total = len(self._rendered_lines)
         pos = f"{self.scroll + 1}/{total}" if total > 0 else "0/0"
         if self.auto_scroll and self._is_streaming:
