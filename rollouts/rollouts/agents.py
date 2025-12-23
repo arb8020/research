@@ -466,6 +466,15 @@ async def run_agent_step(
     assert state is not None
     assert rcfg is not None
 
+    # Update debug context for interrupt diagnostics
+    try:
+        from rollouts.frontends.runner import get_debug_context
+        debug_ctx = get_debug_context()
+        debug_ctx.turn = state.turn_idx
+        debug_ctx.set_phase("agent_step")
+    except ImportError:
+        pass
+
     state = rcfg.handle_stop(state)
     if state.stop:
         return state
@@ -627,6 +636,14 @@ async def process_pending_tools(
             if confirm_result.proceed:
                 # DESERIALIZE fresh environment for each tool call
                 fresh_env = await current_state.environment.__class__.deserialize(env_data)
+
+                # Update debug context for interrupt diagnostics
+                try:
+                    from rollouts.frontends.runner import get_debug_context
+                    debug_ctx = get_debug_context()
+                    debug_ctx.set_tool(tool_call.name)
+                except ImportError:
+                    pass
 
                 # Execute tool on fresh environment with cancellation support
                 tool_result = await fresh_env.exec_tool(

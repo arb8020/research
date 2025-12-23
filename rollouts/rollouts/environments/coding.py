@@ -6,7 +6,6 @@ Inspired by pi-mono's minimalist approach.
 """
 
 import os
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
@@ -804,48 +803,46 @@ class LocalFilesystemEnvironment:
     async def _exec_bash(
         self, tool_call: ToolCall, cancel_scope: trio.CancelScope | None = None
     ) -> ToolResult:
-        """Execute bash command."""
+        """Execute bash command with proper cancellation support."""
+        from ._subprocess import run_command
+
         command = tool_call.args["command"]
         timeout = tool_call.args.get("timeout", 120)
 
         try:
-            # Run command with trio
-            result = await trio.to_thread.run_sync(
-                lambda: subprocess.run(
-                    ["sh", "-c", command],
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                    cwd=str(self.working_dir),
-                ),
+            returncode, stdout, stderr = await run_command(
+                command, cwd=str(self.working_dir), timeout=timeout
             )
 
             output = ""
-            if result.stdout:
-                output += result.stdout
-            if result.stderr:
+            if stdout:
+                output += stdout
+            if stderr:
                 if output:
                     output += "\n"
-                output += result.stderr
+                output += stderr
 
             # Truncate if too large
             if len(output) > MAX_OUTPUT_SIZE:
                 removed_kb = (len(output) - MAX_OUTPUT_SIZE) // 1024
-                output = output[:MAX_OUTPUT_SIZE] + f"\n\n... [output truncated - {removed_kb}KB removed]"
+                output = (
+                    output[:MAX_OUTPUT_SIZE]
+                    + f"\n\n... [output truncated - {removed_kb}KB removed]"
+                )
 
-            if result.returncode != 0:
+            if returncode != 0:
                 return ToolResult(
                     tool_call_id=tool_call.id,
                     is_error=True,
                     content=output or "(no output)",
-                    error=f"Command exited with code {result.returncode}",
+                    error=f"Command exited with code {returncode}",
                 )
 
             return ToolResult(
                 tool_call_id=tool_call.id, is_error=False, content=output or "(no output)"
             )
 
-        except subprocess.TimeoutExpired:
+        except TimeoutError:
             return ToolResult(
                 tool_call_id=tool_call.id,
                 is_error=True,
@@ -853,9 +850,7 @@ class LocalFilesystemEnvironment:
                 error=f"Command timed out after {timeout} seconds",
             )
         except trio.Cancelled:
-            return ToolResult(
-                tool_call_id=tool_call.id, is_error=True, content="", error="Command aborted"
-            )
+            raise  # Re-raise so the agent loop handles it
 
     async def _exec_web_fetch(self, tool_call: ToolCall) -> ToolResult:
         """Fetch content from URL, convert to markdown, return with context."""
