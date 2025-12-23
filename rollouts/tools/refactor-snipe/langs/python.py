@@ -159,7 +159,7 @@ class PythonCodeGen:
             if line.strip():
                 stripped = line.lstrip()
                 current_leading = len(line) - len(stripped)
-                extra_indent = current_leading - min_indent
+                extra_indent = current_leading - int(min_indent)
                 result.append(target_indent + " " * extra_indent + stripped)
             else:
                 result.append("")

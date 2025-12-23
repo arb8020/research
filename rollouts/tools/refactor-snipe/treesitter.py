@@ -6,9 +6,9 @@ Provides AST parsing and node querying capabilities using py-tree-sitter.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
 
 import tree_sitter_python as tspython
 from tree_sitter import Language, Node, Parser, Query, QueryCursor, Tree

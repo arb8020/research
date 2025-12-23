@@ -17,7 +17,7 @@ try:
 except ImportError:
     from langs import get_generator
     from scope import ScopeAnalyzer
-    from treesitter import Region, TreeSitterParser, get_language_for_file
+    from treesitter import TreeSitterParser, get_language_for_file
 
 
 @dataclass
@@ -100,7 +100,9 @@ class InlineFunction:
         edits = []
 
         # Process each call site (in reverse order)
-        for call_node in sorted(calls, key=lambda n: (n.start_point[0], n.start_point[1]), reverse=True):
+        for call_node in sorted(
+            calls, key=lambda n: (n.start_point[0], n.start_point[1]), reverse=True
+        ):
             call_edits = self._inline_call(call_node, params, body_lines, return_value)
             edits.extend(call_edits)
 
@@ -179,7 +181,9 @@ class InlineFunction:
 
         return calls
 
-    def _inline_call(self, call_node, params: list[str], body_lines: list[str], return_value: str | None):
+    def _inline_call(
+        self, call_node, params: list[str], body_lines: list[str], return_value: str | None
+    ):
         """Generate edits to inline a single function call."""
         edits = []
 
@@ -191,7 +195,9 @@ class InlineFunction:
 
         # Get indentation
         lines = self.parser.source.split(b"\n")
-        stmt_line = lines[stmt_node.start_point[0]] if stmt_node.start_point[0] < len(lines) else b""
+        stmt_line = (
+            lines[stmt_node.start_point[0]] if stmt_node.start_point[0] < len(lines) else b""
+        )
         indent = ""
         for ch in stmt_line:
             if ch in (ord(" "), ord("\t")):
@@ -281,7 +287,9 @@ class InlineFunction:
                             start_line=stmt_node.start_point[0] + 1,
                             end_line=stmt_node.end_point[0] + 1,
                             start_col=0,
-                            end_col=len(lines[stmt_node.end_point[0]]) if stmt_node.end_point[0] < len(lines) else 0,
+                            end_col=len(lines[stmt_node.end_point[0]])
+                            if stmt_node.end_point[0] < len(lines)
+                            else 0,
                             new_text=combined,
                         )
                     )
@@ -293,7 +301,9 @@ class InlineFunction:
                         start_line=stmt_node.start_point[0] + 1,
                         end_line=stmt_node.end_point[0] + 1,
                         start_col=0,
-                        end_col=len(lines[stmt_node.end_point[0]]) if stmt_node.end_point[0] < len(lines) else 0,
+                        end_col=len(lines[stmt_node.end_point[0]])
+                        if stmt_node.end_point[0] < len(lines)
+                        else 0,
                         new_text=combined,
                     )
                 )
@@ -326,7 +336,7 @@ class InlineFunction:
     def _substitute_params(self, text: str, params: list[str], args: list[str]) -> str:
         """Substitute parameter names with argument values in text."""
         result = text
-        for param, arg in zip(params, args):
+        for param, arg in zip(params, args, strict=False):
             if param != arg:
                 # Simple word-boundary replacement (not perfect but works for most cases)
                 import re

@@ -102,7 +102,9 @@ class InlineVariable:
         edits = []
 
         # Replace references (in reverse order to preserve positions)
-        for ref_node in sorted(references, key=lambda n: (n.start_point[0], n.start_point[1]), reverse=True):
+        for ref_node in sorted(
+            references, key=lambda n: (n.start_point[0], n.start_point[1]), reverse=True
+        ):
             edits.append(
                 TextEdit(
                     start_line=ref_node.start_point[0] + 1,
@@ -167,6 +169,7 @@ class InlineVariable:
 
     def _node_contains(self, container, target) -> bool:
         """Check if container node contains target node."""
+
         def walk(node):
             if node.id == target.id:
                 return True
@@ -174,6 +177,7 @@ class InlineVariable:
                 if walk(child):
                     return True
             return False
+
         return walk(container)
 
 
