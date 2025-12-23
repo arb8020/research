@@ -331,8 +331,19 @@ class TraceData:
             group.rollouts.append(rollout)
 
         # Handle different event types
+        # sample_start contains initial messages including user prompt
+        if event_type == "sample_start":
+            messages = event_data.get("messages", [])
+            for msg in messages:
+                rollout.messages.append(
+                    Message(role=msg.get("role", "user"), content=msg.get("content", ""))
+                )
+            # Also set prompt for fallback display
+            if messages:
+                rollout.prompt = messages[0].get("content", "")
+
         # Use "End" events which contain complete content (like AgentRenderer)
-        if event_type == "TextEnd":
+        elif event_type == "TextEnd":
             content = event_data.get("content", "")
             # Add or update assistant message with text
             self._update_assistant_text(rollout, content)
@@ -553,22 +564,26 @@ class TraceViewer:
         """Pre-render all message lines."""
         self._rendered_lines = []
 
+        role_colors = {
+            "user": CYAN,
+            "assistant": GREEN,
+            "tool": YELLOW,
+            "system": MAGENTA,
+        }
+
         for msg in self.rollout.messages:
-            # Role header
-            role_colors = {
-                "user": CYAN,
-                "assistant": GREEN,
-                "tool": YELLOW,
-                "system": MAGENTA,
-            }
             color = role_colors.get(msg.role, WHITE)
             self._rendered_lines.append(f"{color}{BOLD}[{msg.role}]{RESET}")
-
-            # Content (wrap lines)
             for line in msg.content.split("\n"):
                 self._rendered_lines.append(f"  {line}")
+            self._rendered_lines.append("")
 
-            # Blank line between messages
+        # Fallback: show response as assistant if not in messages
+        has_assistant = any(m.role == "assistant" for m in self.rollout.messages)
+        if not has_assistant and self.rollout.response:
+            self._rendered_lines.append(f"{GREEN}{BOLD}[assistant]{RESET}")
+            for line in self.rollout.response.split("\n"):
+                self._rendered_lines.append(f"  {line}")
             self._rendered_lines.append("")
 
     def _render(self) -> None:
@@ -850,6 +865,14 @@ class TraceStreamingViewer:
             "tool": YELLOW,
             "system": MAGENTA,
         }
+
+        # Show prompt as user message if no messages yet (streaming just started)
+        has_user_message = any(msg.role == "user" for msg in self.rollout.messages)
+        if not has_user_message and self.rollout.prompt:
+            self._rendered_lines.append(f"{CYAN}{BOLD}[user]{RESET}")
+            for line in self.rollout.prompt.split("\n"):
+                self._rendered_lines.append(f"  {line}")
+            self._rendered_lines.append("")
 
         # Render messages from rollout
         for msg in self.rollout.messages:
