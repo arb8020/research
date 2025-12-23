@@ -307,8 +307,23 @@ async def evaluate_sample(
     )
 
     # Emit rollout record for TUI trace viewer (matches grpo.py format)
+    def extract_text(content):
+        """Extract text from message content (str or list of ContentBlocks)."""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            # Join text from TextContent blocks
+            texts = []
+            for block in content:
+                if hasattr(block, "text"):
+                    texts.append(block.text)
+                elif hasattr(block, "content"):
+                    texts.append(str(block.content))
+            return "\n".join(texts) if texts else ""
+        return str(content) if content else ""
+
     messages = [
-        {"role": m.role, "content": m.content if isinstance(m.content, str) else str(m.content)}
+        {"role": m.role, "content": extract_text(m.content)}
         for m in final_trajectory.messages
     ]
     logger.info(
