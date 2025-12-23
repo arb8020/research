@@ -129,7 +129,7 @@ EVAL_PANES = (
     PaneConfig.create("Eval", ["eval", "kernelbench", "research"]),
     PaneConfig.create("Modal", ["modal"]),
     PaneConfig.create("Agent", ["agent", "agents"]),
-    PaneConfig.create("Traces", ["rollout", "rollouts"], is_traces=True),
+    PaneConfig.create("Traces", ["rollout", "rollouts", "rollouts.stream", "stream"], is_traces=True),
 )
 
 
@@ -269,9 +269,9 @@ class TrainingMonitor:
                 self._trace_data.handle_stream_event(sample_id, event_type, event_data)
                 self._needs_redraw = True
 
-                # Return a summary for the log pane
+                # Return a summary for the traces pane
                 return LogLine(
-                    logger="stream",
+                    logger="rollouts.stream",
                     message=f"[{sample_id}] {event_type}",
                     level="DEBUG",
                     extra=data,
