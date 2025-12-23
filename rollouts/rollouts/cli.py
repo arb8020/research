@@ -446,7 +446,7 @@ def parse_model_string(model_str: str) -> tuple[str, str]:
     return provider, model
 
 
-def get_oauth_client():
+def get_oauth_client() -> object:
     """Get OAuth client for Anthropic. Lazy import to avoid TUI dependencies."""
     from rollouts.frontends.tui.oauth import get_oauth_client as _get_oauth_client
 
@@ -513,7 +513,10 @@ def create_endpoint(
                         print("🔐 OAuth token refreshed", file=sys.stderr)
                     except Exception as e:
                         print(f"❌ OAuth token expired and refresh failed: {e}", file=sys.stderr)
-                        print("   Run `rollouts login` to re-authenticate, or use --api-key", file=sys.stderr)
+                        print(
+                            "   Run `rollouts login` to re-authenticate, or use --api-key",
+                            file=sys.stderr,
+                        )
                         sys.exit(1)
                 else:
                     oauth_token = tokens.access_token
@@ -521,7 +524,9 @@ def create_endpoint(
             else:
                 # No OAuth tokens - require explicit action
                 print("❌ No authentication configured for Anthropic", file=sys.stderr)
-                print("   Run `rollouts login` to authenticate with Claude Pro/Max", file=sys.stderr)
+                print(
+                    "   Run `rollouts login` to authenticate with Claude Pro/Max", file=sys.stderr
+                )
                 print("   Or use --api-key to use API billing", file=sys.stderr)
                 sys.exit(1)
             api_key = ""  # Ensure no API key when using OAuth
@@ -576,7 +581,8 @@ def cmd_list_presets() -> int:
 
 def cmd_oauth(login: bool) -> int:
     """Handle --login-claude and --logout-claude commands."""
-    from rollouts.frontends.tui.oauth import OAuthError, login as do_login, logout
+    from rollouts.frontends.tui.oauth import OAuthError, logout
+    from rollouts.frontends.tui.oauth import login as do_login
 
     if not login:
         logout()
@@ -585,13 +591,14 @@ def cmd_oauth(login: bool) -> int:
     async def oauth_action() -> int:
         try:
             await do_login()
-            return 0
         except OAuthError as e:
             print(f"❌ OAuth error: {e}", file=sys.stderr)
             return 1
         except KeyboardInterrupt:
             print("\n⚠️  Login cancelled")
             return 1
+        else:
+            return 0
 
     return trio.run(oauth_action)
 
@@ -774,9 +781,7 @@ async def _fix_session_issues(
         print("\nNo auto-fixable issues found. Use --trim N for oversized messages.")
         return 0
 
-    fixed_messages = [
-        msg for i, msg in enumerate(session.messages) if i not in indices_to_remove
-    ]
+    fixed_messages = [msg for i, msg in enumerate(session.messages) if i not in indices_to_remove]
 
     new_session = await session_store.create(
         endpoint=session.endpoint,
@@ -878,31 +883,31 @@ def apply_preset(config: CLIConfig) -> bool:
 
     try:
         preset = load_preset(config.preset)
-
-        # Model: only override if still at default
-        if config.model == PARSER_DEFAULTS["model"]:
-            config.model = preset.model
-
-        # Env: only override if still at default
-        if config.env == PARSER_DEFAULTS["env"]:
-            config.env = preset.env
-
-        # System prompt: only override if not explicitly set
-        if config.system_prompt is None:
-            config.system_prompt = preset.system_prompt
-
-        # Thinking: apply preset value
-        if preset.thinking:
-            config.thinking = preset.thinking
-
-        # Working dir: apply preset if available and not set
-        if preset.working_dir and config.cwd is None:
-            config.cwd = str(preset.working_dir)
-
-        return True
     except Exception as e:
         print(f"Error loading preset '{config.preset}': {e}", file=sys.stderr)
         return False
+
+    # Model: only override if still at default
+    if config.model == PARSER_DEFAULTS["model"]:
+        config.model = preset.model
+
+    # Env: only override if still at default
+    if config.env == PARSER_DEFAULTS["env"]:
+        config.env = preset.env
+
+    # System prompt: only override if not explicitly set
+    if config.system_prompt is None:
+        config.system_prompt = preset.system_prompt
+
+    # Thinking: apply preset value
+    if preset.thinking:
+        config.thinking = preset.thinking
+
+    # Working dir: apply preset if available and not set
+    if preset.working_dir and config.cwd is None:
+        config.cwd = str(preset.working_dir)
+
+    return True
 
 
 def apply_session_config(config: CLIConfig) -> bool:
@@ -1007,7 +1012,7 @@ async def run_agent(config: CLIConfig) -> int:
             else:
                 session_id = config.session
         elif config.continue_session:
-            session, err = await session_store.get_latest()
+            session, _err = await session_store.get_latest()
             if session:
                 session_id = session.session_id
             else:
@@ -1021,12 +1026,16 @@ async def run_agent(config: CLIConfig) -> int:
     if session_id and session_store:
         try:
             assert config.endpoint is not None
-            state = await resume_session(session_id, session_store, config.endpoint, config.environment)
+            state = await resume_session(
+                session_id, session_store, config.endpoint, config.environment
+            )
             trajectory = state.actor.trajectory
 
             parent_session, _ = await session_store.get(session_id)
             if parent_session:
-                current_env_type = type(config.environment).__name__ if config.environment else "none"
+                current_env_type = (
+                    type(config.environment).__name__ if config.environment else "none"
+                )
                 parent_env_type = (
                     parent_session.environment.type if parent_session.environment else "none"
                 )
@@ -1048,7 +1057,9 @@ async def run_agent(config: CLIConfig) -> int:
                     branch_point = len(trajectory.messages)
                     session_id = None
                     print(f"Forking from session: {parent_session_id}")
-                    print(f"  Config changed: model={config.endpoint.model}, env={current_env_type}")
+                    print(
+                        f"  Config changed: model={config.endpoint.model}, env={current_env_type}"
+                    )
                     print(f"  Branch point: {branch_point} messages")
                 else:
                     print(f"Resuming session: {parent_session.session_id}")
@@ -1062,8 +1073,7 @@ async def run_agent(config: CLIConfig) -> int:
 
         if not trajectory.messages or trajectory.messages[0].role != "system":
             trajectory = Trajectory(
-                messages=[Message(role="system", content=system_prompt)]
-                + list(trajectory.messages)
+                messages=[Message(role="system", content=system_prompt)] + list(trajectory.messages)
             )
     else:
         trajectory = Trajectory(messages=[Message(role="system", content=system_prompt)])
@@ -1118,7 +1128,6 @@ async def _run_print_mode(
             initial_prompt=query,
             single_turn=True,
         )
-        return 0
     except KeyboardInterrupt:
         return 0
     except Exception as e:
@@ -1129,6 +1138,8 @@ async def _run_print_mode(
         else:
             print(f"\nError: {e}", file=sys.stderr)
         return 1
+    else:
+        return 0
 
 
 async def _run_interactive_mode(
@@ -1158,10 +1169,9 @@ async def _run_interactive_mode(
                 confirm_tools=config.confirm_tools,
                 initial_prompt=initial_prompt,
             )
-            return 0
         except KeyboardInterrupt:
             print("\n\n✅ Agent stopped")
-            return 0
+        return 0
 
     if config.frontend == "textual":
         print(
@@ -1189,10 +1199,9 @@ async def _run_interactive_mode(
             config.confirm_tools,
             initial_prompt,
         )
-        return 0
     except KeyboardInterrupt:
         print("\n\n✅ Agent stopped")
-        return 0
+    return 0
 
 
 # =============================================================================
@@ -1201,832 +1210,102 @@ async def _run_interactive_mode(
 
 
 def main() -> int:
-    """Main CLI entry point."""
-    parser = argparse.ArgumentParser(
-        description="Rollouts - chat with an LLM agent in your terminal"
-    )
-    # Preset configuration
-    parser.add_argument(
-        "--preset",
-        type=str,
-        default=None,
-        help="Agent preset name (e.g., 'fast_coder', 'careful_coder') or path to preset file",
-    )
-
-    # Individual overrides (can override preset values)
-    parser.add_argument(
-        "--model",
-        type=str,
-        default="anthropic/claude-opus-4-5-20251101",
-        help='Model in "provider/model" format. Default: anthropic/claude-opus-4-5-20251101',
-    )
-    parser.add_argument(
-        "--api-base",
-        type=str,
-        default=None,
-        help="API base URL (default: provider-specific)",
-    )
-    parser.add_argument(
-        "--api-key",
-        type=str,
-        default=None,
-        help="API key (default: from environment)",
-    )
-    parser.add_argument(
-        "--system-prompt",
-        type=str,
-        default=None,
-        help="System prompt (default: depends on --env or preset)",
-    )
-    parser.add_argument(
-        "--env",
-        type=str,
-        choices=["none", "calculator", "coding", "git"],
-        default="none",
-        help="Environment with tools: none, calculator, coding, git (default: none)",
-    )
-    parser.add_argument(
-        "--tools",
-        type=str,
-        default=None,
-        help="Tool preset for coding env: full, readonly, no-write (default: full)",
-    )
-    parser.add_argument(
-        "--cwd",
-        type=str,
-        default=None,
-        help="Working directory for coding environment",
-    )
-    parser.add_argument(
-        "--max-turns",
-        type=int,
-        default=50,
-        help="Maximum number of turns (default: 50)",
-    )
-    parser.add_argument(
-        "--confirm-tools",
-        action="store_true",
-        help="Require confirmation before executing tools",
-    )
-
-    # Session management
-    parser.add_argument(
-        "--continue",
-        "-c",
-        dest="continue_session",
-        action="store_true",
-        help="Continue most recent session",
-    )
-    parser.add_argument(
-        "--session",
-        "-s",
-        type=str,
-        nargs="?",
-        const="",
-        default=None,
-        help="Resume session: -s to list/pick, -s ID to resume specific",
-    )
-    parser.add_argument(
-        "--no-session",
-        action="store_true",
-        help="Don't persist session to disk",
-    )
-
-    # Non-interactive mode
-    parser.add_argument(
-        "-p",
-        "--print",
-        dest="print_mode",
-        type=str,
-        nargs="?",
-        const="-",
-        default=None,
-        metavar="QUERY",
-        help="Non-interactive mode: run query and print result. Use '-p -' or just '-p' to read from stdin.",
-    )
-    parser.add_argument(
-        "--stream-json",
-        action="store_true",
-        help="Output NDJSON per turn (for print mode). Each line is a JSON object.",
-    )
-
-    # Frontend options
-    parser.add_argument(
-        "--frontend",
-        type=str,
-        choices=["tui", "none", "textual"],
-        default="tui",
-        help="Frontend: tui (default Python TUI), none (stdout), textual (rich TUI)",
-    )
-    parser.add_argument(
-        "--theme",
-        type=str,
-        choices=["dark", "rounded", "minimal"],
-        default="minimal",
-        help="TUI theme (default: minimal)",
-    )
-
-    # Extended thinking (Anthropic)
-    parser.add_argument(
-        "--thinking",
-        type=str,
-        choices=["enabled", "disabled"],
-        default="enabled",
-        help="Extended thinking for Anthropic models (default: enabled)",
-    )
-
-    # Preset listing
-    parser.add_argument(
-        "--list-presets",
-        action="store_true",
-        help="List available agent presets and exit",
-    )
-
-    # Debug
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Enable debug logging",
-    )
-    parser.add_argument(
-        "--debug-layout",
-        action="store_true",
-        help="Show TUI component boundaries",
-    )
-
-    # OAuth (Claude Pro/Max)
-    parser.add_argument(
-        "--login-claude",
-        action="store_true",
-        help="Login with Claude Pro/Max account (OAuth)",
-    )
-    parser.add_argument(
-        "--logout-claude",
-        action="store_true",
-        help="Logout and revoke Claude OAuth tokens",
-    )
-
-    # Export
-    parser.add_argument(
-        "--export-md",
-        type=str,
-        nargs="?",
-        const="",
-        default=None,
-        metavar="FILE",
-        help="Export session to Markdown (stdout if no FILE)",
-    )
-    parser.add_argument(
-        "--export-html",
-        type=str,
-        nargs="?",
-        const="",
-        default=None,
-        metavar="FILE",
-        help="Export session to HTML (stdout if no FILE)",
-    )
-
-    # Session transformations
-    parser.add_argument(
-        "--handoff",
-        type=str,
-        metavar="GOAL",
-        help="Extract goal-directed context from session to stdout (markdown)",
-    )
-
-    # Doctor (session repair)
-    parser.add_argument(
-        "--doctor",
-        action="store_true",
-        help="Show session diagnostics (use with --session)",
-    )
-    parser.add_argument(
-        "--trim",
-        type=int,
-        metavar="N",
-        help="Remove last N messages from session (creates new fixed session)",
-    )
-    parser.add_argument(
-        "--fix",
-        action="store_true",
-        help="Auto-fix detected issues (duplicate tool results, etc.)",
-    )
-
+    """Main CLI entry point - dispatcher for all CLI commands."""
+    parser = create_parser()
     args = parser.parse_args()
 
-    # --- Non-interactive commands (no endpoint needed) ---
+    # Build config from parsed args
+    config = CLIConfig(
+        model=args.model,
+        api_base=args.api_base,
+        api_key=args.api_key,
+        thinking=args.thinking,
+        env=args.env,
+        tools=args.tools,
+        cwd=args.cwd,
+        confirm_tools=args.confirm_tools,
+        continue_session=args.continue_session,
+        session=args.session,
+        no_session=args.no_session,
+        max_turns=args.max_turns,
+        print_mode=args.print_mode,
+        stream_json=args.stream_json,
+        frontend=args.frontend,
+        theme=args.theme,
+        debug=args.debug,
+        debug_layout=args.debug_layout,
+        preset=args.preset,
+        system_prompt=args.system_prompt,
+        list_presets=args.list_presets,
+        login_claude=args.login_claude,
+        logout_claude=args.logout_claude,
+        export_md=args.export_md,
+        export_html=args.export_html,
+        handoff=args.handoff,
+        doctor=args.doctor,
+        trim=args.trim,
+        fix=args.fix,
+    )
 
-    # List presets
-    if args.list_presets:
-        from rollouts.agent_presets import list_presets
+    # === Commands that don't need endpoint ===
 
-        presets = list_presets()
-        if not presets:
-            print("No presets found in rollouts/agent_presets/")
-            return 0
+    if config.list_presets:
+        return cmd_list_presets()
 
-        print("Available agent presets:")
-        for preset_name in presets:
-            print(f"  - {preset_name}")
+    if config.login_claude or config.logout_claude:
+        return cmd_oauth(login=config.login_claude)
 
-        print("\nUsage: rollouts --preset <name>")
-        print("Example: rollouts --preset sonnet_4")
-        return 0
+    if config.export_md is not None or config.export_html is not None:
+        return cmd_export(config, FileSessionStore())
 
-    # OAuth login/logout
-    if args.login_claude or args.logout_claude:
-        from rollouts.frontends.tui.oauth import OAuthError, login, logout
+    if config.doctor or config.trim is not None or config.fix:
+        return cmd_doctor(config, FileSessionStore())
 
-        if args.logout_claude:
-            logout()
-            return 0
+    # === Commands requiring endpoint ===
 
-        async def oauth_action() -> int:
-            try:
-                await login()
-                return 0
-            except OAuthError as e:
-                print(f"❌ OAuth error: {e}", file=sys.stderr)
-                return 1
-            except KeyboardInterrupt:
-                print("\n⚠️  Login cancelled")
-                return 1
+    # Apply preset and session config
+    if not apply_preset(config):
+        return 1
+    if not apply_session_config(config):
+        return 1
 
-        return trio.run(oauth_action)
-
-    # Export
-    if args.export_md is not None or args.export_html is not None:
-        from rollouts.export import session_to_html, session_to_markdown
-
-        session_store = FileSessionStore()
-
-        async def export_action() -> int:
-            if args.session is not None and args.session != "":
-                session, err = await session_store.get(args.session)
-                if err or session is None:
-                    print(f"Error loading session: {err}", file=sys.stderr)
-                    return 1
-            elif args.session == "" or args.continue_session:
-                if args.continue_session:
-                    session, err = await session_store.get_latest()
-                    if err or session is None:
-                        print("No sessions found", file=sys.stderr)
-                        return 1
-                else:
-                    session = await pick_session_async(session_store)
-                    if session is None:
-                        return 0
-            else:
-                session, err = await session_store.get_latest()
-                if err or session is None:
-                    print("No sessions found. Use -s to select a session.", file=sys.stderr)
-                    return 1
-
-            if args.export_md is not None:
-                output = session_to_markdown(session)
-                export_path = args.export_md
-            else:
-                output = session_to_html(session)
-                export_path = args.export_html
-
-            if export_path == "":
-                print(output)
-            else:
-                Path(export_path).write_text(output)
-                print(f"Exported to {export_path}")
-
-            return 0
-
-        return trio.run(export_action)
-
-    # Doctor (session repair/diagnostics)
-    if args.doctor or args.trim is not None or args.fix:
-        session_store = FileSessionStore()
-
-        async def doctor_action() -> int:
-            # Determine which session to doctor
-            target_session_id: str | None = None
-            if args.session and args.session != "":
-                target_session_id = args.session
-            elif args.continue_session:
-                target_session_id = session_store.get_latest_id_sync()
-            else:
-                # Default to most recent session
-                target_session_id = session_store.get_latest_id_sync()
-
-            if not target_session_id:
-                print("No session found. Use --session <id> to specify.", file=sys.stderr)
-                return 1
-
-            # Load the session
-            session, err = await session_store.get(target_session_id)
-            if err or not session:
-                print(f"Error loading session: {err}", file=sys.stderr)
-                return 1
-
-            # Calculate stats
-            total_chars = sum(
-                len(str(msg.content)) for msg in session.messages
-            )
-            estimated_tokens = total_chars // 4  # rough estimate
-
-            print(f"Session: {session.session_id}")
-            print(f"  Messages: {len(session.messages)}")
-            print(f"  Total chars: {total_chars:,}")
-            print(f"  Est. tokens: {estimated_tokens:,}")
-            print(f"  Status: {session.status.value}")
-            if session.parent_id:
-                print(f"  Parent: {session.parent_id}")
-
-            # Diagnose issues
-            issues: list[tuple[str, str, list[int]]] = []  # (issue_type, description, affected_indices)
-
-            # Check for duplicate tool results
-            tool_result_ids: dict[str, list[int]] = {}
-            for i, msg in enumerate(session.messages):
-                if msg.role == "tool" and msg.tool_call_id:
-                    if msg.tool_call_id not in tool_result_ids:
-                        tool_result_ids[msg.tool_call_id] = []
-                    tool_result_ids[msg.tool_call_id].append(i)
-
-            duplicate_results = {k: v for k, v in tool_result_ids.items() if len(v) > 1}
-            if duplicate_results:
-                for tool_id, indices in duplicate_results.items():
-                    issues.append((
-                        "duplicate_tool_result",
-                        f"Tool result '{tool_id[:20]}...' appears {len(indices)} times at messages {indices}",
-                        indices[1:],  # Keep first, remove rest
-                    ))
-
-            # Check for orphaned tool results (no matching tool_use)
-            tool_call_ids: set[str] = set()
-            for msg in session.messages:
-                if msg.role == "assistant" and isinstance(msg.content, list):
-                    for block in msg.content:
-                        if isinstance(block, dict) and block.get("type") == "toolCall":
-                            tool_call_ids.add(block.get("id", ""))
-
-            for i, msg in enumerate(session.messages):
-                if msg.role == "tool" and msg.tool_call_id:
-                    if msg.tool_call_id not in tool_call_ids:
-                        issues.append((
-                            "orphaned_tool_result",
-                            f"Tool result '{msg.tool_call_id[:20]}...' at message {i} has no matching tool_use",
-                            [i],
-                        ))
-
-            # Check for oversized messages
-            for i, msg in enumerate(session.messages):
-                content_len = len(str(msg.content))
-                if content_len > 100_000:  # 100KB
-                    issues.append((
-                        "oversized_message",
-                        f"Message {i} ({msg.role}) is {content_len:,} chars ({content_len // 4:,} est. tokens)",
-                        [i],
-                    ))
-
-            if issues:
-                print(f"\n⚠️  Found {len(issues)} issue(s):")
-                for issue_type, desc, _ in issues:
-                    print(f"  [{issue_type}] {desc}")
-
-            # Auto-fix if requested
-            if args.fix and issues:
-                # Collect indices to remove (duplicates, not oversized - those need --trim)
-                indices_to_remove: set[int] = set()
-                for issue_type, _, affected in issues:
-                    if issue_type in ("duplicate_tool_result", "orphaned_tool_result"):
-                        indices_to_remove.update(affected)
-
-                if indices_to_remove:
-                    # Create new session with fixed messages
-                    fixed_messages = [
-                        msg for i, msg in enumerate(session.messages)
-                        if i not in indices_to_remove
-                    ]
-
-                    new_session = await session_store.create(
-                        endpoint=session.endpoint,
-                        environment=session.environment,
-                        parent_id=session.session_id,
-                        branch_point=len(fixed_messages),
-                        tags={"doctor": "fixed", "removed_indices": str(sorted(indices_to_remove))},
-                    )
-
-                    for msg in fixed_messages:
-                        await session_store.append_message(new_session.session_id, msg)
-
-                    print(f"\nCreated fixed session: {new_session.session_id}")
-                    print(f"  Removed {len(indices_to_remove)} message(s) at indices: {sorted(indices_to_remove)}")
-                    print(f"  Parent: {session.session_id}")
-                    print(f"\nResume with: rollouts --session {new_session.session_id}")
-                    return 0
-                else:
-                    print("\nNo auto-fixable issues found. Use --trim N for oversized messages.")
-
-            # Show last few messages summary
-            if session.messages:
-                print("\nLast 5 messages:")
-                for msg in session.messages[-5:]:
-                    content_preview = str(msg.content)[:80].replace("\n", " ")
-                    content_len = len(str(msg.content))
-                    print(f"  [{msg.role}] {content_preview}... ({content_len:,} chars)")
-
-            # Trim if requested
-            if args.trim is not None:
-                if args.trim <= 0:
-                    print("\n--trim must be a positive integer", file=sys.stderr)
-                    return 1
-                if args.trim >= len(session.messages):
-                    print(f"\nCannot trim {args.trim} messages from session with {len(session.messages)} messages", file=sys.stderr)
-                    return 1
-
-                # Create new session with trimmed messages
-                trimmed_messages = session.messages[:-args.trim]
-                branch_point = len(trimmed_messages)
-
-                new_session = await session_store.create(
-                    endpoint=session.endpoint,
-                    environment=session.environment,
-                    parent_id=session.session_id,
-                    branch_point=branch_point,
-                    tags={"doctor": "trimmed", "trimmed_count": str(args.trim)},
-                )
-
-                # Copy trimmed messages to new session
-                for msg in trimmed_messages:
-                    await session_store.append_message(new_session.session_id, msg)
-
-                print(f"\nCreated fixed session: {new_session.session_id}")
-                print(f"  Trimmed {args.trim} messages (kept {len(trimmed_messages)})")
-                print(f"  Parent: {session.session_id}")
-                print(f"\nResume with: rollouts --session {new_session.session_id}")
-
-            return 0
-
-        return trio.run(doctor_action)
-
-    # --- Commands requiring endpoint ---
-
-    # Load preset if specified (must happen before endpoint creation)
-    if args.preset:
-        from rollouts.agent_presets import load_preset
-
-        try:
-            preset = load_preset(args.preset)
-
-            # Apply preset values if individual args not explicitly set
-            # Check if arg is still at default value (wasn't overridden by user)
-            parser_defaults = {
-                "model": "anthropic/claude-opus-4-5-20251101",
-                "env": "none",
-            }
-
-            # Model: only override if still at default
-            if args.model == parser_defaults["model"]:
-                args.model = preset.model
-
-            # Env: only override if still at default
-            if args.env == parser_defaults["env"]:
-                args.env = preset.env
-
-            # System prompt: only override if not explicitly set
-            if args.system_prompt is None:
-                args.system_prompt = preset.system_prompt
-
-            # Thinking: apply preset value if not explicitly set
-            if args.thinking is None:
-                args.thinking = preset.thinking
-
-            # Working dir: apply preset if available and not set
-            if preset.working_dir and args.cwd is None:
-                args.cwd = str(preset.working_dir)
-
-        except Exception as e:
-            print(f"Error loading preset '{args.preset}': {e}", file=sys.stderr)
-            return 1
-
-    # Load session config if resuming a session (specific ID or --continue)
-    # Session config provides defaults; CLI args override
-    session_id_for_config: str | None = None
-    if args.session and args.session != "":
-        session_id_for_config = args.session
-    elif args.continue_session:
-        session_store_for_config = FileSessionStore()
-        session_id_for_config = session_store_for_config.get_latest_id_sync()
-
-    if session_id_for_config:
-        session_store_for_config = FileSessionStore()
-        session_config, err = session_store_for_config.get_config_sync(session_id_for_config)
-        if err:
-            print(f"Error loading session config: {err}", file=sys.stderr)
-            return 1
-
-        if session_config:
-            parser_defaults = {
-                "model": "anthropic/claude-opus-4-5-20251101",
-                "env": "none",
-                "thinking": "enabled",
-            }
-
-            # Model: inherit from session if not explicitly set
-            if args.model == parser_defaults["model"]:
-                endpoint_config = session_config.get("endpoint", {})
-                if endpoint_config.get("model"):
-                    provider = endpoint_config.get("provider", "anthropic")
-                    args.model = f"{provider}/{endpoint_config['model']}"
-
-            # Environment: inherit from session if not explicitly set
-            if args.env == parser_defaults["env"]:
-                env_config = session_config.get("environment", {})
-                env_type = env_config.get("type", "")
-                # Map environment class names to CLI env values
-                env_map = {
-                    "CalculatorEnvironment": "calculator",
-                    "LocalFilesystemEnvironment": "coding",
-                    "GitWorktreeEnvironment": "git",
-                }
-                if env_type in env_map:
-                    args.env = env_map[env_type]
-
-            # Thinking: inherit from session if not explicitly set
-            if args.thinking == parser_defaults["thinking"]:
-                endpoint_config = session_config.get("endpoint", {})
-                if endpoint_config.get("thinking") is False:
-                    args.thinking = "disabled"
-
-            # confirm_tools: inherit from session if not explicitly set
-            if not args.confirm_tools:
-                env_config = session_config.get("environment", {})
-                if env_config.get("config", {}).get("confirm_tools"):
-                    args.confirm_tools = True
-
-    working_dir = Path(args.cwd) if args.cwd else Path.cwd()
+    # Set working directory
+    config.working_dir = Path(config.cwd) if config.cwd else Path.cwd()
 
     # Create endpoint
     try:
-        endpoint = create_endpoint(args.model, args.api_base, args.api_key, args.thinking)
+        config.endpoint = create_endpoint(
+            config.model, config.api_base, config.api_key, config.thinking
+        )
     except ValueError as e:
         print(f"❌ {e}", file=sys.stderr)
         return 1
 
     # Validate authentication
-    if not endpoint.api_key and not endpoint.oauth_token:
-        env_var = "OPENAI_API_KEY" if endpoint.provider == "openai" else "ANTHROPIC_API_KEY"
+    if not config.endpoint.api_key and not config.endpoint.oauth_token:
+        env_var = "OPENAI_API_KEY" if config.endpoint.provider == "openai" else "ANTHROPIC_API_KEY"
         print(
-            f"❌ No API key found. Set {env_var}, use --api-key, or --login-claude", file=sys.stderr
+            f"❌ No API key found. Set {env_var}, use --api-key, or --login-claude",
+            file=sys.stderr,
         )
         return 1
 
-    # Handoff - extract goal-directed context to stdout
-    if args.handoff:
-        from rollouts.export import run_handoff_command
-
-        session_store = FileSessionStore()
-
-        async def handoff_action() -> int:
-            # Require session ID
-            if args.session is None:
-                print("Error: --handoff requires -s <session_id>", file=sys.stderr)
-                return 1
-
-            if args.session == "":
-                session = await pick_session_async(session_store)
-                if session is None:
-                    return 0
-            else:
-                session, err = await session_store.get(args.session)
-                if err or session is None:
-                    print(f"Error loading session: {err}", file=sys.stderr)
-                    return 1
-
-            handoff_md, err = await run_handoff_command(session, endpoint, args.handoff)
-            if err:
-                print(f"Error: {err}", file=sys.stderr)
-                return 1
-            print(handoff_md)
-            return 0
-
-        return trio.run(handoff_action)
+    # Handoff command (needs endpoint)
+    if config.handoff:
+        return cmd_handoff(config, FileSessionStore())
 
     # Create environment
-    environment = None
-    _git_env_needs_setup = False
-    if args.env == "calculator":
-        environment = CalculatorEnvironment()
-    elif args.env == "coding":
-        from rollouts.environments.coding import TOOL_PRESETS
+    environment, ok = create_environment(config)
+    if not ok:
+        return 1
+    config.environment = environment
 
-        tools = args.tools or "full"
-        if tools not in TOOL_PRESETS:
-            print(
-                f"Unknown tool preset: {tools}. Available: {', '.join(TOOL_PRESETS.keys())}",
-                file=sys.stderr,
-            )
-            return 1
-        environment = LocalFilesystemEnvironment(working_dir=working_dir, tools=tools)
-    elif args.env == "git":
-        environment = GitWorktreeEnvironment(working_dir=working_dir)
-        # TODO: git env setup was planned but not implemented yet
-        # git_env_needs_setup = True  # Will call setup() after we have session_id
+    # Set up session store
+    config.session_store = FileSessionStore() if not config.no_session else None
 
-    session_store = FileSessionStore() if not args.no_session else None
-    system_prompt = args.system_prompt or SYSTEM_PROMPTS.get(args.env, SYSTEM_PROMPTS["none"])
-
-    async def async_main() -> int:
-        from rollouts.agents import resume_session
-
-        # Resolve session: resume existing or create new (handled by run_agent)
-        session_id: str | None = None
-        trajectory: Trajectory
-
-        if session_store is not None:
-            # Resume specific session
-            if args.session is not None:
-                if args.session == "":
-                    # Interactive picker
-                    session = await pick_session_async(session_store)
-                    if session is None:
-                        return 0
-                    session_id = session.session_id
-                else:
-                    # Direct session ID
-                    session_id = args.session
-
-            # Continue latest session
-            elif args.continue_session:
-                session, err = await session_store.get_latest()
-                if session:
-                    session_id = session.session_id
-                else:
-                    print("No previous session found, starting new session")
-
-        # Build trajectory: either from resumed session or fresh
-        # Track forking info if config differs from parent
-        parent_session_id: str | None = None
-        branch_point: int | None = None
-
-        if session_id:
-            try:
-                state = await resume_session(session_id, session_store, endpoint, environment)
-                trajectory = state.actor.trajectory
-
-                # Check if config differs from parent - if so, fork instead of continue
-                parent_session, _ = await session_store.get(session_id)
-                if parent_session:
-                    # Compare endpoint config
-                    current_env_type = type(environment).__name__ if environment else "none"
-                    parent_env_type = (
-                        parent_session.environment.type if parent_session.environment else "none"
-                    )
-                    parent_confirm_tools = (
-                        parent_session.environment.config.get("confirm_tools", False)
-                        if parent_session.environment
-                        else False
-                    )
-
-                    config_differs = (
-                        endpoint.model != parent_session.endpoint.model
-                        or endpoint.provider != parent_session.endpoint.provider
-                        or current_env_type != parent_env_type
-                        or args.confirm_tools != parent_confirm_tools
-                    )
-
-                    if config_differs:
-                        # Fork: create child session instead of continuing parent
-                        parent_session_id = session_id
-                        branch_point = len(trajectory.messages)
-                        session_id = None  # Will create new session in run_agent
-                        print(f"Forking from session: {parent_session_id}")
-                        print(f"  Config changed: model={endpoint.model}, env={current_env_type}")
-                        print(f"  Branch point: {branch_point} messages")
-                    else:
-                        print(f"Resuming session: {parent_session.session_id}")
-                        print(f"  {len(trajectory.messages)} messages")
-                else:
-                    print(f"Resuming session: {session_id}")
-                    print(f"  {len(trajectory.messages)} messages")
-            except ValueError as e:
-                print(f"Error: {e}", file=sys.stderr)
-                return 1
-
-            # Ensure system prompt is present
-            if not trajectory.messages or trajectory.messages[0].role != "system":
-                trajectory = Trajectory(
-                    messages=[Message(role="system", content=system_prompt)]
-                    + list(trajectory.messages)
-                )
-        else:
-            # Fresh session - just system prompt, run_agent will create session
-            trajectory = Trajectory(messages=[Message(role="system", content=system_prompt)])
-
-        # Check for stdin input (piped or redirected)
-        initial_prompt: str | None = None
-        if not sys.stdin.isatty():
-            initial_prompt = sys.stdin.read().strip() or None
-
-        # Non-interactive print mode - use frontends
-        if args.print_mode is not None:
-            query = args.print_mode
-            if query == "-":
-                # Read from stdin (already read above if piped)
-                query = initial_prompt or ""
-                if not query:
-                    print("Error: no input from stdin", file=sys.stderr)
-                    return 1
-
-            from rollouts.frontends import JsonFrontend, NoneFrontend, run_interactive
-
-            if args.stream_json:
-                frontend = JsonFrontend(include_thinking=True)
-                # Set tools for init event
-                if environment:
-                    frontend.set_tools([t.function.name for t in environment.get_tools()])
-            else:
-                frontend = NoneFrontend(show_tool_calls=True, show_thinking=False)
-
-            try:
-                await run_interactive(
-                    trajectory,
-                    endpoint,
-                    frontend=frontend,
-                    environment=environment,
-                    max_turns=args.max_turns,
-                    session_store=session_store,
-                    session_id=session_id,
-                    initial_prompt=query,
-                    single_turn=True,
-                )
-                return 0
-            except KeyboardInterrupt:
-                return 0
-            except Exception as e:
-                if args.stream_json:
-                    import json
-                    print(json.dumps({"type": "error", "error": str(e)}), flush=True)
-                else:
-                    print(f"\nError: {e}", file=sys.stderr)
-                return 1
-
-        # Interactive mode - select frontend
-        if args.frontend == "none":
-            # Simple stdout frontend
-            from rollouts.frontends import NoneFrontend, run_interactive
-
-            frontend = NoneFrontend(show_tool_calls=True, show_thinking=True)
-            try:
-                await run_interactive(
-                    trajectory,
-                    endpoint,
-                    frontend=frontend,
-                    environment=environment,
-                    max_turns=args.max_turns,
-                    session_store=session_store,
-                    session_id=session_id,
-                    parent_session_id=parent_session_id,
-                    branch_point=branch_point,
-                    confirm_tools=args.confirm_tools,
-                    initial_prompt=initial_prompt,
-                )
-                return 0
-            except KeyboardInterrupt:
-                print("\n\n✅ Agent stopped")
-                return 0
-
-        elif args.frontend == "textual":
-            # Textual-based rich TUI (coming soon)
-            print(
-                "Textual frontend not yet implemented. Use --frontend=tui for now.", file=sys.stderr
-            )
-            return 1
-
-        else:
-            # Default: Python TUI (existing implementation)
-            from rollouts.frontends.tui.interactive_agent import run_interactive_agent
-
-            try:
-                await run_interactive_agent(
-                    trajectory,
-                    endpoint,
-                    environment,
-                    args.max_turns,
-                    session_store,
-                    session_id,
-                    args.theme,
-                    args.debug,
-                    args.debug_layout,
-                    parent_session_id,
-                    branch_point,
-                    args.confirm_tools,
-                    initial_prompt,
-                )
-                return 0
-            except KeyboardInterrupt:
-                print("\n\n✅ Agent stopped")
-                return 0
-
+    # Run the agent
     try:
-        return trio.run(async_main)
+        return trio.run(run_agent, config)
     except Exception as e:
         print(f"\n\n❌ Error: {e}", file=sys.stderr)
         import traceback
