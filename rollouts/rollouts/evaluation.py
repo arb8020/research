@@ -150,7 +150,7 @@ async def evaluate_sample(
     show_turn_progress = config.show_progress and config.max_concurrent == 1
 
     if config.run_config:
-        run_config = replace(config.run_config, show_progress=show_turn_progress)
+        base_run_config = replace(config.run_config, show_progress=show_turn_progress)
     else:
         # Determine on_chunk handler based on stream_tokens flag
         # Debug logging
@@ -174,10 +174,33 @@ async def evaluate_sample(
             on_chunk_handler = silent_chunk_handler
             logger.debug("🔍 Using silent mode (no token streaming)")
 
-        run_config = RunConfig(on_chunk=on_chunk_handler, show_progress=show_turn_progress)
+        base_run_config = RunConfig(on_chunk=on_chunk_handler, show_progress=show_turn_progress)
         logger.debug(
             f"🔍 RunConfig.on_chunk: {on_chunk_handler.__name__ if hasattr(on_chunk_handler, '__name__') else type(on_chunk_handler)}"
         )
+
+    # Wrap on_chunk to inject sample_id context for concurrent sample tracking
+    # This allows handlers to know which sample each event belongs to
+    base_on_chunk = base_run_config.on_chunk
+
+    async def on_chunk_with_sample_id(event: object) -> None:
+        # Inject sample_id into StreamChunk events
+        if isinstance(event, StreamChunk):
+            event = StreamChunk(
+                type=event.type,
+                data={**event.data, "sample_id": sample_id},
+                timestamp=event.timestamp,
+            )
+        else:
+            # Wrap other event types in a StreamChunk with sample_id context
+            # This allows handlers to track which sample each event belongs to
+            event = StreamChunk(
+                type="event_wrapper",
+                data={"sample_id": sample_id, "event": event},
+            )
+        await base_on_chunk(event)
+
+    run_config = replace(base_run_config, on_chunk=on_chunk_with_sample_id)
 
     # Run agent
     # Tiger Style: Catch operational errors (rate limits, network issues) at boundary
