@@ -283,6 +283,129 @@ class TraceData:
                         return rollout
         return None
 
+    def handle_stream_event(
+        self, sample_id: str, event_type: str, event_data: dict
+    ) -> None:
+        """Handle a StreamEvent for live streaming display.
+
+        Uses AgentRenderer-style event handling - builds messages from
+        TextEnd, ThinkingEnd, ToolCallEnd events (not manual accumulation).
+        """
+        # Find or create rollout for this sample
+        rollout = self.find_rollout_by_sample_id(sample_id)
+        if rollout is None:
+            # Create a placeholder rollout for streaming
+            step_num = 0
+            group_id = hash(sample_id) % 10000
+
+            # Find or create step
+            step = None
+            for s in self.steps:
+                if s.step == step_num:
+                    step = s
+                    break
+            if step is None:
+                step = Step(step=step_num, groups=[])
+                self.steps.append(step)
+
+            # Find or create group
+            group = None
+            for g in step.groups:
+                if g.group_id == group_id:
+                    group = g
+                    break
+            if group is None:
+                group = Group(step=step_num, group_id=group_id, prompt="", rollouts=[])
+                step.groups.append(group)
+
+            # Create new rollout
+            rollout = Rollout(
+                step=step_num,
+                group_id=group_id,
+                sample_id=len(group.rollouts),
+                prompt="",
+                response="",
+                reward=0.0,
+                messages=[],
+                is_streaming=True,
+                sample_id_str=sample_id,
+            )
+            group.rollouts.append(rollout)
+
+        # Handle different event types
+        # Use "End" events which contain complete content (like AgentRenderer)
+        if event_type == "TextEnd":
+            content = event_data.get("content", "")
+            # Add or update assistant message with text
+            self._update_assistant_text(rollout, content)
+
+        elif event_type == "ThinkingEnd":
+            content = event_data.get("content", "")
+            # Add thinking to assistant message
+            self._update_assistant_thinking(rollout, content)
+
+        elif event_type == "ToolCallEnd":
+            tool_call = event_data.get("tool_call", {})
+            # Add tool call to assistant message
+            self._add_tool_call(rollout, tool_call)
+
+        elif event_type == "ToolResultReceived":
+            tool_call_id = event_data.get("tool_call_id", "")
+            content = event_data.get("content", "")
+            is_error = event_data.get("is_error", False)
+            # Add tool result message
+            self._add_tool_result(rollout, tool_call_id, content, is_error)
+
+        elif event_type == "StreamDone":
+            # Mark streaming as complete
+            rollout.is_streaming = False
+
+        # For delta events, accumulate text for live preview
+        elif event_type == "TextDelta":
+            delta = event_data.get("delta", "")
+            rollout.response += delta
+
+        elif event_type == "ThinkingDelta":
+            # Could accumulate for live thinking preview if needed
+            pass
+
+    def _update_assistant_text(self, rollout: Rollout, content: str) -> None:
+        """Update or create assistant message with text content."""
+        # Find last assistant message or create one
+        if rollout.messages and rollout.messages[-1].role == "assistant":
+            rollout.messages[-1] = Message(role="assistant", content=content)
+        else:
+            rollout.messages.append(Message(role="assistant", content=content))
+        rollout.response = content
+
+    def _update_assistant_thinking(self, rollout: Rollout, content: str) -> None:
+        """Add thinking content to assistant message."""
+        # For now, prepend thinking to content with a marker
+        if rollout.messages and rollout.messages[-1].role == "assistant":
+            existing = rollout.messages[-1].content
+            rollout.messages[-1] = Message(
+                role="assistant", content=f"[thinking]\n{content}\n[/thinking]\n\n{existing}"
+            )
+
+    def _add_tool_call(self, rollout: Rollout, tool_call: dict) -> None:
+        """Add tool call info to display."""
+        name = tool_call.get("name", "unknown")
+        args = tool_call.get("args", {})
+        # Format as text for now
+        tool_text = f"[tool_call: {name}]\n{args}"
+        if rollout.messages and rollout.messages[-1].role == "assistant":
+            existing = rollout.messages[-1].content
+            rollout.messages[-1] = Message(
+                role="assistant", content=f"{existing}\n\n{tool_text}"
+            )
+
+    def _add_tool_result(
+        self, rollout: Rollout, tool_call_id: str, content: str, is_error: bool
+    ) -> None:
+        """Add tool result message."""
+        prefix = "[tool_error]" if is_error else "[tool_result]"
+        rollout.messages.append(Message(role="tool", content=f"{prefix}\n{content}"))
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Trace Viewer (deepest level - shows message trace)
