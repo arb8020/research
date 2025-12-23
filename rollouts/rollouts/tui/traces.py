@@ -656,8 +656,9 @@ class TraceViewer:
             "system": MAGENTA,
         }
 
-        # Background highlight for cursor
-        BG_CURSOR = "\x1b[48;2;60;60;80m"  # Subtle blue-gray background
+        # Cursor styling - bright yellow background for clear visibility
+        BG_CURSOR = "\x1b[48;2;80;80;40m"  # Muted yellow-brown background
+        CURSOR_ARROW = "\x1b[33;1m▸\x1b[0m"  # Bright yellow arrow
 
         messages = self._get_all_messages()
 
@@ -672,13 +673,13 @@ class TraceViewer:
             line_idx = len(self._rendered_lines)
             self._msg_to_line[msg_idx] = line_idx
 
-            # Cursor indicator
-            cursor_marker = ">" if is_cursor else " "
+            # Cursor indicator - bright arrow when selected, space otherwise
+            cursor_marker = CURSOR_ARROW if is_cursor else " "
             bg = BG_CURSOR if is_cursor else ""
             bg_reset = RESET if is_cursor else ""
 
             if is_folded:
-                # Show folded summary: > ▶ [role] --- N lines ---
+                # Show folded summary: ▸ ▶ [role] --- N lines ---
                 fold_marker = "▶"
                 preview = content_lines[0][:40] if content_lines else ""
                 if len(content_lines[0]) > 40 if content_lines else False:
@@ -686,7 +687,7 @@ class TraceViewer:
                 summary = f"{bg}{cursor_marker} {fold_marker} {color}{BOLD}[{msg.role}]{RESET}{bg} {DIM}--- {num_lines} lines: {preview}{RESET}{bg_reset}"
                 self._rendered_lines.append(summary)
             else:
-                # Show expanded: > ▼ [role] followed by content
+                # Show expanded: ▸ ▼ [role] followed by content
                 fold_marker = "▼"
                 header = (
                     f"{bg}{cursor_marker} {fold_marker} {color}{BOLD}[{msg.role}]{RESET}{bg_reset}"
@@ -1073,8 +1074,9 @@ class TraceStreamingViewer:
             "system": MAGENTA,
         }
 
-        # Background highlight for cursor
-        BG_CURSOR = "\x1b[48;2;60;60;80m"  # Subtle blue-gray background
+        # Cursor styling - bright yellow background for clear visibility
+        BG_CURSOR = "\x1b[48;2;80;80;40m"  # Muted yellow-brown background
+        CURSOR_ARROW = "\x1b[33;1m▸\x1b[0m"  # Bright yellow arrow
 
         # Get all messages
         messages = self._get_all_messages()
@@ -1094,13 +1096,13 @@ class TraceStreamingViewer:
             line_idx = len(self._rendered_lines)
             self._msg_to_line[msg_idx] = line_idx
 
-            # Cursor indicator
-            cursor_marker = ">" if is_cursor else " "
+            # Cursor indicator - bright arrow when selected, space otherwise
+            cursor_marker = CURSOR_ARROW if is_cursor else " "
             bg = BG_CURSOR if is_cursor else ""
             bg_reset = RESET if is_cursor else ""
 
             if is_folded:
-                # Show folded summary: > ▶ [role] --- N lines ---
+                # Show folded summary: ▸ ▶ [role] --- N lines ---
                 fold_marker = "▶"
                 preview = content_lines[0][:40] if content_lines else ""
                 if len(content_lines[0]) > 40 if content_lines else False:
@@ -1108,7 +1110,7 @@ class TraceStreamingViewer:
                 summary = f"{bg}{cursor_marker} {fold_marker} {color}{BOLD}[{msg.role}]{RESET}{bg} {DIM}--- {num_lines} lines: {preview}{RESET}{bg_reset}"
                 self._rendered_lines.append(summary)
             else:
-                # Show expanded: > ▼ [role] followed by content
+                # Show expanded: ▸ ▼ [role] followed by content
                 fold_marker = "▼"
                 header = (
                     f"{bg}{cursor_marker} {fold_marker} {color}{BOLD}[{msg.role}]{RESET}{bg_reset}"
