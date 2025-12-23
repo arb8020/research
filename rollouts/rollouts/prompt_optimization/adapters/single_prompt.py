@@ -1,6 +1,7 @@
 """SinglePromptAdapter - adapter for single system prompt optimization.
 
 The most common use case: optimize just the system prompt.
+Delegates to rollouts/evaluation.py for actual evaluation.
 """
 
 import logging
@@ -9,17 +10,16 @@ from typing import Any
 
 import trio
 
-from rollouts.agents import run_agent
 from rollouts.dtypes import (
-    Actor,
-    AgentState,
     Endpoint,
+    EvalConfig,
     Message,
     RunConfig,
     Score,
+    StopReason,
     StreamEvent,
-    Trajectory,
 )
+from rollouts.evaluation import evaluate_sample
 from rollouts.training.types import Sample
 
 from ..types import Candidate, EvaluationBatch
@@ -34,6 +34,15 @@ EnvironmentFactory = Callable[[dict[str, Any]], Awaitable[Any]]
 async def _silent_chunk_handler(_: StreamEvent) -> None:
     """Silent handler for streaming events."""
     await trio.lowlevel.checkpoint()
+
+
+async def _stop_after_response(
+    state: "rollouts.dtypes.AgentState", run_config: "RunConfig"
+) -> "rollouts.dtypes.AgentState":
+    """Stop after first response - for simple evaluation without tools."""
+    from dataclasses import replace
+
+    return replace(state, stop=StopReason.TASK_COMPLETED)
 
 
 class SinglePromptAdapter:
@@ -52,6 +61,7 @@ class SinglePromptAdapter:
         user_template: str,
         score_fn: ScoreFn,
         environment_factory: EnvironmentFactory | None = None,
+        max_concurrent: int = 10,
     ) -> None:
         """Initialize adapter.
 
@@ -60,11 +70,25 @@ class SinglePromptAdapter:
             user_template: Template for user messages with {placeholders}
             score_fn: Function to compute score from Sample
             environment_factory: Optional factory for tool-using agents
+            max_concurrent: Maximum parallel evaluations (default 10)
         """
         self.endpoint = endpoint
         self.user_template = user_template
         self.score_fn = score_fn
         self.environment_factory = environment_factory
+        self.max_concurrent = max_concurrent
+
+    def _make_prepare_messages(self, system_prompt: str) -> Callable[[dict], list[Message]]:
+        """Create prepare_messages function for EvalConfig."""
+        user_template = self.user_template
+
+        def prepare_messages(sample: dict) -> list[Message]:
+            return [
+                Message(role="system", content=system_prompt),
+                Message(role="user", content=user_template.format(**sample)),
+            ]
+
+        return prepare_messages
 
     async def evaluate(
         self,
@@ -73,6 +97,9 @@ class SinglePromptAdapter:
         capture_traces: bool = False,
     ) -> EvaluationBatch:
         """Evaluate single-prompt candidate on batch.
+
+        Delegates to rollouts/evaluation.evaluate_sample for each sample,
+        with concurrency control.
 
         Args:
             batch: List of sample dicts
@@ -84,86 +111,69 @@ class SinglePromptAdapter:
         """
         system_prompt = candidate["system"]
 
-        outputs: list[Any] = []
-        scores: list[float] = []
-        trajectories: list[dict] = []
+        # Build EvalConfig - this is the bridge to rollouts/evaluation.py
+        run_config = RunConfig(
+            on_chunk=_silent_chunk_handler,
+            handle_no_tool=_stop_after_response,  # Stop after first response
+        )
 
-        for sample in batch:
-            # Format messages
-            user_content = self.user_template.format(**sample)
-            messages = [
-                Message(role="system", content=system_prompt),
-                Message(role="user", content=user_content),
-            ]
+        config = EvalConfig(
+            endpoint=self.endpoint,
+            score_fn=self.score_fn,
+            prepare_messages=self._make_prepare_messages(system_prompt),
+            environment_factory=self.environment_factory,
+            run_config=run_config,
+            max_concurrent=self.max_concurrent,
+        )
 
-            # Build trajectory
-            trajectory = Trajectory(messages=messages)
+        # Evaluate samples with concurrency
+        samples: list[Sample] = []
 
-            # Build actor
-            env = None
-            tools = []
-            if self.environment_factory:
-                env = await self.environment_factory(sample)
-                tools = env.get_tools()
-
-            actor = Actor(trajectory=trajectory, endpoint=self.endpoint, tools=tools)
-            state = AgentState(actor=actor, environment=env)
-            run_config = RunConfig(on_chunk=_silent_chunk_handler)
-
-            # Run agent
-            try:
-                states = await run_agent(state, run_config)
-                final_trajectory = states[-1].actor.trajectory
-            except Exception as e:
-                logger.warning(f"Evaluation failed for sample: {e}")
-                outputs.append("")
-                scores.append(0.0)
-                if capture_traces:
-                    trajectories.append({
-                        "sample": sample,
-                        "messages": messages,
-                        "output": "",
-                        "score": 0.0,
-                        "error": str(e),
-                    })
-                continue
-
-            # Extract output
-            output = self._extract_output(final_trajectory)
-            outputs.append(output)
-
-            # Score
-            eval_sample = Sample(
-                id=str(len(outputs)),
-                input=sample,
-                trajectory=final_trajectory,
-                ground_truth=sample.get("answer") or sample.get("label"),
+        async def eval_one(idx: int, sample_data: dict) -> Sample:
+            env = await self.environment_factory(sample_data) if self.environment_factory else None
+            return await evaluate_sample(
+                sample_data=sample_data,
+                sample_id=f"gepa_{idx}",
+                config=config,
+                environment=env,
             )
 
-            # Support both sync and async score functions
-            import inspect
+        # Run with concurrency limit
+        async with trio.open_nursery() as nursery:
+            limiter = trio.CapacityLimiter(self.max_concurrent)
+            results: list[Sample | None] = [None] * len(batch)
 
-            score_result = self.score_fn(eval_sample)
-            if inspect.iscoroutine(score_result):
-                score = await score_result
-            else:
-                score = score_result
+            async def eval_with_limit(idx: int, sample_data: dict) -> None:
+                async with limiter:
+                    results[idx] = await eval_one(idx, sample_data)
 
-            scores.append(score.reward)
+            for idx, sample_data in enumerate(batch):
+                nursery.start_soon(eval_with_limit, idx, sample_data)
 
-            if capture_traces:
-                trajectories.append({
-                    "sample": sample,
-                    "messages": messages,
-                    "output": output,
-                    "score": score.reward,
-                    "ground_truth": sample.get("answer") or sample.get("label"),
-                })
+        samples = [r for r in results if r is not None]
+
+        # Convert Sample list -> EvaluationBatch
+        outputs = tuple(self._extract_output(s) for s in samples)
+        scores = tuple(s.score.reward if s.score else 0.0 for s in samples)
+
+        trajectories = None
+        if capture_traces:
+            # Build trace dicts for make_reflective_dataset
+            trajectories = tuple(
+                {
+                    "sample": s.input,
+                    "messages": s.trajectory.messages if s.trajectory else [],
+                    "output": self._extract_output(s),
+                    "score": s.score.reward if s.score else 0.0,
+                    "ground_truth": s.ground_truth,
+                }
+                for s in samples
+            )
 
         return EvaluationBatch(
-            outputs=tuple(outputs),
-            scores=tuple(scores),
-            trajectories=tuple(trajectories) if capture_traces else None,
+            outputs=outputs,
+            scores=scores,
+            trajectories=trajectories,
         )
 
     def make_reflective_dataset(
@@ -217,13 +227,13 @@ class SinglePromptAdapter:
 
         return {"system": items}
 
-    def _extract_output(self, trajectory: Trajectory) -> str:
-        """Extract output text from trajectory."""
-        if not trajectory.messages:
+    def _extract_output(self, sample: Sample) -> str:
+        """Extract output text from Sample's trajectory."""
+        if not sample.trajectory or not sample.trajectory.messages:
             return ""
 
         # Get last assistant message
-        for msg in reversed(trajectory.messages):
+        for msg in reversed(sample.trajectory.messages):
             if msg.role == "assistant":
                 if isinstance(msg.content, str):
                     return msg.content

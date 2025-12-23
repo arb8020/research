@@ -14,7 +14,7 @@ import trio
 from rollouts.dtypes import Endpoint, Message
 
 from .evaluation import EnvironmentFactory, ScoreFn, evaluate_template
-from .types import GenerationStats, GEPAConfig, OptimizationResult, PromptTemplate
+from .types import EvolutionaryConfig, GenerationStats, OptimizationResult, PromptTemplate
 
 logger = logging.getLogger(__name__)
 
@@ -211,9 +211,9 @@ def crossover_templates(
 # ─── GEPA Orchestration ───────────────────────────────────────────────────────
 
 
-async def run_gepa(
+async def run_evolutionary_gepa(
     initial_template: PromptTemplate,
-    config: GEPAConfig,
+    config: EvolutionaryConfig,
     dataset: Sequence[dict[str, Any]],
     endpoint: Endpoint,
     mutation_endpoint: Endpoint,
@@ -221,16 +221,18 @@ async def run_gepa(
     environment_factory: EnvironmentFactory | None = None,
     on_generation: Callable[[int, list[PromptTemplate]], None] | None = None,
 ) -> OptimizationResult:
-    """Run GEPA evolutionary optimization loop.
+    """Run evolutionary GEPA optimization loop.
 
-    Async orchestration: manages population across generations.
+    Uses population-based search with mutation and crossover.
+    Unlike reflective mutation, this doesn't require the mutation LLM
+    to understand *why* prompts fail - it just proposes variations.
 
     Args:
         initial_template: Starting prompt template
-        config: GEPA hyperparameters
+        config: Evolutionary GEPA hyperparameters
         dataset: List of sample dicts
         endpoint: LLM endpoint for task evaluation
-        mutation_endpoint: LLM endpoint for proposing mutations (can be cheaper)
+        mutation_endpoint: LLM endpoint for proposing mutations (can be same as endpoint)
         score_fn: Function to compute score from Sample
         environment_factory: Optional factory for per-sample environments
         on_generation: Optional callback after each generation
@@ -239,12 +241,12 @@ async def run_gepa(
         OptimizationResult with best template and history
 
     Example:
-        >>> result = await run_gepa(
+        >>> result = await run_evolutionary_gepa(
         ...     initial_template=template,
-        ...     config=GEPAConfig(population_size=20, generations=10),
+        ...     config=EvolutionaryConfig(population_size=12, generations=20),
         ...     dataset=my_dataset,
         ...     endpoint=task_endpoint,
-        ...     mutation_endpoint=mutation_endpoint,
+        ...     mutation_endpoint=task_endpoint,  # Can use same model
         ...     score_fn=my_score_fn,
         ... )
         >>> print(f"Best score: {result.best_template.score}")
