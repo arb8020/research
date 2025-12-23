@@ -17,12 +17,10 @@ from .dtypes import (
     Actor,
     AgentState,
     Endpoint,
-    EndpointConfig,
     Environment,
     EnvironmentConfig,
     Message,
     RunConfig,
-    SessionMessage,
     SessionStatus,
     StopReason,
     StreamChunk,
@@ -70,31 +68,7 @@ async def handle_checkpoint_event(
     )
 
 
-def _message_to_session_message(msg: Message) -> SessionMessage:
-    """Convert rollouts Message to SessionMessage for storage."""
-    # Handle different content types
-    if isinstance(msg.content, str):
-        content: str | list[dict[str, Any]] = msg.content
-    elif isinstance(msg.content, list):
-        # Content blocks - serialize to dicts
-        content = []
-        for block in msg.content:
-            if hasattr(block, "to_dict"):
-                content.append(block.to_dict())
-            elif hasattr(block, "__dict__"):
-                content.append(vars(block))
-            else:
-                content.append({"type": "unknown", "value": str(block)})
-    elif msg.content is None:
-        content = ""
-    else:
-        content = str(msg.content)
-
-    return SessionMessage(
-        role=msg.role,
-        content=content,
-        tool_call_id=msg.tool_call_id,
-    )
+# _message_to_session_message deleted - use Message directly with timestamp field
 
 
 async def stdout_handler(event: StreamEvent):
@@ -560,8 +534,7 @@ async def run_agent_step(
 
     # Persist assistant message immediately after rollout
     if rcfg.session_store and state.session_id and last_message:
-        session_msg = _message_to_session_message(last_message)
-        await rcfg.session_store.append_message(state.session_id, session_msg)
+        await rcfg.session_store.append_message(state.session_id, last_message)
 
     # Let environment respond to assistant message (e.g., execute code, provide feedback)
     # This happens AFTER updating state but BEFORE tool processing
@@ -720,8 +693,7 @@ async def process_pending_tools(
         # Persist each message after tool execution
         if rcfg.session_store and state.session_id:
             for msg in messages_to_add:
-                session_msg = _message_to_session_message(msg)
-                await rcfg.session_store.append_message(state.session_id, session_msg)
+                await rcfg.session_store.append_message(state.session_id, msg)
 
         # Handle tool errors
         current_state = rcfg.handle_tool_error(tool_result, current_state)
@@ -767,78 +739,14 @@ async def resume_session(
         state = await resume_session("20241205_143052_a1b2c3", store, endpoint, env)
         states = await run_agent(state, RunConfig(session_store=store))
     """
-    from .dtypes import (
-        ContentBlock,
-        ImageContent,
-        TextContent,
-        ThinkingContent,
-        ToolCallContent,
-        Trajectory,
-    )
+    from .dtypes import Trajectory
 
     session, err = await session_store.get(session_id)
     if err or session is None:
         raise ValueError(f"Session not found: {session_id}" + (f" ({err})" if err else ""))
 
-    def deserialize_content(content: str | list[dict] | None) -> str | list[ContentBlock] | None:
-        """Convert serialized content back to ContentBlock objects."""
-        if content is None or isinstance(content, str):
-            return content
-        if not isinstance(content, list):
-            return content
-
-        blocks: list[ContentBlock] = []
-        for item in content:
-            if not isinstance(item, dict):
-                continue
-            block_type = item.get("type")
-            if block_type == "text":
-                blocks.append(
-                    TextContent(
-                        type="text",
-                        text=item.get("text", ""),
-                        text_signature=item.get("text_signature"),
-                    )
-                )
-            elif block_type == "thinking":
-                blocks.append(
-                    ThinkingContent(
-                        type="thinking",
-                        thinking=item.get("thinking", ""),
-                        thinking_signature=item.get("thinking_signature"),
-                    )
-                )
-            elif block_type == "toolCall":
-                blocks.append(
-                    ToolCallContent(
-                        type="toolCall",
-                        id=item.get("id", ""),
-                        name=item.get("name", ""),
-                        arguments=item.get("arguments", {}),
-                        thought_signature=item.get("thought_signature"),
-                    )
-                )
-            elif block_type == "image":
-                blocks.append(
-                    ImageContent(
-                        type="image",
-                        image_url=item.get("image_url", ""),
-                        detail=item.get("detail"),
-                    )
-                )
-        return blocks if blocks else None
-
-    # Convert SessionMessage -> Message
-    messages = [
-        Message(
-            role=m.role,
-            content=deserialize_content(m.content),
-            tool_call_id=m.tool_call_id,
-        )
-        for m in session.messages
-    ]
-
-    trajectory = Trajectory(messages=messages)
+    # session.messages is already list[Message] - dacite properly deserializes content blocks
+    trajectory = Trajectory(messages=session.messages)
 
     return AgentState(
         actor=Actor(
@@ -851,18 +759,7 @@ async def resume_session(
     )
 
 
-def _endpoint_to_config(endpoint: "Endpoint") -> "EndpointConfig":
-    """Convert Endpoint to serializable EndpointConfig."""
-    from .dtypes import EndpointConfig
-
-    return EndpointConfig(
-        model=endpoint.model,
-        provider=endpoint.provider,
-        temperature=endpoint.temperature,
-        max_tokens=endpoint.max_tokens,
-        thinking=endpoint.thinking is not None and endpoint.thinking.get("type") == "enabled",
-        thinking_budget=endpoint.thinking.get("budget_tokens") if endpoint.thinking else None,
-    )
+# _endpoint_to_config deleted - use Endpoint.to_dict(exclude_secrets=True) instead
 
 
 def _environment_to_config(
@@ -911,7 +808,7 @@ async def run_agent(
     # Session creation: if session_store but no session_id, create one
     if session_store and not current_state.session_id:
         session = await session_store.create(
-            endpoint=_endpoint_to_config(current_state.actor.endpoint),
+            endpoint=current_state.actor.endpoint,  # Endpoint stored with secrets excluded
             environment=_environment_to_config(
                 current_state.environment, current_state.confirm_tools
             ),
@@ -928,8 +825,7 @@ async def run_agent(
 
         # Persist initial messages (system prompt, user message, etc.)
         for msg in current_state.actor.trajectory.messages:
-            session_msg = _message_to_session_message(msg)
-            await session_store.append_message(session.session_id, session_msg)
+            await session_store.append_message(session.session_id, msg)
 
     elif session_store and current_state.session_id:
         # Resuming existing session - check for messages added since last persist
@@ -941,8 +837,7 @@ async def run_agent(
             if current_count > persisted_count:
                 # Persist the gap messages
                 for msg in current_state.actor.trajectory.messages[persisted_count:]:
-                    session_msg = _message_to_session_message(msg)
-                    await session_store.append_message(current_state.session_id, session_msg)
+                    await session_store.append_message(current_state.session_id, msg)
 
     # Notify environment of session start (for setup like git worktrees)
     if current_state.environment and current_state.session_id:
@@ -1013,8 +908,7 @@ async def run_agent(
 
                     # Persist to session store
                     if session_store and current_state.session_id:
-                        session_msg = _message_to_session_message(interrupted_msg)
-                        await session_store.append_message(current_state.session_id, session_msg)
+                        await session_store.append_message(current_state.session_id, interrupted_msg)
 
                 # Update in-memory trajectory so TUI has valid state
                 if interrupted_messages:

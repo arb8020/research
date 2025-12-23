@@ -189,23 +189,116 @@ class Sample:
 
 ---
 
+## Phase 2: Unified Message and Endpoint Types
+
+### Context
+
+Two more type duplications following the same pattern as Sample/EvalSample:
+
+**Message vs SessionMessage:**
+- `Message`: runtime type with `content: str | list[ContentBlock]`, provider metadata
+- `SessionMessage`: serializable for sessions, `content: str | list[dict]`, adds `timestamp`
+- Conversion via `_message_to_session_message()` in agents.py
+
+**Endpoint vs EndpointConfig:**
+- `Endpoint`: runtime type with api_key, oauth_token, `thinking: dict | None`
+- `EndpointConfig`: serializable for sessions, no secrets, `thinking: bool` + `thinking_budget: int`
+- Lossy conversion - `thinking: dict` is more expressive than `bool + int`
+
+### Solution
+
+Same pattern as Sample: overcomplete types with optional fields.
+
+**Message:**
+- Add `timestamp: str | None = None` field
+- Delete `SessionMessage` entirely
+- `AgentSession.messages: list[Message]` - keeps type safety
+
+**Endpoint:**
+- Already has all fields (overcomplete)
+- Delete `EndpointConfig` entirely
+- Add `to_dict(exclude_secrets=True)` method
+- Add `from_dict(data, api_key="", oauth_token="")` class method
+- `AgentSession.endpoint: Endpoint` with secrets injected at runtime
+
+### Why overcomplete > separate types
+
+1. **Consistent with Sample refactor** - one type with optional fields
+2. **Type safety preserved** - `AgentSession.messages: list[Message]` not `list[dict]`
+3. **No lossy conversion** - `thinking: dict` stays as dict, not collapsed to bool
+4. **Casey principle** - don't create types when methods suffice
+
+### Why not just to_dict methods?
+
+If we used `AgentSession.messages: list[dict]`, callers lose type safety and must remember to call `Message.from_dict()`. Overcomplete types let us keep `list[Message]` everywhere.
+
+### Implementation
+
+**Message changes:**
+```python
+@dataclass(frozen=True)
+class Message(JsonSerializable):
+    role: str
+    content: str | list[ContentBlock] | None
+    provider: str | None = None
+    api: str | None = None
+    model: str | None = None
+    tool_call_id: str | None = None
+    details: dict[str, Any] | None = None
+    timestamp: str | None = None  # NEW: for session storage
+```
+
+**Endpoint changes:**
+```python
+@dataclass(frozen=True)
+class Endpoint(JsonSerializable):
+    # ... existing fields ...
+
+    def to_dict(self, exclude_secrets: bool = True) -> dict[str, Any]:
+        """Serialize. If exclude_secrets=True, omits api_key/oauth_token."""
+        d = asdict(self)
+        if exclude_secrets:
+            d.pop("api_key", None)
+            d.pop("oauth_token", None)
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict, api_key: str = "", oauth_token: str = "") -> Endpoint:
+        """Deserialize, injecting secrets at runtime."""
+        return cls(**data, api_key=api_key, oauth_token=oauth_token)
+```
+
+**AgentSession changes:**
+```python
+@dataclass
+class AgentSession:
+    # ...
+    endpoint: Endpoint  # was EndpointConfig
+    messages: list[Message]  # was list[SessionMessage]
+```
+
+### Files to modify
+- `rollouts/dtypes.py` - Add timestamp to Message, add to_dict/from_dict to Endpoint, delete SessionMessage/EndpointConfig
+- `rollouts/agents.py` - Delete `_message_to_session_message()`, use Message directly
+- `rollouts/store.py` - Update to use Message/Endpoint
+- `rollouts/__init__.py` - Remove SessionMessage/EndpointConfig exports
+
+### Breaking changes
+- `SessionMessage` deleted - use `Message` with optional `timestamp`
+- `EndpointConfig` deleted - use `Endpoint` with `to_dict(exclude_secrets=True)`
+- `AgentSession.messages` type changes from `list[SessionMessage]` to `list[Message]`
+- `AgentSession.endpoint` type changes from `EndpointConfig` to `Endpoint`
+
+---
+
 ## Future Cleanup (Out of Scope)
 
-Other type duplications that could be compressed in future refactors:
-
-### Endpoint Types (3 types for same concept)
-- `Endpoint` (dtypes.py) - runtime, frozen, has api_key
-- `EndpointConfig` (dtypes.py) - serializable for sessions, different thinking field format
-- `BaseModelConfig` (config/base.py) - has api_key_env_var, to_endpoint()
-
-Could merge into one `Endpoint` with `to_dict(exclude_secrets=True)`.
-
-### Message Types (2 types)
-- `Message` (dtypes.py) - runtime with content blocks
-- `SessionMessage` (dtypes.py) - serializable for sessions
-
-Could delete `SessionMessage`, use `Message.to_dict()`/`from_dict()`.
+### BaseModelConfig (config/base.py)
+- Has `api_key_env_var`, `to_endpoint()`
+- Different purpose: user-facing config that loads secrets from env
+- Keep separate - it's a config helper, not a duplicate type
 
 ### EnvironmentConfig
 - Just `type: str` + `config: dict`
 - Could delete, use dict directly
+- Low priority

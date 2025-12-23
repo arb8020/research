@@ -128,8 +128,8 @@ RL_TRAINING_PANES = (
 EVAL_PANES = (
     PaneConfig.create("Eval", ["eval", "kernelbench", "research"]),
     PaneConfig.create("Modal", ["modal"]),
-    PaneConfig.create("Metrics", ["metrics"], is_metrics=True),
-    PaneConfig.create("Agent", ["agent", "agents", "rollout", "rollouts"]),
+    PaneConfig.create("Agent", ["agent", "agents"]),
+    PaneConfig.create("Traces", ["rollout", "rollouts"], is_traces=True),
 )
 
 

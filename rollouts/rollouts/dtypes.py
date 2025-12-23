@@ -478,6 +478,8 @@ class Message(JsonSerializable):
     tool_call_id: str | None = None
     # UI-only structured data (stripped before LLM)
     details: dict[str, Any] | None = None
+    # Session storage timestamp (optional, only set when persisting)
+    timestamp: str | None = None
 
     def get_tool_calls(self) -> list[ToolCall]:
         """Extract tool calls from ContentBlocks.
@@ -1057,6 +1059,35 @@ class Endpoint(JsonSerializable):
                     "See https://docs.claude.com/en/docs/build-with-claude/extended-thinking"
                 )
 
+    def to_dict(self, exclude_secrets: bool = True) -> dict[str, Any]:
+        """Serialize to dict for storage.
+
+        Args:
+            exclude_secrets: If True (default), omits api_key and oauth_token.
+        """
+        d = asdict(self)
+        if exclude_secrets:
+            d.pop("api_key", None)
+            d.pop("oauth_token", None)
+        return d
+
+    @classmethod
+    def from_dict(
+        cls, data: dict[str, Any], api_key: str = "", oauth_token: str = ""
+    ) -> "Endpoint":
+        """Deserialize from dict, injecting secrets at runtime.
+
+        Args:
+            data: Dict from to_dict()
+            api_key: API key to inject (not stored in session)
+            oauth_token: OAuth token to inject (not stored in session)
+        """
+        # Remove secrets if present (they shouldn't be, but be safe)
+        data = data.copy()
+        data.pop("api_key", None)
+        data.pop("oauth_token", None)
+        return cls(**data, api_key=api_key, oauth_token=oauth_token)
+
 
 @dataclass(frozen=True)
 class Actor(JsonSerializable):
@@ -1264,46 +1295,7 @@ class SessionStatus(Enum):
     ABORTED = "aborted"
 
 
-@dataclass
-class EndpointConfig:
-    """LLM endpoint configuration.
-
-    Stored in session for reproducibility. This is the serializable subset
-    of Endpoint - excludes api_key and other runtime-only fields.
-    """
-
-    model: str
-    provider: str = "anthropic"
-    temperature: float = 0.0
-    max_tokens: int | None = None
-    # Extended thinking
-    thinking: bool = False
-    thinking_budget: int | None = None
-    # Additional params
-    extra: dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "model": self.model,
-            "provider": self.provider,
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
-            "thinking": self.thinking,
-            "thinking_budget": self.thinking_budget,
-            "extra": self.extra,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "EndpointConfig":
-        return cls(
-            model=data["model"],
-            provider=data.get("provider", "anthropic"),
-            temperature=data.get("temperature", 0.0),
-            max_tokens=data.get("max_tokens"),
-            thinking=data.get("thinking", False),
-            thinking_budget=data.get("thinking_budget"),
-            extra=data.get("extra", {}),
-        )
+# EndpointConfig deleted - use Endpoint.to_dict(exclude_secrets=True) instead
 
 
 @dataclass
@@ -1331,38 +1323,7 @@ class EnvironmentConfig:
         )
 
 
-@dataclass
-class SessionMessage:
-    """A message in the session trajectory.
-
-    This is a simplified serializable version of Message for session storage.
-    """
-
-    role: str  # user, assistant, tool
-    content: str | list[dict[str, Any]]  # text or content blocks
-    tool_call_id: str | None = None  # for tool results
-    # Additional metadata
-    timestamp: str | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        result: dict[str, Any] = {
-            "role": self.role,
-            "content": self.content,
-        }
-        if self.tool_call_id:
-            result["tool_call_id"] = self.tool_call_id
-        if self.timestamp:
-            result["timestamp"] = self.timestamp
-        return result
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "SessionMessage":
-        return cls(
-            role=data["role"],
-            content=data["content"],
-            tool_call_id=data.get("tool_call_id"),
-            timestamp=data.get("timestamp"),
-        )
+# SessionMessage deleted - use Message with optional timestamp instead
 
 
 @dataclass
@@ -1378,11 +1339,12 @@ class AgentSession:
     branch_point: int | None = None  # message index where branched from parent
 
     # Config (serializable, stored in session.json)
-    endpoint: EndpointConfig = field(default_factory=lambda: EndpointConfig(model=""))
+    # Endpoint stored with secrets excluded via to_dict(exclude_secrets=True)
+    endpoint: Endpoint = field(default_factory=lambda: Endpoint(provider="", model=""))
     environment: EnvironmentConfig = field(default_factory=lambda: EnvironmentConfig(type=""))
 
-    # Trajectory
-    messages: list[SessionMessage] = field(default_factory=list)
+    # Trajectory - uses Message directly (with optional timestamp field)
+    messages: list[Message] = field(default_factory=list)
     message_count: int | None = None  # Set when listing (without loading messages)
 
     # Environment state (opaque, env-specific)
@@ -1403,7 +1365,7 @@ class AgentSession:
             "session_id": self.session_id,
             "parent_id": self.parent_id,
             "branch_point": self.branch_point,
-            "endpoint": self.endpoint.to_dict(),
+            "endpoint": self.endpoint.to_dict(exclude_secrets=True),
             "environment": self.environment.to_dict(),
             # messages are stored separately in messages.jsonl
             "environment_state": self.environment_state,
@@ -1416,14 +1378,14 @@ class AgentSession:
 
     @classmethod
     def from_dict(
-        cls, data: dict[str, Any], messages: list[SessionMessage] | None = None
+        cls, data: dict[str, Any], messages: list[Message] | None = None
     ) -> "AgentSession":
         """Deserialize from dict."""
         return cls(
             session_id=data["session_id"],
             parent_id=data.get("parent_id"),
             branch_point=data.get("branch_point"),
-            endpoint=EndpointConfig.from_dict(data["endpoint"]),
+            endpoint=Endpoint.from_dict(data["endpoint"]),
             environment=EnvironmentConfig.from_dict(data["environment"]),
             messages=messages or [],
             environment_state=data.get("environment_state"),
