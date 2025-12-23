@@ -571,45 +571,41 @@ class GitWorktreeEnvironment:
     async def _exec_bash(
         self, tool_call: ToolCall, work_dir: Path, cancel_scope: trio.CancelScope | None = None
     ) -> ToolResult:
-        """Execute bash command."""
+        """Execute bash command with proper cancellation support."""
+        from ._subprocess import run_command
+
         command = tool_call.args["command"]
         timeout = tool_call.args.get("timeout", 120)
 
         try:
-            result = await trio.to_thread.run_sync(
-                lambda: subprocess.run(
-                    ["sh", "-c", command],
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                    cwd=str(work_dir),
-                )
+            returncode, stdout, stderr = await run_command(
+                command, cwd=str(work_dir), timeout=timeout
             )
 
             output = ""
-            if result.stdout:
-                output += result.stdout
-            if result.stderr:
+            if stdout:
+                output += stdout
+            if stderr:
                 if output:
                     output += "\n"
-                output += result.stderr
+                output += stderr
 
             if len(output) > MAX_OUTPUT_SIZE:
                 output = output[:MAX_OUTPUT_SIZE] + "\n\n... (truncated)"
 
-            if result.returncode != 0:
+            if returncode != 0:
                 return ToolResult(
                     tool_call_id=tool_call.id,
                     is_error=True,
                     content=output or "(no output)",
-                    error=f"Exit code {result.returncode}",
+                    error=f"Exit code {returncode}",
                 )
 
             return ToolResult(
                 tool_call_id=tool_call.id, is_error=False, content=output or "(no output)"
             )
 
-        except subprocess.TimeoutExpired:
+        except TimeoutError:
             return ToolResult(
                 tool_call_id=tool_call.id,
                 is_error=True,
@@ -617,4 +613,4 @@ class GitWorktreeEnvironment:
                 error=f"Timeout after {timeout}s",
             )
         except trio.Cancelled:
-            return ToolResult(tool_call_id=tool_call.id, is_error=True, content="", error="Aborted")
+            raise  # Re-raise so the agent loop handles it

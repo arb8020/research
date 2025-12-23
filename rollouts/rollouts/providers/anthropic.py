@@ -191,6 +191,15 @@ async def aggregate_anthropic_stream(
     # Emit start event
     await on_chunk(StreamStart())
 
+    # Update debug context for interrupt diagnostics
+    try:
+        from rollouts.frontends.runner import get_debug_context
+
+        debug_ctx = get_debug_context()
+        debug_ctx.set_streaming()
+    except ImportError:
+        debug_ctx = None
+
     accumulated_content = ""
     thinking_content = ""
     thinking_signature = None
@@ -208,7 +217,25 @@ async def aggregate_anthropic_stream(
     tool_json_accumulator: dict[int, str] = {}
     tool_metadata: dict[int, dict[str, str]] = {}
 
+    # Stream stall detection - log if no events for >10s
+    last_event_time = time.time()
+    stall_warning_threshold = 10.0  # seconds
+    stall_warned = False
+
     async for event in stream:
+        now = time.time()
+        gap = now - last_event_time
+        if gap > stall_warning_threshold and not stall_warned:
+            logger.warning(f"Stream stalled for {gap:.1f}s waiting for next event")
+            stall_warned = True
+        elif gap <= stall_warning_threshold:
+            stall_warned = False  # Reset warning if we got an event
+        last_event_time = now
+
+        # Update debug context for interrupt diagnostics
+        if debug_ctx:
+            debug_ctx.on_stream_event()
+
         event_type = event.type
 
         if event_type == "message_start":
@@ -546,13 +573,21 @@ async def rollout_anthropic(
         if system_prompt:
             # Prepend Claude Code identity to existing system prompt
             params["system"] = [
-                {"type": "text", "text": claude_code_identity, "cache_control": {"type": "ephemeral"}},
+                {
+                    "type": "text",
+                    "text": claude_code_identity,
+                    "cache_control": {"type": "ephemeral"},
+                },
                 {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}},
             ]
         else:
             # Just the Claude Code identity
             params["system"] = [
-                {"type": "text", "text": claude_code_identity, "cache_control": {"type": "ephemeral"}},
+                {
+                    "type": "text",
+                    "text": claude_code_identity,
+                    "cache_control": {"type": "ephemeral"},
+                },
             ]
     elif system_prompt:
         params["system"] = system_prompt

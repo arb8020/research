@@ -17,12 +17,66 @@ The frontend is responsible for:
 from __future__ import annotations
 
 import signal
+import sys
+import threading
+import time
 from dataclasses import replace as dc_replace
 from typing import TYPE_CHECKING
 
 import trio
 
 from rollouts.agents import Actor, AgentState, run_agent
+
+
+# Global debug context for interrupt diagnostics
+# Thread-safe since signal handlers run on main thread
+class _DebugContext:
+    """Tracks agent state for debugging hangs/interrupts."""
+
+    def __init__(self):
+        self.phase: str = "initializing"
+        self.turn: int = 0
+        self.tool_name: str | None = None
+        self.stream_start_time: float | None = None
+        self.last_stream_event_time: float | None = None
+
+    def set_phase(self, phase: str) -> None:
+        self.phase = phase
+
+    def set_streaming(self) -> None:
+        self.phase = "streaming"
+        self.stream_start_time = time.time()
+        self.last_stream_event_time = time.time()
+
+    def on_stream_event(self) -> None:
+        self.last_stream_event_time = time.time()
+
+    def set_tool(self, name: str) -> None:
+        self.phase = "tool_execution"
+        self.tool_name = name
+
+    def dump(self) -> str:
+        """Return debug info string for interrupt diagnostics."""
+        lines = [f"Phase: {self.phase}", f"Turn: {self.turn}"]
+        if self.tool_name and self.phase == "tool_execution":
+            lines.append(f"Tool: {self.tool_name}")
+        if self.stream_start_time and self.phase == "streaming":
+            elapsed = time.time() - self.stream_start_time
+            lines.append(f"Streaming for: {elapsed:.1f}s")
+            if self.last_stream_event_time:
+                since_last = time.time() - self.last_stream_event_time
+                lines.append(f"Time since last event: {since_last:.1f}s")
+        return "\n".join(lines)
+
+
+_debug_ctx = _DebugContext()
+
+
+def get_debug_context() -> _DebugContext:
+    """Get the global debug context for state tracking."""
+    return _debug_ctx
+
+
 from rollouts.dtypes import (
     Endpoint,
     Environment,
@@ -134,112 +188,133 @@ class InteractiveRunner:
             # Update status if frontend supports it
             self._update_frontend_status()
 
-            async with trio.open_nursery() as nursery:
-                self._cancel_scope = nursery.cancel_scope
+            try:
+                async with trio.open_nursery() as nursery:
+                    self._cancel_scope = nursery.cancel_scope
 
-                # Start frontend input loop if it has one
-                if hasattr(self.frontend, "run_input_loop"):
-                    await self.frontend.run_input_loop(nursery)
+                    # Start frontend input loop if it has one
+                    if hasattr(self.frontend, "run_input_loop"):
+                        await self.frontend.run_input_loop(nursery)
 
-                # Queue initial prompt if provided
-                first_input = self.initial_prompt
+                    # Queue initial prompt if provided
+                    first_input = self.initial_prompt
 
-                # Get first user input
-                if not first_input:
-                    first_input = await self.frontend.get_input()
+                    # Get first user input
+                    if not first_input:
+                        first_input = await self.frontend.get_input()
 
-                # Create initial state
-                initial_trajectory = Trajectory(
-                    messages=self.trajectory.messages + [Message(role="user", content=first_input)]
-                )
-
-                current_state = AgentState(
-                    actor=Actor(
-                        trajectory=initial_trajectory,
-                        endpoint=self.endpoint,
-                        tools=self.environment.get_tools() if self.environment else [],
-                    ),
-                    environment=self.environment,
-                    session_id=self.session_id,
-                    parent_session_id=self.parent_session_id,
-                    branch_point=self.branch_point,
-                    confirm_tools=self.confirm_tools,
-                )
-
-                # Main agent loop
-                while True:
-                    self._agent_cancel_scope = trio.CancelScope()
-
-                    run_config = RunConfig(
-                        on_chunk=self._handle_stream_event,
-                        on_input=self._handle_input,
-                        confirm_tool=self._handle_tool_confirm,
-                        handle_stop=self._handle_stop,
-                        handle_no_tool=self._handle_no_tool,
-                        session_store=self.session_store,
-                        cancel_scope=self._agent_cancel_scope,
+                    # Create initial state
+                    initial_trajectory = Trajectory(
+                        messages=self.trajectory.messages + [Message(role="user", content=first_input)]
                     )
 
-                    with self._agent_cancel_scope:
-                        agent_states = await run_agent(current_state, run_config)
+                    current_state = AgentState(
+                        actor=Actor(
+                            trajectory=initial_trajectory,
+                            endpoint=self.endpoint,
+                            tools=self.environment.get_tools() if self.environment else [],
+                        ),
+                        environment=self.environment,
+                        session_id=self.session_id,
+                        parent_session_id=self.parent_session_id,
+                        branch_point=self.branch_point,
+                        confirm_tools=self.confirm_tools,
+                    )
 
-                    # Check for abort
-                    if agent_states and agent_states[-1].stop == StopReason.ABORTED:
-                        latest_state = agent_states[-1]
-                        self.session_id = latest_state.session_id or self.session_id
+                    # Main agent loop
+                    while True:
+                        self._agent_cancel_scope = trio.CancelScope()
 
-                        if not self._interrupted:
-                            # Hard exit (Ctrl+C)
+                        run_config = RunConfig(
+                            on_chunk=self._handle_stream_event,
+                            on_input=self._handle_input,
+                            confirm_tool=self._handle_tool_confirm,
+                            handle_stop=self._handle_stop,
+                            handle_no_tool=self._handle_no_tool,
+                            session_store=self.session_store,
+                            cancel_scope=self._agent_cancel_scope,
+                        )
+
+                        with self._agent_cancel_scope:
+                            agent_states = await run_agent(current_state, run_config)
+
+                        # Check for abort
+                        if agent_states and agent_states[-1].stop == StopReason.ABORTED:
+                            latest_state = agent_states[-1]
+                            self.session_id = latest_state.session_id or self.session_id
+
+                            if not self._interrupted:
+                                # Hard exit (Ctrl+C)
+                                break
+
+                            # Soft interrupt (Escape) - continue
+                            self._interrupted = False
+                            self.frontend.hide_loader()
+
+                            # Get partial response
+                            partial_response = None
+                            if hasattr(self.frontend, "get_partial_response"):
+                                partial_response = self.frontend.get_partial_response()
+                            if hasattr(self.frontend, "finalize_partial_response"):
+                                self.frontend.finalize_partial_response()
+                            if hasattr(self.frontend, "add_system_message"):
+                                self.frontend.add_system_message("Interrupted")
+
+                            # Build new messages
+                            new_messages = list(latest_state.actor.trajectory.messages)
+                            if partial_response:
+                                new_messages.append(
+                                    Message(
+                                        role="assistant", content=partial_response + "\n\n[interrupted]"
+                                    )
+                                )
+
+                            # Get next user input
+                            user_input = await self.frontend.get_input()
+                            new_messages.append(Message(role="user", content=user_input))
+
+                            # Continue with new state
+                            current_state = dc_replace(
+                                latest_state,
+                                actor=dc_replace(
+                                    latest_state.actor,
+                                    trajectory=Trajectory(messages=new_messages),
+                                ),
+                                stop=None,
+                            )
+                        else:
+                            # Normal completion
+                            if agent_states:
+                                self.session_id = agent_states[-1].session_id or self.session_id
                             break
 
-                        # Soft interrupt (Escape) - continue
-                        self._interrupted = False
-                        self.frontend.hide_loader()
-
-                        # Get partial response
-                        partial_response = None
-                        if hasattr(self.frontend, "get_partial_response"):
-                            partial_response = self.frontend.get_partial_response()
-                        if hasattr(self.frontend, "finalize_partial_response"):
-                            self.frontend.finalize_partial_response()
-                        if hasattr(self.frontend, "add_system_message"):
-                            self.frontend.add_system_message("Interrupted")
-
-                        # Build new messages
-                        new_messages = list(latest_state.actor.trajectory.messages)
-                        if partial_response:
-                            new_messages.append(
-                                Message(
-                                    role="assistant", content=partial_response + "\n\n[interrupted]"
-                                )
-                            )
-
-                        # Get next user input
-                        user_input = await self.frontend.get_input()
-                        new_messages.append(Message(role="user", content=user_input))
-
-                        # Continue with new state
-                        current_state = dc_replace(
-                            latest_state,
-                            actor=dc_replace(
-                                latest_state.actor,
-                                trajectory=Trajectory(messages=new_messages),
-                            ),
-                            stop=None,
-                        )
-                    else:
-                        # Normal completion
-                        if agent_states:
-                            self.session_id = agent_states[-1].session_id or self.session_id
-                        break
-
-                    self._agent_cancel_scope = None
+                        self._agent_cancel_scope = None
+            except (Exception, BaseExceptionGroup):
+                # Collect feedback even on errors (e.g., EOF)
+                pass
 
             return agent_states
 
         finally:
             signal.signal(signal.SIGINT, original_handler)
             await self.frontend.stop()
+
+            # Collect exit feedback
+            if agent_states:
+                final_state = agent_states[-1]
+                exit_reason = "unknown"
+                if final_state.stop:
+                    exit_reason = str(final_state.stop).split(".")[-1].lower()
+
+                try:
+                    from rollouts.feedback import run_exit_survey
+
+                    await run_exit_survey(
+                        final_state, self.endpoint, exit_reason, session_id=self.session_id, skip_check=True
+                    )
+                except Exception as e:
+                    import sys
+                    print(f"[DEBUG] Feedback error: {e}", file=sys.stderr)
 
             # Print session info
             if self.session_id:
@@ -307,7 +382,11 @@ class InteractiveRunner:
         return state
 
     def _handle_sigint(self, signum, frame) -> None:
-        """Handle SIGINT."""
+        """Handle SIGINT - cancel and dump debug context."""
+        # Dump debug info to help diagnose hangs
+        print(f"\n[SIGINT] Interrupting agent...", file=sys.stderr)
+        print(f"[DEBUG] {_debug_ctx.dump()}", file=sys.stderr)
+
         if self._cancel_scope:
             self._cancel_scope.cancel()
 
