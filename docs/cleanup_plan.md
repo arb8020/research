@@ -2,14 +2,29 @@
 
 > Goal: Fix pre-commit hooks so we don't need `--no-verify`. Apply semantic compression principles from FAVORITES.md.
 
-## Current State (after Phase 1 complete)
+## Current State (2024-12-22, after Phase 2 partial)
 
-- **ruff**: 1229 errors remaining (down from 2262)
-  - Mostly ANN (type annotations) - ~1100
-  - Structural (PLR) - ~150
-  - Other - ~80
-- **ty**: 250 diagnostics (mostly None handling)
+- **ruff**: 1270 errors remaining
+  - ANN (type annotations): 760
+  - TRY (exception handling): 186
+  - PLR (structural): 97
+  - Other: 227
+- **ty**: 623 diagnostics (mostly None handling, unresolved attributes)
 - Pre-commit runs: ruff lint, ruff format, ty check
+
+### Top 10 Error Codes
+| Code | Count | Description |
+|------|-------|-------------|
+| ANN001 | 274 | Missing type annotation for function argument |
+| ANN201 | 248 | Missing return type annotation for public function |
+| ANN202 | 129 | Missing return type annotation for private function |
+| ANN204 | 93 | Missing return type annotation for special method |
+| TRY003 | 80 | Avoid specifying long messages outside exception class |
+| TRY400 | 69 | Use `logging.exception` instead of `logging.error` |
+| B904 | 45 | Raise without `from` inside exception handler |
+| TRY300 | 37 | `return` in `try` block (prefer `else`) |
+| PLR0915 | 37 | Too many statements |
+| PLR0913 | 34 | Too many arguments |
 
 ### Config Changes Made
 ```toml
@@ -28,63 +43,57 @@ exclude = [
 ### Phase 1: Critical Bugs (must fix) ✅ COMPLETE
 
 - [x] **F821**: 30 undefined names → **FIXED**
-  - Added missing imports (`sys`, `trio`, `torch`)
-  - Added `TYPE_CHECKING` imports for forward references (`Sample`, `Score`, `Endpoint`, etc.)
-  - Removed dead code after `raise NotImplementedError` (kerbal migration leftovers)
-  - Deleted broken `test_refactor.py`
-
 - [x] **F841**: 32 unused variables → **FIXED**
-  - Used `_` prefix for intentionally unused vars (Pythonic convention)
-  - Generated fixes via `ruff check --output-format json | python3 ... | perl`
-
 - [x] **F401**: 11 unused imports → **FIXED**
-  - 6 auto-fixed with `ruff check --fix`
-  - 5 manually removed
 
-### Phase 2: Structural - Function Decomposition (Tiger Style)
-These force the architectural changes FAVORITES emphasizes.
+### Phase 2: Structural - Function Decomposition (Tiger Style) 🔄 IN PROGRESS
 
-- [ ] **PLR0915**: 56 functions exceed 70 statement limit
-  - Worst: `rollouts/cli.py:main()` at 346 statements (5x limit)
-  - Strategy: Extract helpers, push ifs up, move computation down
+- [x] **PLR0915**: Major offenders decomposed (56 → 37 remaining)
+  - ✅ `rollouts/cli.py:main()` - 345 → <70 statements
+  - ✅ `rollouts/frontends/tui/interactive_agent.py:run()` - 188 → <70 statements
+  - ✅ `rollouts/training/grpo.py:_grpo_train_async()` - 182 → <70 statements
 
-- [ ] **PLR1702**: 41 too-many-nested-blocks violations
+- [ ] **PLR1702**: 26 too-many-nested-blocks violations (was 41)
   - Strategy: Early returns, extract nested logic to helpers
 
-- [ ] **PLR0913**: 49 too-many-arguments violations
+- [ ] **PLR0913**: 34 too-many-arguments violations (was 49)
   - Strategy: Group related args into dataclasses/configs
 
 ### Phase 3: Structural - SSA & Clarity (Carmack Style)
-- [ ] **PLW2901**: 9 loop variable reassignment violations
+- [ ] **PLW2901**: 8 loop variable reassignment violations
   - Pattern: `for line in f: line = line.strip()`
   - Fix: `for raw_line in f: line = raw_line.strip()`
 
-- [ ] **A001/A002**: 32 shadowing builtins
-  - `ConnectionError` class → rename to `SSHConnectionError`
-  - `def list()` CLI command → add `# noqa: A001` (CLI name is intentional)
-  - `def exec()` CLI command → add `# noqa: A001` (CLI name is intentional)
-  - `input` in PyTorch hooks → rename to `inputs` (matches convention)
+- [ ] **A002**: 18 shadowing builtins (was 32)
+  - `input` in PyTorch hooks → rename to `inputs`
+  - Various `id`, `type`, `format` parameter names
 
-### Phase 4: Type Safety (ty errors)
-- [ ] Fix None handling patterns (add guards or assertions)
-- [ ] Fix `Path` vs `str` mismatches in refactor tools
+### Phase 4: Exception Handling
+- [ ] **TRY003**: 80 - long messages in exceptions (consider ignoring)
+- [ ] **TRY400**: 69 - use `logging.exception` instead of `logging.error`
+- [ ] **TRY300**: 37 - `return` in `try` block
+- [ ] **B904**: 45 - `raise` without `from` in exception handler
 
-### Phase 5: Tune Lint Config
+### Phase 5: Type Safety (ty errors)
+- [ ] 623 ty diagnostics (mostly None handling, unresolved attributes)
+- [ ] Consider tuning ty config or ignoring some rules
+
+### Phase 6: Tune Lint Config
 Decide what to keep vs disable:
 
 ```toml
 # pyproject.toml changes to consider
 [tool.ruff.lint]
 ignore = [
-    "ANN",     # Disable all type annotations? Or fix gradually?
-    # Keep TRY003 ignored (already is)
+    "ANN",     # Disable all type annotations? (760 errors)
+    "TRY003",  # Long exception messages (80 errors)
 ]
 ```
 
 Options for ANN rules:
 1. **Disable entirely** - focus on structural quality, not annotations
 2. **Per-directory ignores** - enforce in core packages, skip dev/
-3. **Fix everything** - significant effort, unclear value
+3. **Fix gradually** - add types as code is touched
 
 ## Files to Prioritize
 
@@ -92,15 +101,15 @@ By error density and importance:
 
 | File | Issues | Notes |
 |------|--------|-------|
-| `rollouts/rollouts/cli.py` | PLR0915 (346 stmts) | Main CLI, needs major decomposition |
-| `rollouts/rollouts/training/grpo.py` | PLR0915 (182 stmts) | Core training loop |
-| `broker/broker/cli.py` | PLR0915 (146 stmts), A001 | `info()` and `list()` commands |
-| `bifrost/bifrost/types.py` | A001 | `ConnectionError` shadowing |
+| ✅ `rollouts/rollouts/cli.py` | PLR0915 | DONE - decomposed main() |
+| ✅ `rollouts/rollouts/training/grpo.py` | PLR0915 | DONE - decomposed _grpo_train_async() |
+| ✅ `rollouts/frontends/tui/interactive_agent.py` | PLR0915 | DONE - decomposed run() |
+| `broker/broker/cli.py` | PLR0915 (146 stmts) | `info()` and `list()` commands |
 | `bifrost/bifrost/client.py` | PLR1702 | Deeply nested SSH streaming |
 
 ## Success Criteria
 
 - [ ] `git commit` works without `--no-verify`
-- [ ] No functions over 70 statements
-- [ ] No shadowed builtins (except intentional CLI names with noqa)
+- [x] No functions over 200 statements (worst offenders fixed)
+- [ ] No functions over 70 statements (37 remaining)
 - [ ] No undefined names or unused variables
