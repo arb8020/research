@@ -251,8 +251,10 @@ async def evaluate_sample(
 
     states = await run_agent(state, run_config)
 
-    # Get result and score
-    final_answer = environment._final_answer
+    # Get result from the final state's environment
+    final_answer = None
+    if states and states[-1].environment:
+        final_answer = states[-1].environment._final_answer
 
     # Use appropriate scoring based on answer type
     if answer_type == "NUMERIC" or expected.isdigit():
