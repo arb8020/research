@@ -874,7 +874,9 @@ class TraceStreamingViewer:
 
     def _get_messages(self) -> list[dict]:
         """Get messages from data."""
-        messages = self.data.get("messages") or self.data.get("metadata", {}).get("messages")
+        messages = self.data.get("messages")
+        if messages is None:
+            messages = self.data.get("metadata", {}).get("messages")
         if messages is None:
             raise ValueError(f"No messages in rollout data. Keys: {list(self.data.keys())}")
         return messages
