@@ -298,8 +298,10 @@ async def evaluate_sample(
 
     states = await run_agent(state, run_config)
 
-    # Score result
-    final_answer = environment._final_answer
+    # Get result from the final state's environment
+    final_answer = None
+    if states and states[-1].environment:
+        final_answer = states[-1].environment._final_answer
     score = exact_match_score(final_answer, expected)
 
     return {

@@ -223,8 +223,10 @@ async def evaluate_sample_rlm(
 
     states = await run_agent(state, run_config)
 
-    # Get result
-    final_answer = environment._final_answer
+    # Get result from the final state's environment (run_agent may create new instances)
+    final_answer = None
+    if states and states[-1].environment:
+        final_answer = states[-1].environment._final_answer
     score = numeric_match_score(final_answer, magic_number)
 
     return {
@@ -334,18 +336,7 @@ async def run_evaluation(config: NeedleHaystackConfig) -> dict[str, Any]:
         else:
             return await evaluate_sample_baseline(sample, config)
 
-    # Run with concurrency limit
-    sem = trio.Semaphore(config.run.max_concurrent)
-
-    async def rate_limited_eval(sample: dict) -> dict:
-        async with sem:
-            return await eval_one(sample)
-
-    async with trio.open_nursery() as nursery:
-        for sample in samples:
-            nursery.start_soon(lambda s=sample: results.append(trio.run(rate_limited_eval, s)))
-
-    # Actually run sequentially for now (simpler)
+    # Run sequentially (simpler, easier to debug)
     for sample in samples:
         result = await eval_one(sample)
         results.append(result)
