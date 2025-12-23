@@ -292,7 +292,117 @@ class InteractiveAgentRunner:
         Returns:
             List of agent states from the run
         """
-        # Create terminal and TUI with selected theme
+        self._setup_tui()
+        agent_states: list[AgentState] = []
+
+        try:
+            agent_states = await self._run_agent_loop()
+        finally:
+            await self._cleanup_and_print_session(agent_states)
+
+        return agent_states
+
+    async def _run_agent_loop(self) -> list[AgentState]:
+        """Main agent loop with input handling."""
+        self.input_send, self.input_receive = trio.open_memory_channel[str](10)
+
+        if self.initial_prompt:
+            self.input_send.send_nowait(self.initial_prompt)
+
+        agent_states: list[AgentState] = []
+
+        async with trio.open_nursery() as nursery:
+            self.cancel_scope = nursery.cancel_scope
+
+            nursery.start_soon(self._input_reading_loop)
+            nursery.start_soon(self.tui.run_animation_loop)
+
+            if self.input_component and self.tui:
+                self.tui.set_focus(self.input_component)
+                self.tui.request_render()
+
+            first_message = await self._tui_input_handler("Enter your message: ")
+            current_state = self._create_initial_state(first_message)
+
+            # Main agent loop - handles interrupts and continues
+            while True:
+                self.agent_cancel_scope = trio.CancelScope()
+                run_config = self._create_run_config()
+
+                with self.agent_cancel_scope:
+                    agent_states = await run_agent(current_state, run_config)
+
+                if agent_states and agent_states[-1].stop == StopReason.ABORTED:
+                    if agent_states[-1].session_id:
+                        self.session_id = agent_states[-1].session_id
+
+                    if not self.escape_pressed:
+                        break  # Ctrl+C - exit the TUI
+
+                    # Escape key - interrupt but continue
+                    current_state = await self._handle_agent_interrupt(agent_states, current_state)
+                else:
+                    # Agent completed normally - update state and exit
+                    self._update_final_state(agent_states)
+                    break
+
+                self.agent_cancel_scope = None
+
+        if agent_states and agent_states[-1].session_id:
+            self.session_id = agent_states[-1].session_id
+
+        return agent_states
+
+    async def _input_reading_loop(self) -> None:
+        """Read terminal input and route to TUI."""
+        while True:
+            if self.terminal and self.terminal._running:
+                input_data = self.terminal.read_input()
+                if input_data:
+                    # Check for Ctrl+C (ASCII 3) - exit TUI entirely
+                    if len(input_data) > 0 and ord(input_data[0]) == 3:
+                        if self.cancel_scope:
+                            self.cancel_scope.cancel()
+                        return
+
+                    # Check for standalone Escape - interrupt current agent run
+                    if input_data == "\x1b":
+                        if self.agent_cancel_scope:
+                            self.escape_pressed = True
+                            self.agent_cancel_scope.cancel()
+                        continue
+
+                    if self.tui:
+                        self.tui._handle_input(input_data)
+            await trio.sleep(0.01)
+
+    def _update_final_state(self, agent_states: list[AgentState]) -> None:
+        """Update session_id and token counts from final agent state."""
+        if not agent_states:
+            return
+
+        final_state = agent_states[-1]
+        if final_state.session_id and final_state.session_id != self.session_id:
+            self.session_id = final_state.session_id
+            if self.status_line:
+                self.status_line.set_session_id(self.session_id)
+            self._update_env_status_info()
+
+        if self.status_line and self.tui:
+            self._update_token_counts(final_state)
+            self.tui.request_render()
+
+    def _handle_stop(self, state: AgentState) -> AgentState:
+        """Handle stop condition - check max turns."""
+        from dataclasses import replace
+
+        if state.turn_idx >= self.max_turns:
+            return replace(state, stop=StopReason.MAX_TURNS)
+        return state
+
+    def _setup_tui(self) -> None:
+        """Initialize terminal, TUI, and all UI components."""
+        from .components.status_line import StatusLine
         from .theme import DARK_THEME, MINIMAL_THEME, ROUNDED_THEME
 
         if self.theme_name == "rounded":
@@ -311,18 +421,13 @@ class InteractiveAgentRunner:
         )
 
         # Render history from initial trajectory (for resumed sessions)
-        # Render all messages including system messages
         if self.initial_trajectory.messages:
             self.renderer.render_history(self.initial_trajectory.messages, skip_system=False)
-            # Mark that we've already shown messages, so next user message isn't "first"
             self.is_first_user_message = False
-
-            # Debug: dump chat state after loading history
             if self.debug:
                 self.renderer.debug_dump_chat()
 
         # Create loader container (for spinner during LLM calls)
-        # Loader brings its own "before" spacer when active
         self.loader_container = LoaderContainer(
             spinner_color_fn=self.tui.theme.accent_fg,
             text_color_fn=self.tui.theme.muted_fg,
@@ -340,24 +445,20 @@ class InteractiveAgentRunner:
         self.tui.add_child(self.input_component)
 
         # Create status line below input
-        from .components.status_line import StatusLine
-
         self.status_line = StatusLine(theme=self.tui.theme)
         self.status_line.set_session_id(self.session_id)
-        # Look up context window from model registry
         model_meta = get_model(self.endpoint.provider, self.endpoint.model)  # type: ignore[arg-type]
         context_window = model_meta.context_window if model_meta else None
         self.status_line.set_model(
             f"{self.endpoint.provider}/{self.endpoint.model}", context_window=context_window
         )
-        # Set environment info if available
         if self.environment and hasattr(self.environment, "get_status_info"):
             env_info = self.environment.get_status_info()
             if env_info:
                 self.status_line.set_env_info(env_info)
         self.tui.add_child(self.status_line)
 
-        # Add spacer after status line to keep it from bottom
+        # Add spacer after status line
         self.tui.add_child(Spacer(5, debug_label="after-status"))
 
         # Set up signal handler for Ctrl+C
@@ -366,372 +467,221 @@ class InteractiveAgentRunner:
         # Start TUI
         self.tui.start()
 
-        # Track agent states across the run (for session_id extraction on Ctrl+C)
-        agent_states: list[AgentState] = []
+    def _create_initial_state(self, first_message: str) -> AgentState:
+        """Create initial agent state with first user message."""
+        initial_trajectory_with_user = Trajectory(
+            messages=self.initial_trajectory.messages
+            + [Message(role="user", content=first_message)]
+        )
+
+        return AgentState(
+            actor=Actor(
+                trajectory=initial_trajectory_with_user,
+                endpoint=self.endpoint,
+                tools=self.environment.get_tools() if self.environment else [],
+            ),
+            environment=self.environment,
+            session_id=self.session_id,
+            parent_session_id=self.parent_session_id,
+            branch_point=self.branch_point,
+            confirm_tools=self.confirm_tools,
+        )
+
+    def _create_run_config(self) -> RunConfig:
+        """Create RunConfig with all handlers."""
+
+        async def auto_confirm_tool(
+            tc: ToolCall, state: AgentState, rcfg: RunConfig
+        ) -> tuple[AgentState, ToolConfirmResult]:
+            return state, ToolConfirmResult(proceed=True)
+
+        async def confirm_tool_tui(
+            tc: ToolCall, state: AgentState, rcfg: RunConfig
+        ) -> tuple[AgentState, ToolConfirmResult]:
+            """Interactive tool confirmation in TUI."""
+            if self.renderer:
+                self.renderer.add_system_message(
+                    f"⚠️  Tool: {tc.name}({tc.args})\n   [y] execute  [n] reject  [s] skip"
+                )
+
+            resp = await rcfg.on_input("Confirm tool? ")
+            resp = resp.strip().lower()
+
+            if resp in ("y", "yes", ""):
+                return state, ToolConfirmResult(proceed=True)
+            elif resp in ("n", "no"):
+                feedback = await rcfg.on_input("Feedback for LLM: ")
+                return state, ToolConfirmResult(
+                    proceed=False,
+                    tool_result=ToolResult(
+                        tool_call_id=tc.id, is_error=True, error="Rejected by user"
+                    ),
+                    user_message=feedback.strip() if feedback.strip() else None,
+                )
+            else:
+                return state, ToolConfirmResult(
+                    proceed=False,
+                    tool_result=ToolResult(
+                        tool_call_id=tc.id, is_error=True, error="Skipped by user"
+                    ),
+                )
+
+        async def handle_no_tool_interactive(
+            state: AgentState, rcfg: RunConfig
+        ) -> AgentState:
+            """Wait for user input when LLM responds without tool calls."""
+            from dataclasses import replace as dc_replace
+
+            self._update_token_counts(state)
+            if self.tui:
+                self.tui.request_render()
+
+            user_input = await rcfg.on_input("Enter your message: ")
+
+            user_messages = [Message(role="user", content=user_input)]
+            for pending_msg in self._pending_user_messages:
+                if self.renderer:
+                    self.renderer.add_user_message(pending_msg, is_first=False)
+                user_messages.append(Message(role="user", content=pending_msg))
+            self._pending_user_messages = []
+
+            new_trajectory = Trajectory(
+                messages=state.actor.trajectory.messages + user_messages
+            )
+            new_actor = dc_replace(state.actor, trajectory=new_trajectory)
+            return dc_replace(state, actor=new_actor)
+
+        confirm_handler = confirm_tool_tui if self.confirm_tools else auto_confirm_tool
+
+        return RunConfig(
+            on_chunk=self._handle_stream_event,
+            on_input=self._tui_input_handler,
+            confirm_tool=confirm_handler,
+            handle_stop=self._handle_stop,
+            handle_no_tool=handle_no_tool_interactive,
+            session_store=self.session_store,
+            cancel_scope=self.agent_cancel_scope,
+        )
+
+    async def _handle_agent_interrupt(
+        self, agent_states: list[AgentState], current_state: AgentState
+    ) -> AgentState:
+        """Handle agent interruption (Escape key). Returns new state to continue."""
+        self.escape_pressed = False
+        if self.tui:
+            self.tui.hide_loader()
+
+        partial_response = None
+        if self.renderer:
+            partial_response = self.renderer.get_partial_response()
+            self.renderer.finalize_partial_response()
+            self.renderer.add_system_message("Interrupted")
+
+        latest_state = agent_states[-1] if agent_states else current_state
+
+        if latest_state.session_id and latest_state.session_id != self.session_id:
+            self.session_id = latest_state.session_id
+            if self.status_line:
+                self.status_line.set_session_id(self.session_id)
+            self._update_env_status_info()
+
+        if self.status_line and self.tui:
+            self._update_token_counts(latest_state)
+            self.tui.request_render()
+
+        new_messages = list(latest_state.actor.trajectory.messages)
+
+        if partial_response:
+            new_messages.append(
+                Message(role="assistant", content=partial_response + "\n\n[interrupted]")
+            )
 
         try:
-            # Create Trio memory channel for input coordination
-            # Buffered channel allows queuing messages while agent is working
-            # TODO: Consider injecting queued messages as system reminders into the
-            # streaming context (like Claude Code does) so the agent is aware of
-            # pending user input while generating a response, rather than only
-            # processing them after the current turn completes.
-            self.input_send, self.input_receive = trio.open_memory_channel[str](10)
+            from rollouts.feedback import run_exit_survey
 
-            # Queue initial prompt if provided (e.g., from stdin)
-            if self.initial_prompt:
-                self.input_send.send_nowait(self.initial_prompt)
+            await run_exit_survey(
+                latest_state, self.endpoint, "yield", session_id=self.session_id
+            )
+        except Exception:
+            pass
 
-            # Set up terminal input reading loop
-            # Terminal is in raw mode, so we need to poll for input
-            async def input_reading_loop():
-                """Read terminal input and route to TUI."""
-                while True:
-                    if self.terminal and self.terminal._running:
-                        # Read input (non-blocking)
-                        input_data = self.terminal.read_input()
-                        if input_data:
-                            # Check for Ctrl+C (ASCII 3) - exit TUI entirely
-                            if len(input_data) > 0 and ord(input_data[0]) == 3:
-                                if self.cancel_scope:
-                                    self.cancel_scope.cancel()
-                                return
+        user_input = await self._tui_input_handler("Enter your message: ")
+        new_messages.append(Message(role="user", content=user_input))
 
-                            # Check for standalone Escape (ASCII 27) - interrupt current agent run
-                            # Multi-byte sequences starting with escape (like \x1b[A for arrows)
-                            # are passed through to the input handler.
-                            if input_data == "\x1b":
-                                if self.agent_cancel_scope:
-                                    self.escape_pressed = True
-                                    self.agent_cancel_scope.cancel()
-                                continue
+        from dataclasses import replace as dc_replace
 
-                            # Route to TUI's input handler
-                            if self.tui:
-                                self.tui._handle_input(input_data)
-                    await trio.sleep(0.01)  # Small delay to avoid busy-waiting
+        new_trajectory = Trajectory(messages=new_messages)
+        return dc_replace(
+            latest_state,
+            actor=dc_replace(latest_state.actor, trajectory=new_trajectory),
+            stop=None,
+        )
 
-            async with trio.open_nursery() as nursery:
-                self.cancel_scope = nursery.cancel_scope
+    async def _cleanup_and_print_session(self, agent_states: list[AgentState]) -> None:
+        """Stop TUI, run exit survey, and print session info."""
+        if self.tui:
+            self.tui.stop()
+        if self.terminal:
+            self.terminal.stop()
 
-                # Start input reading loop in background
-                nursery.start_soon(input_reading_loop)
+        sys.stdout.flush()
 
-                # Start animation loop in background
-                # Why: Loader spinner needs periodic re-renders during blocking operations
-                # (e.g. API call before streaming starts). The loop calls request_render()
-                # every 80ms when loader is active.
-                nursery.start_soon(self.tui.run_animation_loop)
+        if agent_states:
+            final_state = agent_states[-1]
+            exit_reason = "unknown"
+            if final_state.stop:
+                exit_reason = str(final_state.stop).split(".")[-1].lower()
 
-                # Wait for first user message before starting agent
-                # This ensures we don't send empty messages to the LLM
-                if self.input_component and self.tui:
-                    self.tui.set_focus(self.input_component)
-                    self.tui.request_render()
+            try:
+                from rollouts.feedback import run_exit_survey
 
-                first_message = await self._tui_input_handler("Enter your message: ")
-
-                # Now create initial state with user message in trajectory
-                initial_trajectory_with_user = Trajectory(
-                    messages=self.initial_trajectory.messages
-                    + [Message(role="user", content=first_message)]
+                await run_exit_survey(
+                    final_state, self.endpoint, exit_reason, session_id=self.session_id
                 )
+            except Exception:
+                pass
 
-                initial_state = AgentState(
-                    actor=Actor(
-                        trajectory=initial_trajectory_with_user,
-                        endpoint=self.endpoint,
-                        tools=self.environment.get_tools() if self.environment else [],
-                    ),
-                    environment=self.environment,
-                    session_id=self.session_id,  # Set for resumption, None for new session
-                    parent_session_id=self.parent_session_id,  # For forking
-                    branch_point=self.branch_point,  # For forking
-                    confirm_tools=self.confirm_tools,  # Tool confirmation setting
-                )
+        if self.session_id:
+            print(f"\nSession: {self.session_id}")
+            print(f"Resume with: --session {self.session_id}")
 
-                # Create run config
-                # Tool confirmation handlers
-                async def auto_confirm_tool(
-                    tc: ToolCall, state: AgentState, rcfg: RunConfig
-                ) -> tuple[AgentState, ToolConfirmResult]:
-                    return state, ToolConfirmResult(proceed=True)
+            from rollouts.environments.git_worktree import GitWorktreeEnvironment
 
-                async def confirm_tool_tui(
-                    tc: ToolCall, state: AgentState, rcfg: RunConfig
-                ) -> tuple[AgentState, ToolConfirmResult]:
-                    """Interactive tool confirmation in TUI."""
-                    # Show confirmation prompt
-                    if self.renderer:
-                        self.renderer.add_system_message(
-                            f"⚠️  Tool: {tc.name}({tc.args})\n   [y] execute  [n] reject  [s] skip"
-                        )
+            if (
+                isinstance(self.environment, GitWorktreeEnvironment)
+                and self.environment._worktree_path
+            ):
+                self._print_git_worktree_info()
 
-                    resp = await rcfg.on_input("Confirm tool? ")
-                    resp = resp.strip().lower()
+    def _print_git_worktree_info(self) -> None:
+        """Print git worktree information after session ends."""
+        import subprocess
 
-                    if resp in ("y", "yes", ""):
-                        return state, ToolConfirmResult(proceed=True)
-                    elif resp in ("n", "no"):
-                        # Get feedback
-                        feedback = await rcfg.on_input("Feedback for LLM: ")
-                        return state, ToolConfirmResult(
-                            proceed=False,
-                            tool_result=ToolResult(
-                                tool_call_id=tc.id, is_error=True, error="Rejected by user"
-                            ),
-                            user_message=feedback.strip() if feedback.strip() else None,
-                        )
-                    else:  # skip
-                        return state, ToolConfirmResult(
-                            proceed=False,
-                            tool_result=ToolResult(
-                                tool_call_id=tc.id, is_error=True, error="Skipped by user"
-                            ),
-                        )
+        from rollouts.environments.git_worktree import GitWorktreeEnvironment
 
-                confirm_handler = confirm_tool_tui if self.confirm_tools else auto_confirm_tool
+        if not isinstance(self.environment, GitWorktreeEnvironment):
+            return
+        env = self.environment
+        worktree = env._worktree_path
 
-                # Handle no-tool response: wait for user input before continuing
-                async def handle_no_tool_interactive(
-                    state: AgentState, rcfg: RunConfig
-                ) -> AgentState:
-                    """Wait for user input when LLM responds without tool calls."""
-                    from dataclasses import replace as dc_replace
+        try:
+            result = subprocess.run(
+                ["git", "rev-list", "--count", "HEAD"],
+                cwd=str(worktree),
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            commit_count = int(result.stdout.strip()) if result.returncode == 0 else 0
+        except Exception:
+            commit_count = env._commit_count
 
-                    # Update token counts after LLM response
-                    self._update_token_counts(state)
-                    if self.tui:
-                        self.tui.request_render()
-
-                    # Get user input via the TUI (may drain multiple queued messages)
-                    user_input = await rcfg.on_input("Enter your message: ")
-
-                    # Build list of all user messages (first one + any pending)
-                    user_messages = [Message(role="user", content=user_input)]
-                    for pending_msg in self._pending_user_messages:
-                        # Render each pending message in chat
-                        if self.renderer:
-                            self.renderer.add_user_message(pending_msg, is_first=False)
-                        user_messages.append(Message(role="user", content=pending_msg))
-                    self._pending_user_messages = []
-
-                    # Append all user messages to trajectory
-                    new_trajectory = Trajectory(
-                        messages=state.actor.trajectory.messages + user_messages
-                    )
-
-                    # Update actor with new trajectory
-                    new_actor = dc_replace(
-                        state.actor,
-                        trajectory=new_trajectory,
-                    )
-
-                    return dc_replace(state, actor=new_actor)
-
-                current_state = initial_state
-
-                # Main agent loop - handles interrupts and continues
-                while True:
-                    # Create a new cancel scope for this agent run
-                    self.agent_cancel_scope = trio.CancelScope()
-
-                    run_config = RunConfig(
-                        on_chunk=self._handle_stream_event,
-                        on_input=self._tui_input_handler,
-                        confirm_tool=confirm_handler,
-                        handle_stop=self._handle_stop,
-                        handle_no_tool=handle_no_tool_interactive,
-                        session_store=self.session_store,
-                        cancel_scope=self.agent_cancel_scope,
-                    )
-
-                    # Run agent with cancellation support
-                    with self.agent_cancel_scope:
-                        agent_states = await run_agent(current_state, run_config)
-
-                    # Check if agent was aborted
-                    if agent_states and agent_states[-1].stop == StopReason.ABORTED:
-                        # Extract session_id before handling
-                        if agent_states[-1].session_id:
-                            self.session_id = agent_states[-1].session_id
-
-                        # Check if this was Escape (interrupt) vs Ctrl+C (exit)
-                        if not self.escape_pressed:
-                            # Ctrl+C - exit the TUI
-                            break
-
-                        # Escape key - interrupt but continue
-                        self.escape_pressed = False  # Reset for next time
-                        # Agent was interrupted - hide loader and show message
-                        if self.tui:
-                            self.tui.hide_loader()
-
-                        # Get any partial response that was being streamed
-                        partial_response = None
-                        if self.renderer:
-                            partial_response = self.renderer.get_partial_response()
-                            self.renderer.finalize_partial_response()
-                            self.renderer.add_system_message("Interrupted")
-
-                        # Use latest state from agent (has session_id, latest trajectory)
-                        latest_state = agent_states[-1] if agent_states else current_state
-
-                        # Update session_id if it was created during this run
-                        if latest_state.session_id and latest_state.session_id != self.session_id:
-                            self.session_id = latest_state.session_id
-                            if self.status_line:
-                                self.status_line.set_session_id(self.session_id)
-                            # Setup GitWorktreeEnvironment if needed
-                            self._update_env_status_info()
-
-                        # Update token counts from completions
-                        if self.status_line:
-                            self._update_token_counts(latest_state)
-                            self.tui.request_render()
-
-                        # Build new messages list from latest state
-                        new_messages = list(latest_state.actor.trajectory.messages)
-
-                        # If there was a partial response, add it with [interrupted] marker
-                        # TODO: Consider whether to include partial response in trajectory.
-                        # Pros: Agent knows what it said before being cut off
-                        # Cons: Partial text may be confusing, user might not want to see it,
-                        #       could be mid-word/mid-thought garbage
-                        # Maybe add a flag to control this behavior?
-                        if partial_response:
-                            new_messages.append(
-                                Message(
-                                    role="assistant", content=partial_response + "\n\n[interrupted]"
-                                )
-                            )
-
-                        # Run exit survey on yield (agent paused, waiting for user)
-                        try:
-                            from rollouts.feedback import run_exit_survey
-
-                            await run_exit_survey(
-                                latest_state,
-                                self.endpoint,
-                                "yield",
-                                session_id=self.session_id,
-                            )
-                        except Exception:
-                            pass  # Survey failure shouldn't affect main flow
-
-                        # Wait for new user input
-                        user_input = await self._tui_input_handler("Enter your message: ")
-                        new_messages.append(Message(role="user", content=user_input))
-
-                        # Update state with new trajectory, preserving session_id
-                        from dataclasses import replace as dc_replace
-
-                        new_trajectory = Trajectory(messages=new_messages)
-                        current_state = dc_replace(
-                            latest_state,
-                            actor=dc_replace(latest_state.actor, trajectory=new_trajectory),
-                            stop=None,  # Clear any stop reason
-                        )
-                        # Loop continues with new state
-                    else:
-                        # Agent completed normally - exit loop
-                        # Update session_id and token counts from final state
-                        if agent_states:
-                            final_state = agent_states[-1]
-                            if final_state.session_id and final_state.session_id != self.session_id:
-                                self.session_id = final_state.session_id
-                                if self.status_line:
-                                    self.status_line.set_session_id(self.session_id)
-                                # Setup GitWorktreeEnvironment if needed
-                                self._update_env_status_info()
-                            # Update token counts
-                            if self.status_line:
-                                self._update_token_counts(final_state)
-                                self.tui.request_render()
-                        break
-
-                    self.agent_cancel_scope = None
-
-            # After nursery exits (normal or cancelled), extract session_id from agent states
-            if agent_states and agent_states[-1].session_id:
-                self.session_id = agent_states[-1].session_id
-
-            return agent_states
-
-        finally:
-            # Stop TUI
-            if self.tui:
-                self.tui.stop()
-            if self.terminal:
-                self.terminal.stop()
-
-            # Ensure output buffer is clean before printing session info
-            sys.stdout.flush()
-
-            # Run exit survey if we have agent states
-            if agent_states:
-                final_state = agent_states[-1]
-                exit_reason = "unknown"
-                if final_state.stop:
-                    exit_reason = str(final_state.stop).split(".")[-1].lower()
-
-                try:
-                    from rollouts.feedback import run_exit_survey
-
-                    await run_exit_survey(
-                        final_state,
-                        self.endpoint,
-                        exit_reason,
-                        session_id=self.session_id,
-                    )
-                except Exception:
-                    pass  # Survey failure shouldn't affect main flow
-
-            # Print session info for easy resume
-            if self.session_id:
-                # Terminal is now restored, use regular print() for clean output
-                print(f"\nSession: {self.session_id}")
-                print(f"Resume with: --session {self.session_id}")
-
-                # Show git worktree info if applicable
-                from rollouts.environments.git_worktree import GitWorktreeEnvironment
-
-                if (
-                    isinstance(self.environment, GitWorktreeEnvironment)
-                    and self.environment._worktree_path
-                ):
-                    env = self.environment
-                    worktree = env._worktree_path
-
-                    # Get actual commit count from git
-                    import subprocess
-
-                    try:
-                        result = subprocess.run(
-                            ["git", "rev-list", "--count", "HEAD"],
-                            cwd=str(worktree),
-                            capture_output=True,
-                            text=True,
-                            timeout=5,
-                        )
-                        commit_count = int(result.stdout.strip()) if result.returncode == 0 else 0
-                    except Exception:
-                        commit_count = env._commit_count
-
-                    print(f"\nChanges in: {worktree}")
-                    if commit_count > 1:  # >1 because initial snapshot is always there
-                        print(f"  {commit_count - 1} file operations committed")
-                    print(f"\nTo view:  cd {worktree} && git log --oneline")
-                    print(f"To diff:  diff -r {worktree} . --exclude=.rollouts")
-                    print(f"To apply: cp -r {worktree}/* .")
-
-    def _handle_stop(self, state: AgentState) -> AgentState:
-        """Handle stop condition - check max turns."""
-        from dataclasses import replace
-
-        if state.turn_idx >= self.max_turns:
-            return replace(state, stop=StopReason.MAX_TURNS)
-        return state
+        print(f"\nChanges in: {worktree}")
+        if commit_count > 1:
+            print(f"  {commit_count - 1} file operations committed")
+        print(f"\nTo view:  cd {worktree} && git log --oneline")
+        print(f"To diff:  diff -r {worktree} . --exclude=.rollouts")
+        print(f"To apply: cp -r {worktree}/* .")
 
 
 async def run_interactive_agent(
