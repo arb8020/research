@@ -420,11 +420,18 @@ class TraceData:
 
 
 class TraceViewer:
-    """View a single rollout's message trace with nvim-style folding and cursor."""
+    """View a single rollout's message trace with nvim-style folding.
+
+    Navigation:
+    - j/k: scroll lines (skips over folded content)
+    - Space/Enter on fold header: toggle fold
+    - za/zo/zc: toggle/open/close fold at current line
+    - zM/zR: close/open all folds
+    """
 
     def __init__(self, rollout: Rollout) -> None:
         self.rollout = rollout
-        self.scroll = 0
+        self.scroll = 0  # Current line position (cursor line)
         self.h_scroll = 0  # Horizontal scroll
         self.wrap = True  # Wrap mode (False = truncate + h-scroll)
         self.terminal = Terminal(use_alternate_screen=True)
@@ -432,16 +439,13 @@ class TraceViewer:
         self._needs_redraw = True
         self._rendered_lines: list[str] = []
 
-        # Cursor: which message is currently selected
-        self.cursor = 0  # Index into messages list
-
         # Fold state: track which messages are folded (by index)
-        # Start with all messages folded except user messages
         self._folds: dict[int, bool] = {}  # msg_index -> is_folded
         self._init_folds()
 
-        # Message-to-line mapping for scrolling to cursor
-        self._msg_to_line: dict[int, int] = {}  # msg_index -> first rendered line
+        # Line metadata for fold operations
+        self._line_to_msg: dict[int, int] = {}  # line_index -> msg_index (for fold headers only)
+        self._fold_header_lines: set[int] = set()  # lines that are fold headers
 
     def _init_folds(self) -> None:
         """Initialize fold state - fold all non-user messages by default."""
@@ -489,39 +493,30 @@ class TraceViewer:
             self._running = False
             return
 
-        messages = self._get_all_messages()
-        num_messages = len(messages)
         height = self.terminal.rows
         content_height = height - 2
+        max_scroll = max(0, len(self._rendered_lines) - content_height)
 
-        # j/k move cursor between messages
+        # j/k scroll by line
         if data in ("j", "\x1b[B"):
-            if self.cursor < num_messages - 1:
-                self.cursor += 1
-                self._scroll_to_cursor(content_height)
+            self.scroll = min(max_scroll, self.scroll + 1)
             self._needs_redraw = True
         elif data in ("k", "\x1b[A"):
-            if self.cursor > 0:
-                self.cursor -= 1
-                self._scroll_to_cursor(content_height)
+            self.scroll = max(0, self.scroll - 1)
             self._needs_redraw = True
-        elif data == "\x04":  # Ctrl+D - move cursor down by half page worth of messages
-            self.cursor = min(num_messages - 1, self.cursor + 5)
-            self._scroll_to_cursor(content_height)
+        elif data == "\x04":  # Ctrl+D - half page down
+            self.scroll = min(max_scroll, self.scroll + content_height // 2)
             self._needs_redraw = True
-        elif data == "\x15":  # Ctrl+U - move cursor up by half page worth of messages
-            self.cursor = max(0, self.cursor - 5)
-            self._scroll_to_cursor(content_height)
+        elif data == "\x15":  # Ctrl+U - half page up
+            self.scroll = max(0, self.scroll - content_height // 2)
             self._needs_redraw = True
         elif data == "g":
             next_char = self._wait_for_char()
             if next_char == "g":
-                self.cursor = 0
-                self._scroll_to_cursor(content_height)
+                self.scroll = 0
                 self._needs_redraw = True
         elif data == "G":
-            self.cursor = num_messages - 1
-            self._scroll_to_cursor(content_height)
+            self.scroll = max_scroll
             self._needs_redraw = True
         # Horizontal scrolling
         elif data in ("h", "\x1b[D"):  # Left
@@ -545,22 +540,10 @@ class TraceViewer:
         # Fold commands (nvim-style)
         elif data == "z":
             self._handle_fold_command()
-        # Tab/Space/Enter to toggle fold at cursor
+        # Tab/Space/Enter to toggle fold if on a fold header
         elif data in ("\t", " ", "\r", "\n"):
-            self._toggle_fold_at_cursor()
+            self._toggle_fold_at_scroll()
             self._needs_redraw = True
-
-    def _scroll_to_cursor(self, content_height: int) -> None:
-        """Ensure cursor is visible by adjusting scroll."""
-        if self.cursor not in self._msg_to_line:
-            return
-        cursor_line = self._msg_to_line[self.cursor]
-        # If cursor is above visible area, scroll up
-        if cursor_line < self.scroll:
-            self.scroll = cursor_line
-        # If cursor is below visible area, scroll down
-        elif cursor_line >= self.scroll + content_height:
-            self.scroll = cursor_line - content_height + 1
 
     def _handle_fold_command(self) -> None:
         """Handle nvim-style fold commands (za, zo, zc, zM, zR)."""
@@ -568,12 +551,12 @@ class TraceViewer:
         if next_char is None:
             return
 
-        if next_char == "a":  # za - toggle fold at cursor
-            self._toggle_fold_at_cursor()
-        elif next_char == "o":  # zo - open fold at cursor
-            self._set_fold_at_cursor(False)
-        elif next_char == "c":  # zc - close fold at cursor
-            self._set_fold_at_cursor(True)
+        if next_char == "a":  # za - toggle fold at current line
+            self._toggle_fold_at_scroll()
+        elif next_char == "o":  # zo - open fold at current line
+            self._set_fold_at_scroll(False)
+        elif next_char == "c":  # zc - close fold at current line
+            self._set_fold_at_scroll(True)
         elif next_char == "M":  # zM - close all folds
             for i in self._folds:
                 self._folds[i] = True
@@ -585,15 +568,30 @@ class TraceViewer:
 
         self._needs_redraw = True
 
-    def _toggle_fold_at_cursor(self) -> None:
-        """Toggle fold for the message at cursor."""
-        self._folds[self.cursor] = not self._folds.get(self.cursor, False)
-        self._render_messages()
+    def _get_msg_at_scroll(self) -> int | None:
+        """Get the message index for the fold header at or before current scroll."""
+        # Check if current line is a fold header
+        if self.scroll in self._line_to_msg:
+            return self._line_to_msg[self.scroll]
+        # Find the most recent fold header before current scroll
+        for line_idx in range(self.scroll, -1, -1):
+            if line_idx in self._line_to_msg:
+                return self._line_to_msg[line_idx]
+        return None
 
-    def _set_fold_at_cursor(self, folded: bool) -> None:
-        """Set fold state for the message at cursor."""
-        self._folds[self.cursor] = folded
-        self._render_messages()
+    def _toggle_fold_at_scroll(self) -> None:
+        """Toggle fold for the message at current scroll position."""
+        msg_idx = self._get_msg_at_scroll()
+        if msg_idx is not None:
+            self._folds[msg_idx] = not self._folds.get(msg_idx, False)
+            self._render_messages()
+
+    def _set_fold_at_scroll(self, folded: bool) -> None:
+        """Set fold state for the message at current scroll position."""
+        msg_idx = self._get_msg_at_scroll()
+        if msg_idx is not None:
+            self._folds[msg_idx] = folded
+            self._render_messages()
 
     def _open_in_nvim(self) -> None:
         """Open trace content in neovim for full vim navigation."""
@@ -645,9 +643,14 @@ class TraceViewer:
         return None
 
     def _render_messages(self) -> None:
-        """Pre-render all message lines with fold support and cursor highlight."""
+        """Pre-render all message lines with fold support.
+
+        Builds _rendered_lines and tracks which lines are fold headers.
+        The cursor highlight is applied at render time based on scroll position.
+        """
         self._rendered_lines = []
-        self._msg_to_line = {}
+        self._line_to_msg = {}
+        self._fold_header_lines = set()
 
         role_colors = {
             "user": CYAN,
@@ -656,45 +659,31 @@ class TraceViewer:
             "system": MAGENTA,
         }
 
-        # Cursor styling
-        BG_CURSOR = "\x1b[48;2;50;50;30m"  # Muted olive background
-        CURSOR_FG = "\x1b[38;2;255;200;0m"  # Bright yellow/gold foreground
-
         messages = self._get_all_messages()
 
         for msg_idx, msg in enumerate(messages):
             color = role_colors.get(msg.role, WHITE)
             is_folded = self._folds.get(msg_idx, False)
-            is_cursor = msg_idx == self.cursor
             content_lines = msg.content.split("\n")
             num_lines = len(content_lines)
 
-            # Track which line this message starts at
+            # Track this line as a fold header
             line_idx = len(self._rendered_lines)
-            self._msg_to_line[msg_idx] = line_idx
-
-            # Cursor indicator - bright arrow when selected, space otherwise
-            if is_cursor:
-                cursor_marker = f"{CURSOR_FG}{BOLD}▸{RESET}{BG_CURSOR}"
-                bg = BG_CURSOR
-                bg_reset = RESET
-            else:
-                cursor_marker = " "
-                bg = ""
-                bg_reset = ""
+            self._line_to_msg[line_idx] = msg_idx
+            self._fold_header_lines.add(line_idx)
 
             if is_folded:
-                # Show folded summary: ▸ ▶ [role] --- N lines ---
+                # Show folded summary: ▶ [role] --- N lines ---
                 fold_marker = "▶"
-                preview = content_lines[0][:40] if content_lines else ""
-                if len(content_lines[0]) > 40 if content_lines else False:
+                preview = content_lines[0][:50] if content_lines else ""
+                if content_lines and len(content_lines[0]) > 50:
                     preview += "..."
-                summary = f"{bg}{cursor_marker} {fold_marker} {color}{BOLD}[{msg.role}]{RESET}{bg} {DIM}--- {num_lines} lines: {preview}{RESET}{bg_reset}"
-                self._rendered_lines.append(summary)
+                header = f"  {fold_marker} {color}{BOLD}[{msg.role}]{RESET} {DIM}--- {num_lines} lines: {preview}{RESET}"
+                self._rendered_lines.append(header)
             else:
-                # Show expanded: ▸ ▼ [role] followed by content
+                # Show expanded: ▼ [role] followed by content
                 fold_marker = "▼"
-                header = f"{bg}{cursor_marker} {fold_marker} {color}{BOLD}[{msg.role}]{RESET}{bg_reset}"
+                header = f"  {fold_marker} {color}{BOLD}[{msg.role}]{RESET}"
                 self._rendered_lines.append(header)
                 for line in content_lines:
                     self._rendered_lines.append(f"    {line}")
