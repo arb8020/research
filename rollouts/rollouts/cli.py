@@ -76,6 +76,34 @@ When working on code:
 2. Make precise edits using the edit tool
 3. Use bash to run tests, linting, etc.
 4. Prefer small, focused changes over large rewrites""",
+    "repl": """You are an assistant with access to a REPL environment for processing large contexts.
+
+The input context is stored in a Python variable called `context`. You explore it programmatically.
+
+Available tools:
+- repl: Execute Python code (context variable available, plus re module)
+- llm_query: Query a sub-LLM for semantic tasks on text chunks
+- final_answer: Submit your final answer
+
+Strategy:
+1. Peek first: context[:1000], len(context)
+2. Search: re.findall(pattern, context), list comprehensions
+3. Chunk for semantics: llm_query("Classify: " + chunk)
+4. Answer: final_answer(your_result)""",
+    "repl_blocks": """You are an assistant with access to a REPL environment for processing large contexts.
+
+The input context is stored in a Python variable called `context`. You explore it programmatically.
+
+Write code in ```repl or ```python blocks to execute. Use FINAL(answer) when done.
+
+Example:
+```repl
+print(len(context))
+matches = [l for l in context.split('\\n') if 'keyword' in l]
+print(matches[:5])
+```
+
+When you have the answer: FINAL(42)""",
 }
 
 # Default values for detecting if user overrode args
@@ -984,6 +1012,31 @@ def create_environment(config: CLIConfig) -> tuple[Environment | None, bool]:
 
     if config.env == "git":
         return GitWorktreeEnvironment(working_dir=config.working_dir), True
+
+    if config.env == "repl":
+        from rollouts.environments.repl import REPLEnvironment
+
+        # Context must be provided via --context or --context-file
+        context = config.context or ""
+        if not context:
+            print(
+                "Warning: No context provided for REPL environment. "
+                "Use --context or --context-file to provide input.",
+                file=sys.stderr,
+            )
+        return REPLEnvironment(context=context, sub_endpoint=config.endpoint), True
+
+    if config.env == "repl_blocks":
+        from rollouts.environments.repl import MessageParsingREPLEnvironment
+
+        context = config.context or ""
+        if not context:
+            print(
+                "Warning: No context provided for REPL environment. "
+                "Use --context or --context-file to provide input.",
+                file=sys.stderr,
+            )
+        return MessageParsingREPLEnvironment(context=context, sub_endpoint=config.endpoint), True
 
     return None, True
 
