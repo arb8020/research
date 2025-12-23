@@ -420,7 +420,7 @@ class TraceData:
 
 
 class TraceViewer:
-    """View a single rollout's message trace."""
+    """View a single rollout's message trace with nvim-style folding and cursor."""
 
     def __init__(self, rollout: Rollout) -> None:
         self.rollout = rollout
@@ -431,6 +431,33 @@ class TraceViewer:
         self._running = False
         self._needs_redraw = True
         self._rendered_lines: list[str] = []
+
+        # Cursor: which message is currently selected
+        self.cursor = 0  # Index into messages list
+
+        # Fold state: track which messages are folded (by index)
+        # Start with all messages folded except user messages
+        self._folds: dict[int, bool] = {}  # msg_index -> is_folded
+        self._init_folds()
+
+        # Message-to-line mapping for scrolling to cursor
+        self._msg_to_line: dict[int, int] = {}  # msg_index -> first rendered line
+
+    def _init_folds(self) -> None:
+        """Initialize fold state - fold all non-user messages by default."""
+        messages = self._get_all_messages()
+        for i, msg in enumerate(messages):
+            # Fold everything except user messages by default
+            self._folds[i] = msg.role != "user"
+
+    def _get_all_messages(self) -> list[Message]:
+        """Get all messages including fallback assistant response."""
+        messages = list(self.rollout.messages)
+        # Add fallback response as assistant if not in messages
+        has_assistant = any(m.role == "assistant" for m in messages)
+        if not has_assistant and self.rollout.response:
+            messages.append(Message(role="assistant", content=self.rollout.response))
+        return messages
 
     def run(self) -> None:
         self._running = True
@@ -462,29 +489,39 @@ class TraceViewer:
             self._running = False
             return
 
+        messages = self._get_all_messages()
+        num_messages = len(messages)
         height = self.terminal.rows
         content_height = height - 2
-        max_scroll = max(0, len(self._rendered_lines) - content_height)
 
+        # j/k move cursor between messages
         if data in ("j", "\x1b[B"):
-            self.scroll = min(max_scroll, self.scroll + 1)
+            if self.cursor < num_messages - 1:
+                self.cursor += 1
+                self._scroll_to_cursor(content_height)
             self._needs_redraw = True
         elif data in ("k", "\x1b[A"):
-            self.scroll = max(0, self.scroll - 1)
+            if self.cursor > 0:
+                self.cursor -= 1
+                self._scroll_to_cursor(content_height)
             self._needs_redraw = True
-        elif data == "\x04":  # Ctrl+D
-            self.scroll = min(max_scroll, self.scroll + content_height // 2)
+        elif data == "\x04":  # Ctrl+D - move cursor down by half page worth of messages
+            self.cursor = min(num_messages - 1, self.cursor + 5)
+            self._scroll_to_cursor(content_height)
             self._needs_redraw = True
-        elif data == "\x15":  # Ctrl+U
-            self.scroll = max(0, self.scroll - content_height // 2)
+        elif data == "\x15":  # Ctrl+U - move cursor up by half page worth of messages
+            self.cursor = max(0, self.cursor - 5)
+            self._scroll_to_cursor(content_height)
             self._needs_redraw = True
         elif data == "g":
             next_char = self._wait_for_char()
             if next_char == "g":
-                self.scroll = 0
+                self.cursor = 0
+                self._scroll_to_cursor(content_height)
                 self._needs_redraw = True
         elif data == "G":
-            self.scroll = max_scroll
+            self.cursor = num_messages - 1
+            self._scroll_to_cursor(content_height)
             self._needs_redraw = True
         # Horizontal scrolling
         elif data in ("h", "\x1b[D"):  # Left
@@ -505,11 +542,58 @@ class TraceViewer:
             if self.wrap:
                 self.h_scroll = 0
             self._needs_redraw = True
-        # TODO: nvim integration disabled - breaks terminal state when TUI is in raw mode
-        # Need to investigate proper terminal mode switching or run nvim in separate tmux pane
-        # elif data == "v":  # Open in neovim
-        #     self._open_in_nvim()
-        #     self._needs_redraw = True
+        # Fold commands (nvim-style)
+        elif data == "z":
+            self._handle_fold_command()
+        # Tab/Space/Enter to toggle fold at cursor
+        elif data in ("\t", " ", "\r", "\n"):
+            self._toggle_fold_at_cursor()
+            self._needs_redraw = True
+
+    def _scroll_to_cursor(self, content_height: int) -> None:
+        """Ensure cursor is visible by adjusting scroll."""
+        if self.cursor not in self._msg_to_line:
+            return
+        cursor_line = self._msg_to_line[self.cursor]
+        # If cursor is above visible area, scroll up
+        if cursor_line < self.scroll:
+            self.scroll = cursor_line
+        # If cursor is below visible area, scroll down
+        elif cursor_line >= self.scroll + content_height:
+            self.scroll = cursor_line - content_height + 1
+
+    def _handle_fold_command(self) -> None:
+        """Handle nvim-style fold commands (za, zo, zc, zM, zR)."""
+        next_char = self._wait_for_char()
+        if next_char is None:
+            return
+
+        if next_char == "a":  # za - toggle fold at cursor
+            self._toggle_fold_at_cursor()
+        elif next_char == "o":  # zo - open fold at cursor
+            self._set_fold_at_cursor(False)
+        elif next_char == "c":  # zc - close fold at cursor
+            self._set_fold_at_cursor(True)
+        elif next_char == "M":  # zM - close all folds
+            for i in self._folds:
+                self._folds[i] = True
+            self._render_messages()
+        elif next_char == "R":  # zR - open all folds
+            for i in self._folds:
+                self._folds[i] = False
+            self._render_messages()
+
+        self._needs_redraw = True
+
+    def _toggle_fold_at_cursor(self) -> None:
+        """Toggle fold for the message at cursor."""
+        self._folds[self.cursor] = not self._folds.get(self.cursor, False)
+        self._render_messages()
+
+    def _set_fold_at_cursor(self, folded: bool) -> None:
+        """Set fold state for the message at cursor."""
+        self._folds[self.cursor] = folded
+        self._render_messages()
 
     def _open_in_nvim(self) -> None:
         """Open trace content in neovim for full vim navigation."""
@@ -561,8 +645,9 @@ class TraceViewer:
         return None
 
     def _render_messages(self) -> None:
-        """Pre-render all message lines."""
+        """Pre-render all message lines with fold support and cursor highlight."""
         self._rendered_lines = []
+        self._msg_to_line = {}
 
         role_colors = {
             "user": CYAN,
@@ -571,19 +656,45 @@ class TraceViewer:
             "system": MAGENTA,
         }
 
-        for msg in self.rollout.messages:
-            color = role_colors.get(msg.role, WHITE)
-            self._rendered_lines.append(f"{color}{BOLD}[{msg.role}]{RESET}")
-            for line in msg.content.split("\n"):
-                self._rendered_lines.append(f"  {line}")
-            self._rendered_lines.append("")
+        # Background highlight for cursor
+        BG_CURSOR = "\x1b[48;2;60;60;80m"  # Subtle blue-gray background
 
-        # Fallback: show response as assistant if not in messages
-        has_assistant = any(m.role == "assistant" for m in self.rollout.messages)
-        if not has_assistant and self.rollout.response:
-            self._rendered_lines.append(f"{GREEN}{BOLD}[assistant]{RESET}")
-            for line in self.rollout.response.split("\n"):
-                self._rendered_lines.append(f"  {line}")
+        messages = self._get_all_messages()
+
+        for msg_idx, msg in enumerate(messages):
+            color = role_colors.get(msg.role, WHITE)
+            is_folded = self._folds.get(msg_idx, False)
+            is_cursor = msg_idx == self.cursor
+            content_lines = msg.content.split("\n")
+            num_lines = len(content_lines)
+
+            # Track which line this message starts at
+            line_idx = len(self._rendered_lines)
+            self._msg_to_line[msg_idx] = line_idx
+
+            # Cursor indicator
+            cursor_marker = ">" if is_cursor else " "
+            bg = BG_CURSOR if is_cursor else ""
+            bg_reset = RESET if is_cursor else ""
+
+            if is_folded:
+                # Show folded summary: > ▶ [role] --- N lines ---
+                fold_marker = "▶"
+                preview = content_lines[0][:40] if content_lines else ""
+                if len(content_lines[0]) > 40 if content_lines else False:
+                    preview += "..."
+                summary = f"{bg}{cursor_marker} {fold_marker} {color}{BOLD}[{msg.role}]{RESET}{bg} {DIM}--- {num_lines} lines: {preview}{RESET}{bg_reset}"
+                self._rendered_lines.append(summary)
+            else:
+                # Show expanded: > ▼ [role] followed by content
+                fold_marker = "▼"
+                header = (
+                    f"{bg}{cursor_marker} {fold_marker} {color}{BOLD}[{msg.role}]{RESET}{bg_reset}"
+                )
+                self._rendered_lines.append(header)
+                for line in content_lines:
+                    self._rendered_lines.append(f"    {line}")
+
             self._rendered_lines.append("")
 
     def _render(self) -> None:
@@ -641,9 +752,10 @@ class TraceViewer:
 
     def _render_footer(self, width: int) -> str:
         wrap_hint = "w:truncate" if self.wrap else "h/l:scroll  w:wrap"
-        hints = f"j/k:scroll  {wrap_hint}  q:back"
-        total = len(self._rendered_lines)
-        pos = f"{self.scroll + 1}/{total}" if total > 0 else "0/0"
+        hints = f"j/k:move  Space:fold  zR/zM:all  {wrap_hint}  q:back"
+        messages = self._get_all_messages()
+        num_messages = len(messages)
+        pos = f"msg {self.cursor + 1}/{num_messages}"
 
         padding = width - len(hints) - len(pos) - 4
         return (
@@ -657,7 +769,7 @@ class TraceViewer:
 
 
 class TraceStreamingViewer:
-    """View a streaming rollout with live token updates.
+    """View a streaming rollout with live token updates, nvim-style folding and cursor.
 
     Similar to TraceViewer but polls the Rollout object for updates and
     auto-scrolls as new content arrives.
@@ -678,13 +790,29 @@ class TraceStreamingViewer:
         self.scroll = 0
         self.h_scroll = 0
         self.wrap = True
-        self.auto_scroll = True  # Follow tail
+        self.auto_scroll = True  # Follow tail (also moves cursor to last message)
         self.terminal = Terminal(use_alternate_screen=True)
         self._running = False
         self._needs_redraw = True
         self._last_response_len = 0  # Track changes
         self._rendered_lines: list[str] = []
-        self._last_response_len = 0
+
+        # Cursor: which message is currently selected
+        self.cursor = 0  # Index into messages list
+
+        # Fold state: track which messages are folded (by index)
+        # Start with all messages folded except user messages
+        self._folds: dict[int, bool] = {}  # msg_index -> is_folded
+        self._msg_to_line: dict[int, int] = {}  # msg_index -> first rendered line
+        self._last_msg_count = 0  # Track when new messages arrive
+
+    def _init_folds_for_new_messages(self, messages: list) -> None:
+        """Initialize fold state for any new messages."""
+        for i, msg in enumerate(messages):
+            if i not in self._folds:
+                # Fold everything except user messages by default
+                role = msg.role if hasattr(msg, "role") else msg.get("role", "")
+                self._folds[i] = role != "user"
 
     def run(self) -> None:
         self._running = True
@@ -708,12 +836,14 @@ class TraceStreamingViewer:
                 self._last_response_len = current_len
                 self._needs_redraw = True
 
-                # Auto-scroll to bottom if enabled
+                # Auto-scroll: move cursor to last message and scroll to it
                 if self.auto_scroll:
+                    messages = self._get_all_messages()
+                    if messages:
+                        self.cursor = len(messages) - 1
                     height = self.terminal.rows
                     content_height = height - 2
-                    max_scroll = max(0, len(self._rendered_lines) - content_height)
-                    self.scroll = max_scroll
+                    self._scroll_to_cursor(content_height)
 
             if self._needs_redraw:
                 self._render()
@@ -725,39 +855,79 @@ class TraceStreamingViewer:
 
             time.sleep(0.02)  # 50fps for smooth streaming
 
+    def _get_all_messages(self) -> list[Message]:
+        """Get all messages including prompt fallback and streaming response."""
+        messages: list[Message] = []
+
+        # Show prompt as user message if no messages yet
+        has_user_message = any(msg.role == "user" for msg in self.rollout.messages)
+        if not has_user_message and self.rollout.prompt:
+            messages.append(Message(role="user", content=self.rollout.prompt))
+
+        # Add messages from rollout
+        messages.extend(self.rollout.messages)
+
+        # Add streaming response as a separate message if present
+        if self.rollout.response:
+            messages.append(Message(role="assistant", content=self.rollout.response))
+
+        return messages
+
+    def _scroll_to_cursor(self, content_height: int) -> None:
+        """Ensure cursor is visible by adjusting scroll."""
+        if self.cursor not in self._msg_to_line:
+            return
+        cursor_line = self._msg_to_line[self.cursor]
+        # If cursor is above visible area, scroll up
+        if cursor_line < self.scroll:
+            self.scroll = cursor_line
+        # If cursor is below visible area, scroll down
+        elif cursor_line >= self.scroll + content_height:
+            self.scroll = cursor_line - content_height + 1
+
     def _handle_input(self, data: str) -> None:
         if data == "q":
             self._running = False
             return
 
+        messages = self._get_all_messages()
+        num_messages = len(messages)
         height = self.terminal.rows
         content_height = height - 2
-        max_scroll = max(0, len(self._rendered_lines) - content_height)
 
+        # j/k move cursor between messages
         if data in ("j", "\x1b[B"):
-            self.scroll = min(max_scroll, self.scroll + 1)
-            self.auto_scroll = self.scroll >= max_scroll
+            if self.cursor < num_messages - 1:
+                self.cursor += 1
+                self._scroll_to_cursor(content_height)
+                self.auto_scroll = self.cursor >= num_messages - 1
             self._needs_redraw = True
         elif data in ("k", "\x1b[A"):
-            self.scroll = max(0, self.scroll - 1)
-            self.auto_scroll = False
+            if self.cursor > 0:
+                self.cursor -= 1
+                self._scroll_to_cursor(content_height)
+                self.auto_scroll = False
             self._needs_redraw = True
-        elif data == "\x04":  # Ctrl+D
-            self.scroll = min(max_scroll, self.scroll + content_height // 2)
-            self.auto_scroll = self.scroll >= max_scroll
+        elif data == "\x04":  # Ctrl+D - move cursor down by half page worth of messages
+            self.cursor = min(num_messages - 1, self.cursor + 5)
+            self._scroll_to_cursor(content_height)
+            self.auto_scroll = self.cursor >= num_messages - 1
             self._needs_redraw = True
-        elif data == "\x15":  # Ctrl+U
-            self.scroll = max(0, self.scroll - content_height // 2)
+        elif data == "\x15":  # Ctrl+U - move cursor up by half page worth of messages
+            self.cursor = max(0, self.cursor - 5)
+            self._scroll_to_cursor(content_height)
             self.auto_scroll = False
             self._needs_redraw = True
         elif data == "g":
             next_char = self._wait_for_char()
             if next_char == "g":
-                self.scroll = 0
+                self.cursor = 0
+                self._scroll_to_cursor(content_height)
                 self.auto_scroll = False
                 self._needs_redraw = True
         elif data == "G":
-            self.scroll = max_scroll
+            self.cursor = num_messages - 1
+            self._scroll_to_cursor(content_height)
             self.auto_scroll = True
             self._needs_redraw = True
         elif data in ("h", "\x1b[D"):
@@ -776,10 +946,46 @@ class TraceStreamingViewer:
             if self.wrap:
                 self.h_scroll = 0
             self._needs_redraw = True
-        # TODO: nvim integration disabled - breaks terminal state when TUI is in raw mode
-        # elif data == "v":  # Open in neovim (with streaming)
-        #     self._open_in_nvim()
-        #     self._needs_redraw = True
+        # Fold commands (nvim-style)
+        elif data == "z":
+            self._handle_fold_command()
+        # Tab/Space/Enter to toggle fold at cursor
+        elif data in ("\t", " ", "\r", "\n"):
+            self._toggle_fold_at_cursor()
+            self._needs_redraw = True
+
+    def _handle_fold_command(self) -> None:
+        """Handle nvim-style fold commands (za, zo, zc, zM, zR)."""
+        next_char = self._wait_for_char()
+        if next_char is None:
+            return
+
+        if next_char == "a":  # za - toggle fold at cursor
+            self._toggle_fold_at_cursor()
+        elif next_char == "o":  # zo - open fold at cursor
+            self._set_fold_at_cursor(False)
+        elif next_char == "c":  # zc - close fold at cursor
+            self._set_fold_at_cursor(True)
+        elif next_char == "M":  # zM - close all folds
+            for i in self._folds:
+                self._folds[i] = True
+            self._render_content()
+        elif next_char == "R":  # zR - open all folds
+            for i in self._folds:
+                self._folds[i] = False
+            self._render_content()
+
+        self._needs_redraw = True
+
+    def _toggle_fold_at_cursor(self) -> None:
+        """Toggle fold for the message at cursor."""
+        self._folds[self.cursor] = not self._folds.get(self.cursor, False)
+        self._render_content()
+
+    def _set_fold_at_cursor(self, folded: bool) -> None:
+        """Set fold state for the message at cursor."""
+        self._folds[self.cursor] = folded
+        self._render_content()
 
     def _get_plain_text(self) -> str:
         """Get trace content as plain text for nvim."""
@@ -856,8 +1062,9 @@ class TraceStreamingViewer:
         return None
 
     def _render_content(self) -> None:
-        """Render content lines from rollout."""
+        """Render content lines from rollout with fold support and cursor highlight."""
         self._rendered_lines = []
+        self._msg_to_line = {}
 
         role_colors = {
             "user": CYAN,
@@ -866,30 +1073,51 @@ class TraceStreamingViewer:
             "system": MAGENTA,
         }
 
-        # Show prompt as user message if no messages yet (streaming just started)
-        has_user_message = any(msg.role == "user" for msg in self.rollout.messages)
-        if not has_user_message and self.rollout.prompt:
-            self._rendered_lines.append(f"{CYAN}{BOLD}[user]{RESET}")
-            for line in self.rollout.prompt.split("\n"):
-                self._rendered_lines.append(f"  {line}")
+        # Background highlight for cursor
+        BG_CURSOR = "\x1b[48;2;60;60;80m"  # Subtle blue-gray background
+
+        # Get all messages
+        messages = self._get_all_messages()
+
+        # Initialize folds for any new messages
+        self._init_folds_for_new_messages(messages)
+
+        # Render each message with fold support and cursor
+        for msg_idx, msg in enumerate(messages):
+            color = role_colors.get(msg.role, WHITE)
+            is_folded = self._folds.get(msg_idx, False)
+            is_cursor = msg_idx == self.cursor
+            content_lines = msg.content.split("\n")
+            num_lines = len(content_lines)
+
+            # Track which line this message starts at
+            line_idx = len(self._rendered_lines)
+            self._msg_to_line[msg_idx] = line_idx
+
+            # Cursor indicator
+            cursor_marker = ">" if is_cursor else " "
+            bg = BG_CURSOR if is_cursor else ""
+            bg_reset = RESET if is_cursor else ""
+
+            if is_folded:
+                # Show folded summary: > ▶ [role] --- N lines ---
+                fold_marker = "▶"
+                preview = content_lines[0][:40] if content_lines else ""
+                if len(content_lines[0]) > 40 if content_lines else False:
+                    preview += "..."
+                summary = f"{bg}{cursor_marker} {fold_marker} {color}{BOLD}[{msg.role}]{RESET}{bg} {DIM}--- {num_lines} lines: {preview}{RESET}{bg_reset}"
+                self._rendered_lines.append(summary)
+            else:
+                # Show expanded: > ▼ [role] followed by content
+                fold_marker = "▼"
+                header = (
+                    f"{bg}{cursor_marker} {fold_marker} {color}{BOLD}[{msg.role}]{RESET}{bg_reset}"
+                )
+                self._rendered_lines.append(header)
+                for line in content_lines:
+                    self._rendered_lines.append(f"    {line}")
+
             self._rendered_lines.append("")
-
-        # Render messages from rollout
-        for msg in self.rollout.messages:
-            role = msg.role
-            content = msg.content
-            color = role_colors.get(role, WHITE)
-
-            self._rendered_lines.append(f"{color}{BOLD}[{role}]{RESET}")
-            for line in content.split("\n"):
-                self._rendered_lines.append(f"  {line}")
-            self._rendered_lines.append("")
-
-        # Add streaming response if present
-        if self.rollout.response:
-            self._rendered_lines.append(f"{GREEN}{BOLD}[assistant]{RESET}")
-            for line in self.rollout.response.split("\n"):
-                self._rendered_lines.append(f"  {line}")
 
     def _render(self) -> None:
         width = self.terminal.columns
@@ -945,9 +1173,10 @@ class TraceStreamingViewer:
 
     def _render_footer(self, width: int) -> str:
         wrap_hint = "w:truncate" if self.wrap else "h/l:scroll  w:wrap"
-        hints = f"j/k:scroll  {wrap_hint}  q:back"
-        total = len(self._rendered_lines)
-        pos = f"{self.scroll + 1}/{total}" if total > 0 else "0/0"
+        hints = f"j/k:move  Space:fold  zR/zM:all  {wrap_hint}  q:back"
+        messages = self._get_all_messages()
+        num_messages = len(messages)
+        pos = f"msg {self.cursor + 1}/{num_messages}"
         if self.auto_scroll and self.rollout.is_streaming:
             pos += " [FOLLOW]"
 
