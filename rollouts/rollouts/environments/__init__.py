@@ -16,6 +16,7 @@ __all__ = [
     "LocalFilesystemEnvironment",
     "GitWorktreeEnvironment",
     "BrowsingEnvironment",
+    "ChessPuzzleEnvironment",
     "REPLEnvironment",
     "MessageParsingREPLEnvironment",
     "ComposedEnvironment",
@@ -29,4 +30,8 @@ def __getattr__(name: str) -> type:
         from .browsing import BrowsingEnvironment
 
         return BrowsingEnvironment
+    if name == "ChessPuzzleEnvironment":
+        from .chess_puzzle import ChessPuzzleEnvironment
+
+        return ChessPuzzleEnvironment
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

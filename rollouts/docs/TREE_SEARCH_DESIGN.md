@@ -5,6 +5,40 @@
 
 ---
 
+## Core Abstraction
+
+The search loop is three functions composed:
+
+```python
+while not done:
+    nodes = select(tree)                      # which nodes to expand
+    tree = await expand(tree, nodes, config)  # run agent, create children
+    tree = prune(tree)                        # trim frontier
+```
+
+**Type signatures:**
+```python
+SelectFn = Callable[[SearchTree], list[str]]  # returns node IDs to expand
+ExpandFn = Callable[[SearchTree, list[str], RunConfig], Awaitable[SearchTree]]
+PruneFn = Callable[[SearchTree], SearchTree]
+```
+
+**Kevin-32B beam search:**
+```python
+select = select_all_frontier          # expand all 16 trajectories
+expand = make_expand_n_turns(n=4, branch_factor=4)  # 4 turns, then fork 4x
+prune = make_beam_pruner(k=4)         # keep top 4
+```
+
+**MCTS:**
+```python
+select = make_ucb_selector(c=1.414)   # select one node via UCB
+expand = make_expand_n_turns(n=1, branch_factor=1)  # 1 turn, 1 child
+prune = None                          # no pruning (or depth limit)
+```
+
+---
+
 ## Problem Statement
 
 Current RL frameworks (prime-rl, pufferlib, verifiers) assume linear trajectories:
@@ -210,72 +244,11 @@ def prune_node(tree: SearchTree, node_id: str) -> SearchTree:
 
 ### Selection Functions
 
-Type alias for selection:
+See "Core Search Loop" section above for the updated `SelectFn` type and examples.
 
+Type alias:
 ```python
-SelectFn = Callable[[SearchTree], str | None]
-```
-
-Built-in strategies as pure functions:
-
-```python
-def select_best_first(tree: SearchTree) -> str | None:
-    """Select highest-scoring node from frontier."""
-    if not tree.frontier:
-        return None
-    frontier_nodes = [n for n in tree.nodes if n.node_id in tree.frontier]
-    return max(frontier_nodes, key=lambda n: n.score or 0).node_id
-
-
-def select_depth_first(tree: SearchTree) -> str | None:
-    """Select deepest node (most recent)."""
-    if not tree.frontier:
-        return None
-    frontier_nodes = [n for n in tree.nodes if n.node_id in tree.frontier]
-    return max(frontier_nodes, key=lambda n: n.depth).node_id
-
-
-def select_breadth_first(tree: SearchTree) -> str | None:
-    """Select shallowest node (oldest)."""
-    if not tree.frontier:
-        return None
-    frontier_nodes = [n for n in tree.nodes if n.node_id in tree.frontier]
-    return min(frontier_nodes, key=lambda n: n.depth).node_id
-
-
-def select_random(tree: SearchTree) -> str | None:
-    """Select random node from frontier."""
-    if not tree.frontier:
-        return None
-    import random
-    return random.choice(tree.frontier)
-```
-
-Custom selection (e.g., UCB for MCTS):
-
-```python
-def make_ucb_selector(c: float = 1.414) -> SelectFn:
-    """Create UCB selection function for MCTS."""
-    visit_counts: dict[str, int] = {}  # Closure captures state
-
-    def select_ucb(tree: SearchTree) -> str | None:
-        if not tree.frontier:
-            return None
-
-        total_visits = sum(visit_counts.get(nid, 0) for nid in tree.frontier)
-
-        def ucb_score(node: SearchNode) -> float:
-            visits = visit_counts.get(node.node_id, 1)
-            exploit = node.score or 0
-            explore = c * math.sqrt(math.log(total_visits + 1) / visits)
-            return exploit + explore
-
-        frontier_nodes = [n for n in tree.nodes if n.node_id in tree.frontier]
-        best = max(frontier_nodes, key=ucb_score)
-        visit_counts[best.node_id] = visit_counts.get(best.node_id, 0) + 1
-        return best.node_id
-
-    return select_ucb
+SelectFn = Callable[[SearchTree], list[str]]  # returns node IDs to expand
 ```
 
 ### Pruning Functions
@@ -343,112 +316,134 @@ def compose_pruners(*pruners: PruneFn) -> PruneFn:
 ## Core Search Loop
 
 ```python
-async def expand_node(
-    tree: SearchTree,
-    node_id: str,
-    config: RunConfig,
-    branch_factor: int = 1,
-) -> tuple[list[AgentState], list[VerifyResult]]:
-    """Expand a single node. Returns child states and verification results.
-
-    Pure function - doesn't mutate tree.
-    """
-    node = next(n for n in tree.nodes if n.node_id == node_id)
-    state = node.state
-
-    child_states = []
-    verify_results = []
-
-    # Generate branch_factor children from same state
-    for _ in range(branch_factor):
-        # Use existing run_agent_step (unchanged)
-        next_state = await run_agent_step(state, config)
-        child_states.append(next_state)
-
-        # Verify if environment supports it
-        if state.environment and hasattr(state.environment, 'verify'):
-            result = await state.environment.verify(next_state)
-        else:
-            result = VerifyResult()  # Default: valid, no score
-        verify_results.append(result)
-
-    return child_states, verify_results
-
-
 async def run_search(
     initial_state: AgentState,
     config: RunConfig,
-    select: SelectFn = select_best_first,
+    select: SelectFn,
+    expand: ExpandFn,
     prune: PruneFn | None = None,
-    branch_factor: int = 1,
-    max_expansions: int = 100,
+    max_steps: int = 100,
 ) -> SearchTree:
     """Run tree search until solution found or limits reached.
 
     Args:
         initial_state: Starting agent state
         config: Run configuration (unchanged from linear run_agent)
-        select: Function to pick next node to expand
+        select: Function to pick which nodes to expand
+        expand: Function to expand selected nodes (may run multiple turns)
         prune: Optional function to prune frontier after expansion
-        branch_factor: Children per expansion (1 = linear search)
-        max_expansions: Safety limit on total expansions
+        max_steps: Safety limit on search iterations
 
     Returns:
         Final search tree containing all explored nodes
     """
     tree = make_root(initial_state)
-    expansions = 0
 
-    while tree.frontier and expansions < max_expansions:
-        # Select node to expand
-        node_id = select(tree)
-        if node_id is None:
+    for step in range(max_steps):
+        # Select nodes to expand
+        node_ids = select(tree)
+        if not node_ids:
             break
 
-        # Expand: generate children
-        child_states, verify_results = await expand_node(
-            tree, node_id, config, branch_factor
-        )
-
-        # Filter by verification
-        valid_children = []
-        scores = []
-
-        for state, vr in zip(child_states, verify_results):
-            if not vr.valid:
-                continue  # Prune invalid states
-
-            # Inject feedback if provided
-            if vr.feedback:
-                feedback_msg = Message(role="user", content=vr.feedback)
-                new_trajectory = replace(
-                    state.actor.trajectory,
-                    messages=state.actor.trajectory.messages + [feedback_msg]
-                )
-                state = replace(state, actor=replace(state.actor, trajectory=new_trajectory))
-
-            # Mark terminal states
-            if vr.terminal:
-                state = replace(state, stop=StopReason.TASK_COMPLETED)
-
-            valid_children.append(state)
-            scores.append(vr.score)
-
-        # Add children to tree
-        tree = add_children(tree, node_id, valid_children, scores)
+        # Expand selected nodes (may run N turns, create children, fork, etc.)
+        tree = await expand(tree, node_ids, config)
 
         # Check for solution
-        for state in valid_children:
-            if state.stop == StopReason.TASK_COMPLETED:
-                return tree  # Found solution
+        if has_terminal_node(tree):
+            break
 
         # Apply pruning
         if prune:
             tree = prune(tree)
 
-        expansions += 1
-
     return tree
+```
+
+### Expand Functions
+
+The `expand` function encapsulates how to expand nodes. It can:
+- Run the agent for N turns before creating a child node
+- Create multiple children per node (branching)
+- Fork/replicate nodes
+
+```python
+def make_expand_n_turns(
+    n: int = 1,
+    branch_factor: int = 1,
+) -> ExpandFn:
+    """Create an expand function that runs N turns per expansion.
+
+    Args:
+        n: Number of agent turns before creating a child node
+        branch_factor: Number of children to create per selected node
+                      (each child forks from the same state after N turns)
+    """
+    async def expand(
+        tree: SearchTree,
+        node_ids: list[str],
+        config: RunConfig,
+    ) -> SearchTree:
+        for node_id in node_ids:
+            node = get_node(tree, node_id)
+            state = node.state
+
+            # Run agent for N turns
+            for turn in range(n):
+                state = await run_agent_step(state, config)
+                if state.stop:
+                    break
+
+            # Verify state
+            if state.environment and hasattr(state.environment, 'verify'):
+                vr = await state.environment.verify(state)
+            else:
+                vr = VerifyResult()
+
+            # Create branch_factor children from this state
+            for b in range(branch_factor):
+                # Fork environment for each branch
+                if b > 0 and state.environment:
+                    env_data = await state.environment.serialize()
+                    forked_env = await state.environment.__class__.deserialize(env_data)
+                    forked_state = replace(state, environment=forked_env)
+                else:
+                    forked_state = state
+
+                tree = add_child(tree, node_id, forked_state, vr.score)
+
+        return tree
+
+    return expand
+```
+
+### Select Functions
+
+```python
+def select_all_frontier(tree: SearchTree) -> list[str]:
+    """Select all nodes in frontier. For beam search."""
+    return list(tree.frontier)
+
+
+def select_one_best(tree: SearchTree) -> list[str]:
+    """Select single highest-scoring node. For best-first search."""
+    if not tree.frontier:
+        return []
+    frontier_nodes = [n for n in tree.nodes if n.node_id in tree.frontier]
+    best = max(frontier_nodes, key=lambda n: n.score or 0)
+    return [best.node_id]
+
+
+def make_ucb_selector(c: float = 1.414) -> SelectFn:
+    """Create UCB selection for MCTS. Returns single node."""
+    visit_counts: dict[str, int] = {}
+
+    def select(tree: SearchTree) -> list[str]:
+        if not tree.frontier:
+            return []
+        # UCB logic...
+        return [best_node_id]
+
+    return select
 ```
 
 ---
@@ -509,21 +504,22 @@ def get_path_to_node(tree: SearchTree, node_id: str) -> list[SearchNode]:
 tree = await run_search(
     initial_state,
     config,
-    select=select_depth_first,
-    branch_factor=1,
+    select=select_all_frontier,
+    expand=make_expand_n_turns(n=1, branch_factor=1),
 )
 result = get_best_terminal(tree)
 ```
 
-### Beam Search
+### Beam Search (Kevin-32B style)
 
 ```python
 tree = await run_search(
     initial_state,
     config,
-    select=select_best_first,
-    prune=make_beam_pruner(beam_width=5),
-    branch_factor=3,
+    select=select_all_frontier,
+    expand=make_expand_n_turns(n=4, branch_factor=4),  # 4 turns, then fork 4x
+    prune=make_beam_pruner(beam_width=4),
+    max_steps=8,
 )
 solution = get_solution(tree)
 ```
@@ -534,12 +530,12 @@ solution = get_solution(tree)
 tree = await run_search(
     initial_state,
     config,
-    select=select_best_first,
+    select=select_one_best,
+    expand=make_expand_n_turns(n=1, branch_factor=2),
     prune=compose_pruners(
         make_threshold_pruner(min_score=0.3),
         make_depth_pruner(max_depth=10),
     ),
-    branch_factor=2,
 )
 ```
 
@@ -550,8 +546,8 @@ tree = await run_search(
     initial_state,
     config,
     select=make_ucb_selector(c=1.414),
-    branch_factor=1,  # Expand one at a time
-    max_expansions=1000,
+    expand=make_expand_n_turns(n=1, branch_factor=1),
+    max_steps=1000,
 )
 ```
 
@@ -569,7 +565,7 @@ tree = await run_search(
 
 - `AgentState` - unchanged
 - `Actor`, `Trajectory`, `Message` - unchanged
-- `run_agent_step` - unchanged (called by `expand_node`)
+- `run_agent_step` - unchanged (called by expand functions)
 - `run_agent` - unchanged (linear execution still works)
 - `Environment.exec_tool`, `on_assistant_message` - unchanged
 - Streaming events - unchanged
@@ -588,22 +584,19 @@ tree = await run_search(
 
 ### Parallel Expansion
 
-Batch LLM calls across multiple nodes:
+The `expand` function can run expansions in parallel using trio nurseries:
 
 ```python
-async def expand_nodes_parallel(
-    tree: SearchTree,
-    node_ids: list[str],
-    config: RunConfig,
-    branch_factor: int = 1,
-) -> list[tuple[list[AgentState], list[VerifyResult]]]:
-    """Expand multiple nodes in parallel."""
-    async with trio.open_nursery() as nursery:
-        results = []
-        for node_id in node_ids:
-            # Launch concurrent expansions
-            ...
-    return results
+def make_expand_parallel(n: int = 1, branch_factor: int = 1) -> ExpandFn:
+    """Expand all selected nodes in parallel."""
+    async def expand(tree: SearchTree, node_ids: list[str], config: RunConfig) -> SearchTree:
+        async with trio.open_nursery() as nursery:
+            # Launch all expansions concurrently
+            for node_id in node_ids:
+                nursery.start_soon(expand_single_node, tree, node_id, config, n, branch_factor)
+        # ... collect results and build new tree
+        return new_tree
+    return expand
 ```
 
 ### Subagent Spawning
@@ -665,12 +658,13 @@ def compute_branch_credits(
 | `VerifyResult` | frozen dataclass | Verification output |
 | `SearchNode` | frozen dataclass | Node in tree (wraps AgentState) |
 | `SearchTree` | frozen dataclass | Immutable tree structure |
-| `SelectFn` | type alias | Function to pick next node |
+| `SelectFn` | type alias | Function to pick which nodes to expand |
+| `ExpandFn` | type alias | Function to expand nodes (N turns, branching) |
 | `PruneFn` | type alias | Function to prune frontier |
 | `select_*` | pure functions | Built-in selection strategies |
-| `make_*_pruner` | pure functions | Built-in pruning strategies |
-| `expand_node` | async function | Generate children for one node |
-| `run_search` | async function | Main search loop |
+| `make_expand_*` | factory functions | Built-in expand strategies |
+| `make_*_pruner` | factory functions | Built-in pruning strategies |
+| `run_search` | async function | Main search loop: select → expand → prune |
 | `get_*` | pure functions | Extract results from tree |
 
-**Key principle:** The tree is data, not behavior. Selection and pruning are functions, not classes. `run_search` orchestrates stateful operations (`run_agent_step`) but is itself a pure function given the same inputs.
+**Key principle:** The tree is data, not behavior. Selection, expansion, and pruning are functions, not classes. `run_search` orchestrates stateful operations (`run_agent_step`) but is itself a pure function given the same inputs.
