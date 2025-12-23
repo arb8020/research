@@ -283,9 +283,7 @@ class TraceData:
                         return rollout
         return None
 
-    def handle_stream_event(
-        self, sample_id: str, event_type: str, event_data: dict
-    ) -> None:
+    def handle_stream_event(self, sample_id: str, event_type: str, event_data: dict) -> None:
         """Handle a StreamEvent for live streaming display.
 
         Uses AgentRenderer-style event handling - builds messages from
@@ -395,9 +393,7 @@ class TraceData:
         tool_text = f"[tool_call: {name}]\n{args}"
         if rollout.messages and rollout.messages[-1].role == "assistant":
             existing = rollout.messages[-1].content
-            rollout.messages[-1] = Message(
-                role="assistant", content=f"{existing}\n\n{tool_text}"
-            )
+            rollout.messages[-1] = Message(role="assistant", content=f"{existing}\n\n{tool_text}")
 
     def _add_tool_result(
         self, rollout: Rollout, tool_call_id: str, content: str, is_error: bool
@@ -648,26 +644,21 @@ class TraceViewer:
 class TraceStreamingViewer:
     """View a streaming rollout with live token updates.
 
-    Similar to TraceViewer but polls a line queue for updates and
+    Similar to TraceViewer but polls the Rollout object for updates and
     auto-scrolls as new content arrives.
     """
 
     def __init__(
         self,
-        sample_id: str,
-        initial_data: dict,
-        line_queue: list[str],
+        rollout: Rollout,
     ) -> None:
         """Initialize streaming viewer.
 
         Args:
-            sample_id: The sample ID to watch for updates
-            initial_data: Initial rollout data dict with prompt, response, etc.
-            line_queue: Shared list that receives new JSONL lines (from background thread)
+            rollout: The Rollout object (gets updated by handle_stream_event)
         """
-        self.sample_id = sample_id
-        self.data = initial_data.copy()
-        self.line_queue = line_queue
+        self.rollout = rollout
+        self.sample_id = rollout.sample_id_str or str(rollout.sample_id)
 
         self.scroll = 0
         self.h_scroll = 0
@@ -676,7 +667,7 @@ class TraceStreamingViewer:
         self.terminal = Terminal(use_alternate_screen=True)
         self._running = False
         self._needs_redraw = True
-        self._is_streaming = True  # Still receiving updates
+        self._last_response_len = 0  # Track changes
         self._rendered_lines: list[str] = []
         self._last_response_len = 0
 
@@ -695,13 +686,11 @@ class TraceStreamingViewer:
 
     def _main_loop(self) -> None:
         while self._running:
-            # Drain line queue and check for updates to our sample
-            self._process_queue()
-
-            # Re-render content if response changed
-            if len(self.data.get("response", "")) != self._last_response_len:
+            # Check if rollout.response has changed
+            current_len = len(self.rollout.response)
+            if current_len != self._last_response_len:
                 self._render_content()
-                self._last_response_len = len(self.data.get("response", ""))
+                self._last_response_len = current_len
                 self._needs_redraw = True
 
                 # Auto-scroll to bottom if enabled
@@ -720,27 +709,6 @@ class TraceStreamingViewer:
                 self._handle_input(data)
 
             time.sleep(0.02)  # 50fps for smooth streaming
-
-    def _process_queue(self) -> None:
-        """Process queued lines, looking for updates to our sample."""
-        while self.line_queue:
-            raw_line = self.line_queue.pop(0)
-            if not raw_line.strip():
-                continue
-
-            try:
-                data = json.loads(raw_line)
-                message = data.get("message", "")
-                step = data.get("step", "")
-
-                # Check if this is a rollout update for our sample
-                if message == "rollout" and str(step) == str(self.sample_id):
-                    self.data = data
-                    status = data.get("status", "")
-                    if status != "streaming":
-                        self._is_streaming = False
-            except json.JSONDecodeError:
-                pass
 
     def _handle_input(self, data: str) -> None:
         if data == "q":
@@ -872,17 +840,8 @@ class TraceStreamingViewer:
             time.sleep(0.01)
         return None
 
-    def _get_messages(self) -> list[dict]:
-        """Get messages from data."""
-        messages = self.data.get("messages")
-        if messages is None:
-            messages = self.data.get("metadata", {}).get("messages")
-        if messages is None:
-            raise ValueError(f"No messages in rollout data. Keys: {list(self.data.keys())}")
-        return messages
-
     def _render_content(self) -> None:
-        """Render content lines from current data."""
+        """Render content lines from rollout."""
         self._rendered_lines = []
 
         role_colors = {
@@ -892,15 +851,22 @@ class TraceStreamingViewer:
             "system": MAGENTA,
         }
 
-        for msg in self._get_messages():
-            role = msg.get("role", "unknown")
-            content = msg.get("content", "")
+        # Render messages from rollout
+        for msg in self.rollout.messages:
+            role = msg.role
+            content = msg.content
             color = role_colors.get(role, WHITE)
 
             self._rendered_lines.append(f"{color}{BOLD}[{role}]{RESET}")
             for line in content.split("\n"):
                 self._rendered_lines.append(f"  {line}")
             self._rendered_lines.append("")
+
+        # Add streaming response if present
+        if self.rollout.response:
+            self._rendered_lines.append(f"{GREEN}{BOLD}[assistant]{RESET}")
+            for line in self.rollout.response.split("\n"):
+                self._rendered_lines.append(f"  {line}")
 
     def _render(self) -> None:
         width = self.terminal.columns
@@ -941,12 +907,12 @@ class TraceStreamingViewer:
 
     def _render_header(self, width: int) -> str:
         sample_id = self.sample_id
-        char_count = len(self.data.get("response", ""))
+        char_count = len(self.rollout.response)
 
-        if self._is_streaming:
+        if self.rollout.is_streaming:
             status = f"{YELLOW}● STREAMING{RESET}{BG_HEADER}"
         else:
-            reward = self.data.get("reward", 0.0)
+            reward = self.rollout.reward or 0.0
             reward_color = GREEN if reward > 0 else RED if reward < 0 else WHITE
             status = f"{reward_color}reward: {reward:.3f}{RESET}{BG_HEADER}"
 
@@ -959,7 +925,7 @@ class TraceStreamingViewer:
         hints = f"j/k:scroll  {wrap_hint}  q:back"
         total = len(self._rendered_lines)
         pos = f"{self.scroll + 1}/{total}" if total > 0 else "0/0"
-        if self.auto_scroll and self._is_streaming:
+        if self.auto_scroll and self.rollout.is_streaming:
             pos += " [FOLLOW]"
 
         padding = width - len(hints) - len(pos) - 6
@@ -1058,21 +1024,9 @@ class RolloutPicker:
         rollout = self.group.rollouts[self.cursor]
         self.terminal.stop()
 
-        # Use streaming viewer for streaming rollouts (if we have a line queue)
-        if rollout.is_streaming and self.line_queue is not None:
-            initial_data = {
-                "step": rollout.sample_id_str,
-                "prompt": rollout.prompt,
-                "response": rollout.response,
-                "reward": rollout.reward,
-                "status": "streaming",
-                "messages": [{"role": m.role, "content": m.content} for m in rollout.messages],
-            }
-            viewer = TraceStreamingViewer(
-                sample_id=rollout.sample_id_str,
-                initial_data=initial_data,
-                line_queue=self.line_queue,
-            )
+        # Use streaming viewer for streaming rollouts
+        if rollout.is_streaming:
+            viewer = TraceStreamingViewer(rollout)
         else:
             viewer = TraceViewer(rollout)
 
