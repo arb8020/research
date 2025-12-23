@@ -13,13 +13,13 @@ class TestExtractFunction:
 
     def test_simple_extraction(self):
         """Test extracting simple statements without parameters or returns."""
-        code = '''\
+        code = """\
 def main():
     print("hello")
     print("world")
     print("done")
-'''
-        expected = '''\
+"""
+        expected = """\
 def main():
     def greet():
         print("hello")
@@ -27,7 +27,7 @@ def main():
 
     greet()
     print("done")
-'''
+"""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             f.write(code)
             f.flush()
@@ -45,13 +45,13 @@ def main():
 
     def test_extraction_with_parameters(self):
         """Test extracting code that uses variables from outer scope."""
-        code = '''\
+        code = """\
 def process(data):
     x = data + 1
     y = x * 2
     z = y + x
     return z
-'''
+"""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             f.write(code)
             f.flush()
@@ -70,13 +70,13 @@ def process(data):
 
     def test_extraction_with_return_value(self):
         """Test extracting code that defines a variable used later."""
-        code = '''\
+        code = """\
 def calculate():
     a = 1
     b = 2
     result = a + b
     print(result)
-'''
+"""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             f.write(code)
             f.flush()
@@ -96,14 +96,14 @@ def calculate():
 
     def test_extraction_with_params_and_returns(self):
         """Test extraction with both parameters and return values."""
-        code = '''\
+        code = """\
 def transform(input_val):
     x = input_val * 2
     y = x + 10
     z = y * 3
     final = z - x
     print(final)
-'''
+"""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             f.write(code)
             f.flush()
@@ -124,13 +124,13 @@ def transform(input_val):
 
     def test_class_method_extraction(self):
         """Test extracting code from inside a class method."""
-        code = '''\
+        code = """\
 class Calculator:
     def compute(self, x):
         a = x + 1
         b = a * 2
         return b
-'''
+"""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             f.write(code)
             f.flush()

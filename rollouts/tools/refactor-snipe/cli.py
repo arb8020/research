@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import difflib
 import re
-import sys
 from pathlib import Path
 
 import typer
@@ -30,21 +29,21 @@ import typer
 try:
     from .refactors.extract_function import ExtractFunction
     from .refactors.extract_function import apply_edits as apply_extract_function_edits
-    from .refactors.inline_variable import InlineVariable
-    from .refactors.inline_variable import apply_edits as apply_inline_variable_edits
     from .refactors.extract_variable import ExtractVariable
     from .refactors.extract_variable import apply_edits as apply_extract_variable_edits
     from .refactors.inline_function import InlineFunction
     from .refactors.inline_function import apply_edits as apply_inline_function_edits
+    from .refactors.inline_variable import InlineVariable
+    from .refactors.inline_variable import apply_edits as apply_inline_variable_edits
 except ImportError:
     from refactors.extract_function import ExtractFunction
     from refactors.extract_function import apply_edits as apply_extract_function_edits
-    from refactors.inline_variable import InlineVariable
-    from refactors.inline_variable import apply_edits as apply_inline_variable_edits
     from refactors.extract_variable import ExtractVariable
     from refactors.extract_variable import apply_edits as apply_extract_variable_edits
     from refactors.inline_function import InlineFunction
     from refactors.inline_function import apply_edits as apply_inline_function_edits
+    from refactors.inline_variable import InlineVariable
+    from refactors.inline_variable import apply_edits as apply_inline_variable_edits
 
 app = typer.Typer(
     name="snipe",
@@ -125,7 +124,7 @@ def extract_function(
         result = refactor.execute()
     except Exception as e:
         typer.secho(f"Error: {e}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None from None
 
     original = path.read_text()
     modified = apply_extract_function_edits(path, result.edits)
@@ -167,7 +166,9 @@ def extract_function(
         typer.secho("Replacement:", fg=typer.colors.GREEN)
         typer.echo(result.function_call)
         typer.echo()
-        typer.secho(f"Replaces lines {result.replace_start}-{result.replace_end}", fg=typer.colors.BLUE)
+        typer.secho(
+            f"Replaces lines {result.replace_start}-{result.replace_end}", fg=typer.colors.BLUE
+        )
         return
 
     # Apply changes
@@ -279,7 +280,7 @@ def inline_variable(
         result = refactor.execute()
     except Exception as e:
         typer.secho(f"Error: {e}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
     original = path.read_text()
     modified = apply_inline_variable_edits(path, result.edits)
@@ -344,7 +345,7 @@ def extract_variable(
         result = refactor.execute()
     except Exception as e:
         typer.secho(f"Error: {e}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
     original = path.read_text()
     modified = apply_extract_variable_edits(path, result.edits)
@@ -403,7 +404,7 @@ def inline_function(
         result = refactor.execute()
     except Exception as e:
         typer.secho(f"Error: {e}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
     original = path.read_text()
     modified = apply_inline_function_edits(path, result.edits)

@@ -17,7 +17,7 @@ try:
 except ImportError:
     from langs import get_generator
     from scope import ScopeAnalyzer
-    from treesitter import Region, TreeSitterParser, get_language_for_file
+    from treesitter import TreeSitterParser, get_language_for_file
 
 
 @dataclass
@@ -123,7 +123,9 @@ class ExtractVariable:
         edits = []
 
         # Replace all occurrences with variable name (in reverse order)
-        for occ in sorted(occurrences, key=lambda n: (n.start_point[0], n.start_point[1]), reverse=True):
+        for occ in sorted(
+            occurrences, key=lambda n: (n.start_point[0], n.start_point[1]), reverse=True
+        ):
             edits.append(
                 TextEdit(
                     start_line=occ.start_point[0] + 1,

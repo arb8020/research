@@ -11,7 +11,6 @@ This module handles:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterator
 
 from tree_sitter import Node
 
@@ -200,9 +199,8 @@ class ScopeAnalyzer:
                 continue  # Skip nodes before/in the region
 
             node_region = Region.from_node(node)
-            if (
-                node_region.start.row > region.end.row
-                or (node_region.start.row == region.end.row and node_region.start.col >= region.end.col)
+            if node_region.start.row > region.end.row or (
+                node_region.start.row == region.end.row and node_region.start.col >= region.end.col
             ):
                 references.append((self.parser.get_text(node), node))
 
