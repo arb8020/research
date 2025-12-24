@@ -121,7 +121,7 @@ class BrowsingEnvironment:
         return None
 
     async def serialize(self) -> dict:
-        return {"max_search_results": self.max_search_results}
+        return {"env_kind": "browsing", "max_search_results": self.max_search_results}
 
     @staticmethod
     async def deserialize(data: dict) -> "BrowsingEnvironment":

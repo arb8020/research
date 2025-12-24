@@ -271,8 +271,36 @@ class TUI(Container):
         self._render_requested = True
         # In Python we do immediate render since we don't have process.nextTick
         # For async usage, caller should await trio.sleep(0) or similar
+        import time
+
+        start = time.perf_counter()
         self._do_render()
+        elapsed = time.perf_counter() - start
+        # Always log slow renders (>100ms) to help debug hangs
+        if elapsed > 0.1:
+            self._log_slow_render(elapsed)
         self._render_requested = False
+
+    def reset_render_state(self) -> None:
+        """Reset render state to force complete re-render.
+
+        Call this when returning from external editor or after terminal
+        state has been disrupted.
+        """
+        self._previous_lines = []
+        self._previous_width = 0
+        self._cursor_row = 0
+        # Also invalidate all component caches
+        self.invalidate()
+
+    def _log_slow_render(self, elapsed: float) -> None:
+        """Log slow render to debug file (always, regardless of --debug flag)."""
+        log_path = Path.home() / ".rollouts" / "tui-debug.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a") as f:
+            f.write(f"{datetime.now().isoformat()} SLOW_RENDER: {elapsed:.3f}s\n")
+            f.write(f"  component_count={len(self.children)}\n")
+            f.write(f"  previous_lines={len(self._previous_lines)}\n")
 
     def _handle_input(self, data: str) -> None:
         """Handle keyboard input, passing to focused component."""

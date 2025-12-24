@@ -201,6 +201,46 @@ class REPLEnvironment:
             "depth": f"{self._current_depth}/{self.max_depth}",
         }
 
+    def get_system_prompt(self) -> str | None:
+        """Return RLM-specific system prompt explaining the REPL paradigm."""
+        return """## REPL Environment for Large Context Processing
+
+The input context is stored in a Python variable called `context`. It may be very large (millions of characters). You NEVER see the full context in your messages - instead, you explore it programmatically using the tools below.
+
+### Available Tools
+
+**repl** - Execute Python code to explore and process the context:
+- `context` - the full input text as a string
+- `len(context)` - get the size
+- `context[:1000]` - peek at the beginning
+- `context.split('\\n')` - split into lines
+- `re.findall(pattern, context)` - search with regex
+- `[line for line in context.split('\\n') if 'keyword' in line]` - filter lines
+
+The `re` module is available for regex operations.
+
+**llm_query** - Query a language model for semantic tasks on chunks of context:
+- Use for classification, extraction, summarization of text chunks
+- The prompt should be self-contained (include the text to process)
+- Example: `llm_query("Extract the main topic from: " + chunk)`
+
+**final_answer** - Submit your final answer when you've solved the task.
+
+### Strategy
+
+1. **Peek first**: Start by examining the context structure (`context[:2000]`, `len(context)`)
+2. **Search strategically**: Use regex or string matching to narrow down relevant sections
+3. **Chunk for semantics**: When you need understanding, extract chunks and use llm_query
+4. **Build incrementally**: Store intermediate results in variables
+5. **Answer when confident**: Use final_answer only when you have the answer
+
+### Important
+
+- Don't try to process everything at once - the context may be enormous
+- Use programmatic exploration (grep, slice, filter) before semantic processing
+- The llm_query tool is for semantic tasks; use Python for structural tasks
+- Always call final_answer when you're done"""
+
     def get_tools(self) -> list[Tool]:
         return [
             Tool(
