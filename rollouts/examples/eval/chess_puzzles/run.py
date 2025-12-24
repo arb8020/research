@@ -215,6 +215,12 @@ async def eval_puzzle_beam(
         show_progress=False,
     )
 
+    # Value function: use chess position evaluation from environment
+    async def chess_value_fn(state: AgentState) -> float:
+        if state.environment and hasattr(state.environment, "get_value"):
+            return await state.environment.get_value()
+        return 0.0
+
     try:
         tree = await run_search(
             initial_state=initial_state,
@@ -224,6 +230,7 @@ async def eval_puzzle_beam(
                 n=config.turns_per_step,
                 branch_factor=config.branch_factor,
             ),
+            value_fn=chess_value_fn,
             prune=make_beam_pruner(beam_width=config.beam_width),
             max_steps=config.max_search_steps,
         )
