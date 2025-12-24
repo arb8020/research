@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import trio
 
@@ -100,20 +100,49 @@ async def run_command(
         start_new_session=True,
     )
 
+    async def run_process() -> tuple[bytes, bytes, int]:
+        """Run process and collect output."""
+        stdout_data, stderr_data = await read_process_output(process)
+        returncode = await process.wait()
+        return stdout_data, stderr_data, returncode
+
+    async def cancel_monitor() -> None:
+        """Poll for cancellation and kill process to unblock reads.
+
+        Unlike HTTP streams which respect trio cancellation natively,
+        subprocess pipe reads block until data arrives or pipe closes.
+        We must kill the process to close the pipes and unblock reads.
+        """
+        try:
+            while True:
+                await trio.sleep(0.05)
+        except trio.Cancelled:
+            # Cancellation requested - kill process immediately
+            # This closes pipes and unblocks read_process_output
+            # Shield this so we can finish killing before propagating
+            with trio.CancelScope(shield=True):
+                await kill_process_tree(process)
+            raise
+
     try:
-        with trio.move_on_after(timeout) as timeout_scope:
-            stdout_data, stderr_data = await read_process_output(process)
-            returncode = await process.wait()
+        async with trio.open_nursery() as nursery:
+            nursery.start_soon(cancel_monitor)
+
+            with trio.move_on_after(timeout) as timeout_scope:
+                stdout_data, stderr_data, returncode = await run_process()
+
+            # Success - cancel the monitor
+            nursery.cancel_scope.cancel()
 
         if timeout_scope.cancelled_caught:
-            await kill_process_tree(process)
+            with trio.CancelScope(shield=True):
+                await kill_process_tree(process)
             raise TimeoutError(f"Command timed out after {timeout} seconds")
 
         stdout = stdout_data.decode("utf-8", errors="replace") if stdout_data else ""
         stderr = stderr_data.decode("utf-8", errors="replace") if stderr_data else ""
-
         return returncode, stdout, stderr
 
     except trio.Cancelled:
-        await kill_process_tree(process)
+        # Already killed by cancel_monitor, just re-raise
         raise

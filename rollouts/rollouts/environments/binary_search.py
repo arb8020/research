@@ -111,6 +111,9 @@ class BinarySearchEnvironment(Environment):
                     is_error=True,
                     content=f"{tool_call.name} is not a valid tool",
                 )
+        except trio.Cancelled:
+            # Re-raise cancellation so agent loop can handle it
+            raise
         except Exception as e:
             return ToolResult(tool_call_id=tool_call.id, is_error=True, content="", error=str(e))
 

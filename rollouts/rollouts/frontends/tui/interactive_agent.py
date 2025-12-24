@@ -370,6 +370,22 @@ class InteractiveAgentRunner:
                         if self.agent_cancel_scope:
                             self.escape_pressed = True
                             self.agent_cancel_scope.cancel()
+                            # Show visual feedback that interrupt was received
+                            if self.tui:
+                                self.tui.show_loader(
+                                    "Interrupting...",
+                                    spinner_color_fn=self.tui.theme.accent_fg,
+                                    text_color_fn=self.tui.theme.accent_fg,
+                                )
+                                self.tui.request_render()
+                        else:
+                            # No active agent to interrupt - show message
+                            if self.renderer:
+                                self.renderer.add_system_message(
+                                    "Nothing to interrupt (no active operation)"
+                                )
+                            if self.tui:
+                                self.tui.request_render()
                         continue
 
                     if self.tui:
@@ -526,9 +542,7 @@ class InteractiveAgentRunner:
                     ),
                 )
 
-        async def handle_no_tool_interactive(
-            state: AgentState, rcfg: RunConfig
-        ) -> AgentState:
+        async def handle_no_tool_interactive(state: AgentState, rcfg: RunConfig) -> AgentState:
             """Wait for user input when LLM responds without tool calls."""
             from dataclasses import replace as dc_replace
 
@@ -545,9 +559,7 @@ class InteractiveAgentRunner:
                 user_messages.append(Message(role="user", content=pending_msg))
             self._pending_user_messages = []
 
-            new_trajectory = Trajectory(
-                messages=state.actor.trajectory.messages + user_messages
-            )
+            new_trajectory = Trajectory(messages=state.actor.trajectory.messages + user_messages)
             new_actor = dc_replace(state.actor, trajectory=new_trajectory)
             return dc_replace(state, actor=new_actor)
 
@@ -600,7 +612,7 @@ class InteractiveAgentRunner:
             from rollouts.feedback import run_exit_survey
 
             await run_exit_survey(
-                latest_state, self.endpoint, "yield", session_id=self.session_id
+                latest_state, self.endpoint, "yield", session_id=self.session_id, skip_check=True
             )
         except Exception:
             pass
@@ -636,7 +648,11 @@ class InteractiveAgentRunner:
                 from rollouts.feedback import run_exit_survey
 
                 await run_exit_survey(
-                    final_state, self.endpoint, exit_reason, session_id=self.session_id
+                    final_state,
+                    self.endpoint,
+                    exit_reason,
+                    session_id=self.session_id,
+                    skip_check=True,
                 )
             except Exception:
                 pass
