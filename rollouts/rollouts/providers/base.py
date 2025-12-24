@@ -11,9 +11,42 @@ from rollouts.models import ModelCost
 
 
 class NonRetryableError(Exception):
-    """Exception for errors that should not be retried."""
+    """Exception for errors that should not be retried (e.g., context length, invalid params)."""
 
     pass
+
+
+class ProviderError(Exception):
+    """Exception for provider errors that exhausted retries.
+
+    These errors indicate infrastructure/API issues (rate limits, timeouts, 503s)
+    rather than model failures. They should be excluded from accuracy calculations.
+
+    Usage in evaluation:
+        try:
+            result = await run_agent(...)
+        except ProviderError as e:
+            status = "provider_error"  # excluded from accuracy
+        except Exception as e:
+            status = "failed"  # counts against accuracy
+
+    Attributes:
+        original_error: The underlying exception that caused the failure
+        attempts: Number of retry attempts made before giving up
+        provider: Name of the provider (e.g., "anthropic", "openai")
+    """
+
+    def __init__(
+        self,
+        message: str,
+        original_error: Exception | None = None,
+        attempts: int = 0,
+        provider: str = "",
+    ):
+        super().__init__(message)
+        self.original_error = original_error
+        self.attempts = attempts
+        self.provider = provider
 
 
 class VLLMErrorType(Enum):

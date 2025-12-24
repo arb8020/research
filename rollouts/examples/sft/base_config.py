@@ -165,7 +165,6 @@ async def _train_async(config: BaseConfig) -> list[dict]:
     import logging
 
     import torch
-
     from rollouts._logging import setup_logging
     from rollouts.training import (
         PyTorchTrainingBackend,
@@ -273,10 +272,9 @@ def run_remote(script_path: str, keep_alive: bool = False, node_id: str | None =
     import os
     from pathlib import Path
 
-    from dotenv import load_dotenv
-
     from bifrost.client import BifrostClient
     from broker.client import GPUClient
+    from dotenv import load_dotenv
 
     load_dotenv()
 

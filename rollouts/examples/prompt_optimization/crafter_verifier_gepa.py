@@ -20,12 +20,11 @@ import os
 import re
 
 import trio
-
 from rollouts.dtypes import Endpoint, Metric, Score
 from rollouts.prompt_optimization import (
-    GEPAConfig,
+    EvolutionaryConfig,
     PromptTemplate,
-    run_gepa,
+    run_evolutionary_gepa,
 )
 from rollouts.training.types import Sample
 
@@ -370,7 +369,7 @@ Provide your score (0.0 to 1.0):""",
     )
 
     # ─── GEPA Configuration ───────────────────────────────────────────────
-    config = GEPAConfig(
+    config = EvolutionaryConfig(
         population_size=6,
         generations=3,
         mutation_rate=0.5,
@@ -412,7 +411,7 @@ Provide your score (0.0 to 1.0):""",
                 f"best={max(scores):.3f}, mean={sum(scores) / len(scores):.3f}"
             )
 
-    result = await run_gepa(
+    result = await run_evolutionary_gepa(
         initial_template=initial_template,
         config=config,
         dataset=DATASET,

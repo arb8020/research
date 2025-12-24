@@ -157,12 +157,14 @@ class JsonFrontend:
             self._emit({
                 "type": "user",
                 "message": {
-                    "content": [{
-                        "type": "tool_result",
-                        "tool_use_id": event.tool_call_id,
-                        "content": event.content,
-                        "is_error": event.is_error,
-                    }]
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": event.tool_call_id,
+                            "content": event.content,
+                            "is_error": event.is_error,
+                        }
+                    ]
                 },
             })
 

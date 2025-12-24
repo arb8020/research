@@ -29,7 +29,6 @@ from typing import Any
 
 import pandas as pd
 import trio
-
 from rollouts.dtypes import Endpoint, Message, Metric, Score, Trajectory
 
 logger = logging.getLogger(__name__)
@@ -285,7 +284,9 @@ def create_browsecomp_score_fn(grader_endpoint: Endpoint):
         """
         trajectory = sample.trajectory
         if trajectory is None:
-            return Score(metrics=(Metric("correct", 0.0, weight=1.0, metadata={"error": "no trajectory"}),))
+            return Score(
+                metrics=(Metric("correct", 0.0, weight=1.0, metadata={"error": "no trajectory"}),)
+            )
 
         question = sample.input.get("question", "")
         correct_answer = sample.ground_truth or sample.input.get("answer", "")

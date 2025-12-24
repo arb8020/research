@@ -9,7 +9,6 @@ Requires: python-chess (uv add python-chess)
 
 import pytest
 import trio
-
 from rollouts.dtypes import ToolCall
 
 # Skip all tests if python-chess not available

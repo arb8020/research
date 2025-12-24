@@ -11,7 +11,7 @@ SSH_TARGET = "ubuntu@150.136.217.70:22"
 SSH_KEY_PATH = os.path.expanduser("~/.ssh/id_ed25519")
 
 
-async def test_nvidia_smi():
+async def test_nvidia_smi() -> None:
     """Test nvidia-smi command."""
     print("Testing nvidia-smi...")
 
@@ -25,7 +25,7 @@ async def test_nvidia_smi():
             print(f"✗ nvidia-smi failed: {result.stderr}")
 
 
-async def test_real_streaming():
+async def test_real_streaming() -> None:
     """Test that streaming actually streams (not buffered)."""
     print("\nTesting real-time streaming...")
 
@@ -62,7 +62,7 @@ async def test_real_streaming():
                 print("✗ WARNING: May be buffered. Check timing.")
 
 
-async def test_long_output_streaming():
+async def test_long_output_streaming() -> None:
     """Test streaming with long output (like pip install)."""
     print("\nTesting long output streaming...")
 
@@ -77,7 +77,7 @@ async def test_long_output_streaming():
         print(f"✓ Streamed {line_count} lines")
 
 
-async def test_nvidia_smi_streaming():
+async def test_nvidia_smi_streaming() -> None:
     """Test nvidia-smi with streaming."""
     print("\nTesting nvidia-smi with streaming...")
 
@@ -95,7 +95,7 @@ async def test_nvidia_smi_streaming():
             print("✗ No output from nvidia-smi streaming")
 
 
-async def test_error_streaming():
+async def test_error_streaming() -> None:
     """Test that stderr is captured in streaming."""
     print("\nTesting error output in streaming...")
 
@@ -112,7 +112,7 @@ async def test_error_streaming():
         print(f"✓ Captured {line_count} lines (stdout and stderr combined)")
 
 
-async def main():
+async def main() -> None:
     """Run all GPU and streaming tests."""
     print("=" * 70)
     print("GPU and Streaming Tests")

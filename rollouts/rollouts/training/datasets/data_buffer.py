@@ -497,5 +497,3 @@ class DataBuffer:
         self._state = state_from_dict(state)
         self.epoch_id = self._state.epoch_id
         self.sample_offset = self._state.sample_offset
-
-

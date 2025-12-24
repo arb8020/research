@@ -36,8 +36,8 @@ class SSHConnection:
 
         try:
             port = int(port_str)
-        except ValueError:
-            raise ValueError(f"Invalid port: {port_str}")
+        except ValueError as e:
+            raise ValueError(f"Invalid port: {port_str}") from e
 
         return cls(user=user, host=host, port=port)
 
@@ -49,7 +49,7 @@ class SSHConnection:
         try:
             parts = shlex.split(ssh_cmd)
         except ValueError as e:
-            raise ValueError(f"Failed to parse SSH command: {e}")
+            raise ValueError(f"Failed to parse SSH command: {e}") from e
 
         if not parts or parts[0] != "ssh":
             raise ValueError(f"Invalid SSH command: {ssh_cmd}")
@@ -64,8 +64,8 @@ class SSHConnection:
                 try:
                     port = int(parts[i + 1])
                     i += 2
-                except ValueError:
-                    raise ValueError(f"Invalid port in SSH command: {parts[i + 1]}")
+                except ValueError as e:
+                    raise ValueError(f"Invalid port in SSH command: {parts[i + 1]}") from e
             elif "@" in parts[i]:
                 user_host = parts[i]
                 break
@@ -92,7 +92,7 @@ class RemoteConfig:
     user: str
     key_path: str
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         # Tiger Style assertions
         assert isinstance(self.host, str) and len(self.host) > 0, "host must be non-empty string"
         assert isinstance(self.port, int) and 0 < self.port < 65536, (
@@ -112,7 +112,7 @@ class ExecResult:
     stderr: str
     exit_code: int
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         # Tiger Style assertions
         assert isinstance(self.stdout, str), "stdout must be string"
         assert isinstance(self.stderr, str), "stderr must be string"
@@ -148,7 +148,7 @@ class RemotePath:
 
     path: str
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         # Ensure path is absolute for consistency
         if not self.path.startswith("/") and not self.path.startswith("~"):
             self.path = f"./{self.path}"
@@ -160,10 +160,14 @@ class BifrostError(Exception):
     pass
 
 
-class ConnectionError(BifrostError):
+class SSHConnectionError(BifrostError):
     """SSH connection related errors."""
 
     pass
+
+
+# Backwards compatibility alias (deprecated - use SSHConnectionError)
+ConnectionError = SSHConnectionError  # noqa: A001
 
 
 class JobError(BifrostError):
@@ -193,7 +197,7 @@ class EnvironmentVariables:
 
     variables: dict[str, str]
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         # Tiger Style: assert all inputs
         assert isinstance(self.variables, dict), "variables must be dict"
 
@@ -250,7 +254,7 @@ class ProcessSpec:
     env: dict[str, str] | None = None
     cuda_device_ids: tuple[int, ...] | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         assert self.command, "command cannot be empty"
         assert isinstance(self.args, tuple), "args must be a tuple"
 
@@ -298,7 +302,7 @@ class JobInfo:
     log_file: str | None = None
     workspace: str | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         assert self.name, "name cannot be empty"
         assert self.tmux_session, "tmux_session cannot be empty"
 
@@ -321,7 +325,7 @@ class ServerInfo:
     health_endpoint: str | None = None
     workspace: str | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         assert self.name, "name cannot be empty"
         assert self.tmux_session, "tmux_session cannot be empty"
 

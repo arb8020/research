@@ -5,7 +5,6 @@ import tempfile
 from pathlib import Path
 
 import trio
-
 from rollouts.dtypes import ToolCall
 from rollouts.environments.git_worktree import GitWorktreeEnvironment
 

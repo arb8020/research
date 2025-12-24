@@ -31,7 +31,9 @@ def generate_haystack(num_lines: int = 1000, seed: int = 42) -> tuple[str, int]:
     # Hide the needle in the middle third
     magic_number = random.randint(100000, 999999)
     needle_pos = random.randint(num_lines // 3, 2 * num_lines // 3)
-    lines[needle_pos] = f"[{needle_pos:08d}] SECRET: The magic number is {magic_number}. Remember this."
+    lines[needle_pos] = (
+        f"[{needle_pos:08d}] SECRET: The magic number is {magic_number}. Remember this."
+    )
 
     return "\n".join(lines), magic_number
 
@@ -40,8 +42,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Interactive RLM demo")
     parser.add_argument("--lines", type=int, default=1000, help="Lines in haystack (default: 1000)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    parser.add_argument("--print", "-p", dest="print_mode", action="store_true", help="Non-interactive mode")
-    parser.add_argument("--preset", type=str, default=None, help="Use a preset (default: none, uses --env repl)")
+    parser.add_argument(
+        "--print", "-p", dest="print_mode", action="store_true", help="Non-interactive mode"
+    )
+    parser.add_argument(
+        "--preset", type=str, default=None, help="Use a preset (default: none, uses --env repl)"
+    )
     args = parser.parse_args()
 
     # Generate haystack
@@ -67,7 +73,10 @@ def main() -> int:
     cmd.extend(["--context-file", context_file])
 
     if args.print_mode:
-        cmd.extend(["-p", "Find the magic number hidden in the context. Use the repl tool to search."])
+        cmd.extend([
+            "-p",
+            "Find the magic number hidden in the context. Use the repl tool to search.",
+        ])
 
     print(f"Running: {' '.join(cmd)}")
     print("=" * 60)

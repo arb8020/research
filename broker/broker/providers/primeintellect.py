@@ -59,10 +59,10 @@ def _make_api_request(
         )
         response.raise_for_status()
     except requests.Timeout:
-        logger.error("Prime Intellect API request timed out")
+        logger.exception("Prime Intellect API request timed out")
         raise
     except requests.RequestException as exc:
-        logger.error(f"Prime Intellect API request failed: {exc}")
+        logger.exception(f"Prime Intellect API request failed: {exc}")
         raise
 
     # Handle empty responses (e.g., DELETE operations)
@@ -170,7 +170,7 @@ def search_gpu_offers(
         return offers
 
     except Exception as e:
-        logger.error(f"Failed to search Prime Intellect GPU offers: {e}")
+        logger.exception(f"Failed to search Prime Intellect GPU offers: {e}")
         return []
 
 
@@ -247,7 +247,7 @@ def provision_instance(
         return _parse_pod_to_instance(data, api_key=api_key)
 
     except Exception as e:
-        logger.error(f"Failed to provision Prime Intellect instance: {e}")
+        logger.exception(f"Failed to provision Prime Intellect instance: {e}")
         return None
 
 
@@ -262,7 +262,7 @@ def get_instance_details(instance_id: str, api_key: str | None = None) -> GPUIns
         return _parse_pod_to_instance(data, api_key=api_key)
 
     except Exception as e:
-        logger.error(f"Failed to get Prime Intellect instance details: {e}")
+        logger.exception(f"Failed to get Prime Intellect instance details: {e}")
         return None
 
 
@@ -287,7 +287,7 @@ def list_instances(api_key: str | None = None) -> list[GPUInstance]:
         return instances
 
     except Exception as e:
-        logger.error(f"Failed to list Prime Intellect instances: {e}")
+        logger.exception(f"Failed to list Prime Intellect instances: {e}")
         return []
 
 
@@ -299,7 +299,7 @@ def terminate_instance(instance_id: str, api_key: str | None = None) -> bool:
         return True
 
     except Exception as e:
-        logger.error(f"Failed to terminate Prime Intellect instance: {e}")
+        logger.exception(f"Failed to terminate Prime Intellect instance: {e}")
         return False
 
 
@@ -375,7 +375,7 @@ def get_user_balance(api_key: str | None = None) -> dict[str, Any] | None:
         }
 
     except Exception as e:
-        logger.error(f"Failed to get Prime Intellect user balance: {e}")
+        logger.exception(f"Failed to get Prime Intellect user balance: {e}")
         return None
 
 
@@ -471,7 +471,7 @@ def _test_ssh_connectivity(instance) -> bool:
             logger.warning(f"SSH test failed: {result.stderr}")
             return False
     except Exception as e:
-        logger.error(f"SSH connection error: {e}")
+        logger.exception(f"SSH connection error: {e}")
         return False
 
 

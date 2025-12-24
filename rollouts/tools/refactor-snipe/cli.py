@@ -124,7 +124,7 @@ def extract_function(
         result = refactor.execute()
     except Exception as e:
         typer.secho(f"Error: {e}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(1) from None from None
+        raise typer.Exit(1) from None
 
     original = path.read_text()
     modified = apply_extract_function_edits(path, result.edits)

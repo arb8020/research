@@ -35,7 +35,7 @@ class ProviderProtocol(Protocol):
         """
         ...
 
-    def get_fresh_instance(self, instance_id: str, api_key: str):
+    def get_fresh_instance(self, instance_id: str, api_key: str) -> None:
         """Get fresh instance data from provider API.
 
         Args:

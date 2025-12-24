@@ -17,6 +17,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 import trio
+from rollouts.agents import resume_session, run_agent
+from rollouts.store import FileSessionStore
 
 from rollouts import (
     Actor,
@@ -32,8 +34,6 @@ from rollouts import (
     ToolResult,
     Trajectory,
 )
-from rollouts.agents import resume_session, run_agent
-from rollouts.store import FileSessionStore
 
 # --- Test Environment: Calculator with disableable tools ---
 
@@ -226,8 +226,9 @@ async def run_with_script(
 
     This patches the rollout function to return scripted responses.
     """
-    from rollouts import agents
     from rollouts.dtypes import TextContent, ToolCallContent
+
+    from rollouts import agents
 
     llm = ScriptedLLM(script)
     original_rollout = agents.rollout

@@ -12,7 +12,6 @@ from shared.validation import validate_ssh_key_path, validate_timeout
 
 from . import git_sync
 from .types import (
-    ConnectionError,
     CopyResult,
     EnvironmentVariables,
     ExecResult,
@@ -22,6 +21,7 @@ from .types import (
     RemoteConfig,
     ServerInfo,
     SSHConnection,
+    SSHConnectionError,
     TransferError,
 )
 from .validation import generate_job_id, validate_bootstrap_cmd
@@ -52,7 +52,7 @@ class BifrostClient:
         ssh_key_path: str,
         timeout: int = 30,
         progress_callback: Callable[[str, int, int], None] | None = None,
-    ):
+    ) -> None:
         """
         Initialize Bifrost client.
 
@@ -89,7 +89,9 @@ class BifrostClient:
         self._last_workspace: str | None = None
 
     @retry(max_attempts=3, delay=2, backoff=2, exceptions=(Exception,))
-    def _establish_connection(self, ssh_client: paramiko.SSHClient, private_key=None) -> None:
+    def _establish_connection(
+        self, ssh_client: paramiko.SSHClient, private_key: paramiko.PKey | None = None
+    ) -> None:
         """Establish SSH connection with retry logic and keepalive.
 
         This is at an external boundary (network I/O) so retry is appropriate.
@@ -171,7 +173,7 @@ class BifrostClient:
                             continue
 
                     if not private_key:
-                        raise ConnectionError(f"Could not parse SSH key at {self.ssh_key_path}")
+                        raise SSHConnectionError(f"Could not parse SSH key at {self.ssh_key_path}")
 
                     # Connect with retry logic
                     self._establish_connection(self._ssh_client, private_key)
@@ -181,7 +183,7 @@ class BifrostClient:
 
                 self.logger.debug(f"Connected to {self.ssh}")
             except Exception as e:
-                raise ConnectionError(f"Failed to connect to {self.ssh}: {e}")
+                raise SSHConnectionError(f"Failed to connect to {self.ssh}: {e}") from e
 
         # Tiger Style: Assert post-conditions
         assert self._ssh_client is not None, "SSH client must be initialized"
@@ -203,7 +205,7 @@ class BifrostClient:
             with open(key_path) as f:
                 return f.read()
         except Exception as e:
-            raise ConnectionError(f"Failed to load SSH key from {key_path}: {e}")
+            raise SSHConnectionError(f"Failed to load SSH key from {key_path}: {e}") from e
 
     def _build_command_with_env(
         self, command: str, working_dir: str, env: EnvironmentVariables | None
@@ -272,7 +274,7 @@ class BifrostClient:
             Path to deployed workspace (absolute, tilde-expanded)
 
         Raises:
-            ConnectionError: SSH connection failed
+            SSHConnectionError: SSH connection failed
             RuntimeError: Deployment failed
 
         Note:
@@ -330,7 +332,7 @@ class BifrostClient:
             ExecResult with stdout, stderr, exit_code
 
         Raises:
-            ConnectionError: SSH connection failed or timeout exceeded
+            SSHConnectionError: SSH connection failed or timeout exceeded
         """
         try:
             ssh_client = self._get_ssh_client()
@@ -370,15 +372,15 @@ class BifrostClient:
                     stderr=stderr.read().decode(),
                     exit_code=exit_code,
                 )
-            except TimeoutError:
-                raise ConnectionError(f"Command timed out after {timeout}s: {command}")
+            except TimeoutError as e:
+                raise SSHConnectionError(f"Command timed out after {timeout}s: {command}") from e
 
         except Exception as e:
-            if isinstance(e, ConnectionError):
+            if isinstance(e, SSHConnectionError):
                 raise
-            raise ConnectionError(f"Execution failed: {e}")
+            raise SSHConnectionError(f"Execution failed: {e}") from e
 
-    def exec_stream(
+    def exec_stream(  # noqa: PLR1702 - streaming requires nested try/while/if for proper cleanup
         self,
         command: str,
         env: EnvironmentVariables | dict[str, str] | None = None,
@@ -401,7 +403,7 @@ class BifrostClient:
             Lines of output (stdout and stderr interleaved) as they're produced
 
         Raises:
-            ConnectionError: SSH connection failed or timeout exceeded
+            SSHConnectionError: SSH connection failed or timeout exceeded
         """
         try:
             ssh_client = self._get_ssh_client()
@@ -430,7 +432,7 @@ class BifrostClient:
             # Open interactive channel to stream combined stdout/stderr in real-time
             transport = ssh_client.get_transport()
             if transport is None:
-                raise ConnectionError("SSH transport is not available")
+                raise SSHConnectionError("SSH transport is not available")
 
             channel = None
             try:
@@ -464,8 +466,10 @@ class BifrostClient:
                             break
 
                         time.sleep(0.1)
-                    except TimeoutError:
-                        raise ConnectionError(f"Command timed out after {timeout}s: {command}")
+                    except TimeoutError as e:
+                        raise SSHConnectionError(
+                            f"Command timed out after {timeout}s: {command}"
+                        ) from e
 
                 # Drain any remaining data after command exit
                 while channel.recv_ready():
@@ -488,9 +492,9 @@ class BifrostClient:
                     channel.close()
 
         except Exception as e:
-            if isinstance(e, ConnectionError):
+            if isinstance(e, SSHConnectionError):
                 raise
-            raise ConnectionError(f"Streaming execution failed: {e}")
+            raise SSHConnectionError(f"Streaming execution failed: {e}") from e
 
     def expand_path(self, path: str) -> str:
         """Expand ~ and environment variables in path to absolute path.
@@ -505,7 +509,7 @@ class BifrostClient:
             Absolute expanded path on remote machine
 
         Raises:
-            ConnectionError: SSH connection failed
+            SSHConnectionError: SSH connection failed
 
         Example:
             workspace = client.push(workspace_path="~/.bifrost/workspaces/foo")
@@ -759,7 +763,7 @@ class BifrostClient:
             CopyResult with transfer statistics
 
         Raises:
-            ConnectionError: SSH connection failed
+            SSHConnectionError: SSH connection failed
             TransferError: File transfer failed
         """
         start_time = time.time()
@@ -823,7 +827,7 @@ class BifrostClient:
                 sftp.close()
 
         except Exception as e:
-            if isinstance(e, (ConnectionError, TransferError)):
+            if isinstance(e, (SSHConnectionError, TransferError)):
                 raise
             duration = time.time() - start_time
             return CopyResult(
@@ -834,7 +838,7 @@ class BifrostClient:
                 error_message=str(e),
             )
 
-    def _copy_file(self, sftp, remote_path: str, local_path: str) -> int:
+    def _copy_file(self, sftp: paramiko.SFTPClient, remote_path: str, local_path: str) -> int:
         """Copy single file and return bytes transferred.
 
         IMPORTANT: This method receives paths that may contain tilde (~).
@@ -855,7 +859,7 @@ class BifrostClient:
         file_size = sftp.stat(remote_path).st_size
 
         # Define progress callback wrapper
-        def progress_wrapper(transferred, total):
+        def progress_wrapper(transferred: int, total: int) -> None:
             if self.progress_callback:
                 self.progress_callback("file", transferred, total)
 
@@ -868,7 +872,11 @@ class BifrostClient:
         return file_size
 
     def _copy_directory(
-        self, sftp, ssh_client, remote_path: str, local_path: str
+        self,
+        sftp: paramiko.SFTPClient,
+        ssh_client: paramiko.SSHClient,
+        remote_path: str,
+        local_path: str,
     ) -> tuple[int, int]:
         """Copy directory recursively and return (files_copied, total_bytes)."""
         # Get directory listing (expand tilde if present)
@@ -921,7 +929,7 @@ class BifrostClient:
             CopyResult with transfer statistics
 
         Raises:
-            ConnectionError: SSH connection failed
+            SSHConnectionError: SSH connection failed
             TransferError: File transfer failed
         """
         start_time = time.time()
@@ -967,7 +975,7 @@ class BifrostClient:
                 sftp.close()
 
         except Exception as e:
-            if isinstance(e, (ConnectionError, TransferError)):
+            if isinstance(e, (SSHConnectionError, TransferError)):
                 raise
             duration = time.time() - start_time
             return CopyResult(
@@ -978,7 +986,7 @@ class BifrostClient:
                 error_message=str(e),
             )
 
-    def _create_remote_dir(self, sftp, remote_dir: str):
+    def _create_remote_dir(self, sftp: paramiko.SFTPClient, remote_dir: str) -> None:
         """Create remote directory recursively."""
         try:
             sftp.stat(remote_dir)  # Check if directory exists
@@ -993,7 +1001,7 @@ class BifrostClient:
                 # Directory might have been created by another process
                 pass
 
-    def _upload_file(self, sftp, local_path: str, remote_path: str) -> int:
+    def _upload_file(self, sftp: paramiko.SFTPClient, local_path: str, remote_path: str) -> int:
         """Upload single file and return bytes transferred."""
         # Create remote directory if needed
         remote_dir = os.path.dirname(remote_path)
@@ -1005,7 +1013,7 @@ class BifrostClient:
         file_size = os.path.getsize(local_path)
 
         # Define progress callback wrapper
-        def progress_wrapper(transferred, total):
+        def progress_wrapper(transferred: int, total: int) -> None:
             if self.progress_callback:
                 self.progress_callback("file", transferred, total)
 
@@ -1018,7 +1026,11 @@ class BifrostClient:
         return file_size
 
     def _upload_directory(
-        self, sftp, ssh_client, local_path: str, remote_path: str
+        self,
+        sftp: paramiko.SFTPClient,
+        ssh_client: paramiko.SSHClient,
+        local_path: str,
+        remote_path: str,
     ) -> tuple[int, int]:
         """Upload directory recursively and return (files_uploaded, total_bytes)."""
         local_path_obj = Path(local_path)
@@ -1061,16 +1073,21 @@ class BifrostClient:
         """
         return self.copy_files(remote_path, local_path, recursive)
 
-    def close(self):
+    def close(self) -> None:
         """Close SSH connection."""
         if self._ssh_client:
             self._ssh_client.close()
             self._ssh_client = None
 
-    def __enter__(self):
+    def __enter__(self) -> "BifrostClient":
         """Context manager entry."""
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: object,
+    ) -> None:
         """Context manager exit."""
         self.close()

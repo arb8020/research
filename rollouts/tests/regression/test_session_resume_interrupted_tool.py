@@ -27,11 +27,11 @@ from rollouts.dtypes import (
     ThinkingContent,
     ToolCallContent,
 )
-from rollouts.transform_messages import transform_messages
 from rollouts.providers.anthropic import (
-    _message_to_anthropic,
     _merge_consecutive_api_messages,
+    _message_to_anthropic,
 )
+from rollouts.transform_messages import transform_messages
 
 
 def test_session_resume_message_order():
@@ -102,7 +102,7 @@ def test_session_resume_message_order():
     for m in transformed:
         if m.role == "system":
             continue  # System prompt handled separately
-        elif m.role == "tool":
+        if m.role == "tool":
             if isinstance(m.content, str):
                 tool_result_text = m.content
             else:
@@ -130,7 +130,9 @@ def test_session_resume_message_order():
 
     print("\n=== API messages before merge ===")
     for i, m in enumerate(api_messages):
-        print(f"{i}: role={m['role']}, content_types={[c.get('type') if isinstance(c, dict) else 'text' for c in (m['content'] if isinstance(m['content'], list) else [m['content']])]}")
+        print(
+            f"{i}: role={m['role']}, content_types={[c.get('type') if isinstance(c, dict) else 'text' for c in (m['content'] if isinstance(m['content'], list) else [m['content']])]}"
+        )
 
     print("\n=== API messages after merge ===")
     for i, m in enumerate(merged):
@@ -160,7 +162,9 @@ def test_session_resume_message_order():
 
     # Second message should be assistant with tool_use
     second_msg = merged[1]
-    assert second_msg["role"] == "assistant", f"Second message should be assistant, got {second_msg['role']}"
+    assert second_msg["role"] == "assistant", (
+        f"Second message should be assistant, got {second_msg['role']}"
+    )
 
     # Third message should be user with tool_result
     third_msg = merged[2]
@@ -171,8 +175,7 @@ def test_session_resume_message_order():
     assert isinstance(third_content, list), "Third message content should be a list"
 
     has_tool_result = any(
-        isinstance(c, dict) and c.get("type") == "tool_result"
-        for c in third_content
+        isinstance(c, dict) and c.get("type") == "tool_result" for c in third_content
     )
     has_text = any(
         isinstance(c, dict) and c.get("type") == "text" and "what happened" in c.get("text", "")
@@ -250,7 +253,10 @@ def test_tool_result_position_in_merged_messages():
                 if isinstance(block, dict):
                     if block.get("type") == "tool_use" and block.get("id") == "tool_abc123":
                         tool_use_idx = i
-                    if block.get("type") == "tool_result" and block.get("tool_use_id") == "tool_abc123":
+                    if (
+                        block.get("type") == "tool_result"
+                        and block.get("tool_use_id") == "tool_abc123"
+                    ):
                         tool_result_idx = i
 
     assert tool_use_idx is not None, "Should find tool_use"
@@ -321,7 +327,7 @@ def test_interrupt_then_continue_scenario():
     for m in transformed:
         if m.role == "system":
             continue
-        elif m.role == "tool":
+        if m.role == "tool":
             content = m.content if isinstance(m.content, str) else ""
             api_messages.append({
                 "role": "user",

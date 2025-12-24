@@ -59,10 +59,10 @@ def _make_api_request(
         )
         response.raise_for_status()
     except requests.Timeout:
-        logger.error("Lambda Labs API request timed out")
+        logger.exception("Lambda Labs API request timed out")
         raise
     except requests.RequestException as exc:
-        logger.error(f"Lambda Labs API request failed: {exc}")
+        logger.exception(f"Lambda Labs API request failed: {exc}")
         raise
 
     # Handle empty responses (e.g., DELETE operations)
@@ -175,7 +175,7 @@ def search_gpu_offers(
         return offers
 
     except Exception as e:
-        logger.error(f"Failed to search Lambda Labs GPU offers: {e}")
+        logger.exception(f"Failed to search Lambda Labs GPU offers: {e}")
         return []
 
 
@@ -279,7 +279,7 @@ def provision_instance(
         )
 
     except Exception as e:
-        logger.error(f"Failed to provision Lambda Labs instance: {e}")
+        logger.exception(f"Failed to provision Lambda Labs instance: {e}")
         return None
 
 
@@ -295,7 +295,7 @@ def get_instance_details(instance_id: str, api_key: str | None = None) -> GPUIns
         return _parse_instance_to_gpu_instance(instance_data, api_key=api_key)
 
     except Exception as e:
-        logger.error(f"Failed to get Lambda Labs instance details: {e}")
+        logger.exception(f"Failed to get Lambda Labs instance details: {e}")
         return None
 
 
@@ -322,7 +322,7 @@ def list_instances(api_key: str | None = None) -> list[GPUInstance]:
         return instances
 
     except Exception as e:
-        logger.error(f"Failed to list Lambda Labs instances: {e}")
+        logger.exception(f"Failed to list Lambda Labs instances: {e}")
         return []
 
 
@@ -338,7 +338,7 @@ def terminate_instance(instance_id: str, api_key: str | None = None) -> bool:
         return True
 
     except Exception as e:
-        logger.error(f"Failed to terminate Lambda Labs instance: {e}")
+        logger.exception(f"Failed to terminate Lambda Labs instance: {e}")
         return False
 
 
@@ -423,7 +423,7 @@ def get_user_balance(api_key: str | None = None) -> dict[str, Any] | None:
         }
 
     except Exception as e:
-        logger.error(f"Failed to get Lambda Labs user balance: {e}")
+        logger.exception(f"Failed to get Lambda Labs user balance: {e}")
         return None
 
 
@@ -526,7 +526,7 @@ def _test_ssh_connectivity(instance) -> bool:
             logger.warning(f"SSH test failed: {result.stderr}")
             return False
     except Exception as e:
-        logger.error(f"SSH connection error: {e}")
+        logger.exception(f"SSH connection error: {e}")
         return False
 
 

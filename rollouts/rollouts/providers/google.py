@@ -462,6 +462,8 @@ async def rollout_google(
             return final_message, usage_data
 
         except Exception as e:
+            from rollouts.providers.base import ProviderError
+
             logger.error(
                 f"Google Generative AI API call failed: {e}\n  Model: {actor.endpoint.model}",
                 extra={
@@ -469,7 +471,12 @@ async def rollout_google(
                     "model": actor.endpoint.model,
                 },
             )
-            raise
+            raise ProviderError(
+                f"Google API error: {e}",
+                original_error=e,
+                attempts=1,  # Google SDK doesn't expose retry count
+                provider="google",
+            ) from e
 
     # Run the asyncio function from trio context using trio-asyncio loop
     async with trio_asyncio.open_loop() as _loop:

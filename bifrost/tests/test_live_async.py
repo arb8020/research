@@ -12,7 +12,7 @@ SSH_TARGET = "ubuntu@150.136.217.70:22"
 SSH_KEY_PATH = os.path.expanduser("~/.ssh/id_ed25519")
 
 
-async def test_basic_connection():
+async def test_basic_connection() -> None:
     """Test basic connection and command execution."""
     print(f"Testing connection to {SSH_TARGET}...")
 
@@ -37,7 +37,7 @@ async def test_basic_connection():
         print("\n✓ All basic tests passed!")
 
 
-async def test_exec_stream():
+async def test_exec_stream() -> None:
     """Test streaming command output."""
     print(f"\nTesting exec_stream to {SSH_TARGET}...")
 
@@ -54,14 +54,14 @@ async def test_exec_stream():
         print(f"✓ Streamed {line_count} lines successfully")
 
 
-async def test_parallel_commands():
+async def test_parallel_commands() -> None:
     """Test running multiple commands in parallel using trio nursery."""
     print("\nTesting parallel command execution...")
 
     async with AsyncBifrostClient(ssh_connection=SSH_TARGET, ssh_key_path=SSH_KEY_PATH) as client:
         results = {}
 
-        async def run_command(name: str, cmd: str):
+        async def run_command(name: str, cmd: str) -> None:
             result = await client.exec(cmd)
             results[name] = result.stdout.strip()
             print(f"✓ {name}: {result.stdout.strip()[:50]}...")
@@ -78,7 +78,7 @@ async def test_parallel_commands():
             print(f"  {name}: {output}")
 
 
-async def test_file_operations():
+async def test_file_operations() -> None:
     """Test file upload/download operations."""
     print("\nTesting file operations...")
 
@@ -120,7 +120,7 @@ async def test_file_operations():
         print("✓ Cleaned up test files")
 
 
-async def test_timeout():
+async def test_timeout() -> None:
     """Test trio timeout functionality."""
     print("\nTesting timeout mechanism...")
 
@@ -138,7 +138,7 @@ async def test_timeout():
             print(f"✓ Timeout raised exception: {e}")
 
 
-async def test_expand_path():
+async def test_expand_path() -> None:
     """Test path expansion."""
     print("\nTesting path expansion...")
 
@@ -150,7 +150,7 @@ async def test_expand_path():
         assert "~" not in expanded
 
 
-async def main():
+async def main() -> None:
     """Run all tests."""
     print("=" * 70)
     print("AsyncBifrostClient Live Tests")

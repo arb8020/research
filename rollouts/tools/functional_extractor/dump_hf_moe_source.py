@@ -3,6 +3,7 @@
 
 Uses read_module_source() to get the actual forward() implementation.
 """
+
 from __future__ import annotations
 
 import os
@@ -61,6 +62,7 @@ def main():
 
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--gpu-id", type=str)
     parser.add_argument("--keep-alive", action="store_true")
@@ -69,6 +71,7 @@ if __name__ == "__main__":
 
     if args.remote:
         from tools.functional_extractor.verify import run_on_gpu
+
         run_on_gpu(__file__, gpu_id=args.gpu_id, keep_alive=args.keep_alive)
     else:
         main()

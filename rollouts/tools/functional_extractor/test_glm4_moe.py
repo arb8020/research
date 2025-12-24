@@ -294,14 +294,19 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
                 def make_hook(name):
                     def hook(module, inp, out):
                         if isinstance(inp, tuple) and len(inp) > 0:
-                            moe_captures[name + "_in"] = inp[0].clone() if hasattr(inp[0], 'clone') else inp[0]
-                        elif hasattr(inp, 'clone'):
+                            moe_captures[name + "_in"] = (
+                                inp[0].clone() if hasattr(inp[0], "clone") else inp[0]
+                            )
+                        elif hasattr(inp, "clone"):
                             moe_captures[name + "_in"] = inp.clone()
                         if isinstance(out, tuple):
                             # gate returns (topk_indices, topk_weights)
-                            moe_captures[name + "_out"] = tuple(x.clone() if hasattr(x, 'clone') else x for x in out)
-                        elif hasattr(out, 'clone'):
+                            moe_captures[name + "_out"] = tuple(
+                                x.clone() if hasattr(x, "clone") else x for x in out
+                            )
+                        elif hasattr(out, "clone"):
                             moe_captures[name + "_out"] = out.clone()
+
                     return hook
 
                 hooks = []
@@ -311,7 +316,11 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
                 hooks.append(hf_layer.mlp.gate.register_forward_hook(make_hook("gate")))
 
                 # Re-run the layer forward to capture via hooks
-                layer_i_input = hf_intermediates[f"layer_{i - 1}"].cuda() if i > 0 else hf_intermediates["embed"].cuda()
+                layer_i_input = (
+                    hf_intermediates[f"layer_{i - 1}"].cuda()
+                    if i > 0
+                    else hf_intermediates["embed"].cuda()
+                )
                 with torch.no_grad():
                     _ = hf_layer(layer_i_input, position_embeddings=(cos, sin))
 
@@ -418,15 +427,24 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
                         # Compute functional routing
                         bias_key = f"{prefix}.gate.e_score_correction_bias"
                         print(f"      e_score_correction_bias shape: {weights_gpu[bias_key].shape}")
-                        print(f"      e_score_correction_bias sample: {weights_gpu[bias_key][:5].tolist()}")
+                        print(
+                            f"      e_score_correction_bias sample: {weights_gpu[bias_key][:5].tolist()}"
+                        )
                         print(f"      hf_moe_input shape: {hf_moe_input.shape}")
                         print(f"      hf_moe_input sample: {hf_moe_input[0, 0, :5].tolist()}")
                         # Also check gate_input if captured
                         if f"gate_{i}_input" in hf_intermediates:
                             gate_in = hf_intermediates[f"gate_{i}_input"].cuda()
                             print(f"      gate_input shape: {gate_in.shape}")
-                            print(f"      gate_input sample: {gate_in[0, :5].tolist()}")  # gate_in is already flattened
-                            moe_vs_gate_diff = (hf_moe_input.view(-1, hf_moe_input.shape[-1]) - gate_in).abs().max().item()
+                            print(
+                                f"      gate_input sample: {gate_in[0, :5].tolist()}"
+                            )  # gate_in is already flattened
+                            moe_vs_gate_diff = (
+                                (hf_moe_input.view(-1, hf_moe_input.shape[-1]) - gate_in)
+                                .abs()
+                                .max()
+                                .item()
+                            )
                             print(f"      moe_in vs gate_in diff: {moe_vs_gate_diff:.2e}")
                         # Call functional router
                         func_topk_idx, func_topk_weights = moe_router(
@@ -442,13 +460,16 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
                             # Instead, manually replicate HF's gate forward
                             hf_hidden = hf_moe_input.view(-1, hf_moe_input.shape[-1])
                             hf_router_logits = torch.nn.functional.linear(
-                                hf_hidden.float(),
-                                weights_gpu[f"{prefix}.gate.weight"].float()
+                                hf_hidden.float(), weights_gpu[f"{prefix}.gate.weight"].float()
                             )
                             hf_scores = hf_router_logits.sigmoid()
                             hf_scores_for_choice = hf_scores + weights_gpu[bias_key]
-                            direct_topk_idx = torch.topk(hf_scores_for_choice, k=8, dim=-1, sorted=False)[1]
-                            print(f"      Direct HF-style topk: {direct_topk_idx[0].sort()[0].tolist()}")
+                            direct_topk_idx = torch.topk(
+                                hf_scores_for_choice, k=8, dim=-1, sorted=False
+                            )[1]
+                            print(
+                                f"      Direct HF-style topk: {direct_topk_idx[0].sort()[0].tolist()}"
+                            )
 
                         # Compare topk indices if captured
                         if f"moe_{i}_topk_idx" in hf_intermediates:
@@ -465,51 +486,84 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
                                 print(f"        Func experts: {func_topk_idx[0].tolist()}")
                                 # Debug: check bias at those indices
                                 bias = weights_gpu[bias_key]
-                                print(f"        Bias at HF experts: {[bias[idx].item() for idx in hf_topk_idx[0].tolist()]}")
-                                print(f"        Bias at Func experts: {[bias[idx].item() for idx in func_topk_idx[0].tolist()]}")
+                                print(
+                                    f"        Bias at HF experts: {[bias[idx].item() for idx in hf_topk_idx[0].tolist()]}"
+                                )
+                                print(
+                                    f"        Bias at Func experts: {[bias[idx].item() for idx in func_topk_idx[0].tolist()]}"
+                                )
 
                             # Compare routing weights
                             weight_diff = (hf_topk_weights - func_topk_weights).abs().max().item()
                             print(f"      Router weights diff: max_diff={weight_diff:.2e}")
                             print(f"        HF weights sample: {hf_topk_weights[0, :3].tolist()}")
-                            print(f"        Func weights sample: {func_topk_weights[0, :3].tolist()}")
+                            print(
+                                f"        Func weights sample: {func_topk_weights[0, :3].tolist()}"
+                            )
                         else:
                             # Compare router logits if captured (older style)
                             if f"moe_{i}_router_logits" in hf_intermediates:
                                 hf_router_logits = hf_intermediates[f"moe_{i}_router_logits"].cuda()
                                 func_router_logits = F.linear(
                                     hf_moe_input.view(-1, hf_moe_input.shape[-1]).float(),
-                                    weights_gpu[f"{prefix}.gate.weight"].float()
+                                    weights_gpu[f"{prefix}.gate.weight"].float(),
                                 )
-                                router_diff = (hf_router_logits.view(-1, N_ROUTED_EXPERTS) - func_router_logits).abs().max().item()
+                                router_diff = (
+                                    (
+                                        hf_router_logits.view(-1, N_ROUTED_EXPERTS)
+                                        - func_router_logits
+                                    )
+                                    .abs()
+                                    .max()
+                                    .item()
+                                )
                                 print(f"      Router logits: max_diff={router_diff:.2e}")
-                            print(f"      Func routing: experts={func_topk_idx[0].tolist()}, weights={func_topk_weights[0, :3].tolist()}")
+                            print(
+                                f"      Func routing: experts={func_topk_idx[0].tolist()}, weights={func_topk_weights[0, :3].tolist()}"
+                            )
 
                         # Compare shared expert
                         if f"moe_{i}_shared_out" in hf_intermediates:
                             hf_shared = hf_intermediates[f"moe_{i}_shared_out"].cuda()
                             func_shared = dense_mlp(
                                 hf_moe_input,
-                                gate_weight=weights_gpu[f"{prefix}.shared_experts.gate_proj.weight"],
+                                gate_weight=weights_gpu[
+                                    f"{prefix}.shared_experts.gate_proj.weight"
+                                ],
                                 up_weight=weights_gpu[f"{prefix}.shared_experts.up_proj.weight"],
-                                down_weight=weights_gpu[f"{prefix}.shared_experts.down_proj.weight"],
+                                down_weight=weights_gpu[
+                                    f"{prefix}.shared_experts.down_proj.weight"
+                                ],
                             )
                             shared_diff = (hf_shared - func_shared).abs().max().item()
                             print(f"      Shared expert: max_diff={shared_diff:.2e}")
                         else:
                             func_shared = dense_mlp(
                                 hf_moe_input,
-                                gate_weight=weights_gpu[f"{prefix}.shared_experts.gate_proj.weight"],
+                                gate_weight=weights_gpu[
+                                    f"{prefix}.shared_experts.gate_proj.weight"
+                                ],
                                 up_weight=weights_gpu[f"{prefix}.shared_experts.up_proj.weight"],
-                                down_weight=weights_gpu[f"{prefix}.shared_experts.down_proj.weight"],
+                                down_weight=weights_gpu[
+                                    f"{prefix}.shared_experts.down_proj.weight"
+                                ],
                             )
 
                         # Compare routed experts
                         if f"moe_{i}_routed_out" in hf_intermediates:
                             hf_routed = hf_intermediates[f"moe_{i}_routed_out"].cuda()
-                            expert_gate_weights = [weights_gpu[f"{prefix}.experts.{j}.gate_proj.weight"] for j in range(N_ROUTED_EXPERTS)]
-                            expert_up_weights = [weights_gpu[f"{prefix}.experts.{j}.up_proj.weight"] for j in range(N_ROUTED_EXPERTS)]
-                            expert_down_weights = [weights_gpu[f"{prefix}.experts.{j}.down_proj.weight"] for j in range(N_ROUTED_EXPERTS)]
+                            expert_gate_weights = [
+                                weights_gpu[f"{prefix}.experts.{j}.gate_proj.weight"]
+                                for j in range(N_ROUTED_EXPERTS)
+                            ]
+                            expert_up_weights = [
+                                weights_gpu[f"{prefix}.experts.{j}.up_proj.weight"]
+                                for j in range(N_ROUTED_EXPERTS)
+                            ]
+                            expert_down_weights = [
+                                weights_gpu[f"{prefix}.experts.{j}.down_proj.weight"]
+                                for j in range(N_ROUTED_EXPERTS)
+                            ]
 
                             func_routed = expert_forward(
                                 hf_moe_input.view(-1, hf_moe_input.shape[-1]),

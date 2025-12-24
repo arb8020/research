@@ -8,7 +8,7 @@ from typing import Any, Optional, cast
 
 from shared.validation import validate_ssh_key_path
 
-from .query import GPUQuery, QueryType
+from .query import GPUQuery, QueryField, QueryType
 from .types import (
     CloudType,
     GPUInstance,
@@ -16,6 +16,7 @@ from .types import (
     InstanceStatus,
     ProviderCredentials,
     ProvisionResult,
+    SSHResult,
 )
 from .validation import validate_credentials
 
@@ -29,7 +30,7 @@ class ProvisionError(Exception):
         result: The ProvisionResult with detailed error info and attempt history
     """
 
-    def __init__(self, message: str, result: ProvisionResult):
+    def __init__(self, message: str, result: ProvisionResult) -> None:
         super().__init__(message)
         self.result = result
 
@@ -57,7 +58,7 @@ class GPUClient:
         credentials: ProviderCredentials | dict[str, str],
         ssh_key_path: str | None = None,
         ssh_key_paths: dict[str, str] | None = None,
-    ):
+    ) -> None:
         """Initialize GPU broker client
 
         Args:
@@ -127,47 +128,47 @@ class GPUClient:
 
     # Query interface - expose as properties
     @property
-    def gpu_type(self):
+    def gpu_type(self) -> QueryField:
         """Query by GPU type: client.gpu_type.contains('A100')"""
         return self._query.gpu_type
 
     @property
-    def price_per_hour(self):
+    def price_per_hour(self) -> QueryField:
         """Query by price: client.price_per_hour < 2.0"""
         return self._query.price_per_hour
 
     @property
-    def memory_gb(self):
+    def memory_gb(self) -> QueryField:
         """Query by memory: client.memory_gb > 24"""
         return self._query.memory_gb
 
     @property
-    def vram_gb(self):
+    def vram_gb(self) -> QueryField:
         """Query by GPU VRAM: client.vram_gb >= 8"""
         return self._query.vram_gb
 
     @property
-    def cloud_type(self):
+    def cloud_type(self) -> QueryField:
         """Query by cloud type: client.cloud_type == CloudType.SECURE"""
         return self._query.cloud_type
 
     @property
-    def provider(self):
+    def provider(self) -> QueryField:
         """Query by provider: client.provider.in_(['runpod', 'vast'])"""
         return self._query.provider
 
     @property
-    def underlying_provider(self):
+    def underlying_provider(self) -> QueryField:
         """Query by underlying provider (for aggregators): client.underlying_provider == 'massedcompute'"""
         return self._query.underlying_provider
 
     @property
-    def cuda_version(self):
+    def cuda_version(self) -> QueryField:
         """Query by CUDA version: client.cuda_version.contains('12.0')"""
         return self._query.cuda_version
 
     @property
-    def manufacturer(self):
+    def manufacturer(self) -> QueryField:
         """Query by GPU manufacturer: client.manufacturer == 'nvidia'"""
         return self._query.manufacturer
 
@@ -193,9 +194,9 @@ class GPUClient:
 
         return api.search(query=query, sort=sort, reverse=reverse, credentials=self._credentials)
 
-    def create(
+    def create(  # noqa: PLR0913 - create API has many configuration options
         self,
-        query: QueryType | list[GPUOffer] | GPUOffer,
+        query: QueryType | list[GPUOffer] | GPUOffer | None,
         image: str = "runpod/pytorch:1.0.0-cu1281-torch280-ubuntu2204",
         name: str | None = None,
         gpu_count: int = 1,
@@ -205,7 +206,7 @@ class GPUClient:
         cloud_type: str | CloudType | None = None,
         sort: Callable[[Any], Any] | None = None,
         reverse: bool = False,
-        **kwargs,
+        **kwargs: Any,
     ) -> Optional["ClientGPUInstance"]:
         """Create GPU instance
 
@@ -328,7 +329,7 @@ class ClientGPUInstance:
     Wraps GPUInstance to use client's SSH key configuration
     """
 
-    def __init__(self, instance: GPUInstance, client: GPUClient):
+    def __init__(self, instance: GPUInstance, client: GPUClient) -> None:
         self._instance = instance
         self._client = client
 
@@ -392,7 +393,7 @@ class ClientGPUInstance:
         """Get SSH connection string (user@host:port)"""
         return self._instance.ssh_connection_string()
 
-    def exec(self, command: str, ssh_key_path: str | None = None, timeout: int = 30):
+    def exec(self, command: str, ssh_key_path: str | None = None, timeout: int = 30) -> SSHResult:
         """Execute command using client's SSH configuration (synchronous)"""
         if ssh_key_path is None:
             # Get provider-specific SSH key with fallback to default
@@ -400,7 +401,9 @@ class ClientGPUInstance:
 
         return self._instance.exec(command, ssh_key_path, timeout)
 
-    async def aexec(self, command: str, ssh_key_path: str | None = None, timeout: int = 30):
+    async def aexec(
+        self, command: str, ssh_key_path: str | None = None, timeout: int = 30
+    ) -> SSHResult:
         """Execute command using client's SSH configuration (asynchronous)"""
         if ssh_key_path is None:
             # Get provider-specific SSH key with fallback to default

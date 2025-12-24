@@ -120,7 +120,9 @@ def acquire_node(
         if runpod_key:
             credentials["runpod"] = runpod_key
 
-    assert credentials, "No provider credentials found. Set RUNPOD_API_KEY, VAST_API_KEY, or PRIME_API_KEY"
+    assert credentials, (
+        "No provider credentials found. Set RUNPOD_API_KEY, VAST_API_KEY, or PRIME_API_KEY"
+    )
 
     broker = GPUClient(
         credentials=credentials,
@@ -141,6 +143,8 @@ def acquire_node(
         instance.wait_until_ssh_ready(timeout=ssh_timeout)
 
         key_path = broker.get_ssh_key_path(provider)
+        if key_path is None:
+            raise RuntimeError(f"No SSH key configured for provider {provider}")
         client = BifrostClient(instance.ssh_connection_string(), ssh_key_path=key_path)
         return client, instance
 
@@ -157,6 +161,8 @@ def acquire_node(
         sort=lambda x: x.price_per_hour,
         min_cuda_version=provision.min_cuda,
     )
+    if instance is None:
+        raise RuntimeError("Failed to provision instance - no suitable GPU offers found")
     print(f"  Instance ID: {instance.provider}:{instance.id}")
     print(f"  GPU: {instance.gpu_count}x {instance.gpu_type}")
 
@@ -164,5 +170,7 @@ def acquire_node(
     instance.wait_until_ssh_ready(timeout=ssh_timeout)
 
     key_path = broker.get_ssh_key_path(instance.provider)
+    if key_path is None:
+        raise RuntimeError(f"No SSH key configured for provider {instance.provider}")
     client = BifrostClient(instance.ssh_connection_string(), ssh_key_path=key_path)
     return client, instance

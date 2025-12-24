@@ -81,7 +81,6 @@ def test_context_builder():
 def test_flex_attention_backend():
     """Test attention backend with GPU."""
     import torch
-
     from rollouts.inference.attention import CacheConfig, FlexAttentionBackend
 
     print("Testing FlexAttentionBackend...")
@@ -117,7 +116,6 @@ def test_flex_attention_backend():
 def test_end_to_end():
     """End-to-end integration test."""
     import torch
-
     from rollouts.inference.attention import CacheConfig, FlexAttentionBackend
     from rollouts.inference.cache import PagedKVCache
     from rollouts.inference.context import (
@@ -210,10 +208,9 @@ def run_remote():
     import os
     from pathlib import Path
 
-    from dotenv import load_dotenv
-
     from bifrost.client import BifrostClient
     from broker.client import GPUClient
+    from dotenv import load_dotenv
 
     load_dotenv()
 
@@ -277,7 +274,6 @@ def test_attention_correctness():
     """Verify our attention matches PyTorch reference implementation."""
     import torch
     import torch.nn.functional as F
-
     from rollouts.inference.attention import CacheConfig, FlexAttentionBackend
     from rollouts.inference.types import InferenceContext
 

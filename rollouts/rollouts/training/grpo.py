@@ -244,7 +244,9 @@ def _create_generate_fn(
     """Create the generate function for rollout generation."""
     if config.use_tito:
         return _create_tito_generate_fn(config, endpoint, tokenizer, metadata_key, logger)
-    return _create_agent_generate_fn(config, endpoint, tokenizer, environment_cls, metadata_key, logger)
+    return _create_agent_generate_fn(
+        config, endpoint, tokenizer, environment_cls, metadata_key, logger
+    )
 
 
 def _create_tito_generate_fn(
@@ -277,9 +279,7 @@ def _create_tito_generate_fn(
                 metadata = {k: v for k, v in prompt_data.items() if k != "messages"}
 
             try:
-                initial_messages = [
-                    Message(role=m["role"], content=m["content"]) for m in messages
-                ]
+                initial_messages = [Message(role=m["role"], content=m["content"]) for m in messages]
                 trajectory = Trajectory(messages=initial_messages)
                 actor = Actor(trajectory=trajectory, endpoint=endpoint)
 
@@ -409,9 +409,7 @@ async def _process_training_step(
         advantages = torch.tensor([r - mean_reward for r in rewards], device=device)
 
     # Prepare batch tensors
-    training_batch = _prepare_training_batch(
-        batch, config, tokenizer, advantages, device
-    )
+    training_batch = _prepare_training_batch(batch, config, tokenizer, advantages, device)
 
     # Training step
     fb_future = backend.forward_backward(training_batch)
@@ -584,8 +582,16 @@ async def _grpo_train_async(
 
                 batch = await rollout_manager.generate_batch(score_fn=score_fn)
                 step_metrics = await _process_training_step(
-                    step, batch, config, backend, tokenizer, device,
-                    output_dir, metrics_logger, inference_engine, logger
+                    step,
+                    batch,
+                    config,
+                    backend,
+                    tokenizer,
+                    device,
+                    output_dir,
+                    metrics_logger,
+                    inference_engine,
+                    logger,
                 )
 
                 if step_metrics:

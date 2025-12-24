@@ -475,9 +475,7 @@ def _insert_synthetic_tool_results(messages: list[Message]) -> list[Message]:
 
         # Tool results clear the pending tool calls for that ID
         if msg.role == "tool" and msg.tool_call_id:
-            pending_tool_calls = [
-                tc for tc in pending_tool_calls if tc.id != msg.tool_call_id
-            ]
+            pending_tool_calls = [tc for tc in pending_tool_calls if tc.id != msg.tool_call_id]
 
         # User messages also interrupt tool flow - insert synthetic results
         if msg.role == "user" and pending_tool_calls:

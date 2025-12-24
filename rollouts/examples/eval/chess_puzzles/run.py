@@ -31,16 +31,6 @@ from datetime import datetime
 from pathlib import Path
 
 import trio
-
-from rollouts import (
-    Actor,
-    AgentState,
-    Endpoint,
-    Message,
-    RunConfig,
-    Trajectory,
-    run_agent,
-)
 from rollouts.datasets.lichess_puzzles import (
     get_puzzle_fen_after_opponent_move,
     load_lichess_puzzles,
@@ -52,6 +42,16 @@ from rollouts.search import (
     make_expand_n_turns,
     run_search,
     select_all_frontier,
+)
+
+from rollouts import (
+    Actor,
+    AgentState,
+    Endpoint,
+    Message,
+    RunConfig,
+    Trajectory,
+    run_agent,
 )
 
 # ──────────────────────── Config ────────────────────────────────────────────

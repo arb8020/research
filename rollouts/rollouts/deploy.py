@@ -1138,7 +1138,7 @@ async def _wait_for_health_remote(
 
 
 # Convenience function for creating Endpoint from ServerInfo
-def server_info_to_endpoint(server_info: ServerInfo) -> "Endpoint":
+def server_info_to_endpoint(server_info: ServerInfo) -> Endpoint:
     """Convert ServerInfo to rollouts Endpoint.
 
     Tiger Style: Explicit conversion function.

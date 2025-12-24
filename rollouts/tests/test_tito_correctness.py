@@ -36,9 +36,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
+from rollouts.remote import release_node
 
 from bifrost import GPUQuery, ProcessSpec, acquire_node, job_stream_until_complete
-from rollouts.remote import release_node
 
 if TYPE_CHECKING:
     from bifrost import BifrostClient
@@ -1185,7 +1185,9 @@ def main():
     node_group.add_argument("--provision", action="store_true", help="Provision new instance")
 
     parser.add_argument(
-        "--cleanup", action="store_true", help="Terminate instance after completion (default: keep alive)"
+        "--cleanup",
+        action="store_true",
+        help="Terminate instance after completion (default: keep alive)",
     )
     parser.add_argument("--gpu-type", default="A100", help="GPU type (default: A100)")
 
@@ -1263,7 +1265,10 @@ def main():
             files_to_sync = [
                 # Test logs
                 (f"{workspace}/rollouts/results/tito-test.log", "tito-test.log"),
-                (f"{workspace}/rollouts/results/agent-loop-tito-test.log", "agent-loop-tito-test.log"),
+                (
+                    f"{workspace}/rollouts/results/agent-loop-tito-test.log",
+                    "agent-loop-tito-test.log",
+                ),
                 # SGLang logs
                 ("/tmp/tito-test/sglang.log", "sglang-retok.log"),
                 ("/tmp/tito-agent-test/sglang.log", "sglang-agent.log"),

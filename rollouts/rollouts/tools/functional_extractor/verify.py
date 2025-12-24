@@ -1,6 +1,6 @@
 """GPU verification for functional model extraction.
 
-Uses bifrost/broker/kerbal to run verification on remote GPU instances.
+Uses bifrost v2 API for remote GPU execution.
 
 CLI Usage:
     # Verify functional code against model
@@ -36,8 +36,9 @@ from typing import TYPE_CHECKING
 from .config import DeploymentConfig, VerificationConfig
 
 if TYPE_CHECKING:
-    from bifrost.client import BifrostClient
     from broker.client import ClientGPUInstance, GPUClient
+
+    from bifrost import BifrostClient
 
 
 @dataclass(frozen=True)
@@ -61,7 +62,7 @@ class GPUHandle:
     client: GPUClient
     bifrost: BifrostClient
     ssh_key_path: str
-    workspace: str  # Expanded workspace path
+    workspace: str  # Workspace path after push
 
 
 def _load_env() -> tuple[str, str]:
@@ -76,6 +77,12 @@ def _load_env() -> tuple[str, str]:
     ssh_key_path = os.getenv("SSH_KEY_PATH", "~/.ssh/id_ed25519")
 
     return runpod_key, ssh_key_path
+
+
+# Default bootstrap commands for verification environment
+BOOTSTRAP_COMMANDS = [
+    "pip install torch transformers>=4.50 accelerate safetensors",
+]
 
 
 def provision_gpu(
@@ -93,8 +100,9 @@ def provision_gpu(
     Returns:
         GPUHandle if successful, None if provisioning failed
     """
-    from bifrost.client import BifrostClient
     from broker.client import GPUClient
+
+    from bifrost import BifrostClient
 
     runpod_key, ssh_key_path = _load_env()
     client = GPUClient(credentials={"runpod": runpod_key}, ssh_key_path=ssh_key_path)
@@ -146,8 +154,13 @@ def provision_gpu(
     print(f"SSH: {instance.ssh_connection_string()}")
     bifrost = BifrostClient(instance.ssh_connection_string(), ssh_key_path)
 
-    # Expand workspace path
-    workspace = bifrost.expand_path("~/.bifrost/workspaces/verify")
+    # Deploy code with bootstrap
+    print("Deploying code...")
+    workspace = bifrost.push(
+        "~/.bifrost/workspaces/verify",
+        bootstrap_cmd=BOOTSTRAP_COMMANDS,
+    )
+    print(f"Workspace: {workspace}")
 
     return GPUHandle(
         instance=instance,
@@ -176,47 +189,24 @@ def print_gpu_info(handle: GPUHandle) -> None:
     print("=" * 50)
 
 
-def setup_env(handle: GPUHandle, requirements: list[str]) -> str:
-    """Setup Python environment using kerbal.
-
-    Args:
-        handle: GPU handle with bifrost client
-        requirements: List of pip packages to install
-
-    Returns:
-        Path to venv python binary
-    """
-    # TODO: Migrate to bifrost v2 API - kerbal has been deleted
-    # See bifrost.ProcessSpec + client.submit() for the new pattern
-    raise NotImplementedError("kerbal.python_env has been removed - migrate to bifrost v2 API")
-
-
 def run_on_gpu(
     script_path: str,
     deployment: DeploymentConfig | None = None,
-    requirements: list[str] | None = None,
     keep_alive: bool = False,
     gpu_id: str | None = None,
 ) -> None:
-    """Run a script on a remote GPU via broker/bifrost/kerbal.
+    """Run a script on a remote GPU via bifrost v2 API.
 
     Args:
         script_path: Path to the script (__file__ from caller)
         deployment: Deployment configuration (uses defaults if None)
-        requirements: Pip packages to install (uses defaults if None)
         keep_alive: Keep GPU running after completion
         gpu_id: Reuse existing GPU instance ID (skips provisioning)
     """
+    from bifrost import ProcessSpec, job_stream_until_complete
+
     if deployment is None:
         deployment = DeploymentConfig()
-
-    if requirements is None:
-        requirements = [
-            "torch",
-            "transformers>=4.50",
-            "accelerate",
-            "safetensors",
-        ]
 
     # Get script path relative to git root
     script = Path(script_path).resolve()
@@ -234,22 +224,31 @@ def run_on_gpu(
         if gpu_id:
             keep_alive = True  # Always keep alive when reusing
 
-        # Deploy code via git sync (no bootstrap - use kerbal instead)
-        print("Deploying code...")
-        handle.bifrost.push(workspace_path=handle.workspace)
-        print("Code deployed")
-
-        # Setup Python environment with kerbal
-        venv_python = setup_env(handle, requirements)
-
-        # Run with streaming output
+        # Submit job using bifrost v2 API
         remote_script = f"{handle.workspace}/{rel_path}"
-        cmd = f"{venv_python} {remote_script}"
-        print(f"Running: {cmd}")
+        log_file = f"{handle.workspace}/run.log"
+
+        print(f"Running: python {rel_path}")
+        job = handle.bifrost.submit(
+            ProcessSpec(
+                command="python",
+                args=(str(rel_path),),
+                cwd=handle.workspace,
+            ),
+            name=f"run-{script.stem}",
+            log_file=log_file,
+            workspace=handle.workspace,
+        )
+
+        print(f"Job started in tmux session: {job.tmux_session}")
         print("-" * 50)
-        for line in handle.bifrost.exec_stream(cmd, working_dir=handle.workspace):
-            print(line)
+        success, exit_code, err = job_stream_until_complete(
+            handle.bifrost, job, timeout=3600, poll_interval=1.0
+        )
         print("-" * 50)
+
+        if not success:
+            print(f"Job failed: {err} (exit code: {exit_code})")
 
     except KeyboardInterrupt:
         print("\n\nInterrupted!")
@@ -356,7 +355,7 @@ def verify_functional(
 
     This function:
     1. Provisions a GPU (or reuses gpu_id)
-    2. Sets up Python environment with kerbal
+    2. Deploys code with dependencies via bifrost
     3. Runs comparison with torch.allclose
     4. Returns results
 
@@ -371,6 +370,8 @@ def verify_functional(
         VerificationResult with matches, max_diff, and shapes
     """
     import json
+
+    from bifrost import ProcessSpec, job_stream_until_complete
 
     if deployment is None:
         deployment = DeploymentConfig()
@@ -394,30 +395,39 @@ def verify_functional(
         if gpu_id:
             keep_alive = True
 
-        # Setup Python environment using kerbal
-        requirements = [
-            "torch",
-            "transformers>=4.50",
-            "accelerate",
-            "safetensors",
-        ]
-        venv_python = setup_env(handle, requirements)
-
         # Write verification script to remote
         verify_script = _build_verification_script(functional_code, verification)
         script_path = f"{handle.workspace}/verify_functional.py"
         handle.bifrost.exec(f"cat > {script_path} << 'SCRIPT_EOF'\n{verify_script}\nSCRIPT_EOF")
 
-        # Run verification
+        # Run verification using bifrost v2 API
         print("Running verification...")
+        log_file = f"{handle.workspace}/verify.log"
+
+        job = handle.bifrost.submit(
+            ProcessSpec(
+                command="python",
+                args=("verify_functional.py",),
+                cwd=handle.workspace,
+            ),
+            name="verify-functional",
+            log_file=log_file,
+            workspace=handle.workspace,
+        )
+
+        print(f"Job started in tmux session: {job.tmux_session}")
         print("-" * 50)
-        for line in handle.bifrost.exec_stream(
-            f"{venv_python} {script_path}",
-            working_dir=handle.workspace,
-        ):
+
+        # Collect output and look for result JSON
+        def on_line(line: str) -> None:
+            nonlocal result_json
             print(line)
             if line.startswith("RESULT_JSON:"):
                 result_json = json.loads(line[len("RESULT_JSON:") :])
+
+        success, exit_code, err = job_stream_until_complete(
+            handle.bifrost, job, on_line=on_line, timeout=1800, poll_interval=1.0
+        )
         print("-" * 50)
 
         if result_json:

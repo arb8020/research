@@ -15,7 +15,9 @@ logger = logging.getLogger(__name__)
 
 
 @retry(max_attempts=3, delay=1, backoff=2, exceptions=(Exception,))
-def _upload_bundle_with_retry(sftp, local_bundle_path: str, remote_bundle_path: str) -> None:
+def _upload_bundle_with_retry(
+    sftp: paramiko.SFTPClient, local_bundle_path: str, remote_bundle_path: str
+) -> None:
     """Upload git bundle with retry logic.
 
     This is at an external boundary (network I/O over SFTP) so retry is appropriate.
@@ -68,11 +70,10 @@ def _check_untracked_files() -> list[str] | None:
                 # Extract filename (remove '?? ' prefix)
                 filename = line[3:].strip()
                 untracked.append(filename)
-
-        return untracked if untracked else None
-
     except Exception:
         return None  # Git command failed
+    else:
+        return untracked if untracked else None
 
 
 def _check_uncommitted_changes() -> list[str] | None:
@@ -100,11 +101,10 @@ def _check_uncommitted_changes() -> list[str] | None:
                 # Extract filename (skip first 3 chars: status codes + space)
                 filename = line[3:].strip()
                 uncommitted.append(filename)
-
-        return uncommitted if uncommitted else None
-
     except Exception:
         return None  # Git command failed
+    else:
+        return uncommitted if uncommitted else None
 
 
 def deploy_code(ssh_client: paramiko.SSHClient, config: RemoteConfig, workspace_path: str) -> str:

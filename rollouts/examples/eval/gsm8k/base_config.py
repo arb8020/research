@@ -394,7 +394,9 @@ def gsm8k_tool_score_fn(sample: Any) -> Score:
 
     trajectory = sample.trajectory
     if trajectory is None:
-        return Score(metrics=(Metric("correct", 0.0, weight=1.0, metadata={"error": "no trajectory"}),))
+        return Score(
+            metrics=(Metric("correct", 0.0, weight=1.0, metadata={"error": "no trajectory"}),)
+        )
 
     # Sample is a dataclass with .ground_truth and .input dict
     ground_truth = sample.ground_truth or sample.input.get("answer")
@@ -515,7 +517,9 @@ def _single_turn_score_fn(sample: Sample) -> Score:
 
     trajectory = sample.trajectory
     if trajectory is None:
-        return Score(metrics=(Metric("correct", 0.0, weight=1.0, metadata={"error": "no trajectory"}),))
+        return Score(
+            metrics=(Metric("correct", 0.0, weight=1.0, metadata={"error": "no trajectory"}),)
+        )
 
     # Get ground truth from sample
     ground_truth = sample.ground_truth or sample.input.get("answer")

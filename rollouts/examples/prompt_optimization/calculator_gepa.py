@@ -14,13 +14,12 @@ import logging
 import os
 
 import trio
-
 from rollouts.dtypes import Endpoint, Metric, Score
 from rollouts.environments.calculator import CalculatorEnvironment
 from rollouts.prompt_optimization import (
-    GEPAConfig,
+    EvolutionaryConfig,
     PromptTemplate,
-    run_gepa,
+    run_evolutionary_gepa,
 )
 from rollouts.training.types import Sample
 
@@ -122,7 +121,7 @@ async def main() -> None:
     )
 
     # ─── GEPA Configuration ───────────────────────────────────────────────
-    config = GEPAConfig(
+    config = EvolutionaryConfig(
         population_size=8,  # Small for demo
         generations=3,  # Few generations for demo
         mutation_rate=0.4,
@@ -154,7 +153,7 @@ async def main() -> None:
     logger.info("Starting GEPA optimization...")
     logger.info(f"Initial prompt: {initial_template.system}")
 
-    result = await run_gepa(
+    result = await run_evolutionary_gepa(
         initial_template=initial_template,
         config=config,
         dataset=DATASET,

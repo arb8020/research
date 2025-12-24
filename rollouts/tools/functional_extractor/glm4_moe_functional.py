@@ -264,7 +264,9 @@ def moe_router(
     router_logits_for_choice = router_probs + e_score_correction_bias
 
     if debug:
-        print(f"      [moe_router] scores_for_choice sample: {router_logits_for_choice[0, :5].tolist()}")
+        print(
+            f"      [moe_router] scores_for_choice sample: {router_logits_for_choice[0, :5].tolist()}"
+        )
         print(f"      [moe_router] hidden_states dtype: {hidden_states.dtype}")
         print(f"      [moe_router] router_weight dtype: {router_weight.dtype}")
         print(f"      [moe_router] e_score_correction_bias dtype: {e_score_correction_bias.dtype}")
@@ -527,7 +529,9 @@ if __name__ == "__main__":
     print("GLM-4 MoE Functional Implementation")
     print("=" * 50)
     print(f"Hidden size: {HIDDEN_SIZE}")
-    print(f"Layers: {NUM_LAYERS} ({FIRST_K_DENSE_REPLACE} dense, {NUM_LAYERS - FIRST_K_DENSE_REPLACE} MoE)")
+    print(
+        f"Layers: {NUM_LAYERS} ({FIRST_K_DENSE_REPLACE} dense, {NUM_LAYERS - FIRST_K_DENSE_REPLACE} MoE)"
+    )
     print(f"Experts: {N_ROUTED_EXPERTS} routed + {N_SHARED_EXPERTS} shared")
     print(f"Experts per token: {NUM_EXPERTS_PER_TOK}")
     print(f"Attention heads: {NUM_HEADS} ({NUM_KV_HEADS} KV heads)")

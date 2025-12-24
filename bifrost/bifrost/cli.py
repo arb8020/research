@@ -54,7 +54,7 @@ def parse_ssh_connection(conn_str: str) -> tuple[str, str, int]:
     )
 
 
-def resolve_ssh_key(ctx) -> str:
+def resolve_ssh_key(ctx: typer.Context) -> str:
     """Resolve SSH key: CLI → env → discover → error"""
     ssh_key_arg = ctx.obj.get("ssh_key")
 
@@ -81,7 +81,7 @@ def resolve_ssh_key(ctx) -> str:
         logger.info("")
     logger.info("set SSH_KEY_PATH in .env (run: bifrost init)")
 
-    raise typer.Exit(1)
+    raise typer.Exit(1) from None
 
 
 def parse_env_vars(env_list: list[str]) -> dict[str, str]:
@@ -96,7 +96,7 @@ def parse_env_vars(env_list: list[str]) -> dict[str, str]:
             logger.error(f"✗ Invalid env format: {item}")
             logger.info("expected format: KEY=VALUE")
             logger.info("example: --env API_KEY=abc123 --env DEBUG=true")
-            raise typer.Exit(1)
+            raise typer.Exit(1) from None
         key, value = item.split("=", 1)
         env_dict[key] = value
     return env_dict
@@ -109,7 +109,7 @@ def main(
     quiet: bool = typer.Option(False, "-q", "--quiet"),
     json_output: bool = typer.Option(False, "--json"),
     debug: bool = typer.Option(False, "--debug"),
-):
+) -> None:
     """Configure logging and store global options"""
 
     # Setup logging
@@ -126,7 +126,7 @@ def main(
 
 
 @app.command()
-def init():
+def init() -> None:
     """Create .env template for SSH configuration"""
     try:
         create_env_template("bifrost")
@@ -137,9 +137,9 @@ def init():
         logger.info("")
         logger.info("then run: bifrost push <ssh-connection>")
     except FileExistsError:
-        logger.error("✗ .env already exists")
+        logger.exception("✗ .env already exists")
         logger.info("edit manually or delete to recreate")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
 
 @app.command()
@@ -157,7 +157,7 @@ def push(
     workspace: str = typer.Option(
         "~/.bifrost/workspace", "--workspace", help="Remote workspace path"
     ),
-):
+) -> None:
     """Deploy code to remote instance
 
     Bootstrap options (choose one):
@@ -175,15 +175,15 @@ def push(
     # Validate bootstrap options
     if bootstrap and bootstrap_script:
         logger.error("✗ Cannot use both --bootstrap and --bootstrap-script")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
     # Parse SSH connection
     try:
         user, host, port = parse_ssh_connection(ssh_connection)
         ssh_conn_str = f"{user}@{host}:{port}"
     except ValueError as e:
-        logger.error(str(e))
-        raise typer.Exit(1)
+        logger.exception(str(e))
+        raise typer.Exit(1) from None
 
     # Prepare bootstrap command
     bootstrap_cmd = None
@@ -192,7 +192,7 @@ def push(
         script_path = Path(bootstrap_script)
         if not script_path.exists():
             logger.error(f"✗ Bootstrap script not found: {bootstrap_script}")
-            raise typer.Exit(1)
+            raise typer.Exit(1) from None
 
         # Read script content
         bootstrap_cmd = script_path.read_text()
@@ -211,13 +211,13 @@ def push(
     logger.info(f"code deployed to {workspace_path}")
 
 
-@app.command()
-def exec(
+@app.command(name="exec")
+def exec_command(
     ctx: typer.Context,
     ssh_connection: str = typer.Argument(...),
     command: str = typer.Argument(..., help="Command to execute"),
     env: list[str] | None = typer.Option(None, "--env", help="KEY=VALUE"),
-):
+) -> None:
     """Execute command on remote instance
 
     To run in a specific directory, use: bifrost exec conn "cd /path && cmd"
@@ -228,8 +228,8 @@ def exec(
         user, host, port = parse_ssh_connection(ssh_connection)
         ssh_conn_str = f"{user}@{host}:{port}"
     except ValueError as e:
-        logger.error(str(e))
-        raise typer.Exit(1)
+        logger.exception(str(e))
+        raise typer.Exit(1) from None
 
     # Parse env vars
     env_dict = parse_env_vars(env) if env else None
@@ -275,21 +275,21 @@ def deploy(
     workspace: str = typer.Option(
         "~/.bifrost/workspace", "--workspace", help="Remote workspace path"
     ),
-):
+) -> None:
     """Deploy code and execute command (convenience: push + exec)"""
     ssh_key = resolve_ssh_key(ctx)
 
     # Validate bootstrap options
     if bootstrap and bootstrap_script:
         logger.error("✗ Cannot use both --bootstrap and --bootstrap-script")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
     try:
         user, host, port = parse_ssh_connection(ssh_connection)
         ssh_conn_str = f"{user}@{host}:{port}"
     except ValueError as e:
-        logger.error(str(e))
-        raise typer.Exit(1)
+        logger.exception(str(e))
+        raise typer.Exit(1) from None
 
     # Parse inputs
     bootstrap_cmd = None
@@ -297,7 +297,7 @@ def deploy(
         script_path = Path(bootstrap_script)
         if not script_path.exists():
             logger.error(f"✗ Bootstrap script not found: {bootstrap_script}")
-            raise typer.Exit(1)
+            raise typer.Exit(1) from None
         bootstrap_cmd = script_path.read_text()
     elif bootstrap:
         bootstrap_cmd = " && ".join(bootstrap)
@@ -338,7 +338,7 @@ def deploy(
 
 
 @app.command()
-def run(
+def run(  # noqa: PLR0913 - CLI handlers need many args
     ctx: typer.Context,
     ssh_connection: str = typer.Argument(...),
     command: str = typer.Argument(...),
@@ -349,7 +349,7 @@ def run(
     workspace: str = typer.Option(
         "~/.bifrost/workspace", "--workspace", help="Remote workspace path"
     ),
-):
+) -> None:
     """Run command in background (detached mode)
 
     The job will continue running even if SSH disconnects.
@@ -360,14 +360,14 @@ def run(
     # Validate bootstrap options
     if bootstrap and bootstrap_script:
         logger.error("✗ Cannot use both --bootstrap and --bootstrap-script")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
     try:
         user, host, port = parse_ssh_connection(ssh_connection)
         ssh_conn_str = f"{user}@{host}:{port}"
     except ValueError as e:
-        logger.error(str(e))
-        raise typer.Exit(1)
+        logger.exception(str(e))
+        raise typer.Exit(1) from None
 
     # Parse inputs
     bootstrap_cmd = None
@@ -375,7 +375,7 @@ def run(
         script_path = Path(bootstrap_script)
         if not script_path.exists():
             logger.error(f"✗ Bootstrap script not found: {bootstrap_script}")
-            raise typer.Exit(1)
+            raise typer.Exit(1) from None
         bootstrap_cmd = script_path.read_text()
     elif bootstrap:
         bootstrap_cmd = " && ".join(bootstrap)
@@ -420,7 +420,7 @@ def logs(
         False, "-f", "--follow", help="Follow logs in real-time (like tail -f)"
     ),
     lines: int = typer.Option(100, "-n", help="Number of lines to show"),
-):
+) -> None:
     """Show job logs"""
     ssh_key = resolve_ssh_key(ctx)
 
@@ -428,8 +428,8 @@ def logs(
         user, host, port = parse_ssh_connection(ssh_connection)
         ssh_conn_str = f"{user}@{host}:{port}"
     except ValueError as e:
-        logger.error(str(e))
-        raise typer.Exit(1)
+        logger.exception(str(e))
+        raise typer.Exit(1) from None
 
     client = BifrostClient(ssh_conn_str, ssh_key_path=ssh_key)
 
@@ -461,7 +461,7 @@ def download(
     remote_path: str = typer.Argument(...),
     local_path: str = typer.Argument(...),
     recursive: bool = typer.Option(False, "-r", "--recursive"),
-):
+) -> None:
     """Download files from remote to local"""
     ssh_key = resolve_ssh_key(ctx)
 
@@ -469,8 +469,8 @@ def download(
         user, host, port = parse_ssh_connection(ssh_connection)
         ssh_conn_str = f"{user}@{host}:{port}"
     except ValueError as e:
-        logger.error(str(e))
-        raise typer.Exit(1)
+        logger.exception(str(e))
+        raise typer.Exit(1) from None
 
     client = BifrostClient(ssh_conn_str, ssh_key_path=ssh_key)
 
@@ -481,7 +481,7 @@ def download(
         logger.info(f"downloaded {result.files_copied} files ({result.total_bytes} bytes)")
     else:
         logger.error(f"✗ Download failed: {result.error_message}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
 
 @app.command()
@@ -491,7 +491,7 @@ def upload(
     local_path: str = typer.Argument(...),
     remote_path: str = typer.Argument(...),
     recursive: bool = typer.Option(False, "-r", "--recursive"),
-):
+) -> None:
     """Upload files from local to remote"""
     ssh_key = resolve_ssh_key(ctx)
 
@@ -499,8 +499,8 @@ def upload(
         user, host, port = parse_ssh_connection(ssh_connection)
         ssh_conn_str = f"{user}@{host}:{port}"
     except ValueError as e:
-        logger.error(str(e))
-        raise typer.Exit(1)
+        logger.exception(str(e))
+        raise typer.Exit(1) from None
 
     client = BifrostClient(ssh_conn_str, ssh_key_path=ssh_key)
 
@@ -511,7 +511,7 @@ def upload(
         logger.info(f"uploaded {result.files_copied} files ({result.total_bytes} bytes)")
     else:
         logger.error(f"✗ Upload failed: {result.error_message}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
 
 if __name__ == "__main__":

@@ -113,7 +113,7 @@ class ApplyResult:
 def apply_commands(
     commands: list[Command],
     workspace_root: Path,
-    block_state: "BlockState | None" = None,
+    block_state: BlockState | None = None,
 ) -> list[ApplyResult]:
     """
     Apply commands to filesystem.
@@ -164,7 +164,7 @@ def _apply_write(cmd: WriteCommand, workspace_root: Path) -> ApplyResult:
 def _apply_patch(
     cmd: PatchCommand,
     workspace_root: Path,
-    block_state: "BlockState | None",
+    block_state: BlockState | None,
 ) -> ApplyResult:
     """Apply a patch command."""
     from .blocks import apply_block_patch

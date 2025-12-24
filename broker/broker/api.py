@@ -29,7 +29,7 @@ PROVIDER_MODULES: dict[str, ProviderModule] = {
 }
 
 
-def search(
+def search(  # noqa: PLR0913 - search API has many filter options
     query: QueryType | None = None,
     # Legacy parameters for backward compatibility
     gpu_type: str | None = None,
@@ -205,18 +205,18 @@ def terminate_instance(instance_id: str, provider: str, credentials: dict | None
     return False
 
 
-def _normalize_query_input(
-    query,
-    gpu_type,
-    max_price_per_hour,
-    provider,
-    cuda_version,
-    manufacturer,
-    gpu_count,
-    sort,
-    reverse,
-    credentials,
-    kwargs,
+def _normalize_query_input(  # noqa: PLR0913 - internal helper mirrors search() params
+    query: QueryType | list[GPUOffer] | GPUOffer | None,
+    gpu_type: str | None,
+    max_price_per_hour: float | None,
+    provider: str | None,
+    cuda_version: str | None,
+    manufacturer: str | None,
+    gpu_count: int,
+    sort: Callable[[Any], Any] | None,
+    reverse: bool,
+    credentials: dict[str, Any] | None,
+    kwargs: dict[str, Any],
 ) -> list[GPUOffer]:
     """Normalize query input to list of GPUOffers.
 
@@ -229,7 +229,7 @@ def _normalize_query_input(
     elif isinstance(query, list):
         # List of offers provided
         assert len(query) > 0, "Offer list cannot be empty"
-        return query
+        return cast(list[GPUOffer], query)
     else:
         # Query object or None - search for suitable offers
         memory_gb = kwargs.get("memory_gb")
@@ -252,26 +252,30 @@ def _normalize_query_input(
         return offers
 
 
-def _try_provision_with_fallback(
-    suitable_offers,
-    n_offers,
-    image,
-    name,
-    gpu_count,
-    exposed_ports,
-    enable_http_proxy,
-    start_jupyter,
-    jupyter_password,
-    manufacturer,
-    template_id,
-    credentials,
-    kwargs,
+def _try_provision_with_fallback(  # noqa: PLR0913 - internal helper for provisioning
+    suitable_offers: list[GPUOffer],
+    n_offers: int,
+    image: str,
+    name: str | None,
+    gpu_count: int,
+    exposed_ports: list[int] | None,
+    enable_http_proxy: bool,
+    start_jupyter: bool,
+    jupyter_password: str | None,
+    manufacturer: str | None,
+    template_id: str | None,
+    credentials: dict[str, Any] | None,
+    kwargs: dict[str, Any],
 ) -> ProvisionResult:
     """Try provisioning from top N offers with automatic fallback.
 
     Tiger Style: Extracted to keep create() under 70 lines.
     Returns ProvisionResult with detailed attempt tracking.
     """
+    # Guard: credentials must exist for provisioning
+    if credentials is None:
+        credentials = {}
+
     attempts = []
     total_offers = min(len(suitable_offers), n_offers)
 
@@ -326,18 +330,18 @@ def _try_provision_with_fallback(
     return _categorize_failure(attempts, total_offers)
 
 
-def _build_provision_request(
-    offer,
-    image,
-    name,
-    gpu_count,
-    exposed_ports,
-    enable_http_proxy,
-    start_jupyter,
-    jupyter_password,
-    manufacturer,
-    template_id,
-    kwargs,
+def _build_provision_request(  # noqa: PLR0913 - builder needs all provision params
+    offer: GPUOffer,
+    image: str,
+    name: str | None,
+    gpu_count: int,
+    exposed_ports: list[int] | None,
+    enable_http_proxy: bool,
+    start_jupyter: bool,
+    jupyter_password: str | None,
+    manufacturer: str | None,
+    template_id: str | None,
+    kwargs: dict[str, Any],
 ) -> ProvisionRequest:
     """Build ProvisionRequest from offer and parameters.
 
@@ -408,7 +412,10 @@ def _categorize_failure(attempts: list[ProvisionAttempt], total_offers: int) -> 
 
 
 def _try_provision_from_offer(
-    offer: GPUOffer, request: ProvisionRequest, ssh_startup_script: str | None, credentials: dict
+    offer: GPUOffer,
+    request: ProvisionRequest,
+    ssh_startup_script: str | None,
+    credentials: dict[str, Any],
 ) -> ProvisionAttempt:
     """Try to provision from a single offer with explicit error categorization.
 
@@ -518,8 +525,8 @@ def _try_provision_from_offer(
             )
 
 
-def create(
-    query: QueryType | list[GPUOffer] | GPUOffer = None,
+def create(  # noqa: PLR0913 - create API has many configuration options
+    query: QueryType | list[GPUOffer] | GPUOffer | None = None,
     image: str = "runpod/pytorch:1.0.0-cu1281-torch280-ubuntu2204",
     name: str | None = None,
     # Search parameters for when query is a filter
@@ -543,7 +550,7 @@ def create(
     n_offers: int = 3,
     # API credentials
     credentials: dict | None = None,
-    **kwargs,
+    **kwargs: Any,
 ) -> ProvisionResult:
     """
     Provision GPU using pandas-style query, search results, or specific offer.

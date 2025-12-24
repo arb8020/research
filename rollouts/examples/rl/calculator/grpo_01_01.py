@@ -12,7 +12,6 @@ Run with:
 """
 
 from examples.rl.calculator.base_config import train
-
 from rollouts.training.grpo import GRPOConfig
 
 config = GRPOConfig(

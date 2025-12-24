@@ -18,6 +18,7 @@ import os
 
 import pytest
 import trio
+from rollouts.transform_messages import transform_messages
 
 from rollouts import (
     Actor,
@@ -30,7 +31,6 @@ from rollouts import (
     rollout,
     stdout_handler,
 )
-from rollouts.transform_messages import transform_messages
 
 
 @pytest.mark.trio

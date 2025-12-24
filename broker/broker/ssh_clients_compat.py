@@ -111,7 +111,7 @@ def execute_command_streaming(
         return -1, "", f"Broker streaming execution failed: {e}"
 
 
-def start_interactive_ssh_session(instance, private_key_path: str | None = None):
+def start_interactive_ssh_session(instance, private_key_path: str | None = None) -> None:
     """Start an interactive SSH session using broker GPUInstance
 
     Args:
@@ -125,7 +125,7 @@ def start_interactive_ssh_session(instance, private_key_path: str | None = None)
         import logging
 
         logger = logging.getLogger(__name__)
-        logger.error(f"❌ Interactive SSH session failed: {e}")
+        logger.exception(f"❌ Interactive SSH session failed: {e}")
         raise
 
 

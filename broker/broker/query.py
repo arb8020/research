@@ -10,7 +10,7 @@ from .types import GPUOffer
 class QueryField:
     """Represents a queryable field on GPU offers"""
 
-    def __init__(self, field_name: str):
+    def __init__(self, field_name: str) -> None:
         self.field_name = field_name
 
     def contains(self, value: str) -> "QueryCondition":
@@ -29,12 +29,12 @@ class QueryField:
         """Field value is in list"""
         return QueryCondition(self.field_name, "isin", values)
 
-    def __eq__(self, value: Any) -> "QueryCondition":
-        """Field equals value"""
+    def __eq__(self, value: Any) -> "QueryCondition":  # type: ignore[override]
+        """Field equals value. Returns QueryCondition for DSL, not bool."""
         return QueryCondition(self.field_name, "eq", value)
 
-    def __ne__(self, value: Any) -> "QueryCondition":
-        """Field not equals value"""
+    def __ne__(self, value: Any) -> "QueryCondition":  # type: ignore[override]
+        """Field not equals value. Returns QueryCondition for DSL, not bool."""
         return QueryCondition(self.field_name, "ne", value)
 
     def __lt__(self, value: Any) -> "QueryCondition":
@@ -57,7 +57,7 @@ class QueryField:
 class QueryCondition:
     """Single condition in a query"""
 
-    def __init__(self, field: str, operator: str, value: Any):
+    def __init__(self, field: str, operator: str, value: Any) -> None:
         self.field = field
         self.operator = operator
         self.value = value
@@ -107,7 +107,9 @@ class QueryCondition:
 class QueryExpression:
     """Boolean combination of conditions"""
 
-    def __init__(self, operator: str, conditions: list[Union[QueryCondition, "QueryExpression"]]):
+    def __init__(
+        self, operator: str, conditions: list[Union[QueryCondition, "QueryExpression"]]
+    ) -> None:
         self.operator = operator
         self.conditions = conditions
 
@@ -153,4 +155,4 @@ class GPUQuery:
 
 
 # Type alias for query types
-QueryType = Union[QueryCondition, QueryExpression]
+QueryType = QueryCondition | QueryExpression

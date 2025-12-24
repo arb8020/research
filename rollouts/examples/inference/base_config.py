@@ -28,7 +28,6 @@ def test_inference(config: BaseConfig) -> list[dict]:
     import logging
 
     import torch
-
     from rollouts._logging import setup_logging
 
     # Local imports to avoid loading torch on import
@@ -114,10 +113,9 @@ def run_remote(script_path: str, keep_alive: bool = False, node_id: str | None =
     """
     import os
 
-    from dotenv import load_dotenv
-
     from bifrost.client import BifrostClient
     from broker.client import GPUClient
+    from dotenv import load_dotenv
 
     load_dotenv()
 

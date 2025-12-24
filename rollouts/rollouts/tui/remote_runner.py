@@ -127,11 +127,14 @@ def main() -> None:
     stop_event.set()
 
     # Emit completion marker
-    print(json.dumps({
-        "logger": "runner",
-        "message": "Training complete",
-        "exit_code": exit_code,
-    }), flush=True)
+    print(
+        json.dumps({
+            "logger": "runner",
+            "message": "Training complete",
+            "exit_code": exit_code,
+        }),
+        flush=True,
+    )
 
     sys.exit(exit_code)
 
