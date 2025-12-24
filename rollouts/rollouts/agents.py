@@ -664,6 +664,12 @@ async def process_pending_tools(
                     cancel_scope=rcfg.cancel_scope,
                 )
 
+                # Update debug context - tool execution complete
+                try:
+                    debug_ctx.set_phase("tool_complete")
+                except (NameError, UnboundLocalError):
+                    pass
+
                 # ALWAYS serialize the environment state after tool execution
                 # (even if tool failed, environment state like _initialized may have changed)
                 env_data = await fresh_env.serialize()
@@ -689,6 +695,12 @@ async def process_pending_tools(
                 details=tool_result.details,
             )
         )
+
+        # Update debug context - tool result emitted (TUI render complete)
+        try:
+            debug_ctx.set_phase("tool_result_emitted")
+        except (NameError, UnboundLocalError):
+            pass
 
         # Add tool result message
         # Always include content - it has structured stdout/stderr even on error

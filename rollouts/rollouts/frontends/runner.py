@@ -38,14 +38,18 @@ class _DebugContext:
         self.tool_name: str | None = None
         self.stream_start_time: float | None = None
         self.last_stream_event_time: float | None = None
+        self.last_operation: str | None = None
+        self.last_operation_time: float | None = None
 
     def set_phase(self, phase: str) -> None:
         self.phase = phase
+        self._track_operation(f"phase:{phase}")
 
     def set_streaming(self) -> None:
         self.phase = "streaming"
         self.stream_start_time = time.time()
         self.last_stream_event_time = time.time()
+        self._track_operation("streaming_start")
 
     def on_stream_event(self) -> None:
         self.last_stream_event_time = time.time()
@@ -53,6 +57,28 @@ class _DebugContext:
     def set_tool(self, name: str) -> None:
         self.phase = "tool_execution"
         self.tool_name = name
+        self._track_operation(f"tool:{name}")
+
+    def _track_operation(self, op: str) -> None:
+        """Track operation timing and log if previous operation was slow."""
+        now = time.time()
+        if self.last_operation_time and self.last_operation:
+            elapsed = now - self.last_operation_time
+            if elapsed > 5.0:  # Log operations that took >5s
+                self._log_slow_operation(self.last_operation, elapsed)
+        self.last_operation = op
+        self.last_operation_time = now
+
+    def _log_slow_operation(self, operation: str, elapsed: float) -> None:
+        """Log slow operation to debug file."""
+        from datetime import datetime
+        from pathlib import Path
+
+        log_path = Path.home() / ".rollouts" / "tui-debug.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a") as f:
+            f.write(f"{datetime.now().isoformat()} SLOW_OPERATION: {operation} took {elapsed:.1f}s\n")
+            f.write(f"  turn={self.turn}, phase={self.phase}\n")
 
     def dump(self) -> str:
         """Return debug info string for interrupt diagnostics."""
@@ -65,6 +91,9 @@ class _DebugContext:
             if self.last_stream_event_time:
                 since_last = time.time() - self.last_stream_event_time
                 lines.append(f"Time since last event: {since_last:.1f}s")
+        if self.last_operation and self.last_operation_time:
+            elapsed = time.time() - self.last_operation_time
+            lines.append(f"Last operation: {self.last_operation} ({elapsed:.1f}s ago)")
         return "\n".join(lines)
 
 
