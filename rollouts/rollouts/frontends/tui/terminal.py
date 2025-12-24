@@ -298,7 +298,7 @@ class ProcessTerminal:
 
             # Run editor - use /dev/tty for stdin/stdout to ensure editor works
             # even when rollouts stdin is piped
-            with open("/dev/tty", "r") as tty_in, open("/dev/tty", "w") as tty_out:
+            with open("/dev/tty") as tty_in, open("/dev/tty", "w") as tty_out:
                 result = subprocess.run(
                     [editor, temp_path],
                     stdin=tty_in,

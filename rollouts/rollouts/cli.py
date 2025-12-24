@@ -1134,7 +1134,7 @@ async def run_agent(config: CLIConfig) -> int:
     # Build trajectory
     parent_session_id: str | None = None
     branch_point: int | None = None
-    
+
     # Build system prompt - use dynamic builder if we have an environment with tools
     if config.system_prompt:
         # User provided explicit prompt - use as-is
