@@ -91,6 +91,9 @@ class Sample:
     group_index: int | None = None
 
     # Input
+    # TODO: Refactor out input/ground_truth - these are legacy fields from non-agentic evals.
+    # For agentic evals (KernelBench, coding, etc.), AgentState.environment has all the
+    # relevant state. Sample should probably just wrap AgentState instead.
     input: dict[str, Any] = field(default_factory=dict)
     prompt: str | list[dict[str, str]] = ""
     ground_truth: Any | None = None

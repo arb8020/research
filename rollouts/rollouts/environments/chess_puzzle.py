@@ -28,7 +28,6 @@ from ..dtypes import (
     ToolFunctionParameter,
     ToolResult,
 )
-from ..search import VerifyResult
 
 try:
     import chess
@@ -220,23 +219,25 @@ class ChessPuzzleEnvironment:
 
         return None
 
-    async def verify(self, state: AgentState) -> VerifyResult:
-        """Verify current state for tree search scoring.
+    async def get_value(self) -> float:
+        """Get value estimate for current state.
 
         Returns centipawn evaluation normalized to 0-1 range.
+        Use this with tree search by wrapping in a value_fn.
+
+        Example:
+            async def value_fn(state: AgentState) -> float:
+                return await state.environment.get_value()
         """
         # Check if puzzle is solved
         if self.submitted_answer:
             is_correct = self._check_solution(self.submitted_answer)
-            return VerifyResult(
-                score=1.0 if is_correct else 0.0,
-                terminal=True,
-            )
+            return 1.0 if is_correct else 0.0
 
         # Get position evaluation
         centipawns = await self._get_evaluation()
         if centipawns is None:
-            return VerifyResult(score=0.5)  # No evaluation available
+            return 0.5  # No evaluation available
 
         # Normalize centipawns to 0-1 using sigmoid
         # 100 centipawns ≈ 0.73, 300 centipawns ≈ 0.95
@@ -248,7 +249,7 @@ class ChessPuzzleEnvironment:
         if self.board and not self.board.turn:
             normalized = 1 - normalized
 
-        return VerifyResult(score=normalized)
+        return normalized
 
     def _check_solution(self, move_str: str) -> bool:
         """Check if move matches the puzzle solution."""
