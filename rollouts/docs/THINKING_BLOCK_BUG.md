@@ -96,21 +96,43 @@ Added `tests/test_thinking_block_resume.py` with:
 
 ## The Fix
 
-**Solution**: Strip thinking blocks from all assistant messages except the LAST one.
+**Two-part solution** (matching pi-mono's approach):
 
-The Anthropic API only requires thinking blocks in the "latest assistant turn".
-When thinking blocks exist in earlier messages, and those messages get merged
-server-side (due to consecutive same-role messages), the API sees them as "modified"
-and rejects the request.
+### 1. Insert synthetic tool results (transform_messages.py)
 
-The fix converts thinking blocks in non-last assistant messages to text blocks:
+When consecutive assistant messages exist (which can happen when user interrupts
+during tool execution), insert synthetic `[interrupted - no result provided]`
+tool results to break up the consecutive pattern.
+
 ```python
-TextContent(type="text", text=f"<thinking>\n{block.thinking}\n</thinking>")
+def _insert_synthetic_tool_results(messages):
+    # Before: [assistant w/tool_use] -> [assistant w/tool_use] -> [user]
+    # After:  [assistant w/tool_use] -> [tool: interrupted] -> [assistant w/tool_use] -> [user]
 ```
 
-This preserves the thinking content for context while avoiding the API validation error.
+This prevents Anthropic's server-side merge which corrupts thinking block validation.
 
-Implemented in `rollouts/transform_messages.py:_strip_non_last_thinking()`
+### 2. Add interrupted results on cancel (agents.py)
+
+When the agent is cancelled (e.g., user presses Escape), check both
+`pending_tool_calls` AND the last message's tool calls to ensure all
+tool_use blocks get corresponding `[interrupted]` tool results.
+
+```python
+# Check both pending_tool_calls AND the last message's tool calls.
+# If cancelled during rollout(), pending_tool_calls may be empty but
+# the assistant message with tool calls is already in the trajectory.
+```
+
+## How the bug happens
+
+1. User sends message
+2. Assistant responds with [thinking, tool_use]
+3. User presses Escape while tool is executing
+4. New LLM call happens (another [thinking, tool_use])
+5. First tool call never got a result
+6. Session saved with consecutive assistant messages
+7. On resume, API merges them and rejects "thinking blocks modified"
 
 ## Verification
 

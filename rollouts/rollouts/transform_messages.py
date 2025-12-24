@@ -106,22 +106,23 @@ def transform_messages(
     assert isinstance(transformed_messages, list)
     assert len(transformed_messages) == len(messages)
 
-    # Pass 2: Filter orphaned tool calls
-    filtered_messages = _filter_orphaned_tool_calls(transformed_messages)
+    # Pass 2: Insert synthetic tool results for orphaned tool calls
+    # This prevents consecutive assistant messages which cause thinking block errors
+    # when the API merges them. Similar to pi-mono's transform-messages.ts approach.
+    # Must run BEFORE _filter_orphaned_tool_calls so we can see which tool calls need results.
+    with_synthetic_results = _insert_synthetic_tool_results(transformed_messages)
+    assert with_synthetic_results is not None
+    assert isinstance(with_synthetic_results, list)
+
+    # Pass 3: Filter orphaned tool calls (those still without results after synthetic insertion)
+    # Note: After synthetic insertion, there shouldn't be any orphans left, but keep this
+    # as a safety net for edge cases.
+    filtered_messages = _filter_orphaned_tool_calls(with_synthetic_results)
     assert filtered_messages is not None
     assert isinstance(filtered_messages, list)
-    assert len(filtered_messages) <= len(transformed_messages)
+    assert len(filtered_messages) <= len(with_synthetic_results)
 
-    # Pass 3: Strip thinking blocks from non-last assistant messages
-    # The API requires thinking blocks in the LAST assistant turn only.
-    # Having thinking blocks in earlier messages can cause "cannot be modified" errors
-    # when the API merges consecutive same-role messages.
-    stripped_messages = _strip_non_last_thinking(filtered_messages)
-    assert stripped_messages is not None
-    assert isinstance(stripped_messages, list)
-    assert len(stripped_messages) == len(filtered_messages)
-
-    return stripped_messages
+    return filtered_messages
 
 
 def _transform_thinking_blocks(
@@ -428,6 +429,71 @@ def _filter_content_by_tool_calls(
 
     # Unknown type - pass through
     return content
+
+
+def _insert_synthetic_tool_results(messages: list[Message]) -> list[Message]:
+    """Insert synthetic tool results for orphaned tool calls.
+
+    When an assistant message has tool calls but is immediately followed by another
+    assistant message (no tool results in between), the Anthropic API merges them.
+    This can corrupt thinking block validation.
+
+    This function inserts synthetic "[interrupted]" tool results to break up
+    consecutive assistant messages, similar to pi-mono's transform-messages.ts.
+
+    Args:
+        messages: List of messages that may have orphaned tool calls
+
+    Returns:
+        Messages with synthetic tool results inserted
+    """
+    if not messages:
+        return []
+
+    result: list[Message] = []
+    pending_tool_calls: list[ToolCallContent] = []
+
+    for msg in messages:
+        # If we have pending tool calls and see another assistant message,
+        # insert synthetic results first
+        if msg.role == "assistant" and pending_tool_calls:
+            for tool_call in pending_tool_calls:
+                result.append(
+                    Message(
+                        role="tool",
+                        content="[interrupted - no result provided]",
+                        tool_call_id=tool_call.id,
+                    )
+                )
+            pending_tool_calls = []
+
+        # Track tool calls from assistant messages
+        if msg.role == "assistant" and isinstance(msg.content, list):
+            for block in msg.content:
+                if isinstance(block, ToolCallContent):
+                    pending_tool_calls.append(block)
+
+        # Tool results clear the pending tool calls for that ID
+        if msg.role == "tool" and msg.tool_call_id:
+            pending_tool_calls = [
+                tc for tc in pending_tool_calls if tc.id != msg.tool_call_id
+            ]
+
+        # User messages also interrupt tool flow - insert synthetic results
+        if msg.role == "user" and pending_tool_calls:
+            for tool_call in pending_tool_calls:
+                result.append(
+                    Message(
+                        role="tool",
+                        content="[interrupted - no result provided]",
+                        tool_call_id=tool_call.id,
+                    )
+                )
+            pending_tool_calls = []
+
+        result.append(msg)
+
+    return result
 
 
 def _strip_non_last_thinking(messages: list[Message]) -> list[Message]:

@@ -924,9 +924,35 @@ async def run_agent(
 
             # Add "interrupted" tool results for any pending tool calls
             # This ensures session state is valid on resume (every tool call has a result)
-            if current_state.pending_tool_calls:
+            #
+            # Check both pending_tool_calls AND the last message's tool calls.
+            # If cancelled during rollout(), pending_tool_calls may be empty but
+            # the assistant message with tool calls is already in the trajectory.
+            tool_calls_to_interrupt = list(
+                current_state.pending_tool_calls[current_state.next_tool_idx:]
+            )
+
+            # Also check last message for tool calls not yet in pending_tool_calls
+            last_msg = (
+                current_state.actor.trajectory.messages[-1]
+                if current_state.actor.trajectory.messages
+                else None
+            )
+            if last_msg and last_msg.role == "assistant" and not tool_calls_to_interrupt:
+                # Get tool calls from last message that don't have results
+                msg_tool_calls = last_msg.get_tool_calls()
+                existing_result_ids = {
+                    m.tool_call_id
+                    for m in current_state.actor.trajectory.messages
+                    if m.role == "tool" and m.tool_call_id
+                }
+                tool_calls_to_interrupt = [
+                    tc for tc in msg_tool_calls if tc.id not in existing_result_ids
+                ]
+
+            if tool_calls_to_interrupt:
                 interrupted_messages = []
-                for tool_call in current_state.pending_tool_calls[current_state.next_tool_idx :]:
+                for tool_call in tool_calls_to_interrupt:
                     interrupted_msg = Message(
                         role="tool",
                         content="[interrupted]",
