@@ -49,7 +49,6 @@ class InteractiveAgentRunner:
         initial_trajectory: Trajectory,
         endpoint: Endpoint,
         environment: Environment | None = None,
-        max_turns: int = 50,
         session_store: SessionStore | None = None,
         session_id: str | None = None,
         theme_name: str = "dark",
@@ -66,7 +65,6 @@ class InteractiveAgentRunner:
             initial_trajectory: Initial conversation trajectory
             endpoint: LLM endpoint configuration
             environment: Optional environment for tool execution
-            max_turns: Maximum number of turns
             session_store: Optional session store for persistence
             session_id: Optional session ID (required if session_store is set)
             theme_name: Theme name (dark or rounded)
@@ -81,7 +79,6 @@ class InteractiveAgentRunner:
         self.endpoint = endpoint
         self.theme_name = theme_name
         self.environment = environment
-        self.max_turns = max_turns
         self.session_store = session_store
         self.session_id = session_id
         self.debug = debug
@@ -414,11 +411,7 @@ class InteractiveAgentRunner:
             self.tui.request_render()
 
     def _handle_stop(self, state: AgentState) -> AgentState:
-        """Handle stop condition - check max turns."""
-        from dataclasses import replace
-
-        if state.turn_idx >= self.max_turns:
-            return replace(state, stop=StopReason.MAX_TURNS)
+        """Handle stop condition. No max turns limit in interactive mode."""
         return state
 
     def _setup_tui(self) -> None:
@@ -723,7 +716,6 @@ async def run_interactive_agent(
     initial_trajectory: Trajectory,
     endpoint: Endpoint,
     environment: Environment | None = None,
-    max_turns: int = 50,
     session_store: SessionStore | None = None,
     session_id: str | None = None,
     theme_name: str = "dark",
@@ -740,7 +732,6 @@ async def run_interactive_agent(
         initial_trajectory: Initial conversation trajectory
         endpoint: LLM endpoint configuration
         environment: Optional environment for tool execution
-        max_turns: Maximum number of turns
         session_store: Optional session store for persistence
         session_id: Optional session ID (required if session_store is set)
         theme_name: Theme name (dark or rounded)
@@ -758,7 +749,6 @@ async def run_interactive_agent(
         initial_trajectory=initial_trajectory,
         endpoint=endpoint,
         environment=environment,
-        max_turns=max_turns,
         session_store=session_store,
         session_id=session_id,
         theme_name=theme_name,
