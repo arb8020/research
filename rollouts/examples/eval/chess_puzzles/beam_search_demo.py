@@ -11,7 +11,6 @@ Requires:
 """
 
 import trio
-
 from rollouts.datasets.lichess_puzzles import (
     get_puzzle_fen_after_opponent_move,
     load_lichess_puzzles,
@@ -80,6 +79,7 @@ Think about tactics: forks, pins, discovered attacks, checkmate patterns.""",
 
     # Use a simple model for testing
     import os
+
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     endpoint = Endpoint(provider="anthropic", model="claude-sonnet-4-20250514", api_key=api_key)
 

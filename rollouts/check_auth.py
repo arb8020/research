@@ -127,7 +127,6 @@ def check_current_auth():
 def test_api_key_path():
     """Test that API key path actually uses API key (not OAuth)"""
     import trio
-
     from rollouts.dtypes import Actor, Endpoint, Message, StreamEvent, Trajectory
     from rollouts.providers.anthropic import rollout_anthropic
 

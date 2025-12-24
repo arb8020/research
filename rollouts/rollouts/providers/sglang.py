@@ -351,9 +351,19 @@ async def rollout_sglang_streaming(
     try:
         stream = await client.chat.completions.create(**params)
         completion = await aggregate_stream(stream, on_chunk)
-    except Exception as e:
-        logger.error(f"SGLang streaming request failed: {e}")
+    except NonRetryableError:
+        # Context length, invalid params - re-raise as-is
         raise
+    except Exception as e:
+        from .base import ProviderError
+
+        logger.error(f"SGLang streaming request failed: {e}")
+        raise ProviderError(
+            f"SGLang API error: {e}",
+            original_error=e,
+            attempts=max_retries,
+            provider="sglang",
+        ) from e
 
     # Update trajectory with completion
     completion = replace(completion, model=actor.endpoint.model)
@@ -461,8 +471,12 @@ async def rollout_sglang_token_level(
     tool_calls = []
     if actor.tools:
         tool_call_parser = kwargs.get("tool_call_parser", "hermes")
-        tools_for_parser = [_tool_to_openai(t) for t in actor.tools] if tool_call_parser != "hermes" else None
-        tool_calls = parse_tool_calls(generated_text, tools=tools_for_parser, parser=tool_call_parser)
+        tools_for_parser = (
+            [_tool_to_openai(t) for t in actor.tools] if tool_call_parser != "hermes" else None
+        )
+        tool_calls = parse_tool_calls(
+            generated_text, tools=tools_for_parser, parser=tool_call_parser
+        )
 
     # Build Message from decoded text
     if tool_calls:
@@ -623,8 +637,12 @@ async def rollout_vllm_token_level(
     tool_calls = []
     if actor.tools:
         tool_call_parser = kwargs.get("tool_call_parser", "hermes")
-        tools_for_parser = [_tool_to_openai(t) for t in actor.tools] if tool_call_parser != "hermes" else None
-        tool_calls = parse_tool_calls(generated_text, tools=tools_for_parser, parser=tool_call_parser)
+        tools_for_parser = (
+            [_tool_to_openai(t) for t in actor.tools] if tool_call_parser != "hermes" else None
+        )
+        tool_calls = parse_tool_calls(
+            generated_text, tools=tools_for_parser, parser=tool_call_parser
+        )
 
     # Build Message from decoded text
     if tool_calls:

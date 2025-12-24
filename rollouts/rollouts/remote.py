@@ -31,8 +31,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 if TYPE_CHECKING:
-    from bifrost import BifrostClient
     from broker.client import ClientGPUInstance
+
+    from bifrost import BifrostClient
 
 
 def get_broker_credentials() -> dict[str, str]:

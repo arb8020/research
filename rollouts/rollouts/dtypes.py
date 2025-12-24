@@ -1038,6 +1038,23 @@ class Environment(Protocol):
         ...
 
 
+# TODO: Add provider-specific max_tokens limits and validate in Endpoint.__post_init__
+# Article quote: "Some providers have lower max_tokens than advertised, resulting in cut-off
+# responses, even though a higher limit was set via the API request. This affects SiliconFlow,
+# Friendly and Cerebras."
+#
+# Article quote: "Some providers have max_tokens limits which are lower than needed to evaluate
+# the corresponding model. These providers were dropped completely for the given eval."
+#
+# Problem: No validation that max_tokens is within provider/model limits. This causes silent
+# truncation where responses are cut off but we don't detect it.
+#
+# Fix: Add max_output_tokens to ModelInfo in models.py, then validate in __post_init__:
+#     model_meta = get_model(self.provider, self.model)
+#     if model_meta and model_meta.max_output_tokens:
+#         assert self.max_tokens <= model_meta.max_output_tokens
+
+
 @dataclass(frozen=True)
 class Endpoint(JsonSerializable):
     provider: str
@@ -1046,6 +1063,16 @@ class Endpoint(JsonSerializable):
     api_key: str = ""
     oauth_token: str = ""  # OAuth bearer token (takes precedence over api_key for Anthropic)
     max_tokens: int = 8192
+    # TODO: Document temperature choice for evaluations
+    # Article quote: "Evaluators must also decide on the sampling parameters that models will
+    # be run with, in particular the temperature... Default temperature is 0.0 for API-based
+    # models [lm-evaluation-harness]... Default temperature is 0.5 [simple-evals]...
+    # Default temperature is 1.0 (when invoking the script via command line) [gpt-oss]"
+    #
+    # Problem: Different temperature defaults make results incomparable across frameworks.
+    # Our default of 1.0 increases variance. For reproducible evals, consider 0.0.
+    #
+    # Decision needed: Document why we chose 1.0, or change to 0.0 for deterministic evals.
     temperature: float = 1.0
     tool_choice: str | dict[str, Any] | None = None
     parallel_tool_calls: bool | None = None
@@ -1264,6 +1291,22 @@ class EvalConfig:
     """Configuration for evaluation runs.
 
     Tiger Style: All configuration explicit, immutable, composable.
+
+    TODO: Document API choice and its impact on results
+    Article quote: "OpenAI reports up to 3% improvements on SWE-bench Verified by using their
+    Responses API, while other providers, such as Anthropic, only offer a subset of features
+    in their OpenAI ChatCompletions compatible endpoint."
+
+    Article quote: "Minimax reports an astronomical 23 percentage point difference in performance
+    on tau-bench when using their API implementation compared to the standard ChatCompletions API."
+
+    Problem: We use native SDKs (good), but should document which API variant we use per provider
+    and ensure we're not leaving performance on the table by using compatibility endpoints.
+
+    Current status:
+    - OpenAI: Using Chat Completions (not Responses API - may underperform by ~3%)
+    - Anthropic: Using native Messages API (correct)
+    - Google: Using native Gemini API (correct)
 
     Example:
         >>> def prepare_messages(sample: dict) -> list[Message]:

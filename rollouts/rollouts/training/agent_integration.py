@@ -488,14 +488,16 @@ def _branching_trajectory_to_samples(
         # Build metadata for this turn
         turn_metadata = metadata.copy() if metadata else {}
         turn_metadata["turn_index"] = msg_idx
-        turn_metadata["messages"] = [_msg_to_dict(m) for m in trajectory.messages[:msg_idx + 1]]
+        turn_metadata["messages"] = [_msg_to_dict(m) for m in trajectory.messages[: msg_idx + 1]]
 
         sample = Sample(
             prompt=tokenizer.apply_chat_template(
                 [_msg_to_dict(m) for m in input_messages],
                 tokenize=False,
                 add_generation_prompt=True,
-            ) if input_messages else "",
+            )
+            if input_messages
+            else "",
             response=_content_to_str(msg.content),
             tokens=tokens,
             loss_mask=loss_mask,
@@ -547,10 +549,7 @@ def _extract_tokens_from_trajectory(
     )
 
     # Check if ANY completion has stored token_ids
-    has_stored_tokens = any(
-        c.choices and c.choices[0].token_ids
-        for c in trajectory.completions
-    )
+    has_stored_tokens = any(c.choices and c.choices[0].token_ids for c in trajectory.completions)
 
     if not has_stored_tokens:
         # Fallback: retokenize (old behavior)

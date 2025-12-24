@@ -214,9 +214,7 @@ async def generate_vllm(
     top_logprobs_raw = logprobs_data.get("top_logprobs")
     top_logprobs = None
     if top_logprobs_raw:
-        top_logprobs = tuple(
-            pos_lp if pos_lp is not None else {} for pos_lp in top_logprobs_raw
-        )
+        top_logprobs = tuple(pos_lp if pos_lp is not None else {} for pos_lp in top_logprobs_raw)
 
     finish_reason = choice.get("finish_reason", "length")
 
@@ -318,12 +316,10 @@ def generate_hf(
 
         # Top-N logprobs
         topk = log_probs.topk(num_logprobs, dim=-1)
-        top_logprobs_list.append(
-            {
-                int(tok): float(lp)
-                for tok, lp in zip(topk.indices[0].tolist(), topk.values[0].tolist(), strict=False)
-            }
-        )
+        top_logprobs_list.append({
+            int(tok): float(lp)
+            for tok, lp in zip(topk.indices[0].tolist(), topk.values[0].tolist(), strict=False)
+        })
 
         # Check stop
         if next_token in stop_set:
@@ -331,9 +327,7 @@ def generate_hf(
             break
 
         # Append for next iteration
-        current_ids = torch.cat(
-            [current_ids, torch.tensor([[next_token]], device=device)], dim=1
-        )
+        current_ids = torch.cat([current_ids, torch.tensor([[next_token]], device=device)], dim=1)
     else:
         finish_reason = "length"
 

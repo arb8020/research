@@ -273,10 +273,10 @@ def _make_graphql_request(
         )
         response.raise_for_status()
     except requests.Timeout:
-        logger.error("RunPod GraphQL request timed out")
+        logger.exception("RunPod GraphQL request timed out")
         raise
     except requests.RequestException as exc:
-        logger.error(f"RunPod GraphQL request failed: {exc}")
+        logger.exception(f"RunPod GraphQL request failed: {exc}")
         raise
 
     data = response.json()
@@ -400,7 +400,7 @@ def search_gpu_offers(
                 )
 
         except Exception as e:
-            logger.error(f"Failed to query RunPod {cloud_name} cloud: {e}")
+            logger.exception(f"Failed to query RunPod {cloud_name} cloud: {e}")
             continue
 
     return offers
@@ -499,7 +499,7 @@ def provision_instance(
         )
 
     except Exception as e:
-        logger.error(f"Failed to provision RunPod instance: {e}")
+        logger.exception(f"Failed to provision RunPod instance: {e}")
         return None
 
 
@@ -561,7 +561,7 @@ def get_instance_details_enhanced(instance_id: str, api_key: str | None = None) 
         return pod_data
 
     except Exception as e:
-        logger.error(f"Failed to get RunPod instance details: {e}")
+        logger.exception(f"Failed to get RunPod instance details: {e}")
         return None
 
 
@@ -620,7 +620,7 @@ def get_instance_details(instance_id: str, api_key: str | None = None) -> GPUIns
         )
 
     except Exception as e:
-        logger.error(f"Failed to get RunPod instance details: {e}")
+        logger.exception(f"Failed to get RunPod instance details: {e}")
         return None
 
 
@@ -730,7 +730,7 @@ def list_instances(api_key: str | None = None) -> list[GPUInstance]:
         return instances
 
     except Exception as e:
-        logger.error(f"Failed to list RunPod instances: {e}")
+        logger.exception(f"Failed to list RunPod instances: {e}")
         return []
 
 
@@ -771,7 +771,7 @@ def get_user_balance(api_key: str | None = None) -> dict[str, Any] | None:
         return balance_info
 
     except Exception as e:
-        logger.error(f"Failed to get RunPod user balance: {e}")
+        logger.exception(f"Failed to get RunPod user balance: {e}")
         return None
 
 
@@ -805,7 +805,7 @@ def terminate_instance(instance_id: str, api_key: str | None = None) -> bool:
             return True
 
     except Exception as e:
-        logger.error(f"Failed to terminate RunPod instance: {e}")
+        logger.exception(f"Failed to terminate RunPod instance: {e}")
         return False
 
 
@@ -927,7 +927,7 @@ def _test_ssh_connectivity(instance) -> bool:
             logger.warning(f"SSH test failed: {result.stderr}")
             return False
     except Exception as e:
-        logger.error(f"SSH connection error: {e}")
+        logger.exception(f"SSH connection error: {e}")
         return False
 
 
@@ -1008,5 +1008,5 @@ def get_pod_logs(instance_id: str, api_key: str | None = None) -> dict[str, Any]
         return result
 
     except Exception as e:
-        logger.error(f"Failed to get RunPod pod logs: {e}")
+        logger.exception(f"Failed to get RunPod pod logs: {e}")
         return None

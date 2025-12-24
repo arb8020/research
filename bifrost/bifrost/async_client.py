@@ -11,12 +11,12 @@ import trio_asyncio
 from shared.validation import validate_ssh_key_path, validate_timeout
 
 from .types import (
-    ConnectionError,
     CopyResult,
     EnvironmentVariables,
     ExecResult,
     RemoteConfig,
     SSHConnection,
+    SSHConnectionError,
     TransferError,
 )
 from .validation import validate_bootstrap_cmd
@@ -24,7 +24,7 @@ from .validation import validate_bootstrap_cmd
 logger = logging.getLogger(__name__)
 
 
-def _trio_wrap(coro_func):
+def _trio_wrap(coro_func: Callable) -> Callable:
     """Helper to wrap asyncio coroutines for trio-asyncio.
 
     Usage: await _trio_wrap(conn.run)(args, kwargs)
@@ -55,7 +55,7 @@ class AsyncBifrostClient:
         ssh_key_path: str,
         timeout: int = 30,
         progress_callback: Callable[[str, int, int], None] | None = None,
-    ):
+    ) -> None:
         """
         Initialize Async Bifrost client.
 
@@ -101,7 +101,7 @@ class AsyncBifrostClient:
             asyncssh.SSHClientConnection
 
         Raises:
-            ConnectionError: If connection fails after all retry attempts
+            SSHConnectionError: If connection fails after all retry attempts
         """
         # Retry 3 times with exponential backoff (2s, 4s, 8s = 14s total)
         # Enough to handle transient network issues but fail fast on real problems
@@ -123,10 +123,6 @@ class AsyncBifrostClient:
                     keepalive_interval=30,
                     known_hosts=None,  # Accept any host key (like paramiko.AutoAddPolicy)
                 )
-
-                self.logger.debug(f"Connected to {self.ssh}")
-                return conn
-
             except Exception as e:
                 if attempt < max_attempts - 1:
                     wait_time = delay * (backoff**attempt)
@@ -135,11 +131,14 @@ class AsyncBifrostClient:
                     )
                     await trio.sleep(wait_time)
                 else:
-                    raise ConnectionError(
+                    raise SSHConnectionError(
                         f"Failed to connect to {self.ssh} after {max_attempts} attempts: {e}"
-                    )
+                    ) from e
+            else:
+                self.logger.debug(f"Connected to {self.ssh}")
+                return conn
 
-        raise ConnectionError(f"Failed to connect to {self.ssh}")
+        raise SSHConnectionError(f"Failed to connect to {self.ssh}")
 
     async def _get_connection(self) -> asyncssh.SSHClientConnection:
         """Get or create SSH connection.
@@ -153,7 +152,8 @@ class AsyncBifrostClient:
             return self._ssh_conn
 
         # Check if existing connection is still alive
-        if self._ssh_conn._transport.is_closing():
+        transport = self._ssh_conn._transport
+        if transport is None or transport.is_closing():
             self.logger.debug("SSH connection inactive, reconnecting...")
             self._ssh_conn = await self._establish_connection()
             assert self._ssh_conn is not None, "SSH connection must be initialized"
@@ -221,7 +221,7 @@ class AsyncBifrostClient:
             ExecResult with stdout, stderr, exit_code
 
         Raises:
-            ConnectionError: SSH connection failed
+            SSHConnectionError: SSH connection failed
         """
         try:
             conn = await self._get_connection()
@@ -257,9 +257,9 @@ class AsyncBifrostClient:
             )
 
         except Exception as e:
-            if isinstance(e, ConnectionError):
+            if isinstance(e, SSHConnectionError):
                 raise
-            raise ConnectionError(f"Execution failed: {e}")
+            raise SSHConnectionError(f"Execution failed: {e}") from e
 
     async def exec_stream(
         self,
@@ -282,7 +282,7 @@ class AsyncBifrostClient:
             Lines of output (stdout and stderr interleaved) as they're produced
 
         Raises:
-            ConnectionError: SSH connection failed
+            SSHConnectionError: SSH connection failed
         """
         try:
             conn = await self._get_connection()
@@ -329,9 +329,9 @@ class AsyncBifrostClient:
                 process.close()
 
         except Exception as e:
-            if isinstance(e, ConnectionError):
+            if isinstance(e, SSHConnectionError):
                 raise
-            raise ConnectionError(f"Streaming execution failed: {e}")
+            raise SSHConnectionError(f"Streaming execution failed: {e}") from e
 
     async def push(self, workspace_path: str, bootstrap_cmd: str | list[str] | None = None) -> str:
         """Deploy code to remote workspace.
@@ -355,7 +355,7 @@ class AsyncBifrostClient:
             Path to deployed workspace (absolute, tilde-expanded)
 
         Raises:
-            ConnectionError: SSH connection failed
+            SSHConnectionError: SSH connection failed
             RuntimeError: Deployment failed
 
         Note:
@@ -416,7 +416,7 @@ class AsyncBifrostClient:
             Absolute expanded path on remote machine
 
         Raises:
-            ConnectionError: SSH connection failed
+            SSHConnectionError: SSH connection failed
 
         Example:
             workspace = await client.push(workspace_path="~/.bifrost/workspaces/foo")
@@ -447,7 +447,7 @@ class AsyncBifrostClient:
             CopyResult with transfer statistics
 
         Raises:
-            ConnectionError: SSH connection failed
+            SSHConnectionError: SSH connection failed
             TransferError: File transfer failed
         """
         import time
@@ -495,7 +495,7 @@ class AsyncBifrostClient:
                 sftp.close()
 
         except Exception as e:
-            if isinstance(e, (ConnectionError, TransferError)):
+            if isinstance(e, (SSHConnectionError, TransferError)):
                 raise
             duration = time.time() - start_time
             return CopyResult(
@@ -506,7 +506,7 @@ class AsyncBifrostClient:
                 error_message=str(e),
             )
 
-    async def _copy_file(self, sftp, remote_path: str, local_path: str) -> int:
+    async def _copy_file(self, sftp: asyncssh.SFTPClient, remote_path: str, local_path: str) -> int:
         """Copy single file and return bytes transferred."""
         # Ensure local directory exists
         local_dir = Path(local_path).parent
@@ -522,7 +522,11 @@ class AsyncBifrostClient:
         return file_size
 
     async def _copy_directory(
-        self, sftp, conn, remote_path: str, local_path: str
+        self,
+        sftp: asyncssh.SFTPClient,
+        conn: asyncssh.SSHClientConnection,
+        remote_path: str,
+        local_path: str,
     ) -> tuple[int, int]:
         """Copy directory recursively and return (files_copied, total_bytes).
 
@@ -536,11 +540,11 @@ class AsyncBifrostClient:
         total_bytes = 0
 
         # Use Trio nursery for parallel file transfers
-        async def copy_one_file(remote_file: str):
+        async def copy_one_file(remote_file: str) -> None:
             nonlocal files_copied, total_bytes
 
-            # Calculate relative path and local destination
-            rel_path = os.path.relpath(remote_file, remote_path)
+            # Calculate relative path and local destination (string ops only, no fs access)
+            rel_path = os.path.relpath(remote_file, remote_path)  # noqa: ASYNC240
             local_file = os.path.join(local_path, rel_path)
 
             # Copy file
@@ -573,7 +577,7 @@ class AsyncBifrostClient:
             CopyResult with transfer statistics
 
         Raises:
-            ConnectionError: SSH connection failed
+            SSHConnectionError: SSH connection failed
             TransferError: File transfer failed
         """
         import time
@@ -584,11 +588,11 @@ class AsyncBifrostClient:
             conn = await self._get_connection()
 
             # Check if local path exists
-            local_path_obj = Path(local_path)
-            if not local_path_obj.exists():
+            local_path_obj = trio.Path(local_path)
+            if not await local_path_obj.exists():
                 raise TransferError(f"Local path not found: {local_path}")
 
-            is_directory = local_path_obj.is_dir()
+            is_directory = await local_path_obj.is_dir()
 
             if is_directory and not recursive:
                 raise TransferError(f"{local_path} is a directory. Use recursive=True")
@@ -619,7 +623,7 @@ class AsyncBifrostClient:
                 sftp.close()
 
         except Exception as e:
-            if isinstance(e, (ConnectionError, TransferError)):
+            if isinstance(e, (SSHConnectionError, TransferError)):
                 raise
             duration = time.time() - start_time
             return CopyResult(
@@ -630,7 +634,9 @@ class AsyncBifrostClient:
                 error_message=str(e),
             )
 
-    async def _upload_file(self, sftp, local_path: str, remote_path: str) -> int:
+    async def _upload_file(
+        self, sftp: asyncssh.SFTPClient, local_path: str, remote_path: str
+    ) -> int:
         """Upload single file and return bytes transferred."""
         # Create remote directory if needed
         remote_dir = os.path.dirname(remote_path)
@@ -638,14 +644,15 @@ class AsyncBifrostClient:
             await self._create_remote_dir(sftp, remote_dir)
 
         # Get file size
-        file_size = os.path.getsize(local_path)
+        local_stat = await trio.Path(local_path).stat()
+        file_size = local_stat.st_size
 
         # Upload file
         await _trio_wrap(sftp.put)(local_path, remote_path)
 
         return file_size
 
-    async def _create_remote_dir(self, sftp, remote_dir: str):
+    async def _create_remote_dir(self, sftp: asyncssh.SFTPClient, remote_dir: str) -> None:
         """Create remote directory recursively."""
         try:
             await _trio_wrap(sftp.stat)(remote_dir)  # Check if directory exists
@@ -660,21 +667,26 @@ class AsyncBifrostClient:
                 # Directory might have been created by another process
                 pass
 
-    async def _upload_directory(self, sftp, local_path: str, remote_path: str) -> tuple[int, int]:
+    async def _upload_directory(
+        self, sftp: asyncssh.SFTPClient, local_path: str, remote_path: str
+    ) -> tuple[int, int]:
         """Upload directory recursively and return (files_uploaded, total_bytes).
 
         Uses Trio's structured concurrency to upload files in parallel.
         """
-        local_path_obj = Path(local_path)
+        local_path_obj = trio.Path(local_path)
 
         files_uploaded = 0
         total_bytes = 0
 
         # Collect all files first
-        all_files = [f for f in local_path_obj.rglob("*") if f.is_file()]
+        all_files = []
+        for f in await local_path_obj.rglob("*"):
+            if await f.is_file():
+                all_files.append(f)
 
         # Use Trio nursery for parallel file uploads
-        async def upload_one_file(local_file: Path):
+        async def upload_one_file(local_file: trio.Path) -> None:
             nonlocal files_uploaded, total_bytes
 
             # Calculate relative path and remote destination
@@ -714,17 +726,22 @@ class AsyncBifrostClient:
         """
         return await self.copy_files(remote_path, local_path, recursive)
 
-    async def close(self):
+    async def close(self) -> None:
         """Close SSH connection."""
         if self._ssh_conn:
             self._ssh_conn.close()
             await _trio_wrap(self._ssh_conn.wait_closed)()
             self._ssh_conn = None
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> "AsyncBifrostClient":
         """Async context manager entry."""
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: object,
+    ) -> None:
         """Async context manager exit."""
         await self.close()

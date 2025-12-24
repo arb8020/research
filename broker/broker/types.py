@@ -255,12 +255,11 @@ class GPUInstance:
                 assert self.public_ip, "SSH ready but no public_ip"
                 assert self.ssh_port, "SSH ready but no ssh_port"
                 assert self.ssh_username, "SSH ready but no ssh_username"
-
-            return result
-
         except Exception as e:
-            logger.error(f"wait_until_ssh_ready failed: {e}")
+            logger.exception(f"wait_until_ssh_ready failed: {e}")
             return False
+        else:
+            return result
 
     def refresh(self) -> "GPUInstance":
         """Refresh instance details from provider"""
@@ -394,7 +393,7 @@ class ProviderCredentials:
     vast: str = ""
     # Add more providers as needed
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         # Tiger Style: assert at least one credential provided
         assert self.runpod or self.primeintellect or self.lambdalabs or self.vast, (
             "At least one provider credential required"

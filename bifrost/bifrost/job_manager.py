@@ -77,7 +77,7 @@ def generate_job_id() -> str:
 class JobManager:
     """Manages detached jobs on remote instances."""
 
-    def __init__(self, ssh_user: str, ssh_host: str, ssh_port: int):
+    def __init__(self, ssh_user: str, ssh_host: str, ssh_port: int) -> None:
         self.ssh_user = ssh_user
         self.ssh_host = ssh_host
         self.ssh_port = ssh_port

@@ -14,12 +14,11 @@ import os
 import re
 
 import trio
-
 from rollouts.dtypes import Endpoint, Metric, Score
 from rollouts.prompt_optimization import (
-    GEPAConfig,
+    EvolutionaryConfig,
     PromptTemplate,
-    run_gepa,
+    run_evolutionary_gepa,
 )
 from rollouts.training.types import Sample
 
@@ -258,7 +257,7 @@ Respond with ONLY the intent label, nothing else.""",
     )
 
     # ─── GEPA Configuration ───────────────────────────────────────────────
-    config = GEPAConfig(
+    config = EvolutionaryConfig(
         population_size=8,
         generations=4,
         mutation_rate=0.4,
@@ -299,7 +298,7 @@ Respond with ONLY the intent label, nothing else.""",
                 f"  Generation {gen + 1}: best={max(scores):.2%}, mean={sum(scores) / len(scores):.2%}"
             )
 
-    result = await run_gepa(
+    result = await run_evolutionary_gepa(
         initial_template=initial_template,
         config=config,
         dataset=DATASET,

@@ -6,10 +6,10 @@ by comparing against a naive reference implementation.
 
 Usage:
     # Local (with GPU)
-    python tools/functional_extractor/debug_swa.py
+    uv run python -m rollouts.tools.functional_extractor.debug_swa --local
 
     # Remote GPU
-    python tools/functional_extractor/debug_swa.py --gpu-id <id>
+    uv run python -m rollouts.tools.functional_extractor.debug_swa --gpu-id <id>
 """
 
 from __future__ import annotations
@@ -185,17 +185,96 @@ def debug_swa():
 
 
 if __name__ == "__main__":
-    import torch
+    import argparse
 
-    if torch.cuda.is_available():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--gpu-id", type=str, help="Reuse existing GPU instance")
+    parser.add_argument("--local", action="store_true", help="Run locally (requires GPU)")
+    args = parser.parse_args()
+
+    # Check if we can run locally
+    run_local = args.local
+    if not run_local:
+        try:
+            import torch
+
+            run_local = torch.cuda.is_available()
+        except ImportError:
+            run_local = False
+
+    if run_local:
         debug_swa()
     else:
-        print("No GPU available. Run on remote GPU.")
-        import argparse
+        print("No local GPU. Running on remote GPU...")
 
-        from verify import run_on_gpu
+        # Use bifrost v2 API for remote execution
+        from pathlib import Path
 
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--gpu-id", type=str)
-        args = parser.parse_args()
-        run_on_gpu(__file__, gpu_id=args.gpu_id, keep_alive=True, vram_gb=16)
+        from dotenv import load_dotenv
+
+        load_dotenv()
+
+        from bifrost import (
+            GPUQuery,
+            ProcessSpec,
+            acquire_node,
+            job_stream_until_complete,
+        )
+
+        # Acquire a GPU node
+        print("Acquiring GPU node...")
+        if args.gpu_id:
+            bifrost, instance = acquire_node(node_id=args.gpu_id)
+        else:
+            bifrost, instance = acquire_node(
+                provision=GPUQuery(type="A100", count=1, min_cuda="12.0")
+            )
+
+        if instance:
+            print(f"Instance: {instance.provider}:{instance.id}")
+
+        try:
+            # Deploy code with bootstrap
+            print("Deploying code...")
+            bootstrap = ["pip install torch transformers accelerate"]
+            workspace = bifrost.push(
+                "~/.bifrost/workspaces/rollouts-debug-swa",
+                bootstrap_cmd=bootstrap,
+            )
+            print(f"Workspace: {workspace}")
+
+            # Get relative path to this script
+            script_path = Path(__file__).resolve()
+            repo_root = script_path.parents[
+                3
+            ]  # rollouts/tools/functional_extractor/debug_swa.py -> repo root
+            rel_path = script_path.relative_to(repo_root)
+
+            # Submit job
+            log_file = f"{workspace}/debug_swa.log"
+            job = bifrost.submit(
+                ProcessSpec(
+                    command="python",
+                    args=(str(rel_path), "--local"),  # --local since we're on the GPU now
+                    cwd=workspace,
+                ),
+                name="debug-swa",
+                log_file=log_file,
+                workspace=workspace,
+            )
+
+            print(f"Job started in tmux session: {job.tmux_session}")
+            print("-" * 50)
+            success, exit_code, err = job_stream_until_complete(
+                bifrost, job, timeout=600, poll_interval=1.0
+            )
+            print("-" * 50)
+
+            if not success:
+                print(f"Job failed: {err} (exit code: {exit_code})")
+
+        finally:
+            if instance and not args.gpu_id:
+                print(f"\n💡 Instance kept alive: {instance.provider}:{instance.id}")
+                print(f"   Reuse with: --gpu-id {instance.provider}:{instance.id}")
+                print(f"   Terminate: broker terminate {instance.provider}:{instance.id}")

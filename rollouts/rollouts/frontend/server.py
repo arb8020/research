@@ -1060,11 +1060,15 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
             # Try to replace cuda_device_ids list first
             config_source = re.sub(
-                r"(cuda_device_ids\s*[:=]\s*)\[[^\]]*\]", f"\\g<1>{cuda_device_ids_str}", config_source
+                r"(cuda_device_ids\s*[:=]\s*)\[[^\]]*\]",
+                f"\\g<1>{cuda_device_ids_str}",
+                config_source,
             )
             # Also try in dict format
             config_source = re.sub(
-                r'(["\']cuda_device_ids["\']\s*:\s*)\[[^\]]*\]', f"\\g<1>{cuda_device_ids_str}", config_source
+                r'(["\']cuda_device_ids["\']\s*:\s*)\[[^\]]*\]',
+                f"\\g<1>{cuda_device_ids_str}",
+                config_source,
             )
             # Fallback: replace old gpu_id with first GPU from list
             if cuda_device_ids:
@@ -1445,14 +1449,18 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
 
             cuda_device_ids = []
             # Try to match cuda_device_ids as a list first
-            gpu_list_match = re.search(r'["\']cuda_device_ids["\']\s*:\s*\[([^\]]+)\]', config_source)
+            gpu_list_match = re.search(
+                r'["\']cuda_device_ids["\']\s*:\s*\[([^\]]+)\]', config_source
+            )
             if not gpu_list_match:
                 gpu_list_match = re.search(r"cuda_device_ids\s*[:=]\s*\[([^\]]+)\]", config_source)
 
             if gpu_list_match:
                 # Parse list of GPU IDs
                 cuda_device_ids_str = gpu_list_match.group(1)
-                cuda_device_ids = [int(x.strip()) for x in cuda_device_ids_str.split(",") if x.strip().isdigit()]
+                cuda_device_ids = [
+                    int(x.strip()) for x in cuda_device_ids_str.split(",") if x.strip().isdigit()
+                ]
             else:
                 # Fallback to single gpu_id
                 gpu_match = re.search(r'["\']gpu_id["\']\s*:\s*(\d+)', config_source)

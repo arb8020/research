@@ -32,30 +32,26 @@ import argparse
 import logging
 import random
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 import trio
-
 from rollouts.agents import handle_stop_max_turns, run_agent
 from rollouts.dtypes import (
     Actor,
     AgentState,
     Message,
-    Metric,
     RunConfig,
-    Score,
     Trajectory,
 )
 
 from .base_config import (
+    RLM_TOOL_SYSTEM_PROMPT,
     DatasetConfig,
     EndpointConfig,
     EvalRunConfig,
     OutputConfig,
     RLMConfig,
     RLMEvalConfig,
-    RLM_TOOL_SYSTEM_PROMPT,
     get_endpoint,
     get_sub_endpoint,
     numeric_match_score,
@@ -80,9 +76,7 @@ class NeedleHaystackDatasetConfig(DatasetConfig):
 class NeedleHaystackConfig(RLMEvalConfig):
     """Needle-in-haystack evaluation config."""
 
-    dataset: NeedleHaystackDatasetConfig = field(
-        default_factory=NeedleHaystackDatasetConfig
-    )
+    dataset: NeedleHaystackDatasetConfig = field(default_factory=NeedleHaystackDatasetConfig)
     output: OutputConfig = field(
         default_factory=lambda: OutputConfig(experiment_name="needle_haystack")
     )
@@ -110,9 +104,24 @@ def generate_haystack(
         random.seed(seed)
 
     words = [
-        "lorem", "ipsum", "dolor", "sit", "amet", "consectetur",
-        "adipiscing", "elit", "sed", "do", "eiusmod", "tempor",
-        "incididunt", "ut", "labore", "et", "dolore", "magna",
+        "lorem",
+        "ipsum",
+        "dolor",
+        "sit",
+        "amet",
+        "consectetur",
+        "adipiscing",
+        "elit",
+        "sed",
+        "do",
+        "eiusmod",
+        "tempor",
+        "incididunt",
+        "ut",
+        "labore",
+        "et",
+        "dolore",
+        "magna",
     ]
 
     lines = []
@@ -123,7 +132,9 @@ def generate_haystack(
 
     # Insert needle in middle third
     insert_pos = random.randint(num_lines // 3, 2 * num_lines // 3)
-    lines[insert_pos] = f"[{insert_pos:08d}] SECRET: The magic number is {magic_number}. Remember this."
+    lines[insert_pos] = (
+        f"[{insert_pos:08d}] SECRET: The magic number is {magic_number}. Remember this."
+    )
 
     return "\n".join(lines), insert_pos
 
@@ -315,7 +326,7 @@ async def run_evaluation(config: NeedleHaystackConfig) -> dict[str, Any]:
     setup_logging(level="INFO", use_color=True)
 
     logger.info("=" * 60)
-    logger.info(f"Needle-in-Haystack Evaluation")
+    logger.info("Needle-in-Haystack Evaluation")
     logger.info("=" * 60)
     logger.info(f"Lines per context: {config.dataset.num_lines:,}")
     logger.info(f"Samples: {config.dataset.max_samples}")
@@ -341,7 +352,9 @@ async def run_evaluation(config: NeedleHaystackConfig) -> dict[str, Any]:
         result = await eval_one(sample)
         results.append(result)
         status = "✓" if result["correct"] else "✗"
-        logger.info(f"  {status} {result['sample_id']}: {result['predicted']} (expected {result['magic_number']})")
+        logger.info(
+            f"  {status} {result['sample_id']}: {result['predicted']} (expected {result['magic_number']})"
+        )
 
     # Compute metrics
     correct = sum(1 for r in results if r["correct"])

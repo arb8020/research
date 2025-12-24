@@ -45,9 +45,7 @@ def run_remote(
     else:
         # Provision new instance
         print("Provisioning 2x GPU...")
-        bifrost, instance = acquire_node(
-            provision=GPUQuery(type="A100", count=2, min_cuda="12.8")
-        )
+        bifrost, instance = acquire_node(provision=GPUQuery(type="A100", count=2, min_cuda="12.8"))
         if instance:
             print(f"Instance: {instance.provider}:{instance.id}")
 

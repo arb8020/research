@@ -10,19 +10,19 @@ from bifrost.client import BifrostClient
 
 
 class _FakeChannel:
-    def __init__(self, chunks):
+    def __init__(self, chunks) -> None:
         self._chunks = deque(chunks)
         self.executed_command = None
         self.pty_requested = False
         self.closed = False
 
-    def set_combine_stderr(self, _):
+    def set_combine_stderr(self, _) -> None:
         pass
 
-    def get_pty(self):
+    def get_pty(self) -> None:
         self.pty_requested = True
 
-    def exec_command(self, command):
+    def exec_command(self, command) -> None:
         self.executed_command = command
 
     def recv_ready(self):
@@ -33,18 +33,18 @@ class _FakeChannel:
             return self._chunks.popleft()
         return b""
 
-    def exit_status_ready(self):
+    def exit_status_ready(self) -> bool:
         return not self._chunks
 
-    def recv_exit_status(self):
+    def recv_exit_status(self) -> int:
         return 0
 
-    def close(self):
+    def close(self) -> None:
         self.closed = True
 
 
 class _FakeTransport:
-    def __init__(self, channel):
+    def __init__(self, channel) -> None:
         self._channel = channel
         self.open_calls = 0
 
@@ -54,14 +54,14 @@ class _FakeTransport:
 
 
 class _FakeSSHClient:
-    def __init__(self, channel):
+    def __init__(self, channel) -> None:
         self._transport = _FakeTransport(channel)
 
     def get_transport(self):
         return self._transport
 
 
-def run_smoke_test():
+def run_smoke_test() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         key_path = Path(tmpdir) / "dummy_key"
         key_path.write_text("dummy")
@@ -88,5 +88,5 @@ if __name__ == "__main__":
         run_smoke_test()
     except AssertionError as exc:
         print(f"SMOKE TEST FAILED: {exc}")
-        raise SystemExit(1)
+        raise SystemExit(1) from None
     print("SMOKE TEST PASSED")

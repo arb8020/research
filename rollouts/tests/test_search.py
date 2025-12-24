@@ -14,7 +14,6 @@ module as a coherent unit, not individual functions in isolation.
 
 import pytest
 import trio
-
 from rollouts.dtypes import (
     Actor,
     AgentState,

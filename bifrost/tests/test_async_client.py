@@ -9,7 +9,7 @@ from bifrost import AsyncBifrostClient
 pytestmark = pytest.mark.trio
 
 
-async def test_async_client_context_manager():
+async def test_async_client_context_manager() -> None:
     """Test that AsyncBifrostClient can be used as an async context manager."""
     # This test doesn't actually connect, just tests the interface
     # Real connection tests would require a live SSH server
@@ -23,7 +23,7 @@ async def test_async_client_context_manager():
     assert client.ssh.port == 22
 
 
-async def test_exec_stream_interface():
+async def test_exec_stream_interface() -> None:
     """Test that exec_stream returns an async iterator."""
     client = AsyncBifrostClient(ssh_connection="user@example.com:22", ssh_key_path="~/.ssh/id_rsa")
 
@@ -32,10 +32,10 @@ async def test_exec_stream_interface():
     assert callable(client.exec_stream)
 
 
-async def test_parallel_operations_with_nursery():
+async def test_parallel_operations_with_nursery() -> None:
     """Demonstrate how trio nurseries enable parallel operations."""
 
-    async def mock_task(task_id: int, duration: float):
+    async def mock_task(task_id: int, duration: float) -> str:
         """Mock async task."""
         await trio.sleep(duration)
         return f"Task {task_id} completed"
@@ -53,10 +53,10 @@ async def test_parallel_operations_with_nursery():
     assert True  # Nursery exited cleanly
 
 
-async def test_timeout_with_trio():
+async def test_timeout_with_trio() -> None:
     """Demonstrate trio's timeout mechanism."""
 
-    async def slow_task():
+    async def slow_task() -> str:
         await trio.sleep(10)
         return "Should not complete"
 

@@ -20,6 +20,7 @@ import os
 
 import pytest
 import trio
+from rollouts.transform_messages import transform_messages
 
 from rollouts import (
     Actor,
@@ -34,7 +35,6 @@ from rollouts import (
     run_agent,
     stdout_handler,
 )
-from rollouts.transform_messages import transform_messages
 
 
 def get_endpoint(provider: str, model: str, api_key: str, api_base: str = "") -> Endpoint:
@@ -148,9 +148,7 @@ async def test_openai_to_anthropic_tool_handoff():
         tools=env.get_tools(),
     )
 
-    actor, env = await run_single_turn(
-        actor, env, "Use the add tool to add 10 to the calculator."
-    )
+    actor, env = await run_single_turn(actor, env, "Use the add tool to add 10 to the calculator.")
 
     # Verify OpenAI made tool calls with valid IDs
     verify_tool_call_ids(actor.trajectory.messages, "After OpenAI")
@@ -173,9 +171,7 @@ async def test_openai_to_anthropic_tool_handoff():
     verify_tool_call_ids(actor.trajectory.messages, "After transform to Anthropic")
 
     # Make another tool call with Anthropic
-    actor, env = await run_single_turn(
-        actor, env, "Now use the add tool to add 5 more."
-    )
+    actor, env = await run_single_turn(actor, env, "Now use the add tool to add 5 more.")
 
     # Verify all tool_call_ids are still valid
     verify_tool_call_ids(actor.trajectory.messages, "After Anthropic tool call")
@@ -223,9 +219,7 @@ async def test_anthropic_to_openai_tool_handoff():
         tools=env.get_tools(),
     )
 
-    actor, env = await run_single_turn(
-        actor, env, "Use the multiply tool to multiply by 3."
-    )
+    actor, env = await run_single_turn(actor, env, "Use the multiply tool to multiply by 3.")
 
     verify_tool_call_ids(actor.trajectory.messages, "After Anthropic")
     anthropic_tool_count = len([m for m in actor.trajectory.messages if m.role == "tool"])
@@ -244,9 +238,7 @@ async def test_anthropic_to_openai_tool_handoff():
     verify_tool_call_ids(actor.trajectory.messages, "After transform to OpenAI")
 
     # Make another tool call with OpenAI
-    actor, env = await run_single_turn(
-        actor, env, "Now use the add tool to add 7."
-    )
+    actor, env = await run_single_turn(actor, env, "Now use the add tool to add 7.")
 
     verify_tool_call_ids(actor.trajectory.messages, "After OpenAI tool call")
 
@@ -321,8 +313,9 @@ async def test_tool_call_id_format_after_transform():
         print(f"  {tid!r} -> {str(content)[:50]!r}")
 
     # Verify count preserved
-    assert len(ids_after) == len(ids_before), \
+    assert len(ids_after) == len(ids_before), (
         f"Tool message count changed: {len(ids_before)} -> {len(ids_after)}"
+    )
 
     # Verify all IDs are valid strings
     for i, (tid, _) in enumerate(ids_after):
@@ -336,6 +329,7 @@ async def test_tool_call_id_format_after_transform():
 
 
 if __name__ == "__main__":
+
     async def main():
         print("\n" + "=" * 70)
         print("INTEGRATION TEST: Multi-Provider Tool Call Handoff")
@@ -362,6 +356,7 @@ if __name__ == "__main__":
                 else:
                     print(f"❌ Failed {name}: {e}")
                     import traceback
+
                     traceback.print_exc()
                     failed += 1
 

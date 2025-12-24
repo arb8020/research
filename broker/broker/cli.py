@@ -38,9 +38,11 @@ def main(
     ),
     ssh_key: str | None = typer.Option(None, "--ssh-key", help="Path to SSH private key"),
     quiet: bool = typer.Option(False, "-q", "--quiet", help="Show only warnings and errors"),
-    json_output: bool = typer.Option(True, "--json/--rich", help="Output format (JSON default, --rich for tables)"),
+    json_output: bool = typer.Option(
+        True, "--json/--rich", help="Output format (JSON default, --rich for tables)"
+    ),
     debug: bool = typer.Option(False, "--debug", help="Show debug logs"),
-):
+) -> None:
     """Configure logging and store global options"""
 
     # Setup logging based on flags
@@ -60,7 +62,7 @@ def main(
 
 
 @app.command()
-def init():
+def init() -> None:
     """Create .env template for credentials
 
     Creates a .env file in the current directory with template
@@ -78,7 +80,7 @@ def init():
         logger.info("")
         logger.info("then run: broker search")
     except FileExistsError:
-        logger.error("✗ .env already exists")
+        logger.exception("✗ .env already exists")
         logger.info("")
         logger.info("to edit manually:")
         logger.info(f"  open: {Path('.env').absolute()}")
@@ -89,7 +91,7 @@ def init():
         logger.info("    SSH_KEY_PATH=~/.ssh/id_ed25519")
         logger.info("")
         logger.info("or delete .env and run 'broker init' again")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
 
 def resolve_credentials(ctx) -> ProviderCredentials:
@@ -182,7 +184,7 @@ def resolve_ssh_key(ctx) -> str:
 
 
 @app.command()
-def search(
+def search(  # noqa: PLR0913 - CLI search has many filter options
     ctx: typer.Context,
     gpu_type: str | None = typer.Option(
         None, "--gpu-type", help="Filter by GPU type (e.g., 'A100')"
@@ -214,7 +216,7 @@ def search(
         help="Filter by underlying provider (e.g., massedcompute, hyperstack) for aggregators like PrimeIntellect",
     ),
     limit: int = typer.Option(10, "--limit", help="Maximum number of results"),
-):
+) -> None:
     """Search for available GPU offers
 
     By default searches all configured providers and merges results.
@@ -362,7 +364,7 @@ def search(
 
 
 @app.command()
-def create(
+def create(  # noqa: PLR0913 - CLI create has many configuration options
     ctx: typer.Context,
     gpu_type: str | None = typer.Option(None, "--gpu-type", help="GPU type filter"),
     gpu_count: int = typer.Option(1, "--gpu-count", help="Number of GPUs (default: 1)"),
@@ -393,7 +395,7 @@ def create(
         False, "--wait-ssh", help="Wait for SSH to be ready before returning"
     ),
     output: str = typer.Option("summary", "--output", help="Output format: summary|ssh|json"),
-):
+) -> None:
     """Provision a new GPU instance
 
     By default returns immediately after provisioning starts.
@@ -452,7 +454,9 @@ def create(
     else:
         cloud_msg = f" ({cloud_type} cloud)" if cloud_type else ""
         logger.info(f"provisioning instance{cloud_msg}...")
-    instance = client.create(query, image=image, name=name, gpu_count=gpu_count, min_cuda_version=min_cuda_version)
+    instance = client.create(
+        query, image=image, name=name, gpu_count=gpu_count, min_cuda_version=min_cuda_version
+    )
 
     if not instance:
         logger.error("✗ Failed to provision instance")
@@ -520,8 +524,8 @@ def create(
             logger.info(f"use 'broker status {instance.id}' to check progress")
 
 
-@app.command()
-def list(ctx: typer.Context):
+@app.command(name="list")
+def list_instances(ctx: typer.Context) -> None:
     """List all your GPU instances"""
     creds = resolve_credentials(ctx)
     ssh_key = resolve_ssh_key(ctx)
@@ -587,7 +591,7 @@ def status(
     provider: str | None = typer.Argument(
         None, help="Provider (runpod|primeintellect). Auto-detect if omitted."
     ),
-):
+) -> None:
     """Get instance status
 
     Provider can be omitted for convenience. If omitted, will search all
@@ -650,7 +654,7 @@ def ssh(
     provider: str | None = typer.Argument(
         None, help="Provider (runpod|primeintellect). Auto-detect if omitted."
     ),
-):
+) -> None:
     """Get SSH connection string for instance
 
     Provider can be omitted for convenience. If omitted, will search all
@@ -695,7 +699,7 @@ def info(
     provider: str | None = typer.Argument(
         None, help="Provider (runpod|primeintellect). Auto-detect if omitted."
     ),
-):
+) -> None:
     """Get detailed system information from GPU instance
 
     Collects GPU utilization, VRAM usage, CPU usage, memory usage, and disk usage
@@ -764,8 +768,8 @@ def info(
         disk_result = instance._instance.exec(disk_cmd)
 
     except Exception as e:
-        logger.error(f"✗ Failed to collect system info: {e}")
-        raise typer.Exit(1)
+        logger.exception(f"✗ Failed to collect system info: {e}")
+        raise typer.Exit(1) from None
     finally:
         # Restore original log levels
         ssh_logger.setLevel(original_ssh_level)
@@ -952,7 +956,7 @@ def terminate(
         None, help="Provider (runpod|primeintellect). Auto-detect if omitted."
     ),
     yes: bool = typer.Option(False, "-y", "--yes", help="Skip confirmation"),
-):
+) -> None:
     """Terminate GPU instance
 
     Provider can be omitted for convenience. If omitted, will search all
@@ -1014,7 +1018,7 @@ def cleanup(
         "--exclude",
         help="Instance IDs to exclude from cleanup (can be specified multiple times)",
     ),
-):
+) -> None:
     """Terminate all running GPU instances
 
     This command lists all your instances across all configured providers
@@ -1120,7 +1124,7 @@ def cleanup(
 def logs(
     ctx: typer.Context,
     pod_id: str = typer.Argument(..., help="RunPod pod ID"),
-):
+) -> None:
     """Fetch system logs from a RunPod pod.
 
     This uses a separate Chrome debug instance to authenticate with RunPod's

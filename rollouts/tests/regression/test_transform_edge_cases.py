@@ -9,12 +9,12 @@ Separated from main integration tests to keep core tests focused.
 
 import pytest
 import trio
+from rollouts.transform_messages import transform_messages
 
 from rollouts import (
     Message,
     ToolCallContent,
 )
-from rollouts.transform_messages import transform_messages
 
 
 @pytest.mark.trio

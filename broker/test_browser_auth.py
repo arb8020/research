@@ -83,7 +83,7 @@ def test_with_browser_headers(pod_id: str, headers: dict[str, str]) -> None:
         traceback.print_exc()
 
 
-def main():
+def main() -> None:
     if len(sys.argv) < 2:
         print(__doc__)
         print("\nExample headers to paste:")

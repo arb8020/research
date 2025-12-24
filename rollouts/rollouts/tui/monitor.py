@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .terminal import Terminal
-from .traces import StepPicker, TraceData, TraceStreamingViewer
+from .traces import StepPicker, TraceData
 
 # Colors (ANSI)
 DIM = "\x1b[90m"
@@ -113,7 +113,7 @@ class PaneConfig:
         patterns: list[str],
         is_metrics: bool = False,
         is_traces: bool = False,
-    ) -> "PaneConfig":
+    ) -> PaneConfig:
         return cls(name, tuple(p.lower() for p in patterns), is_metrics, is_traces)
 
 
@@ -129,7 +129,9 @@ EVAL_PANES = (
     PaneConfig.create("Eval", ["eval", "kernelbench", "research"]),
     PaneConfig.create("Modal", ["modal"]),
     PaneConfig.create("Agent", ["agent", "agents"]),
-    PaneConfig.create("Traces", ["rollout", "rollouts", "rollouts.stream", "stream"], is_traces=True),
+    PaneConfig.create(
+        "Traces", ["rollout", "rollouts", "rollouts.stream", "stream"], is_traces=True
+    ),
 )
 
 
@@ -779,8 +781,8 @@ class TrainingMonitor:
             # Wrap mode: split long lines into multiple
             lines = []
             while msg:
-                chunk = msg[:width - 1]
-                msg = msg[width - 1:]
+                chunk = msg[: width - 1]
+                msg = msg[width - 1 :]
                 lines.append(f"{level_color}{chunk}{RESET}")
             return lines if lines else [f"{level_color}{RESET}"]
         else:

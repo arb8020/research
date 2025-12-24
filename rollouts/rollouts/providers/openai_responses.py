@@ -1,4 +1,13 @@
-"""OpenAI Responses API provider implementation (o1/o3 reasoning models)."""
+"""OpenAI Responses API provider implementation (o1/o3 reasoning models).
+
+NOTE: This uses the Responses API which may perform better than Chat Completions.
+Article quote: "OpenAI reports up to 3% improvements on SWE-bench Verified by using their
+Responses API."
+
+This provider should be preferred for o1/o3 models and potentially for other OpenAI models
+where maximum performance is needed. See openai_completions.py for the Chat Completions
+implementation.
+"""
 
 from __future__ import annotations
 
@@ -685,9 +694,38 @@ async def rollout_openai_responses(
             )
 
         if isinstance(e, RateLimitError):
-            logger.warning(f"Rate limit exceeded for {actor.endpoint.model}")
-            raise
+            from .base import ProviderError
 
+            logger.warning(f"Rate limit exceeded for {actor.endpoint.model}")
+            raise ProviderError(
+                f"OpenAI Responses rate limit exceeded: {e}",
+                original_error=e,
+                attempts=actor.endpoint.max_retries,
+                provider="openai",
+            ) from e
+
+        # For other transient errors, wrap as ProviderError
+        from openai import APIConnectionError, APITimeoutError, InternalServerError
+
+        if isinstance(e, (APIConnectionError, APITimeoutError, InternalServerError)):
+            from .base import ProviderError
+
+            logger.error(
+                f"OpenAI Responses API call failed: {e}\n  Model: {actor.endpoint.model}",
+                extra={
+                    "exception": str(e),
+                    "request_params": sanitized,
+                    "model": actor.endpoint.model,
+                },
+            )
+            raise ProviderError(
+                f"OpenAI Responses API error: {e}",
+                original_error=e,
+                attempts=actor.endpoint.max_retries,
+                provider="openai",
+            ) from e
+
+        # Other errors - log and re-raise as-is
         logger.error(
             f"OpenAI Responses API call failed: {e}\n  Model: {actor.endpoint.model}",
             extra={

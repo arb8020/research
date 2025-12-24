@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from .anthropic import aggregate_anthropic_stream, rollout_anthropic
 from .base import (
     NonRetryableError,
+    ProviderError,
     VLLMErrorType,
     add_cache_control_to_last_content,
     calculate_cost_from_usage,
@@ -89,6 +90,7 @@ __all__ = [
     "get_provider_function",
     # Utilities
     "NonRetryableError",
+    "ProviderError",
     "VLLMErrorType",
     "add_cache_control_to_last_content",
     "calculate_cost_from_usage",

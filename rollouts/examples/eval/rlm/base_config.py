@@ -17,9 +17,8 @@ import os
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
-from rollouts.dtypes import Endpoint, Message, Metric, Score, Trajectory
+from rollouts.dtypes import Endpoint, Metric, Score
 
 logger = logging.getLogger(__name__)
 
@@ -242,9 +241,7 @@ async def create_rlm_environment(
 def exact_match_score(predicted: str | None, expected: str) -> Score:
     """Simple exact match scoring."""
     if predicted is None:
-        return Score(
-            metrics=(Metric("correct", 0.0, weight=1.0, metadata={"error": "no answer"}),)
-        )
+        return Score(metrics=(Metric("correct", 0.0, weight=1.0, metadata={"error": "no answer"}),))
 
     # Normalize for comparison
     pred_norm = str(predicted).strip().lower()
@@ -255,12 +252,12 @@ def exact_match_score(predicted: str | None, expected: str) -> Score:
     return Score(metrics=(Metric("correct", 1.0 if is_correct else 0.0, weight=1.0),))
 
 
-def numeric_match_score(predicted: str | None, expected: int | float, tolerance: float = 0.01) -> Score:
+def numeric_match_score(
+    predicted: str | None, expected: int | float, tolerance: float = 0.01
+) -> Score:
     """Numeric matching with tolerance."""
     if predicted is None:
-        return Score(
-            metrics=(Metric("correct", 0.0, weight=1.0, metadata={"error": "no answer"}),)
-        )
+        return Score(metrics=(Metric("correct", 0.0, weight=1.0, metadata={"error": "no answer"}),))
 
     import re
 

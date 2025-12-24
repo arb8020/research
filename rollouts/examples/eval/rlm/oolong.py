@@ -43,7 +43,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import trio
-
 from rollouts.agents import handle_stop_max_turns, run_agent
 from rollouts.dtypes import (
     Actor,
@@ -54,16 +53,16 @@ from rollouts.dtypes import (
 )
 
 from .base_config import (
+    RLM_TOOL_SYSTEM_PROMPT,
     DatasetConfig,
     EndpointConfig,
     EvalRunConfig,
     OutputConfig,
     RLMConfig,
     RLMEvalConfig,
-    RLM_TOOL_SYSTEM_PROMPT,
+    exact_match_score,
     get_endpoint,
     get_sub_endpoint,
-    exact_match_score,
     numeric_match_score,
 )
 
@@ -92,9 +91,7 @@ class OolongConfig(RLMEvalConfig):
     """OOLONG evaluation config."""
 
     dataset: OolongDatasetConfig = field(default_factory=OolongDatasetConfig)
-    output: OutputConfig = field(
-        default_factory=lambda: OutputConfig(experiment_name="oolong")
-    )
+    output: OutputConfig = field(default_factory=lambda: OutputConfig(experiment_name="oolong"))
 
 
 # ──────────────────────── Dataset Loading ────────────────────────────────────
@@ -153,9 +150,15 @@ def load_oolong_dataset(config: OolongDatasetConfig) -> list[dict[str, Any]]:
         sample["context_chars"] = len(sample["context"])
 
         # Apply context length filters
-        if config.min_context_len and sample.get("context_len", sample["context_chars"]) < config.min_context_len:
+        if (
+            config.min_context_len
+            and sample.get("context_len", sample["context_chars"]) < config.min_context_len
+        ):
             continue
-        if config.max_context_len and sample.get("context_len", sample["context_chars"]) > config.max_context_len:
+        if (
+            config.max_context_len
+            and sample.get("context_len", sample["context_chars"]) > config.max_context_len
+        ):
             continue
 
         samples.append(sample)
@@ -165,6 +168,7 @@ def load_oolong_dataset(config: OolongDatasetConfig) -> list[dict[str, Any]]:
     # Subsample if requested
     if config.max_samples and config.max_samples < len(samples):
         import random
+
         rng = random.Random(config.seed)
         samples = rng.sample(samples, config.max_samples)
         logger.info(f"Subsampled to {len(samples)} samples")
@@ -175,7 +179,9 @@ def load_oolong_dataset(config: OolongDatasetConfig) -> list[dict[str, Any]]:
 # ──────────────────────── Evaluation Logic ──────────────────────────────────
 
 
-OOLONG_SYSTEM_PROMPT = RLM_TOOL_SYSTEM_PROMPT + """
+OOLONG_SYSTEM_PROMPT = (
+    RLM_TOOL_SYSTEM_PROMPT
+    + """
 
 ## OOLONG Task Guidance
 
@@ -193,6 +199,7 @@ Use the REPL to:
 
 Be precise with counting - off-by-one errors will be marked incorrect.
 """
+)
 
 
 async def evaluate_sample(
@@ -298,7 +305,9 @@ async def run_evaluation(config: OolongConfig) -> dict[str, Any]:
         logger.error("No samples loaded!")
         return {"error": "No samples"}
 
-    logger.info(f"Context sizes: {min(s['context_chars'] for s in samples):,} - {max(s['context_chars'] for s in samples):,} chars")
+    logger.info(
+        f"Context sizes: {min(s['context_chars'] for s in samples):,} - {max(s['context_chars'] for s in samples):,} chars"
+    )
 
     # Run evaluation
     results = []

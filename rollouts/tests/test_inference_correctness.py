@@ -40,14 +40,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from bifrost import BifrostClient
+from bifrost import BifrostClient, ProcessSpec, job_stream_until_complete
 from broker import GPUClient
-
-# TODO: Migrate to bifrost v2 API - kerbal has been deleted
-# See bifrost.ProcessSpec + client.submit() for the new pattern
-# from kerbal import submit
-# from kerbal.protocol import DependencyConfig
-raise NotImplementedError("kerbal has been removed - migrate to bifrost v2 API")
 
 if TYPE_CHECKING:
     from broker.client import ClientGPUInstance
@@ -423,10 +417,56 @@ def acquire_node(
 
 
 def test_correctness(client: BifrostClient, workspace: str) -> bool:
-    """Run correctness test on remote GPU."""
-    # TODO: Migrate to bifrost v2 API - kerbal has been deleted
-    # See bifrost.ProcessSpec + client.submit() for the new pattern
-    raise NotImplementedError("kerbal.submit has been removed - migrate to bifrost v2 API")
+    """Run correctness test on remote GPU using bifrost v2 API."""
+    print("\n" + "=" * 60)
+    print("TEST: Inference Correctness Test")
+    print("=" * 60)
+
+    # Write test script to remote
+    script_content = REMOTE_TEST_SCRIPT.format(
+        model=MODEL,
+        prompts=TEST_PROMPTS,
+        max_tokens=MAX_TOKENS,
+        num_logprobs=NUM_LOGPROBS,
+    )
+    rollouts_dir = f"{workspace}/rollouts"
+    script_path = f"{rollouts_dir}/test_correctness_remote.py"
+    log_file = f"{rollouts_dir}/results/correctness-test.log"
+
+    client.exec(f"mkdir -p {rollouts_dir}/results")
+    client.exec(f"cat > {script_path} << 'SCRIPT_EOF'\n{script_content}\nSCRIPT_EOF")
+
+    # Submit test job using bifrost v2 API
+    print("\n1. Starting correctness test...")
+    job = client.submit(
+        ProcessSpec(
+            command="python",
+            args=("test_correctness_remote.py",),
+            cwd=rollouts_dir,
+            env={"PYTHONPATH": f"{rollouts_dir}:$PYTHONPATH"},
+        ),
+        name="correctness-test",
+        log_file=log_file,
+        workspace=rollouts_dir,
+    )
+
+    print(f"Test started in tmux session: {job.tmux_session}")
+    print(f"Log file: {job.log_file}")
+
+    # Stream logs until complete
+    print("\n2. Running test (streaming logs)...")
+    print("-" * 40)
+    success, exit_code, err = job_stream_until_complete(
+        client, job, timeout=1800, poll_interval=1.0
+    )
+    print("-" * 40)
+
+    if success and exit_code == 0:
+        print("\n✓ Correctness test completed")
+        return True
+    else:
+        print(f"\n✗ Correctness test FAILED (exit code: {exit_code}, error: {err})")
+        return False
 
 
 def main():
@@ -463,7 +503,13 @@ def main():
 
     try:
         print("\nDeploying code...")
-        workspace = client.push("~/.bifrost/workspaces/rollouts-test")
+        bootstrap = [
+            "pip install torch transformers accelerate",
+        ]
+        workspace = client.push(
+            "~/.bifrost/workspaces/rollouts-test",
+            bootstrap_cmd=bootstrap,
+        )
         print(f"Workspace: {workspace}")
 
         passed = test_correctness(client, workspace)

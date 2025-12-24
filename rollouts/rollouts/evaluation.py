@@ -230,21 +230,55 @@ async def evaluate_sample(
         )
     )
 
+    # Distinguish provider errors from actual sample failures
+    # Provider errors (rate limits, timeouts, 5xx) are excluded from accuracy calculation
+    # Actual failures (model got it wrong) count against accuracy
+    from rollouts.providers.base import ProviderError
+
     error_message = None
+    is_provider_error = False
+
     try:
         states = await run_agent(initial_state, run_config)
         final_trajectory = states[-1].actor.trajectory
+
+    except ProviderError as e:
+        # Provider infrastructure error - exclude from accuracy calculation
+        is_provider_error = True
+        error_message = f"ProviderError[{e.provider}]: {str(e)}"
+        logger.warning(
+            f"Sample {sample_id} provider_error: {error_message} (attempts: {e.attempts})"
+        )
+
+        # Create minimal trajectory with error
+        states = [initial_state]
+        final_trajectory = initial_state.actor.trajectory
+        final_trajectory = replace(
+            final_trajectory,
+            metadata={
+                **final_trajectory.metadata,
+                "error": error_message,
+                "error_type": "provider_error",
+                "provider": e.provider,
+                "attempts": e.attempts,
+            },
+        )
+
     except Exception as e:
-        # Tiger Style: Operational errors go in report, not traceback
+        # Actual failure - counts against accuracy
         error_message = f"{type(e).__name__}: {str(e)}"
         logger.warning(f"Sample {sample_id} failed: {error_message}")
 
         # Create minimal trajectory with error
         states = [initial_state]
         final_trajectory = initial_state.actor.trajectory
-        # Add error to metadata for analysis
         final_trajectory = replace(
-            final_trajectory, metadata={**final_trajectory.metadata, "error": error_message}
+            final_trajectory,
+            metadata={
+                **final_trajectory.metadata,
+                "error": error_message,
+                "error_type": "failed",
+            },
         )
 
     # Serialize environment state for score function (agentic evals)
@@ -291,7 +325,8 @@ async def evaluate_sample(
     # Include error if agent execution failed
     if error_message:
         exec_metadata["error"] = error_message
-        exec_metadata["status"] = "failed"
+        # Distinguish provider errors from actual failures
+        exec_metadata["status"] = "provider_error" if is_provider_error else "failed"
     else:
         exec_metadata["status"] = "success"
 
@@ -545,6 +580,18 @@ def compute_summary_metrics(results: list[Sample]) -> dict[str, float]:
     """Compute summary statistics from results using Score.
 
     Aggregates metrics from Score objects across all results.
+
+    TODO: Separate provider_error from failed samples in accuracy calculation
+    Article quote: "As these samples get scored as failure, the scores for the
+    corresponding provider are affected substantially."
+
+    Problem: Currently failed_samples includes both actual failures AND provider errors.
+    This inflates the failure rate when providers have issues (rate limits, timeouts, etc.)
+
+    Fix: Track provider_errors separately and exclude from success_rate calculation:
+        provider_errors = [r for r in results if r.metadata.get("status") == "provider_error"]
+        actual_failures = [r for r in results if r.metadata.get("status") == "failed"]
+        success_rate = (total - len(actual_failures)) / (total - len(provider_errors))
     """
     if not results:
         return {}
@@ -590,23 +637,49 @@ def compute_summary_metrics(results: list[Sample]) -> dict[str, float]:
     summary["avg_turns"] = sum(r.metadata.get("turns_used", 0) for r in results) / len(results)
     summary["avg_tokens"] = sum(r.metadata.get("total_tokens", 0) for r in results) / len(results)
 
-    # Add error statistics
+    # Separate provider errors from actual failures
+    # Provider errors (rate limits, timeouts) are excluded from accuracy calculation
+    provider_errors = [r for r in results if r.metadata.get("status") == "provider_error"]
     failed_samples = [r for r in results if r.metadata.get("status") == "failed"]
-    summary["failed_samples"] = len(failed_samples)
-    summary["success_rate"] = (
-        (len(results) - len(failed_samples)) / len(results) if results else 0.0
-    )
+    successful_samples = [r for r in results if r.metadata.get("status") == "success"]
 
-    # Breakdown errors by type
+    summary["provider_errors"] = len(provider_errors)
+    summary["failed_samples"] = len(failed_samples)
+    summary["successful_samples"] = len(successful_samples)
+
+    # Success rate excludes provider errors from denominator
+    # (we can't count them as failures if the model never got to run)
+    valid_samples = len(results) - len(provider_errors)
+    summary["success_rate"] = len(successful_samples) / valid_samples if valid_samples > 0 else 0.0
+
+    # Also provide raw completion rate (including provider errors as failures)
+    summary["completion_rate"] = len(successful_samples) / len(results) if results else 0.0
+
+    # Breakdown errors by type (for failed samples only, not provider errors)
     error_types: dict[str, int] = {}
     for r in failed_samples:
         error = r.metadata.get("error", "Unknown error")
-        # Extract error type (e.g., "RateLimitError" from "RateLimitError: ...")
+        # Extract error type (e.g., "ValueError" from "ValueError: ...")
         error_type = error.split(":")[0] if ":" in error else error
         error_types[error_type] = error_types.get(error_type, 0) + 1
 
     if error_types:
         summary["error_breakdown"] = error_types
+
+    # Breakdown provider errors by provider
+    provider_breakdown: dict[str, int] = {}
+    for r in provider_errors:
+        # Extract provider from error message or metadata
+        error = r.metadata.get("error", "")
+        if "ProviderError[" in error:
+            # Extract provider name from "ProviderError[anthropic]: ..."
+            provider = error.split("[")[1].split("]")[0]
+        else:
+            provider = "unknown"
+        provider_breakdown[provider] = provider_breakdown.get(provider, 0) + 1
+
+    if provider_breakdown:
+        summary["provider_error_breakdown"] = provider_breakdown
 
     return summary
 

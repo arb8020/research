@@ -15,7 +15,6 @@ assistant messages to prevent the merge.
 import os
 
 import pytest
-
 from rollouts.dtypes import (
     Message,
     TextContent,
@@ -135,7 +134,9 @@ class TestSyntheticToolResultInsertion:
         )
 
         # After fix: synthetic tool results inserted
-        assert len(transformed) > len(messages), "Should have more messages after inserting synthetic results"
+        assert len(transformed) > len(messages), (
+            "Should have more messages after inserting synthetic results"
+        )
 
         # Count consecutive assistant pairs after transform
         consecutive_after = 0
@@ -146,9 +147,7 @@ class TestSyntheticToolResultInsertion:
 
         # Verify synthetic results were inserted
         synthetic_count = sum(
-            1
-            for m in transformed
-            if m.role == "tool" and "[interrupted" in str(m.content)
+            1 for m in transformed if m.role == "tool" and "[interrupted" in str(m.content)
         )
         assert synthetic_count == 2, "Should have 2 synthetic tool results"
 
@@ -192,9 +191,7 @@ async def test_resume_with_consecutive_assistants() -> None:
     assert assistant_msg.role == "assistant"
     assert isinstance(assistant_msg.content, list)
 
-    thinking_blocks = [
-        b for b in assistant_msg.content if isinstance(b, ThinkingContent)
-    ]
+    thinking_blocks = [b for b in assistant_msg.content if isinstance(b, ThinkingContent)]
     assert len(thinking_blocks) >= 1, "Expected thinking block"
     real_signature = thinking_blocks[0].thinking_signature
     assert real_signature, "Expected valid signature"

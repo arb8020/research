@@ -70,17 +70,17 @@ def _make_api_request(
         )
         response.raise_for_status()
     except requests.Timeout:
-        logger.error("Vast.ai API request timed out")
+        logger.exception("Vast.ai API request timed out")
         raise
     except requests.RequestException as exc:
         # Log response body for debugging 400 errors
         if hasattr(exc, "response") and exc.response is not None:
             try:
                 error_detail = exc.response.json()
-                logger.error(f"Vast.ai API error: {error_detail}")
+                logger.exception(f"Vast.ai API error: {error_detail}")
             except Exception:
-                logger.error(f"Vast.ai API response: {exc.response.text[:500]}")
-        logger.error(f"Vast.ai API request failed: {exc}")
+                logger.exception(f"Vast.ai API response: {exc.response.text[:500]}")
+        logger.exception(f"Vast.ai API request failed: {exc}")
         raise
 
     # Handle empty responses (e.g., DELETE operations)
@@ -313,8 +313,8 @@ def provision_instance(
     try:
         offer_id = int(request.gpu_type.split("-", 1)[1])
     except (IndexError, ValueError) as e:
-        logger.error(f"Failed to parse offer_id from gpu_type '{request.gpu_type}': {e}")
-        raise ValueError(f"Invalid gpu_type format: {request.gpu_type}")
+        logger.exception(f"Failed to parse offer_id from gpu_type '{request.gpu_type}': {e}")
+        raise ValueError(f"Invalid gpu_type format: {request.gpu_type}") from e
 
     # Get price from raw_data (stored in GPUOffer during search, passed through ProvisionRequest)
     # The raw_data contains the original Vast.ai API response with pricing info
@@ -384,7 +384,7 @@ def provision_instance(
 
     except ValueError as e:
         # Programmer error - invalid parameters
-        logger.error(f"Invalid parameters for Vast.ai provisioning: {e}")
+        logger.exception(f"Invalid parameters for Vast.ai provisioning: {e}")
         raise  # Re-raise programmer errors
 
     except Exception as e:
@@ -605,7 +605,7 @@ def wait_for_ssh_ready(instance, timeout: int = 300) -> bool:
             logger.warning(f"SSH test failed: {result.stderr}")
             return False
     except Exception as e:
-        logger.error(f"SSH connection error: {e}")
+        logger.exception(f"SSH connection error: {e}")
         return False
 
 

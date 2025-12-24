@@ -299,6 +299,15 @@ async def aggregate_stream(
     - toolcall_start/delta/end: Tool call lifecycle with partial JSON parsing
     - done: Stream completes successfully
     - error: Stream encounters error
+
+    TODO: Add doom loop detection (same as Anthropic provider)
+    Article quote: "Rarely, model responses run into 'doom loops', i.e., the model
+    re-generates part of its response endlessly, until it reaches the max_tokens limit."
+
+    TODO: Detect truncated responses
+    Article quote: "Some providers return empty or cut-off responses, although the
+    max_tokens are not reached."
+    Check finish_reason and add warning if not "stop" or "tool_calls".
     """
     assert stream is not None
     assert on_chunk is not None
@@ -589,8 +598,10 @@ async def rollout_openai(
             )
 
         # Tiger Style: Rate limits are operational errors, not bugs
-        # Log helpful context but let caller decide whether to retry or fail
+        # Wrap in ProviderError so evaluation layer can exclude from accuracy
         if isinstance(e, RateLimitError):
+            from .base import ProviderError
+
             error_msg = str(e)
             # Extract quota info if available
             if "quota" in error_msg.lower() or "rate limit" in error_msg.lower():
@@ -604,10 +615,40 @@ async def rollout_openai(
                 )
             else:
                 logger.warning(f"Rate limit error: {error_msg}")
-            # Re-raise - let evaluation layer handle gracefully
-            raise
 
-        # For other errors (network issues, etc), just log and raise
+            raise ProviderError(
+                f"OpenAI rate limit exceeded after retries: {e}",
+                original_error=e,
+                attempts=actor.endpoint.max_retries,
+                provider="openai",
+            ) from e
+
+        # For other transient errors (network issues, 5xx, etc), wrap as ProviderError
+        from openai import APIConnectionError, APITimeoutError, InternalServerError
+
+        if isinstance(e, (APIConnectionError, APITimeoutError, InternalServerError)):
+            from .base import ProviderError
+
+            msg_list = params.get("messages", [])
+            msg_count = len(cast(list, msg_list)) if isinstance(msg_list, list) else 0
+            logger.error(
+                f"OpenAI API call failed: {e}\n"
+                f"  Model: {actor.endpoint.model}\n"
+                f"  Messages: {msg_count} messages",
+                extra={
+                    "exception": str(e),
+                    "request_params": sanitized,
+                    "model": actor.endpoint.model,
+                },
+            )
+            raise ProviderError(
+                f"OpenAI API error after retries: {e}",
+                original_error=e,
+                attempts=actor.endpoint.max_retries,
+                provider="openai",
+            ) from e
+
+        # For other errors, log and re-raise as-is (likely bugs)
         msg_list = params.get("messages", [])
         msg_count = len(cast(list, msg_list)) if isinstance(msg_list, list) else 0
         logger.error(

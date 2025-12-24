@@ -262,6 +262,20 @@ async def aggregate_anthropic_stream(
     stall_warning_threshold = 10.0  # seconds
     stall_warned = False
 
+    # TODO: Add doom loop detection
+    # Article quote: "Rarely, model responses run into 'doom loops', i.e., the model
+    # re-generates part of its response endlessly, until it reaches the max_tokens limit."
+    #
+    # Problem: Model gets stuck repeating the same text pattern, wasting tokens and time.
+    # This is rare but can corrupt eval results if not detected.
+    #
+    # Fix: Track recent output and detect repetition:
+    #     REPETITION_WINDOW = 200
+    #     if len(accumulated_content) > REPETITION_WINDOW * 3:
+    #         suffix = accumulated_content[-REPETITION_WINDOW:]
+    #         if accumulated_content[:-REPETITION_WINDOW].count(suffix) >= 2:
+    #             raise StreamError(error="Doom loop detected - repetitive output pattern")
+
     async for event in stream:
         now = time.time()
         gap = now - last_event_time
@@ -471,6 +485,17 @@ async def aggregate_anthropic_stream(
                     break
 
     # Validate we actually received content from the stream
+    # TODO: Also detect truncated responses (not just empty)
+    # Article quote: "Some providers return empty or cut-off responses, although the
+    # max_tokens are not reached. This includes AtlasCloud, Mancer, Fireworks (via OpenRouter)."
+    #
+    # Problem: We catch empty responses, but not truncated ones where the response was
+    # cut off mid-generation without hitting max_tokens. Check finish_reason and response
+    # patterns to detect this.
+    #
+    # Fix: Add truncation detection:
+    #     if finish_reason not in ("stop", "end_turn", "tool_use") and not tool_calls:
+    #         logger.warning(f"Unexpected finish_reason: {finish_reason} - possible truncation")
     if not final_content_blocks:
         raise ValueError(
             "aggregate_anthropic_stream produced empty message. "
@@ -719,7 +744,10 @@ async def rollout_anthropic(
                 print(f"   Retrying in {delay}s...")
                 await trio.sleep(delay)
                 continue
-            # Log error with sanitized request details
+
+            # All retries exhausted - raise ProviderError (excluded from accuracy)
+            from .base import ProviderError
+
             sanitized = sanitize_request_for_logging(params)
             logger.error(
                 "Anthropic API call failed after all retries",
@@ -730,10 +758,21 @@ async def rollout_anthropic(
                     "max_retries": max_retries,
                 },
             )
-            raise
+            raise ProviderError(
+                f"Anthropic API failed after {max_retries + 1} attempts: {e}",
+                original_error=e,
+                attempts=max_retries + 1,
+                provider="anthropic",
+            ) from e
 
     if completion is None:
-        raise Exception("Failed to get completion after all retries")
+        from .base import ProviderError
+
+        raise ProviderError(
+            "Failed to get completion after all retries",
+            attempts=max_retries + 1,
+            provider="anthropic",
+        )
 
     completion = replace(completion, model=actor.endpoint.model)
 

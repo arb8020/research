@@ -7,8 +7,9 @@ from an authenticated RunPod console session.
 import shutil
 import subprocess
 import time
-import httpx
 from pathlib import Path
+
+import httpx
 
 # Chrome debug instance settings
 CHROME_DEBUG_PORT = 9222
@@ -90,8 +91,8 @@ def get_runpod_jwt() -> str | None:
     """
     try:
         from playwright.sync_api import sync_playwright
-    except ImportError:
-        raise RuntimeError("playwright not installed. Run: pip install playwright")
+    except ImportError as e:
+        raise RuntimeError("playwright not installed. Run: pip install playwright") from e
 
     with sync_playwright() as p:
         browser = p.chromium.connect_over_cdp(f"http://localhost:{CHROME_DEBUG_PORT}")
@@ -171,7 +172,7 @@ def fetch_pod_logs(pod_id: str, log_type: str = "system") -> dict:
     if not is_chrome_debug_running():
         launch_chrome_debug()
         print("Chrome debug instance launched. Please log into RunPod console.")
-        print(f"Navigate to: https://console.runpod.io")
+        print("Navigate to: https://console.runpod.io")
         print("Then run this command again.")
         return {"error": "Please log into RunPod console in the Chrome debug window"}
 

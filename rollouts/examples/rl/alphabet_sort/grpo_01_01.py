@@ -11,8 +11,9 @@ Run with:
     python examples/rl/alphabet_sort/grpo_01_01.py --node-id runpod:abc123
 """
 
-from examples.rl.alphabet_sort.base_config import train
 from rollouts.training.grpo import GRPOConfig
+
+from examples.rl.alphabet_sort.base_config import train
 
 config = GRPOConfig(
     experiment_name="alphabet_sort_grpo_01",

@@ -7,11 +7,11 @@ Components:
 """
 
 from rollouts.tui.monitor import (
-    TrainingMonitor,
-    PaneConfig,
-    RL_TRAINING_PANES,
     EVAL_PANES,
     PANE_PRESETS,
+    RL_TRAINING_PANES,
+    PaneConfig,
+    TrainingMonitor,
 )
 
 __all__ = [

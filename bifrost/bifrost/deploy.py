@@ -171,7 +171,7 @@ def execute_with_env_injection(
 class GitDeployment:
     """Handles git-based code deployment to remote instances."""
 
-    def __init__(self, ssh_user: str, ssh_host: str, ssh_port: int):
+    def __init__(self, ssh_user: str, ssh_host: str, ssh_port: int) -> None:
         self.ssh_user = ssh_user
         self.ssh_host = ssh_host
         self.ssh_port = ssh_port
@@ -231,8 +231,10 @@ class GitDeployment:
             logger.debug(f"📦 Detected git repo: {repo_name} @ {commit_hash[:8]}")
             return repo_name, commit_hash
 
-        except subprocess.CalledProcessError:
-            raise ValueError("Not in a git repository. Please run bifrost from a git repository.")
+        except subprocess.CalledProcessError as e:
+            raise ValueError(
+                "Not in a git repository. Please run bifrost from a git repository."
+            ) from e
 
     def setup_remote_structure(
         self, client: paramiko.SSHClient, repo_name: str, job_id: str | None = None
@@ -320,7 +322,7 @@ class GitDeployment:
             logger.debug(f"✅ Code pushed to branch: {job_branch}")
 
         except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"Failed to push code: {e.stderr}")
+            raise RuntimeError(f"Failed to push code: {e.stderr}") from e
 
     def push_code_to_main(self, repo_name: str, commit_hash: str, bare_repo_path: str) -> None:
         """Push current code to remote bare repository main branch."""
@@ -348,7 +350,7 @@ class GitDeployment:
             logger.debug("✅ Code pushed to main branch")
 
         except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"Failed to push code to main: {e.stderr}")
+            raise RuntimeError(f"Failed to push code to main: {e.stderr}") from e
 
     def create_or_update_workspace(
         self, client: paramiko.SSHClient, bare_repo_path: str, workspace_path: str
@@ -536,7 +538,7 @@ class GitDeployment:
         # Install dependencies
         bootstrap_cmd = self.detect_bootstrap_command(client, workspace_path, uv_extra)
         if bootstrap_cmd:
-            bootstrap_only = bootstrap_cmd.rstrip(" && ")
+            bootstrap_only = bootstrap_cmd.rstrip(" && ")  # noqa: B005
             logger.debug(f"🔄 Installing dependencies: {bootstrap_only}")
 
             stdin, stdout, stderr = client.exec_command(f"cd {workspace_path} && {bootstrap_only}")
@@ -619,7 +621,7 @@ class GitDeployment:
         bootstrap_cmd = self.detect_bootstrap_command(client, worktree_path, uv_extra)
         if bootstrap_cmd:
             # Remove the trailing " && " from bootstrap command for standalone execution
-            bootstrap_only = bootstrap_cmd.rstrip(" && ")
+            bootstrap_only = bootstrap_cmd.rstrip(" && ")  # noqa: B005
             logger.debug(f"🔄 Installing dependencies: {bootstrap_only}")
 
             # Execute bootstrap command in worktree
@@ -666,7 +668,7 @@ class GitDeployment:
             console.print(f"🔍 Job data preserved for debugging: ~/.bifrost/jobs/{job_id}")
             raise
 
-    def _execute_detached_deployment(
+    def _execute_detached_deployment(  # noqa: PLR0913 - deployment needs many params
         self,
         client: paramiko.SSHClient,
         job_manager: JobManager,

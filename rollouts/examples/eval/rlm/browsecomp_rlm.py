@@ -39,7 +39,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import trio
-
 from rollouts.agents import handle_stop_max_turns, run_agent
 from rollouts.dtypes import (
     Actor,
@@ -50,13 +49,13 @@ from rollouts.dtypes import (
 )
 
 from .base_config import (
+    RLM_TOOL_SYSTEM_PROMPT,
     DatasetConfig,
     EndpointConfig,
     EvalRunConfig,
     OutputConfig,
     RLMConfig,
     RLMEvalConfig,
-    RLM_TOOL_SYSTEM_PROMPT,
     exact_match_score,
     get_endpoint,
     get_sub_endpoint,
@@ -82,9 +81,7 @@ class BrowseCompPlusDatasetConfig(DatasetConfig):
 class BrowseCompPlusConfig(RLMEvalConfig):
     """BrowseComp-Plus RLM evaluation config."""
 
-    dataset: BrowseCompPlusDatasetConfig = field(
-        default_factory=BrowseCompPlusDatasetConfig
-    )
+    dataset: BrowseCompPlusDatasetConfig = field(default_factory=BrowseCompPlusDatasetConfig)
     output: OutputConfig = field(
         default_factory=lambda: OutputConfig(experiment_name="browsecomp_plus")
     )
@@ -106,9 +103,9 @@ def _decrypt_browsecomp(text: str, key: str) -> str:
     # Decode and XOR
     encrypted = base64.b64decode(text)
     key_extended = key_bytes * (len(encrypted) // len(key_bytes) + 1)
-    decrypted = bytes(a ^ b for a, b in zip(encrypted, key_extended))
+    decrypted = bytes(a ^ b for a, b in zip(encrypted, key_extended, strict=False))
 
-    return decrypted.decode('utf-8', errors='ignore')
+    return decrypted.decode("utf-8", errors="ignore")
 
 
 def load_browsecomp_plus(config: BrowseCompPlusDatasetConfig) -> list[dict[str, Any]]:
@@ -164,7 +161,9 @@ def load_browsecomp_plus(config: BrowseCompPlusDatasetConfig) -> list[dict[str, 
         # Evidence docs (help find answer)
         evidence_docs = row.get("evidence_docs", [])
         for doc in evidence_docs:
-            if isinstance(doc, dict) and doc.get("docid") not in [d.get("docid") for d in gold_docs]:
+            if isinstance(doc, dict) and doc.get("docid") not in [
+                d.get("docid") for d in gold_docs
+            ]:
                 documents.append({
                     "text": doc.get("text", ""),
                     "type": "evidence",
@@ -194,7 +193,7 @@ def load_browsecomp_plus(config: BrowseCompPlusDatasetConfig) -> list[dict[str, 
         rng.shuffle(documents)
 
         # Truncate to target size
-        documents = documents[:config.num_documents]
+        documents = documents[: config.num_documents]
 
         samples.append({
             "id": row.get("query_id", str(len(samples))),
@@ -218,7 +217,9 @@ def load_browsecomp_plus(config: BrowseCompPlusDatasetConfig) -> list[dict[str, 
 # ──────────────────────── Evaluation Logic ──────────────────────────────────
 
 
-BROWSECOMP_SYSTEM_PROMPT = RLM_TOOL_SYSTEM_PROMPT + """
+BROWSECOMP_SYSTEM_PROMPT = (
+    RLM_TOOL_SYSTEM_PROMPT
+    + """
 
 ## Document Corpus Task
 
@@ -235,6 +236,7 @@ Strategy:
 - Read relevant document sections
 - Synthesize the final answer from found information
 """
+)
 
 
 async def evaluate_sample(
@@ -337,7 +339,9 @@ async def run_evaluation(config: BrowseCompPlusConfig) -> dict[str, Any]:
         logger.error("No samples loaded!")
         return {"error": "No samples"}
 
-    logger.info(f"Context sizes: ~{sum(len(s.get('documents', [])) for s in samples) // len(samples)} docs avg")
+    logger.info(
+        f"Context sizes: ~{sum(len(s.get('documents', [])) for s in samples) // len(samples)} docs avg"
+    )
 
     # Run evaluation
     results = []
