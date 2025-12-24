@@ -1109,7 +1109,9 @@ class TraceStreamingViewer:
             else:
                 # Show expanded: ▸ ▼ [role] followed by content
                 fold_marker = "▼"
-                header = f"{bg}{cursor_marker} {fold_marker} {color}{BOLD}[{msg.role}]{RESET}{bg_reset}"
+                header = (
+                    f"{bg}{cursor_marker} {fold_marker} {color}{BOLD}[{msg.role}]{RESET}{bg_reset}"
+                )
                 self._rendered_lines.append(header)
                 for line in content_lines:
                     self._rendered_lines.append(f"    {line}")

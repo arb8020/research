@@ -140,6 +140,7 @@ class CLIConfig:
     max_turns: int = 50
     print_mode: str | None = None
     stream_json: bool = False
+    quiet: bool = False
     initial_prompt: str | None = None
 
     # Frontend
@@ -294,6 +295,12 @@ def create_parser() -> argparse.ArgumentParser:
         "--stream-json",
         action="store_true",
         help="Output NDJSON per turn (for print mode). Each line is a JSON object.",
+    )
+    parser.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Only print final assistant response (for print mode). Hides tool calls and intermediate output.",
     )
 
     # Frontend options
@@ -501,6 +508,7 @@ def create_endpoint(
     api_base: str | None = None,
     api_key: str | None = None,
     thinking: str = "enabled",
+    quiet: bool = False,
 ) -> Endpoint:
     """Create endpoint from CLI arguments."""
     import os
@@ -563,7 +571,8 @@ def create_endpoint(
                         sys.exit(1)
                 else:
                     oauth_token = tokens.access_token
-                print("🔐 Using OAuth authentication (Claude Pro/Max)", file=sys.stderr)
+                if not quiet:
+                    print("🔐 Using OAuth authentication (Claude Pro/Max)", file=sys.stderr)
             else:
                 # No OAuth tokens - require explicit action
                 print("❌ No authentication configured for Anthropic", file=sys.stderr)
@@ -1125,7 +1134,22 @@ async def run_agent(config: CLIConfig) -> int:
     # Build trajectory
     parent_session_id: str | None = None
     branch_point: int | None = None
-    system_prompt = config.system_prompt or SYSTEM_PROMPTS.get(config.env, SYSTEM_PROMPTS["none"])
+    
+    # Build system prompt - use dynamic builder if we have an environment with tools
+    if config.system_prompt:
+        # User provided explicit prompt - use as-is
+        system_prompt = config.system_prompt
+    elif config.environment:
+        # Build dynamic prompt with actual tools
+        from rollouts.prompt import build_system_prompt
+        system_prompt = build_system_prompt(
+            env_name=config.env,
+            tools=config.environment.get_tools(),
+            cwd=config.working_dir,
+        )
+    else:
+        # Fallback to static prompts
+        system_prompt = SYSTEM_PROMPTS.get(config.env, SYSTEM_PROMPTS["none"])
 
     if session_id and session_store:
         try:
@@ -1217,6 +1241,8 @@ async def _run_print_mode(
         frontend = JsonFrontend(include_thinking=True)
         if config.environment:
             frontend.set_tools([t.function.name for t in config.environment.get_tools()])
+    elif config.quiet:
+        frontend = NoneFrontend(show_tool_calls=False, show_thinking=False)
     else:
         frontend = NoneFrontend(show_tool_calls=True, show_thinking=False)
 
@@ -1344,6 +1370,7 @@ def main() -> int:
         max_turns=args.max_turns,
         print_mode=args.print_mode,
         stream_json=args.stream_json,
+        quiet=args.quiet,
         frontend=args.frontend,
         theme=args.theme,
         debug=args.debug,
@@ -1389,7 +1416,7 @@ def main() -> int:
     # Create endpoint
     try:
         config.endpoint = create_endpoint(
-            config.model, config.api_base, config.api_key, config.thinking
+            config.model, config.api_base, config.api_key, config.thinking, config.quiet
         )
     except ValueError as e:
         print(f"❌ {e}", file=sys.stderr)
