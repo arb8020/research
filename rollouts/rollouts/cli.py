@@ -137,7 +137,6 @@ class CLIConfig:
     no_session: bool = False
 
     # Interaction
-    max_turns: int = 50
     print_mode: str | None = None
     stream_json: bool = False
     quiet: bool = False
@@ -231,12 +230,6 @@ def create_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Working directory for coding environment",
-    )
-    parser.add_argument(
-        "--max-turns",
-        type=int,
-        default=50,
-        help="Maximum number of turns (default: 50)",
     )
     parser.add_argument(
         "--confirm-tools",
@@ -1261,7 +1254,6 @@ async def _run_print_mode(
             config.endpoint,
             frontend=frontend,
             environment=config.environment,
-            max_turns=config.max_turns,
             session_store=config.session_store,
             session_id=session_id,
             initial_prompt=query,
@@ -1300,7 +1292,6 @@ async def _run_interactive_mode(
                 config.endpoint,
                 frontend=frontend,
                 environment=config.environment,
-                max_turns=config.max_turns,
                 session_store=config.session_store,
                 session_id=session_id,
                 parent_session_id=parent_session_id,
@@ -1327,7 +1318,6 @@ async def _run_interactive_mode(
             trajectory,
             config.endpoint,
             config.environment,
-            config.max_turns,
             config.session_store,
             session_id,
             config.theme,
@@ -1376,7 +1366,6 @@ def main() -> int:
         continue_session=args.continue_session,
         session=args.session,
         no_session=args.no_session,
-        max_turns=args.max_turns,
         print_mode=args.print_mode,
         stream_json=args.stream_json,
         quiet=args.quiet,

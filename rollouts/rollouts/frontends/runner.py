@@ -77,7 +77,9 @@ class _DebugContext:
         log_path = Path.home() / ".rollouts" / "tui-debug.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with open(log_path, "a") as f:
-            f.write(f"{datetime.now().isoformat()} SLOW_OPERATION: {operation} took {elapsed:.1f}s\n")
+            f.write(
+                f"{datetime.now().isoformat()} SLOW_OPERATION: {operation} took {elapsed:.1f}s\n"
+            )
             f.write(f"  turn={self.turn}, phase={self.phase}\n")
 
     def dump(self) -> str:
@@ -145,7 +147,6 @@ class InteractiveRunner:
         endpoint: Endpoint,
         frontend: Frontend,
         environment: Environment | None = None,
-        max_turns: int = 50,
         session_store: SessionStore | None = None,
         session_id: str | None = None,
         parent_session_id: str | None = None,
@@ -161,7 +162,6 @@ class InteractiveRunner:
             endpoint: LLM endpoint configuration
             frontend: Frontend implementation for UI
             environment: Optional environment for tool execution
-            max_turns: Maximum number of turns
             session_store: Optional session store for persistence
             session_id: Optional session ID for resumption
             parent_session_id: Parent session ID when forking
@@ -174,7 +174,6 @@ class InteractiveRunner:
         self.endpoint = endpoint
         self.frontend = frontend
         self.environment = environment
-        self.max_turns = max_turns
         self.session_store = session_store
         self.session_id = session_id
         self.parent_session_id = parent_session_id
@@ -411,9 +410,7 @@ class InteractiveRunner:
         )
 
     def _handle_stop(self, state: AgentState) -> AgentState:
-        """Check stop conditions."""
-        if state.turn_idx >= self.max_turns:
-            return dc_replace(state, stop=StopReason.MAX_TURNS)
+        """Check stop conditions. No max turns limit in interactive mode."""
         return state
 
     def _handle_sigint(self, signum, frame) -> None:
@@ -462,7 +459,6 @@ async def run_interactive(
     endpoint: Endpoint,
     frontend: Frontend,
     environment: Environment | None = None,
-    max_turns: int = 50,
     session_store: SessionStore | None = None,
     session_id: str | None = None,
     parent_session_id: str | None = None,
@@ -478,7 +474,6 @@ async def run_interactive(
         endpoint: LLM endpoint configuration
         frontend: Frontend implementation
         environment: Optional environment for tool execution
-        max_turns: Maximum number of turns
         session_store: Optional session store for persistence
         session_id: Optional session ID for resumption
         parent_session_id: Parent session ID when forking
@@ -495,7 +490,6 @@ async def run_interactive(
         endpoint=endpoint,
         frontend=frontend,
         environment=environment,
-        max_turns=max_turns,
         session_store=session_store,
         session_id=session_id,
         parent_session_id=parent_session_id,

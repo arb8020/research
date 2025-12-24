@@ -44,6 +44,26 @@ from .dtypes import (
 # STATE IMMUTABILITY: All core data structures are frozen dataclasses.
 # Benefits: time-travel debugging, safe concurrency, easy rollback.
 # Cost: O(n) allocations per turn. Assumption: allocation cheaper than debugging.
+#
+# TODO: Document scaffold versioning for reproducibility
+# Article quote: "On SWE-bench Verified, a popular agentic coding benchmark, simply switching
+# the scaffold makes up to an 11% difference for GPT-5 and up to a 15% difference for Kimi K2
+# Thinking. We cover the effect of the scaffold in our SWE-bench Verified review. The choice
+# of scaffold has the single biggest impact on the overall performance."
+#
+# Article quote: "Customizing the harness for each model risks hill-climbing on the evaluation
+# and makes direct comparisons between models difficult."
+#
+# Problem: Our scaffold (run_agent → run_agent_step → process_pending_tools) has implicit
+# design choices that affect benchmark scores:
+# - Tool execution is sequential (not parallel)
+# - All tools execute before next LLM turn (turn atomicity)
+# - Tool confirmation flow
+# - System prompt injection points
+#
+# Fix: Add SCAFFOLD_VERSION constant and include in eval outputs:
+#     SCAFFOLD_VERSION = "1.0.0"  # Bump when changing tool execution, prompts, etc.
+# Include in EvalReport for reproducibility.
 
 # Core types (Endpoint, Actor, AgentState, RunConfig, Environment) are now imported from dtypes
 
