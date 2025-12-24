@@ -447,7 +447,11 @@ class LocalFilesystemEnvironment:
         return {"cwd": cwd}
 
     async def serialize(self) -> dict:
-        return {"working_dir": str(self.working_dir), "tools": self.tools}
+        return {
+            "env_kind": "coding",
+            "working_dir": str(self.working_dir),
+            "tools": self.tools,
+        }
 
     @staticmethod
     async def deserialize(data: dict) -> "LocalFilesystemEnvironment":

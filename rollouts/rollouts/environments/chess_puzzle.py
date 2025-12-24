@@ -76,6 +76,7 @@ class ChessPuzzleEnvironment:
 
     async def serialize(self) -> dict:
         return {
+            "env_kind": "chess_puzzle",
             "fen": self.fen,
             "solution": self.solution,
             "current_fen": self.board.fen() if self.board else self.fen,

@@ -22,7 +22,7 @@ class CalculatorEnvironment:
     current_value: float = 0.0
 
     async def serialize(self) -> dict:
-        return {"current_value": self.current_value}
+        return {"env_kind": "calculator", "current_value": self.current_value}
 
     @staticmethod
     async def deserialize(data: dict) -> "CalculatorEnvironment":

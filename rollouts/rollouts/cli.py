@@ -1142,10 +1142,17 @@ async def run_agent(config: CLIConfig) -> int:
     elif config.environment:
         # Build dynamic prompt with actual tools
         from rollouts.prompt import build_system_prompt
+
+        # Get environment-provided system prompt if available
+        env_system_prompt = None
+        if hasattr(config.environment, "get_system_prompt"):
+            env_system_prompt = config.environment.get_system_prompt()
+
         system_prompt = build_system_prompt(
             env_name=config.env,
             tools=config.environment.get_tools(),
             cwd=config.working_dir,
+            env_system_prompt=env_system_prompt,
         )
     else:
         # Fallback to static prompts
@@ -1191,6 +1198,8 @@ async def run_agent(config: CLIConfig) -> int:
                     print(f"  Branch point: {branch_point} messages")
                 else:
                     print(f"Resuming session: {parent_session.session_id}")
+                    # TODO: Token counting is not accurate when resuming - should count tokens
+                    # from resumed messages, not just new messages in this session
                     print(f"  {len(trajectory.messages)} messages")
             else:
                 print(f"Resuming session: {session_id}")

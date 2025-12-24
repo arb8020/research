@@ -38,7 +38,7 @@ class BasicEnvironment:
 
     async def serialize(self) -> dict:
         """Serialize environment state (empty for this simple environment)."""
-        return {}
+        return {"env_kind": "basic"}
 
     @staticmethod
     async def deserialize(data: dict) -> "BasicEnvironment":

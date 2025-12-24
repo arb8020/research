@@ -140,6 +140,11 @@ class InteractiveAgentRunner:
         # Run editor (this temporarily exits raw mode)
         edited_content = self.terminal.run_external_editor(current_text)
 
+        # Reset TUI state before redrawing - this clears cached render state
+        # that may be invalid after returning from the external editor
+        if self.tui:
+            self.tui.reset_render_state()
+
         # If user saved content, update input and optionally submit
         if edited_content:
             if self.input_component:

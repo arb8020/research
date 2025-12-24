@@ -53,11 +53,15 @@ class BinarySearchEnvironment(Environment):
         assert (answer >= range_min) & (answer <= range_max)
 
     async def serialize(self):
-        return {k: v for k, v in self.__dict__.items()}
+        data = {k: v for k, v in self.__dict__.items()}
+        data["env_kind"] = "binary_search"
+        return data
 
     @staticmethod
     async def deserialize(data: dict) -> "BinarySearchEnvironment":
-        return BinarySearchEnvironment(**data)
+        # Filter out env_kind which is used for registry lookup
+        filtered = {k: v for k, v in data.items() if k != "env_kind"}
+        return BinarySearchEnvironment(**filtered)
 
     def get_tools(self) -> list[Tool]:
         return [

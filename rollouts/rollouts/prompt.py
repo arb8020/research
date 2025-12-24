@@ -205,6 +205,7 @@ def build_system_prompt(
     tools: list[Tool],
     cwd: Path | None = None,
     base_prompt: str | None = None,
+    env_system_prompt: str | None = None,
     include_self_docs: bool = True,
     include_project_context: bool = True,
 ) -> str:
@@ -215,6 +216,7 @@ def build_system_prompt(
         tools: Actual tools from environment.get_tools()
         cwd: Working directory (defaults to current)
         base_prompt: Override base prompt (e.g., from preset)
+        env_system_prompt: Environment-provided system prompt (from env.get_system_prompt())
         include_self_docs: Whether to include rollouts documentation paths
         include_project_context: Whether to load AGENTS.md/ROLLOUTS.md files
     """
@@ -229,21 +231,25 @@ def build_system_prompt(
     base = base_prompt or BASE_PROMPTS.get(env_name, BASE_PROMPTS["none"])
     sections.append(base)
 
-    # 2. Actual tool list
+    # 2. Environment-provided system prompt (explains paradigm, strategies, etc.)
+    if env_system_prompt:
+        sections.append(env_system_prompt)
+
+    # 3. Actual tool list
     if tools:
         tool_list = format_tool_list(tools)
         sections.append(f"Available tools:\n{tool_list}")
 
-    # 3. Dynamic guidelines
+    # 4. Dynamic guidelines
     guidelines = build_tool_guidelines(tools)
     if guidelines:
         sections.append("Guidelines:\n" + "\n".join(f"- {g}" for g in guidelines))
 
-    # 4. Self-documentation
+    # 5. Self-documentation
     if include_self_docs:
         sections.append(build_self_doc_section())
 
-    # 5. Project context files (AGENTS.md, ROLLOUTS.md, etc.)
+    # 6. Project context files (AGENTS.md, ROLLOUTS.md, etc.)
     if include_project_context:
         context_files = load_project_context(working_dir)
         if context_files:
@@ -252,7 +258,7 @@ def build_system_prompt(
                 ctx_section += f"\n## {path}\n\n{content}\n"
             sections.append(ctx_section)
 
-    # 6. Runtime context
+    # 7. Runtime context
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     sections.append(f"Current time: {now}\nWorking directory: {working_dir}")
 

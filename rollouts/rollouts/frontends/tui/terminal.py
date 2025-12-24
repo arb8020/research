@@ -281,8 +281,12 @@ class ProcessTerminal:
 
         try:
             # Temporarily restore terminal to cooked mode
-            if self._old_settings is not None and sys.stdin.isatty():
-                termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, self._old_settings)
+            if self._old_settings is not None:
+                if self._tty_fd is not None:
+                    # Restore /dev/tty settings for editor
+                    termios.tcsetattr(self._tty_fd, termios.TCSADRAIN, self._old_settings)
+                elif sys.stdin.isatty():
+                    termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, self._old_settings)
 
             # Disable bracketed paste mode
             sys.stdout.write("\x1b[?2004l")
@@ -292,8 +296,15 @@ class ProcessTerminal:
             sys.stdout.write("\x1b[2J\x1b[H")
             sys.stdout.flush()
 
-            # Run editor
-            result = subprocess.run([editor, temp_path])
+            # Run editor - use /dev/tty for stdin/stdout to ensure editor works
+            # even when rollouts stdin is piped
+            with open("/dev/tty", "r") as tty_in, open("/dev/tty", "w") as tty_out:
+                result = subprocess.run(
+                    [editor, temp_path],
+                    stdin=tty_in,
+                    stdout=tty_out,
+                    stderr=tty_out,
+                )
 
             # Read edited content
             if result.returncode == 0:
@@ -309,16 +320,21 @@ class ProcessTerminal:
             except OSError:
                 pass
 
-            # Restore raw mode
-            if sys.stdin.isatty():
+            # Restore raw mode on the correct fd
+            if self._tty_fd is not None:
+                tty.setraw(self._tty_fd)
+            elif sys.stdin.isatty():
                 tty.setraw(sys.stdin.fileno())
 
             # Re-enable bracketed paste mode
             sys.stdout.write("\x1b[?2004h")
+            # Hide cursor during redraw
+            sys.stdout.write("\x1b[?25l")
             # Clear screen (TUI will redraw)
             sys.stdout.write("\x1b[2J\x1b[H")
             sys.stdout.flush()
 
             # Trigger resize handler to force full redraw
+            # Note: This will cause the TUI to re-render all components
             if self._resize_handler:
                 self._resize_handler()

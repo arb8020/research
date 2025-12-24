@@ -13,6 +13,7 @@ Usage:
     # Tools: read, write, edit, bash, repl, llm_query, final_answer
 """
 
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -27,6 +28,48 @@ from ..dtypes import (
     ToolCall,
     ToolResult,
 )
+
+# Environment registry: maps env_kind -> deserialize function
+# Lazily populated to avoid circular imports
+_ENVIRONMENT_REGISTRY: dict[str, Callable[[dict], Coroutine[Any, Any, Environment]]] = {}
+
+
+def _get_environment_registry() -> dict[str, Callable[[dict], Coroutine[Any, Any, Environment]]]:
+    """Get the environment registry, populating it lazily on first call."""
+    if not _ENVIRONMENT_REGISTRY:
+        # Import all environments and register them
+        from .binary_search import BinarySearchEnvironment
+        from .calculator import CalculatorEnvironment
+        from .coding import LocalFilesystemEnvironment
+        from .git_worktree import GitWorktreeEnvironment
+        from .no_tools import BasicEnvironment
+        from .repl import REPLEnvironment
+
+        _ENVIRONMENT_REGISTRY.update({
+            "coding": LocalFilesystemEnvironment.deserialize,
+            "git_worktree": GitWorktreeEnvironment.deserialize,
+            "repl": REPLEnvironment.deserialize,
+            "calculator": CalculatorEnvironment.deserialize,
+            "basic": BasicEnvironment.deserialize,
+            "binary_search": BinarySearchEnvironment.deserialize,
+        })
+
+        # Optional environments with heavy dependencies (lazy import)
+        try:
+            from .browsing import BrowsingEnvironment
+
+            _ENVIRONMENT_REGISTRY["browsing"] = BrowsingEnvironment.deserialize
+        except ImportError:
+            pass
+
+        try:
+            from .chess_puzzle import ChessPuzzleEnvironment
+
+            _ENVIRONMENT_REGISTRY["chess_puzzle"] = ChessPuzzleEnvironment.deserialize
+        except ImportError:
+            pass
+
+    return _ENVIRONMENT_REGISTRY
 
 
 @dataclass
@@ -104,6 +147,16 @@ class ComposedEnvironment:
                     # TODO: Handle key collisions in status info
                     combined.update(info)
         return combined if combined else None
+
+    def get_system_prompt(self) -> str | None:
+        """Combine system prompts from all environments."""
+        prompts = []
+        for env in self.environments:
+            if hasattr(env, "get_system_prompt"):
+                prompt = env.get_system_prompt()
+                if prompt:
+                    prompts.append(prompt)
+        return "\n\n".join(prompts) if prompts else None
 
     def get_tools(self) -> list[Tool]:
         """Return union of all tools from composed environments."""
@@ -185,19 +238,27 @@ class ComposedEnvironment:
     async def deserialize(data: dict[str, Any]) -> "ComposedEnvironment":
         """Deserialize composed environment.
 
-        TODO: This requires a registry of environment types to deserialize
-        each sub-environment correctly. For now, raises NotImplementedError.
+        Uses the environment registry to deserialize each sub-environment
+        based on its env_kind field.
         """
-        raise NotImplementedError(
-            "ComposedEnvironment.deserialize requires environment type registry. "
-            "See TODO in compose.py for details."
-        )
-        # Future implementation would look like:
-        # environments = []
-        # for env_data in data["environments"]:
-        #     env_cls = ENVIRONMENT_REGISTRY[env_data["env_kind"]]
-        #     environments.append(await env_cls.deserialize(env_data))
-        # return ComposedEnvironment(environments=environments)
+        registry = _get_environment_registry()
+        environments = []
+
+        for env_data in data["environments"]:
+            env_kind = env_data.get("env_kind")
+            if env_kind is None:
+                raise ValueError(f"Environment data missing 'env_kind' field: {env_data.keys()}")
+
+            deserialize_fn = registry.get(env_kind)
+            if deserialize_fn is None:
+                raise ValueError(
+                    f"Unknown environment kind '{env_kind}'. Known kinds: {list(registry.keys())}"
+                )
+
+            env = await deserialize_fn(env_data)
+            environments.append(env)
+
+        return ComposedEnvironment(environments=environments)
 
 
 def compose(*environments: Environment) -> ComposedEnvironment:

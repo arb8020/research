@@ -938,6 +938,23 @@ class Environment(Protocol):
         """
         ...
 
+    def get_system_prompt(self) -> str | None:
+        """Return environment-specific system prompt content.
+
+        Optional method - environments can return None or not implement this.
+        The returned string will be appended to the base system prompt.
+
+        Use this to explain environment-specific concepts, tools, or strategies
+        that the model needs to understand.
+
+        Example (REPL environment):
+            return '''
+            The input context is stored in a Python variable called `context`.
+            Use the repl tool to explore it programmatically.
+            '''
+        """
+        ...
+
     async def on_session_start(self, session_id: str) -> None:
         """Called when an agent session starts, before any tools execute.
 

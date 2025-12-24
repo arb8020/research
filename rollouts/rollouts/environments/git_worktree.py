@@ -247,6 +247,7 @@ class GitWorktreeEnvironment:
                 pass
 
         return {
+            "env_kind": "git_worktree",
             "working_dir": str(self.working_dir),
             "session_id": self.session_id,
             "branch": self._current_branch,
