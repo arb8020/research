@@ -161,6 +161,46 @@ def _message_to_anthropic(m: Message, inline_thinking: str | None = None) -> dic
     return msg
 
 
+def _merge_consecutive_api_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge consecutive messages with the same role.
+
+    The Anthropic API silently merges consecutive same-role messages server-side,
+    which can cause issues with tool_result ordering. By merging explicitly,
+    we ensure the content array order is correct.
+
+    Args:
+        messages: List of API-format messages (dict with role/content)
+
+    Returns:
+        Messages with consecutive same-role entries merged
+    """
+    if not messages:
+        return []
+
+    result: list[dict[str, Any]] = []
+
+    for msg in messages:
+        if not result or result[-1]["role"] != msg["role"]:
+            # Different role or first message - add as-is (copy to avoid mutation)
+            result.append({"role": msg["role"], "content": msg["content"]})
+        else:
+            # Same role as previous - merge content
+            prev = result[-1]
+            prev_content = prev["content"]
+            curr_content = msg["content"]
+
+            # Normalize to lists
+            if isinstance(prev_content, str):
+                prev_content = [{"type": "text", "text": prev_content}]
+            if isinstance(curr_content, str):
+                curr_content = [{"type": "text", "text": curr_content}]
+
+            # Merge content blocks
+            prev["content"] = prev_content + curr_content
+
+    return result
+
+
 def _tool_to_anthropic(tool: Tool) -> dict[str, Any]:
     """Convert framework `Tool` definitions into Anthropic's schema."""
     return {
@@ -556,6 +596,11 @@ async def rollout_anthropic(
 
     if messages and messages[0]["role"] != "user":
         messages.insert(0, {"role": "user", "content": "Begin."})
+
+    # Merge consecutive same-role messages to avoid API rejection
+    # The Anthropic API silently merges them server-side, but this can cause
+    # tool_result ordering issues. Merge explicitly to control the order.
+    messages = _merge_consecutive_api_messages(messages)
 
     messages_with_cache = add_cache_control_to_last_content(messages)
 
