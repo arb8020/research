@@ -928,115 +928,12 @@ async def run_agent(
         states.append(aborted_state)
         current_state = aborted_state
 
-        # Shield cleanup operations from further cancellation
+        # Simple cleanup - just save status, let resume handle incomplete state
         with trio.CancelScope(shield=True):
-            await handle_checkpoint_event(
-                current_state, "final", run_config, current_state.session_id
-            )
-
-            # Add "interrupted" tool results for any pending tool calls
-            # This ensures session state is valid on resume (every tool call has a result)
-            #
-            # Check both pending_tool_calls AND the last message's tool calls.
-            # If cancelled during rollout(), pending_tool_calls may be empty but
-            # the assistant message with tool calls is already in the trajectory.
-            tool_calls_to_interrupt = list(
-                current_state.pending_tool_calls[current_state.next_tool_idx :]
-            )
-
-            # Also check last message for tool calls not yet in pending_tool_calls
-            # NOTE: current_state.actor.trajectory may not have the assistant message yet
-            # if we were cancelled during tool execution - the message was persisted to
-            # session store but state wasn't returned. So check session store too.
-            last_msg = (
-                current_state.actor.trajectory.messages[-1]
-                if current_state.actor.trajectory.messages
-                else None
-            )
-
-            # If last message isn't assistant, try loading from session store
-            # and update trajectory to include the assistant message
-            if (
-                last_msg
-                and last_msg.role != "assistant"
-                and session_store
-                and current_state.session_id
-            ):
-                try:
-                    stored_session, _ = await session_store.get(current_state.session_id)
-                    if (
-                        stored_session
-                        and stored_session.messages
-                        and stored_session.messages[-1].role == "assistant"
-                    ):
-                        last_msg = stored_session.messages[-1]
-                        # FIX: Also update trajectory to include the assistant message
-                        # that was persisted but not yet in memory
-                        current_state = replace(
-                            current_state,
-                            actor=replace(
-                                current_state.actor,
-                                trajectory=replace(
-                                    current_state.actor.trajectory,
-                                    messages=current_state.actor.trajectory.messages + [last_msg],
-                                ),
-                            ),
-                        )
-                        states[-1] = current_state
-                except Exception:
-                    pass
-
-            if last_msg and last_msg.role == "assistant" and not tool_calls_to_interrupt:
-                # Get tool calls from last message that don't have results
-                msg_tool_calls = last_msg.get_tool_calls()
-                existing_result_ids = {
-                    m.tool_call_id
-                    for m in current_state.actor.trajectory.messages
-                    if m.role == "tool" and m.tool_call_id
-                }
-                tool_calls_to_interrupt = [
-                    tc for tc in msg_tool_calls if tc.id not in existing_result_ids
-                ]
-
-            if tool_calls_to_interrupt:
-                interrupted_messages = []
-                for tool_call in tool_calls_to_interrupt:
-                    interrupted_msg = Message(
-                        role="tool",
-                        content="[interrupted]",
-                        tool_call_id=tool_call.id,
-                    )
-                    interrupted_messages.append(interrupted_msg)
-
-                    # Persist to session store
-                    if session_store and current_state.session_id:
-                        await session_store.append_message(
-                            current_state.session_id, interrupted_msg
-                        )
-
-                # Update in-memory trajectory so TUI has valid state
-                if interrupted_messages:
-                    updated_trajectory = replace(
-                        current_state.actor.trajectory,
-                        messages=current_state.actor.trajectory.messages + interrupted_messages,
-                    )
-                    current_state = replace(
-                        current_state,
-                        actor=replace(current_state.actor, trajectory=updated_trajectory),
-                        pending_tool_calls=[],  # Clear pending since we added results
-                    )
-                    # Update the state in the list we're returning
-                    states[-1] = current_state
-
-            # Save session with aborted status
             if session_store and current_state.session_id:
-                env_state = None
-                if current_state.environment is not None:
-                    env_state = await current_state.environment.serialize()
                 await session_store.update(
                     current_state.session_id,
                     status=SessionStatus.ABORTED,
-                    environment_state=env_state,
                 )
 
         # Return states instead of re-raising - caller can check stop reason
