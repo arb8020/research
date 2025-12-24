@@ -311,8 +311,47 @@ class InteractiveRunner:
                                 ),
                                 stop=None,
                             )
+                        elif agent_states and agent_states[-1].stop == StopReason.TASK_COMPLETED:
+                            # Task completed - in interactive mode, show result and continue
+                            latest_state = agent_states[-1]
+                            self.session_id = latest_state.session_id or self.session_id
+                            self.frontend.hide_loader()
+
+                            # Check if environment has a final_answer to display
+                            if latest_state.environment and hasattr(
+                                latest_state.environment, "_final_answer"
+                            ):
+                                final_answer = getattr(
+                                    latest_state.environment, "_final_answer", None
+                                )
+                                if final_answer:
+                                    # Use add_final_answer if available (TUI), otherwise add_system_message
+                                    if hasattr(self.frontend, "add_final_answer"):
+                                        self.frontend.add_final_answer(final_answer)
+                                    elif hasattr(self.frontend, "add_system_message"):
+                                        self.frontend.add_system_message(
+                                            f"final_answer()\n\n{final_answer}"
+                                        )
+
+                            # In single_turn mode, exit after completion
+                            if self.single_turn:
+                                break
+
+                            # Get next user input
+                            user_input = await self.frontend.get_input()
+                            new_messages = list(latest_state.actor.trajectory.messages)
+                            new_messages.append(Message(role="user", content=user_input))
+
+                            current_state = dc_replace(
+                                latest_state,
+                                actor=dc_replace(
+                                    latest_state.actor,
+                                    trajectory=Trajectory(messages=new_messages),
+                                ),
+                                stop=None,
+                            )
                         else:
-                            # Normal completion
+                            # Other stop reasons (MAX_TURNS, etc.) - exit
                             if agent_states:
                                 self.session_id = agent_states[-1].session_id or self.session_id
                             break

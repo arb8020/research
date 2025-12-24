@@ -394,6 +394,39 @@ class AgentRenderer:
         self.chat_container.add_child(system_text)
         self.tui.request_render()
 
+    def add_final_answer(self, answer: str) -> None:
+        """Add a final answer block to the chat, styled like thinking blocks.
+
+        Args:
+            answer: The final answer content
+        """
+        from ..theme import RESET, hex_to_bg
+        from .components.markdown import DefaultMarkdownTheme, Markdown
+
+        self.chat_container.add_child(
+            Spacer(1, debug_label="before-final-answer", debug_layout=self.debug_layout)
+        )
+
+        # Format like thinking block with header
+        answer_text = f"final_answer()\n\n{answer.strip()}"
+
+        # Use theme's thinking_bg_fn if available, otherwise default
+        if hasattr(self.theme, "thinking_bg_fn"):
+            bg_fn = self.theme.thinking_bg_fn
+        else:
+            bg_fn = lambda x: f"{hex_to_bg(self.theme.tool_pending_bg)}{x}{RESET}"
+
+        answer_md = Markdown(
+            answer_text,
+            padding_x=2,
+            padding_y=self.theme.thinking_padding_y,
+            theme=DefaultMarkdownTheme(self.theme),
+            bg_fn=bg_fn,
+            gutter_prefix=self.theme.assistant_gutter,
+        )
+        self.chat_container.add_child(answer_md)
+        self.tui.request_render()
+
     def get_partial_response(self) -> str | None:
         """Get any partial assistant response that was being streamed.
 
