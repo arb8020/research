@@ -79,7 +79,9 @@ Think about tactics: forks, pins, discovered attacks, checkmate patterns.""",
     trajectory = Trajectory(messages=[system_msg, user_msg])
 
     # Use a simple model for testing
-    endpoint = Endpoint(provider="anthropic", model="claude-sonnet-4-20250514")
+    import os
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    endpoint = Endpoint(provider="anthropic", model="claude-sonnet-4-20250514", api_key=api_key)
 
     actor = Actor(
         trajectory=trajectory,
