@@ -606,8 +606,22 @@ class InteractiveAgentRunner:
             self._update_token_counts(latest_state)
             self.tui.request_render()
 
-        new_messages = list(latest_state.actor.trajectory.messages)
+        # Load messages from session store - this includes any assistant messages
+        # that were persisted during the interrupted turn but aren't in the in-memory state
+        new_messages = []
+        if self.session_store and latest_state.session_id:
+            try:
+                session, _ = await self.session_store.get(latest_state.session_id)
+                if session and session.messages:
+                    new_messages = list(session.messages)
+            except Exception:
+                pass
 
+        # Fall back to in-memory trajectory if session store load failed
+        if not new_messages:
+            new_messages = list(latest_state.actor.trajectory.messages)
+
+        # Add partial response if we interrupted during streaming
         if partial_response:
             new_messages.append(
                 Message(role="assistant", content=partial_response + "\n\n[interrupted]")
