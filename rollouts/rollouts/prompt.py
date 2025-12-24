@@ -34,6 +34,12 @@ def load_project_context(cwd: Path) -> list[tuple[Path, str]]:
 
     Returns:
         List of (path, content) tuples, root-first order
+
+    # TODO: Add global context from ~/.rollouts/AGENTS.md (or CLAUDE.md)
+    # See badlogic/pi-mono's loadProjectContextFiles for reference:
+    # 1. Load global context from agentDir first (~/.rollouts/)
+    # 2. Then walk up from cwd to root
+    # This allows user-wide defaults that project-specific files can override.
     """
     assert cwd, "cwd required"
     assert isinstance(cwd, Path), "cwd must be a Path"
