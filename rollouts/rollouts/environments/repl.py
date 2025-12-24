@@ -305,6 +305,9 @@ class REPLEnvironment:
                     content="",
                     error=f"Unknown tool: {tool_call.name}",
                 )
+        except trio.Cancelled:
+            # Re-raise cancellation so agent loop can handle it
+            raise
         except Exception as e:
             return ToolResult(
                 tool_call_id=tool_call.id,

@@ -208,6 +208,9 @@ class CalculatorEnvironment:
                     error=f"Unknown operation: {tool_call.name}",
                 )
 
+        except trio.Cancelled:
+            # Re-raise cancellation so agent loop can handle it
+            raise
         except Exception as e:
             return ToolResult(tool_call_id=tool_call.id, is_error=True, content="", error=str(e))
 

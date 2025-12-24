@@ -30,6 +30,7 @@ from .dtypes import (
     ToolCall,
     ToolCallEnd,
     ToolConfirmResult,
+    ToolExecutionStart,
     ToolResult,
     ToolResultReceived,
 )
@@ -469,6 +470,7 @@ async def run_agent_step(
     # Update debug context for interrupt diagnostics
     try:
         from rollouts.frontends.runner import get_debug_context
+
         debug_ctx = get_debug_context()
         debug_ctx.turn = state.turn_idx
         debug_ctx.set_phase("agent_step")
@@ -640,10 +642,19 @@ async def process_pending_tools(
                 # Update debug context for interrupt diagnostics
                 try:
                     from rollouts.frontends.runner import get_debug_context
+
                     debug_ctx = get_debug_context()
                     debug_ctx.set_tool(tool_call.name)
                 except ImportError:
                     pass
+
+                # Emit tool execution start event (for TUI spinner)
+                await rcfg.on_chunk(
+                    ToolExecutionStart(
+                        tool_call_id=tool_call.id,
+                        tool_name=tool_call.name,
+                    )
+                )
 
                 # Execute tool on fresh environment with cancellation support
                 tool_result = await fresh_env.exec_tool(
@@ -925,7 +936,9 @@ async def run_agent(
 
                     # Persist to session store
                     if session_store and current_state.session_id:
-                        await session_store.append_message(current_state.session_id, interrupted_msg)
+                        await session_store.append_message(
+                            current_state.session_id, interrupted_msg
+                        )
 
                 # Update in-memory trajectory so TUI has valid state
                 if interrupted_messages:

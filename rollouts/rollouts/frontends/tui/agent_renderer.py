@@ -23,6 +23,7 @@ from rollouts.dtypes import (
     ToolCallEnd,
     ToolCallError,
     ToolCallStart,
+    ToolExecutionStart,
     ToolResultReceived,
 )
 
@@ -106,6 +107,9 @@ class AgentRenderer:
 
             case ToolCallError(content_index=idx, tool_call_id=tool_id, tool_name=name, error=err):
                 self._handle_tool_call_error(idx, tool_id, name, err)
+
+            case ToolExecutionStart(tool_call_id=tool_id, tool_name=name):
+                self._handle_tool_execution_start(tool_id, name)
 
             case ToolResultReceived(
                 tool_call_id=tool_id, content=content, is_error=is_err, error=err, details=details
@@ -302,6 +306,14 @@ class AgentRenderer:
             # Remove from pending (error is final)
             del self.pending_tools[tool_call_id]
 
+    def _handle_tool_execution_start(self, tool_call_id: str, tool_name: str) -> None:
+        """Handle tool execution start - show spinner with tool name."""
+        self.tui.show_loader(
+            f"Running {tool_name}... (Esc to interrupt)",
+            spinner_color_fn=self.theme.fg(self.theme.accent),
+            text_color_fn=self.theme.fg(self.theme.muted),
+        )
+
     def _handle_tool_result(
         self,
         tool_call_id: str,
@@ -311,6 +323,9 @@ class AgentRenderer:
         details: dict | None = None,
     ) -> None:
         """Handle tool execution result - update tool component from pending to success/error."""
+        # Hide the "Running tool..." spinner
+        self.tui.hide_loader()
+
         if tool_call_id in self.pending_tools:
             result_text = error if is_error and error else content
             result_data = {"content": [{"type": "text", "text": result_text}]}

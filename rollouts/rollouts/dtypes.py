@@ -313,6 +313,16 @@ class ToolCallError(JsonSerializable):
 
 
 @dataclass(frozen=True)
+class ToolExecutionStart(JsonSerializable):
+    """Emitted when a tool begins execution (after confirmation, before result)"""
+
+    tool_call_id: str
+    tool_name: str
+    type: Literal["tool_execution_start"] = "tool_execution_start"
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
 class ToolResultReceived(JsonSerializable):
     """Emitted when a tool execution result is received"""
 
@@ -357,6 +367,7 @@ StreamEvent = (
     | ToolCallDelta
     | ToolCallEnd
     | ToolCallError
+    | ToolExecutionStart
     | ToolResultReceived
     | StreamDone
     | StreamError
