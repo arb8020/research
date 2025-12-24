@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import signal
 import sys
-import threading
 import time
 from dataclasses import replace as dc_replace
 from typing import TYPE_CHECKING
@@ -205,7 +204,8 @@ class InteractiveRunner:
 
                     # Create initial state
                     initial_trajectory = Trajectory(
-                        messages=self.trajectory.messages + [Message(role="user", content=first_input)]
+                        messages=self.trajectory.messages
+                        + [Message(role="user", content=first_input)]
                     )
 
                     current_state = AgentState(
@@ -265,7 +265,8 @@ class InteractiveRunner:
                             if partial_response:
                                 new_messages.append(
                                     Message(
-                                        role="assistant", content=partial_response + "\n\n[interrupted]"
+                                        role="assistant",
+                                        content=partial_response + "\n\n[interrupted]",
                                     )
                                 )
 
@@ -310,10 +311,15 @@ class InteractiveRunner:
                     from rollouts.feedback import run_exit_survey
 
                     await run_exit_survey(
-                        final_state, self.endpoint, exit_reason, session_id=self.session_id, skip_check=True
+                        final_state,
+                        self.endpoint,
+                        exit_reason,
+                        session_id=self.session_id,
+                        skip_check=True,
                     )
                 except Exception as e:
                     import sys
+
                     print(f"[DEBUG] Feedback error: {e}", file=sys.stderr)
 
             # Print session info
@@ -384,7 +390,7 @@ class InteractiveRunner:
     def _handle_sigint(self, signum, frame) -> None:
         """Handle SIGINT - cancel and dump debug context."""
         # Dump debug info to help diagnose hangs
-        print(f"\n[SIGINT] Interrupting agent...", file=sys.stderr)
+        print("\n[SIGINT] Interrupting agent...", file=sys.stderr)
         print(f"[DEBUG] {_debug_ctx.dump()}", file=sys.stderr)
 
         if self._cancel_scope:

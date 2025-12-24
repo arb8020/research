@@ -693,7 +693,7 @@ async def rollout_anthropic(
             from rollouts.store import log_crash
 
             if isinstance(e, anthropic.BadRequestError):
-                crash_file = log_crash(e, "anthropic", actor.endpoint.model)
+                crash_file = log_crash(e, "anthropic", actor.endpoint.model, messages=messages)
                 # Fail immediately - don't retry configuration errors
                 assert False, (
                     f"API returned 400 Bad Request: {e}\nCrash details written to: {crash_file}"

@@ -414,8 +414,9 @@ def log_crash(
     model: str,
     *,
     session_id: str | None = None,
+    messages: list | None = None,
 ) -> Path:
-    """Log crash info to ~/.rollouts/crashes/ without dumping full conversation.
+    """Log crash info to ~/.rollouts/crashes/ with optional message dump.
 
     Returns path to the crash file for reference in error messages.
     """
@@ -428,7 +429,7 @@ def log_crash(
     random_suffix = os.urandom(3).hex()
     crash_file = crashes_dir / f"{timestamp}_{random_suffix}.txt"
 
-    crash_info = {
+    crash_info: dict = {
         "timestamp": datetime.now().isoformat(),
         "provider": provider,
         "model": model,
@@ -438,5 +439,8 @@ def log_crash(
         "traceback": traceback.format_exc(),
     }
 
-    crash_file.write_text(json.dumps(crash_info, indent=2))
+    if messages is not None:
+        crash_info["messages"] = messages
+
+    crash_file.write_text(json.dumps(crash_info, indent=2, default=str))
     return crash_file

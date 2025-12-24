@@ -929,7 +929,7 @@ async def run_agent(
             # If cancelled during rollout(), pending_tool_calls may be empty but
             # the assistant message with tool calls is already in the trajectory.
             tool_calls_to_interrupt = list(
-                current_state.pending_tool_calls[current_state.next_tool_idx:]
+                current_state.pending_tool_calls[current_state.next_tool_idx :]
             )
 
             # Also check last message for tool calls not yet in pending_tool_calls
@@ -943,11 +943,34 @@ async def run_agent(
             )
 
             # If last message isn't assistant, try loading from session store
-            if last_msg and last_msg.role != "assistant" and session_store and current_state.session_id:
+            # and update trajectory to include the assistant message
+            if (
+                last_msg
+                and last_msg.role != "assistant"
+                and session_store
+                and current_state.session_id
+            ):
                 try:
-                    stored_session, err = await session_store.get(current_state.session_id)
-                    if stored_session and stored_session.messages and stored_session.messages[-1].role == "assistant":
+                    stored_session, _ = await session_store.get(current_state.session_id)
+                    if (
+                        stored_session
+                        and stored_session.messages
+                        and stored_session.messages[-1].role == "assistant"
+                    ):
                         last_msg = stored_session.messages[-1]
+                        # FIX: Also update trajectory to include the assistant message
+                        # that was persisted but not yet in memory
+                        current_state = replace(
+                            current_state,
+                            actor=replace(
+                                current_state.actor,
+                                trajectory=replace(
+                                    current_state.actor.trajectory,
+                                    messages=current_state.actor.trajectory.messages + [last_msg],
+                                ),
+                            ),
+                        )
+                        states[-1] = current_state
                 except Exception:
                     pass
 
