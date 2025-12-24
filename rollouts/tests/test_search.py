@@ -2,7 +2,7 @@
 """Tests for tree search infrastructure.
 
 Tests the core search abstractions:
-- SearchTree, SearchNode, VerifyResult data structures
+- SearchTree, SearchNode data structures
 - Tree operations (make_root, add_child, get_node, etc.)
 - Selection functions (select_all_frontier, select_one_best, etc.)
 - Pruning functions (beam_pruner, threshold_pruner, etc.)
@@ -27,7 +27,6 @@ from rollouts.dtypes import (
 from rollouts.search import (
     SearchNode,
     SearchTree,
-    VerifyResult,
     add_child,
     add_children,
     compose_pruners,
@@ -66,30 +65,12 @@ def make_test_state(stop: StopReason | None = None) -> AgentState:
 # =============================================================================
 
 
-def test_verify_result_defaults():
-    """VerifyResult should have sensible defaults."""
-    vr = VerifyResult()
-    assert vr.score is None
-    assert vr.valid is True
-    assert vr.terminal is False
-    assert vr.feedback is None
-    print("✓ VerifyResult defaults correct")
-
-
-def test_verify_result_frozen():
-    """VerifyResult should be immutable."""
-    vr = VerifyResult(score=0.5)
-    with pytest.raises(AttributeError):
-        vr.score = 0.9  # type: ignore
-    print("✓ VerifyResult is frozen")
-
-
 def test_search_node_frozen():
     """SearchNode should be immutable."""
     state = make_test_state()
     node = SearchNode(state=state, node_id="0")
     with pytest.raises(AttributeError):
-        node.score = 0.5  # type: ignore
+        node.value = 0.5  # type: ignore
     print("✓ SearchNode is frozen")
 
 
@@ -144,13 +125,13 @@ def test_add_child():
     state = make_test_state()
     tree = make_root(state)
 
-    tree2 = add_child(tree, "0", state, score=0.5)
+    tree2 = add_child(tree, "0", state, value=0.5)
 
     assert len(tree2.nodes) == 2
     child = get_node(tree2, "0.0")
     assert child.parent_id == "0"
     assert child.depth == 1
-    assert child.score == 0.5
+    assert child.value == 0.5
     print("✓ add_child works")
 
 
@@ -189,9 +170,9 @@ def test_add_children():
     tree2 = add_children(tree, "0", states, scores)
 
     assert len(tree2.nodes) == 4  # root + 3 children
-    assert get_node(tree2, "0.0").score == 0.3
-    assert get_node(tree2, "0.1").score == 0.5
-    assert get_node(tree2, "0.2").score == 0.7
+    assert get_node(tree2, "0.0").value == 0.3
+    assert get_node(tree2, "0.1").value == 0.5
+    assert get_node(tree2, "0.2").value == 0.7
     print("✓ add_children works")
 
 
@@ -217,15 +198,15 @@ def test_get_terminal_nodes_sorted():
     t2 = make_test_state(stop=StopReason.TASK_COMPLETED)
     t3 = make_test_state(stop=StopReason.TASK_COMPLETED)
 
-    tree = add_child(tree, "0", t1, score=0.3)
-    tree = add_child(tree, "0", t2, score=0.9)
-    tree = add_child(tree, "0", t3, score=0.5)
+    tree = add_child(tree, "0", t1, value=0.3)
+    tree = add_child(tree, "0", t2, value=0.9)
+    tree = add_child(tree, "0", t3, value=0.5)
 
     terminals = get_terminal_nodes(tree)
     assert len(terminals) == 3
-    assert terminals[0].score == 0.9  # Best first
-    assert terminals[1].score == 0.5
-    assert terminals[2].score == 0.3
+    assert terminals[0].value == 0.9  # Best first
+    assert terminals[1].value == 0.5
+    assert terminals[2].value == 0.3
     print("✓ get_terminal_nodes sorted by score")
 
 
@@ -237,12 +218,12 @@ def test_get_best_terminal():
     t1 = make_test_state(stop=StopReason.TASK_COMPLETED)
     t2 = make_test_state(stop=StopReason.TASK_COMPLETED)
 
-    tree = add_child(tree, "0", t1, score=0.3)
-    tree = add_child(tree, "0", t2, score=0.9)
+    tree = add_child(tree, "0", t1, value=0.3)
+    tree = add_child(tree, "0", t2, value=0.9)
 
     best = get_best_terminal(tree)
     assert best is not None
-    assert best.score == 0.9
+    assert best.value == 0.9
     print("✓ get_best_terminal works")
 
 
@@ -281,9 +262,9 @@ def test_select_one_best():
     """select_one_best returns highest-scoring frontier node."""
     state = make_test_state()
     tree = make_root(state)
-    tree = add_child(tree, "0", state, score=0.3)
-    tree = add_child(tree, "0", state, score=0.9)
-    tree = add_child(tree, "0", state, score=0.5)
+    tree = add_child(tree, "0", state, value=0.3)
+    tree = add_child(tree, "0", state, value=0.9)
+    tree = add_child(tree, "0", state, value=0.5)
 
     selected = select_one_best(tree)
     assert selected == ["0.1"]  # Score 0.9
@@ -336,9 +317,9 @@ def test_beam_pruner():
     """Beam pruner keeps top-k nodes by score."""
     state = make_test_state()
     tree = make_root(state)
-    tree = add_child(tree, "0", state, score=0.3)
-    tree = add_child(tree, "0", state, score=0.9)
-    tree = add_child(tree, "0", state, score=0.5)
+    tree = add_child(tree, "0", state, value=0.3)
+    tree = add_child(tree, "0", state, value=0.9)
+    tree = add_child(tree, "0", state, value=0.5)
 
     pruner = make_beam_pruner(beam_width=2)
     pruned = pruner(tree)
@@ -367,11 +348,11 @@ def test_threshold_pruner():
     """Threshold pruner removes nodes below min_score."""
     state = make_test_state()
     tree = make_root(state)
-    tree = add_child(tree, "0", state, score=0.3)
-    tree = add_child(tree, "0", state, score=0.9)
-    tree = add_child(tree, "0", state, score=0.5)
+    tree = add_child(tree, "0", state, value=0.3)
+    tree = add_child(tree, "0", state, value=0.9)
+    tree = add_child(tree, "0", state, value=0.5)
 
-    pruner = make_threshold_pruner(min_score=0.4)
+    pruner = make_threshold_pruner(min_value=0.4)
     pruned = pruner(tree)
 
     assert len(pruned.frontier) == 2
@@ -406,16 +387,16 @@ def test_compose_pruners():
     state = make_test_state()
     tree = make_root(state)
     # Create structure where we have nodes at different depths in frontier
-    tree = add_child(tree, "0", state, score=0.9)  # 0.0, depth 1
-    tree = add_child(tree, "0", state, score=0.2)  # 0.1, depth 1, low score
-    tree = add_child(tree, "0.0", state, score=0.8)  # 0.0.0, depth 2
-    tree = add_child(tree, "0.0.0", state, score=0.7)  # 0.0.0.0, depth 3
+    tree = add_child(tree, "0", state, value=0.9)  # 0.0, depth 1
+    tree = add_child(tree, "0", state, value=0.2)  # 0.1, depth 1, low score
+    tree = add_child(tree, "0.0", state, value=0.8)  # 0.0.0, depth 2
+    tree = add_child(tree, "0.0.0", state, value=0.7)  # 0.0.0.0, depth 3
 
     # Frontier now: 0.1 (depth 1, score 0.2), 0.0.0.0 (depth 3, score 0.7)
 
     # Compose: threshold 0.5, then depth 2
     pruner = compose_pruners(
-        make_threshold_pruner(min_score=0.5),
+        make_threshold_pruner(min_value=0.5),
         make_depth_pruner(max_depth=2),
     )
     pruned = pruner(tree)
@@ -449,7 +430,7 @@ async def test_run_search_linear():
     # Counter to track expansions
     expansion_count = 0
 
-    async def mock_expand(tree, node_ids, config):
+    async def mock_expand(tree, node_ids, config, value_fn=None):
         """Mock expand that adds one child per node, terminates after 3 expansions."""
         nonlocal expansion_count
         expansion_count += 1
@@ -457,10 +438,10 @@ async def test_run_search_linear():
         for node_id in node_ids:
             if expansion_count >= 3:
                 terminal = make_test_state(stop=StopReason.TASK_COMPLETED)
-                tree = add_child(tree, node_id, terminal, score=1.0)
+                tree = add_child(tree, node_id, terminal, value=1.0)
             else:
                 new_state = make_test_state()
-                tree = add_child(tree, node_id, new_state, score=0.5)
+                tree = add_child(tree, node_id, new_state, value=0.5)
         return tree
 
     tree = await run_search(
@@ -476,7 +457,7 @@ async def test_run_search_linear():
     assert expansion_count == 3
     best = get_best_terminal(tree)
     assert best is not None
-    assert best.score == 1.0
+    assert best.value == 1.0
     print(f"✓ Linear search completed in {expansion_count} expansions")
     print(f"✓ Tree has {len(tree.nodes)} nodes")
 
@@ -491,7 +472,7 @@ async def test_run_search_beam():
 
     step = 0
 
-    async def mock_beam_expand(tree, node_ids, config):
+    async def mock_beam_expand(tree, node_ids, config, value_fn=None):
         """Mock expand that branches 2x per node."""
         nonlocal step
         step += 1
@@ -500,13 +481,13 @@ async def test_run_search_beam():
             if step >= 3:
                 # Terminate on step 3
                 t = make_test_state(stop=StopReason.TASK_COMPLETED)
-                tree = add_child(tree, node_id, t, score=1.0)
+                tree = add_child(tree, node_id, t, value=1.0)
             else:
                 # Branch 2x with different scores
                 s1 = make_test_state()
                 s2 = make_test_state()
-                tree = add_child(tree, node_id, s1, score=0.3 + step * 0.1)
-                tree = add_child(tree, node_id, s2, score=0.5 + step * 0.1)
+                tree = add_child(tree, node_id, s1, value=0.3 + step * 0.1)
+                tree = add_child(tree, node_id, s2, value=0.5 + step * 0.1)
         return tree
 
     tree = await run_search(
@@ -532,11 +513,11 @@ async def test_run_search_stops_on_empty_frontier():
     state = make_test_state()
     config = RunConfig(on_chunk=noop_chunk_handler)
 
-    async def mock_expand_prunes_all(tree, node_ids, config):
-        """Expand with low scores that will all be pruned."""
+    async def mock_expand_prunes_all(tree, node_ids, config, value_fn=None):
+        """Expand with low values that will all be pruned."""
         for node_id in node_ids:
             s = make_test_state()
-            tree = add_child(tree, node_id, s, score=0.1)
+            tree = add_child(tree, node_id, s, value=0.1)
         return tree
 
     tree = await run_search(
@@ -544,7 +525,7 @@ async def test_run_search_stops_on_empty_frontier():
         config=config,
         select=select_all_frontier,
         expand=mock_expand_prunes_all,
-        prune=make_threshold_pruner(min_score=0.5),  # Prunes everything
+        prune=make_threshold_pruner(min_value=0.5),  # Prunes everything
         max_steps=10,
     )
 
@@ -568,8 +549,6 @@ if __name__ == "__main__":
 
         # Sync tests
         print("--- Data Structures ---")
-        test_verify_result_defaults()
-        test_verify_result_frozen()
         test_search_node_frozen()
         test_search_tree_frozen()
 
