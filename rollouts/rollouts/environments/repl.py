@@ -367,7 +367,26 @@ The `re` module is available for regex operations.
                 error="No code provided",
             )
 
-        output, had_error = _exec_code(code, self._namespace)
+        # Get trio token so we can call back from thread
+        trio_token = trio.lowlevel.current_trio_token()
+
+        # Create sync llm_query that bridges back to async
+        def sync_llm_query(prompt: str) -> str:
+            """Synchronous llm_query callable from inside exec'd code."""
+            try:
+                return trio.from_thread.run(
+                    self._async_llm_query,
+                    prompt,
+                    trio_token=trio_token,
+                )
+            except Exception as e:
+                return f"[llm_query error: {e}]"
+
+        # Update namespace with working llm_query
+        self._namespace["llm_query"] = sync_llm_query
+
+        # Run exec in a thread so trio.from_thread.run works
+        output, had_error = await trio.to_thread.run_sync(_exec_code, code, self._namespace)
 
         return ToolResult(
             tool_call_id=tool_call.id,
@@ -426,22 +445,14 @@ The `re` module is available for regex operations.
             stop_reason=StopReason.TASK_COMPLETED,
         )
 
-    # Sync wrappers for use inside exec'd code
+    # Sync wrappers - these are replaced at runtime in _exec_repl with thread-bridged versions
     def _sync_llm_query(self, prompt: str) -> str:
-        """Synchronous llm_query for use inside REPL code.
-
-        Note: This uses trio.from_thread which requires being called from
-        a thread spawned by trio. For now, returns placeholder.
-        """
-        # TODO: Implement proper async bridge
-        # Could use trio.from_thread.run or similar
-        return "[llm_query not available inside exec - use llm_query tool instead]"
+        """Placeholder - replaced with thread-bridged version in _exec_repl."""
+        return "[llm_query: call from within repl tool execution]"
 
     def _sync_rlm_query(self, prompt: str) -> str:
-        """Synchronous rlm_query for use inside REPL code."""
-        return (
-            "[rlm_query not available inside exec - use llm_query tool with recursive=True instead]"
-        )
+        """Placeholder for recursive RLM query."""
+        return "[rlm_query not yet implemented - use llm_query instead]"
 
     async def _async_llm_query(self, prompt: str) -> str:
         """Make a simple LLM call (not recursive)."""
@@ -600,10 +611,28 @@ class MessageParsingREPLEnvironment(REPLEnvironment):
         if not code_blocks:
             return state
 
-        # Execute all code blocks
+        # Setup thread-bridged llm_query for code execution
+        trio_token = trio.lowlevel.current_trio_token()
+
+        def sync_llm_query(prompt: str) -> str:
+            """Synchronous llm_query callable from inside exec'd code."""
+            try:
+                return trio.from_thread.run(
+                    self._async_llm_query,
+                    prompt,
+                    trio_token=trio_token,
+                )
+            except Exception as e:
+                return f"[llm_query error: {e}]"
+
+        self._namespace["llm_query"] = sync_llm_query
+
+        # Execute all code blocks in a thread (so trio.from_thread.run works)
         all_output = []
         for code in code_blocks:
-            output, _had_error = _exec_code(code.strip(), self._namespace)
+            output, _had_error = await trio.to_thread.run_sync(
+                _exec_code, code.strip(), self._namespace
+            )
             if output.strip():
                 all_output.append(output)
 
