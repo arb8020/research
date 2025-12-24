@@ -92,6 +92,13 @@ Think about tactics: forks, pins, discovered attacks, checkmate patterns.""",
         environment=env,
     )
 
+    # Define value function for chess puzzles
+    async def chess_value_fn(state: AgentState) -> float:
+        """Value function: use environment's position evaluation."""
+        if state.environment and hasattr(state.environment, "get_value"):
+            return await state.environment.get_value()
+        return 0.0
+
     # Run beam search
     print("\n" + "=" * 50)
     print("Running beam search...")
@@ -111,6 +118,7 @@ Think about tactics: forks, pins, discovered attacks, checkmate patterns.""",
         config,
         select=select_all_frontier,
         expand=make_expand_n_turns(n=2, branch_factor=2),
+        value_fn=chess_value_fn,
         prune=make_beam_pruner(beam_width=2),
         max_steps=3,
     )
@@ -126,7 +134,7 @@ Think about tactics: forks, pins, discovered attacks, checkmate patterns.""",
     best = get_best_terminal(tree)
     if best:
         print("\nBest terminal node:")
-        print(f"  Score: {best.score}")
+        print(f"  Value: {best.value}")
         print(f"  Depth: {best.depth}")
 
         # Get the submitted answer from environment
@@ -141,7 +149,7 @@ Think about tactics: forks, pins, discovered attacks, checkmate patterns.""",
         print("\nFrontier nodes:")
         for node_id in tree.frontier[:3]:
             node = next(n for n in tree.nodes if n.node_id == node_id)
-            print(f"  {node_id}: score={node.score}, depth={node.depth}")
+            print(f"  {node_id}: value={node.value}, depth={node.depth}")
 
 
 if __name__ == "__main__":
