@@ -343,8 +343,11 @@ class InteractiveAgentRunner:
 
                     # Escape key - interrupt but continue
                     current_state = await self._handle_agent_interrupt(agent_states, current_state)
+                elif agent_states and agent_states[-1].stop == StopReason.TASK_COMPLETED:
+                    # Task completed - in interactive mode, show result and continue
+                    current_state = await self._handle_task_completed(agent_states)
                 else:
-                    # Agent completed normally - update state and exit
+                    # Other stop reasons (MAX_TURNS, etc.) - update state and exit
                     self._update_final_state(agent_states)
                     break
 
@@ -639,6 +642,52 @@ class InteractiveAgentRunner:
             latest_state,
             actor=dc_replace(latest_state.actor, trajectory=new_trajectory),
             stop=None,
+        )
+
+    async def _handle_task_completed(self, agent_states: list[AgentState]) -> AgentState:
+        """Handle TASK_COMPLETED in interactive mode - show result and continue.
+
+        Unlike batch mode where TASK_COMPLETED exits, interactive mode should
+        display the result and wait for more user input.
+        """
+        if self.tui:
+            self.tui.hide_loader()
+
+        latest_state = agent_states[-1]
+
+        # Update session tracking
+        if latest_state.session_id and latest_state.session_id != self.session_id:
+            self.session_id = latest_state.session_id
+            if self.status_line:
+                self.status_line.set_session_id(self.session_id)
+            self._update_env_status_info()
+
+        if self.status_line and self.tui:
+            self._update_token_counts(latest_state)
+            self.tui.request_render()
+
+        # Check if environment has a final_answer to display
+        if latest_state.environment and hasattr(latest_state.environment, "_final_answer"):
+            final_answer = getattr(latest_state.environment, "_final_answer", None)
+            if final_answer and self.renderer:
+                self.renderer.add_final_answer(final_answer)
+                if self.tui:
+                    self.tui.request_render()
+
+        # Wait for next user input
+        user_input = await self._tui_input_handler("Enter your message: ")
+
+        # Build new trajectory with user message
+        new_messages = list(latest_state.actor.trajectory.messages)
+        new_messages.append(Message(role="user", content=user_input))
+
+        from dataclasses import replace as dc_replace
+
+        new_trajectory = Trajectory(messages=new_messages)
+        return dc_replace(
+            latest_state,
+            actor=dc_replace(latest_state.actor, trajectory=new_trajectory),
+            stop=None,  # Clear stop so agent continues
         )
 
     async def _cleanup_and_print_session(self, agent_states: list[AgentState]) -> None:
