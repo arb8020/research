@@ -26,8 +26,11 @@ async def read_process_output(process: Process) -> tuple[bytes, bytes]:
     async def read_stream(stream: ReceiveStream | None, chunks: list[bytes]) -> None:
         if stream is None:
             return
-        async for chunk in stream:
-            chunks.append(chunk)
+        try:
+            async for chunk in stream:
+                chunks.append(chunk)
+        except trio.ClosedResourceError:
+            pass
 
     async with trio.open_nursery() as nursery:
         nursery.start_soon(read_stream, process.stdout, stdout_chunks)
@@ -72,12 +75,50 @@ async def kill_process_tree(process: Process, graceful_timeout: float = 5.0) -> 
             pass
 
 
+class _ProcessHolder:
+    """Holds a reference to a subprocess so it can be killed from outside the thread."""
+
+    def __init__(self) -> None:
+        self.process: subprocess.Popen[bytes] | None = None
+
+
+def _run_command_sync(
+    command: str, cwd: str, timeout: float, holder: _ProcessHolder
+) -> tuple[int, str, str]:
+    """Synchronous subprocess execution (runs in thread)."""
+    process = subprocess.Popen(
+        ["sh", "-c", command],
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    holder.process = process
+
+    try:
+        stdout_bytes, stderr_bytes = process.communicate(timeout=timeout)
+        stdout = stdout_bytes.decode("utf-8", errors="replace")
+        stderr = stderr_bytes.decode("utf-8", errors="replace")
+        return process.returncode, stdout, stderr
+    except subprocess.TimeoutExpired:
+        # Kill on timeout
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            process.kill()
+        process.wait()
+        raise TimeoutError(f"Command timed out after {timeout} seconds")
+
+
 async def run_command(
     command: str,
     cwd: str,
     timeout: float = 120,  # noqa: ASYNC109
 ) -> tuple[int, str, str]:
     """Run a shell command with cancellation support.
+
+    Uses a thread with cancellable=True so trio can abandon it on cancellation.
+    When cancelled, the thread is abandoned and the process is killed.
 
     Args:
         command: Shell command to run
@@ -91,58 +132,23 @@ async def run_command(
         trio.Cancelled: If cancelled via Escape/Ctrl+C (process is killed)
         TimeoutError: If command exceeds timeout
     """
-    process = await trio.lowlevel.open_process(
-        ["sh", "-c", command],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        cwd=cwd,
-        start_new_session=True,
-    )
-
-    async def run_process() -> tuple[bytes, bytes, int]:
-        """Run process and collect output."""
-        stdout_data, stderr_data = await read_process_output(process)
-        returncode = await process.wait()
-        return stdout_data, stderr_data, returncode
-
-    async def cancel_monitor() -> None:
-        """Poll for cancellation and kill process to unblock reads.
-
-        Unlike HTTP streams which respect trio cancellation natively,
-        subprocess pipe reads block until data arrives or pipe closes.
-        We must kill the process to close the pipes and unblock reads.
-        """
-        try:
-            while True:
-                await trio.sleep(0.05)
-        except trio.Cancelled:
-            # Cancellation requested - kill process immediately
-            # This closes pipes and unblocks read_process_output
-            # Shield this so we can finish killing before propagating
-            with trio.CancelScope(shield=True):
-                await kill_process_tree(process)
-            raise
+    holder = _ProcessHolder()
 
     try:
-        async with trio.open_nursery() as nursery:
-            nursery.start_soon(cancel_monitor)
-
-            with trio.move_on_after(timeout) as timeout_scope:
-                stdout_data, stderr_data, returncode = await run_process()
-
-            # Success - cancel the monitor
-            nursery.cancel_scope.cancel()
-
-        if timeout_scope.cancelled_caught:
-            with trio.CancelScope(shield=True):
-                await kill_process_tree(process)
-            raise TimeoutError(f"Command timed out after {timeout} seconds")
-
-        stdout = stdout_data.decode("utf-8", errors="replace") if stdout_data else ""
-        stderr = stderr_data.decode("utf-8", errors="replace") if stderr_data else ""
-        return returncode, stdout, stderr
-
+        # Run in thread with abandon_on_cancel=True - allows trio to abandon the thread
+        # when the cancel scope is cancelled
+        return await trio.to_thread.run_sync(
+            lambda: _run_command_sync(command, cwd, timeout, holder),
+            abandon_on_cancel=True,
+        )
     except trio.Cancelled:
-        # Already killed by cancel_monitor, just re-raise
+        # Kill the process if it exists
+        if holder.process and holder.process.pid:
+            try:
+                os.killpg(holder.process.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                try:
+                    holder.process.kill()
+                except (ProcessLookupError, OSError):
+                    pass
         raise

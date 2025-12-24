@@ -933,11 +933,24 @@ async def run_agent(
             )
 
             # Also check last message for tool calls not yet in pending_tool_calls
+            # NOTE: current_state.actor.trajectory may not have the assistant message yet
+            # if we were cancelled during tool execution - the message was persisted to
+            # session store but state wasn't returned. So check session store too.
             last_msg = (
                 current_state.actor.trajectory.messages[-1]
                 if current_state.actor.trajectory.messages
                 else None
             )
+
+            # If last message isn't assistant, try loading from session store
+            if last_msg and last_msg.role != "assistant" and session_store and current_state.session_id:
+                try:
+                    stored_session, err = await session_store.get(current_state.session_id)
+                    if stored_session and stored_session.messages and stored_session.messages[-1].role == "assistant":
+                        last_msg = stored_session.messages[-1]
+                except Exception:
+                    pass
+
             if last_msg and last_msg.role == "assistant" and not tool_calls_to_interrupt:
                 # Get tool calls from last message that don't have results
                 msg_tool_calls = last_msg.get_tool_calls()
