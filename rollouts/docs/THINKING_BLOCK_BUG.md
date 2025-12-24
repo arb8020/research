@@ -94,9 +94,27 @@ Added `tests/test_thinking_block_resume.py` with:
 - `test_consecutive_assistant_messages_both_preserved`: Edge case handling
 - `test_real_api_thinking_block_round_trip`: Integration test with real API
 
-## Next Steps
+## The Fix
 
-1. Implement message merging for consecutive same-role messages
-2. Add synthetic tool result insertion for orphaned tool calls
-3. Write integration test that actually reproduces the crash
-4. Verify fix with the crashed session's message history
+**Solution**: Strip thinking blocks from all assistant messages except the LAST one.
+
+The Anthropic API only requires thinking blocks in the "latest assistant turn".
+When thinking blocks exist in earlier messages, and those messages get merged
+server-side (due to consecutive same-role messages), the API sees them as "modified"
+and rejects the request.
+
+The fix converts thinking blocks in non-last assistant messages to text blocks:
+```python
+TextContent(type="text", text=f"<thinking>\n{block.thinking}\n</thinking>")
+```
+
+This preserves the thinking content for context while avoiding the API validation error.
+
+Implemented in `rollouts/transform_messages.py:_strip_non_last_thinking()`
+
+## Verification
+
+Test passes with the exact crashed session:
+```bash
+python -m pytest tests/test_thinking_block_resume.py -v
+```

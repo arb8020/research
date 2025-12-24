@@ -112,7 +112,16 @@ def transform_messages(
     assert isinstance(filtered_messages, list)
     assert len(filtered_messages) <= len(transformed_messages)
 
-    return filtered_messages
+    # Pass 3: Strip thinking blocks from non-last assistant messages
+    # The API requires thinking blocks in the LAST assistant turn only.
+    # Having thinking blocks in earlier messages can cause "cannot be modified" errors
+    # when the API merges consecutive same-role messages.
+    stripped_messages = _strip_non_last_thinking(filtered_messages)
+    assert stripped_messages is not None
+    assert isinstance(stripped_messages, list)
+    assert len(stripped_messages) == len(filtered_messages)
+
+    return stripped_messages
 
 
 def _transform_thinking_blocks(
@@ -419,3 +428,120 @@ def _filter_content_by_tool_calls(
 
     # Unknown type - pass through
     return content
+
+
+def _strip_non_last_thinking(messages: list[Message]) -> list[Message]:
+    """Strip thinking blocks from all assistant messages except the last one.
+
+    The Anthropic API has strict rules about thinking blocks:
+    - "thinking blocks in the latest assistant message cannot be modified"
+    - When consecutive same-role messages are merged server-side, thinking blocks
+      from different responses get combined, triggering "modified" errors
+
+    The safest approach is to only keep thinking blocks in the LAST assistant message,
+    converting others to text blocks with <thinking> tags (preserving the content).
+
+    Args:
+        messages: List of messages
+
+    Returns:
+        Messages with thinking blocks stripped from non-last assistant messages
+    """
+    if not messages:
+        return []
+
+    from dataclasses import replace
+
+    # Find the last assistant message index
+    last_assistant_idx = None
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].role == "assistant":
+            last_assistant_idx = i
+            break
+
+    if last_assistant_idx is None:
+        return messages
+
+    result: list[Message] = []
+    for i, msg in enumerate(messages):
+        if msg.role != "assistant" or i == last_assistant_idx:
+            # Keep non-assistant messages and the last assistant message as-is
+            result.append(msg)
+        else:
+            # Strip thinking blocks from this assistant message
+            content = msg.content
+            if not isinstance(content, list):
+                result.append(msg)
+                continue
+
+            new_content: list[ContentBlock] = []
+            for block in content:
+                if isinstance(block, ThinkingContent):
+                    # Convert thinking to text block
+                    new_content.append(
+                        TextContent(
+                            type="text",
+                            text=f"<thinking>\n{block.thinking}\n</thinking>",
+                        )
+                    )
+                else:
+                    new_content.append(block)
+
+            result.append(replace(msg, content=new_content))
+
+    return result
+
+
+def merge_consecutive_messages(messages: list[Message]) -> list[Message]:
+    """Merge consecutive messages with the same role.
+
+    The Anthropic API silently merges consecutive same-role messages server-side.
+    When this happens with thinking blocks, the API can reject the request with:
+        "thinking blocks in the latest assistant message cannot be modified"
+
+    This is because thinking blocks from different responses get combined,
+    and the API sees them as "modified" from their original context.
+
+    By merging on our side first, we avoid the server-side merge behavior.
+
+    Args:
+        messages: List of messages that may have consecutive same-role entries
+
+    Returns:
+        List with consecutive same-role messages merged
+    """
+    if not messages:
+        return []
+
+    from dataclasses import replace
+
+    result: list[Message] = []
+
+    for msg in messages:
+        if not result or result[-1].role != msg.role:
+            # Different role or first message - add as-is
+            result.append(msg)
+        else:
+            # Same role as previous - merge content
+            prev = result[-1]
+            prev_content = prev.content
+            curr_content = msg.content
+
+            # Normalize to lists
+            if isinstance(prev_content, str):
+                prev_content = [TextContent(type="text", text=prev_content)]
+            elif prev_content is None:
+                prev_content = []
+
+            if isinstance(curr_content, str):
+                curr_content = [TextContent(type="text", text=curr_content)]
+            elif curr_content is None:
+                curr_content = []
+
+            # Merge content blocks
+            merged_content = list(prev_content) + list(curr_content)
+
+            # Replace the previous message with merged content
+            result[-1] = replace(prev, content=merged_content)
+
+    return result
