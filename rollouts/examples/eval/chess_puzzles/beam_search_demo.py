@@ -1,11 +1,13 @@
-"""Test beam search on chess puzzles.
+"""Demo: Beam search on a single chess puzzle.
+
+A minimal example showing tree search on chess puzzles.
+For full evaluation, use run.py instead.
 
 Usage:
-    uv run python examples/chess_beam_search.py
+    uv run python examples/eval/chess_puzzles/beam_search_demo.py
 
 Requires:
     uv add python-chess httpx
-    # Optional for evaluation: uv add stockfish
 """
 
 import trio

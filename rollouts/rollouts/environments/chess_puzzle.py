@@ -98,7 +98,7 @@ class ChessPuzzleEnvironment:
         # Restore current position
         if "current_fen" in data:
             env.board = chess.Board(data["current_fen"])
-        env.moves_made = data.get("moves_made", [])
+        env.moves_made = list(data.get("moves_made", []))  # Copy to avoid shared state
         env.submitted_answer = data.get("submitted_answer")
         return env
 
@@ -332,9 +332,12 @@ class ChessPuzzleEnvironment:
                 error=f"Illegal move: {move_str}. Legal moves: {', '.join(legal_moves[:10])}{'...' if len(legal_moves) > 10 else ''}",
             )
 
+        # Format move BEFORE pushing (san() needs move to be legal in current position)
+        formatted_move = self._format_move(move)
+
         # Make the move
         self.board.push(move)
-        self.moves_made.append(self._format_move(move))
+        self.moves_made.append(formatted_move)
 
         # Get evaluation if available
         eval_str = ""
