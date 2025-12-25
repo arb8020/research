@@ -37,6 +37,9 @@ SCOPES = "org:create_api_key user:profile user:inference"
 # Token storage
 DEFAULT_TOKEN_PATH = Path.home() / ".rollouts" / "oauth" / "anthropic.json"
 
+# Refresh tokens 3 minutes before expiry to avoid mid-request failures
+EXPIRY_BUFFER_MS = 3 * 60 * 1000
+
 
 @dataclass
 class OAuthTokens:
@@ -197,7 +200,7 @@ class OAuthClient:
             tokens = OAuthTokens(
                 access_token=data["access_token"],
                 refresh_token=data["refresh_token"],
-                expires_at=time.time() * 1000 + data["expires_in"] * 1000,
+                expires_at=time.time() * 1000 + data["expires_in"] * 1000 - EXPIRY_BUFFER_MS,
             )
 
             self._tokens = tokens
@@ -234,7 +237,7 @@ class OAuthClient:
             new_tokens = OAuthTokens(
                 access_token=data["access_token"],
                 refresh_token=data.get("refresh_token", tokens.refresh_token),
-                expires_at=time.time() * 1000 + data["expires_in"] * 1000,
+                expires_at=time.time() * 1000 + data["expires_in"] * 1000 - EXPIRY_BUFFER_MS,
             )
 
             self._tokens = new_tokens
