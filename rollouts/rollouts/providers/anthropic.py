@@ -537,6 +537,54 @@ async def aggregate_anthropic_stream(
     return completion
 
 
+async def _get_fresh_oauth_token() -> str | None:
+    """Get a fresh OAuth token, refreshing if needed. Returns None if not using OAuth."""
+    try:
+        from rollouts.frontends.tui.oauth import get_oauth_client
+        client = get_oauth_client()
+        return await client.get_valid_access_token()
+    except Exception as e:
+        logger.warning(f"Failed to refresh OAuth token: {e}")
+        return None
+
+
+def _create_anthropic_client(
+    oauth_token: str | None,
+    api_key: str,
+    api_base: str | None,
+    max_retries: int,
+    timeout: float,
+) -> AsyncAnthropic:
+    """Create an Anthropic client with the appropriate auth."""
+    if oauth_token:
+        client_kwargs: dict[str, Any] = {
+            "auth_token": oauth_token,
+            "max_retries": max_retries,
+            "timeout": timeout,
+        }
+    else:
+        client_kwargs = {
+            "api_key": api_key,
+            "max_retries": max_retries,
+            "timeout": timeout,
+        }
+    
+    if api_base:
+        # Anthropic SDK adds /v1 automatically, so remove it if present
+        base_url = api_base.rstrip("/v1").rstrip("/")
+        client_kwargs["base_url"] = base_url
+    
+    client = AsyncAnthropic(**client_kwargs)
+    
+    if oauth_token:
+        # Prevent SDK from sending X-Api-Key header alongside OAuth Bearer token.
+        # The SDK auto-reads ANTHROPIC_API_KEY from env, which causes both headers
+        # to be sent, resulting in API key billing instead of OAuth billing.
+        client.api_key = None
+    
+    return client
+
+
 async def rollout_anthropic(
     actor: Actor,
     on_chunk: Callable[[StreamEvent], Awaitable[None]],
@@ -549,30 +597,21 @@ async def rollout_anthropic(
     Note: **kwargs accepts but ignores provider-specific params (e.g., openai reasoning params)
     """
 
-    # Support OAuth bearer token authentication (takes precedence over api_key)
-    # OAuth tokens use auth_token parameter for Bearer auth
-    if actor.endpoint.oauth_token:
-        client_kwargs: dict[str, Any] = {
-            "auth_token": actor.endpoint.oauth_token,
-            "max_retries": actor.endpoint.max_retries,
-            "timeout": actor.endpoint.timeout,
-        }
-    else:
-        client_kwargs: dict[str, Any] = {
-            "api_key": actor.endpoint.api_key,
-            "max_retries": actor.endpoint.max_retries,
-            "timeout": actor.endpoint.timeout,
-        }
-    if actor.endpoint.api_base:
-        # Anthropic SDK adds /v1 automatically, so remove it if present
-        base_url = actor.endpoint.api_base.rstrip("/v1").rstrip("/")
-        client_kwargs["base_url"] = base_url
-    client = AsyncAnthropic(**client_kwargs)
-    if actor.endpoint.oauth_token:
-        # Prevent SDK from sending X-Api-Key header alongside OAuth Bearer token.
-        # The SDK auto-reads ANTHROPIC_API_KEY from env, which causes both headers
-        # to be sent, resulting in API key billing instead of OAuth billing.
-        client.api_key = None
+    # Get fresh OAuth token if using OAuth (handles mid-session expiry)
+    oauth_token = actor.endpoint.oauth_token
+    if oauth_token:
+        fresh_token = await _get_fresh_oauth_token()
+        if fresh_token:
+            oauth_token = fresh_token
+        # If refresh failed, continue with existing token - it might still work
+    
+    client = _create_anthropic_client(
+        oauth_token=oauth_token,
+        api_key=actor.endpoint.api_key,
+        api_base=actor.endpoint.api_base,
+        max_retries=actor.endpoint.max_retries,
+        timeout=actor.endpoint.timeout,
+    )
 
     # Transform messages for cross-provider compatibility (like pi-ai does)
     from rollouts.transform_messages import transform_messages
@@ -700,7 +739,7 @@ async def rollout_anthropic(
 
             # Build extra headers - include oauth beta header if using oauth
             extra_headers = {"anthropic-beta": "prompt-caching-2024-07-31"}
-            if actor.endpoint.oauth_token:
+            if oauth_token:
                 extra_headers["anthropic-beta"] = "oauth-2025-04-20,prompt-caching-2024-07-31"
 
             async with client.messages.stream(  # type: ignore[missing-argument]
@@ -717,15 +756,48 @@ async def rollout_anthropic(
 
             from rollouts.store import log_crash
 
+            from .base import ContextTooLongError
+
             if isinstance(e, anthropic.BadRequestError):
+                error_str = str(e)
+                # Check for context length errors - these are recoverable, not crashes
+                if "prompt is too long" in error_str or "too many tokens" in error_str.lower():
+                    # Try to extract token counts from error message
+                    import re
+                    match = re.search(r"(\d+)\s*tokens?\s*>\s*(\d+)", error_str)
+                    current_tokens = int(match.group(1)) if match else None
+                    max_tokens = int(match.group(2)) if match else None
+                    raise ContextTooLongError(
+                        f"Context too long: {current_tokens:,} tokens (max: {max_tokens:,})",
+                        current_tokens=current_tokens,
+                        max_tokens=max_tokens,
+                    )
+                
+                # Other 400 errors are likely bugs - log and fail
                 crash_file = log_crash(e, "anthropic", actor.endpoint.model, messages=messages)
                 # Fail immediately - don't retry configuration errors
                 assert False, (
                     f"API returned 400 Bad Request: {e}\nCrash details written to: {crash_file}"
                 )
 
-            # Fail fast on authentication errors - these won't resolve with retries
+            # For OAuth: try to refresh token and retry once on auth errors
             if isinstance(e, anthropic.AuthenticationError):
+                if oauth_token and attempt == 0:
+                    print("🔄 OAuth token rejected, attempting refresh...")
+                    fresh_token = await _get_fresh_oauth_token()
+                    if fresh_token and fresh_token != oauth_token:
+                        oauth_token = fresh_token
+                        # Recreate client with new token
+                        await client.close()
+                        client = _create_anthropic_client(
+                            oauth_token=oauth_token,
+                            api_key=actor.endpoint.api_key,
+                            api_base=actor.endpoint.api_base,
+                            max_retries=actor.endpoint.max_retries,
+                            timeout=actor.endpoint.timeout,
+                        )
+                        print("🔐 OAuth token refreshed, retrying...")
+                        continue
                 raise RuntimeError(
                     f"Authentication failed: {e}\nCheck your API key or OAuth token."
                 )

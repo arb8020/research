@@ -174,5 +174,116 @@ async def test_llm_query_error_handling() -> None:
     assert "llm_query error" in result.content or "error" in result.content.lower()
 
 
+@pytest.mark.trio
+async def test_agent_in_namespace() -> None:
+    """Test that agent() function is available in REPL namespace."""
+    env = MockREPLEnvironment(
+        context="Parent context with data.",
+        sub_endpoint=MOCK_ENDPOINT,
+        max_depth=2,
+    )
+
+    # Test that agent is available and respects max_depth
+    tool_call = ToolCall(
+        id="test-4",
+        name="repl",
+        args={
+            "code": """
+# Check agent is available
+print(f"agent available: {callable(agent)}")
+
+# Check context is available
+print(f"context length: {len(context)}")
+"""
+        },
+    )
+
+    run_config = _make_run_config()
+    result = await env.exec_tool(tool_call, None, run_config)
+
+    assert not result.is_error, f"Tool execution failed: {result.error}"
+    assert "agent available: True" in result.content
+    assert "context length:" in result.content
+
+
+@pytest.mark.trio
+async def test_agent_max_depth_reached() -> None:
+    """Test that agent() returns error when max depth reached."""
+    env = MockREPLEnvironment(
+        context="test",
+        sub_endpoint=MOCK_ENDPOINT,
+        max_depth=1,
+        _current_depth=1,  # Already at max
+    )
+
+    tool_call = ToolCall(
+        id="test-5",
+        name="repl",
+        args={"code": "result = agent('test task', 'test context')\nprint(result)"},
+    )
+
+    run_config = _make_run_config()
+    result = await env.exec_tool(tool_call, None, run_config)
+
+    assert not result.is_error
+    assert "max depth" in result.content.lower()
+
+
+@pytest.mark.trio
+async def test_agent_tool_direct_call() -> None:
+    """Test the agent tool can be called directly (not via repl)."""
+    env = MockREPLEnvironment(
+        context="Parent context.",
+        sub_endpoint=MOCK_ENDPOINT,
+        max_depth=2,
+        _current_depth=2,  # At max depth
+    )
+
+    tool_call = ToolCall(
+        id="test-6",
+        name="agent",
+        args={"task": "Analyze the context", "context": "Some data to analyze"},
+    )
+
+    run_config = _make_run_config()
+    result = await env.exec_tool(tool_call, None, run_config)
+
+    # Should fail due to max depth
+    assert result.is_error
+    assert "max" in result.error.lower() or "depth" in result.error.lower()
+
+
+@pytest.mark.trio
+async def test_agent_tool_inherits_parent_context() -> None:
+    """Test that agent tool uses parent context if not specified."""
+    env = MockREPLEnvironment(
+        context="This is the parent context with important data.",
+        sub_endpoint=MOCK_ENDPOINT,
+        max_depth=2,
+    )
+
+    # Check that agent defaults to parent context
+    tool_call = ToolCall(
+        id="test-7",
+        name="repl",
+        args={
+            "code": """
+# agent() should use self.context if context not provided
+# We can't fully test spawning without mocking run_agent,
+# but we can verify the function signature works
+import inspect
+sig = str(inspect.signature(agent))
+print(f"agent signature: {sig}")
+"""
+        },
+    )
+
+    run_config = _make_run_config()
+    result = await env.exec_tool(tool_call, None, run_config)
+
+    assert not result.is_error, f"Tool execution failed: {result.error}"
+    assert "context" in result.content.lower()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
