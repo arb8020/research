@@ -121,24 +121,26 @@ def _parse_segment(part: str) -> SliceSegment:
     if inject_match:
         return SliceSegment(type="inject", content=inject_match.group(1))
 
-    # Check for summarize: prefix (with optional goal)
-    # summarize:4:18 or summarize:4:18:'goal text'
-    summarize_match = re.match(r"summarize:\s*(\d+):(\d+)(?::\s*['\"](.+)['\"])?", part)
+    # Check for summarize: prefix (with optional goal, end is optional)
+    # summarize:4:18 or summarize:4: or summarize:4:18:'goal text'
+    summarize_match = re.match(r"summarize:\s*(\d+):(\d*)(?::\s*['\"](.+)['\"])?", part)
     if summarize_match:
+        end_str = summarize_match.group(2)
         return SliceSegment(
             type="summarize",
             start=int(summarize_match.group(1)),
-            end=int(summarize_match.group(2)),
+            end=int(end_str) if end_str else None,
             goal=summarize_match.group(3),  # None if not provided
         )
 
-    # Check for compact: prefix
-    compact_match = re.match(r"compact:\s*(\d+):(\d+)", part)
+    # Check for compact: prefix (end is optional, defaults to all remaining)
+    compact_match = re.match(r"compact:\s*(\d+):(\d*)", part)
     if compact_match:
+        end_str = compact_match.group(2)
         return SliceSegment(
             type="compact",
             start=int(compact_match.group(1)),
-            end=int(compact_match.group(2)),
+            end=int(end_str) if end_str else None,
         )
 
     # Must be a range like "0:4" or "10:" or ":5"
