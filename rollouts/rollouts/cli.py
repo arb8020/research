@@ -980,6 +980,11 @@ def cmd_slice(config: CLIConfig, session_store: FileSessionStore) -> int:
         assert config.endpoint is not None
         assert config.slice is not None
 
+        # Handle "count" command specially - just show message count
+        if config.slice.strip().lower() == "count":
+            print(len(session.messages))
+            return 0
+
         source_tokens = estimate_tokens(session.messages)
         print(
             f"Slicing: {session.session_id} ({len(session.messages)} messages, ~{source_tokens:,} tokens)",
