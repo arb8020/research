@@ -192,6 +192,65 @@ rollouts --handoff "fix the failing tests" -s abc123 | rollouts --env coding
 Handoff is goal-directed: it extracts only context relevant to your next task,
 not a generic summary. This keeps sessions focused.
 
+## Slice (Session Surgery)
+
+Slice, summarize, compact, and inject messages to create a focused child session:
+
+```bash
+# Keep only first 4 messages
+rollouts --slice "0:4" -s abc123
+
+# Keep beginning and end, summarize the middle
+rollouts --slice "0:4, summarize:4:18, 18:" -s abc123
+
+# Same, but focus the summary on a specific goal
+rollouts --slice "0:4, summarize:4:18:'security review', 18:" -s abc123
+
+# Compact tool results (shrink verbose output, keep structure)
+rollouts --slice "0:4, compact:4:15, 15:" -s abc123
+
+# Inject a user message
+rollouts --slice "0:10, inject:'now focus on tests'" -s abc123
+
+# Full example: slice, summarize, inject, then continue
+rollouts --slice "0:4, summarize:4:18, 18:20, inject:'focus on tests'" -s abc123 \
+    | xargs rollouts -s --env coding
+```
+
+### Slice Spec Format
+
+| Segment | Syntax | Description |
+|---------|--------|-------------|
+| Range | `0:4`, `10:`, `:5` | Keep messages (Python slice notation) |
+| Summarize | `summarize:4:18` | LLM summary of range |
+| Summarize+Goal | `summarize:4:18:'goal'` | Focused summary |
+| Compact | `compact:4:15` | Shrink tool results, keep structure |
+| Inject | `inject:'message'` | Insert user message |
+
+### Output
+
+```
+Slicing: abc123 (25 messages, ~12,000 tokens)
+Spec: 0:4, summarize:4:18:'security', 18:
+Created: def456 (8 messages, ~3,200 tokens)
+Reduction: 73% fewer tokens
+def456
+```
+
+- **stderr**: Progress and stats
+- **stdout**: New session ID (for piping)
+
+### Compact Behavior
+
+Compact preserves conversation structure but shrinks verbose tool outputs:
+
+| Tool | Before | After |
+|------|--------|-------|
+| `read` | Full file (5000 chars) | `📄 [read: 234 lines] first line...` |
+| `bash` | Full stdout (1000 lines) | First 3 lines + `... (997 more)` |
+| `edit` | Full diff | `🔧 [edit: +12/-5 lines]` |
+| `write` | Confirmation | `✏️ [wrote 156 lines]` |
+
 ## Export
 
 ```bash
@@ -246,10 +305,17 @@ rollouts --preset fast_coder
 
 -p, --print [QUERY]     Non-interactive mode (stdin if no QUERY)
 --stream-json           Output NDJSON per turn (for -p mode)
+
 --handoff GOAL          Extract context for goal to stdout
+--slice SPEC            Slice/summarize/compact messages (see Slice section)
+--slice-goal GOAL       Default goal for summarize segments
 
 --export-md [FILE]      Export to markdown
 --export-html [FILE]    Export to HTML
+
+--doctor                Show session diagnostics
+--trim N                Remove last N messages
+--fix                   Auto-fix session issues
 
 --thinking {enabled,disabled}  Extended thinking (Anthropic)
 --preset NAME           Use agent preset
