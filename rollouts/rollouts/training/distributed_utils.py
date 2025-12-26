@@ -211,7 +211,7 @@ def barrier() -> None:
 
 def all_reduce(
     tensor: torch.Tensor,
-    op: dist.ReduceOp = dist.ReduceOp.SUM,
+    op: dist.ReduceOp.RedOpType = dist.ReduceOp.SUM,
     group: dist.ProcessGroup | None = None,
 ) -> torch.Tensor:
     """All-reduce tensor across all processes.
