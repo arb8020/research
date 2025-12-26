@@ -488,6 +488,66 @@ class PyTorchTrainingBackend:
 
         return metadata
 
+    async def save_hf_checkpoint(
+        self,
+        path: Path | str,
+        tokenizer: Any | None = None,
+    ) -> Path:
+        """Save model in HuggingFace format for easy loading with from_pretrained().
+
+        This is useful for the SFT → RL pipeline where SFT saves a checkpoint
+        that RL can load directly as a model_name.
+
+        Args:
+            path: Directory to save the model
+            tokenizer: Optional tokenizer to save alongside model
+
+        Returns:
+            Path to the saved directory
+
+        Example:
+            >>> await backend.save_hf_checkpoint("/tmp/sft_model")
+            >>> # Later, in GRPO:
+            >>> config = GRPOConfig(model_name="/tmp/sft_model", ...)
+        """
+        import logging
+
+        logger = logging.getLogger(__name__)
+        path = Path(path)
+        path.mkdir(parents=True, exist_ok=True)
+
+        rank = dist.get_rank() if dist.is_initialized() else 0
+
+        # Only rank 0 saves
+        if rank == 0:
+            logger.info(f"Saving HuggingFace checkpoint to {path}")
+
+            # For FSDP, gather the full state dict first
+            if self._fsdp_state_dict_opts is not None:
+                state_dict = get_model_state_dict(self.model, options=self._fsdp_state_dict_opts)
+                # Need to load into unwrapped model for save_pretrained
+                # Get the underlying model from FSDP wrapper
+                unwrapped = (
+                    self.model._fsdp_wrapped_module
+                    if hasattr(self.model, "_fsdp_wrapped_module")
+                    else self.model
+                )
+                unwrapped.load_state_dict(state_dict)
+                await trio.to_thread.run_sync(unwrapped.save_pretrained, path)
+            else:
+                await trio.to_thread.run_sync(self.model.save_pretrained, path)
+
+            if tokenizer is not None:
+                await trio.to_thread.run_sync(tokenizer.save_pretrained, path)
+
+            logger.info(f"HuggingFace checkpoint saved to {path}")
+
+        # Barrier for coordination
+        if dist.is_initialized():
+            dist.barrier()
+
+        return path
+
     def get_weights(self) -> TrainFuture[dict[str, Any]]:
         """Get model weights for syncing to inference.
 
