@@ -461,8 +461,8 @@ async def _process_training_step(
             # Reuse the checkpoint we just saved
             sync_dir = ckpt_dir
         else:
-            # Save temp checkpoint for sync (will be overwritten next sync)
-            sync_dir = await backend.save_checkpoint(step + 1, accumulated_metrics, prefix="sync_")
+            # Save temp checkpoint for sync - always use same name to avoid filling disk
+            sync_dir = await backend.save_checkpoint(0, accumulated_metrics, prefix="sync_latest_")
         logger.info(f"Syncing weights to {inference_engine.name}...")
         await inference_engine.update_weights_from_checkpoint(str(sync_dir))
         logger.info("Weight sync complete")
