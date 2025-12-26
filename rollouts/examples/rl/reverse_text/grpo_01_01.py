@@ -44,7 +44,7 @@ config = GRPOConfig(
     experiment_name="reverse_text_grpo_01",
     model_name=DEFAULT_MODEL,
     num_steps=100,  # verifiers uses 100, prime-rl uses 20
-    checkpoint_every=25,
+    checkpoint_every=1,  # Sync weights every step for on-policy training
     batch_size=8,  # prompts per step (× 16 rollouts = 128 total)
     n_samples_per_prompt=16,
     temperature=1.0,  # Prime uses default (1.0), not 0.7
