@@ -40,11 +40,13 @@ BASE_MODEL = "Qwen/Qwen3-0.6B"
 #   - batch_size=128 total (8 prompts × 16 rollouts)
 #   - lr=3e-6
 #   - seq_len=512-2048
+#   - sync_weights_every=1 (on-policy, max_async_level=1)
 config = GRPOConfig(
     experiment_name="reverse_text_grpo_01",
     model_name=DEFAULT_MODEL,
     num_steps=100,  # verifiers uses 100, prime-rl uses 20
-    checkpoint_every=1,  # Sync weights every step for on-policy training
+    checkpoint_every=25,  # Save to disk every 25 steps (for recovery)
+    sync_weights_every=1,  # Sync to inference every step (on-policy)
     batch_size=8,  # prompts per step (× 16 rollouts = 128 total)
     n_samples_per_prompt=16,
     temperature=1.0,  # Prime uses default (1.0), not 0.7
