@@ -49,12 +49,12 @@ class PipelineConfig:
 
     # RL settings (following Prime-RL)
     rl_dataset: str = "PrimeIntellect/Reverse-Text-RL"
-    rl_num_steps: int = 20
+    rl_num_steps: int = 100  # verifiers uses 100, prime-rl uses 20
     rl_batch_size: int = 8
     rl_n_samples_per_prompt: int = 16
     rl_lr: float = 3e-6  # Lower LR for RL
-    rl_max_tokens: int = 128
-    rl_temperature: float = 0.8
+    rl_max_tokens: int = 128  # Prime uses 128
+    rl_temperature: float = 1.0  # Prime uses default 1.0
 
     # Output
     output_dir: str = "/tmp/reverse_text_pipeline"

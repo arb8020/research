@@ -34,17 +34,23 @@ DEFAULT_MODEL = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 # Alternative: Base model (will struggle without SFT warmup)
 BASE_MODEL = "Qwen/Qwen3-0.6B"
 
+# Prime-RL uses:
+#   - max_steps=20 (prime-rl) or 100 (verifiers)
+#   - max_tokens=128
+#   - batch_size=128 total (8 prompts × 16 rollouts)
+#   - lr=3e-6
+#   - seq_len=512-2048
 config = GRPOConfig(
     experiment_name="reverse_text_grpo_01",
-    model_name=DEFAULT_MODEL,  # Changed from BASE_MODEL
-    num_steps=20,
-    checkpoint_every=10,
-    batch_size=8,
+    model_name=DEFAULT_MODEL,
+    num_steps=100,  # verifiers uses 100, prime-rl uses 20
+    checkpoint_every=25,
+    batch_size=8,  # prompts per step (× 16 rollouts = 128 total)
     n_samples_per_prompt=16,
-    temperature=0.7,
+    temperature=1.0,  # Prime uses default (1.0), not 0.7
     lr=3e-6,
-    max_seq_len=256,
-    max_tokens=128,
+    max_seq_len=512,  # verifiers uses 512
+    max_tokens=128,  # both use 128
 )
 
 if __name__ == "__main__":
