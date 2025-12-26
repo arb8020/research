@@ -147,6 +147,169 @@ def get_fast_sync_dir() -> Path:
 
 
 # ══════════════════════════════════════════════════════════════
+# NCCL Weight Sync (pure functions for multi-node)
+# ══════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True)
+class NCCLSyncGroup:
+    """Immutable config for NCCL weight sync group.
+
+    This is just data - the actual process group is created by
+    init_nccl_weight_sync() and passed around.
+    """
+
+    master_addr: str
+    master_port: int
+    trainer_rank: int  # Usually 0
+    world_size: int  # trainer + all inference GPUs
+    group_name: str = "weight_sync"
+
+
+def init_nccl_weight_sync(
+    config: NCCLSyncGroup,
+    inference_endpoints: list[str],
+) -> Any:  # Returns torch.distributed ProcessGroup
+    """Initialize NCCL process group for weight sync.
+
+    Pure function: takes config, returns process group.
+    Must be called once at startup.
+
+    Args:
+        config: NCCL group configuration
+        inference_endpoints: List of SGLang server URLs
+
+    Returns:
+        NCCL process group for broadcasting weights
+
+    Example:
+        >>> config = NCCLSyncGroup(
+        ...     master_addr="10.0.0.1",
+        ...     master_port=29500,
+        ...     trainer_rank=0,
+        ...     world_size=5,  # 1 trainer + 4 inference GPUs
+        ... )
+        >>> pg = init_nccl_weight_sync(config, ["http://10.0.0.2:30000", ...])
+        >>> # Later: sync_weights_nccl(model, pg, endpoints)
+    """
+
+    import requests
+    import torch.distributed as dist
+
+    # 1. Tell each SGLang server to join the NCCL group
+    for i, endpoint in enumerate(inference_endpoints):
+        response = requests.post(
+            f"{endpoint}/init_weights_update_group",
+            json={
+                "master_address": config.master_addr,
+                "master_port": config.master_port,
+                "rank": i + 1,  # Inference ranks start at 1
+                "world_size": config.world_size,
+                "group_name": config.group_name,
+                "backend": "nccl",
+            },
+            timeout=60,
+        )
+        response.raise_for_status()
+
+    # 2. Trainer joins as rank 0
+    if not dist.is_initialized():
+        dist.init_process_group(
+            backend="nccl",
+            init_method=f"tcp://{config.master_addr}:{config.master_port}",
+            rank=config.trainer_rank,
+            world_size=config.world_size,
+        )
+
+    # 3. Create named group for weight sync
+    pg = dist.new_group(
+        ranks=list(range(config.world_size)),
+        backend="nccl",
+    )
+
+    return pg
+
+
+def sync_weights_nccl(
+    model: Any,  # nn.Module
+    process_group: Any,  # ProcessGroup
+    inference_endpoints: list[str],
+    weight_version: int,
+) -> None:
+    """Broadcast model weights to inference engines via NCCL.
+
+    Pure function: no hidden state, explicit inputs.
+
+    Args:
+        model: PyTorch model to sync
+        process_group: NCCL process group from init_nccl_weight_sync()
+        inference_endpoints: SGLang server URLs
+        weight_version: Version number for this weight update
+
+    Example:
+        >>> sync_weights_nccl(model, pg, endpoints, step)
+    """
+    import requests
+    import torch.distributed as dist
+
+    state_dict = model.state_dict()
+
+    # 1. Send metadata to inference engines (names, shapes, dtypes)
+    param_info = [
+        {"name": name, "shape": list(p.shape), "dtype": str(p.dtype)}
+        for name, p in state_dict.items()
+    ]
+
+    for endpoint in inference_endpoints:
+        requests.post(
+            f"{endpoint}/update_weights_from_distributed",
+            json={
+                "names": [p["name"] for p in param_info],
+                "shapes": [p["shape"] for p in param_info],
+                "dtypes": [p["dtype"] for p in param_info],
+                "group_name": "weight_sync",
+                "weight_version": str(weight_version),
+            },
+            timeout=300,
+        )
+
+    # 2. Broadcast each tensor via NCCL (GPU-to-GPU, no serialization)
+    for name, param in state_dict.items():
+        param_data = param.data.contiguous().cuda()
+        dist.broadcast(param_data, src=0, group=process_group)
+
+    # 3. Wait for completion
+    dist.barrier(group=process_group)
+
+
+def cleanup_nccl_weight_sync(
+    process_group: Any,
+    inference_endpoints: list[str],
+) -> None:
+    """Cleanup NCCL weight sync group.
+
+    Call at shutdown to properly cleanup distributed resources.
+    """
+    import requests
+    import torch.distributed as dist
+
+    # Tell SGLang servers to leave the group
+    for endpoint in inference_endpoints:
+        try:
+            requests.post(
+                f"{endpoint}/destroy_weights_update_group",
+                json={"group_name": "weight_sync"},
+                timeout=10,
+            )
+        except Exception:
+            pass  # Best effort cleanup
+
+    # Destroy local process group
+    if process_group is not None:
+        dist.destroy_process_group(process_group)
+
+
+# ══════════════════════════════════════════════════════════════
 # Minimal Protocol (Tiger Style: just type hints, not inheritance)
 # ══════════════════════════════════════════════════════════════
 
