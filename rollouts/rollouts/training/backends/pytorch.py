@@ -434,6 +434,74 @@ class PyTorchTrainingBackend:
         logger.debug(f"[CHECKPOINT DEBUG] Rank {rank}: Checkpoint save completed successfully!")
         return ckpt_dir
 
+    async def save_checkpoint_to_path(
+        self,
+        path: Path,
+        metrics: dict[str, float] | None = None,
+    ) -> Path:
+        """Save checkpoint to a specific path (for fast sync to RAM disk).
+
+        Unlike save_checkpoint(), this saves to an exact path (not checkpoint_dir).
+        Used for syncing weights to /dev/shm for fast I/O.
+
+        Args:
+            path: Exact directory path to save checkpoint
+            metrics: Optional training metrics to save
+
+        Returns:
+            Path to checkpoint directory (same as input path)
+        """
+        import logging
+        import time
+
+        import torch
+        import torch.distributed as dist
+        from torch.distributed.checkpoint.state_dict import get_model_state_dict
+
+        if metrics is None:
+            metrics = {}
+
+        logger = logging.getLogger(__name__)
+        rank = dist.get_rank() if dist.is_initialized() else 0
+
+        # Increment weight version
+        self.weight_version += 1
+
+        # Create directory
+        path = Path(path)
+        if rank == 0:
+            path.mkdir(parents=True, exist_ok=True)
+
+        # Barrier if distributed
+        if dist.is_initialized():
+            dist.barrier()
+
+        # Get state dict
+        if self._fsdp_state_dict_opts is not None:
+            state_dict = get_model_state_dict(self.model, options=self._fsdp_state_dict_opts)
+        else:
+            state_dict = self.model.state_dict()
+
+        # Only rank 0 saves
+        if rank == 0:
+            # Save model only (skip optimizer for sync - we just need weights)
+            model_path = path / "pytorch_model.bin"
+            await trio.to_thread.run_sync(torch.save, state_dict, model_path)
+
+            # Save minimal metadata
+            metadata = {
+                "weight_version": self.weight_version,
+                "timestamp": time.time(),
+            }
+            metadata_path = path / "metadata.json"
+            await trio.to_thread.run_sync(self._write_json_metadata, metadata_path, metadata)
+
+        # Barrier to ensure save completes
+        if dist.is_initialized():
+            dist.barrier()
+
+        return path
+
     async def load_checkpoint(self, checkpoint_path: Path) -> dict[str, Any]:
         """Load checkpoint and restore weight_version.
 

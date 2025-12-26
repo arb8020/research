@@ -455,14 +455,20 @@ async def _process_training_step(
         logger.info(f"Saved checkpoint: {ckpt_dir}")
 
     # Sync weights to inference engine (for on-policy training)
-    # If we just checkpointed, use that. Otherwise save a temp checkpoint.
+    # If we just checkpointed, use that. Otherwise save a temp checkpoint to RAM disk.
     if should_sync:
         if should_checkpoint:
             # Reuse the checkpoint we just saved
             sync_dir = ckpt_dir
         else:
-            # Save temp checkpoint for sync - always use same name to avoid filling disk
-            sync_dir = await backend.save_checkpoint(0, accumulated_metrics, prefix="sync_latest_")
+            # Save temp checkpoint to RAM disk (/dev/shm) for fast I/O
+            # This avoids slow disk writes when syncing every step
+            from rollouts.training.weight_sync import get_fast_sync_dir
+
+            fast_dir = get_fast_sync_dir()
+            sync_dir = await backend.save_checkpoint_to_path(
+                fast_dir / "sync_latest", accumulated_metrics
+            )
         logger.info(f"Syncing weights to {inference_engine.name}...")
         await inference_engine.update_weights_from_checkpoint(str(sync_dir))
         logger.info("Weight sync complete")
