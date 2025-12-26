@@ -31,6 +31,7 @@ from rollouts.dtypes import (
 
 from .components.assistant_message import AssistantMessage
 from .components.spacer import Spacer
+from .components.system_message import SystemMessage
 from .components.tool_execution import ToolExecution
 from .components.user_message import UserMessage
 from .tui import TUI, Container
@@ -483,8 +484,11 @@ class AgentRenderer:
             if not isinstance(msg, Message):
                 continue
 
-            # Skip system messages
-            if skip_system and msg.role == "system":
+            # Handle system messages
+            if msg.role == "system":
+                if skip_system:
+                    continue
+                self._render_system_message(msg)
                 continue
 
             if msg.role == "user":
@@ -499,6 +503,28 @@ class AgentRenderer:
         # Note: Don't call request_render() here - caller handles rendering
         # after all components are set up. Rendering early causes issues with
         # differential rendering when more components are added later.
+
+    def _render_system_message(self, msg: Message) -> None:
+        """Render a system message (system prompt)."""
+        content = msg.content
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            # Extract text from content blocks
+            text_parts = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text_parts.append(block.get("text", ""))
+            text = "\n".join(text_parts)
+        else:
+            text = str(content) if content else ""
+
+        if text:
+            system_component = SystemMessage(text, theme=self.theme)
+            self.chat_container.add_child(system_component)
+            self.chat_container.add_child(
+                Spacer(1, debug_label="after-system", debug_layout=self.debug_layout)
+            )
 
     def _render_user_message(self, msg: Message) -> None:
         """Render a user message from history."""
