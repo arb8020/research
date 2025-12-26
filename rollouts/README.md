@@ -251,6 +251,47 @@ Compact preserves conversation structure but shrinks verbose tool outputs:
 | `edit` | Full diff | `🔧 [edit: +12/-5 lines]` |
 | `write` | Confirmation | `✏️ [wrote 156 lines]` |
 
+## Context Management for Agents
+
+When an agent's context window fills up, it can manage its own context using bash:
+
+```bash
+# Check current session size
+rollouts --doctor -s $SESSION_ID
+
+# Compact tool results to save tokens (keeps structure)
+rollouts --slice "compact:0:$(rollouts --doctor -s $SESSION_ID | grep Messages | cut -d: -f2)" -s $SESSION_ID
+
+# Summarize old work, keep recent context
+rollouts --slice "0:2, summarize:2:100:'key decisions', 100:" -s $SESSION_ID | xargs rollouts -s
+
+# Spawn a sub-agent for isolated exploration (doesn't pollute main context)
+rollouts --spawn --env coding -p "explore the auth module" --no-session
+```
+
+### When to Use What
+
+| Situation | Solution |
+|-----------|----------|
+| Tool results too verbose | `compact:START:END` |
+| Old context no longer relevant | `summarize:START:END:'goal'` |
+| Need isolated exploration | Spawn sub-agent via bash |
+| Context window nearly full | Summarize first 80%, keep recent 20% |
+| Starting fresh with learnings | `--handoff "goal" \| rollouts` |
+
+### Self-Compaction Pattern
+
+An agent approaching context limits can compact itself:
+
+```bash
+# Get current session ID from environment or parse from rollouts output
+# Then create a compacted child session and continue there
+NEW_SESSION=$(rollouts --slice "0:2, summarize:2:80, compact:80:150, 150:" -s $CURRENT_SESSION)
+echo "Continuing in compacted session: $NEW_SESSION"
+```
+
+The original session is preserved—compaction creates a child session, so you can always trace back.
+
 ## Export
 
 ```bash

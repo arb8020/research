@@ -69,5 +69,29 @@ When NOT to use sub-agents:
 For read-only exploration (safer):
 ```bash
 rollouts -p "analyze codebase structure" --env coding --tools readonly --no-session
-```""",
+```
+
+## Managing your context
+
+When your context fills up, you can compact or summarize your own session:
+
+```bash
+# Check how big your session is
+rollouts --doctor -s YOUR_SESSION_ID
+
+# Compact tool results (keeps structure, shrinks verbose output)
+rollouts --slice "compact:0:500" -s YOUR_SESSION_ID
+
+# Summarize old work, keep recent context
+rollouts --slice "0:2, summarize:2:400:'key progress', 400:" -s YOUR_SESSION_ID
+
+# This creates a child session - continue there
+NEW_SID=$(rollouts --slice "0:2, summarize:2:400, 400:" -s $SID)
+# Then tell the user: "Continuing in compacted session $NEW_SID"
+```
+
+When to compact vs summarize:
+- `compact` - keeps all messages but shrinks tool results (good when structure matters)
+- `summarize` - replaces N messages with 1 summary (good when old details don't matter)
+- Combine them: `summarize:2:100, compact:100:200, 200:` (summarize old, compact medium, keep recent)""",
 )
