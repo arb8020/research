@@ -217,15 +217,35 @@ rollouts --slice "0:4, summarize:4:18, 18:20, inject:'focus on tests'" -s abc123
     | xargs rollouts -s --env coding
 ```
 
+### Percentage-Based Slicing
+
+Use percentages when you don't know the exact message count:
+
+```bash
+# Keep last 20% of messages
+rollouts --slice "80%:" -s abc123
+
+# Keep system prompt, summarize first 80%, keep last 20%
+rollouts --slice "0:2, summarize:2:80%, 80%:" -s abc123
+
+# Compact first half, keep second half
+rollouts --slice "compact:0%:50%, 50%:" -s abc123
+
+# Self-compaction pattern (agent approaching context limits)
+rollouts --slice "0:2, summarize:2:80%:'key progress', 80%:" -s abc123
+```
+
 ### Slice Spec Format
 
 | Segment | Syntax | Description |
 |---------|--------|-------------|
-| Range | `0:4`, `10:`, `:5` | Keep messages (Python slice notation) |
-| Summarize | `summarize:4:18` | LLM summary of range |
+| Range | `0:4`, `10:`, `80%:` | Keep messages (Python slice notation) |
+| Summarize | `summarize:4:18`, `summarize:2:80%` | LLM summary of range |
 | Summarize+Goal | `summarize:4:18:'goal'` | Focused summary |
-| Compact | `compact:4:15` | Shrink tool results, keep structure |
+| Compact | `compact:0:`, `compact:0%:50%` | Shrink tool results, keep structure |
 | Inject | `inject:'message'` | Insert user message |
+
+Percentages work in any position: `80%:`, `0:50%`, `summarize:2:80%`
 
 ### Output
 
