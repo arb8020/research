@@ -80,6 +80,13 @@ class GRPOConfig:
     # - "branching": Each assistant turn is a separate sample (safer, mirrors deployment)
     trajectory_strategy: str = "interleaved"  # Literal["interleaved", "branching"]
 
+    # Checkpoint loading (for SFT → RL pipeline)
+    # If set, loads weights from this checkpoint before training.
+    # Can be:
+    #   - Path to HuggingFace-format directory (with config.json)
+    #   - Path to pytorch checkpoint directory (with pytorch_model.bin)
+    checkpoint_path: str | None = None
+
     # Training loop
     num_steps: int = 100
     log_every: int = 1
@@ -557,6 +564,22 @@ async def _grpo_train_async(
         # Setup training backend
         backend, tokenizer, endpoint = _setup_training_backend(config, output_dir, inference_engine)
         device = f"cuda:{config.trainer_cuda_device_ids[0]}"
+
+        # Load checkpoint if provided (for SFT → RL pipeline)
+        if config.checkpoint_path:
+            ckpt_path = Path(config.checkpoint_path)
+            if (ckpt_path / "pytorch_model.bin").exists():
+                # Our checkpoint format
+                logger.info(f"Loading checkpoint from {ckpt_path}")
+                await backend.load_checkpoint(ckpt_path)
+                logger.info("Checkpoint loaded successfully")
+            elif (ckpt_path / "config.json").exists():
+                # HuggingFace format - already loaded via model_name
+                logger.info(f"Using HuggingFace checkpoint: {ckpt_path}")
+            else:
+                raise ValueError(
+                    f"Invalid checkpoint path: {ckpt_path} (no pytorch_model.bin or config.json)"
+                )
 
         # Setup data and rollout generation
         logger.info(f"Dataset: {len(prompts)} prompts")

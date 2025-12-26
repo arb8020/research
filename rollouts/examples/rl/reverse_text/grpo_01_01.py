@@ -1,22 +1,42 @@
 """Reverse Text GRPO baseline experiment.
 
 Run with:
-    # Local (requires GPU + SGLang)
+    # Local (requires GPU + SGLang) - uses Prime's SFT model by default
     python examples/rl/reverse_text/grpo_01_01.py
+
+    # Use base model (will likely fail - no SFT warmup!)
+    python examples/rl/reverse_text/grpo_01_01.py --base-model
 
     # Remote (provisions GPU automatically)
     python examples/rl/reverse_text/grpo_01_01.py --provision
 
     # Reuse existing GPU
     python examples/rl/reverse_text/grpo_01_01.py --node-id runpod:abc123
+
+Note:
+    Using the base Qwen3-0.6B model without SFT warmup typically achieves
+    only ~5% reward because the model doesn't know how to reverse text.
+
+    Prime's SFT model (PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT) was
+    trained on willcb/R1-reverse-wikipedia-paragraphs-v1-1000 and starts
+    at ~50% reward, which RL can then improve to ~80%.
+
+    For the full SFT → RL pipeline, see sft_then_grpo.py
 """
 
 from examples.rl.reverse_text.base_config import train
 from rollouts.training.grpo import GRPOConfig
 
+# Default: Use Prime's pre-trained SFT model (recommended)
+# This model already knows how to reverse text, so RL can refine it
+DEFAULT_MODEL = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+# Alternative: Base model (will struggle without SFT warmup)
+BASE_MODEL = "Qwen/Qwen3-0.6B"
+
 config = GRPOConfig(
     experiment_name="reverse_text_grpo_01",
-    model_name="Qwen/Qwen3-0.6B",
+    model_name=DEFAULT_MODEL,  # Changed from BASE_MODEL
     num_steps=20,
     checkpoint_every=10,
     batch_size=8,
@@ -29,6 +49,7 @@ config = GRPOConfig(
 
 if __name__ == "__main__":
     import argparse
+    from dataclasses import replace
 
     parser = argparse.ArgumentParser(description="Reverse Text GRPO training")
     parser.add_argument("--provision", action="store_true", help="Provision new GPU instance")
@@ -36,7 +57,18 @@ if __name__ == "__main__":
     parser.add_argument("--node-id", type=str, help="Reuse existing instance ID")
     parser.add_argument("--tui", action="store_true", help="Show TUI monitor")
     parser.add_argument("--tui-debug", action="store_true", help="Print raw JSONL")
+    parser.add_argument(
+        "--base-model",
+        action="store_true",
+        help="Use base Qwen3-0.6B instead of SFT model (will likely fail)",
+    )
     args = parser.parse_args()
+
+    # Update config if using base model
+    run_config = config
+    if args.base_model:
+        print("WARNING: Using base model without SFT warmup - expect ~5% reward")
+        run_config = replace(config, model_name=BASE_MODEL)
 
     if args.provision or args.node_id:
         from examples.rl.base_config import run_remote
@@ -49,5 +81,5 @@ if __name__ == "__main__":
             tui_debug=args.tui_debug,
         )
     else:
-        results = train(config=config, num_samples=1000)
+        results = train(config=run_config, num_samples=1000)
         print(f"Training complete. {len(results.get('metrics_history', []))} steps")
