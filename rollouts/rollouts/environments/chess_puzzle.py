@@ -66,7 +66,7 @@ class ChessPuzzleEnvironment:
     stockfish_path: str | None = None
     _engine: "chess.engine.SimpleEngine | None" = field(default=None, repr=False)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not CHESS_AVAILABLE:
             raise ImportError("python-chess is required: uv add python-chess")
 

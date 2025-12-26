@@ -2,9 +2,6 @@
 
 Multi-turn task: sort names alphabetically across turns.
 Based on Prime-RL's alphabet-sort example.
-
-Baseline Qwen3-4B: ~0.26 reward
-After RL (100 steps): ~0.81 reward
 """
 
 from __future__ import annotations

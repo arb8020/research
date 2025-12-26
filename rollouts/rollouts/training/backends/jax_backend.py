@@ -69,7 +69,7 @@ class JAXTrainingBackend:
     # JIT-compiled train step
     _train_step_fn: Callable | None = field(default=None, init=False, repr=False)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Initialize JIT-compiled train step."""
         raise NotImplementedError(
             "D6v3: JAX backend not yet implemented. "
@@ -96,7 +96,7 @@ class JAXTrainingBackend:
     async def save_checkpoint(
         self,
         step: int,
-        metrics: dict[str, float] = {},
+        metrics: dict[str, float] | None = None,
     ) -> Path:
         """Save checkpoint using Orbax."""
         raise NotImplementedError("D6v3: Not yet implemented")

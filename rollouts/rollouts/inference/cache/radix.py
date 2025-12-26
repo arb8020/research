@@ -39,7 +39,7 @@ class RadixKVCache:
     - Can add later when we need better prefix sharing
     """
 
-    def __init__(self, num_blocks: int, block_size: int = 16):
+    def __init__(self, num_blocks: int, block_size: int = 16) -> None:
         raise NotImplementedError("RadixKVCache not yet implemented. Use PagedKVCache for now.")
 
     def num_free_blocks(self) -> int:

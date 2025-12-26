@@ -11,9 +11,8 @@ Run with:
     python examples/rl/gsm8k/grpo_01_01.py --node-id runpod:abc123
 """
 
-from rollouts.training.grpo import GRPOConfig
-
 from examples.rl.gsm8k.base_config import train
+from rollouts.training.grpo import GRPOConfig
 
 config = GRPOConfig(
     experiment_name="gsm8k_grpo_01",

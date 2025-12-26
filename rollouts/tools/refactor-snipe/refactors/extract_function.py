@@ -52,7 +52,7 @@ class ExtractFunctionResult:
 class ExtractFunction:
     """Extract Function refactoring operation."""
 
-    def __init__(self, path: Path, start_line: int, end_line: int, function_name: str):
+    def __init__(self, path: Path, start_line: int, end_line: int, function_name: str) -> None:
         """
         Initialize the refactoring.
 

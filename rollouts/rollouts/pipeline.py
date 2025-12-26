@@ -144,12 +144,16 @@ async def run_parallel_agents(
         (trajectories, all_agent_states) - List of final trajectories and full state lists
     """
     if run_config is None:
-        run_config = RunConfig(on_chunk=lambda _: trio.lowlevel.checkpoint(), show_progress=False)
+
+        async def noop_chunk_handler(_: object) -> None:
+            await trio.lowlevel.checkpoint()
+
+        run_config = RunConfig(on_chunk=noop_chunk_handler, show_progress=False)
 
     trajectories = []
     all_states = []
 
-    async def run_single_agent(agent_idx: int):
+    async def run_single_agent(agent_idx: int) -> None:
         """Run one agent instance."""
         # Create fresh environment if factory provided
         env = environment_factory() if environment_factory else initial_state.environment
@@ -247,10 +251,14 @@ async def reduce_llm_judge(
     judge_trajectory = Trajectory(messages=judge_messages)
 
     judge_actor = Actor(trajectory=judge_trajectory, endpoint=judge_endpoint, tools=[])
-    judge_state = AgentState(actor=judge_actor, environment=None, max_turns=1)
+    judge_state = AgentState(actor=judge_actor, environment=None)
 
     if run_config is None:
-        run_config = RunConfig(on_chunk=lambda _: trio.lowlevel.checkpoint(), show_progress=False)
+
+        async def noop_chunk(_: object) -> None:
+            await trio.lowlevel.checkpoint()
+
+        run_config = RunConfig(on_chunk=noop_chunk, show_progress=False)
 
     states = await run_agent(judge_state, run_config)
     return states[-1].actor.trajectory
@@ -366,7 +374,6 @@ async def run_agent_pipeline(
                 tools=env.get_tools() if env else [],
             ),
             environment=env,
-            max_turns=stage.max_turns,
         )
 
         # 4. Run agents (1 or more in parallel)
@@ -375,11 +382,13 @@ async def run_agent_pipeline(
         if stage.n == 1:
             # Single agent
             logger.info(f"  Running 1 agent (max_turns={stage.max_turns})")
-            states = await run_agent(
-                initial_state,
-                stage_run_config
-                or RunConfig(on_chunk=lambda _: trio.lowlevel.checkpoint(), show_progress=False),
-            )
+            if stage_run_config is None:
+
+                async def _noop_chunk(_: object) -> None:
+                    await trio.lowlevel.checkpoint()
+
+                stage_run_config = RunConfig(on_chunk=_noop_chunk, show_progress=False)
+            states = await run_agent(initial_state, stage_run_config)
             current_traj = states[-1].actor.trajectory
         else:
             # Parallel agents

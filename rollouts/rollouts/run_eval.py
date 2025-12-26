@@ -29,7 +29,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
-def load_config_from_file(config_path: Path, workspace_root: Path | None = None):
+def load_config_from_file(config_path: Path, workspace_root: Path | None = None) -> object:
     """Load and resolve config from Python file.
 
     This is a reusable function for loading configs, suitable for
@@ -90,7 +90,7 @@ def load_config_from_file(config_path: Path, workspace_root: Path | None = None)
     return config
 
 
-async def run_evaluation(config, result_dir: Path) -> dict:
+async def run_evaluation(config: object, result_dir: Path) -> dict:
     """Run evaluation on dataset with environment.
 
     Generic evaluation loop:
@@ -190,7 +190,7 @@ async def run_evaluation(config, result_dir: Path) -> dict:
         logger.debug(f"writing incremental results to: {jsonl_path}")
         logger.info("")
 
-    async def run_sample(i: int, row: dict):
+    async def run_sample(i: int, row: dict) -> None:
         """Run a single sample evaluation."""
         async with semaphore:
             sample_id = f"Sample {i + 1}/{len(dataset)}"
@@ -210,12 +210,11 @@ async def run_evaluation(config, result_dir: Path) -> dict:
                 state = AgentState(
                     actor=actor,
                     environment=environment,
-                    max_turns=config.max_turns,
                 )
 
                 # Run agent
                 # Use no-op handler to avoid printing streaming chunks
-                async def noop_chunk_handler(chunk):
+                async def noop_chunk_handler(chunk: object) -> None:
                     pass
 
                 run_config = RunConfig(on_chunk=noop_chunk_handler)
@@ -268,7 +267,7 @@ async def run_evaluation(config, result_dir: Path) -> dict:
                 pbar.update(1)
 
             except Exception as e:
-                logger.error(f"❌ {sample_id} failed: {e}")
+                logger.exception(f"❌ {sample_id} failed: {e}")
                 result = {
                     "sample_id": i,
                     "error": str(e),
@@ -323,7 +322,7 @@ async def run_evaluation(config, result_dir: Path) -> dict:
     }
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(description="Run generic evaluation")
     parser.add_argument("--config", type=Path, required=True, help="Config file path")
     parser.add_argument(

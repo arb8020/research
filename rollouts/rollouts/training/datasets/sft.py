@@ -243,7 +243,6 @@ def prepare_sft_sample(
 
     return Sample(
         prompt=prompt,
-        response=response,
         tokens=tokens,
         loss_mask=loss_mask,
     )

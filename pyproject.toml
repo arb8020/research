@@ -150,6 +150,8 @@ exclude = [
     "cutlass/**",  # External vendored code
     "cutlass_repo/**",  # External vendored code
     "worktrees/**",  # Git worktrees (copies of repo)
+    "**/functional_extractor/**",  # Debugging/testing tools for model extraction
+    "**/refactor-snipe/**",  # Refactoring tool (dev tooling)
 ]
 
 [tool.ruff.lint]
@@ -184,6 +186,27 @@ ignore = [
     "B008",    # function-call-in-default-argument (false positive for typer)
     # Deferred - requires creating exception class hierarchy (TODO: implement later)
     "TRY003",  # raise-vanilla-args (exception messages at raise site)
+    "TRY002",  # raise-vanilla-class (same category)
+    "TRY004",  # prefer-type-error (stylistic)
+    "TRY300",  # try-consider-else (stylistic, often less readable)
+    # Deferred - complexity rules require refactoring, not quick fixes
+    "PLR0913", # too-many-arguments
+    "PLR0915", # too-many-statements
+    "PLR1702", # too-many-nested-blocks
+    # Async rules - some need --preview flag, ignore all ASYNC for now
+    "ASYNC",   # blocking calls in async (trio.to_thread.run_sync handles these)
+    # Stylistic/low-priority - defer for later cleanup
+    "PLW2901", # redefined-loop-name (often intentional in comprehensions)
+    "E402",    # module-import-not-at-top (often for lazy imports)
+    "A002",    # builtin-argument-shadowing (format arg is common)
+    "A005",    # module-shadowing-builtin (types.py is common pattern)
+    "B007",    # unused-loop-control-variable (use _ prefix if needed)
+    "B012",    # return-in-finally (rare, usually intentional)
+    "B027",    # empty-method-without-abstract (protocol stubs)
+    "B023",    # function-uses-loop-variable (often intentional closure)
+    "E741",    # ambiguous-variable-name (l, O, I - sometimes needed)
+    "UP038",   # use X | Y in isinstance - breaks Python 3.9 compat
+    "F841",    # unused variable - often intentional (stdin, _ pattern)
 ]
 
 [tool.ruff.lint.pylint]

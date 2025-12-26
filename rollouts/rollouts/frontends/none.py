@@ -30,7 +30,7 @@ class NoneFrontend:
         await run_interactive(trajectory, endpoint, frontend=frontend)
     """
 
-    def __init__(self, show_tool_calls: bool = True, show_thinking: bool = False):
+    def __init__(self, show_tool_calls: bool = True, show_thinking: bool = False) -> None:
         """Initialize NoneFrontend.
 
         Args:

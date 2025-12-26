@@ -115,7 +115,7 @@ class FSDPTrainingBackend:
     optimizer: torch.optim.Optimizer | None = None
     scheduler: Any | None = None  # Optional LR scheduler
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Initialize FSDP backend with two-phase checkpoint loading.
 
         Initialization order (following THUDM SLIME pattern):
@@ -605,7 +605,7 @@ class FSDPTrainingBackend:
         try:
             from torch.distributed._tensor import DTensor, distribute_tensor
         except ImportError:
-            logger.error("DTensor not available, cannot load weights")
+            logger.exception("DTensor not available, cannot load weights")
             raise
 
         # Cache parameter and buffer maps for efficiency

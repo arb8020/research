@@ -38,7 +38,7 @@ class TextualFrontend:
         theme: str = "dark",
         show_thinking: bool = True,
         show_tool_details: bool = True,
-    ):
+    ) -> None:
         """Initialize TextualFrontend.
 
         Args:
@@ -73,10 +73,10 @@ class TextualFrontend:
             from textual.binding import Binding
             from textual.containers import Horizontal, Vertical, VerticalScroll
             from textual.widgets import Footer, Header, Input, Markdown, Static
-        except ImportError:
+        except ImportError as e:
             raise ImportError(
                 "Textual is required for TextualFrontend. Install with: pip install textual"
-            )
+            ) from e
 
         frontend = self  # Capture for inner class
 
@@ -149,7 +149,7 @@ class TextualFrontend:
                 Binding("escape", "interrupt", "Interrupt"),
             ]
 
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.frontend = frontend
                 self._current_message: Markdown | None = None

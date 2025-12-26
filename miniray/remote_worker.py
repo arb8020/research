@@ -40,7 +40,7 @@ class RemoteWorker:
     w: Any = field(default=None, init=False, repr=False)
     _connected: bool = field(default=False, init=False, repr=False)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Validate configuration.
 
         Casey Muratori: Split construction from connection for better control.
@@ -98,21 +98,21 @@ class RemoteWorker:
 
             self._connected = True
 
-        except ConnectionRefusedError:
+        except ConnectionRefusedError as e:
             raise ConnectionRefusedError(
                 f"Cannot connect to worker server at {self.host}:{self.port}. "
                 "Is WorkerServer running on the remote node?"
-            )
-        except TimeoutError:
+            ) from e
+        except TimeoutError as e:
             raise TimeoutError(
                 f"Timeout connecting to {self.host}:{self.port}. Check network connectivity."
-            )
+            ) from e
 
-    def recv(self, max_size: int, timeout: float | None = None) -> Any:
+    def recv(self, max_size: int = 1024 * 1024, timeout: float | None = None) -> Any:
         """Receive message from remote worker (blocking).
 
         Args:
-            max_size: Maximum message size in bytes (required for safety)
+            max_size: Maximum message size in bytes (default 1MB)
             timeout: Optional timeout in seconds
 
         Returns:
@@ -152,8 +152,8 @@ class RemoteWorker:
 
             return json.loads(line)
 
-        except TimeoutError:
-            raise TimeoutError(f"Timeout waiting for response from {self.host}:{self.port}")
+        except TimeoutError as e:
+            raise TimeoutError(f"Timeout waiting for response from {self.host}:{self.port}") from e
         finally:
             # Restore no timeout
             if timeout is not None:
@@ -184,10 +184,10 @@ class RemoteWorker:
             self.w.write("\n")
             self.w.flush()
 
-        except BrokenPipeError:
+        except BrokenPipeError as e:
             raise BrokenPipeError(
                 f"Connection to {self.host}:{self.port} is broken. Remote worker may have crashed."
-            )
+            ) from e
 
     def fileno(self) -> int:
         """Return socket file descriptor for use with select().
@@ -223,10 +223,11 @@ class RemoteWorker:
             # Check if socket is still connected
             # getpeername() raises if disconnected
             self._sock.getpeername()
-            return True
         except (OSError, AttributeError):
             # Socket disconnected or doesn't exist
             return False
+        else:
+            return True
 
     def health_check(self, timeout: float = 5.0) -> bool:
         """Send ping and check if worker responds.
@@ -279,7 +280,7 @@ class RemoteWorker:
             self._sock.close()
         self._connected = False
 
-    def __enter__(self):
+    def __enter__(self) -> "RemoteWorker":
         """Context manager support.
 
         Example:
@@ -289,7 +290,12 @@ class RemoteWorker:
         """
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: object,
+    ) -> None:
         """Context manager cleanup."""
         self.close()
 

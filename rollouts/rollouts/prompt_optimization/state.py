@@ -25,7 +25,7 @@ class GEPAState:
     The rest of GEPA is pure functions that operate on this state.
     """
 
-    def __init__(self, seed_candidate: Candidate):
+    def __init__(self, seed_candidate: Candidate) -> None:
         """Initialize state with seed candidate.
 
         Args:

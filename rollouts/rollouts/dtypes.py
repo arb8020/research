@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import (
     Any,
     Literal,
-    Optional,
     Protocol,
+    Self,
     runtime_checkable,
 )
 
@@ -31,7 +31,7 @@ ToolFormatter = Callable[[str, dict[str, Any], dict[str, Any] | None, bool], str
 
 
 # Verbose function for debugging
-def verbose(level=1):
+def verbose(level: int = 1) -> bool:
     """Check if verbose logging is enabled at given level"""
     return int(os.getenv("VERBOSE", 0)) >= level
 
@@ -63,13 +63,14 @@ def parse_streaming_json(partial_json: str) -> dict[str, Any]:
     # Try parsing as complete JSON first
     try:
         result = json.loads(partial_json)
+    except json.JSONDecodeError:
+        pass
+    else:
         # Model might return non-object JSON (e.g., "8" instead of {"result": 8})
         # Return empty dict rather than crashing - caller will handle via ToolCallError
         if not isinstance(result, dict):
             return {}
         return result
-    except json.JSONDecodeError:
-        pass
 
     # Incomplete JSON - try to extract what we can
     # Strategy: Progressively trim incomplete parts from the end
@@ -149,7 +150,7 @@ class JsonSerializable:
         return result
 
     @classmethod
-    def from_json(cls, json_str: str):
+    def from_json(cls, json_str: str) -> Self:
         """Deserialize from JSON string using dacite"""
         assert json_str is not None
         assert isinstance(json_str, str)
@@ -371,6 +372,7 @@ StreamEvent = (
     | ToolResultReceived
     | StreamDone
     | StreamError
+    | StreamChunk  # DEPRECATED: Included for backwards compatibility, will be removed
 )
 
 
@@ -627,7 +629,7 @@ class TokenInfo(JsonSerializable):
     decoded_token: str
 
 
-PromptLogprob = Optional[dict[str, TokenInfo]]
+PromptLogprob = dict[str, TokenInfo] | None
 """
 {
 "8948": { # key is different every token
@@ -678,9 +680,8 @@ class Trajectory(JsonSerializable):
             assert "completion_tokens" in usage_dict
             assert "total_tokens" in usage_dict
             usage = Usage(
-                prompt_tokens=usage_dict["prompt_tokens"],
-                completion_tokens=usage_dict["completion_tokens"],
-                total_tokens=usage_dict["total_tokens"],
+                input_tokens=usage_dict["prompt_tokens"],
+                output_tokens=usage_dict["completion_tokens"],
             )
             assert usage is not None
             # Construct ChatCompletion with explicit parameters for type safety
@@ -1085,7 +1086,7 @@ class Endpoint(JsonSerializable):
     # Extra params merged into the raw chat request for custom servers
     extra_params: dict[str, Any] | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Validate endpoint configuration.
 
         Tiger Style: Crash loud on invalid config, explicit error messages.
@@ -1274,7 +1275,7 @@ class Score:
 
 
 # Sample is unified in training.types - import here for backward compatibility
-from rollouts.training.types import Sample
+from rollouts.training.types import Sample  # noqa: E402
 
 # Score function: pure transform from Sample -> Score
 # Sample has trajectory, ground_truth, input, etc. - access via sample.trajectory

@@ -11,21 +11,12 @@ from ..refactors.extract_function import ExtractFunction, apply_edits
 class TestExtractFunction:
     """Test extract function refactoring."""
 
-    def test_simple_extraction(self):
+    def test_simple_extraction(self) -> None:
         """Test extracting simple statements without parameters or returns."""
         code = """\
 def main():
     print("hello")
     print("world")
-    print("done")
-"""
-        expected = """\
-def main():
-    def greet():
-        print("hello")
-        print("world")
-
-    greet()
     print("done")
 """
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
@@ -43,7 +34,7 @@ def main():
         finally:
             path.unlink()
 
-    def test_extraction_with_parameters(self):
+    def test_extraction_with_parameters(self) -> None:
         """Test extracting code that uses variables from outer scope."""
         code = """\
 def process(data):
@@ -68,7 +59,7 @@ def process(data):
         finally:
             path.unlink()
 
-    def test_extraction_with_return_value(self):
+    def test_extraction_with_return_value(self) -> None:
         """Test extracting code that defines a variable used later."""
         code = """\
 def calculate():
@@ -94,7 +85,7 @@ def calculate():
         finally:
             path.unlink()
 
-    def test_extraction_with_params_and_returns(self):
+    def test_extraction_with_params_and_returns(self) -> None:
         """Test extraction with both parameters and return values."""
         code = """\
 def transform(input_val):
@@ -122,7 +113,7 @@ def transform(input_val):
         finally:
             path.unlink()
 
-    def test_class_method_extraction(self):
+    def test_class_method_extraction(self) -> None:
         """Test extracting code from inside a class method."""
         code = """\
 class Calculator:
@@ -152,7 +143,7 @@ class Calculator:
 class TestApplyEdits:
     """Test the edit application logic."""
 
-    def test_apply_insertion(self):
+    def test_apply_insertion(self) -> None:
         """Test inserting new code."""
         code = "line1\nline2\nline3\n"
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
@@ -172,7 +163,7 @@ class TestApplyEdits:
         finally:
             path.unlink()
 
-    def test_apply_replacement(self):
+    def test_apply_replacement(self) -> None:
         """Test replacing existing code."""
         code = "line1\nline2\nline3\n"
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:

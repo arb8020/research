@@ -280,7 +280,7 @@ class GitWorktreeEnvironment:
         """Only bash commands require confirmation."""
         return tool_call.name == "bash"
 
-    def get_tool_formatter(self, tool_name: str):
+    def get_tool_formatter(self, tool_name: str) -> object | None:
         """Return formatter for the given tool."""
         # Reuse formatters from coding.py
         from .coding import format_bash, format_edit, format_read, format_write

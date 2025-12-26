@@ -98,9 +98,10 @@ def get_samples(
         group: list[Sample] = []
         for i in range(n_samples_per_prompt):
             # Create copy with group_index and index set
+            # Note: response is a computed property derived from trajectory, not a field
             sample_copy = Sample(
                 prompt=base_sample.prompt,
-                response=base_sample.response,
+                trajectory=base_sample.trajectory,
                 tokens=list(base_sample.tokens),
                 loss_mask=list(base_sample.loss_mask),
                 reward=base_sample.reward,
@@ -267,7 +268,7 @@ def load_samples_from_parquet(
         df = df.head(limit)
 
     samples = []
-    for i, row in df.iterrows():
+    for _i, row in df.iterrows():
         prompt = row.get(prompt_key, row.to_dict())
 
         metadata: dict[str, Any] = {}
@@ -475,7 +476,7 @@ class DataBuffer:
     sample_offset: int = 0
     seed: int = 42
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         self._samples = load_samples_from_list(self.prompts)
         self._state = BufferState(
             epoch_id=self.epoch_id,
@@ -493,7 +494,7 @@ class DataBuffer:
     def save_state(self) -> dict[str, Any]:
         return state_to_dict(self._state)
 
-    def load_state(self, state: dict[str, Any]):
+    def load_state(self, state: dict[str, Any]) -> None:
         self._state = state_from_dict(state)
         self.epoch_id = self._state.epoch_id
         self.sample_offset = self._state.sample_offset

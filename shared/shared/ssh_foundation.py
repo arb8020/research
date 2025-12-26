@@ -53,7 +53,7 @@ def secure_temp_ssh_key(private_key_content: str) -> Generator[str, None, None]:
         yield temp_key_path
 
     except Exception as e:
-        logger.error(f"Error in secure_temp_ssh_key: {e}")
+        logger.exception(f"Error in secure_temp_ssh_key: {e}")
         raise
     finally:
         # Guaranteed cleanup
@@ -114,8 +114,8 @@ class SSHConnectionInfo:
 
         try:
             port = int(port_str)
-        except ValueError:
-            raise ValueError(f"Invalid port number: {port_str}")
+        except ValueError as e:
+            raise ValueError(f"Invalid port number: {port_str}") from e
 
         return cls(
             hostname=hostname, port=port, username=username, key_path=key_path, timeout=timeout
@@ -130,8 +130,8 @@ class SSHConnectionInfo:
 
         try:
             parts = shlex.split(ssh_cmd)
-        except ValueError as e:
-            raise ValueError(f"Failed to parse SSH command: {e}")
+        except ValueError as err:
+            raise ValueError(f"Failed to parse SSH command: {err}") from err
 
         if not parts or parts[0] != "ssh":
             raise ValueError(f"Invalid SSH command: {ssh_cmd}")
@@ -146,8 +146,8 @@ class SSHConnectionInfo:
                 try:
                     port = int(parts[i + 1])
                     i += 2
-                except ValueError:
-                    raise ValueError(f"Invalid port in SSH command: {parts[i + 1]}")
+                except ValueError as err:
+                    raise ValueError(f"Invalid port in SSH command: {parts[i + 1]}") from err
             elif "@" in parts[i]:
                 user_host = parts[i]
                 break
@@ -220,7 +220,7 @@ class UniversalSSHClient:
     operations, with shared secure key handling and connection management.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._paramiko_client: Any | None = None
         self._asyncssh_client: Any | None = None
 
@@ -272,10 +272,10 @@ class UniversalSSHClient:
                         )
                         return True
                 else:
-                    raise agent_error
+                    raise
 
         except Exception as e:
-            logger.error(f"❌ SSH connection failed: {e}")
+            logger.exception(f"❌ SSH connection failed: {e}")
             return False
 
     async def aconnect(self, conn_info: SSHConnectionInfo) -> bool:
@@ -327,10 +327,10 @@ class UniversalSSHClient:
                         )
                         return True
                 else:
-                    raise agent_error
+                    raise
 
         except Exception as e:
-            logger.error(f"❌ AsyncSSH connection failed: {e}")
+            logger.exception(f"❌ AsyncSSH connection failed: {e}")
             return False
 
     def exec_command(self, command: str, timeout: int = 30) -> tuple[int, str, str]:
@@ -477,7 +477,7 @@ def execute_command_streaming(
 
 def start_interactive_ssh_session(
     conn_info: SSHConnectionInfo, private_key_path: str | None = None
-):
+) -> None:
     """
     Start an interactive SSH session using the system's SSH client
 
@@ -526,7 +526,7 @@ def start_interactive_ssh_session(
         subprocess.run(ssh_cmd, check=False)
 
     except Exception as e:
-        logger.error(f"❌ Interactive SSH failed: {e}")
+        logger.exception(f"❌ Interactive SSH failed: {e}")
         raise
 
 
@@ -570,7 +570,7 @@ def test_ssh_connection(
         try:
             import asyncio
 
-            async def test_async():
+            async def test_async() -> str | None:
                 client = UniversalSSHClient()
                 try:
                     if await client.aconnect(conn_info):

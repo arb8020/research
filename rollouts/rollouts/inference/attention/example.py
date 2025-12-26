@@ -31,7 +31,7 @@ class ExampleTransformerBlock(nn.Module):
         num_kv_heads: int,
         head_dim: int,
         backend: FlexAttentionBackend,
-    ):
+    ) -> None:
         super().__init__()
         self.layer_idx = layer_idx
 
@@ -117,7 +117,7 @@ class ExampleModel(nn.Module):
         num_blocks: int = 256,
         block_size: int = 16,
         device: str = "cuda",
-    ):
+    ) -> None:
         super().__init__()
 
         # 1. Create cache config
@@ -175,7 +175,7 @@ class ExampleModel(nn.Module):
         return self.lm_head(x)
 
 
-def example_usage():
+def example_usage() -> None:
     """Show how to use the model with context."""
     device = "cuda" if torch.cuda.is_available() else "cpu"
 

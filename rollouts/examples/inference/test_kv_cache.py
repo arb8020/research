@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 
-def test_paged_kv_cache():
+def test_paged_kv_cache() -> None:
     """Test block allocation logic (CPU-only)."""
     from rollouts.inference.cache import PagedKVCache
 
@@ -49,7 +49,7 @@ def test_paged_kv_cache():
     print("PagedKVCache: PASSED")
 
 
-def test_context_builder():
+def test_context_builder() -> None:
     """Test context building (CPU-only)."""
     from rollouts.inference.cache import PagedKVCache
     from rollouts.inference.context import (
@@ -78,9 +78,10 @@ def test_context_builder():
     print("ContextBuilder: PASSED")
 
 
-def test_flex_attention_backend():
+def test_flex_attention_backend() -> None:
     """Test attention backend with GPU."""
     import torch
+
     from rollouts.inference.attention import CacheConfig, FlexAttentionBackend
 
     print("Testing FlexAttentionBackend...")
@@ -113,9 +114,10 @@ def test_flex_attention_backend():
     print("FlexAttentionBackend: PASSED")
 
 
-def test_end_to_end():
+def test_end_to_end() -> None:
     """End-to-end integration test."""
     import torch
+
     from rollouts.inference.attention import CacheConfig, FlexAttentionBackend
     from rollouts.inference.cache import PagedKVCache
     from rollouts.inference.context import (
@@ -176,7 +178,7 @@ def test_end_to_end():
     print("End-to-End: PASSED")
 
 
-def run_tests():
+def run_tests() -> None:
     """Run all tests."""
     import torch
 
@@ -203,14 +205,15 @@ def run_tests():
     print("=" * 50)
 
 
-def run_remote():
+def run_remote() -> None:
     """Run tests on remote GPU."""
     import os
     from pathlib import Path
 
+    from dotenv import load_dotenv
+
     from bifrost.client import BifrostClient
     from broker.client import GPUClient
-    from dotenv import load_dotenv
 
     load_dotenv()
 
@@ -270,10 +273,11 @@ def run_remote():
             client.terminate_instance(gpu.id, gpu.provider)
 
 
-def test_attention_correctness():
+def test_attention_correctness() -> None:
     """Verify our attention matches PyTorch reference implementation."""
     import torch
     import torch.nn.functional as F
+
     from rollouts.inference.attention import CacheConfig, FlexAttentionBackend
     from rollouts.inference.types import InferenceContext
 

@@ -11,7 +11,7 @@ if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 
 
-def debug_with_tools():
+def debug_with_tools() -> None:
     import torch
     from analysis_tools import (
         capture_intermediates,
@@ -319,7 +319,7 @@ def debug_with_tools():
     # Let's hook into model.model to see
     masks_captured = []
 
-    def capture_mask_hook(module, args, kwargs):
+    def capture_mask_hook(module, args, kwargs) -> None:
         if "attention_mask" in kwargs:
             mask = kwargs["attention_mask"]
             if isinstance(mask, dict):
@@ -341,7 +341,7 @@ def debug_with_tools():
     # Capture position_embeddings too
     position_embeddings_captured = []
 
-    def capture_pos_hook(module, args, kwargs):
+    def capture_pos_hook(module, args, kwargs) -> None:
         if "position_embeddings" in kwargs:
             pos_emb = kwargs["position_embeddings"]
             if pos_emb is not None:

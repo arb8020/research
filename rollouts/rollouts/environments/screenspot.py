@@ -20,7 +20,7 @@ class ScreenSpotEnvironment:
     Tiger Style: Simple class, minimal interface.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize ScreenSpot environment."""
         pass
 
@@ -44,7 +44,7 @@ class ScreenSpotEnvironment:
         self,
         tool_call: ToolCall,
         current_state: AgentState,
-        run_config,
+        run_config: object,
         cancel_scope: trio.CancelScope | None = None,
     ) -> ToolResult:
         """No tools available in ScreenSpot environment."""

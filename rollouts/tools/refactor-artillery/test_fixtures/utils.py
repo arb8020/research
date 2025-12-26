@@ -6,6 +6,6 @@ def format_output(value: int) -> str:
     return f"Result: {value}"
 
 
-def unused_function():
+def unused_function() -> None:
     """This function is not used anywhere."""
     pass

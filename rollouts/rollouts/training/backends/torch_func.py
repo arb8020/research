@@ -15,7 +15,7 @@ Estimated effort: ~1-2 days
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import torch
 
@@ -67,7 +67,7 @@ class TorchFuncTrainingBackend:
         optimizer_fn: Callable,
         loss_fn: Callable,
         checkpoint_dir: Path,
-    ):
+    ) -> NoReturn:
         """Create from PyTorch model (extracts functional params).
 
         Args:
@@ -98,7 +98,7 @@ class TorchFuncTrainingBackend:
     async def save_checkpoint(
         self,
         step: int,
-        metrics: dict[str, float] = {},
+        metrics: dict[str, float] | None = None,
     ) -> Path:
         """Save checkpoint (functional params as PyTorch state_dict)."""
         raise NotImplementedError("D6v2: Not yet implemented")

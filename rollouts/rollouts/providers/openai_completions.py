@@ -67,12 +67,12 @@ def _message_to_openai(m: Message) -> ChatCompletionMessageParam:
         logger.error(f"❌ Empty message content detected! Role: {m.role}")
         logger.error("   This usually means prepare_messages() is using the wrong dataset field.")
         logger.error(f"   Message object: {m}")
-        assert False, (
+        raise AssertionError(
             f"Message has empty content (role={m.role}). "
             f"Check that prepare_messages() is using the correct dataset field name. "
             f"Common issue: using 'prompt' when dataset has 'problem_description'."
         )
-    elif not m.content and not tool_calls and m.role == "assistant":
+    if not m.content and not tool_calls and m.role == "assistant":
         # Empty assistant message - likely from failed tool call parsing
         # Add placeholder to prevent downstream errors
         logger.warning("Empty assistant message detected - adding placeholder")
@@ -570,7 +570,7 @@ async def rollout_openai(
                         f"Invalid message format - nested role/content in message {i} part {j}\n"
                         f"Full request:\n{json.dumps(sanitized, indent=2)}"
                     )
-                    assert False, (
+                    raise AssertionError(
                         f"Message {i} content[{j}] has nested role/content fields.\n"
                         f"This usually means you accidentally put a message dict inside content.\n"
                         f"For vision: content should be [{{'type': 'text', 'text': '...'}}, ...]\n"
@@ -593,9 +593,9 @@ async def rollout_openai(
         if isinstance(e, BadRequestError):
             crash_file = log_crash(e, "openai", actor.endpoint.model)
             # Tiger Style: Assertion to fail fast and surface the bug
-            assert False, (
+            raise AssertionError(
                 f"API returned 400 Bad Request: {e}\nCrash details written to: {crash_file}"
-            )
+            ) from e
 
         # Tiger Style: Rate limits are operational errors, not bugs
         # Wrap in ProviderError so evaluation layer can exclude from accuracy
@@ -631,7 +631,7 @@ async def rollout_openai(
 
             msg_list = params.get("messages", [])
             msg_count = len(cast(list, msg_list)) if isinstance(msg_list, list) else 0
-            logger.error(
+            logger.exception(
                 f"OpenAI API call failed: {e}\n"
                 f"  Model: {actor.endpoint.model}\n"
                 f"  Messages: {msg_count} messages",
@@ -651,7 +651,7 @@ async def rollout_openai(
         # For other errors, log and re-raise as-is (likely bugs)
         msg_list = params.get("messages", [])
         msg_count = len(cast(list, msg_list)) if isinstance(msg_list, list) else 0
-        logger.error(
+        logger.exception(
             f"OpenAI API call failed: {e}\n"
             f"  Model: {actor.endpoint.model}\n"
             f"  Messages: {msg_count} messages",

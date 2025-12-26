@@ -11,6 +11,7 @@ from typing import Any
 import trio
 
 from rollouts.dtypes import (
+    AgentState,
     Endpoint,
     EvalConfig,
     Message,
@@ -36,9 +37,7 @@ async def _silent_chunk_handler(_: StreamEvent) -> None:
     await trio.lowlevel.checkpoint()
 
 
-async def _stop_after_response(
-    state: "rollouts.dtypes.AgentState", run_config: "RunConfig"
-) -> "rollouts.dtypes.AgentState":
+async def _stop_after_response(state: AgentState, run_config: RunConfig) -> AgentState:
     """Stop after first response - for simple evaluation without tools."""
     from dataclasses import replace
 

@@ -19,7 +19,7 @@ from shared.ssh_foundation import (
 )
 
 
-def test_ssh_connection_info():
+def test_ssh_connection_info() -> None:
     """Test SSHConnectionInfo parsing and generation"""
     print("🧪 Testing SSHConnectionInfo...")
 
@@ -45,13 +45,13 @@ def test_ssh_connection_info():
     # Test invalid formats
     try:
         SSHConnectionInfo.from_string("invalid-format")
-        assert False, "Should have raised ValueError"
+        raise AssertionError("Should have raised ValueError")
     except ValueError:
         print("   ✅ Invalid format rejected")
 
     try:
         SSHConnectionInfo.from_string("user@host:invalid-port")
-        assert False, "Should have raised ValueError"
+        raise AssertionError("Should have raised ValueError")
     except ValueError:
         print("   ✅ Invalid port rejected")
 
@@ -65,7 +65,7 @@ def test_ssh_connection_info():
     print("   🎉 SSHConnectionInfo tests passed!")
 
 
-def test_secure_temp_ssh_key():
+def test_secure_temp_ssh_key() -> None:
     """Test secure temporary SSH key handling"""
     print("🔐 Testing secure temporary SSH key handling...")
 
@@ -107,7 +107,7 @@ No actual cryptographic material is present here.
     print("   🎉 Secure key handling tests passed!")
 
 
-def test_universal_ssh_client_structure():
+def test_universal_ssh_client_structure() -> None:
     """Test UniversalSSHClient structure without actual connections"""
     print("🔌 Testing UniversalSSHClient structure...")
 
@@ -137,7 +137,7 @@ def test_universal_ssh_client_structure():
     print("   🎉 UniversalSSHClient structure tests passed!")
 
 
-def test_convenience_functions():
+def test_convenience_functions() -> None:
     """Test convenience functions"""
     print("🛠️ Testing convenience functions...")
 
@@ -152,7 +152,7 @@ def test_convenience_functions():
     print("   🎉 Convenience function tests passed!")
 
 
-async def test_async_patterns():
+async def test_async_patterns() -> None:
     """Test async pattern compatibility"""
     print("🔄 Testing async patterns...")
 
@@ -185,7 +185,7 @@ async def test_async_patterns():
     print("   🎉 Async pattern tests passed!")
 
 
-def main():
+def main() -> bool | None:
     """Run all tests"""
     print("🧪 Comprehensive Shared SSH Foundation Test Suite")
     print("=" * 60)

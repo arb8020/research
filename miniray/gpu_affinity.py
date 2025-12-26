@@ -9,7 +9,7 @@ Tiger Style: Graceful fallback, clear error messages.
 import os
 
 
-def set_gpu_affinity(local_rank: int = None, verbose: bool = True) -> bool:
+def set_gpu_affinity(local_rank: int | None = None, verbose: bool = True) -> bool:
     """Set CPU affinity to GPU's NUMA node for optimal memory bandwidth.
 
     This improves performance by ensuring CPU cores are on the same NUMA

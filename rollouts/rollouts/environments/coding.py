@@ -5,14 +5,21 @@ Tools: read, write, edit, bash
 Inspired by pi-mono's minimalist approach.
 """
 
+from __future__ import annotations
+
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 import httpx
 import markdownify
 import trio
+
+if TYPE_CHECKING:
+    from rollouts.frontends.tui.theme import Theme
 
 from ..dtypes import (
     AgentState,
@@ -115,7 +122,9 @@ def _get_text_output(result: dict | None) -> str:
 # Signature: (tool_name, args, result, expanded, theme) -> str
 
 
-def format_bash(tool_name: str, args: dict, result: dict | None, expanded: bool, theme=None) -> str:
+def format_bash(
+    tool_name: str, args: dict, result: dict | None, expanded: bool, theme: Theme | None = None
+) -> str:
     """Format bash tool execution."""
     command = args.get("command", "")
     text = f"bash(command={repr(command or '...')})"
@@ -143,7 +152,9 @@ def format_bash(tool_name: str, args: dict, result: dict | None, expanded: bool,
     return text
 
 
-def format_read(tool_name: str, args: dict, result: dict | None, expanded: bool, theme=None) -> str:
+def format_read(
+    tool_name: str, args: dict, result: dict | None, expanded: bool, theme: Theme | None = None
+) -> str:
     """Format read tool execution."""
     path = _shorten_path(args.get("file_path") or args.get("path") or "")
     offset = args.get("offset")
@@ -176,7 +187,7 @@ def format_read(tool_name: str, args: dict, result: dict | None, expanded: bool,
 
 
 def format_write(
-    tool_name: str, args: dict, result: dict | None, expanded: bool, theme=None
+    tool_name: str, args: dict, result: dict | None, expanded: bool, theme: Theme | None = None
 ) -> str:
     """Format write tool execution with line numbers and gray styling (like edit)."""
     path = _shorten_path(args.get("file_path") or args.get("path") or "")
@@ -212,7 +223,9 @@ def format_write(
     return text
 
 
-def format_edit(tool_name: str, args: dict, result: dict | None, expanded: bool, theme=None) -> str:
+def format_edit(
+    tool_name: str, args: dict, result: dict | None, expanded: bool, theme: Theme | None = None
+) -> str:
     """Format edit tool execution with colored diff."""
     path = _shorten_path(args.get("file_path") or args.get("path") or "")
 
@@ -289,7 +302,7 @@ def format_edit(tool_name: str, args: dict, result: dict | None, expanded: bool,
 
 
 def format_web_fetch(
-    tool_name: str, args: dict, result: dict | None, expanded: bool, theme=None
+    tool_name: str, args: dict, result: dict | None, expanded: bool, theme: Theme | None = None
 ) -> str:
     """Format web_fetch tool execution."""
     url = args.get("url", "")
@@ -421,7 +434,7 @@ class LocalFilesystemEnvironment:
     working_dir: Path = field(default_factory=Path.cwd)
     tools: str | list[str] = "full"
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         # Resolve preset name to tool list
         if isinstance(self.tools, str):
             if self.tools in TOOL_PRESETS:
@@ -454,7 +467,7 @@ class LocalFilesystemEnvironment:
         }
 
     @staticmethod
-    async def deserialize(data: dict) -> "LocalFilesystemEnvironment":
+    async def deserialize(data: dict) -> LocalFilesystemEnvironment:
         return LocalFilesystemEnvironment(
             working_dir=Path(data["working_dir"]),
             tools=data.get("tools", "full"),
@@ -464,7 +477,9 @@ class LocalFilesystemEnvironment:
         """Only bash commands require confirmation by default."""
         return tool_call.name == "bash"
 
-    def get_tool_formatter(self, tool_name: str):
+    def get_tool_formatter(
+        self, tool_name: str
+    ) -> Callable[[str, dict, dict | None, bool, Theme | None], str] | None:
         """Return formatter function for the given tool.
 
         Returns a function with signature:
@@ -612,8 +627,8 @@ class LocalFilesystemEnvironment:
     async def exec_tool(
         self,
         tool_call: ToolCall,
-        current_state: "AgentState",
-        run_config: "RunConfig",
+        current_state: AgentState,
+        run_config: RunConfig,
         cancel_scope: trio.CancelScope | None = None,
     ) -> ToolResult:
         """Execute tool call."""

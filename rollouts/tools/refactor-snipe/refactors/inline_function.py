@@ -44,7 +44,7 @@ class InlineFunctionResult:
 class InlineFunction:
     """Inline Function refactoring operation."""
 
-    def __init__(self, path: Path, line: int):
+    def __init__(self, path: Path, line: int) -> None:
         """
         Initialize the refactoring.
 
@@ -156,7 +156,7 @@ class InlineFunction:
         """Count return statements in a function body."""
         count = 0
         query = "(return_statement) @ret"
-        for node, _ in self.parser.query_captures(query, body_node):
+        for _node, _ in self.parser.query_captures(query, body_node):
             count += 1
         return count
 

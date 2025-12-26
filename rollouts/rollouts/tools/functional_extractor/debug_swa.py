@@ -15,7 +15,7 @@ Usage:
 from __future__ import annotations
 
 
-def debug_swa():
+def debug_swa() -> None:
     """Test sliding window attention mask correctness."""
     import torch
     import torch.nn.functional as F

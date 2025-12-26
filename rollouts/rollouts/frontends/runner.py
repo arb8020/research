@@ -20,6 +20,7 @@ import signal
 import sys
 import time
 from dataclasses import replace as dc_replace
+from types import FrameType
 from typing import TYPE_CHECKING
 
 import trio
@@ -32,7 +33,7 @@ from rollouts.agents import Actor, AgentState, run_agent
 class _DebugContext:
     """Tracks agent state for debugging hangs/interrupts."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.phase: str = "initializing"
         self.turn: int = 0
         self.tool_name: str | None = None
@@ -113,6 +114,7 @@ from rollouts.dtypes import (
     Message,
     RunConfig,
     StopReason,
+    StreamEvent,
     ToolCall,
     ToolConfirmResult,
     ToolResult,
@@ -357,8 +359,8 @@ class InteractiveRunner:
                             break
 
                         self._agent_cancel_scope = None
-            except (Exception, BaseExceptionGroup):
-                # Collect feedback even on errors (e.g., EOF)
+            except BaseException:
+                # Collect feedback even on errors (e.g., EOF, exception groups)
                 pass
 
             return agent_states
@@ -394,7 +396,7 @@ class InteractiveRunner:
                 print(f"\nSession: {self.session_id}")
                 print(f"Resume with: --session {self.session_id}")
 
-    async def _handle_stream_event(self, event) -> None:
+    async def _handle_stream_event(self, event: StreamEvent) -> None:
         """Route stream event to frontend."""
         await self.frontend.handle_event(event)
 
@@ -452,7 +454,7 @@ class InteractiveRunner:
         """Check stop conditions. No max turns limit in interactive mode."""
         return state
 
-    def _handle_sigint(self, signum, frame) -> None:
+    def _handle_sigint(self, signum: int, frame: FrameType | None) -> None:
         """Handle SIGINT - cancel and dump debug context."""
         # Dump debug info to help diagnose hangs
         print("\n[SIGINT] Interrupting agent...", file=sys.stderr)

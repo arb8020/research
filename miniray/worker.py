@@ -185,14 +185,14 @@ class Worker:
     def __init__(
         self,
         work_fn: Callable[[Any], None],
-        format: SerializationFormat = "json",
-    ):
+        serialization_format: SerializationFormat = "json",
+    ) -> None:
         """Spawn worker process.
 
         Args:
             work_fn: Function to execute in child process.
                      Takes a handle (self) as argument for communication.
-            format: Serialization format - "json" (default, readable) or
+            serialization_format: Serialization format - "json" (default, readable) or
                     "marshal" (faster, ~5-10x for large messages)
 
         Side effects:
@@ -200,7 +200,7 @@ class Worker:
             - Creates socketpair for IPC
             - Child process executes work_fn and exits
         """
-        self._format = format
+        self._format = serialization_format
 
         # Create bidirectional socket pair
         sock, sock0 = socket.socketpair()
@@ -225,7 +225,7 @@ class Worker:
             child_handle.r = r
             child_handle.w = w
             child_handle.pid = os.getpid()
-            child_handle._format = format
+            child_handle._format = serialization_format
 
             # Execute work function
             try:
@@ -451,7 +451,7 @@ def spawn_training_workers(
     for rank in range(num_workers):
         # Create worker with rank and world_size bound
         # Tiger Style: Fix closure bug - bind rank in default argument
-        def wrapped_work(handle, r=rank):
+        def wrapped_work(handle: Worker, r: int = rank) -> None:
             # Set GPU affinity if requested
             if with_gpus:
                 os.environ["CUDA_VISIBLE_DEVICES"] = str(r)
@@ -501,7 +501,7 @@ def shutdown_workers(workers: list[Worker]) -> None:
 if __name__ == "__main__":
     """Test the Worker pattern"""
 
-    def example_work(handle):
+    def example_work(handle: Worker) -> None:
         """Example work function"""
         rank, world_size = handle.recv(max_size=1024)
         print(f"Hello from worker {rank}/{world_size}!", flush=True)

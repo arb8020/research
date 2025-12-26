@@ -52,7 +52,7 @@ class ExtractVariable:
         start_col: int,
         end_col: int,
         variable_name: str,
-    ):
+    ) -> None:
         """
         Initialize the refactoring.
 
@@ -204,7 +204,7 @@ class ExtractVariable:
         """Find all occurrences of an expression in a scope."""
         occurrences = []
 
-        def walk(node):
+        def walk(node) -> None:
             if self.parser.get_text(node) == expression_text:
                 occurrences.append(node)
             else:

@@ -130,7 +130,7 @@ class Region:
 class TreeSitterParser:
     """Wrapper around tree-sitter parser with query capabilities."""
 
-    def __init__(self, language: str):
+    def __init__(self, language: str) -> None:
         if language not in LANGUAGES:
             raise ValueError(f"Unsupported language: {language}")
 

@@ -14,6 +14,7 @@ module as a coherent unit, not individual functions in isolation.
 
 import pytest
 import trio
+
 from rollouts.dtypes import (
     Actor,
     AgentState,
@@ -21,11 +22,13 @@ from rollouts.dtypes import (
     Message,
     RunConfig,
     StopReason,
+    StreamEvent,
     Trajectory,
 )
 from rollouts.search import (
     SearchNode,
     SearchTree,
+    ValueFn,
     add_child,
     add_children,
     compose_pruners,
@@ -64,7 +67,7 @@ def make_test_state(stop: StopReason | None = None) -> AgentState:
 # =============================================================================
 
 
-def test_search_node_frozen():
+def test_search_node_frozen() -> None:
     """SearchNode should be immutable."""
     state = make_test_state()
     node = SearchNode(state=state, node_id="0")
@@ -73,7 +76,7 @@ def test_search_node_frozen():
     print("✓ SearchNode is frozen")
 
 
-def test_search_tree_frozen():
+def test_search_tree_frozen() -> None:
     """SearchTree should be immutable."""
     tree = SearchTree(nodes=(), frontier=())
     with pytest.raises(AttributeError):
@@ -86,7 +89,7 @@ def test_search_tree_frozen():
 # =============================================================================
 
 
-def test_make_root():
+def test_make_root() -> None:
     """make_root creates a tree with single root node."""
     state = make_test_state()
     tree = make_root(state)
@@ -99,7 +102,7 @@ def test_make_root():
     print("✓ make_root works")
 
 
-def test_get_node():
+def test_get_node() -> None:
     """get_node retrieves node by ID."""
     state = make_test_state()
     tree = make_root(state)
@@ -109,7 +112,7 @@ def test_get_node():
     print("✓ get_node works")
 
 
-def test_get_node_not_found():
+def test_get_node_not_found() -> None:
     """get_node raises ValueError for missing node."""
     state = make_test_state()
     tree = make_root(state)
@@ -119,7 +122,7 @@ def test_get_node_not_found():
     print("✓ get_node raises on missing node")
 
 
-def test_add_child():
+def test_add_child() -> None:
     """add_child adds a single child to a node."""
     state = make_test_state()
     tree = make_root(state)
@@ -134,7 +137,7 @@ def test_add_child():
     print("✓ add_child works")
 
 
-def test_add_child_removes_parent_from_frontier():
+def test_add_child_removes_parent_from_frontier() -> None:
     """Adding a child removes parent from frontier."""
     state = make_test_state()
     tree = make_root(state)
@@ -147,7 +150,7 @@ def test_add_child_removes_parent_from_frontier():
     print("✓ add_child updates frontier correctly")
 
 
-def test_add_child_terminal_not_in_frontier():
+def test_add_child_terminal_not_in_frontier() -> None:
     """Terminal nodes (state.stop set) don't go in frontier."""
     state = make_test_state()
     terminal_state = make_test_state(stop=StopReason.TASK_COMPLETED)
@@ -159,7 +162,7 @@ def test_add_child_terminal_not_in_frontier():
     print("✓ Terminal nodes excluded from frontier")
 
 
-def test_add_children():
+def test_add_children() -> None:
     """add_children adds multiple children at once."""
     state = make_test_state()
     tree = make_root(state)
@@ -175,7 +178,7 @@ def test_add_children():
     print("✓ add_children works")
 
 
-def test_has_terminal_node():
+def test_has_terminal_node() -> None:
     """has_terminal_node detects terminal nodes."""
     state = make_test_state()
     tree = make_root(state)
@@ -187,7 +190,7 @@ def test_has_terminal_node():
     print("✓ has_terminal_node works")
 
 
-def test_get_terminal_nodes_sorted():
+def test_get_terminal_nodes_sorted() -> None:
     """get_terminal_nodes returns terminals sorted by score."""
     state = make_test_state()
     tree = make_root(state)
@@ -209,7 +212,7 @@ def test_get_terminal_nodes_sorted():
     print("✓ get_terminal_nodes sorted by score")
 
 
-def test_get_best_terminal():
+def test_get_best_terminal() -> None:
     """get_best_terminal returns highest-scoring terminal."""
     state = make_test_state()
     tree = make_root(state)
@@ -226,7 +229,7 @@ def test_get_best_terminal():
     print("✓ get_best_terminal works")
 
 
-def test_get_path_to_node():
+def test_get_path_to_node() -> None:
     """get_path_to_node returns path from root."""
     state = make_test_state()
     tree = make_root(state)
@@ -245,7 +248,7 @@ def test_get_path_to_node():
 # =============================================================================
 
 
-def test_select_all_frontier():
+def test_select_all_frontier() -> None:
     """select_all_frontier returns all frontier nodes."""
     state = make_test_state()
     tree = make_root(state)
@@ -257,7 +260,7 @@ def test_select_all_frontier():
     print("✓ select_all_frontier works")
 
 
-def test_select_one_best():
+def test_select_one_best() -> None:
     """select_one_best returns highest-scoring frontier node."""
     state = make_test_state()
     tree = make_root(state)
@@ -270,7 +273,7 @@ def test_select_one_best():
     print("✓ select_one_best works")
 
 
-def test_select_one_deepest():
+def test_select_one_deepest() -> None:
     """select_one_deepest returns deepest frontier node."""
     state = make_test_state()
     tree = make_root(state)
@@ -283,7 +286,7 @@ def test_select_one_deepest():
     print("✓ select_one_deepest works")
 
 
-def test_select_one_random():
+def test_select_one_random() -> None:
     """select_one_random returns a frontier node."""
     state = make_test_state()
     tree = make_root(state)
@@ -296,7 +299,7 @@ def test_select_one_random():
     print("✓ select_one_random works")
 
 
-def test_select_empty_frontier():
+def test_select_empty_frontier() -> None:
     """Selection functions handle empty frontier."""
     tree = SearchTree(nodes=(), frontier=())
 
@@ -312,7 +315,7 @@ def test_select_empty_frontier():
 # =============================================================================
 
 
-def test_beam_pruner():
+def test_beam_pruner() -> None:
     """Beam pruner keeps top-k nodes by score."""
     state = make_test_state()
     tree = make_root(state)
@@ -330,7 +333,7 @@ def test_beam_pruner():
     print("✓ Beam pruner works")
 
 
-def test_beam_pruner_no_op_when_under_limit():
+def test_beam_pruner_no_op_when_under_limit() -> None:
     """Beam pruner is no-op when frontier <= beam_width."""
     state = make_test_state()
     tree = make_root(state)
@@ -343,7 +346,7 @@ def test_beam_pruner_no_op_when_under_limit():
     print("✓ Beam pruner no-op when under limit")
 
 
-def test_threshold_pruner():
+def test_threshold_pruner() -> None:
     """Threshold pruner removes nodes below min_score."""
     state = make_test_state()
     tree = make_root(state)
@@ -361,7 +364,7 @@ def test_threshold_pruner():
     print("✓ Threshold pruner works")
 
 
-def test_depth_pruner():
+def test_depth_pruner() -> None:
     """Depth pruner removes nodes beyond max_depth."""
     state = make_test_state()
     tree = make_root(state)
@@ -381,7 +384,7 @@ def test_depth_pruner():
     print("✓ Depth pruner works")
 
 
-def test_compose_pruners():
+def test_compose_pruners() -> None:
     """Composed pruners apply in sequence."""
     state = make_test_state()
     tree = make_root(state)
@@ -413,13 +416,13 @@ def test_compose_pruners():
 # =============================================================================
 
 
-async def noop_chunk_handler(chunk):
+async def noop_chunk_handler(chunk: StreamEvent) -> None:
     """No-op chunk handler for tests."""
     pass
 
 
 @pytest.mark.trio
-async def test_run_search_linear():
+async def test_run_search_linear() -> None:
     """Test run_search with linear expansion (no branching)."""
     print("\n=== Testing run_search (linear) ===\n")
 
@@ -429,7 +432,12 @@ async def test_run_search_linear():
     # Counter to track expansions
     expansion_count = 0
 
-    async def mock_expand(tree, node_ids, config, value_fn=None):
+    async def mock_expand(
+        tree: SearchTree,
+        node_ids: list[str],
+        config: RunConfig,
+        value_fn: ValueFn | None = None,
+    ) -> SearchTree:
         """Mock expand that adds one child per node, terminates after 3 expansions."""
         nonlocal expansion_count
         expansion_count += 1
@@ -462,7 +470,7 @@ async def test_run_search_linear():
 
 
 @pytest.mark.trio
-async def test_run_search_beam():
+async def test_run_search_beam() -> None:
     """Test run_search with beam search (branching + pruning)."""
     print("\n=== Testing run_search (beam) ===\n")
 
@@ -471,7 +479,12 @@ async def test_run_search_beam():
 
     step = 0
 
-    async def mock_beam_expand(tree, node_ids, config, value_fn=None):
+    async def mock_beam_expand(
+        tree: SearchTree,
+        node_ids: list[str],
+        config: RunConfig,
+        value_fn: ValueFn | None = None,
+    ) -> SearchTree:
         """Mock expand that branches 2x per node."""
         nonlocal step
         step += 1
@@ -505,14 +518,19 @@ async def test_run_search_beam():
 
 
 @pytest.mark.trio
-async def test_run_search_stops_on_empty_frontier():
+async def test_run_search_stops_on_empty_frontier() -> None:
     """run_search stops when frontier is empty."""
     print("\n=== Testing run_search (empty frontier) ===\n")
 
     state = make_test_state()
     config = RunConfig(on_chunk=noop_chunk_handler)
 
-    async def mock_expand_prunes_all(tree, node_ids, config, value_fn=None):
+    async def mock_expand_prunes_all(
+        tree: SearchTree,
+        node_ids: list[str],
+        config: RunConfig,
+        value_fn: ValueFn | None = None,
+    ) -> SearchTree:
         """Expand with low values that will all be pruned."""
         for node_id in node_ids:
             s = make_test_state()
@@ -541,7 +559,7 @@ async def test_run_search_stops_on_empty_frontier():
 
 if __name__ == "__main__":
 
-    async def main():
+    async def main() -> None:
         print("\n" + "=" * 70)
         print("TESTS: Tree Search Infrastructure")
         print("=" * 70 + "\n")

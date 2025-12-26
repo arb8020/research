@@ -34,7 +34,7 @@ from rollouts.providers.anthropic import (
 from rollouts.transform_messages import transform_messages
 
 
-def test_session_resume_message_order():
+def test_session_resume_message_order() -> None:
     """Test that messages are in correct order after transform and merge.
 
     Session file structure (from real repro):
@@ -188,7 +188,7 @@ def test_session_resume_message_order():
     print("\n✅ All assertions passed!")
 
 
-def test_tool_result_position_in_merged_messages():
+def test_tool_result_position_in_merged_messages() -> None:
     """Verify tool_result appears after corresponding tool_use, not before.
 
     The Anthropic API requires:
@@ -268,7 +268,7 @@ def test_tool_result_position_in_merged_messages():
     print(f"\n✅ tool_use at {tool_use_idx}, tool_result at {tool_result_idx} - order correct!")
 
 
-def test_interrupt_then_continue_scenario():
+def test_interrupt_then_continue_scenario() -> None:
     """Test the exact scenario from the bug:
 
     1. User starts session, types "sleep 60"

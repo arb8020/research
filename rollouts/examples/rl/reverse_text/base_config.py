@@ -2,9 +2,6 @@
 
 Simple single-turn task: reverse a string.
 Based on Prime-RL's reverse-text example.
-
-Baseline Qwen3-0.6B: ~0.05 reward
-After RL (20 steps): ~0.8 reward
 """
 
 from __future__ import annotations

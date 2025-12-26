@@ -453,7 +453,7 @@ def refactor(
     print("\nDone!")
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="Multi-file AI refactoring tool",
         formatter_class=argparse.RawDescriptionHelpFormatter,

@@ -36,9 +36,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
-from rollouts.remote import release_node
 
 from bifrost import GPUQuery, ProcessSpec, acquire_node, job_stream_until_complete
+from rollouts.remote import release_node
 
 if TYPE_CHECKING:
     from bifrost import BifrostClient
@@ -1175,7 +1175,7 @@ def run_agent_loop_test(client: BifrostClient, workspace: str) -> bool:
         return False
 
 
-def main():
+def main() -> int | None:
     parser = argparse.ArgumentParser(description="TI/TO correctness tests")
 
     # Node acquisition (mutually exclusive)

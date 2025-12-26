@@ -66,7 +66,7 @@ class PyTorchTrainingBackend:
 
     model: torch.nn.Module
     optimizer: torch.optim.Optimizer
-    loss_fn: Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]
+    loss_fn: Callable[[torch.Tensor, dict], torch.Tensor]
     checkpoint_dir: (
         Path  # TODO(ray): Replace with CheckpointStorage protocol for S3/distributed storage
     )
@@ -84,7 +84,7 @@ class PyTorchTrainingBackend:
     # FSDP checkpoint options (SLIME pattern - set in __post_init__)
     _fsdp_state_dict_opts: Any | None = field(default=None, init=False, repr=False)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Validate initialization (Tiger Style)."""
         assert self.model is not None, "model cannot be None"
         assert self.optimizer is not None, "optimizer cannot be None"
@@ -193,7 +193,7 @@ class PyTorchTrainingBackend:
                     logits = output
 
                 # Compute loss (loss_fn returns (loss, metrics) or just loss)
-                loss_result = self.loss_fn(logits=logits, batch=micro_batch)
+                loss_result = self.loss_fn(logits, micro_batch)
 
                 # Handle both (loss, metrics) tuple and bare loss tensor
                 if isinstance(loss_result, tuple):
@@ -294,7 +294,7 @@ class PyTorchTrainingBackend:
     async def save_checkpoint(
         self,
         step: int,
-        metrics: dict[str, float] = {},
+        metrics: dict[str, float] | None = None,
     ) -> Path:
         """Save checkpoint with version (increments weight_version).
 
@@ -337,6 +337,8 @@ class PyTorchTrainingBackend:
             - Matches ray_design.txt: "Abstract Storage - Don't assume local filesystem"
         """
         # Tiger Style: Assert preconditions
+        if metrics is None:
+            metrics = {}
         assert step >= 0, f"step must be >= 0, got {step}"
         assert not self._poisoned, "Backend is poisoned (previous error)"
 

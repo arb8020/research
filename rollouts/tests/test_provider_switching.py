@@ -18,7 +18,6 @@ import os
 
 import pytest
 import trio
-from rollouts.transform_messages import transform_messages
 
 from rollouts import (
     Actor,
@@ -31,10 +30,11 @@ from rollouts import (
     rollout,
     stdout_handler,
 )
+from rollouts.transform_messages import transform_messages
 
 
 @pytest.mark.trio
-async def test_provider_switching_basic():
+async def test_provider_switching_basic() -> None:
     """Test basic provider switching with message transformation.
 
     Start with Claude, switch to GPT-4o, verify thinking is converted to text.
@@ -153,7 +153,7 @@ async def test_provider_switching_basic():
 
 
 @pytest.mark.trio
-async def test_context_serialization():
+async def test_context_serialization() -> None:
     """Test that context can be serialized and restored.
 
     Verify JSON serialization works for cross-provider contexts.
@@ -228,7 +228,7 @@ async def test_context_serialization():
 
 
 @pytest.mark.trio
-async def test_orphaned_tool_call_filtering():
+async def test_orphaned_tool_call_filtering() -> None:
     """Test that orphaned tool calls are filtered out.
 
     When switching providers, tool calls without results should be removed.
@@ -278,7 +278,7 @@ async def test_orphaned_tool_call_filtering():
 
 
 @pytest.mark.trio
-async def test_full_provider_switching():
+async def test_full_provider_switching() -> None:
     """Full integration test with real providers (if API keys available)."""
     if not os.getenv("ANTHROPIC_API_KEY") or not os.getenv("OPENAI_API_KEY"):
         pytest.skip("Need both ANTHROPIC_API_KEY and OPENAI_API_KEY")
@@ -287,20 +287,20 @@ async def test_full_provider_switching():
 
 
 @pytest.mark.trio
-async def test_serialization():
+async def test_serialization() -> None:
     """Test serialization (no API keys needed)."""
     await test_context_serialization()
 
 
 @pytest.mark.trio
-async def test_tool_call_filtering():
+async def test_tool_call_filtering() -> None:
     """Test tool call filtering (no API keys needed)."""
     await test_orphaned_tool_call_filtering()
 
 
 if __name__ == "__main__":
 
-    async def main():
+    async def main() -> None:
         print("\n" + "=" * 70)
         print("INTEGRATION TEST: Cross-Provider Message Transformation")
         print("=" * 70)

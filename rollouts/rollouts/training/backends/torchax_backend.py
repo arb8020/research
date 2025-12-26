@@ -66,7 +66,7 @@ class TorchaxTrainingBackend:
 
     _poisoned: bool = field(default=False, init=False, repr=False)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Validate model is on JAX device."""
         raise NotImplementedError(
             "D6v4: torchax backend not implemented (experimental). "
@@ -93,7 +93,7 @@ class TorchaxTrainingBackend:
     async def save_checkpoint(
         self,
         step: int,
-        metrics: dict[str, float] = {},
+        metrics: dict[str, float] | None = None,
     ) -> Path:
         """Save checkpoint (PyTorch format, should work via torchax)."""
         raise NotImplementedError("D6v4: Not implemented")

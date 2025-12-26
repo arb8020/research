@@ -51,7 +51,7 @@ class AsyncRolloutManager:
     # Rollout kwargs passed to generate_fn
     rollout_kwargs: dict[str, Any] = field(default_factory=dict)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Validate configuration."""
         if self.config.generate_fn is None:
             raise ValueError("RolloutConfig.generate_fn must be provided")
@@ -62,11 +62,16 @@ class AsyncRolloutManager:
                 f"over_sampling_factor must be >= 1.0, got {self.config.over_sampling_factor}"
             )
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> "AsyncRolloutManager":
         """Async context manager entry."""
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: object,
+    ) -> bool:
         """Async context manager exit - cache any partial samples."""
         if self.partial_samples:
             # Log partial samples for debugging
@@ -188,7 +193,7 @@ class AsyncRolloutManager:
             results: list[Sample] = []
             results_lock = trio.Lock()
 
-            async def run_task(prompt: str | dict[str, Any], group_idx: int):
+            async def run_task(prompt: str | dict[str, Any], group_idx: int) -> None:
                 samples = await generate_for_prompt(prompt, group_idx)
                 async with results_lock:
                     results.extend(samples)
@@ -267,7 +272,7 @@ class AsyncRolloutManager:
             # Filter individual samples
             return [s for s in samples if self.config.filter_fn([s])]
 
-    def request_abort(self):
+    def request_abort(self) -> None:
         """Request graceful abort of current generation.
 
         Partial samples will be cached for next batch.

@@ -35,7 +35,7 @@ class TestResult:
     max_diff: float
     details: dict | None = None
 
-    def __str__(self):
+    def __str__(self) -> str:
         status = "PASS" if self.passed else "FAIL"
         return f"{self.name}: max_diff={self.max_diff:.2e} [{status}]"
 
@@ -53,7 +53,7 @@ class TestSuiteResult:
     def all_passed(self) -> bool:
         return self.failed == 0
 
-    def __str__(self):
+    def __str__(self) -> str:
         return f"{self.passed}/{self.total} tests passed"
 
 
@@ -72,7 +72,7 @@ class FunctionalModelTestSuite:
         dtype: torch.dtype = torch.bfloat16,
         rtol: float = 1e-5,
         atol: float = 1e-5,
-    ):
+    ) -> None:
         self.model_name = model_name
         self.functional_forward = functional_forward
         self.weights = weights
@@ -84,7 +84,7 @@ class FunctionalModelTestSuite:
         self.hf_model = None
         self.results: list[TestResult] = []
 
-    def setup(self):
+    def setup(self) -> None:
         """Load HF model. Called once before tests."""
         from transformers import AutoModelForCausalLM
 
@@ -96,7 +96,7 @@ class FunctionalModelTestSuite:
         )
         self.hf_model.eval()
 
-    def teardown(self):
+    def teardown(self) -> None:
         """Cleanup. Called after tests."""
         del self.hf_model
         self.hf_model = None
@@ -174,7 +174,7 @@ class FunctionalModelTestSuite:
 
     # === Standard Test Categories ===
 
-    def test_sequence_lengths(self, seq_lengths: list[int] | None = None):
+    def test_sequence_lengths(self, seq_lengths: list[int] | None = None) -> None:
         """Test various sequence lengths."""
         if seq_lengths is None:
             seq_lengths = [1, 4, 16, 32, 64, 128]
@@ -185,7 +185,7 @@ class FunctionalModelTestSuite:
             result = self.run_test(f"seq_len={seq_len:3d}", input_ids)
             print(f"  {result}")
 
-    def test_batch_sizes(self, batch_sizes: list[int] | None = None, seq_len: int = 16):
+    def test_batch_sizes(self, batch_sizes: list[int] | None = None, seq_len: int = 16) -> None:
         """Test various batch sizes."""
         if batch_sizes is None:
             batch_sizes = [1, 2, 4, 8]
@@ -196,7 +196,7 @@ class FunctionalModelTestSuite:
             result = self.run_test(f"batch={batch}, seq={seq_len}", input_ids)
             print(f"  {result}")
 
-    def test_edge_cases(self):
+    def test_edge_cases(self) -> None:
         """Test edge cases: single token, repeated tokens, etc."""
         print("\n### Edge Cases ###")
 
@@ -224,7 +224,7 @@ class FunctionalModelTestSuite:
         result = self.run_test("high_token_ids", input_ids)
         print(f"  {result}")
 
-    def test_attention_masks(self):
+    def test_attention_masks(self) -> None:
         """Test with various attention mask patterns."""
         print("\n### Attention Mask Tests ###")
 
@@ -252,7 +252,7 @@ class FunctionalModelTestSuite:
         result = self.run_mask_test("variable_length", input_ids, attention_mask)
         print(f"  {result}")
 
-    def test_dtypes(self, dtypes: list[tuple[str, torch.dtype]] | None = None):
+    def test_dtypes(self, dtypes: list[tuple[str, torch.dtype]] | None = None) -> None:
         """Test different dtypes by reloading model."""
         if dtypes is None:
             dtypes = [
@@ -319,7 +319,7 @@ class FunctionalModelTestSuite:
             results=self.results,
         )
 
-    def print_summary(self, result: TestSuiteResult):
+    def print_summary(self, result: TestSuiteResult) -> None:
         """Print test summary."""
         print("\n" + "=" * 60)
         if result.all_passed:

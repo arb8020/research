@@ -15,7 +15,7 @@ if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 
 
-def main():
+def main() -> None:
     import torch
     from transformers import AutoConfig, AutoModelForCausalLM
 

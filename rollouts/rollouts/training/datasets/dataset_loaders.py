@@ -5,6 +5,7 @@ Supports common datasets for SFT and RL training.
 """
 
 import logging
+from collections.abc import Callable
 from typing import Any, cast
 
 try:
@@ -20,13 +21,13 @@ from rollouts.training.types import Sample
 
 
 # Import tokenization functions lazily to avoid torch dependency at import time
-def _get_tokenize_conversation():
+def _get_tokenize_conversation() -> Callable:
     from rollouts.training.datasets.sft import tokenize_conversation
 
     return tokenize_conversation
 
 
-def _get_compute_loss_mask():
+def _get_compute_loss_mask() -> Callable:
     from rollouts.training.datasets.sft import compute_loss_mask
 
     return compute_loss_mask
@@ -120,7 +121,6 @@ def load_sft_dataset(
 
             sample = Sample(
                 prompt=conversation,
-                response="",  # Full response is in conversation
                 tokens=tokens,
                 loss_mask=loss_mask,
                 reward=0.0,
@@ -130,7 +130,6 @@ def load_sft_dataset(
             # No tokenization - just store conversation
             sample = Sample(
                 prompt=conversation,
-                response="",
                 tokens=[],
                 loss_mask=[],
                 reward=0.0,

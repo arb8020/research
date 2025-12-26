@@ -9,7 +9,7 @@ if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 
 
-def debug_sdpa():
+def debug_sdpa() -> None:
     import torch
     import torch.nn.functional as F
     from transformers import AutoModelForCausalLM

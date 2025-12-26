@@ -15,6 +15,7 @@ assistant messages to prevent the merge.
 import os
 
 import pytest
+
 from rollouts.dtypes import (
     Message,
     TextContent,

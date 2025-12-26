@@ -8,7 +8,7 @@ It handles its own environment setup to avoid venv caching issues.
 import subprocess
 
 
-def setup_environment():
+def setup_environment() -> None:
     """Install required packages with correct versions."""
     print("Setting up environment...")
 
@@ -25,7 +25,7 @@ def setup_environment():
     print("Environment setup complete!")
 
 
-def explore():
+def explore() -> None:
     import torch
     from transformers import AutoConfig, AutoModelForCausalLM
 

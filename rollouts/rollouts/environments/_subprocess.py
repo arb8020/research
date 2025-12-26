@@ -100,14 +100,14 @@ def _run_command_sync(
         stdout = stdout_bytes.decode("utf-8", errors="replace")
         stderr = stderr_bytes.decode("utf-8", errors="replace")
         return process.returncode, stdout, stderr
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
         # Kill on timeout
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError, OSError):
             process.kill()
         process.wait()
-        raise TimeoutError(f"Command timed out after {timeout} seconds")
+        raise TimeoutError(f"Command timed out after {timeout} seconds") from e
 
 
 async def run_command(

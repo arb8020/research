@@ -42,7 +42,7 @@ class ColorFormatter(logging.Formatter):
         logging.CRITICAL: Colors.CRITICAL,
     }
 
-    def __init__(self, show_timestamp: bool = True):
+    def __init__(self, show_timestamp: bool = True) -> None:
         """Initialize formatter.
 
         Args:

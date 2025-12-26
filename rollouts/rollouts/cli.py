@@ -536,6 +536,7 @@ def create_endpoint(
         from typing import cast
 
         from rollouts.models import Provider
+
         model_metadata = get_model(cast(Provider, provider), model)
         if model_metadata is not None:
             if not model_metadata.reasoning:
@@ -942,13 +943,13 @@ def cmd_handoff(config: CLIConfig, session_store: FileSessionStore) -> int:
 
 def cmd_slice(config: CLIConfig, session_store: FileSessionStore) -> int:
     """Handle --slice command.
-    
+
     Output (stderr):
         Slicing: <source_id> (N messages, ~M tokens)
         Spec: <slice_spec>
         Created: <child_id> (N messages, ~M tokens)
         Reduction: X% fewer tokens
-    
+
     Output (stdout):
         <child_session_id>
     """
@@ -957,8 +958,7 @@ def cmd_slice(config: CLIConfig, session_store: FileSessionStore) -> int:
     def estimate_tokens(messages: list) -> int:
         """Rough token estimate: chars / 4."""
         total_chars = sum(
-            len(m.content) if isinstance(m.content, str) else len(str(m.content))
-            for m in messages
+            len(m.content) if isinstance(m.content, str) else len(str(m.content)) for m in messages
         )
         return total_chars // 4
 
@@ -1000,7 +1000,7 @@ def cmd_slice(config: CLIConfig, session_store: FileSessionStore) -> int:
             return 1
 
         assert child is not None
-        
+
         # Load child messages to get accurate count
         child_full, _ = await session_store.get(child.session_id)
         if child_full:
@@ -1014,7 +1014,7 @@ def cmd_slice(config: CLIConfig, session_store: FileSessionStore) -> int:
                 print(f"Reduction: {reduction:.0f}% fewer tokens", file=sys.stderr)
         else:
             print(f"Created: {child.session_id}", file=sys.stderr)
-        
+
         # Print session ID to stdout for piping
         print(child.session_id)
         return 0

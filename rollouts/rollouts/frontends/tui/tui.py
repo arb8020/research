@@ -199,7 +199,7 @@ class TUI(Container):
             content_width = width - gutter_width
 
             # Component type to character mapping
-            def get_component_char(component):
+            def get_component_char(component: object) -> str:
                 name = type(component).__name__
                 if name == "Spacer":
                     if hasattr(component, "_debug_label") and component._debug_label:
@@ -228,7 +228,9 @@ class TUI(Container):
                 else:
                     return "?"
 
-            def render_with_gutter(component, width, recurse_containers=True):
+            def render_with_gutter(
+                component: object, width: int, recurse_containers: bool = True
+            ) -> list[str]:
                 """Recursively render component and its children with gutter."""
                 # Special handling for plain Container: render its children individually
                 # But don't recurse into component containers like UserMessage, AssistantMessage

@@ -33,7 +33,7 @@ class InferenceEngine:
     - sample_with_logprobs() does sampling
     """
 
-    def __init__(self, config: EngineConfig):
+    def __init__(self, config: EngineConfig) -> None:
         assert config.block_size > 0
         assert config.max_batch_size > 0
 

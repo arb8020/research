@@ -96,7 +96,7 @@ def validate_config_protocol(config: Any, protocol_class: type) -> list[str]:
         # Try to provide helpful error messages
         # Check for required methods
         if hasattr(protocol_class, "__annotations__"):
-            for attr_name, attr_type in protocol_class.__annotations__.items():
+            for attr_name, _attr_type in protocol_class.__annotations__.items():
                 if not hasattr(config, attr_name):
                     errors.append(f"Missing required attribute: {attr_name}")
 

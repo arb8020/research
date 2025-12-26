@@ -31,6 +31,16 @@ from datetime import datetime
 from pathlib import Path
 
 import trio
+
+from rollouts import (
+    Actor,
+    AgentState,
+    Endpoint,
+    Message,
+    RunConfig,
+    Trajectory,
+    run_agent,
+)
 from rollouts.datasets.lichess_puzzles import (
     get_puzzle_fen_after_opponent_move,
     load_lichess_puzzles,
@@ -42,16 +52,6 @@ from rollouts.search import (
     make_expand_n_turns,
     run_search,
     select_all_frontier,
-)
-
-from rollouts import (
-    Actor,
-    AgentState,
-    Endpoint,
-    Message,
-    RunConfig,
-    Trajectory,
-    run_agent,
 )
 
 # ──────────────────────── Config ────────────────────────────────────────────
@@ -87,7 +87,7 @@ class ChessPuzzleConfig:
     output_dir: Path = field(default_factory=lambda: Path("results"))
     run_id: str | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.run_id is None:
             object.__setattr__(self, "run_id", datetime.now().strftime("%Y%m%d_%H%M%S"))
 
@@ -99,7 +99,7 @@ class ChessPuzzleConfig:
 # ──────────────────────── Eval Logic ────────────────────────────────────────
 
 
-async def noop_chunk_handler(chunk):
+async def noop_chunk_handler(chunk: object) -> None:
     """No-op chunk handler."""
     pass
 
@@ -323,12 +323,12 @@ async def run_eval(config: ChessPuzzleConfig) -> dict:
 
     send_channel, receive_channel = trio.open_memory_channel[dict](config.max_concurrent)
 
-    async def producer():
+    async def producer() -> None:
         async with send_channel:
             for puzzle in puzzles:
                 await send_channel.send(puzzle)
 
-    async def consumer(worker_id: int):
+    async def consumer(worker_id: int) -> None:
         async for puzzle in receive_channel:
             result = await eval_fn(puzzle, config)
             results.append(result)
@@ -490,7 +490,7 @@ def parse_args() -> ChessPuzzleConfig:
     )
 
 
-async def main():
+async def main() -> None:
     config = parse_args()
     await run_eval(config)
 

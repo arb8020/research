@@ -26,7 +26,7 @@ class FlexAttentionBackend:
     - Doesn't need register_buffer/load_state_dict machinery
     """
 
-    def __init__(self, config: CacheConfig):
+    def __init__(self, config: CacheConfig) -> None:
         self.config = config
         self.num_heads_per_kv = 1  # Set by model, updated via set_num_heads()
         self.scale = config.head_dim**-0.5
@@ -44,7 +44,7 @@ class FlexAttentionBackend:
         """Set number of query heads (for GQA expansion)."""
         self.num_heads_per_kv = num_heads // self.config.num_kv_heads
 
-    def get_block_mask(self, batch_size: int, seq_len: int):
+    def get_block_mask(self, batch_size: int, seq_len: int) -> object:
         """Get or create block mask for attention.
 
         Creates appropriate mask based on config (causal or sliding window).

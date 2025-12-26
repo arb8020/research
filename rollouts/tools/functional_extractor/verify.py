@@ -225,7 +225,6 @@ def run_on_gpu(
             keep_alive = True  # Always keep alive when reusing
 
         # Submit job using bifrost v2 API
-        remote_script = f"{handle.workspace}/{rel_path}"
         log_file = f"{handle.workspace}/run.log"
 
         print(f"Running: python {rel_path}")
@@ -506,7 +505,7 @@ def load_config_from_file(config_path: str) -> tuple[DeploymentConfig, Verificat
     return deployment, verification
 
 
-def main():
+def main() -> None:
     """CLI entry point."""
     import argparse
 

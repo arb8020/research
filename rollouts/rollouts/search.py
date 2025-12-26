@@ -256,7 +256,7 @@ def make_expand_n_turns(
     n: int = 1,
     branch_factor: int = 1,
     parallel: bool = True,
-):
+) -> Callable[[SearchTree, list[str], RunConfig, ValueFn | None], Awaitable[SearchTree]]:
     """Create an expand function that runs N turns per expansion.
 
     Args:
@@ -279,7 +279,7 @@ def make_expand_n_turns(
         results: list[tuple[AgentState, float | None]] = []
 
         # Run agent for N turns to get base state
-        for turn in range(n):
+        for _turn in range(n):
             state = await run_agent_step(state, config)
             if state.stop:
                 break
@@ -412,7 +412,7 @@ async def run_search(
     initial_state: AgentState,
     config: RunConfig,
     select: SelectFn,
-    expand,  # expand function from make_expand_n_turns
+    expand: Callable[[SearchTree, list[str], RunConfig, ValueFn | None], Awaitable[SearchTree]],
     value_fn: ValueFn | None = None,
     prune: PruneFn | None = None,
     max_steps: int = 100,
@@ -437,7 +437,7 @@ async def run_search(
     """
     tree = make_root(initial_state)
 
-    for step in range(max_steps):
+    for _step in range(max_steps):
         # Select nodes to expand
         node_ids = select(tree)
         if not node_ids:

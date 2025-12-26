@@ -37,10 +37,10 @@ class JsonFrontend:
 
     def __init__(
         self,
-        file=None,
+        file: object | None = None,
         include_thinking: bool = False,
         include_timing: bool = True,
-    ):
+    ) -> None:
         """Initialize JsonFrontend.
 
         Args:

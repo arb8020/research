@@ -469,7 +469,7 @@ def test_correctness(client: BifrostClient, workspace: str) -> bool:
         return False
 
 
-def main():
+def main() -> int | None:
     parser = argparse.ArgumentParser(description="Correctness tests for nano-inference")
 
     node_group = parser.add_mutually_exclusive_group(required=True)

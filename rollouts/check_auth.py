@@ -16,7 +16,7 @@ import os
 import sys
 
 
-def check_current_auth():
+def check_current_auth() -> bool:
     """Check what authentication is currently configured"""
     print("=" * 70)
     print("🔍 Rollouts Authentication Check")
@@ -124,16 +124,17 @@ def check_current_auth():
         return False
 
 
-def test_api_key_path():
+def test_api_key_path() -> None:
     """Test that API key path actually uses API key (not OAuth)"""
     import trio
+
     from rollouts.dtypes import Actor, Endpoint, Message, StreamEvent, Trajectory
     from rollouts.providers.anthropic import rollout_anthropic
 
-    async def noop(event: StreamEvent):
+    async def noop(event: StreamEvent) -> None:
         pass
 
-    async def test():
+    async def test() -> bool | None:
         print("\n" + "=" * 70)
         print("🧪 Testing API Key Path (with invalid key)")
         print("=" * 70)
@@ -172,7 +173,7 @@ def test_api_key_path():
     return trio.run(test)
 
 
-def test_cli_output():
+def test_cli_output() -> None:
     """Test that CLI shows OAuth message"""
     import subprocess
 
@@ -223,7 +224,7 @@ def test_cli_output():
         print(f"❌ Error: {e}")
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Check Rollouts authentication method")
     parser.add_argument("--test-api-key", action="store_true", help="Test API key path")
     parser.add_argument("--test-json", action="store_true", help="Test with --json mode")

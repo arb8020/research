@@ -266,7 +266,7 @@ def capture_intermediates(
     captures = []
 
     def make_hook(name: str):
-        def hook(module, input, output):
+        def hook(module, input, output) -> None:
             if isinstance(output, Tensor):
                 captures.append(
                     IntermediateCapture(
@@ -364,7 +364,7 @@ def compare_intermediates(
     return results
 
 
-def print_trace_summary(trace: TraceResult, top_n: int = 15):
+def print_trace_summary(trace: TraceResult, top_n: int = 15) -> None:
     """Print a summary of a trace."""
     print(f"Total nodes: {len(trace.nodes)}")
     print(f"Call nodes: {len(trace.get_ops())}")
@@ -374,7 +374,7 @@ def print_trace_summary(trace: TraceResult, top_n: int = 15):
         print(f"  {op}: {count}")
 
 
-def print_comparison_results(results: list[dict], show_passing: bool = False):
+def print_comparison_results(results: list[dict], show_passing: bool = False) -> None:
     """Print intermediate comparison results."""
     failures = [r for r in results if not r["match"]]
     passes = [r for r in results if r["match"]]

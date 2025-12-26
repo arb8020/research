@@ -4,7 +4,7 @@
 from rollouts.agent_presets import list_presets, load_preset
 
 
-def test_list_presets():
+def test_list_presets() -> None:
     """Test listing presets."""
     print("Testing list_presets()...")
     presets = list_presets()
@@ -15,7 +15,7 @@ def test_list_presets():
     print("✓ list_presets() works\n")
 
 
-def test_load_opus():
+def test_load_opus() -> None:
     """Test loading Claude Opus preset."""
     print("Testing load_preset('opus_4_01_01')...")
     preset = load_preset("opus_4_01_01")
@@ -26,7 +26,7 @@ def test_load_opus():
     print(f"✓ Loaded: {preset.name} ({preset.model})\n")
 
 
-def test_load_fuzzy():
+def test_load_fuzzy() -> None:
     """Test loading preset by prefix."""
     print("Testing load_preset('sonnet_4') (fuzzy match)...")
     preset = load_preset("sonnet_4")
@@ -35,7 +35,7 @@ def test_load_fuzzy():
     print(f"✓ Loaded: {preset.name} ({preset.model})\n")
 
 
-def test_load_openai():
+def test_load_openai() -> None:
     """Test loading OpenAI preset."""
     print("Testing load_preset('gpt_5_2_03_03')...")
     preset = load_preset("gpt_5_2_03_03")
@@ -45,7 +45,7 @@ def test_load_openai():
     print(f"✓ Loaded: {preset.name} ({preset.model})\n")
 
 
-def test_to_cli_args():
+def test_to_cli_args() -> None:
     """Test converting preset to CLI args."""
     print("Testing preset.to_cli_args()...")
     preset = load_preset("sonnet_4")

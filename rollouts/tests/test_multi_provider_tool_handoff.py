@@ -20,7 +20,6 @@ import os
 
 import pytest
 import trio
-from rollouts.transform_messages import transform_messages
 
 from rollouts import (
     Actor,
@@ -35,6 +34,7 @@ from rollouts import (
     run_agent,
     stdout_handler,
 )
+from rollouts.transform_messages import transform_messages
 
 
 def get_endpoint(provider: str, model: str, api_key: str, api_base: str = "") -> Endpoint:
@@ -114,7 +114,7 @@ def verify_tool_call_ids(messages: list[Message], context: str) -> None:
 
 
 @pytest.mark.trio
-async def test_openai_to_anthropic_tool_handoff():
+async def test_openai_to_anthropic_tool_handoff() -> None:
     """Test switching from OpenAI to Anthropic mid-conversation with tool calls.
 
     This is the core test - verifies tool_call_id integrity across provider switch.
@@ -185,7 +185,7 @@ async def test_openai_to_anthropic_tool_handoff():
 
 
 @pytest.mark.trio
-async def test_anthropic_to_openai_tool_handoff():
+async def test_anthropic_to_openai_tool_handoff() -> None:
     """Test switching from Anthropic to OpenAI mid-conversation with tool calls.
 
     Tests the reverse direction to ensure bidirectional compatibility.
@@ -251,7 +251,7 @@ async def test_anthropic_to_openai_tool_handoff():
 
 
 @pytest.mark.trio
-async def test_tool_call_id_format_after_transform():
+async def test_tool_call_id_format_after_transform() -> None:
     """Test that tool_call_id format is valid after transformation.
 
     Some providers use different ID formats. Verify IDs are usable after transform.
@@ -330,7 +330,7 @@ async def test_tool_call_id_format_after_transform():
 
 if __name__ == "__main__":
 
-    async def main():
+    async def main() -> None:
         print("\n" + "=" * 70)
         print("INTEGRATION TEST: Multi-Provider Tool Call Handoff")
         print("=" * 70)

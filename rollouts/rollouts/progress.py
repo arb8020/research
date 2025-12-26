@@ -38,7 +38,7 @@ class tqdm(Generic[T]):
         unit_scale: bool = False,
         rate: int = 100,
         bar_format: str | None = None,
-    ):
+    ) -> None:
         self.disable = disable
         self.unit = unit
         self.unit_scale = unit_scale
@@ -62,21 +62,21 @@ class tqdm(Generic[T]):
         self.set_description(desc)
         self.update(0)
 
-    def __enter__(self):
+    def __enter__(self) -> "tqdm[T]":
         return self
 
-    def __exit__(self, *_):
+    def __exit__(self, *_: object) -> None:
         self.update(close=True)
 
-    def set_description(self, desc: str):
+    def set_description(self, desc: str) -> None:
         """Set the description prefix."""
         self.desc = f"{desc}: " if desc else ""
 
-    def set_postfix(self, postfix_dict: dict):
+    def set_postfix(self, postfix_dict: dict) -> None:
         """Set custom metrics to display (e.g., {'loss': '0.123'})."""
         self.postfix_dict = postfix_dict
 
-    def update(self, n: int = 0, close: bool = False):
+    def update(self, n: int = 0, close: bool = False) -> None:
         """Update progress by n items."""
         self.n += n
         self.i += 1
@@ -95,7 +95,7 @@ class tqdm(Generic[T]):
             self.skip = max(int(self.i / elapsed) // self.rate, 1)
 
         # Format helpers
-        def HMS(t):
+        def HMS(t: float) -> str:
             """Format seconds as H:MM:SS."""
             return ":".join(
                 f"{x:02d}" if i else str(x)
@@ -103,7 +103,7 @@ class tqdm(Generic[T]):
                 if i or x
             )
 
-        def SI(x):
+        def SI(x: float) -> str:
             """Format number with SI prefix (k, M, G, etc)."""
             if not x:
                 return "0.00"
@@ -161,6 +161,6 @@ class tqdm(Generic[T]):
         # Print (truncate to terminal width)
         print(bar[: ncols + 1], flush=True, end="\n" * close, file=sys.stderr)
 
-    def close(self):
+    def close(self) -> None:
         """Finalize the progress bar."""
         self.update(close=True)

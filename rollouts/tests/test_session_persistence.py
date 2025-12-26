@@ -15,10 +15,9 @@ correctness, low level enough to debug when it breaks.
 import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 import trio
-from rollouts.agents import resume_session, run_agent
-from rollouts.store import FileSessionStore
 
 from rollouts import (
     Actor,
@@ -34,6 +33,8 @@ from rollouts import (
     ToolResult,
     Trajectory,
 )
+from rollouts.agents import resume_session, run_agent
+from rollouts.store import FileSessionStore
 
 # --- Test Environment: Calculator with disableable tools ---
 
@@ -45,7 +46,7 @@ class TestCalculatorEnvironment:
     current_value: float = 0.0
     disabled_tools: set[str] | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.disabled_tools is None:
             self.disabled_tools = set()
 
@@ -163,7 +164,7 @@ class TestCalculatorEnvironment:
                 error=f"Unknown tool: {name}",
             )
 
-    def get_tool_formatter(self, tool_name: str):
+    def get_tool_formatter(self, tool_name: str) -> None:
         return None
 
 
@@ -181,7 +182,7 @@ class ScriptedResponse:
 class ScriptedLLM:
     """Mock LLM that returns scripted responses in order."""
 
-    def __init__(self, responses: list[ScriptedResponse]):
+    def __init__(self, responses: list[ScriptedResponse]) -> None:
         self.responses = list(responses)
         self.call_count = 0
 
@@ -226,14 +227,18 @@ async def run_with_script(
 
     This patches the rollout function to return scripted responses.
     """
-    from rollouts.dtypes import TextContent, ToolCallContent
-
     from rollouts import agents
+    from rollouts.dtypes import TextContent, ToolCallContent
 
     llm = ScriptedLLM(script)
     original_rollout = agents.rollout
 
-    async def mock_rollout(actor, on_chunk, *args, **kwargs):
+    async def mock_rollout(
+        actor: Actor,
+        on_chunk: Any,  # StreamEvent callback
+        *args: Any,
+        **kwargs: Any,
+    ) -> Actor:
         response = llm.get_next_response()
 
         # Build content blocks
@@ -268,7 +273,7 @@ async def run_with_script(
 # --- The Integration Test ---
 
 
-async def test_session_persistence_with_model_swap():
+async def test_session_persistence_with_model_swap() -> bool:
     """
     Full integration test with provider swaps:
 
@@ -326,8 +331,11 @@ async def test_session_persistence_with_model_swap():
                 return replace(state, stop=StopReason.MAX_TURNS)
             return state
 
+        async def noop_chunk(e: object) -> None:
+            await trio.lowlevel.checkpoint()
+
         run_config1 = RunConfig(
-            on_chunk=lambda e: trio.lowlevel.checkpoint(),
+            on_chunk=noop_chunk,
             session_store=store,
             handle_stop=stop_after_3,
         )
@@ -402,7 +410,7 @@ async def test_session_persistence_with_model_swap():
             return state
 
         run_config2 = RunConfig(
-            on_chunk=lambda e: trio.lowlevel.checkpoint(),
+            on_chunk=noop_chunk,
             session_store=store,
             handle_stop=stop_after_2,
         )
@@ -466,7 +474,7 @@ async def test_session_persistence_with_model_swap():
         ]
 
         run_config3 = RunConfig(
-            on_chunk=lambda e: trio.lowlevel.checkpoint(),
+            on_chunk=noop_chunk,
             session_store=store,
         )
 

@@ -14,6 +14,7 @@ import logging
 import os
 
 import trio
+
 from rollouts.dtypes import Endpoint, Metric, Score
 from rollouts.environments.calculator import CalculatorEnvironment
 from rollouts.prompt_optimization import (

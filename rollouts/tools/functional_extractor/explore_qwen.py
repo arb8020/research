@@ -15,7 +15,7 @@ import argparse
 import sys
 
 
-def explore_local():
+def explore_local() -> None:
     """Explore model structure without loading weights (fast, no GPU)."""
     from transformers import AutoConfig, AutoModelForCausalLM
 
@@ -45,7 +45,7 @@ def explore_local():
         model = AutoModelForCausalLM.from_config(config)
 
     # Print module tree
-    def print_modules(module, prefix="", max_depth=4, depth=0):
+    def print_modules(module, prefix="", max_depth=4, depth=0) -> None:
         if depth >= max_depth:
             return
         for name, child in module.named_children():
@@ -80,7 +80,7 @@ def explore_local():
     print(f"  mlp.down_proj.weight: ({h}, {i})")
 
 
-def explore_gpu():
+def explore_gpu() -> None:
     """Full exploration with loaded model on GPU."""
     import torch
     from transformers import AutoModelForCausalLM
@@ -159,7 +159,7 @@ def explore_gpu():
     print(f"  logits dtype: {output.logits.dtype}")
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Explore Qwen2.5-0.5B architecture")
     parser.add_argument("--local", action="store_true", help="Run locally without GPU")
     parser.add_argument("--gpu-id", type=str, help="Reuse existing GPU instance")

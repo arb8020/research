@@ -209,7 +209,7 @@ async def create_rlm_environment(
     context: str,
     sub_endpoint: Endpoint,
     rlm_config: RLMConfig,
-):
+) -> object | None:
     """Create RLM or baseline environment based on config."""
     if not rlm_config.enabled:
         # Baseline: no environment, context goes in messages
@@ -221,7 +221,6 @@ async def create_rlm_environment(
         return REPLEnvironment(
             context=context,
             sub_endpoint=sub_endpoint,
-            recursive=rlm_config.recursive,
             max_depth=rlm_config.max_depth,
         )
     else:
@@ -230,7 +229,6 @@ async def create_rlm_environment(
         return MessageParsingREPLEnvironment(
             context=context,
             sub_endpoint=sub_endpoint,
-            recursive=rlm_config.recursive,
             max_depth=rlm_config.max_depth,
         )
 

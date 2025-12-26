@@ -83,7 +83,7 @@ async def aggregate_google_stream(
                 for part in parts:
                     # Handle text content
                     if hasattr(part, "text") and part.text is not None:
-                        is_thinking = getattr(part, "thought", False) == True
+                        is_thinking = getattr(part, "thought", False)
 
                         # Check if we need to start a new block
                         if (
@@ -167,15 +167,18 @@ async def aggregate_google_stream(
 
                         # Generate unique ID
                         fc = part.functionCall
-                        provided_id = getattr(fc, "id", None)
+                        provided_id: str | None = getattr(fc, "id", None)
                         needs_new_id = not provided_id or any(
                             b.get("type") == "toolCall" and b.get("id") == provided_id
                             for b in content_blocks
                         )
                         if needs_new_id:
                             tool_call_counter += 1
-                            tool_call_id = f"{fc.name}_{int(time.time())}_{tool_call_counter}"
+                            tool_call_id: str = f"{fc.name}_{int(time.time())}_{tool_call_counter}"
                         else:
+                            assert (
+                                provided_id is not None
+                            )  # ensured by `not provided_id` check above
                             tool_call_id = provided_id
 
                         # Create tool call block
@@ -327,15 +330,17 @@ async def rollout_google(
     try:
         from google import genai
         from google.genai import types
-    except ImportError:
+    except ImportError as e:
         raise ImportError(
             "Google Generative AI SDK not installed. Install with: pip install google-genai"
-        )
+        ) from e
 
     try:
         import trio_asyncio
-    except ImportError:
-        raise ImportError("trio-asyncio not installed. Install with: pip install trio-asyncio")
+    except ImportError as e:
+        raise ImportError(
+            "trio-asyncio not installed. Install with: pip install trio-asyncio"
+        ) from e
 
     # Get API key
     api_key = actor.endpoint.api_key
@@ -446,7 +451,7 @@ async def rollout_google(
         config.tools = tools
 
     # The actual API call in asyncio context
-    async def _call_google_in_asyncio():
+    async def _call_google_in_asyncio() -> ChatCompletion:
         # Create client inside asyncio context
         client = genai.Client(api_key=api_key)
 
@@ -464,7 +469,7 @@ async def rollout_google(
         except Exception as e:
             from rollouts.providers.base import ProviderError
 
-            logger.error(
+            logger.exception(
                 f"Google Generative AI API call failed: {e}\n  Model: {actor.endpoint.model}",
                 extra={
                     "exception": str(e),

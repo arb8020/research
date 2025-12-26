@@ -114,7 +114,7 @@ def load_samples_from_config(config: DatasetConfig) -> list:
         raise ValueError(f"Unknown source: {config.source}")
 
 
-def load_tokenizer(model_name: str):
+def load_tokenizer(model_name: str) -> object:
     """Load tokenizer with pad token."""
     from transformers import AutoTokenizer
 
@@ -124,7 +124,7 @@ def load_tokenizer(model_name: str):
     return tokenizer
 
 
-def load_model(model_name: str, device: str, lr: float):
+def load_model(model_name: str, device: str, lr: float) -> tuple[object, object]:
     """Load model and optimizer."""
     import torch
     from transformers import AutoModelForCausalLM
@@ -165,6 +165,7 @@ async def _train_async(config: BaseConfig) -> list[dict]:
     import logging
 
     import torch
+
     from rollouts._logging import setup_logging
     from rollouts.training import (
         PyTorchTrainingBackend,
@@ -256,7 +257,7 @@ def train(config: BaseConfig) -> list[dict]:
     return trio.run(_train_async, config)
 
 
-def run_remote(script_path: str, keep_alive: bool = False, node_id: str | None = None):
+def run_remote(script_path: str, keep_alive: bool = False, node_id: str | None = None) -> None:
     """Run script on remote GPU via broker/bifrost.
 
     Args:
@@ -272,9 +273,10 @@ def run_remote(script_path: str, keep_alive: bool = False, node_id: str | None =
     import os
     from pathlib import Path
 
+    from dotenv import load_dotenv
+
     from bifrost.client import BifrostClient
     from broker.client import GPUClient
-    from dotenv import load_dotenv
 
     load_dotenv()
 

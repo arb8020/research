@@ -114,11 +114,11 @@ def run_remote(
             streaming_done = threading.Event()
             stream_result: tuple[bool, int | None, str | None] = (False, None, None)
 
-            def collect_lines():
+            def collect_lines() -> None:
                 """Stream logs in background, queue lines for TUI."""
                 nonlocal stream_result
 
-                def queue_line(line: str):
+                def queue_line(line: str) -> None:
                     lines_queue.append(line)
 
                 stream_result = job_stream_until_complete(

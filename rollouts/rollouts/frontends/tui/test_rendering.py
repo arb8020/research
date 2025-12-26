@@ -16,7 +16,7 @@ def cyan(text: str) -> str:
     return f"\x1b[36m{text}\x1b[0m"
 
 
-def test_visible_width():
+def test_visible_width() -> None:
     """Test ANSI-aware width calculation."""
     assert visible_width("hello") == 5
     assert visible_width(bold("hello")) == 5
@@ -27,7 +27,7 @@ def test_visible_width():
     print("test_visible_width: PASSED")
 
 
-def test_wrap_text():
+def test_wrap_text() -> None:
     """Test word wrapping with ANSI codes."""
     # Simple wrap
     lines = wrap_text_with_ansi("hello world", 5)
@@ -51,7 +51,7 @@ def test_wrap_text():
     print("test_wrap_text: PASSED")
 
 
-def test_text_component():
+def test_text_component() -> None:
     """Test Text component rendering."""
     text = Text("Hello World", padding_x=1, padding_y=0)
     lines = text.render(80)
@@ -66,7 +66,7 @@ def test_text_component():
     print("test_text_component: PASSED")
 
 
-def test_container():
+def test_container() -> None:
     """Test Container composing components."""
     container = Container()
     container.add_child(Text("First", padding_x=0, padding_y=0))
@@ -82,7 +82,7 @@ def test_container():
     print("test_container: PASSED")
 
 
-def test_ansi_preservation():
+def test_ansi_preservation() -> None:
     """Test that ANSI codes are preserved through rendering."""
     styled_text = bold("Hello") + " " + cyan("World")
     text = Text(styled_text, padding_x=1, padding_y=0)
@@ -95,7 +95,7 @@ def test_ansi_preservation():
     print("test_ansi_preservation: PASSED")
 
 
-def test_markdown():
+def test_markdown() -> None:
     """Test markdown rendering."""
     md = Markdown(
         """# Heading
@@ -128,7 +128,7 @@ print("hello")
     print("test_markdown: PASSED")
 
 
-def main():
+def main() -> None:
     """Run all tests."""
     test_visible_width()
     test_wrap_text()
