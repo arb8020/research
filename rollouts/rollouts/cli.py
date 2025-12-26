@@ -159,6 +159,8 @@ class CLIConfig:
     export_md: str | None = None
     export_html: str | None = None
     handoff: str | None = None
+    slice: str | None = None
+    slice_goal: str | None = None
     doctor: bool = False
     trim: int | None = None
     fix: bool = False
@@ -379,6 +381,21 @@ def create_parser() -> argparse.ArgumentParser:
         metavar="GOAL",
         help="Extract goal-directed context from session to stdout (markdown)",
     )
+    parser.add_argument(
+        "--slice",
+        type=str,
+        metavar="SPEC",
+        help=(
+            "Slice session messages. SPEC format: '0:4, summarize:5:15, 16:, inject:\"msg\"'. "
+            "Creates new child session. Outputs session ID."
+        ),
+    )
+    parser.add_argument(
+        "--slice-goal",
+        type=str,
+        metavar="GOAL",
+        help="Focus summaries in --slice on this goal (optional)",
+    )
 
     # Doctor (session repair)
     parser.add_argument(
@@ -478,6 +495,9 @@ def parse_model_string(model_str: str) -> tuple[str, str]:
     """Parse model string into (provider, model_name).
 
     Requires explicit "provider/model" format (e.g., "anthropic/claude-3-5-haiku-20241022").
+
+    Note: Returns str instead of Provider literal since user input is dynamic.
+    Callers should validate the provider against known providers if needed.
     """
     if "/" not in model_str:
         raise ValueError(
@@ -513,7 +533,10 @@ def create_endpoint(
 
     # Check model capabilities if thinking is enabled
     if thinking == "enabled":
-        model_metadata = get_model(provider, model)
+        from typing import cast
+
+        from rollouts.models import Provider
+        model_metadata = get_model(cast(Provider, provider), model)
         if model_metadata is not None:
             if not model_metadata.reasoning:
                 raise ValueError(
@@ -683,6 +706,9 @@ def cmd_export(
         else:
             output = session_to_html(session)
             export_path = config.export_html
+
+        # export_path should never be None here since we check export_md/export_html before calling
+        assert export_path is not None, "export_path should be set by export_md or export_html"
 
         if export_path == "":
             print(output)
@@ -912,6 +938,88 @@ def cmd_handoff(config: CLIConfig, session_store: FileSessionStore) -> int:
         return 0
 
     return trio.run(handoff_action)
+
+
+def cmd_slice(config: CLIConfig, session_store: FileSessionStore) -> int:
+    """Handle --slice command.
+    
+    Output (stderr):
+        Slicing: <source_id> (N messages, ~M tokens)
+        Spec: <slice_spec>
+        Created: <child_id> (N messages, ~M tokens)
+        Reduction: X% fewer tokens
+    
+    Output (stdout):
+        <child_session_id>
+    """
+    from rollouts.slice import run_slice_command
+
+    def estimate_tokens(messages: list) -> int:
+        """Rough token estimate: chars / 4."""
+        total_chars = sum(
+            len(m.content) if isinstance(m.content, str) else len(str(m.content))
+            for m in messages
+        )
+        return total_chars // 4
+
+    async def slice_action() -> int:
+        if config.session is None:
+            print("Error: --slice requires -s <session_id>", file=sys.stderr)
+            return 1
+
+        if config.session == "":
+            session = await pick_session_async(session_store)
+            if session is None:
+                return 0
+        else:
+            session, err = await session_store.get(config.session)
+            if err or session is None:
+                print(f"Error loading session: {err}", file=sys.stderr)
+                return 1
+
+        assert config.endpoint is not None
+        assert config.slice is not None
+
+        source_tokens = estimate_tokens(session.messages)
+        print(
+            f"Slicing: {session.session_id} ({len(session.messages)} messages, ~{source_tokens:,} tokens)",
+            file=sys.stderr,
+        )
+        print(f"Spec: {config.slice}", file=sys.stderr)
+
+        child, err = await run_slice_command(
+            session=session,
+            spec=config.slice,
+            endpoint=config.endpoint,
+            session_store=session_store,
+            summarize_goal=config.slice_goal,
+        )
+
+        if err:
+            print(f"Error: {err}", file=sys.stderr)
+            return 1
+
+        assert child is not None
+        
+        # Load child messages to get accurate count
+        child_full, _ = await session_store.get(child.session_id)
+        if child_full:
+            child_tokens = estimate_tokens(child_full.messages)
+            reduction = (1 - child_tokens / source_tokens) * 100 if source_tokens > 0 else 0
+            print(
+                f"Created: {child.session_id} ({len(child_full.messages)} messages, ~{child_tokens:,} tokens)",
+                file=sys.stderr,
+            )
+            if reduction > 0:
+                print(f"Reduction: {reduction:.0f}% fewer tokens", file=sys.stderr)
+        else:
+            print(f"Created: {child.session_id}", file=sys.stderr)
+        
+        # Print session ID to stdout for piping
+        print(child.session_id)
+        return 0
+
+    return trio.run(slice_action)
 
 
 # =============================================================================
@@ -1230,6 +1338,8 @@ async def _run_print_mode(
     initial_prompt: str | None,
 ) -> int:
     """Run in non-interactive print mode."""
+    assert config.endpoint is not None, "endpoint must be set for print mode"
+
     from rollouts.frontends import JsonFrontend, NoneFrontend, run_interactive
 
     query = config.print_mode
@@ -1282,6 +1392,8 @@ async def _run_interactive_mode(
     initial_prompt: str | None,
 ) -> int:
     """Run in interactive mode with selected frontend."""
+    assert config.endpoint is not None, "endpoint must be set for interactive mode"
+
     if config.frontend == "none":
         from rollouts.frontends import NoneFrontend, run_interactive
 
@@ -1381,6 +1493,8 @@ def main() -> int:
         export_md=args.export_md,
         export_html=args.export_html,
         handoff=args.handoff,
+        slice=args.slice,
+        slice_goal=args.slice_goal,
         doctor=args.doctor,
         trim=args.trim,
         fix=args.fix,
@@ -1432,6 +1546,10 @@ def main() -> int:
     # Handoff command (needs endpoint)
     if config.handoff:
         return cmd_handoff(config, FileSessionStore())
+
+    # Slice command (needs endpoint for summarize)
+    if config.slice:
+        return cmd_slice(config, FileSessionStore())
 
     # Create environment
     environment, ok = create_environment(config)
