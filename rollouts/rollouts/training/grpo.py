@@ -90,7 +90,8 @@ class GRPOConfig:
     # Training loop
     num_steps: int = 100
     log_every: int = 1
-    checkpoint_every: int = 20
+    checkpoint_every: int = 20  # Save to disk (for recovery/resuming)
+    sync_weights_every: int = 1  # Sync to inference engine (for on-policy vs off-policy)
 
     # Output
     output_dir: str = "results/rl"
@@ -445,12 +446,25 @@ async def _process_training_step(
             f"pg_loss={pg_loss:.4f} | entropy={entropy:.2f}"
         )
 
-    # Checkpoint and sync
-    if (step + 1) % config.checkpoint_every == 0:
+    # Checkpoint (save to disk for recovery)
+    should_checkpoint = (step + 1) % config.checkpoint_every == 0
+    should_sync = (step + 1) % config.sync_weights_every == 0
+
+    if should_checkpoint:
         ckpt_dir = await backend.save_checkpoint(step + 1, accumulated_metrics)
         logger.info(f"Saved checkpoint: {ckpt_dir}")
+
+    # Sync weights to inference engine (for on-policy training)
+    # If we just checkpointed, use that. Otherwise save a temp checkpoint.
+    if should_sync:
+        if should_checkpoint:
+            # Reuse the checkpoint we just saved
+            sync_dir = ckpt_dir
+        else:
+            # Save temp checkpoint for sync (will be overwritten next sync)
+            sync_dir = await backend.save_checkpoint(step + 1, accumulated_metrics, prefix="sync_")
         logger.info(f"Syncing weights to {inference_engine.name}...")
-        await inference_engine.update_weights_from_checkpoint(str(ckpt_dir))
+        await inference_engine.update_weights_from_checkpoint(str(sync_dir))
         logger.info("Weight sync complete")
 
     return step_metrics

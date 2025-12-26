@@ -295,12 +295,14 @@ class PyTorchTrainingBackend:
         self,
         step: int,
         metrics: dict[str, float] | None = None,
+        prefix: str = "step_",
     ) -> Path:
         """Save checkpoint with version (increments weight_version).
 
         Args:
             step: Training step number
             metrics: Optional training metrics to save
+            prefix: Directory prefix (default "step_", use "sync_" for temp sync checkpoints)
 
         Returns:
             Path to checkpoint directory (e.g., checkpoint_dir/step_0100)
@@ -362,7 +364,7 @@ class PyTorchTrainingBackend:
         )
 
         # Create checkpoint directory (only rank 0, then barrier)
-        ckpt_dir = self.checkpoint_dir / f"step_{step:04d}"
+        ckpt_dir = self.checkpoint_dir / f"{prefix}{step:04d}"
         if rank == 0:
             logger.debug(f"[CHECKPOINT DEBUG] Rank 0: Creating checkpoint directory: {ckpt_dir}")
             ckpt_dir.mkdir(parents=True, exist_ok=True)
