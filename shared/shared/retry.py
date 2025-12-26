@@ -120,7 +120,7 @@ def retry(
 
     def decorator(func: F) -> F:
         @functools.wraps(func)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
             attempt = 0
             current_delay = delay
 
@@ -144,7 +144,7 @@ def retry(
                     current_delay *= backoff
 
             # Tiger Style: Assert impossible states
-            assert False, "Retry loop exited without return or raise"
+            raise AssertionError("Retry loop exited without return or raise")
 
         return cast(F, wrapper)
 
@@ -208,7 +208,7 @@ def retry_v2(
 
     def decorator(func: F) -> F:
         @functools.wraps(func)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
             attempt = 0
             current_delay = delay
 
@@ -270,7 +270,7 @@ def retry_v2(
                 current_delay *= backoff
 
             # Tiger Style: Assert impossible states
-            assert False, "Retry loop exited without return or raise"
+            raise AssertionError("Retry loop exited without return or raise")
 
         return cast(F, wrapper)
 
@@ -391,7 +391,7 @@ def async_retry(
                 current_delay *= backoff
 
             # Tiger Style: Assert impossible states
-            assert False, "Retry loop exited without return or raise"
+            raise AssertionError("Retry loop exited without return or raise")
 
         return cast(F, wrapper)
 

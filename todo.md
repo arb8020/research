@@ -3,7 +3,9 @@
 [ ] clean up + make evals code nice
 [ ] run evals
 
-
+[ ] themes (compact)
+[ ] toggleable tool results (ideally scrollable)
+[ ] 
 
 [ ] implement opentui instead of bespoke tui
 [ ] get smoke test runs for RL on single gpu node

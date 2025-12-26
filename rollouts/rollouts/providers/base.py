@@ -16,6 +16,28 @@ class NonRetryableError(Exception):
     pass
 
 
+class ContextTooLongError(NonRetryableError):
+    """Exception raised when the context/prompt exceeds the model's maximum token limit.
+
+    This is a recoverable error - the user can clear context, start a new conversation,
+    or the system can auto-compact the conversation history.
+
+    Attributes:
+        current_tokens: Number of tokens in the current prompt
+        max_tokens: Maximum tokens allowed by the model
+    """
+
+    def __init__(
+        self,
+        message: str = "Context too long",
+        current_tokens: int | None = None,
+        max_tokens: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.current_tokens = current_tokens
+        self.max_tokens = max_tokens
+
+
 class ProviderError(Exception):
     """Exception for provider errors that exhausted retries.
 
@@ -42,7 +64,7 @@ class ProviderError(Exception):
         original_error: Exception | None = None,
         attempts: int = 0,
         provider: str = "",
-    ):
+    ) -> None:
         super().__init__(message)
         self.original_error = original_error
         self.attempts = attempts
@@ -143,9 +165,11 @@ def sanitize_request_for_logging(params: dict) -> dict:
 
 
 def add_cache_control_to_last_content(
-    messages, cache_control={"type": "ephemeral"}, max_cache_controls: int = 4
-):
+    messages: list[dict], cache_control: dict | None = None, max_cache_controls: int = 4
+) -> list[dict]:
     """Adds cache control metadata to the final content block if possible."""
+    if cache_control is None:
+        cache_control = {"type": "ephemeral"}
     assert cache_control is not None
     assert isinstance(cache_control, dict)
     assert max_cache_controls > 0

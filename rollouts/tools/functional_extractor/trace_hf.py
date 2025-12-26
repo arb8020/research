@@ -14,7 +14,7 @@ if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 
 
-def trace_model():
+def trace_model() -> None:
     import torch
     import torch.fx as fx
     from transformers import AutoModelForCausalLM
@@ -113,11 +113,11 @@ def trace_model():
     print("\n### Hook-Based Op Tracing ###")
     ops_called = []
 
-    def trace_hook(module, input, output):
+    def trace_hook(module, input, output) -> None:
         ops_called.append((type(module).__name__, module))
 
     hooks = []
-    for name, module in model.named_modules():
+    for _name, module in model.named_modules():
         hooks.append(module.register_forward_hook(trace_hook))
 
     with torch.no_grad():

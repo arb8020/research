@@ -78,7 +78,7 @@ def capture_hf_internals(
         capture_layers = list(range(num_layers))
 
     # Hook to capture position embeddings and mask from first layer
-    def capture_pos_and_mask(module, args, kwargs):
+    def capture_pos_and_mask(module, args, kwargs) -> None:
         if "position_embeddings" in kwargs and kwargs["position_embeddings"] is not None:
             pos_emb = kwargs["position_embeddings"]
             result.position_embeddings = (pos_emb[0].clone(), pos_emb[1].clone())
@@ -93,7 +93,7 @@ def capture_hf_internals(
 
     # Hooks to capture layer inputs/outputs
     def make_layer_hook(layer_idx: int):
-        def hook(module, input, output):
+        def hook(module, input, output) -> None:
             if isinstance(input, tuple) and len(input) > 0:
                 result.layer_inputs[layer_idx] = (
                     input[0].clone() if isinstance(input[0], Tensor) else None
@@ -410,7 +410,7 @@ class DebugSession:
         return result
 
 
-def print_comparison_report(comparison: dict, verbose: bool = True):
+def print_comparison_report(comparison: dict, verbose: bool = True) -> None:
     """Pretty-print a comparison result."""
     name = comparison.get("name", "comparison")
     matches = comparison.get("matches", False)
@@ -428,7 +428,7 @@ def print_comparison_report(comparison: dict, verbose: bool = True):
             print(f"    Max diff at index: {comparison['max_diff_idx']}")
 
 
-def print_layer_report(layer_result: dict):
+def print_layer_report(layer_result: dict) -> None:
     """Pretty-print layer-by-layer divergence results."""
     print(f"\nLayer-by-layer analysis ({layer_result['num_layers']} layers):")
 

@@ -17,7 +17,7 @@ import argparse
 import sys
 
 
-def test_on_gpu():
+def test_on_gpu() -> None:
     """Run full verification test on GPU."""
     import os
     import sys
@@ -58,7 +58,7 @@ def test_on_gpu():
         sys.exit(1)
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Test functional SmolLM2 implementation")
     parser.add_argument("--remote", action="store_true", help="Run on remote GPU")
     parser.add_argument("--gpu-id", type=str, help="Reuse existing GPU instance")
@@ -72,7 +72,6 @@ def main():
             script_path=__file__,
             gpu_id=args.gpu_id,
             keep_alive=args.keep_alive or bool(args.gpu_id),
-            vram_gb=16,  # SmolLM2-135M is small
         )
     else:
         # Check if we have GPU

@@ -86,7 +86,7 @@ def _message_to_anthropic(m: Message, inline_thinking: str | None = None) -> dic
         logger.error(f"❌ Empty message content detected! Role: {m.role}")
         logger.error("   This usually means prepare_messages() is using the wrong dataset field.")
         logger.error(f"   Message object: {m}")
-        assert False, (
+        raise AssertionError(
             f"Message has empty content (role={m.role}). "
             f"Check that prepare_messages() is using the correct dataset field name. "
             f"Common issue: using 'prompt' when dataset has 'problem_description'."
@@ -215,7 +215,7 @@ def _tool_to_anthropic(tool: Tool) -> dict[str, Any]:
 
 
 async def aggregate_anthropic_stream(
-    stream, on_chunk: Callable[[StreamEvent], Awaitable[None]]
+    stream: object, on_chunk: Callable[[StreamEvent], Awaitable[None]]
 ) -> ChatCompletion:
     """Aggregate Anthropic SDK stream events into a `ChatCompletion` with granular events.
 
@@ -479,7 +479,7 @@ async def aggregate_anthropic_stream(
                             ToolCallContent(
                                 id=tc.id,
                                 name=tc.name,
-                                arguments=tc.args,
+                                arguments=dict(tc.args),
                             )
                         )
                     break
@@ -541,6 +541,7 @@ async def _get_fresh_oauth_token() -> str | None:
     """Get a fresh OAuth token, refreshing if needed. Returns None if not using OAuth."""
     try:
         from rollouts.frontends.tui.oauth import get_oauth_client
+
         client = get_oauth_client()
         return await client.get_valid_access_token()
     except Exception as e:
@@ -556,6 +557,18 @@ def _create_anthropic_client(
     timeout: float,
 ) -> AsyncAnthropic:
     """Create an Anthropic client with the appropriate auth."""
+    # TODO: Refactor to use TypedDict for type-safe kwargs unpacking.
+    # Currently ty reports invalid-argument-type because dict[str, Any] loses
+    # per-key type info when unpacked with **kwargs. Example fix:
+    #
+    #   class ClientKwargs(TypedDict, total=False):
+    #       api_key: str | None
+    #       auth_token: str | None
+    #       base_url: str | None
+    #       max_retries: int
+    #       timeout: float
+    #
+    # Then: client_kwargs: ClientKwargs = {...}
     if oauth_token:
         client_kwargs: dict[str, Any] = {
             "auth_token": oauth_token,
@@ -568,20 +581,20 @@ def _create_anthropic_client(
             "max_retries": max_retries,
             "timeout": timeout,
         }
-    
+
     if api_base:
         # Anthropic SDK adds /v1 automatically, so remove it if present
         base_url = api_base.rstrip("/v1").rstrip("/")
         client_kwargs["base_url"] = base_url
-    
+
     client = AsyncAnthropic(**client_kwargs)
-    
+
     if oauth_token:
         # Prevent SDK from sending X-Api-Key header alongside OAuth Bearer token.
         # The SDK auto-reads ANTHROPIC_API_KEY from env, which causes both headers
         # to be sent, resulting in API key billing instead of OAuth billing.
         client.api_key = None
-    
+
     return client
 
 
@@ -604,7 +617,7 @@ async def rollout_anthropic(
         if fresh_token:
             oauth_token = fresh_token
         # If refresh failed, continue with existing token - it might still work
-    
+
     client = _create_anthropic_client(
         oauth_token=oauth_token,
         api_key=actor.endpoint.api_key,
@@ -764,6 +777,7 @@ async def rollout_anthropic(
                 if "prompt is too long" in error_str or "too many tokens" in error_str.lower():
                     # Try to extract token counts from error message
                     import re
+
                     match = re.search(r"(\d+)\s*tokens?\s*>\s*(\d+)", error_str)
                     current_tokens = int(match.group(1)) if match else None
                     max_tokens = int(match.group(2)) if match else None
@@ -771,14 +785,14 @@ async def rollout_anthropic(
                         f"Context too long: {current_tokens:,} tokens (max: {max_tokens:,})",
                         current_tokens=current_tokens,
                         max_tokens=max_tokens,
-                    )
-                
+                    ) from e
+
                 # Other 400 errors are likely bugs - log and fail
                 crash_file = log_crash(e, "anthropic", actor.endpoint.model, messages=messages)
                 # Fail immediately - don't retry configuration errors
-                assert False, (
+                raise AssertionError(
                     f"API returned 400 Bad Request: {e}\nCrash details written to: {crash_file}"
-                )
+                ) from e
 
             # For OAuth: try to refresh token and retry once on auth errors
             if isinstance(e, anthropic.AuthenticationError):
@@ -800,7 +814,7 @@ async def rollout_anthropic(
                         continue
                 raise RuntimeError(
                     f"Authentication failed: {e}\nCheck your API key or OAuth token."
-                )
+                ) from e
 
             # Fail fast on ValueError - these are programming errors (e.g., empty message)
             if isinstance(e, ValueError):
@@ -821,7 +835,7 @@ async def rollout_anthropic(
             from .base import ProviderError
 
             sanitized = sanitize_request_for_logging(params)
-            logger.error(
+            logger.exception(
                 "Anthropic API call failed after all retries",
                 extra={
                     "exception": str(e),

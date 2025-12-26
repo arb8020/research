@@ -80,7 +80,7 @@ class ServerConfig:
     allow_long_max_model_len: bool = True
     flash_attn_version: str | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Validate configuration."""
         assert len(self.model) > 0, "model cannot be empty"
         assert self.port > 1024 and self.port < 65536, f"Invalid port: {self.port}"
@@ -745,7 +745,7 @@ tmux new-session -d -s {config.tmux_session_name} "
             return None, error_msg
     except Exception as e:
         error_msg = f"Failed to start tmux: {e}"
-        logger.error(f"❌ {error_msg}")
+        logger.exception(f"❌ {error_msg}")
         return None, error_msg
 
     logger.debug(f"✅ Server started in tmux session: {config.tmux_session_name}")
@@ -785,7 +785,7 @@ async def _deploy_remote(
         from bifrost.client import BifrostClient
     except ImportError:
         error_msg = "bifrost not installed. Install with: pip install rollouts[deploy]"
-        logger.error(f"❌ {error_msg}")
+        logger.exception(f"❌ {error_msg}")
         return None, error_msg
 
     assert config.ssh_connection is not None
@@ -833,7 +833,8 @@ async def _deploy_remote(
     # Deploy code (without bootstrap first)
     logger.debug("📦 Deploying code...")
     try:
-        workspace_path = bifrost_client.push()
+        # Use convention: ~/.bifrost/workspaces/rollouts
+        workspace_path = bifrost_client.push(workspace_path="~/.bifrost/workspaces/rollouts")
         logger.debug(f"✅ Code deployed to {workspace_path}")
     except Exception as e:
         logger.warning(f"Code deployment skipped: {e}")
@@ -873,7 +874,7 @@ async def _deploy_remote(
                 print(line, end="", flush=True)
                 output_lines.append(line)
     except Exception as e:
-        logger.error(f"❌ Bootstrap streaming failed: {e}")
+        logger.exception(f"❌ Bootstrap streaming failed: {e}")
         return None, f"Bootstrap execution failed: {e}"
 
     logger.debug("=" * 60)

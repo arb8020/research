@@ -72,7 +72,7 @@ class JSONLLogger:
     log_dir: Path
     max_lines: int = 1_000_000  # Tiger: Bounded! Prevents unbounded growth
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         # Tiger: Assert preconditions
         assert self.log_dir is not None, "log_dir cannot be None"
         assert self.max_lines > 0, f"max_lines must be > 0, got {self.max_lines}"
@@ -143,13 +143,13 @@ class WandbLogger:
     entity: str | None = None
     tags: list[str] | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         try:
             import wandb
 
             self.wandb = wandb
-        except ImportError:
-            raise ImportError("wandb not installed. Install with: pip install wandb")
+        except ImportError as e:
+            raise ImportError("wandb not installed. Install with: pip install wandb") from e
 
         # Initialize W&B run
         self.run = self.wandb.init(

@@ -35,9 +35,9 @@ class BinarySearchEnvironment(Environment):
         range_max: int = 7,
         space_size: int = 8,
         answer: int = 0,
-        _turns=0,
-        _correct=False,
-    ):
+        _turns: int = 0,
+        _correct: bool = False,
+    ) -> None:
         self.range_min: int = range_min
         self.range_max: int = range_max
         self.answer: int = answer
@@ -52,7 +52,7 @@ class BinarySearchEnvironment(Environment):
         )
         assert (answer >= range_min) & (answer <= range_max)
 
-    async def serialize(self):
+    async def serialize(self) -> dict:
         data = {k: v for k, v in self.__dict__.items()}
         data["env_kind"] = "binary_search"
         return data
@@ -122,7 +122,7 @@ class BinarySearchEnvironment(Environment):
             return ToolResult(tool_call_id=tool_call.id, is_error=True, content="", error=str(e))
 
 
-async def main():
+async def main() -> None:
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Binary Search Agent")
     parser.add_argument("--model", default="gpt-4o-mini", help="Model to use")
@@ -133,9 +133,9 @@ async def main():
         on_chunk=stdout_handler,
         confirm_tool=confirm_tool_with_feedback,  # type: ignore
         handle_tool_error=handle_tool_error,
-        handle_stop=handle_stop_max_turns,
+        handle_stop=handle_stop_max_turns(10),
         handle_no_tool=inject_tool_reminder,
-        on_step_start=inject_turn_warning,
+        on_step_start=inject_turn_warning(max_turns=10),
     )
 
     # Create the initial environment
@@ -161,7 +161,6 @@ async def main():
         actor=actor,
         environment=environment,
         turn_idx=0,
-        max_turns=10,
     )
 
     states = await run_agent(initial_state, run_config)

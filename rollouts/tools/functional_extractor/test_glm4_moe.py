@@ -292,7 +292,7 @@ def test_on_gpu(num_layers: int = 5, layer_by_layer: bool = True) -> None:  # no
                 moe_captures = {}
 
                 def make_hook(name):
-                    def hook(module, inp, out):
+                    def hook(module, inp, out) -> None:
                         if isinstance(inp, tuple) and len(inp) > 0:
                             moe_captures[name + "_in"] = (
                                 inp[0].clone() if hasattr(inp[0], "clone") else inp[0]
@@ -787,7 +787,7 @@ def debug_layer(
         # Attention
         hf_attn_out = None
 
-        def capture_attn(module, input, output):
+        def capture_attn(module, input, output) -> None:
             nonlocal hf_attn_out
             hf_attn_out = output[0] if isinstance(output, tuple) else output
 
@@ -842,7 +842,7 @@ def debug_layer(
         # Capture HF MLP output
         hf_mlp_out = None
 
-        def capture_mlp(module, input, output):
+        def capture_mlp(module, input, output) -> None:
             nonlocal hf_mlp_out
             hf_mlp_out = output
 

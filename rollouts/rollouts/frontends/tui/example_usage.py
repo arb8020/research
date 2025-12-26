@@ -13,7 +13,7 @@ from rollouts.dtypes import RunConfig
 from rollouts.frontends.tui import TUI, AgentRenderer, ProcessTerminal
 
 
-async def example_main():
+async def example_main() -> None:
     """Example main function showing TUI integration."""
     # Create terminal and TUI
     terminal = ProcessTerminal()

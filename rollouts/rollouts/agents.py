@@ -92,7 +92,7 @@ async def handle_checkpoint_event(
 # _message_to_session_message deleted - use Message directly with timestamp field
 
 
-async def stdout_handler(event: StreamEvent):
+async def stdout_handler(event: StreamEvent) -> None:
     """Simple stdout handler for granular streaming events"""
     if isinstance(event, TextDelta):
         print(event.delta, end="", flush=True)
@@ -576,11 +576,11 @@ async def run_agent_step(
                 last_message, current_state
             )
         except Exception as e:
-            logger.error(f"❌ ENVIRONMENT RESPONSE FAILED: {e}")
-            logger.error(f"   Environment type: {type(state.environment).__name__}")
+            logger.exception(f"❌ ENVIRONMENT RESPONSE FAILED: {e}")
+            logger.exception(f"   Environment type: {type(state.environment).__name__}")
             import traceback
 
-            logger.error(f"   Full traceback:\n{traceback.format_exc()}")
+            logger.exception(f"   Full traceback:\n{traceback.format_exc()}")
             # Re-raise to maintain error handling flow
             raise
 

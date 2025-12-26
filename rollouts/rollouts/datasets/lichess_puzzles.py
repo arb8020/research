@@ -83,7 +83,7 @@ async def download_puzzles(
         if result.returncode != 0:
             raise RuntimeError(
                 f"Failed to decompress: {result.stderr}\nInstall zstandard: uv add zstandard"
-            )
+            ) from None
 
     # Clean up zst file
     zst_path.unlink()

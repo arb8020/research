@@ -9,7 +9,7 @@ import subprocess
 import sys
 
 
-def setup_environment():
+def setup_environment() -> None:
     """Install required packages."""
     print("Setting up environment...")
     subprocess.run(
@@ -30,7 +30,7 @@ def setup_environment():
     print("Environment ready!")
 
 
-def explore():
+def explore() -> None:
     import torch
     from transformers import AutoConfig, AutoModelForCausalLM
 

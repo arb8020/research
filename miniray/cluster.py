@@ -81,7 +81,7 @@ class Cluster:
     processes: list[subprocess.Popen] = field(default_factory=list, init=False)
     workers: list[RemoteWorker] = field(default_factory=list, init=False)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Validate cluster configuration."""
         # Tiger Style: Assert preconditions
         assert len(self.nodes) > 0, "Must have at least one node"
@@ -240,7 +240,7 @@ class Cluster:
 
         return self.workers
 
-    def _launch_worker_servers(self, work_fn: str, verbose: bool):
+    def _launch_worker_servers(self, work_fn: str, verbose: bool) -> None:
         """Launch WorkerServer on each node via SSH.
 
         Args:
@@ -285,7 +285,7 @@ class Cluster:
                 )
                 self.processes.append(proc)
 
-    def _connect_workers(self, verbose: bool):
+    def _connect_workers(self, verbose: bool) -> None:
         """Connect RemoteWorker to each launched server.
 
         Args:
@@ -309,7 +309,7 @@ class Cluster:
                     # Continue connecting to other workers
                     continue
 
-    def stop(self, verbose: bool = True):
+    def stop(self, verbose: bool = True) -> None:
         """Stop all worker servers and clean up.
 
         Args:
@@ -336,7 +336,7 @@ class Cluster:
         for worker in self.workers:
             try:
                 worker.close()
-            except:
+            except Exception:
                 pass
 
         # Phase 3: Terminate SSH processes
@@ -355,7 +355,7 @@ class Cluster:
         self.workers.clear()
         self.processes.clear()
 
-    def __enter__(self):
+    def __enter__(self) -> "Cluster":
         """Context manager support.
 
         Example:
@@ -366,7 +366,12 @@ class Cluster:
         """
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: object,
+    ) -> None:
         """Context manager cleanup."""
         self.stop(verbose=False)
 
@@ -410,7 +415,7 @@ if __name__ == "__main__":
     """Test cluster management"""
 
     # Example work function for testing
-    def echo_worker_fn(handle):
+    def echo_worker_fn(handle: RemoteWorker) -> None:
         """Echo server for testing"""
         while True:
             msg = handle.recv()

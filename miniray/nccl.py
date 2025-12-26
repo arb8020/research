@@ -59,7 +59,7 @@ class NCCLConfig:
     local_rank: int = 0
     """Local rank within this node (0 to num_gpus_per_node-1)"""
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Validate configuration."""
         # Tiger Style: Assert preconditions
         assert self.master_addr, "master_addr cannot be empty"
@@ -226,7 +226,7 @@ def create_nccl_configs(
     assert world_size > 0, "world_size must be > 0"
     assert world_size < 10000, f"world_size too large: {world_size}"
 
-    for node_name, num_gpus in nodes:
+    for _node_name, num_gpus in nodes:
         for local_rank in range(num_gpus):
             config = NCCLConfig(
                 master_addr=master_addr,
@@ -241,7 +241,7 @@ def create_nccl_configs(
     return configs
 
 
-def print_nccl_config(config: NCCLConfig):
+def print_nccl_config(config: NCCLConfig) -> None:
     """Pretty-print NCCL configuration.
 
     Args:

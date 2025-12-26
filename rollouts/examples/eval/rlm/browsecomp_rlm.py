@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import trio
+
 from rollouts.agents import handle_stop_max_turns, run_agent
 from rollouts.dtypes import (
     Actor,
@@ -120,7 +121,7 @@ def load_browsecomp_plus(config: BrowseCompPlusDatasetConfig) -> list[dict[str, 
     try:
         from datasets import load_dataset
     except ImportError:
-        raise ImportError("Please install datasets: pip install datasets")
+        raise ImportError("Please install datasets: pip install datasets") from None
 
     logger.info("Loading BrowseComp-Plus dataset...")
     ds = load_dataset("Tevatron/browsecomp-plus", split="test")
@@ -181,7 +182,7 @@ def load_browsecomp_plus(config: BrowseCompPlusDatasetConfig) -> list[dict[str, 
                 })
 
         # Add corpus negatives to reach target doc count
-        num_gold_evidence = sum(1 for d in documents if d["type"] in ("gold", "evidence"))
+        sum(1 for d in documents if d["type"] in ("gold", "evidence"))
         num_needed = config.num_documents - len(documents)
 
         if num_needed > 0 and corpus:
@@ -264,14 +265,12 @@ async def evaluate_sample(
         environment = REPLEnvironment(
             context=context,
             sub_endpoint=sub_endpoint,
-            recursive=config.rlm.recursive,
             max_depth=config.rlm.max_depth,
         )
     else:
         environment = MessageParsingREPLEnvironment(
             context=context,
             sub_endpoint=sub_endpoint,
-            recursive=config.rlm.recursive,
             max_depth=config.rlm.max_depth,
         )
 

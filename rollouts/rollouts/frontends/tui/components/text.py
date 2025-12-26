@@ -240,7 +240,7 @@ class Text(Component):
 
             # Find the position where visible characters start (skip ANSI codes)
 
-            def skip_ansi_and_get_pos(line, visible_chars_to_skip):
+            def skip_ansi_and_get_pos(line: str, visible_chars_to_skip: int) -> int:
                 """Find byte position after skipping N visible characters, preserving ANSI."""
                 pos = 0
                 visible_count = 0

@@ -12,7 +12,7 @@ if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 
 
-def debug_on_gpu():
+def debug_on_gpu() -> None:
     """Compare each component against HF implementation."""
     import torch
     import torch.nn.functional as F

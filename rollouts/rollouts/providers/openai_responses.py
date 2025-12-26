@@ -454,7 +454,7 @@ def _messages_to_openai_responses(messages: list[Message]) -> list[dict[str, Any
                 text_blocks = [b for b in msg.content if isinstance(b, TextContent)]
                 user_text = "\n".join(b.text for b in text_blocks) if text_blocks else ""
             else:
-                assert False, (
+                raise AssertionError(
                     f"User message content must be str or list[ContentBlock], got {type(msg.content)}"
                 )
 
@@ -494,7 +494,7 @@ def _messages_to_openai_responses(messages: list[Message]) -> list[dict[str, Any
                                     f"Skipping reasoning item without encrypted_content: id={reasoning_item.get('id', 'unknown')}"
                                 )
                         except json.JSONDecodeError as e:
-                            logger.error(f"Failed to parse thinking_signature: {e}")
+                            logger.exception(f"Failed to parse thinking_signature: {e}")
                             pass
                     elif isinstance(block, TextContent):
                         # Add text content as message object
@@ -689,9 +689,9 @@ async def rollout_openai_responses(
 
         if isinstance(e, BadRequestError):
             crash_file = log_crash(e, "openai_responses", actor.endpoint.model)
-            assert False, (
+            raise AssertionError(
                 f"API returned 400 Bad Request: {e}\nCrash details written to: {crash_file}"
-            )
+            ) from e
 
         if isinstance(e, RateLimitError):
             from .base import ProviderError
@@ -710,7 +710,7 @@ async def rollout_openai_responses(
         if isinstance(e, (APIConnectionError, APITimeoutError, InternalServerError)):
             from .base import ProviderError
 
-            logger.error(
+            logger.exception(
                 f"OpenAI Responses API call failed: {e}\n  Model: {actor.endpoint.model}",
                 extra={
                     "exception": str(e),
@@ -726,7 +726,7 @@ async def rollout_openai_responses(
             ) from e
 
         # Other errors - log and re-raise as-is
-        logger.error(
+        logger.exception(
             f"OpenAI Responses API call failed: {e}\n  Model: {actor.endpoint.model}",
             extra={
                 "exception": str(e),

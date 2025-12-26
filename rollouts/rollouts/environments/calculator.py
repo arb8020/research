@@ -28,10 +28,6 @@ class CalculatorEnvironment:
     async def deserialize(data: dict) -> "CalculatorEnvironment":
         return CalculatorEnvironment(current_value=data["current_value"])
 
-    def requires_confirmation(self, tool_call: ToolCall) -> bool:
-        """Calculator tools don't require confirmation by default."""
-        return False
-
     def get_tools(self) -> list[Tool]:
         # Calculator is accumulator-style: starts at 0, operations modify current value
         return [
@@ -218,7 +214,7 @@ class CalculatorEnvironment:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 
-async def main():
+async def main() -> None:
     """Simple demo main function"""
     print("Use the simple_calculator.py example in examples/ instead!")
 

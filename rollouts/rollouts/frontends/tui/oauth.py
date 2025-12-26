@@ -82,7 +82,7 @@ def _generate_pkce() -> tuple[str, str]:
 class TokenStorage:
     """Persistent storage for OAuth tokens."""
 
-    def __init__(self, path: Path = DEFAULT_TOKEN_PATH):
+    def __init__(self, path: Path = DEFAULT_TOKEN_PATH) -> None:
         self.path = path
 
     def save(self, tokens: OAuthTokens) -> None:
@@ -116,7 +116,7 @@ class OAuthError(Exception):
 class OAuthClient:
     """OAuth client for Claude authentication."""
 
-    def __init__(self, storage: TokenStorage | None = None):
+    def __init__(self, storage: TokenStorage | None = None) -> None:
         self.storage = storage or TokenStorage()
         self._tokens: OAuthTokens | None = None
         self._verifier: str | None = None
@@ -255,7 +255,7 @@ class OAuthClient:
             try:
                 tokens = await self.refresh_tokens()
             except OAuthError as e:
-                logger.error(f"Failed to refresh tokens: {e}")
+                logger.exception(f"Failed to refresh tokens: {e}")
                 return None
 
         return tokens.access_token
@@ -299,9 +299,9 @@ async def login() -> OAuthTokens:
         code = input("Paste the code here: ")
         # Clean up the input - remove CR and strip whitespace
         code = code.replace("\r", "").strip()
-    except (KeyboardInterrupt, EOFError):
+    except (KeyboardInterrupt, EOFError) as e:
         print("\n⚠️  Login cancelled")
-        raise KeyboardInterrupt()
+        raise KeyboardInterrupt() from e
 
     if not code:
         raise OAuthError("No code provided")

@@ -29,7 +29,7 @@ class GPUConfig:
     python_version: str = "3.11"  # Python version for venv
     cuda_version: str = "12.4"  # CUDA version
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Validate GPU config."""
         assert len(self.gpu_ranks) > 0, "gpu_ranks cannot be empty"
         assert all(r >= 0 for r in self.gpu_ranks), (

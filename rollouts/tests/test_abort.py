@@ -56,7 +56,7 @@ def create_test_state(provider: str = "openai", model: str = "gpt-4o-mini") -> A
 
 
 @pytest.mark.trio
-async def test_abort_checkpoints_state():
+async def test_abort_checkpoints_state() -> None:
     """Verify that aborted state is checkpointed.
 
     This test verifies that when cancellation occurs, the aborted state
@@ -66,7 +66,7 @@ async def test_abort_checkpoints_state():
     checkpointed_events = []
     cancel_scope = trio.CancelScope()
 
-    async def checkpoint_handler(event):
+    async def checkpoint_handler(event: object) -> None:
         """Capture checkpoint events."""
         from rollouts import StreamChunk
 
@@ -75,7 +75,7 @@ async def test_abort_checkpoints_state():
 
     async with trio.open_nursery() as nursery:
 
-        async def agent_task():
+        async def agent_task() -> None:
             run_config = RunConfig(
                 on_chunk=checkpoint_handler,
                 cancel_scope=cancel_scope,

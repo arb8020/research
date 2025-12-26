@@ -66,7 +66,7 @@ class PagedKVCache:
     This class just manages the block allocation and lookup.
     """
 
-    def __init__(self, num_blocks: int, block_size: int = 16):
+    def __init__(self, num_blocks: int, block_size: int = 16) -> None:
         assert num_blocks > 0
         assert block_size > 0
 

@@ -172,7 +172,7 @@ async def _execute_vllm_request(
         jitter=True,
         exceptions=(httpx.HTTPError, httpx.TimeoutException),
     )
-    async def _call_with_retry():
+    async def _call_with_retry() -> httpx.Response:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(api_base, json=params, headers=headers)
             error_type = _classify_vllm_error(response.status_code, response.text)
@@ -357,11 +357,11 @@ async def rollout_sglang_streaming(
     except Exception as e:
         from .base import ProviderError
 
-        logger.error(f"SGLang streaming request failed: {e}")
+        logger.exception(f"SGLang streaming request failed: {e}")
         raise ProviderError(
             f"SGLang API error: {e}",
             original_error=e,
-            attempts=max_retries,
+            attempts=actor.endpoint.max_retries,
             provider="sglang",
         ) from e
 

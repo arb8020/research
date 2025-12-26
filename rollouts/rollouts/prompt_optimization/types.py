@@ -111,7 +111,7 @@ class EvaluationBatch:
     scores: tuple[float, ...]
     trajectories: tuple[Any, ...] | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         assert len(self.outputs) == len(self.scores)
         if self.trajectories is not None:
             assert len(self.trajectories) == len(self.scores)
@@ -133,7 +133,7 @@ class GEPAConfig:
     minibatch_size: int = 4
     perfect_score: float = 1.0
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         assert self.max_evaluations > 0, "max_evaluations must be positive"
         assert self.minibatch_size > 0, "minibatch_size must be positive"
         assert 0.0 <= self.perfect_score <= 1.0, "perfect_score must be in [0, 1]"

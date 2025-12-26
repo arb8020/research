@@ -44,7 +44,7 @@ class InlineVariableResult:
 class InlineVariable:
     """Inline Variable refactoring operation."""
 
-    def __init__(self, path: Path, line: int, col: int | None = None):
+    def __init__(self, path: Path, line: int, col: int | None = None) -> None:
         """
         Initialize the refactoring.
 
@@ -170,7 +170,7 @@ class InlineVariable:
     def _node_contains(self, container, target) -> bool:
         """Check if container node contains target node."""
 
-        def walk(node):
+        def walk(node) -> bool:
             if node.id == target.id:
                 return True
             for child in node.children:

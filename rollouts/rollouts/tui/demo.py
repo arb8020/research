@@ -13,7 +13,7 @@ import random
 import time
 
 
-def main():
+def main() -> None:
     """Generate fake training logs."""
     step = 0
 

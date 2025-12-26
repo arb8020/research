@@ -11,6 +11,7 @@ Requires:
 """
 
 import trio
+
 from rollouts.datasets.lichess_puzzles import (
     get_puzzle_fen_after_opponent_move,
     load_lichess_puzzles,
@@ -27,7 +28,7 @@ from rollouts.search import (
 )
 
 
-async def main():
+async def main() -> None:
     # Load a few puzzles (easy ones for testing)
     print("Loading puzzles...", flush=True)
     puzzles = await load_lichess_puzzles(
@@ -110,10 +111,10 @@ Think about tactics: forks, pins, discovered attacks, checkmate patterns.""",
     print("  - max_steps=3")
     print("=" * 50 + "\n")
 
-    config = RunConfig(
-        on_chunk=lambda _: trio.lowlevel.checkpoint(),
-        show_progress=False,
-    )
+    async def noop_chunk(_: object) -> None:
+        await trio.lowlevel.checkpoint()
+
+    config = RunConfig(on_chunk=noop_chunk, show_progress=False)
 
     tree = await run_search(
         initial_state,

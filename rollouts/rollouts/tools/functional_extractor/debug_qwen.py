@@ -12,7 +12,7 @@ if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 
 
-def debug_on_gpu():
+def debug_on_gpu() -> None:
     """Compare each component against HF implementation."""
     import torch
     import torch.nn.functional as F
@@ -269,8 +269,9 @@ if __name__ == "__main__":
         import argparse
 
         from verify import run_on_gpu
+        from config import DeploymentConfig
 
         parser = argparse.ArgumentParser()
         parser.add_argument("--gpu-id", type=str)
         args = parser.parse_args()
-        run_on_gpu(__file__, gpu_id=args.gpu_id, keep_alive=True, vram_gb=16)
+        run_on_gpu(__file__, deployment=DeploymentConfig(vram_gb=16), gpu_id=args.gpu_id, keep_alive=True)

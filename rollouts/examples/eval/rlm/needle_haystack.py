@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import trio
+
 from rollouts.agents import handle_stop_max_turns, run_agent
 from rollouts.dtypes import (
     Actor,
@@ -189,14 +190,12 @@ async def evaluate_sample_rlm(
         environment = REPLEnvironment(
             context=context,
             sub_endpoint=sub_endpoint,
-            recursive=config.rlm.recursive,
             max_depth=config.rlm.max_depth,
         )
     else:
         environment = MessageParsingREPLEnvironment(
             context=context,
             sub_endpoint=sub_endpoint,
-            recursive=config.rlm.recursive,
             max_depth=config.rlm.max_depth,
         )
 

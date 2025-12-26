@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Test script to demonstrate debug_dump_chat functionality."""
 
+from typing import Any
+
 from rollouts.dtypes import Message, TextContent, ThinkingContent
 from rollouts.frontends.tui.agent_renderer import AgentRenderer
 from rollouts.frontends.tui.theme import DARK_THEME
@@ -8,20 +10,20 @@ from rollouts.frontends.tui.theme import DARK_THEME
 
 # Create a mock TUI with minimal setup
 class MockTUI:
-    def __init__(self):
+    def __init__(self) -> None:
         self.theme = DARK_THEME
-        self.children = []
+        self.children: list[Any] = []
 
-    def add_child(self, child):
+    def add_child(self, child: Any) -> None:
         self.children.append(child)
 
-    def hide_loader(self):
+    def hide_loader(self) -> None:
         pass
 
-    def show_loader(self, msg, **kwargs):
+    def show_loader(self, msg: str, **kwargs: Any) -> None:
         pass
 
-    def request_render(self):
+    def request_render(self) -> None:
         pass
 
 

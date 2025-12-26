@@ -29,6 +29,7 @@ Tiger Style:
 
 import logging
 import sys
+from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import TextIO
 
@@ -45,7 +46,7 @@ class PrintToLogger:
         level: int = logging.INFO,
         original_stream: TextIO | None = None,
         also_print: bool = False,
-    ):
+    ) -> None:
         """Initialize print-to-logger adapter.
 
         Args:
@@ -111,11 +112,16 @@ class PrintToLogger:
         """Return False (not a TTY)."""
         return False
 
-    def __enter__(self):
+    def __enter__(self) -> "PrintToLogger":
         """Support context manager protocol."""
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: object,
+    ) -> bool:
         """Flush on exit (Tiger: cleanup!)."""
         self.flush()
         return False
@@ -128,7 +134,7 @@ def intercept_prints(
     intercept_stdout: bool = True,
     intercept_stderr: bool = False,
     also_print: bool = False,
-):
+) -> Iterator[None]:
     """Context manager to redirect print() and sys.stdout to logger.
 
     Tiger Style: Explicit scope, guaranteed cleanup.

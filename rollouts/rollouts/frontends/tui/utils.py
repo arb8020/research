@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Callable
 from typing import NamedTuple
 
 
@@ -327,7 +328,7 @@ def truncate_to_width(text: str, max_width: int, ellipsis: str = "...") -> str:
     return text[:truncate_at] + "\x1b[0m" + ellipsis
 
 
-def apply_background_to_line(line: str, width: int, bg_fn) -> str:
+def apply_background_to_line(line: str, width: int, bg_fn: Callable[[str], str]) -> str:
     """Apply background color to a line, padding to full width.
 
     Args:

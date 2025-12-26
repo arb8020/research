@@ -36,7 +36,7 @@ from rollouts import (
 )
 
 
-async def run_calculator_test(provider: str, model: str, api_key: str, api_base: str = ""):
+async def run_calculator_test(provider: str, model: str, api_key: str, api_base: str = "") -> None:
     """Shared test logic for all providers.
 
     Task: "What is 25 + 17?"
@@ -92,7 +92,7 @@ async def run_calculator_test(provider: str, model: str, api_key: str, api_base:
 
 
 @pytest.mark.trio
-async def test_openai_agent():
+async def test_openai_agent() -> None:
     """Test OpenAI provider (openai-completions API)"""
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -107,7 +107,7 @@ async def test_openai_agent():
 
 
 @pytest.mark.trio
-async def test_anthropic_agent():
+async def test_anthropic_agent() -> None:
     """Test Anthropic provider (anthropic-messages API)"""
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
@@ -122,7 +122,7 @@ async def test_anthropic_agent():
 
 
 @pytest.mark.trio
-async def test_groq_agent():
+async def test_groq_agent() -> None:
     """Test Groq provider (openai-completions API - proves provider abstraction works)"""
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
@@ -137,7 +137,7 @@ async def test_groq_agent():
 
 
 @pytest.mark.trio
-async def test_openai_responses_api():
+async def test_openai_responses_api() -> None:
     """Test OpenAI Responses API with gpt-5.1-codex-mini (GPT-5 Codex model)
 
     GPT-5.1-Codex models are designed for agentic coding tasks and only support
@@ -157,7 +157,7 @@ async def test_openai_responses_api():
 
 @pytest.mark.trio
 @pytest.mark.skip(reason="Gemini not calling tools in streaming mode - needs investigation")
-async def test_google_gemini_agent():
+async def test_google_gemini_agent() -> None:
     """Test Google Gemini provider (google-generative-ai API)
 
     Uses trio-asyncio to bridge trio and asyncio event loops.
@@ -184,7 +184,7 @@ async def test_google_gemini_agent():
 
 if __name__ == "__main__":
 
-    async def main():
+    async def main() -> None:
         print("\n=== Testing Real Agents with LLM Providers ===\n")
 
         tests = [

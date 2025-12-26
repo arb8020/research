@@ -101,7 +101,7 @@ class OutputConfig:
     save_json: bool = True
     save_jsonl: bool = True
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.run_id is None:
             object.__setattr__(self, "run_id", datetime.now().strftime("%Y%m%d-%H%M%S"))
 

@@ -13,6 +13,7 @@ import signal
 import socket
 import sys
 from collections.abc import Callable
+from types import FrameType
 
 
 class WorkerServer:
@@ -50,7 +51,7 @@ class WorkerServer:
         port: int,
         work_fn: Callable,
         num_workers: int = 4,
-    ):
+    ) -> None:
         """Initialize WorkerServer.
 
         Args:
@@ -71,13 +72,13 @@ class WorkerServer:
         self.workers = []  # List of (pid, client_addr)
         self.listen_sock = None
 
-    def _setup_signal_handlers(self):
+    def _setup_signal_handlers(self) -> None:
         """Set up signal handlers for graceful shutdown.
 
         Catches SIGTERM and SIGINT to clean up workers.
         """
 
-        def signal_handler(signum, frame):
+        def signal_handler(signum: int, frame: FrameType | None) -> None:
             print(f"\n[WorkerServer] Received signal {signum}, shutting down...")
             self._shutdown()
             sys.exit(0)
@@ -85,19 +86,19 @@ class WorkerServer:
         signal.signal(signal.SIGTERM, signal_handler)
         signal.signal(signal.SIGINT, signal_handler)
 
-    def _shutdown(self):
+    def _shutdown(self) -> None:
         """Shut down all workers and close server socket."""
         print(f"[WorkerServer] Shutting down {len(self.workers)} workers...")
 
         # Send SIGTERM to all worker processes
-        for pid, addr in self.workers:
+        for pid, _addr in self.workers:
             try:
                 os.kill(pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass  # Already dead
 
         # Wait for workers to exit
-        for pid, addr in self.workers:
+        for pid, _addr in self.workers:
             try:
                 os.waitpid(pid, 0)
             except ChildProcessError:
@@ -109,7 +110,7 @@ class WorkerServer:
 
         print("[WorkerServer] Shutdown complete")
 
-    def serve_forever(self):
+    def serve_forever(self) -> None:
         """Start server and spawn workers.
 
         Listens on host:port and spawns a worker for each connection.
@@ -181,12 +182,12 @@ class WorkerServer:
         # Wait for all workers to exit
         self._wait_for_workers()
 
-    def _run_worker(self, client_sock: socket.socket, client_addr):
+    def _run_worker(self, client_sock: socket.socket, client_addr: tuple[str, int]) -> None:
         """Run worker process (child process after fork).
 
         Args:
             client_sock: TCP socket to communicate with client
-            client_addr: Address of client
+            client_addr: Address of client (host, port)
 
         Side effects:
             - Closes listening socket (not needed in worker)
@@ -225,11 +226,11 @@ class WorkerServer:
             traceback.print_exc()
             os._exit(1)
 
-    def _wait_for_workers(self):
+    def _wait_for_workers(self) -> None:
         """Wait for all worker processes to exit."""
         print("[WorkerServer] Waiting for workers to complete...")
 
-        for pid, addr in self.workers:
+        for pid, _addr in self.workers:
             try:
                 _, status = os.waitpid(pid, 0)
                 exit_code = os.waitstatus_to_exitcode(status)
@@ -252,7 +253,7 @@ class WorkerServer:
 # ============================================================================
 
 
-def main():
+def main() -> None:
     """CLI entry point for launching worker server.
 
     Usage:

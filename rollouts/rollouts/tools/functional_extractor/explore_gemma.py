@@ -9,7 +9,7 @@ if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 
 
-def explore():
+def explore() -> None:
     import torch
     from transformers import AutoConfig, AutoModelForCausalLM
 
@@ -154,11 +154,11 @@ if __name__ == "__main__":
     else:
         print("No local GPU. Running on remote GPU...")
         from verify import run_on_gpu
+        from config import DeploymentConfig
 
         run_on_gpu(
             __file__,
+            deployment=DeploymentConfig(vram_gb=80, max_price=args.max_price),
             gpu_id=args.gpu_id,
             keep_alive=args.keep_alive or bool(args.gpu_id),
-            vram_gb=80,  # Need large GPU for 80B model
-            max_price=args.max_price,
         )

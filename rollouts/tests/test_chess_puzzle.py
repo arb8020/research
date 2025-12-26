@@ -9,6 +9,7 @@ Requires: python-chess (uv add python-chess)
 
 import pytest
 import trio
+
 from rollouts.dtypes import ToolCall
 
 # Skip all tests if python-chess not available
@@ -21,7 +22,7 @@ SCHOLARS_MATE_FEN = "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQ
 SCHOLARS_MATE_SOLUTION = ["h5f7"]  # Qxf7#
 
 
-async def test_make_move_legal():
+async def test_make_move_legal() -> None:
     """make_move accepts legal moves."""
     env = ChessPuzzleEnvironment(fen=SCHOLARS_MATE_FEN, solution=SCHOLARS_MATE_SOLUTION)
     result = await env.exec_tool(
@@ -34,7 +35,7 @@ async def test_make_move_legal():
     print("✓ make_move accepts legal moves")
 
 
-async def test_make_move_illegal():
+async def test_make_move_illegal() -> None:
     """make_move rejects illegal moves."""
     env = ChessPuzzleEnvironment(fen=SCHOLARS_MATE_FEN, solution=SCHOLARS_MATE_SOLUTION)
     result = await env.exec_tool(
@@ -46,7 +47,7 @@ async def test_make_move_illegal():
     print("✓ make_move rejects illegal moves")
 
 
-async def test_submit_answer():
+async def test_submit_answer() -> None:
     """submit_answer works correctly."""
     env = ChessPuzzleEnvironment(fen=SCHOLARS_MATE_FEN, solution=SCHOLARS_MATE_SOLUTION)
 
@@ -61,7 +62,7 @@ async def test_submit_answer():
     print("✓ submit_answer works")
 
 
-async def test_serialize_deserialize():
+async def test_serialize_deserialize() -> None:
     """Environment can be serialized and deserialized."""
     env = ChessPuzzleEnvironment(fen=SCHOLARS_MATE_FEN, solution=SCHOLARS_MATE_SOLUTION)
 
@@ -96,7 +97,7 @@ async def test_serialize_deserialize():
 
 if __name__ == "__main__":
 
-    async def main():
+    async def main() -> None:
         print("\n" + "=" * 50)
         print("Chess Puzzle Environment Tests")
         print("=" * 50 + "\n")

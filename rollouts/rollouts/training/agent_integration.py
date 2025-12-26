@@ -498,7 +498,6 @@ def _branching_trajectory_to_samples(
             )
             if input_messages
             else "",
-            response=_content_to_str(msg.content),
             tokens=tokens,
             loss_mask=loss_mask,
             rollout_log_probs=rollout_logprobs,
@@ -683,7 +682,7 @@ def _silent_run_config(
         RunConfig with no-op chunk handler and max_turns stop handler
     """
 
-    async def noop_chunk(chunk):
+    async def noop_chunk(chunk: object) -> None:
         """No-op chunk handler (silent mode)."""
         pass
 

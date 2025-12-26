@@ -61,7 +61,7 @@ class RolloutManager:
         data_buffer: DataBuffer,
         config: RolloutConfig,
         **rollout_kwargs: Any,
-    ):
+    ) -> None:
         """Initialize rollout manager.
 
         ⚠️ DEPRECATED: Use generate_rollout_batches() from training.rollout_generation instead.

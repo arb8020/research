@@ -2,8 +2,10 @@
 https://blog.ezyang.com/2025/10/draw-high-dimensional-tensors-as-a-matrix-of-matrices/
 """
 
+from typing import Any
 
-def render(tensor, cell_width=None):
+
+def render(tensor: Any, cell_width: int | None = None) -> str:
     """
     Print a tensor following the matrix-of-matrices algorithm.
 
@@ -66,7 +68,7 @@ def render(tensor, cell_width=None):
                 return join_vertical(sub_prints, 0)
 
 
-def calculate_cell_width(tensor):
+def calculate_cell_width(tensor: Any) -> int:
     """
     Calculate the maximum width needed for any element in the tensor.
 
@@ -82,7 +84,7 @@ def calculate_cell_width(tensor):
     return max_width
 
 
-def join_horizontal(blocks):
+def join_horizontal(blocks: list[str]) -> str:
     """Join multiple text blocks horizontally with spacing."""
     if not blocks:
         return ""
@@ -117,7 +119,7 @@ def join_horizontal(blocks):
     return "\n".join(result_lines)
 
 
-def join_horizontal_with_separator(blocks, separator=":"):
+def join_horizontal_with_separator(blocks: list[str], separator: str = ":") -> str:
     """Join multiple text blocks horizontally with separator."""
     if not blocks:
         return ""
@@ -158,7 +160,7 @@ def join_horizontal_with_separator(blocks, separator=":"):
     return "\n".join(result_lines)
 
 
-def join_vertical(blocks, num_separator_lines=0):
+def join_vertical(blocks: list[str], num_separator_lines: int = 0) -> str:
     """Join multiple text blocks vertically with separator lines.
 
     Args:

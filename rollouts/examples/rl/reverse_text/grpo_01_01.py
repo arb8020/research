@@ -11,9 +11,8 @@ Run with:
     python examples/rl/reverse_text/grpo_01_01.py --node-id runpod:abc123
 """
 
-from rollouts.training.grpo import GRPOConfig
-
 from examples.rl.reverse_text.base_config import train
+from rollouts.training.grpo import GRPOConfig
 
 config = GRPOConfig(
     experiment_name="reverse_text_grpo_01",

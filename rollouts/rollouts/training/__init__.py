@@ -23,7 +23,7 @@ from rollouts.training.types import (
 )
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> object:
     """Lazy import torch-dependent modules."""
     # Backends (need torch)
     if name == "PyTorchTrainingBackend":

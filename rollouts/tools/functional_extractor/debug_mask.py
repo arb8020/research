@@ -11,7 +11,7 @@ if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
 
 
-def debug_mask():
+def debug_mask() -> None:
     import torch
     from qwen_functional import create_causal_mask
     from transformers import AutoModelForCausalLM

@@ -15,13 +15,19 @@ Reference: https://github.com/alexzhang13/rlm-minimal
 Paper: "Recursive Language Models" (Zhang & Khattab, 2025)
 """
 
+from __future__ import annotations
+
 import contextlib
 import io
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import trio
+
+if TYPE_CHECKING:
+    from rollouts.frontends.tui.theme import Theme
 
 from ..dtypes import (
     AgentState,
@@ -103,7 +109,7 @@ def _get_text_output(result: dict | None) -> str:
 
 
 def format_final_answer(
-    tool_name: str, args: dict, result: dict | None, expanded: bool, theme=None
+    tool_name: str, args: dict, result: dict | None, expanded: bool, theme: Theme | None = None
 ) -> str:
     """Format final_answer tool - show answer prominently."""
     answer = args.get("answer", "")
@@ -132,7 +138,7 @@ def format_final_answer(
 
 
 def format_repl(
-    tool_name: str, args: dict, result: dict | None, expanded: bool, theme=None
+    tool_name: str, args: dict, result: dict | None, expanded: bool, theme: Theme | None = None
 ) -> str:
     """Format repl tool - show code and output."""
     code = args.get("code", "")
@@ -158,7 +164,9 @@ def format_repl(
             text += f"\n⎿ {summary}:"
             for line in display_lines:
                 if theme and is_error:
-                    text += "\n  " + (theme.diff_removed_fg(line) if hasattr(theme, 'diff_removed_fg') else line)
+                    text += "\n  " + (
+                        theme.diff_removed_fg(line) if hasattr(theme, "diff_removed_fg") else line
+                    )
                 else:
                     text += "\n  " + line
             if len(lines) > max_lines:
@@ -168,7 +176,7 @@ def format_repl(
 
 
 def format_agent(
-    tool_name: str, args: dict, result: dict | None, expanded: bool, theme=None
+    tool_name: str, args: dict, result: dict | None, expanded: bool, theme: Theme | None = None
 ) -> str:
     """Format agent tool - show task and result."""
     task = args.get("task", "")
@@ -198,7 +206,7 @@ def format_agent(
 
 
 def format_llm_query(
-    tool_name: str, args: dict, result: dict | None, expanded: bool, theme=None
+    tool_name: str, args: dict, result: dict | None, expanded: bool, theme: Theme | None = None
 ) -> str:
     """Format llm_query tool - show prompt summary and response."""
     prompt = args.get("prompt", "")
@@ -501,7 +509,9 @@ findings = agent("Find security vulnerabilities and explain each", auth_code)
     def requires_confirmation(self, tool_call: ToolCall) -> bool:
         return False
 
-    def get_tool_formatter(self, tool_name: str):
+    def get_tool_formatter(
+        self, tool_name: str
+    ) -> Callable[[str, dict, dict | None, bool, Theme | None], str] | None:
         """Return custom formatters for REPL tools."""
         formatters = {
             "repl": format_repl,
@@ -754,7 +764,7 @@ findings = agent("Find security vulnerabilities and explain each", auth_code)
             handle_stop_on_empty_message,
             run_agent,
         )
-        from ..dtypes import Actor, Trajectory
+        from ..dtypes import Actor, ToolConfirmResult, Trajectory
 
         assert self.sub_endpoint is not None
 
@@ -784,9 +794,26 @@ findings = agent("Find security vulnerabilities and explain each", auth_code)
             environment=child_env,
         )
 
-        # Build run config for child agent
+        # Safe handlers for sub-agent (prevent blocking on input)
+        async def noop_input_handler(prompt: str) -> str:
+            """Sub-agents should not request user input."""
+            return "[sub-agent cannot request user input]"
+
+        async def auto_confirm_tool(
+            tc: ToolCall, state: AgentState, cfg: RunConfig
+        ) -> tuple[AgentState, ToolConfirmResult]:
+            """Auto-confirm all tools for sub-agents."""
+            return state, ToolConfirmResult(proceed=True)
+
+        # Async no-op for silencing sub-agent streaming
+        async def noop_chunk(e: object) -> None:
+            pass
+
+        # Build run config for child agent with safe handlers
         child_run_config = RunConfig(
-            on_chunk=run_config.on_chunk,  # Inherit streaming (or could silence)
+            on_chunk=noop_chunk,  # Silence sub-agent streaming to avoid TUI conflicts
+            on_input=noop_input_handler,  # Prevent blocking on input()
+            confirm_tool=auto_confirm_tool,  # Auto-confirm tools
             handle_stop=compose_handlers([
                 handle_stop_max_turns(self.max_agent_turns),
                 handle_stop_on_empty_message(),
@@ -794,13 +821,44 @@ findings = agent("Find security vulnerabilities and explain each", auth_code)
             session_store=None,  # Don't persist child sessions
         )
 
-        await run_agent(child_state, child_run_config)
+        states = await run_agent(child_state, child_run_config)
 
-        # Return final answer from child
-        if child_env._final_answer:
-            return child_env._final_answer
-        else:
-            return "(sub-agent did not provide a final answer)"
+        # Return final answer from the final state's environment
+        # (environment is serialized/deserialized each tool call, so check the final state)
+        if states:
+            final_env = states[-1].environment
+            if hasattr(final_env, "_final_answer") and final_env._final_answer:
+                return final_env._final_answer
+
+        # Fallback: extract last assistant message if no final_answer
+        if states:
+            last_state = states[-1]
+            messages = last_state.actor.trajectory.messages
+            # Find last assistant message
+            for msg in reversed(messages):
+                if msg.role == "assistant" and msg.content:
+                    content = msg.content
+                    if isinstance(content, str):
+                        # Truncate if too long
+                        if len(content) > 1000:
+                            content = content[:1000] + "..."
+                        return f"[sub-agent partial response]: {content}"
+                    elif isinstance(content, list):
+                        # Extract text from content blocks
+                        text_parts = []
+                        for block in content:
+                            if hasattr(block, "text"):
+                                text_parts.append(block.text)
+                            elif isinstance(block, dict) and block.get("type") == "text":
+                                text_parts.append(block.get("text", ""))
+                        if text_parts:
+                            combined = "\n".join(text_parts)
+                            if len(combined) > 1000:
+                                combined = combined[:1000] + "..."
+                            return f"[sub-agent partial response]: {combined}"
+                    break
+
+        return "(sub-agent did not provide a final answer)"
 
     async def serialize(self) -> dict:
         return {
@@ -816,7 +874,7 @@ findings = agent("Find security vulnerabilities and explain each", auth_code)
         }
 
     @staticmethod
-    async def deserialize(data: dict) -> "REPLEnvironment":
+    async def deserialize(data: dict) -> REPLEnvironment:
         assert data.get("env_kind") == "repl"
 
         sub_endpoint = None
@@ -906,13 +964,20 @@ class MessageParsingREPLEnvironment(REPLEnvironment):
             if context is None:
                 context = self._namespace.get("context", "")
             try:
-                # Note: We don't have run_config here, so we build a minimal one
+                # Note: We pass a minimal config here, but _async_agent internally
+                # builds a proper child_run_config with safe handlers (noop input,
+                # silenced streaming, auto-confirm) to prevent blocking.
                 from ..agents import (
                     compose_handlers,
                     handle_stop_max_turns,
                     handle_stop_on_empty_message,
                 )
+
+                async def silent_chunk(_: object) -> None:
+                    pass
+
                 minimal_config = RunConfig(
+                    on_chunk=silent_chunk,
                     handle_stop=compose_handlers([
                         handle_stop_max_turns(self.max_agent_turns),
                         handle_stop_on_empty_message(),

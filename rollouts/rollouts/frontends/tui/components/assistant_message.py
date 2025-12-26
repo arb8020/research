@@ -114,7 +114,9 @@ class AssistantMessage(Component):
             if hasattr(self._theme, "thinking_bg_fn"):
                 bg_fn = self._theme.thinking_bg_fn
             else:
-                bg_fn = lambda x: f"{hex_to_bg(self._theme.tool_pending_bg)}{x}{RESET}"
+
+                def bg_fn(x: str) -> str:
+                    return f"{hex_to_bg(self._theme.tool_pending_bg)}{x}{RESET}"
 
             self._thinking_md = Markdown(
                 thinking_text,

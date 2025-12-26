@@ -62,6 +62,10 @@ ignore = [
     "B008",    # function-call-in-default-argument (false positive for typer)
     # Deferred - requires creating exception class hierarchy (TODO: implement later)
     "TRY003",  # raise-vanilla-args (exception messages at raise site)
+    # Stylistic - defer for later
+    "UP038",   # use X | Y in isinstance - breaks Python 3.9 compat
+    "F841",    # unused variable - often intentional (stdin pattern for SSH)
+    "A005",    # module-shadowing-builtin (types.py is common pattern)
 ]
 
 [tool.ruff.lint.pylint]

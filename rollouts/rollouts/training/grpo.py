@@ -283,7 +283,7 @@ def _create_tito_generate_fn(
                 trajectory = Trajectory(messages=initial_messages)
                 actor = Actor(trajectory=trajectory, endpoint=endpoint)
 
-                async def noop_chunk(chunk):
+                async def noop_chunk(chunk: object) -> None:
                     pass
 
                 updated_actor = await tito_provider(
@@ -708,21 +708,8 @@ def _trajectory_to_sample_tito_interleaved(
                 # No logprobs stored, use placeholder
                 all_logprobs.extend([0.0] * len(token_ids))
 
-    # Extract response text
-    response_messages = trajectory.messages[len(prompt_messages) :]
-    response = (
-        tokenizer.apply_chat_template(
-            [{"role": m.role, "content": _get_message_content(m)} for m in response_messages],
-            tokenize=False,
-            add_generation_prompt=False,
-        )
-        if response_messages
-        else ""
-    )
-
     return Sample(
         prompt=prompt,
-        response=response,
         tokens=all_tokens,
         loss_mask=loss_mask,
         rollout_log_probs=all_logprobs,
@@ -803,7 +790,6 @@ def _trajectory_to_samples_tito_branching(
 
         sample = Sample(
             prompt=prompt_text,
-            response=_get_message_content(msg),
             tokens=tokens,
             loss_mask=loss_mask,
             rollout_log_probs=all_logprobs,

@@ -8,7 +8,14 @@ References:
 - attention-gym: https://github.com/meta-pytorch/attention-gym
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import torch
+
+if TYPE_CHECKING:
+    from torch.nn.attention.flex_attention import BlockMask
 
 
 def create_causal_block_mask(
@@ -16,7 +23,7 @@ def create_causal_block_mask(
     seq_len: int,
     block_size: int = 128,
     device: torch.device | str = "cuda",
-):
+) -> BlockMask:
     """Create causal block mask for FlexAttention.
 
     Returns a BlockMask object for use with flex_attention().
@@ -32,7 +39,7 @@ def create_causal_block_mask(
     """
     from torch.nn.attention.flex_attention import create_block_mask
 
-    def causal_mask(b, h, q_idx, kv_idx):
+    def causal_mask(b: int, h: int, q_idx: int, kv_idx: int) -> bool:
         return q_idx >= kv_idx
 
     return create_block_mask(
@@ -52,7 +59,7 @@ def create_sliding_window_causal_mask(
     window_size: int,
     block_size: int = 128,
     device: torch.device | str = "cuda",
-):
+) -> BlockMask:
     """Create causal sliding window block mask for FlexAttention.
 
     Combines causal masking with sliding window attention. Each query token
@@ -74,7 +81,7 @@ def create_sliding_window_causal_mask(
     """
     from torch.nn.attention.flex_attention import create_block_mask
 
-    def causal_sliding_window_mask(b, h, q_idx, kv_idx):
+    def causal_sliding_window_mask(b: int, h: int, q_idx: int, kv_idx: int) -> bool:
         # Causal: can only attend to positions <= current position
         causal = q_idx >= kv_idx
         # Sliding window: can only attend to positions within window_size
@@ -99,7 +106,7 @@ def create_attention_mask(
     sliding_window: int | None = None,
     block_size: int = 128,
     device: torch.device | str = "cuda",
-):
+) -> BlockMask:
     """Create appropriate block mask based on attention configuration.
 
     Factory function that returns the right mask type based on parameters.
@@ -137,7 +144,7 @@ def create_document_mask(
     total_len: int,
     block_size: int = 128,
     device: torch.device | str = "cuda",
-):
+) -> BlockMask:
     """Create document mask for packed sequences (FlexAttention).
 
     For packed sequences where multiple documents are concatenated,
@@ -161,7 +168,7 @@ def create_document_mask(
     for length in seq_lens:
         boundaries.append(boundaries[-1] + length)
 
-    def document_mask(b, h, q_idx, kv_idx):
+    def document_mask(b: int, h: int, q_idx: int, kv_idx: int) -> bool:
         # Find which document each position belongs to
         # q_idx and kv_idx must be in same document, and causal
         q_doc = 0

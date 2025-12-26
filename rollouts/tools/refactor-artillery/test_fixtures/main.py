@@ -4,7 +4,7 @@ from .helpers import helper_function
 from .utils import format_output
 
 
-def main():
+def main() -> None:
     result = helper_function(42)
     output = format_output(result)
     print(output)

@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import trio
+
 from rollouts.agents import handle_stop_max_turns, run_agent
 from rollouts.dtypes import (
     Actor,
@@ -110,7 +111,7 @@ def load_oolong_dataset(config: OolongDatasetConfig) -> list[dict[str, Any]]:
     try:
         from datasets import load_dataset
     except ImportError:
-        raise ImportError("Please install datasets: pip install datasets")
+        raise ImportError("Please install datasets: pip install datasets") from None
 
     logger.info(f"Loading OOLONG {config.dataset_type} dataset...")
 
@@ -222,14 +223,12 @@ async def evaluate_sample(
         environment = REPLEnvironment(
             context=context,
             sub_endpoint=sub_endpoint,
-            recursive=config.rlm.recursive,
             max_depth=config.rlm.max_depth,
         )
     else:
         environment = MessageParsingREPLEnvironment(
             context=context,
             sub_endpoint=sub_endpoint,
-            recursive=config.rlm.recursive,
             max_depth=config.rlm.max_depth,
         )
 

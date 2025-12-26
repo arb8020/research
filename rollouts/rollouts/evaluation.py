@@ -351,7 +351,7 @@ async def evaluate_sample(
     )
 
     # Emit rollout record for TUI trace viewer (matches grpo.py format)
-    def extract_text(content):
+    def extract_text(content: object) -> str:
         """Extract text from message content (str or list of ContentBlocks)."""
         if isinstance(content, str):
             return content

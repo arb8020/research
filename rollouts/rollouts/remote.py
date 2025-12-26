@@ -31,9 +31,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 if TYPE_CHECKING:
-    from broker.client import ClientGPUInstance
-
     from bifrost import BifrostClient
+    from broker.client import ClientGPUInstance
 
 
 def get_broker_credentials() -> dict[str, str]:
@@ -213,7 +212,7 @@ def release_node(
         print("Instance terminated.")
 
 
-def add_remote_args(parser) -> None:
+def add_remote_args(parser: object) -> None:
     """Add standard remote execution arguments to an argparse parser.
 
     Adds mutually exclusive group:

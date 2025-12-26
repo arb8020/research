@@ -5,12 +5,19 @@ Tools: web_search (DuckDuckGo), web_fetch
 For use with BrowseComp and other web research tasks.
 """
 
+from __future__ import annotations
+
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 import markdownify
 import trio
 from curl_cffi import requests as curl_requests
+
+if TYPE_CHECKING:
+    from rollouts.frontends.tui.theme import Theme
 
 from ..dtypes import (
     AgentState,
@@ -36,7 +43,7 @@ async def _ddg_search(query: str, max_results: int = SEARCH_MAX_RESULTS) -> list
     """Run DuckDuckGo search in thread pool (sync library)."""
     from ddgs import DDGS
 
-    def _search():
+    def _search() -> list[dict]:
         with DDGS() as ddgs:
             return list(ddgs.text(query, max_results=max_results))
 
@@ -44,7 +51,7 @@ async def _ddg_search(query: str, max_results: int = SEARCH_MAX_RESULTS) -> list
 
 
 def format_web_search(
-    tool_name: str, args: dict, result: dict | None, expanded: bool, theme=None
+    tool_name: str, args: dict, result: dict | None, expanded: bool, theme: Theme | None = None
 ) -> str:
     """Format web_search tool execution."""
     query = args.get("query", "")
@@ -70,7 +77,7 @@ def format_web_search(
 
 
 def format_web_fetch(
-    tool_name: str, args: dict, result: dict | None, expanded: bool, theme=None
+    tool_name: str, args: dict, result: dict | None, expanded: bool, theme: Theme | None = None
 ) -> str:
     """Format web_fetch tool execution."""
     url = args.get("url", "")
@@ -124,7 +131,7 @@ class BrowsingEnvironment:
         return {"env_kind": "browsing", "max_search_results": self.max_search_results}
 
     @staticmethod
-    async def deserialize(data: dict) -> "BrowsingEnvironment":
+    async def deserialize(data: dict) -> BrowsingEnvironment:
         return BrowsingEnvironment(
             max_search_results=data.get("max_search_results", SEARCH_MAX_RESULTS)
         )
@@ -132,7 +139,9 @@ class BrowsingEnvironment:
     def requires_confirmation(self, tool_call: ToolCall) -> bool:
         return False
 
-    def get_tool_formatter(self, tool_name: str):
+    def get_tool_formatter(
+        self, tool_name: str
+    ) -> Callable[[str, dict, dict | None, bool, Theme | None], str] | None:
         formatters = {
             "web_search": format_web_search,
             "web_fetch": format_web_fetch,
@@ -283,7 +292,7 @@ class BrowsingEnvironment:
             url = url.replace("http://", "https://", 1)
 
         # Fetch the URL using curl_cffi (impersonates browser TLS fingerprint)
-        def _fetch():
+        def _fetch() -> curl_requests.Response:
             return curl_requests.get(
                 url,
                 impersonate="chrome",

@@ -56,11 +56,11 @@ class DevLoopServer(SimpleHTTPRequestHandler):
     # Class variable to store project root (set by main())
     project_root: Path = Path.cwd()
 
-    def log_message(self, format, *args):
+    def log_message(self, format: str, *args: object) -> None:
         """Override to use our logger instead of stderr."""
-        logger.info("%s - %s" % (self.address_string(), format % args))
+        logger.info(f"{self.address_string()} - {format % args}")
 
-    def do_GET(self):
+    def do_GET(self) -> None:
         """Handle GET requests."""
         parsed = urlparse(self.path)
         path = parsed.path
@@ -113,7 +113,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
             # Default behavior for other files
             super().do_GET()
 
-    def do_POST(self):
+    def do_POST(self) -> None:
         """Handle POST requests."""
         parsed = urlparse(self.path)
         path = parsed.path
@@ -137,7 +137,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         else:
             self.send_error(404, "Not found")
 
-    def _serve_index(self):
+    def _serve_index(self) -> None:
         """Serve the main HTML file."""
         index_path = Path(__file__).parent / "index.html"
 
@@ -153,7 +153,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
-    def _list_configs(self):
+    def _list_configs(self) -> None:
         """List available config files in project."""
         configs_dir = self.project_root / "configs"
 
@@ -175,7 +175,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
         self._json_response(configs)
 
-    def _list_traces(self):
+    def _list_traces(self) -> None:
         """List available evaluation traces in results/."""
         results_dir = self.project_root / "results"
 
@@ -206,7 +206,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
         self._json_response(traces)
 
-    def _get_trace(self, trace_id: str):
+    def _get_trace(self, trace_id: str) -> None:
         """Load a specific evaluation trace."""
         trace_dir = self.project_root / "results" / trace_id
 
@@ -271,7 +271,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
         self._json_response(trace_data)
 
-    def _load_config(self, config_name: str):
+    def _load_config(self, config_name: str) -> None:
         """Load and parse an existing config file."""
         config_path = self.project_root / "configs" / f"{config_name}.py"
 
@@ -396,7 +396,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
         self._json_response(config_data)
 
-    def _get_dataset_preview(self, config_name: str):
+    def _get_dataset_preview(self, config_name: str) -> None:
         """Get preview of dataset for a config - shows first sample with all fields."""
         import re
 
@@ -469,7 +469,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         except Exception as e:
             self._json_response({"error": f"Error reading dataset: {str(e)}"})
 
-    def _parse_messages(self, config_name: str):
+    def _parse_messages(self, config_name: str) -> None:
         """Parse prepare_messages() method from config to extract message list."""
         import re
 
@@ -580,7 +580,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
         self._json_response({"messages": messages, "error": None})
 
-    def _parse_tools(self, config_name: str):
+    def _parse_tools(self, config_name: str) -> None:
         """Parse get_tools() method from config to extract tool definitions."""
         import re
 
@@ -648,7 +648,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
         self._json_response({"tools": tools, "hasTools": len(tools) > 0, "error": None})
 
-    def _view_hook(self, config_name: str):
+    def _view_hook(self, config_name: str) -> None:
         """View on_assistant_message() implementation from environment."""
         import re
 
@@ -699,7 +699,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
         self._json_response({"source": method_source, "error": None})
 
-    def _view_environment(self, config_name: str):
+    def _view_environment(self, config_name: str) -> None:
         """View full environment source code."""
         import re
 
@@ -739,11 +739,11 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         self._json_response({
             "source": env_source,
             "file_path": str(env_file.relative_to(self.project_root)),
-            "class_name": env_class,
+            "class_name": _env_class,
             "error": None,
         })
 
-    def _list_models(self):
+    def _list_models(self) -> None:
         """Fetch available models from OpenAI and Anthropic APIs."""
         import os
         import urllib.request
@@ -791,7 +791,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
 
         self._json_response({"models": models, "errors": errors if errors else None})
 
-    def _list_datasets(self):
+    def _list_datasets(self) -> None:
         """List available dataset files in the datasets directory."""
         datasets_dir = self.project_root / "datasets"
 
@@ -820,7 +820,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         except Exception as e:
             self._json_response({"datasets": [], "error": f"Error listing datasets: {str(e)}"})
 
-    def _preview_dataset_direct(self):
+    def _preview_dataset_direct(self) -> None:
         """Preview a dataset by path directly (not via config)."""
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length)
@@ -886,7 +886,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         except Exception as e:
             self._json_response({"error": f"Error reading dataset: {str(e)}"})
 
-    def _generate_config(self):
+    def _generate_config(self) -> None:
         """Generate a new config file from JSON payload."""
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length)
@@ -1159,7 +1159,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
                 # Use f-string - convert {field} to {sample_data.get('field', '')}
                 import re
 
-                def replace_placeholder(match):
+                def replace_placeholder(match: re.Match[str]) -> str:
                     field = match.group(1)
                     return f"{{sample_data.get('{field}', '')}}"
 
@@ -1214,7 +1214,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         # Extract config params
         model_name = data.get("model", "gpt-4-turbo")
         system_prompt = data.get("systemPrompt", "You are an expert assistant.")
-        max_turns = data.get("maxTurns", 5)
+        _max_turns = data.get("maxTurns", 5)  # TODO: Use this in eval config
         num_samples = data.get("numSamples", 10)
         temperature = data.get("temperature", 0.1)
         stream_tokens = data.get("stream_tokens", True)  # Default to True for dev loop
@@ -1337,7 +1337,6 @@ class Config:
         default_factory=lambda: BaseEvaluationConfig(
             environment=None,  # Will be set by factory
             eval_name="custom_eval",
-            max_turns={max_turns},
             num_samples={num_samples},
             output_dir=Path("results/custom"),
             verbose=True,
@@ -1415,7 +1414,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
 
         return config
 
-    def _launch_config(self):
+    def _launch_config(self) -> None:
         """Launch a config in the background with live streaming support."""
         global _run_counter, _active_runs
 
@@ -1553,7 +1552,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                 )
                 logger.debug(f"Process started with PID: {process.pid}")
             except Exception as e:
-                logger.error(f"Failed to start process: {str(e)}")
+                logger.exception(f"Failed to start process: {str(e)}")
                 _run_semaphore.release()  # Release semaphore on failure
                 self._json_response({
                     "success": False,
@@ -1587,7 +1586,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
         except Exception as e:
             self.send_error(500, f"Launch failed: {e}")
 
-    def _stream_run_output(self, run_id: str):
+    def _stream_run_output(self, run_id: str) -> None:
         """Stream output from events.jsonl and stdout via SSE.
 
         Dual-stream approach:
@@ -1746,7 +1745,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
             with _run_lock:
                 run_data["status"] = "failed"
 
-    def _log_from_frontend(self):
+    def _log_from_frontend(self) -> None:
         """Receive log messages from frontend."""
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length)
@@ -1772,10 +1771,10 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
             self._json_response({"success": True})
 
         except Exception as e:
-            logger.error(f"Failed to process frontend log: {e}")
+            logger.exception(f"Failed to process frontend log: {e}")
             self.send_error(400, str(e))
 
-    def _list_active_runs(self):
+    def _list_active_runs(self) -> None:
         """List all active and recent runs."""
         global _active_runs
 
@@ -1793,7 +1792,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
 
         self._json_response({"runs": runs})
 
-    def _kill_run(self, run_id: str):
+    def _kill_run(self, run_id: str) -> None:
         """Kill a running process."""
         global _active_runs
 
@@ -1851,7 +1850,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
             logger.error(f"❌ Failed to kill run: {str(e)}", exc_info=True)
             self._json_response({"success": False, "message": f"Failed to kill run: {str(e)}"})
 
-    def _delete_run(self, run_id: str):
+    def _delete_run(self, run_id: str) -> None:
         """Delete a completed/failed run from registry."""
         global _active_runs
 
@@ -1875,7 +1874,7 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
 
         self._json_response({"success": True, "message": f"Deleted run {run_id}"})
 
-    def _json_response(self, data: Any):
+    def _json_response(self, data: Any) -> None:
         """Send JSON response."""
         json_data = json.dumps(data, indent=2)
 
@@ -1885,12 +1884,8 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
         self.end_headers()
         self.wfile.write(json_data.encode("utf-8"))
 
-    def log_message(self, format, *args):
-        """Override to provide cleaner logging."""
-        print(f"[{self.log_date_time_string()}] {format % args}")
 
-
-def main():
+def main() -> None:
     """Run the dev loop server."""
     parser = argparse.ArgumentParser(
         description="Agent dev loop tool - config builder & trace viewer"

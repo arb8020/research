@@ -30,7 +30,7 @@ def build_prefill_context(
     # For prefill, we map each token position to its cache slot
     slot_mapping: list[int] = []
 
-    for seq_idx, (seq_len, blocks) in enumerate(zip(seq_lens, block_tables, strict=False)):
+    for _seq_idx, (seq_len, blocks) in enumerate(zip(seq_lens, block_tables, strict=False)):
         for pos in range(seq_len):
             block_idx = pos // block_size
             offset = pos % block_size

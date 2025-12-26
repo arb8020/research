@@ -13,13 +13,14 @@ import sys
 import termios
 import tty
 from collections.abc import Callable
+from types import FrameType
 from typing import Protocol
 
 # Global reference for atexit cleanup
 _active_terminal: ProcessTerminal | None = None
 
 
-def _cleanup_terminal():
+def _cleanup_terminal() -> None:
     """Atexit handler to restore terminal state."""
     global _active_terminal
     if _active_terminal is not None:
@@ -205,7 +206,7 @@ class ProcessTerminal:
         """Clear entire screen and move cursor to home (1,1)."""
         self.write("\x1b[2J\x1b[H")
 
-    def _handle_sigwinch(self, signum: int, frame) -> None:
+    def _handle_sigwinch(self, signum: int, frame: FrameType | None) -> None:
         """Handle terminal resize signal."""
         if self._resize_handler:
             self._resize_handler()

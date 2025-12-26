@@ -9,6 +9,7 @@ from typing import Any
 
 from rollouts.dtypes import (
     LLMCallStart,
+    Message,
     StreamDone,
     StreamError,
     StreamEvent,
@@ -19,6 +20,7 @@ from rollouts.dtypes import (
     ThinkingDelta,
     ThinkingEnd,
     ThinkingStart,
+    ToolCall,
     ToolCallDelta,
     ToolCallEnd,
     ToolCallError,
@@ -282,7 +284,7 @@ class AgentRenderer:
         if content_index in self.content_blocks:
             self.content_blocks[content_index]["args"] = partial_args
 
-    def _handle_tool_call_end(self, content_index: int, tool_call) -> None:
+    def _handle_tool_call_end(self, content_index: int, tool_call: ToolCall) -> None:
         """Handle tool call end - tool is complete (but not executed yet)."""
         tool_id = tool_call.id
         if tool_id in self.pending_tools:
@@ -414,7 +416,9 @@ class AgentRenderer:
         if hasattr(self.theme, "thinking_bg_fn"):
             bg_fn = self.theme.thinking_bg_fn
         else:
-            bg_fn = lambda x: f"{hex_to_bg(self.theme.tool_pending_bg)}{x}{RESET}"
+
+            def bg_fn(x: str) -> str:
+                return f"{hex_to_bg(self.theme.tool_pending_bg)}{x}{RESET}"
 
         answer_md = Markdown(
             answer_text,
@@ -496,7 +500,7 @@ class AgentRenderer:
         # after all components are set up. Rendering early causes issues with
         # differential rendering when more components are added later.
 
-    def _render_user_message(self, msg) -> None:
+    def _render_user_message(self, msg: Message) -> None:
         """Render a user message from history."""
         content = msg.content
         if isinstance(content, str):
@@ -520,7 +524,7 @@ class AgentRenderer:
             user_component = UserMessage(text, is_first=is_first, theme=self.theme)
             self.chat_container.add_child(user_component)
 
-    def _replay_assistant_message_as_events(self, msg) -> None:
+    def _replay_assistant_message_as_events(self, msg: Message) -> None:
         """Convert assistant message from history into events and replay through handlers.
 
         This ensures history rendering uses the exact same code path as live streaming.
@@ -603,7 +607,7 @@ class AgentRenderer:
         # Simulate stream done to finalize the message
         self._handle_stream_done()
 
-    def _replay_tool_result_as_event(self, msg) -> None:
+    def _replay_tool_result_as_event(self, msg: Message) -> None:
         """Convert tool result from history into event and replay through handler."""
         tool_call_id = msg.tool_call_id
         if not tool_call_id:

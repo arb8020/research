@@ -20,7 +20,7 @@ if str(_rollouts_dir) not in sys.path:
     sys.path.insert(0, str(_rollouts_dir))
 
 
-def setup_environment():
+def setup_environment() -> None:
     """Install required packages with correct versions."""
     import subprocess
 
@@ -38,7 +38,7 @@ def setup_environment():
     print("Environment setup complete!")
 
 
-def debug():
+def debug() -> None:
     import torch
 
     # Import debug toolkit and functional implementation
@@ -203,7 +203,7 @@ def debug():
                         # Get HF attention output (need to capture via hook)
                         attn_output_hf = None
 
-                        def capture_attn(module, input, output):
+                        def capture_attn(module, input, output) -> None:
                             nonlocal attn_output_hf
                             attn_output_hf = output[0] if isinstance(output, tuple) else output
 
@@ -230,7 +230,7 @@ def debug():
                         # Capture HF output
                         attn_output_hf = None
 
-                        def capture_attn(module, input, output):
+                        def capture_attn(module, input, output) -> None:
                             nonlocal attn_output_hf
                             attn_output_hf = output[0] if isinstance(output, tuple) else output
 

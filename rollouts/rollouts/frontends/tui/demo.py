@@ -33,7 +33,7 @@ def yellow(text: str) -> str:
     return f"\x1b[33m{text}\x1b[0m"
 
 
-def main():
+def main() -> None:
     """Run a simple TUI demo."""
     terminal = ProcessTerminal()
     ui = TUI(terminal)

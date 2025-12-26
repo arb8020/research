@@ -22,6 +22,7 @@ import logging
 import os
 import random
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -29,6 +30,7 @@ from typing import Any
 
 import pandas as pd
 import trio
+
 from rollouts.dtypes import Endpoint, Message, Metric, Score, Trajectory
 
 logger = logging.getLogger(__name__)
@@ -131,7 +133,7 @@ class OutputConfig:
     save_json: bool = True
     save_jsonl: bool = True
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.run_id is None:
             object.__setattr__(self, "run_id", datetime.now().strftime("%Y%m%d-%H%M%S"))
 
@@ -248,7 +250,7 @@ async def grade_response(
     provider_fn = get_provider_function(grader_endpoint.provider, grader_endpoint.model)
 
     # Simple streaming callback that does nothing
-    async def noop_callback(chunk):
+    async def noop_callback(chunk: object) -> None:
         pass
 
     actor = Actor(trajectory=trajectory, endpoint=grader_endpoint, tools=[])
@@ -269,7 +271,7 @@ async def grade_response(
 # ──────────────────────── Score Function ─────────────────────────────────────
 
 
-def create_browsecomp_score_fn(grader_endpoint: Endpoint):
+def create_browsecomp_score_fn(grader_endpoint: Endpoint) -> Callable[[Any], Awaitable[Score]]:
     """Create score function with grader endpoint bound.
 
     Returns an async score function compatible with rollouts EvalConfig.

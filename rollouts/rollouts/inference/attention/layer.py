@@ -21,7 +21,7 @@ class Attention(nn.Module):
     - No trainable parameters (no weights here)
     """
 
-    def __init__(self, layer_idx: int, backend: AttentionBackend):
+    def __init__(self, layer_idx: int, backend: AttentionBackend) -> None:
         """Initialize attention layer.
 
         Args:

@@ -90,13 +90,11 @@ class HasEvaluationConfig(Protocol):
     Example:
         @dataclass(frozen=True)
         class MyEvalConfig:
-            max_turns: int = 5
             num_samples: int = 100
 
             def to_eval_config(self, score_fn: Callable) -> EvalConfig:
                 return EvalConfig(
                     score_fn=score_fn,
-                    max_turns=self.max_turns,
                     max_samples=self.num_samples,
                 )
     """

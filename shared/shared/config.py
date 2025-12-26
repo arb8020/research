@@ -73,7 +73,7 @@ def get_modal_token() -> str | None:
                     sections[current_section][key] = value
 
             # Find active workspace
-            for workspace, config in sections.items():
+            for _workspace, config in sections.items():
                 if config.get("active") == "true":
                     return config.get("token_id")
         except Exception:
@@ -97,7 +97,7 @@ def discover_ssh_keys() -> list[str]:
     return [str(p) for p in common_paths if p.exists()]
 
 
-def create_env_template(tool: str):
+def create_env_template(tool: str) -> None:
     """Create .env template for broker or bifrost
 
     Args:

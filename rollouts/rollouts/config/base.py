@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from rollouts.dtypes import Endpoint, EvalConfig, Message, RunConfig
+from rollouts.dtypes import Endpoint, EvalConfig, Message, PrepareMessagesFn, RunConfig
 
 
 def infer_provider_from_model(model_name: str) -> str:
@@ -268,16 +268,25 @@ class BaseEvaluationConfig:
     stream_tokens: bool = False  # Whether to stream LLM tokens to stdout
     run_config: RunConfig | None = None  # Optional custom RunConfig
 
-    def to_eval_config(self, score_fn: Callable) -> EvalConfig:
+    def to_eval_config(
+        self,
+        endpoint: Endpoint,
+        prepare_messages: PrepareMessagesFn,
+        score_fn: Callable,
+    ) -> EvalConfig:
         """Convert to rollouts EvalConfig.
 
         Args:
+            endpoint: Endpoint configuration for LLM calls
+            prepare_messages: Function to prepare messages from sample
             score_fn: Score function (Trajectory, Sample) -> Score
 
         Returns:
             EvalConfig ready for rollouts.evaluate()
         """
         return EvalConfig(
+            endpoint=endpoint,
+            prepare_messages=prepare_messages,
             score_fn=score_fn,
             max_samples=self.num_samples,
             max_concurrent=self.max_concurrent,

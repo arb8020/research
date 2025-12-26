@@ -31,7 +31,7 @@ class TUIFrontend:
         environment: Environment | None = None,
         debug: bool = False,
         debug_layout: bool = False,
-    ):
+    ) -> None:
         """Initialize TUIFrontend.
 
         Args:
@@ -316,7 +316,7 @@ class TUIFrontend:
             nursery: Trio nursery to spawn tasks in
         """
 
-        async def input_reading_loop():
+        async def input_reading_loop() -> None:
             while True:
                 if self._terminal and self._terminal._running:
                     input_data = self._terminal.read_input()

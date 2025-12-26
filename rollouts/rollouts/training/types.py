@@ -465,7 +465,7 @@ class TrainerConfig:
     num_minibatches: int | None = None
     max_grad_norm: float | None = 1.0
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Validate config."""
         if self.micro_batch_size is not None and self.num_minibatches is not None:
             raise ValueError(

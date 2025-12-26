@@ -15,7 +15,7 @@ import argparse
 import sys
 
 
-def test_on_gpu():
+def test_on_gpu() -> None:
     """Run full verification test on GPU."""
     import os
     import sys
@@ -238,7 +238,7 @@ def test_on_gpu():
         sys.exit(1)
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Test functional Qwen implementation")
     parser.add_argument("--remote", action="store_true", help="Run on remote GPU")
     parser.add_argument("--gpu-id", type=str, help="Reuse existing GPU instance")
@@ -247,12 +247,13 @@ def main():
 
     if args.remote:
         from tools.functional_extractor.verify import run_on_gpu
+        from tools.functional_extractor.config import DeploymentConfig
 
         run_on_gpu(
             script_path=__file__,
+            deployment=DeploymentConfig(vram_gb=16),
             gpu_id=args.gpu_id,
             keep_alive=args.keep_alive or bool(args.gpu_id),
-            vram_gb=16,
         )
     else:
         # Check if we have GPU
