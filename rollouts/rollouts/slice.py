@@ -39,8 +39,8 @@ class SliceSegment:
     """One segment of a slice operation."""
 
     type: Literal["range", "summarize", "compact", "inject"]
-    start: int | None = None
-    end: int | None = None
+    start: int | str | None = None  # int, "N%", or None
+    end: int | str | None = None  # int, "N%", or None
     content: str | None = None  # For inject
     goal: str | None = None  # For summarize with goal
 
@@ -55,6 +55,17 @@ class SliceSegment:
             return f"compact({self.start}:{self.end})"
         else:
             return f"inject({self.content!r})"
+
+    def resolve_index(self, value: int | str | None, total: int) -> int:
+        """Resolve an index value (int, percentage string, or None) to an int."""
+        if value is None:
+            return total
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.endswith("%"):
+            pct = int(value[:-1])
+            return (total * pct) // 100
+        return int(value)
 
 
 def parse_slice_spec(spec: str) -> list[SliceSegment]:
@@ -113,8 +124,17 @@ def _split_respecting_quotes(s: str) -> list[str]:
     return parts
 
 
+def _parse_index(s: str | None) -> int | str | None:
+    """Parse an index string to int, percentage string, or None."""
+    if not s:
+        return None
+    if s.endswith("%"):
+        return s  # Keep as string like "80%"
+    return int(s)
+
+
 def _parse_segment(part: str) -> SliceSegment:
-    """Parse a single segment like '0:4' or 'summarize:4:18:'goal'' or 'compact:5:15'."""
+    """Parse a single segment like '0:4' or '80%:' or 'summarize:4:80%' or 'compact:0:50%'."""
 
     # Check for inject: prefix
     inject_match = re.match(r"inject:\s*['\"](.+)['\"]", part)
@@ -122,34 +142,37 @@ def _parse_segment(part: str) -> SliceSegment:
         return SliceSegment(type="inject", content=inject_match.group(1))
 
     # Check for summarize: prefix (with optional goal, end is optional)
-    # summarize:4:18 or summarize:4: or summarize:4:18:'goal text'
-    summarize_match = re.match(r"summarize:\s*(\d+):(\d*)(?::\s*['\"](.+)['\"])?", part)
+    # summarize:4:18 or summarize:4: or summarize:0%:80% or summarize:4:18:'goal text'
+    summarize_match = re.match(
+        r"summarize:\s*(\d+%?):(\d*%?)(?::\s*['\"](.+)['\"])?", part
+    )
     if summarize_match:
-        end_str = summarize_match.group(2)
         return SliceSegment(
             type="summarize",
-            start=int(summarize_match.group(1)),
-            end=int(end_str) if end_str else None,
+            start=_parse_index(summarize_match.group(1)),
+            end=_parse_index(summarize_match.group(2)),
             goal=summarize_match.group(3),  # None if not provided
         )
 
     # Check for compact: prefix (end is optional, defaults to all remaining)
-    compact_match = re.match(r"compact:\s*(\d+):(\d*)", part)
+    # compact:0:50% or compact:0: or compact:50%:
+    compact_match = re.match(r"compact:\s*(\d+%?):(\d*%?)", part)
     if compact_match:
-        end_str = compact_match.group(2)
         return SliceSegment(
             type="compact",
-            start=int(compact_match.group(1)),
-            end=int(end_str) if end_str else None,
+            start=_parse_index(compact_match.group(1)),
+            end=_parse_index(compact_match.group(2)),
         )
 
-    # Must be a range like "0:4" or "10:" or ":5"
-    range_match = re.match(r"(-?\d*):(-?\d*)", part)
+    # Must be a range like "0:4" or "10:" or ":5" or "80%:" or ":50%"
+    range_match = re.match(r"(-?\d*%?):(-?\d*%?)", part)
     if range_match:
         start_str, end_str = range_match.groups()
-        start = int(start_str) if start_str else None
-        end = int(end_str) if end_str else None
-        return SliceSegment(type="range", start=start, end=end)
+        return SliceSegment(
+            type="range",
+            start=_parse_index(start_str),
+            end=_parse_index(end_str),
+        )
 
     raise ValueError(f"Invalid slice segment: {part!r}")
 
@@ -397,11 +420,12 @@ async def apply_slice(
     """
     result: list[Message] = []
     messages = session.messages
+    total = len(messages)
 
     for seg in segments:
         if seg.type == "range":
-            start = seg.start if seg.start is not None else 0
-            end = seg.end  # None means to end
+            start = seg.resolve_index(seg.start, total) if seg.start is not None else 0
+            end = seg.resolve_index(seg.end, total) if seg.end is not None else None
             sliced = messages[start:end]
             result.extend(sliced)
 
@@ -409,8 +433,8 @@ async def apply_slice(
             if endpoint is None:
                 raise ValueError("Endpoint required for summarize segments")
 
-            start = seg.start if seg.start is not None else 0
-            end = seg.end if seg.end is not None else len(messages)
+            start = seg.resolve_index(seg.start, total) if seg.start is not None else 0
+            end = seg.resolve_index(seg.end, total) if seg.end is not None else total
 
             to_summarize = messages[start:end]
             if not to_summarize:
@@ -428,8 +452,8 @@ async def apply_slice(
             result.append(summary_msg)
 
         elif seg.type == "compact":
-            start = seg.start if seg.start is not None else 0
-            end = seg.end if seg.end is not None else len(messages)
+            start = seg.resolve_index(seg.start, total) if seg.start is not None else 0
+            end = seg.resolve_index(seg.end, total) if seg.end is not None else total
 
             to_compact = messages[start:end]
             if not to_compact:
