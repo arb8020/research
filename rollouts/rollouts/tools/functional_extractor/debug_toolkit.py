@@ -65,13 +65,12 @@ def capture_hf_internals(
     else:
         base_model = model
 
-    # Get layers list
+    # Get layers list (ModuleList or similar sequence)
+    layers: list = []
     if hasattr(base_model, "layers"):
-        layers = base_model.layers
+        layers = list(base_model.layers)
     elif hasattr(base_model, "h"):  # GPT-2 style
-        layers = base_model.h
-    else:
-        layers = []
+        layers = list(base_model.h)
 
     num_layers = len(layers)
     if capture_layers is None:
