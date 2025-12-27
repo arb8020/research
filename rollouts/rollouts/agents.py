@@ -1,6 +1,7 @@
 # Core agent execution framework
 
 import logging
+import os
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any
@@ -876,6 +877,8 @@ async def run_agent(
             branch_point=current_state.branch_point,
         )
         current_state = replace(current_state, session_id=session.session_id)
+        # Expose session ID to agent via environment variable
+        os.environ["ROLLOUTS_SESSION_ID"] = session.session_id
         if current_state.parent_session_id:
             logger.info(
                 f"Created child session: {session.session_id} (forked from {current_state.parent_session_id} at message {current_state.branch_point})"
@@ -888,6 +891,8 @@ async def run_agent(
             await session_store.append_message(session.session_id, msg)
 
     elif session_store and current_state.session_id:
+        # Expose session ID to agent via environment variable
+        os.environ["ROLLOUTS_SESSION_ID"] = current_state.session_id
         # Resuming existing session - check for messages added since last persist
         # (e.g., user added a new message before calling run_agent)
         session, _ = await session_store.get(current_state.session_id)
