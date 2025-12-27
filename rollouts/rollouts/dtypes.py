@@ -655,8 +655,11 @@ class ChatCompletion(JsonSerializable):
 
 @dataclass
 class Trajectory(JsonSerializable):
+    # completions: API responses with usage/logprobs (for training)
+    # messages: full conversation including user msgs & tool results (for runtime)
+    # Both needed because ChatCompletion only captures assistant turns
     completions: list[ChatCompletion] = field(default_factory=list)
-    messages: list[Message] = field(default_factory=list)  # debugging only
+    messages: list[Message] = field(default_factory=list)
     rewards: float = 0.0
     group: int = 0
     replica: int = 0

@@ -237,15 +237,27 @@ rollouts --slice "0:2, summarize:2:80%:'key progress', 80%:" -s abc123
 
 ### Slice Spec Format
 
+Grammar:
+```
+slice_spec := segment ("," segment)*
+segment    := range | summarize | compact | inject
+range      := start ":" end?
+summarize  := "summarize:" start ":" end (":" quoted_string)?
+compact    := "compact:" start ":" end
+inject     := "inject:" quoted_string
+```
+
 | Segment | Syntax | Description |
 |---------|--------|-------------|
-| Range | `0:4`, `10:`, `80%:` | Keep messages (Python slice notation) |
-| Summarize | `summarize:4:18`, `summarize:2:80%` | LLM summary of range |
+| Range | `0:4`, `10:`, `-5:`, `80%:` | Keep messages (Python slice notation) |
+| Summarize | `summarize:4:18`, `summarize:2:80%` | Collapse range into single user message via LLM |
 | Summarize+Goal | `summarize:4:18:'goal'` | Focused summary |
-| Compact | `compact:0:`, `compact:0%:50%` | Shrink tool results, keep structure |
+| Compact | `compact:0:`, `compact:0%:50%` | Shrink tool results, keep message structure |
 | Inject | `inject:'message'` | Insert user message |
 
-Percentages work in any position: `80%:`, `0:50%`, `summarize:2:80%`
+- **Percentages** work in any position: `80%:`, `0:50%`, `summarize:2:80%`
+- **Negative indices** work for ranges: `-5:` keeps last 5 messages
+- **Compact vs Summarize**: Compact preserves each message but shrinks tool output. Summarize collapses the entire range into one summary message.
 
 ### Output
 
