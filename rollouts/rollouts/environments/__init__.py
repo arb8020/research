@@ -1,4 +1,5 @@
 from ..dtypes import Environment
+from .ask_user import AskUserQuestionEnvironment
 from .binary_search import BinarySearchEnvironment
 from .calculator import CalculatorEnvironment
 from .coding import LocalFilesystemEnvironment
@@ -9,6 +10,7 @@ from .repl import MessageParsingREPLEnvironment, REPLEnvironment
 
 __all__ = [
     "Environment",
+    "AskUserQuestionEnvironment",
     "CalculatorEnvironment",
     "BinarySearchEnvironment",
     "BasicEnvironment",

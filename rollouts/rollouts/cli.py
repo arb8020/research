@@ -219,8 +219,8 @@ def create_parser() -> argparse.ArgumentParser:
         type=str,
         default=PARSER_DEFAULTS["env"],
         help=(
-            "Environment with tools. Options: none, calculator, coding, git, repl, repl_blocks. "
-            "Compose with '+': coding+repl, git+repl (default: none)"
+            "Environment with tools. Options: none, calculator, coding, git, repl, repl_blocks, ask_user. "
+            "Compose with '+': coding+ask_user, git+repl (default: none)"
         ),
     )
     parser.add_argument(
@@ -1280,6 +1280,7 @@ def create_environment(config: CLIConfig) -> tuple[Environment | None, bool]:
     # TODO: Consider auto-composition when --context is provided with coding/git envs
     # For now, explicit composition via comma-separated env names
     if "+" in config.env:
+        from rollouts.environments.ask_user import AskUserQuestionEnvironment
         from rollouts.environments.compose import compose
         from rollouts.environments.repl import REPLEnvironment
 
@@ -1306,6 +1307,8 @@ def create_environment(config: CLIConfig) -> tuple[Environment | None, bool]:
                 environments.append(REPLEnvironment(context=context, sub_endpoint=config.endpoint))
             elif env_name == "calculator":
                 environments.append(CalculatorEnvironment())
+            elif env_name == "ask_user":
+                environments.append(AskUserQuestionEnvironment())
             else:
                 print(f"Unknown environment in composition: {env_name}", file=sys.stderr)
                 return None, False
