@@ -48,10 +48,19 @@ QuestionHandler = Callable[
 ]
 
 
+def _strip_bracketed_paste(s: str) -> str:
+    """Strip bracketed paste mode escape sequences from input."""
+    # Remove start marker \x1b[200~ and end marker \x1b[201~
+    return s.replace("\x1b[200~", "").replace("\x1b[201~", "")
+
+
 async def default_question_handler(questions: list[dict[str, Any]]) -> dict[str, str]:
     """Default handler that prompts via stdin.
 
     For each question, displays the options and asks user to select.
+
+    Note: This is a basic fallback. For proper TUI integration, pass a custom
+    question_handler that uses the TUI's input components.
     """
     answers: dict[str, str] = {}
 
@@ -73,7 +82,7 @@ async def default_question_handler(questions: list[dict[str, Any]]) -> dict[str,
 
         # Use trio's to_thread for blocking input
         response = await trio.to_thread.run_sync(input, "Choice: ")
-        response = response.strip()
+        response = _strip_bracketed_paste(response).strip()
 
         if multi_select:
             # Parse comma-separated numbers
