@@ -526,7 +526,31 @@ class InteractiveAgentRunner:
     async def _tui_question_handler(self, questions: list[dict]) -> dict[str, str]:
         """Handle ask_user_question in the TUI.
 
-        Renders questions and uses the TUI input system to get responses.
+        Uses interactive QuestionSelectorComponent for arrow-key navigation.
+        """
+        from .components.question_selector import MultiQuestionSelector
+
+        if not self.tui:
+            # Fallback to basic input if TUI not available
+            return await self._tui_question_handler_basic(questions)
+
+        # Hide the loader while asking questions
+        self.tui.hide_loader()
+
+        # Use the interactive selector
+        selector = MultiQuestionSelector(
+            questions=questions,
+            tui=self.tui,
+            theme=self.tui.theme if self.tui else None,
+        )
+
+        answers = await selector.ask_all()
+        return answers
+
+    async def _tui_question_handler_basic(self, questions: list[dict]) -> dict[str, str]:
+        """Fallback question handler using text input.
+
+        Used when TUI is not available or for simpler interaction.
         """
         answers: dict[str, str] = {}
 
