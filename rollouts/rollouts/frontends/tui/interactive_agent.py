@@ -488,11 +488,107 @@ class InteractiveAgentRunner:
         # Add spacer after status line
         self.tui.add_child(Spacer(5, debug_label="after-status"))
 
+        # Inject TUI question handler into AskUserQuestionEnvironment if present
+        self._inject_question_handler()
+
         # Set up signal handler for Ctrl+C
         signal.signal(signal.SIGINT, self._handle_sigint)
 
         # Start TUI
         self.tui.start()
+
+    def _inject_question_handler(self) -> None:
+        """Inject TUI-aware question handler into AskUserQuestionEnvironment.
+
+        This allows the ask_user_question tool to render questions in the TUI
+        and use the TUI's input system instead of raw stdin.
+        """
+        if not self.environment:
+            return
+
+        # Find AskUserQuestionEnvironment in the environment (could be composed)
+        from rollouts.environments.ask_user import AskUserQuestionEnvironment
+        from rollouts.environments.compose import ComposedEnvironment
+
+        ask_user_envs: list[AskUserQuestionEnvironment] = []
+
+        if isinstance(self.environment, AskUserQuestionEnvironment):
+            ask_user_envs.append(self.environment)
+        elif isinstance(self.environment, ComposedEnvironment):
+            for env in self.environment.environments:
+                if isinstance(env, AskUserQuestionEnvironment):
+                    ask_user_envs.append(env)
+
+        # Inject the handler
+        for env in ask_user_envs:
+            env.question_handler = self._tui_question_handler
+
+    async def _tui_question_handler(self, questions: list[dict]) -> dict[str, str]:
+        """Handle ask_user_question in the TUI.
+
+        Renders questions and uses the TUI input system to get responses.
+        """
+        answers: dict[str, str] = {}
+
+        for q in questions:
+            question_text = q.get("question", "")
+            header = q.get("header", "Question")
+            options = q.get("options", [])
+            multi_select = q.get("multiSelect", False)
+
+            # Render question to TUI
+            if self.renderer:
+                self.renderer.add_system_message(f"[{header}] {question_text}")
+                for i, opt in enumerate(options, 1):
+                    label = opt.get("label", f"Option {i}")
+                    desc = opt.get("description", "")
+                    self.renderer.add_system_message(f"  {i}. {label}: {desc}")
+                self.renderer.add_system_message(
+                    f"  {len(options) + 1}. Other (type custom answer)"
+                )
+
+                if multi_select:
+                    self.renderer.add_system_message(
+                        "Enter numbers separated by commas (e.g., 1,3):"
+                    )
+
+            # Get user input via TUI input system
+            response = await self._tui_input_handler("Choice: ")
+            response = response.strip()
+
+            # Parse response
+            if multi_select:
+                selected_labels = []
+                for part in response.split(","):
+                    part = part.strip()
+                    if part.isdigit():
+                        idx = int(part) - 1
+                        if 0 <= idx < len(options):
+                            selected_labels.append(options[idx].get("label", ""))
+                        elif idx == len(options):
+                            # "Other" selected - get custom input
+                            other_text = await self._tui_input_handler("Enter your answer: ")
+                            selected_labels.append(other_text.strip())
+                answers[question_text] = ", ".join(selected_labels)
+            else:
+                if response.isdigit():
+                    idx = int(response) - 1
+                    if 0 <= idx < len(options):
+                        answers[question_text] = options[idx].get("label", "")
+                    elif idx == len(options):
+                        # "Other" selected
+                        other_text = await self._tui_input_handler("Enter your answer: ")
+                        answers[question_text] = other_text.strip()
+                    else:
+                        # Invalid number, default to first
+                        answers[question_text] = (
+                            options[0].get("label", "") if options else response
+                        )
+                else:
+                    # Treat as free text
+                    answers[question_text] = response
+
+        return answers
 
     def _create_initial_state(self, first_message: str) -> AgentState:
         """Create initial agent state with first user message."""
