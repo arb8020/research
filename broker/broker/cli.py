@@ -15,6 +15,7 @@ from shared.config import (
     get_prime_key,
     get_runpod_key,
     get_ssh_key_path,
+    get_vast_key,
 )
 from shared.logging_config import setup_logging
 
@@ -129,10 +130,14 @@ def resolve_credentials(ctx) -> ProviderCredentials:
     runpod_key = get_runpod_key()
     prime_key = get_prime_key()
     lambda_key = get_lambda_key()
+    vast_key = get_vast_key()
 
-    if runpod_key or prime_key or lambda_key:
+    if runpod_key or prime_key or lambda_key or vast_key:
         return ProviderCredentials(
-            runpod=runpod_key or "", primeintellect=prime_key or "", lambdalabs=lambda_key or ""
+            runpod=runpod_key or "",
+            primeintellect=prime_key or "",
+            lambdalabs=lambda_key or "",
+            vast=vast_key or "",
         )
 
     # Priority 4: Error with helpful message

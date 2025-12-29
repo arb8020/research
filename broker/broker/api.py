@@ -670,4 +670,10 @@ def list_instances(
             lambda_instances = lambdalabs.list_instances(api_key=api_key)
             instances.extend(lambda_instances)
 
+    if provider is None or provider == "vast":
+        api_key = credentials.get("vast") if credentials else None
+        if api_key:  # Only list if we have credentials
+            vast_instances = vast.list_instances(api_key=api_key)
+            instances.extend(vast_instances)
+
     return instances
