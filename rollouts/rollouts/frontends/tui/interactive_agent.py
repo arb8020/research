@@ -498,41 +498,41 @@ class InteractiveAgentRunner:
         self.tui.start()
 
     def _inject_question_handler(self) -> None:
-        """Inject TUI-aware question handler into AskUserQuestionEnvironment.
+        """No longer needed - ask_user_question is now intercepted via confirm_tool.
 
-        This allows the ask_user_question tool to render questions in the TUI
-        and use the TUI's input system instead of raw stdin.
+        Kept as no-op for backwards compatibility in case it's called elsewhere.
         """
-        if not self.environment:
-            return
+        pass
 
-        # Find AskUserQuestionEnvironment in the environment (could be composed)
-        from rollouts.environments.ask_user import AskUserQuestionEnvironment
-        from rollouts.environments.compose import ComposedEnvironment
+    async def _handle_ask_user_question_tool(
+        self, tc: ToolCall, state: AgentState
+    ) -> tuple[AgentState, ToolConfirmResult]:
+        """Handle ask_user_question tool via TUI confirm_tool interception.
 
-        ask_user_envs: list[AskUserQuestionEnvironment] = []
-
-        if isinstance(self.environment, AskUserQuestionEnvironment):
-            ask_user_envs.append(self.environment)
-        elif isinstance(self.environment, ComposedEnvironment):
-            for env in self.environment.environments:
-                if isinstance(env, AskUserQuestionEnvironment):
-                    ask_user_envs.append(env)
-
-        # Inject the handler
-        for env in ask_user_envs:
-            env.question_handler = self._tui_question_handler
-
-    async def _tui_question_handler(self, questions: list[dict]) -> dict[str, str]:
-        """Handle ask_user_question in the TUI.
-
-        Uses interactive QuestionSelectorComponent for arrow-key navigation.
+        Instead of letting the environment execute this tool, we intercept it
+        in confirm_tool and provide the result directly. This avoids the issue
+        of environment deserialization losing injected handlers.
         """
+        import json
+
         from .components.question_selector import MultiQuestionSelector
 
+        questions = tc.args.get("questions", [])
+
+        # Validate questions
+        if not questions:
+            return state, ToolConfirmResult(
+                proceed=False,
+                tool_result=ToolResult(
+                    tool_call_id=tc.id,
+                    is_error=True,
+                    error="No questions provided",
+                ),
+            )
+
         if not self.tui:
-            # Fallback to basic input if TUI not available
-            return await self._tui_question_handler_basic(questions)
+            # Fallback - let environment handle it
+            return state, ToolConfirmResult(proceed=True)
 
         # Hide the loader while asking questions
         self.tui.hide_loader()
@@ -541,78 +541,20 @@ class InteractiveAgentRunner:
         selector = MultiQuestionSelector(
             questions=questions,
             tui=self.tui,
-            theme=self.tui.theme if self.tui else None,
+            theme=self.tui.theme,
         )
 
         answers = await selector.ask_all()
-        return answers
 
-    async def _tui_question_handler_basic(self, questions: list[dict]) -> dict[str, str]:
-        """Fallback question handler using text input.
-
-        Used when TUI is not available or for simpler interaction.
-        """
-        answers: dict[str, str] = {}
-
-        for q in questions:
-            question_text = q.get("question", "")
-            header = q.get("header", "Question")
-            options = q.get("options", [])
-            multi_select = q.get("multiSelect", False)
-
-            # Render question to TUI
-            if self.renderer:
-                self.renderer.add_system_message(f"[{header}] {question_text}")
-                for i, opt in enumerate(options, 1):
-                    label = opt.get("label", f"Option {i}")
-                    desc = opt.get("description", "")
-                    self.renderer.add_system_message(f"  {i}. {label}: {desc}")
-                self.renderer.add_system_message(
-                    f"  {len(options) + 1}. Other (type custom answer)"
-                )
-
-                if multi_select:
-                    self.renderer.add_system_message(
-                        "Enter numbers separated by commas (e.g., 1,3):"
-                    )
-
-            # Get user input via TUI input system
-            response = await self._tui_input_handler("Choice: ")
-            response = response.strip()
-
-            # Parse response
-            if multi_select:
-                selected_labels = []
-                for part in response.split(","):
-                    part = part.strip()
-                    if part.isdigit():
-                        idx = int(part) - 1
-                        if 0 <= idx < len(options):
-                            selected_labels.append(options[idx].get("label", ""))
-                        elif idx == len(options):
-                            # "Other" selected - get custom input
-                            other_text = await self._tui_input_handler("Enter your answer: ")
-                            selected_labels.append(other_text.strip())
-                answers[question_text] = ", ".join(selected_labels)
-            else:
-                if response.isdigit():
-                    idx = int(response) - 1
-                    if 0 <= idx < len(options):
-                        answers[question_text] = options[idx].get("label", "")
-                    elif idx == len(options):
-                        # "Other" selected
-                        other_text = await self._tui_input_handler("Enter your answer: ")
-                        answers[question_text] = other_text.strip()
-                    else:
-                        # Invalid number, default to first
-                        answers[question_text] = (
-                            options[0].get("label", "") if options else response
-                        )
-                else:
-                    # Treat as free text
-                    answers[question_text] = response
-
-        return answers
+        # Return the result directly, bypassing environment execution
+        return state, ToolConfirmResult(
+            proceed=False,  # Don't proceed to env.exec_tool
+            tool_result=ToolResult(
+                tool_call_id=tc.id,
+                is_error=False,
+                content=json.dumps(answers),
+            ),
+        )
 
     def _create_initial_state(self, first_message: str) -> AgentState:
         """Create initial agent state with first user message."""
@@ -640,12 +582,19 @@ class InteractiveAgentRunner:
         async def auto_confirm_tool(
             tc: ToolCall, state: AgentState, rcfg: RunConfig
         ) -> tuple[AgentState, ToolConfirmResult]:
+            # Intercept ask_user_question to handle it via TUI
+            if tc.name == "ask_user_question":
+                return await self._handle_ask_user_question_tool(tc, state)
             return state, ToolConfirmResult(proceed=True)
 
         async def confirm_tool_tui(
             tc: ToolCall, state: AgentState, rcfg: RunConfig
         ) -> tuple[AgentState, ToolConfirmResult]:
             """Interactive tool confirmation in TUI."""
+            # Intercept ask_user_question to handle it via TUI (no confirmation needed)
+            if tc.name == "ask_user_question":
+                return await self._handle_ask_user_question_tool(tc, state)
+
             if self.renderer:
                 self.renderer.add_system_message(
                     f"⚠️  Tool: {tc.name}({tc.args})\n   [y] execute  [n] reject  [s] skip"
