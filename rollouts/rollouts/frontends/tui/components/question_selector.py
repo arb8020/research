@@ -122,6 +122,12 @@ class QuestionSelectorComponent(Container):
 
     def handle_input(self, data: str) -> None:
         """Handle keyboard input."""
+        # Ctrl+C - treat as cancel (let it propagate for TUI to handle)
+        if len(data) > 0 and ord(data[0]) == 3:
+            if self._on_cancel:
+                self._on_cancel()
+            return
+
         # Up arrow or k
         if data == "\x1b[A" or data == "k":
             self._selected_index = max(0, self._selected_index - 1)
