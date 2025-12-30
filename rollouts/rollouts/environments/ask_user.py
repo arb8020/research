@@ -134,6 +134,9 @@ def format_ask_user_question(
         text = f"ask_user_question([{header}] {question_text[:50]})"
     elif num_questions > 1:
         text = f"ask_user_question({num_questions} questions)"
+    elif not args:
+        # Args empty - still streaming
+        text = "ask_user_question(...)"
     else:
         text = "ask_user_question(invalid: no questions)"
 

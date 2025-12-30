@@ -229,8 +229,12 @@ class AgentRenderer:
         self, content_index: int, tool_call_id: str, tool_name: str
     ) -> None:
         """Handle tool call start - create tool component."""
-        # Hide loader - we're now showing tool UI instead
-        self.tui.hide_loader()
+        # Show streaming loader while tool args are being generated
+        self.tui.show_loader(
+            f"Streaming {tool_name}... (Esc to interrupt)",
+            spinner_color_fn=self.theme.fg(self.theme.accent),
+            text_color_fn=self.theme.fg(self.theme.muted),
+        )
 
         # Finalize current message if we have one
         if self.current_message:
@@ -287,6 +291,9 @@ class AgentRenderer:
 
     def _handle_tool_call_end(self, content_index: int, tool_call: ToolCall) -> None:
         """Handle tool call end - tool is complete (but not executed yet)."""
+        # Hide the streaming loader now that args are complete
+        self.tui.hide_loader()
+
         tool_id = tool_call.id
         if tool_id in self.pending_tools:
             # Update with final args
