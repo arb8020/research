@@ -237,10 +237,9 @@ class MultiQuestionSelector:
                     # Cancelled - use empty string
                     self._answers[question_text] = ""
                 elif answer == "Other":
-                    # Need to get custom input - restore focus to input component
-                    # For now, just use "Other" as the answer
-                    # TODO: Implement custom input flow
-                    self._answers[question_text] = "Other"
+                    # Get custom input from user
+                    custom_answer = await self._get_custom_input()
+                    self._answers[question_text] = custom_answer if custom_answer else ""
                 else:
                     self._answers[question_text] = answer
 
@@ -251,6 +250,41 @@ class MultiQuestionSelector:
             if self._original_focus and self._tui:
                 self._tui.set_focus(self._original_focus)
             self._tui.request_render()
+
+    async def _get_custom_input(self) -> str:
+        """Get custom text input from user when 'Other' is selected."""
+        # Create a channel for receiving the input
+        send, receive = trio.open_memory_channel[str](1)
+
+        # Find the input component and set up a one-time submit handler
+        input_component = self._original_focus
+
+        if input_component is None or not hasattr(input_component, "_on_submit"):
+            return ""
+
+        # Save the original submit handler
+        original_on_submit = input_component._on_submit
+
+        def custom_submit(text: str) -> None:
+            try:
+                send.send_nowait(text)
+            except trio.WouldBlock:
+                pass
+
+        # Set our custom handler
+        input_component._on_submit = custom_submit
+
+        # Restore focus to input
+        self._tui.set_focus(input_component)
+        self._tui.request_render()
+
+        try:
+            # Wait for user input
+            result = await receive.receive()
+            return result
+        finally:
+            # Restore original handler
+            input_component._on_submit = original_on_submit
 
     async def _ask_single_question(self, question: dict[str, Any]) -> str | None:
         """Ask a single question and wait for response."""
@@ -279,8 +313,14 @@ class MultiQuestionSelector:
             on_cancel=on_cancel,
         )
 
-        # Add to TUI and set focus
-        self._tui.add_child(self._selector)
+        # Insert before the last spacer (after status line) for tighter layout
+        # The TUI children are: [..., status_line, spacer(5)]
+        # We want to insert before the spacer
+        if len(self._tui.children) >= 2:
+            self._tui.children.insert(-1, self._selector)
+        else:
+            self._tui.children.append(self._selector)
+
         self._tui.set_focus(self._selector)
         self._tui.request_render()
 
