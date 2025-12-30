@@ -127,38 +127,51 @@ def format_ask_user_question(
     questions = args.get("questions") or []
     num_questions = len(questions) if isinstance(questions, list) else 0
 
+    # Header line
     if num_questions == 1:
         q = questions[0]
         header = q.get("header", "Question") if isinstance(q, dict) else "Question"
         question_text = q.get("question", "...") if isinstance(q, dict) else "..."
-        text = f"ask_user_question([{header}] {question_text[:50]})"
+        # Truncate for header, but show full in expanded view
+        if len(question_text) > 60:
+            header_text = f"[{header}] {question_text[:57]}..."
+        else:
+            header_text = f"[{header}] {question_text}"
+        text = f"ask_user_question({header_text})"
     elif num_questions > 1:
         text = f"ask_user_question({num_questions} questions)"
     elif not args:
-        # Args empty - still streaming
         text = "ask_user_question(...)"
     else:
         text = "ask_user_question(invalid: no questions)"
 
     if result:
-        # Check for error first
         is_error = result.get("isError", False) or result.get("is_error", False)
         error = result.get("error", "")
 
         if is_error and error:
             text += f"\n⎿ Error: {error[:100]}"
         else:
-            # Show the answers
+            # Extract content - handle both string and list formats
             content = result.get("content", "")
+
+            # If content is a list (standard format), extract text from it
+            if isinstance(content, list):
+                text_blocks = [
+                    c for c in content if isinstance(c, dict) and c.get("type") == "text"
+                ]
+                content = "\n".join(c.get("text", "") for c in text_blocks if c.get("text"))
+
             if isinstance(content, str) and content:
                 try:
                     answers = json.loads(content)
                     if isinstance(answers, dict):
+                        # Format like Claude Code: show each Q&A on its own line
                         text += "\n⎿ User answered:"
                         for q_text, answer in answers.items():
-                            # Truncate long question text
-                            short_q = q_text[:40] + "..." if len(q_text) > 40 else q_text
-                            text += f"\n  {short_q}: {answer}"
+                            # Show question with arrow, then answer
+                            text += f"\n   · {q_text}"
+                            text += f"\n     → {answer}"
                 except json.JSONDecodeError:
                     text += f"\n⎿ {content[:100]}"
 
