@@ -49,10 +49,15 @@ class QuestionSelectorComponent(Container):
         self._selected_index = 0
         self._selected_indices: set[int] = set()  # For multi-select
 
-        # Add "Other" option
+        # Add "Other" option (last index)
         self._all_options = list(self._options) + [
             {"label": "Other", "description": "Type a custom answer"}
         ]
+        self._other_index = len(self._all_options) - 1
+
+        # Custom text input state (for "Other" option)
+        self._custom_text = ""
+        self._is_typing_custom = False
 
         self._build_ui()
 
@@ -75,6 +80,16 @@ class QuestionSelectorComponent(Container):
             desc = opt.get("description", "")
             is_selected = i == self._selected_index
             is_checked = i in self._selected_indices  # For multi-select
+            is_other = i == self._other_index
+
+            # For "Other" option, show custom text if typing
+            if is_other and (self._custom_text or self._is_typing_custom):
+                # Show the custom text with a cursor indicator
+                display_label = self._custom_text if self._custom_text else "Type here..."
+                if is_selected:
+                    display_label += "▏"  # Cursor
+            else:
+                display_label = label
 
             # Build option text
             if self._multi_select:
@@ -87,22 +102,23 @@ class QuestionSelectorComponent(Container):
                 # Highlighted option
                 arrow = "→ " if not self._multi_select else ""
                 if self._theme:
-                    option_text = self._theme.accent_fg(f"{arrow}{label}")
-                    if desc:
+                    option_text = self._theme.accent_fg(f"{arrow}{display_label}")
+                    # Only show description if not typing custom text
+                    if desc and not (is_other and self._custom_text):
                         option_text += self._theme.muted_fg(f": {desc}")
                 else:
-                    option_text = f"{arrow}{label}"
-                    if desc:
+                    option_text = f"{arrow}{display_label}"
+                    if desc and not (is_other and self._custom_text):
                         option_text += f": {desc}"
             else:
                 if self._theme:
                     # Use text color for unselected options
-                    option_text = self._theme.fg(self._theme.text)(label)
-                    if desc:
+                    option_text = self._theme.fg(self._theme.text)(display_label)
+                    if desc and not (is_other and self._custom_text):
                         option_text += self._theme.muted_fg(f": {desc}")
                 else:
-                    option_text = label
-                    if desc:
+                    option_text = display_label
+                    if desc and not (is_other and self._custom_text):
                         option_text += f": {desc}"
 
             full_text = prefix + option_text
@@ -129,26 +145,72 @@ class QuestionSelectorComponent(Container):
             if not data:
                 return
 
+        is_on_other = self._selected_index == self._other_index
+
         # Ctrl+C - treat as cancel (let it propagate for TUI to handle)
         if len(data) > 0 and ord(data[0]) == 3:
             if self._on_cancel:
                 self._on_cancel()
             return
 
-        # Up arrow or k
-        if data == "\x1b[A" or data == "k":
+        # Up arrow - navigate (but not if typing custom text with content)
+        if data == "\x1b[A":
+            if not (is_on_other and self._custom_text):
+                self._selected_index = max(0, self._selected_index - 1)
+                self._is_typing_custom = False
+                self._build_ui()
+            return
+
+        # Down arrow - navigate (but not if typing custom text with content)
+        if data == "\x1b[B":
+            if not (is_on_other and self._custom_text):
+                self._selected_index = min(len(self._all_options) - 1, self._selected_index + 1)
+                self._is_typing_custom = False
+                self._build_ui()
+            return
+
+        # If on "Other" option, handle text input
+        if is_on_other:
+            # Backspace
+            if len(data) > 0 and ord(data[0]) in (127, 8):
+                if self._custom_text:
+                    self._custom_text = self._custom_text[:-1]
+                    self._build_ui()
+                return
+
+            # Enter - confirm with custom text
+            if len(data) == 1 and ord(data[0]) == 13:
+                result = self._custom_text if self._custom_text else "Other"
+                if self._on_select:
+                    self._on_select(result)
+                return
+
+            # Escape - cancel
+            if data == "\x1b":
+                if self._on_cancel:
+                    self._on_cancel()
+                return
+
+            # Regular printable characters - add to custom text
+            if len(data) > 0 and ord(data[0]) >= 32:
+                self._custom_text += data
+                self._is_typing_custom = True
+                self._build_ui()
+                return
+
+        # j/k navigation (only when not typing custom)
+        if data == "k" and not self._custom_text:
             self._selected_index = max(0, self._selected_index - 1)
             self._build_ui()
             return
 
-        # Down arrow or j
-        if data == "\x1b[B" or data == "j":
+        if data == "j" and not self._custom_text:
             self._selected_index = min(len(self._all_options) - 1, self._selected_index + 1)
             self._build_ui()
             return
 
         # Space - toggle selection (multi-select only)
-        if data == " " and self._multi_select:
+        if data == " " and self._multi_select and not is_on_other:
             if self._selected_index in self._selected_indices:
                 self._selected_indices.remove(self._selected_index)
             else:
@@ -156,7 +218,7 @@ class QuestionSelectorComponent(Container):
             self._build_ui()
             return
 
-        # Enter - confirm selection
+        # Enter - confirm selection (for non-Other options)
         if len(data) == 1 and ord(data[0]) == 13:
             if self._multi_select:
                 # Return comma-separated labels
@@ -236,11 +298,8 @@ class MultiQuestionSelector:
                 if answer is None:
                     # Cancelled - use empty string
                     self._answers[question_text] = ""
-                elif answer == "Other":
-                    # Get custom input from user
-                    custom_answer = await self._get_custom_input()
-                    self._answers[question_text] = custom_answer if custom_answer else ""
                 else:
+                    # answer is either a label or custom text from inline typing
                     self._answers[question_text] = answer
 
             return self._answers
@@ -250,41 +309,6 @@ class MultiQuestionSelector:
             if self._original_focus and self._tui:
                 self._tui.set_focus(self._original_focus)
             self._tui.request_render()
-
-    async def _get_custom_input(self) -> str:
-        """Get custom text input from user when 'Other' is selected."""
-        # Create a channel for receiving the input
-        send, receive = trio.open_memory_channel[str](1)
-
-        # Find the input component and set up a one-time submit handler
-        input_component = self._original_focus
-
-        if input_component is None or not hasattr(input_component, "_on_submit"):
-            return ""
-
-        # Save the original submit handler
-        original_on_submit = input_component._on_submit
-
-        def custom_submit(text: str) -> None:
-            try:
-                send.send_nowait(text)
-            except trio.WouldBlock:
-                pass
-
-        # Set our custom handler
-        input_component._on_submit = custom_submit
-
-        # Restore focus to input
-        self._tui.set_focus(input_component)
-        self._tui.request_render()
-
-        try:
-            # Wait for user input
-            result = await receive.receive()
-            return result
-        finally:
-            # Restore original handler
-            input_component._on_submit = original_on_submit
 
     async def _ask_single_question(self, question: dict[str, Any]) -> str | None:
         """Ask a single question and wait for response."""
