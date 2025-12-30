@@ -180,7 +180,18 @@ class QuestionSelectorComponent(Container):
 
             # Enter - confirm with custom text
             if len(data) == 1 and ord(data[0]) == 13:
-                result = self._custom_text if self._custom_text else "Other"
+                custom_answer = self._custom_text if self._custom_text else "Other"
+                if self._multi_select:
+                    # Include any previously selected options + the custom text
+                    selected_labels = [
+                        self._all_options[i].get("label", "")
+                        for i in sorted(self._selected_indices)
+                        if i != self._other_index  # Don't include "Other" label
+                    ]
+                    selected_labels.append(custom_answer)
+                    result = ", ".join(selected_labels)
+                else:
+                    result = custom_answer
                 if self._on_select:
                     self._on_select(result)
                 return
