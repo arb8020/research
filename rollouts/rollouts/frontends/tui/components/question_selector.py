@@ -96,7 +96,8 @@ class QuestionSelectorComponent(Container):
                         option_text += f": {desc}"
             else:
                 if self._theme:
-                    option_text = self._theme.fg(label)
+                    # Use text color for unselected options
+                    option_text = self._theme.fg(self._theme.text)(label)
                     if desc:
                         option_text += self._theme.muted_fg(f": {desc}")
                 else:
@@ -122,6 +123,12 @@ class QuestionSelectorComponent(Container):
 
     def handle_input(self, data: str) -> None:
         """Handle keyboard input."""
+        # Strip bracketed paste escape sequences (ignore paste content in selector)
+        if "\x1b[200~" in data or "\x1b[201~" in data:
+            data = data.replace("\x1b[200~", "").replace("\x1b[201~", "")
+            if not data:
+                return
+
         # Ctrl+C - treat as cancel (let it propagate for TUI to handle)
         if len(data) > 0 and ord(data[0]) == 3:
             if self._on_cancel:
@@ -273,7 +280,6 @@ class MultiQuestionSelector:
         )
 
         # Add to TUI and set focus
-        # We need to temporarily add it to the TUI's children
         self._tui.add_child(self._selector)
         self._tui.set_focus(self._selector)
         self._tui.request_render()
