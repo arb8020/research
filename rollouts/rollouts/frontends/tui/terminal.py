@@ -18,13 +18,25 @@ from typing import Protocol
 
 # Global reference for atexit cleanup
 _active_terminal: ProcessTerminal | None = None
+_active_session_id: str | None = None
+
+
+def set_active_session_id(session_id: str | None) -> None:
+    """Set the active session ID for crash reporting."""
+    global _active_session_id
+    _active_session_id = session_id
 
 
 def _cleanup_terminal() -> None:
-    """Atexit handler to restore terminal state."""
-    global _active_terminal
+    """Atexit handler to restore terminal state and print session ID."""
+    global _active_terminal, _active_session_id
     if _active_terminal is not None:
         _active_terminal.stop()
+
+    # Print session ID on crash/exit so user can resume
+    if _active_session_id:
+        print(f"\nSession: {_active_session_id}")
+        print(f"Resume with: --session {_active_session_id}")
 
 
 class Terminal(Protocol):

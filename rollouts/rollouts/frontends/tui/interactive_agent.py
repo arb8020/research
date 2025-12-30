@@ -33,7 +33,7 @@ from .agent_renderer import AgentRenderer
 from .components.input import Input
 from .components.loader_container import LoaderContainer
 from .components.spacer import Spacer
-from .terminal import ProcessTerminal
+from .terminal import ProcessTerminal, set_active_session_id
 from .tui import TUI
 
 if TYPE_CHECKING:
@@ -82,6 +82,8 @@ class InteractiveAgentRunner:
         self.environment = environment
         self.session_store = session_store
         self.session_id = session_id
+        if session_id:
+            set_active_session_id(session_id)  # For crash reporting
         self.debug = debug
         self.debug_layout = debug_layout
         self.parent_session_id = parent_session_id
@@ -347,6 +349,7 @@ class InteractiveAgentRunner:
                 if agent_states and agent_states[-1].stop == StopReason.ABORTED:
                     if agent_states[-1].session_id:
                         self.session_id = agent_states[-1].session_id
+                        set_active_session_id(self.session_id)
 
                     if not self.escape_pressed:
                         break  # Ctrl+C - exit the TUI
@@ -365,6 +368,7 @@ class InteractiveAgentRunner:
 
         if agent_states and agent_states[-1].session_id:
             self.session_id = agent_states[-1].session_id
+            set_active_session_id(self.session_id)
 
         return agent_states
 
@@ -415,6 +419,7 @@ class InteractiveAgentRunner:
         final_state = agent_states[-1]
         if final_state.session_id and final_state.session_id != self.session_id:
             self.session_id = final_state.session_id
+            set_active_session_id(self.session_id)
             if self.status_line:
                 self.status_line.set_session_id(self.session_id)
             self._update_env_status_info()
@@ -673,6 +678,7 @@ class InteractiveAgentRunner:
 
         if latest_state.session_id and latest_state.session_id != self.session_id:
             self.session_id = latest_state.session_id
+            set_active_session_id(self.session_id)
             if self.status_line:
                 self.status_line.set_session_id(self.session_id)
             self._update_env_status_info()
@@ -737,6 +743,7 @@ class InteractiveAgentRunner:
         # Update session tracking
         if latest_state.session_id and latest_state.session_id != self.session_id:
             self.session_id = latest_state.session_id
+            set_active_session_id(self.session_id)
             if self.status_line:
                 self.status_line.set_session_id(self.session_id)
             self._update_env_status_info()
@@ -839,6 +846,8 @@ class InteractiveAgentRunner:
         if self.session_id:
             print(f"\nSession: {self.session_id}")
             print(f"Resume with: --session {self.session_id}")
+            # Clear active session so atexit handler doesn't double-print
+            set_active_session_id(None)
 
             from rollouts.environments.git_worktree import GitWorktreeEnvironment
 

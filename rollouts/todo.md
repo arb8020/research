@@ -2,6 +2,9 @@ https://mariozechner.at/posts/2025-11-30-pi-coding-agent/#toc_3
 
 https://github.com/letta-ai/letta-code.git
 
+[ ] vim input with ctrlG is fragile
+
+
 ## Evaluation
 
 [ ] Scaffold versioning - add SCAFFOLD_VERSION constant, include in EvalReport (agents.py:48)
