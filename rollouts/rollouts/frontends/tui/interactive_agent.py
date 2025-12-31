@@ -209,6 +209,36 @@ class InteractiveAgentRunner:
         if self.tui:
             self.tui.request_render()
 
+    def _handle_input_change(self, text: str) -> None:
+        """Handle input text change - update ghost text for autocomplete preview.
+
+        This is called whenever the input text changes. We use it to show
+        ghost text (dimmed completion hint) for slash commands.
+        """
+        from .slash_commands import get_all_commands
+
+        if not self.input_component:
+            return
+
+        ghost_text = ""
+
+        # Only show ghost text for slash commands at the start of input
+        if text.startswith("/") and " " not in text:
+            prefix = text[1:]  # Remove /
+            if prefix:  # Don't show ghost for just "/"
+                commands = get_all_commands()
+                matches = [c.name for c in commands if c.name.startswith(prefix)]
+
+                if matches:
+                    # Show the remainder of the first match as ghost text
+                    first_match = matches[0]
+                    ghost_text = first_match[len(prefix) :]
+
+        self.input_component.set_ghost_text(ghost_text)
+
+        if self.tui:
+            self.tui.request_render()
+
     def _handle_tab_complete(self, text: str) -> str | None:
         """Handle tab completion for slash commands and model names.
 
@@ -625,6 +655,7 @@ class InteractiveAgentRunner:
         self.input_component.set_on_submit(self._handle_input_submit)
         self.input_component.set_on_editor(self._handle_open_editor)
         self.input_component.set_on_tab_complete(self._handle_tab_complete)
+        self.input_component.set_on_change(self._handle_input_change)
         self.tui.add_child(self.input_component)
 
         # Create status line below input
