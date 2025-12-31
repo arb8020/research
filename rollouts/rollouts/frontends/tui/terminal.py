@@ -33,6 +33,15 @@ def _cleanup_terminal() -> None:
     if _active_terminal is not None:
         _active_terminal.stop()
 
+    # Run stty sane as a fallback to ensure terminal is usable
+    # This handles edge cases where termios restoration fails or is incomplete
+    import subprocess
+
+    try:
+        subprocess.run(["stty", "sane"], stdin=open("/dev/tty"), check=False)
+    except Exception:
+        pass  # Best effort - don't fail cleanup if stty unavailable
+
     # Print session ID on crash/exit so user can resume
     if _active_session_id:
         print(f"\nSession: {_active_session_id}")
