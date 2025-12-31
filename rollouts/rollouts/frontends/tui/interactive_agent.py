@@ -223,7 +223,10 @@ class InteractiveAgentRunner:
         Ghost text types:
         1. Command name completion: /mo → "del" (completes to /model)
         2. Argument hint: /model → " [provider/model]" (shows expected args)
+        3. Model completion: /model anth → "ropic/claude-sonnet-4-20250514"
         """
+        from rollouts.models import get_models, get_providers
+
         from .slash_commands import get_all_commands, get_command_arg_hint
 
         if not self.input_component:
@@ -262,15 +265,28 @@ class InteractiveAgentRunner:
                             if arg_hint:
                                 ghost_text = f" {arg_hint}"
             else:
-                # Space present - show arg hint for the command
+                # Space present - check for model completion or show arg hint
                 space_idx = text.index(" ")
                 cmd_name = text[1:space_idx]  # Extract command name
-                arg_hint = get_command_arg_hint(cmd_name)
-
-                # Only show hint if user hasn't started typing args
                 arg_text = text[space_idx + 1 :]
-                if arg_hint and not arg_text:
-                    ghost_text = arg_hint
+
+                if cmd_name == "model" and arg_text:
+                    # Model argument - show completion for provider/model
+                    all_models: list[str] = []
+                    for provider in get_providers():
+                        for model in get_models(provider):
+                            all_models.append(f"{provider}/{model.id}")
+
+                    # Find matches (prefix match)
+                    matches = [m for m in all_models if m.startswith(arg_text)]
+                    if matches:
+                        first_match = matches[0]
+                        ghost_text = first_match[len(arg_text) :]
+                elif not arg_text:
+                    # No args typed yet - show hint
+                    arg_hint = get_command_arg_hint(cmd_name)
+                    if arg_hint:
+                        ghost_text = arg_hint
 
         self.input_component.set_ghost_text(ghost_text)
 
@@ -295,7 +311,7 @@ class InteractiveAgentRunner:
         if not text.startswith("/"):
             return None
 
-        # Check for /model completion (no cycling for model names, just common prefix)
+        # Check for /model completion with tab cycling
         if text.startswith("/model "):
             arg = text[7:]  # After "/model "
 
@@ -308,18 +324,25 @@ class InteractiveAgentRunner:
             # Find matches
             matches = [m for m in all_models if m.startswith(arg)]
 
-            if len(matches) == 1:
-                # Single match - complete it
-                return f"/model {matches[0]}"
-            elif len(matches) > 1:
-                # Multiple matches - find common prefix
-                common = matches[0]
-                for m in matches[1:]:
-                    while not m.startswith(common):
-                        common = common[:-1]
-                if len(common) > len(arg):
-                    return f"/model {common}"
-            return None
+            if not matches:
+                return None
+
+            # Check if we're continuing a tab cycle for models
+            if (
+                self._tab_cycle_matches
+                and self._tab_cycle_prefix.startswith("/model ")
+                and f"/model {self._tab_cycle_matches[self._tab_cycle_index]}" == text.rstrip()
+            ):
+                # Continue cycling - move to next match
+                self._tab_cycle_index = (self._tab_cycle_index + 1) % len(self._tab_cycle_matches)
+                return f"/model {self._tab_cycle_matches[self._tab_cycle_index]}"
+
+            # Start new cycle
+            self._tab_cycle_matches = matches
+            self._tab_cycle_index = 0
+            self._tab_cycle_prefix = text
+
+            return f"/model {matches[0]}"
 
         # Check for command name completion with tab cycling
         if " " not in text:
