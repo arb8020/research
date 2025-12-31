@@ -59,6 +59,14 @@ class AgentRenderer:
 
         # Current streaming state
         self.current_message: AssistantMessage | None = None
+        self.current_thinking_index: int | None = None
+        self.current_text_index: int | None = None
+
+        # Tool tracking: tool_call_id -> ToolExecution component
+        self.pending_tools: dict[str, ToolExecution] = {}
+
+        # Track content blocks by index
+        self.content_blocks: dict[int, dict[str, Any]] = {}
 
     def clear_chat(self) -> None:
         """Clear all messages from the chat container.
@@ -71,14 +79,6 @@ class AgentRenderer:
         self.current_text_index = None
         self.pending_tools.clear()
         self.content_blocks.clear()
-        self.current_thinking_index: int | None = None
-        self.current_text_index: int | None = None
-
-        # Tool tracking: tool_call_id -> ToolExecution component
-        self.pending_tools: dict[str, ToolExecution] = {}
-
-        # Track content blocks by index
-        self.content_blocks: dict[int, dict[str, Any]] = {}
 
     async def handle_event(self, event: StreamEvent) -> None:
         """Route StreamEvent to appropriate handler.
