@@ -19,6 +19,7 @@ from typing import Protocol
 # Global reference for atexit cleanup
 _active_terminal: ProcessTerminal | None = None
 _active_session_id: str | None = None
+_cleanup_done: bool = False
 
 
 def set_active_session_id(session_id: str | None) -> None:
@@ -29,7 +30,14 @@ def set_active_session_id(session_id: str | None) -> None:
 
 def _cleanup_terminal() -> None:
     """Atexit handler to restore terminal state and print session ID."""
-    global _active_terminal, _active_session_id
+    global _active_terminal, _active_session_id, _cleanup_done
+
+    # Skip if cleanup already done (clean shutdown via stop())
+    if _cleanup_done:
+        return
+
+    _cleanup_done = True
+
     if _active_terminal is not None:
         _active_terminal.stop()
 
@@ -107,13 +115,14 @@ class ProcessTerminal:
 
     def start(self, on_input: Callable[[str], None], on_resize: Callable[[], None]) -> None:
         """Start terminal in raw mode with input/resize handlers."""
-        global _active_terminal
+        global _active_terminal, _cleanup_done
 
         self._input_handler = on_input
         self._resize_handler = on_resize
 
         # Register atexit handler for cleanup on unexpected exit
         _active_terminal = self
+        _cleanup_done = False  # Reset so atexit will run stty sane if needed
         atexit.register(_cleanup_terminal)
 
         # Always try to open /dev/tty for terminal control
@@ -143,12 +152,13 @@ class ProcessTerminal:
 
     def stop(self) -> None:
         """Stop terminal and restore previous settings."""
-        global _active_terminal
+        global _active_terminal, _cleanup_done
 
         if not self._running and self._old_settings is None:
             return  # Already stopped
 
         self._running = False
+        _cleanup_done = True  # Mark cleanup as done so atexit skips stty sane
 
         # Restore terminal to clean state
         # Show cursor (in case we hid it)

@@ -604,6 +604,14 @@ class InteractiveAgentRunner:
                     if isinstance(e, ContextTooLongError):
                         current_state = await self._handle_context_too_long(e, current_state)
                         continue
+
+                    # Check for OAuth expired error - prompt for re-login
+                    from rollouts.frontends.tui.oauth import OAuthExpiredError
+
+                    if isinstance(e, OAuthExpiredError):
+                        current_state = await self._handle_oauth_expired(e, current_state)
+                        continue
+
                     raise  # Re-raise other exceptions
 
                 if agent_states and agent_states[-1].stop == StopReason.ABORTED:
@@ -1077,6 +1085,34 @@ class InteractiveAgentRunner:
             actor=dc_replace(current_state.actor, trajectory=new_trajectory),
             stop=None,
         )
+
+    async def _handle_oauth_expired(
+        self, error: Exception, current_state: AgentState
+    ) -> AgentState:
+        """Handle OAuth token expiration gracefully.
+
+        Shows an error message and prompts user to re-login via /login command.
+        After login, retries the last user message.
+        """
+        if self.tui:
+            self.tui.hide_loader()
+
+        # Display error message with login instructions
+        if self.renderer:
+            self.renderer.add_system_message(
+                "🔐 OAuth token expired and refresh failed.\n"
+                "   Run /login to re-authenticate, then your message will be retried."
+            )
+            if self.tui:
+                self.tui.request_render()
+
+        # Wait for user to run /login (or any other input)
+        # The _tui_input_handler will process /login and loop back
+        user_input = await self._tui_input_handler("Run /login to continue: ")
+
+        # Return current state - the user's original message is still in trajectory
+        # so when they re-authenticate and hit enter, it will retry
+        return current_state
 
     async def _cleanup_and_print_session(self, agent_states: list[AgentState]) -> None:
         """Stop TUI, run exit survey, and print session info."""
