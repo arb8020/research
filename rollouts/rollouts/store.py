@@ -66,6 +66,7 @@ class SessionStore(Protocol):
         environment_state: dict | None = None,
         reward: float | dict[str, float] | None = None,
         tags: dict[str, str] | None = None,
+        endpoint: Endpoint | None = None,
     ) -> tuple[None, str | None]:
         """Update session metadata. Returns (None, None) or (None, error)."""
         ...
@@ -259,6 +260,7 @@ class FileSessionStore:
         environment_state: dict | None = None,
         reward: float | dict[str, float] | None = None,
         tags: dict[str, str] | None = None,
+        endpoint: Endpoint | None = None,
     ) -> tuple[None, str | None]:
         """Update session metadata. Returns (None, None) or (None, error)."""
         session_dir = self._session_dir(session_id)
@@ -277,6 +279,8 @@ class FileSessionStore:
             session_data["reward"] = reward
         if tags is not None:
             session_data["tags"] = tags
+        if endpoint is not None:
+            session_data["endpoint"] = endpoint.to_dict(exclude_secrets=True)
 
         session_data["updated_at"] = datetime.now().isoformat()
 

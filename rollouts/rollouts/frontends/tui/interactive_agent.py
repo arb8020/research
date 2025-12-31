@@ -33,6 +33,7 @@ from .agent_renderer import AgentRenderer
 from .components.input import Input
 from .components.loader_container import LoaderContainer
 from .components.spacer import Spacer
+from .slash_commands import handle_slash_command
 from .terminal import ProcessTerminal, set_active_session_id
 from .tui import TUI
 
@@ -113,6 +114,55 @@ class InteractiveAgentRunner:
         # Store for passing multiple messages from input handler to no_tool handler
         self._pending_user_messages: list[str] = []
 
+        # Track current trajectory for slash commands (updated during agent loop)
+        self._current_trajectory: Trajectory | None = None
+
+    @property
+    def trajectory(self) -> Trajectory:
+        """Get the current trajectory (for slash commands like /slice)."""
+        if self._current_trajectory:
+            return self._current_trajectory
+        return self.initial_trajectory
+
+    async def switch_session(self, new_session_id: str) -> bool:
+        """Switch to a different session (e.g., after /slice).
+
+        Args:
+            new_session_id: ID of the session to switch to
+
+        Returns:
+            True if switch succeeded, False otherwise
+        """
+        if not self.session_store:
+            return False
+
+        # Load the new session
+        session, err = await self.session_store.get(new_session_id)
+        if err or not session:
+            return False
+
+        # Update session tracking
+        self.session_id = new_session_id
+        set_active_session_id(new_session_id)
+
+        # Update trajectory
+        self.initial_trajectory = Trajectory(messages=session.messages)
+        self._current_trajectory = self.initial_trajectory
+
+        # Update status line
+        if self.status_line:
+            self.status_line.set_session_id(new_session_id)
+
+        # Clear and re-render chat with new session's messages
+        if self.renderer:
+            self.renderer.clear_chat()
+            self.renderer.render_history(session.messages, skip_system=False)
+
+        if self.tui:
+            self.tui.request_render()
+
+        return True
+
     def _handle_input_submit(self, text: str) -> None:
         """Handle input submission from TUI (sync wrapper for trio channel send).
 
@@ -159,19 +209,96 @@ class InteractiveAgentRunner:
         if self.tui:
             self.tui.request_render()
 
-    async def _handle_slash_command(self, command: str) -> bool:
+    def _handle_tab_complete(self, text: str) -> str | None:
+        """Handle tab completion for slash commands and model names.
+
+        Args:
+            text: Current input text
+
+        Returns:
+            Completed text, or None if no completion
+        """
+        from rollouts.models import get_models, get_providers
+
+        from .slash_commands import get_all_commands
+
+        if not text.startswith("/"):
+            return None
+
+        # Check for /model completion
+        if text.startswith("/model "):
+            arg = text[7:]  # After "/model "
+
+            # Build list of all provider/model combinations
+            all_models: list[str] = []
+            for provider in get_providers():
+                for model in get_models(provider):
+                    all_models.append(f"{provider}/{model.id}")
+
+            # Find matches
+            matches = [m for m in all_models if m.startswith(arg)]
+
+            if len(matches) == 1:
+                # Single match - complete it
+                return f"/model {matches[0]}"
+            elif len(matches) > 1:
+                # Multiple matches - find common prefix
+                common = matches[0]
+                for m in matches[1:]:
+                    while not m.startswith(common):
+                        common = common[:-1]
+                if len(common) > len(arg):
+                    return f"/model {common}"
+            return None
+
+        # Check for command name completion
+        if " " not in text:
+            # Completing command name
+            prefix = text[1:]  # Remove /
+            commands = get_all_commands()
+            matches = [c.name for c in commands if c.name.startswith(prefix)]
+
+            if len(matches) == 1:
+                # Single match - complete it
+                return f"/{matches[0]} "
+            elif len(matches) > 1:
+                # Find common prefix
+                common = matches[0]
+                for m in matches[1:]:
+                    while not m.startswith(common):
+                        common = common[:-1]
+                if len(common) > len(prefix):
+                    return f"/{common}"
+
+        return None
+
+    async def _handle_slash_command(self, command: str) -> tuple[bool, str | None]:
         """Handle slash commands.
 
         Args:
             command: The slash command string
 
         Returns:
-            True if command was handled, False if it should be passed to LLM
+            (handled, expanded_text):
+            - handled=True, expanded_text=None: command was handled, don't send to LLM
+            - handled=False, expanded_text=None: unknown command, pass original to LLM
+            - handled=False, expanded_text=str: file command, send expanded_text to LLM
         """
-        # For now, no built-in slash commands
-        # User should use --continue with different flags instead
-        # Return False to pass to LLM (so /commands become regular messages)
-        return False
+        result = await handle_slash_command(self, command)
+
+        # Display any message from the command as a ghost message
+        # (shows in chat but not part of conversation history)
+        if result.message and self.renderer:
+            self.renderer.add_ghost_message(result.message)
+            if self.tui:
+                self.tui.request_render()
+
+        if result.handled:
+            return True, None
+        elif result.expanded_text:
+            return False, result.expanded_text
+        else:
+            return False, None
 
     async def _tui_input_handler(self, prompt: str) -> str:
         """Async input handler for RunConfig.on_input.
@@ -223,10 +350,13 @@ class InteractiveAgentRunner:
 
         # Handle slash commands
         if user_input.startswith("/"):
-            handled = await self._handle_slash_command(user_input)
+            handled, expanded_text = await self._handle_slash_command(user_input)
             if handled:
-                # Command was handled, request new input
+                # Command was handled (e.g., /model), request new input
                 return await self._tui_input_handler(prompt)
+            elif expanded_text:
+                # File-based command expanded, use expanded text as user message
+                user_input = expanded_text
 
         # Add user message to chat
         if self.renderer:
@@ -337,6 +467,9 @@ class InteractiveAgentRunner:
                 try:
                     with self.agent_cancel_scope:
                         agent_states = await run_agent(current_state, run_config)
+                    # Update trajectory for slash commands (e.g., /slice)
+                    if agent_states:
+                        self._current_trajectory = agent_states[-1].actor.trajectory
                 except Exception as e:
                     # Check for context too long error
                     from rollouts.providers.base import ContextTooLongError
@@ -474,6 +607,7 @@ class InteractiveAgentRunner:
         self.input_component = Input(theme=self.tui.theme)
         self.input_component.set_on_submit(self._handle_input_submit)
         self.input_component.set_on_editor(self._handle_open_editor)
+        self.input_component.set_on_tab_complete(self._handle_tab_complete)
         self.tui.add_child(self.input_component)
 
         # Create status line below input
@@ -645,7 +779,8 @@ class InteractiveAgentRunner:
             self._pending_user_messages = []
 
             new_trajectory = Trajectory(messages=state.actor.trajectory.messages + user_messages)
-            new_actor = dc_replace(state.actor, trajectory=new_trajectory)
+            # Use self.endpoint to pick up any /model changes
+            new_actor = dc_replace(state.actor, trajectory=new_trajectory, endpoint=self.endpoint)
             return dc_replace(state, actor=new_actor)
 
         confirm_handler = confirm_tool_tui if self.confirm_tools else auto_confirm_tool

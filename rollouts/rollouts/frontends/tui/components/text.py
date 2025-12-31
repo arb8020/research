@@ -114,6 +114,7 @@ class Text(Component):
         custom_bg_fn: Callable[[str], str] | None = None,
         theme: Theme | None = None,
         gutter_prefix: str | None = None,
+        dim: bool = False,
     ) -> None:
         self._text = text
         self._padding_x = padding_x
@@ -122,6 +123,7 @@ class Text(Component):
         self._custom_bg_fn = custom_bg_fn
         self._theme = theme
         self._gutter_prefix = gutter_prefix
+        self._dim = dim
 
         # Cache for rendered output
         self._cached_text: str | None = None
@@ -279,6 +281,10 @@ class Text(Component):
                     pos = skip_ansi_and_get_pos(line, self._padding_x)
                     new_result.append(" " * (gutter_len + 1) + line[pos:])
             result = new_result
+
+        # Apply dim styling if enabled
+        if self._dim:
+            result = [f"\x1b[2m{line}\x1b[22m" for line in result]
 
         # Update cache
         self._cached_text = self._text
