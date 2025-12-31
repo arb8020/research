@@ -53,7 +53,11 @@ class SlashCommandResult:
 BUILTIN_COMMANDS: list[SlashCommand] = [
     SlashCommand("model", "Switch model", arg_hint="[provider/model]"),
     SlashCommand("thinking", "Toggle extended thinking", arg_hint="[on|off|budget]"),
-    SlashCommand("slice", "Slice session context", arg_hint="[spec]"),
+    SlashCommand(
+        "slice",
+        "Slice session context",
+        arg_hint="[0:5, summarize:5:20, 20:]",
+    ),
 ]
 
 
