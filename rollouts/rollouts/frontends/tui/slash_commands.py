@@ -30,6 +30,7 @@ class SlashCommand:
 
     name: str
     description: str
+    arg_hint: str | None = None  # Ghost text hint for arguments, e.g., "[spec]"
     content: str | None = None  # For file-based commands
     source: str = "(builtin)"  # "(builtin)", "(user)", "(project)"
 
@@ -50,9 +51,9 @@ class SlashCommandResult:
 
 
 BUILTIN_COMMANDS: list[SlashCommand] = [
-    SlashCommand("model", "Switch model: /model provider/model-id"),
-    SlashCommand("thinking", "Toggle thinking: /thinking [on|off|budget]"),
-    SlashCommand("slice", "Slice session: /slice [spec]"),
+    SlashCommand("model", "Switch model", arg_hint="[provider/model]"),
+    SlashCommand("thinking", "Toggle extended thinking", arg_hint="[on|off|budget]"),
+    SlashCommand("slice", "Slice session context", arg_hint="[spec]"),
 ]
 
 
@@ -569,3 +570,18 @@ def get_all_commands() -> list[SlashCommand]:
     commands = list(BUILTIN_COMMANDS)
     commands.extend(load_file_commands())
     return commands
+
+
+def get_command_arg_hint(command_name: str) -> str | None:
+    """Get the argument hint for a command (e.g., '[spec]' for /slice).
+
+    Args:
+        command_name: The command name without the leading /
+
+    Returns:
+        The arg_hint string, or None if no hint available
+    """
+    for cmd in BUILTIN_COMMANDS:
+        if cmd.name == command_name:
+            return cmd.arg_hint
+    return None

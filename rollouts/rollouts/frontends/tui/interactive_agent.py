@@ -219,8 +219,12 @@ class InteractiveAgentRunner:
 
         This is called whenever the input text changes. We use it to show
         ghost text (dimmed completion hint) for slash commands.
+
+        Ghost text types:
+        1. Command name completion: /mo → "del" (completes to /model)
+        2. Argument hint: /model → " [provider/model]" (shows expected args)
         """
-        from .slash_commands import get_all_commands
+        from .slash_commands import get_all_commands, get_command_arg_hint
 
         if not self.input_component:
             return
@@ -239,17 +243,34 @@ class InteractiveAgentRunner:
 
         ghost_text = ""
 
-        # Only show ghost text for slash commands at the start of input
-        if text.startswith("/") and " " not in text:
-            prefix = text[1:]  # Remove /
-            if prefix:  # Don't show ghost for just "/"
-                commands = get_all_commands()
-                matches = [c.name for c in commands if c.name.startswith(prefix)]
+        if text.startswith("/"):
+            if " " not in text:
+                # No space yet - show command name completion
+                prefix = text[1:]  # Remove /
+                if prefix:  # Don't show ghost for just "/"
+                    commands = get_all_commands()
+                    matches = [c.name for c in commands if c.name.startswith(prefix)]
 
-                if matches:
-                    # Show the remainder of the first match as ghost text
-                    first_match = matches[0]
-                    ghost_text = first_match[len(prefix) :]
+                    if matches:
+                        # Show the remainder of the first match as ghost text
+                        first_match = matches[0]
+                        ghost_text = first_match[len(prefix) :]
+
+                        # If exact match, also show arg hint
+                        if prefix == first_match:
+                            arg_hint = get_command_arg_hint(first_match)
+                            if arg_hint:
+                                ghost_text = f" {arg_hint}"
+            else:
+                # Space present - show arg hint for the command
+                space_idx = text.index(" ")
+                cmd_name = text[1:space_idx]  # Extract command name
+                arg_hint = get_command_arg_hint(cmd_name)
+
+                # Only show hint if user hasn't started typing args
+                arg_text = text[space_idx + 1 :]
+                if arg_hint and not arg_text:
+                    ghost_text = arg_hint
 
         self.input_component.set_ghost_text(ghost_text)
 
