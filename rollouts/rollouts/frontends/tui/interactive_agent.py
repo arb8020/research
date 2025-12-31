@@ -288,10 +288,9 @@ class InteractiveAgentRunner:
 
         # Display any message from the command as a ghost message
         # (shows in chat but not part of conversation history)
+        # Note: add_ghost_message internally calls request_render()
         if result.message and self.renderer:
             self.renderer.add_ghost_message(result.message)
-            if self.tui:
-                self.tui.request_render()
 
         if result.handled:
             return True, None
@@ -303,15 +302,51 @@ class InteractiveAgentRunner:
     async def _tui_input_handler(self, prompt: str) -> str:
         """Async input handler for RunConfig.on_input.
 
+        Uses a loop pattern instead of recursion for slash commands.
+        This provides cleaner state management and avoids render timing issues.
+
         Args:
             prompt: Prompt string (not used in TUI, but required by signature)
 
         Returns:
-            User input string
+            User input string (either direct input or expanded file command)
         """
         if self.input_receive is None:
             raise RuntimeError("Input channel not initialized")
 
+        # Loop until we get a message to send to LLM
+        while True:
+            user_input = await self._get_next_input()
+
+            # Handle slash commands
+            if user_input.startswith("/"):
+                handled, expanded_text = await self._handle_slash_command(user_input)
+                if handled:
+                    # Command was handled (e.g., /model, /thinking)
+                    # Loop back to wait for next input
+                    continue
+                if expanded_text:
+                    # File-based command expanded, use expanded text
+                    user_input = expanded_text
+                # else: unknown command, pass through to LLM as-is
+
+            # We have a message to send to LLM
+            break
+
+        # Add user message to chat
+        if self.renderer:
+            self.renderer.add_user_message(user_input, is_first=self.is_first_user_message)
+            self.is_first_user_message = False
+
+        # Session persistence is handled by run_agent() via RunConfig.session_store
+        return user_input
+
+    async def _get_next_input(self) -> str:
+        """Get the next user input, either from queue or by waiting.
+
+        Returns:
+            User input string
+        """
         # Drain all queued messages (non-blocking)
         queued_messages: list[str] = []
         while True:
@@ -330,40 +365,22 @@ class InteractiveAgentRunner:
             self._pending_user_messages = queued_messages[1:]
             if self.tui:
                 self.tui.request_render()
-        else:
-            user_input = None
-            self._pending_user_messages = []
+            return user_input
 
-        if user_input is None:
-            # No queued message, show input and wait
-            self.input_pending = True
-            if self.input_component and self.tui:
-                self.tui.set_focus(self.input_component)
-                self.tui.request_render()
+        # No queued message - clear pending and wait for input
+        self._pending_user_messages = []
+        self.input_pending = True
 
-            user_input = await self.input_receive.receive()
-            self.input_pending = False
+        if self.input_component and self.tui:
+            self.tui.set_focus(self.input_component)
+            self.tui.request_render()
 
-            # Clear input component
-            if self.input_component:
-                self.input_component.set_text("")
+        user_input = await self.input_receive.receive()
+        self.input_pending = False
 
-        # Handle slash commands
-        if user_input.startswith("/"):
-            handled, expanded_text = await self._handle_slash_command(user_input)
-            if handled:
-                # Command was handled (e.g., /model), request new input
-                return await self._tui_input_handler(prompt)
-            elif expanded_text:
-                # File-based command expanded, use expanded text as user message
-                user_input = expanded_text
-
-        # Add user message to chat
-        if self.renderer:
-            self.renderer.add_user_message(user_input, is_first=self.is_first_user_message)
-            self.is_first_user_message = False
-
-        # Session persistence is handled by run_agent() via RunConfig.session_store
+        # Clear input component
+        if self.input_component:
+            self.input_component.set_text("")
 
         return user_input
 
