@@ -681,11 +681,17 @@ async def rollout_openai_responses(
         final_message, usage_data = await aggregate_openai_responses_stream(stream, on_chunk)
 
     except Exception as e:
-        from openai import BadRequestError, RateLimitError
+        from openai import BadRequestError, NotFoundError, RateLimitError
 
         from rollouts.store import log_crash
 
         sanitized = sanitize_request_for_logging(params)
+
+        if isinstance(e, NotFoundError):
+            raise AssertionError(
+                f"Model not found: {actor.endpoint.model}\n"
+                f"The model may not exist or may not be available to your API key."
+            ) from e
 
         if isinstance(e, BadRequestError):
             crash_file = log_crash(e, "openai_responses", actor.endpoint.model)

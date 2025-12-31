@@ -538,15 +538,16 @@ async def aggregate_anthropic_stream(
 
 
 async def _get_fresh_oauth_token() -> str | None:
-    """Get a fresh OAuth token, refreshing if needed. Returns None if not using OAuth."""
-    try:
-        from rollouts.frontends.tui.oauth import get_oauth_client
+    """Get a fresh OAuth token, refreshing if needed. Returns None if not using OAuth.
 
-        client = get_oauth_client()
-        return await client.get_valid_access_token()
-    except Exception as e:
-        logger.warning(f"Failed to refresh OAuth token: {e}")
-        return None
+    Raises:
+        OAuthExpiredError: If token refresh fails (re-login required).
+    """
+    from rollouts.frontends.tui.oauth import get_oauth_client
+
+    client = get_oauth_client()
+    # Let OAuthExpiredError propagate up - caller should handle re-login
+    return await client.get_valid_access_token()
 
 
 def _create_anthropic_client(
@@ -611,12 +612,12 @@ async def rollout_anthropic(
     """
 
     # Get fresh OAuth token if using OAuth (handles mid-session expiry)
+    # OAuthExpiredError will propagate up if refresh fails - caller handles re-login
     oauth_token = actor.endpoint.oauth_token
     if oauth_token:
         fresh_token = await _get_fresh_oauth_token()
         if fresh_token:
             oauth_token = fresh_token
-        # If refresh failed, continue with existing token - it might still work
 
     client = _create_anthropic_client(
         oauth_token=oauth_token,
@@ -763,6 +764,12 @@ async def rollout_anthropic(
                 break
 
         except Exception as e:
+            # Let OAuthExpiredError propagate immediately - handled by TUI for re-login
+            from rollouts.frontends.tui.oauth import OAuthExpiredError
+
+            if isinstance(e, OAuthExpiredError):
+                raise
+
             # Tiger Style: Fail fast on 400 errors (invalid requests)
             # These indicate bugs in our code or invalid configuration, not transient issues
             import anthropic
@@ -798,20 +805,26 @@ async def rollout_anthropic(
             if isinstance(e, anthropic.AuthenticationError):
                 if oauth_token and attempt == 0:
                     print("🔄 OAuth token rejected, attempting refresh...")
-                    fresh_token = await _get_fresh_oauth_token()
-                    if fresh_token and fresh_token != oauth_token:
-                        oauth_token = fresh_token
-                        # Recreate client with new token
-                        await client.close()
-                        client = _create_anthropic_client(
-                            oauth_token=oauth_token,
-                            api_key=actor.endpoint.api_key,
-                            api_base=actor.endpoint.api_base,
-                            max_retries=actor.endpoint.max_retries,
-                            timeout=actor.endpoint.timeout,
-                        )
-                        print("🔐 OAuth token refreshed, retrying...")
-                        continue
+                    from rollouts.frontends.tui.oauth import OAuthExpiredError
+
+                    try:
+                        fresh_token = await _get_fresh_oauth_token()
+                        if fresh_token and fresh_token != oauth_token:
+                            oauth_token = fresh_token
+                            # Recreate client with new token
+                            await client.close()
+                            client = _create_anthropic_client(
+                                oauth_token=oauth_token,
+                                api_key=actor.endpoint.api_key,
+                                api_base=actor.endpoint.api_base,
+                                max_retries=actor.endpoint.max_retries,
+                                timeout=actor.endpoint.timeout,
+                            )
+                            print("🔐 OAuth token refreshed, retrying...")
+                            continue
+                    except OAuthExpiredError:
+                        # Re-raise to propagate up to caller for re-login handling
+                        raise
                 raise RuntimeError(
                     f"Authentication failed: {e}\nCheck your API key or OAuth token."
                 ) from e
