@@ -318,6 +318,17 @@ class InteractiveAgentRunner:
 
         # Check for /model completion with tab cycling
         if text.startswith("/model "):
+            # FIRST: Check if we're continuing a tab cycle for models
+            # (must check before finding new matches, otherwise we lose the cycle)
+            if (
+                self._tab_cycle_matches
+                and self._tab_cycle_prefix.startswith("/model ")
+                and f"/model {self._tab_cycle_matches[self._tab_cycle_index]}" == text.rstrip()
+            ):
+                # Continue cycling - move to next match
+                self._tab_cycle_index = (self._tab_cycle_index + 1) % len(self._tab_cycle_matches)
+                return f"/model {self._tab_cycle_matches[self._tab_cycle_index]}"
+
             arg = text[7:]  # After "/model "
 
             # Build list of all provider/model combinations
@@ -331,16 +342,6 @@ class InteractiveAgentRunner:
 
             if not matches:
                 return None
-
-            # Check if we're continuing a tab cycle for models
-            if (
-                self._tab_cycle_matches
-                and self._tab_cycle_prefix.startswith("/model ")
-                and f"/model {self._tab_cycle_matches[self._tab_cycle_index]}" == text.rstrip()
-            ):
-                # Continue cycling - move to next match
-                self._tab_cycle_index = (self._tab_cycle_index + 1) % len(self._tab_cycle_matches)
-                return f"/model {self._tab_cycle_matches[self._tab_cycle_index]}"
 
             # Start new cycle
             self._tab_cycle_matches = matches
