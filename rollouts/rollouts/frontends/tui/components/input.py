@@ -124,6 +124,7 @@ class Input(Component):
         self._last_width = width
         horizontal = self._border_color_fn("─")
         gray_fg = "\x1b[38;5;245m"  # Gray text for queued messages
+        ghost_fg = "\x1b[38;5;240m"  # Dimmer gray for ghost text
         reset = "\x1b[0m"
 
         result: list[str] = []
@@ -165,11 +166,23 @@ class Input(Component):
                     rest_after = after[1:]
                     display_text = before + cursor + rest_after
                 else:
-                    # Cursor at end - add highlighted space if room
-                    if len(display_text) < content_width:
+                    # Cursor at end - add ghost text (completion hint) if available
+                    ghost_suffix = ""
+                    if self._ghost_text:
+                        # Calculate how much ghost text fits
+                        available_for_ghost = content_width - len(before) - 1  # -1 for cursor
+                        if available_for_ghost > 0:
+                            ghost_suffix = self._ghost_text[:available_for_ghost]
+                            visible_len += len(ghost_suffix)
+
+                    # Add highlighted cursor space
+                    if len(before) + 1 + len(ghost_suffix) <= content_width:
                         cursor = "\x1b[7m \x1b[0m"
-                        display_text = before + cursor
-                        visible_len = len(display_text)
+                        if ghost_suffix:
+                            display_text = before + cursor + f"{ghost_fg}{ghost_suffix}{reset}"
+                        else:
+                            display_text = before + cursor
+                        visible_len = len(before) + 1 + len(ghost_suffix)
                     elif before:
                         # Line full - highlight last char
                         last_char = before[-1]
