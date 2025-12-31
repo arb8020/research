@@ -117,6 +117,11 @@ class InteractiveAgentRunner:
         # Track current trajectory for slash commands (updated during agent loop)
         self._current_trajectory: Trajectory | None = None
 
+        # Tab completion cycling state
+        self._tab_cycle_matches: list[str] = []  # Current list of matches
+        self._tab_cycle_index: int = 0  # Current position in cycle
+        self._tab_cycle_prefix: str = ""  # Original prefix before cycling started
+
     @property
     def trajectory(self) -> Trajectory:
         """Get the current trajectory (for slash commands like /slice)."""
@@ -220,6 +225,18 @@ class InteractiveAgentRunner:
         if not self.input_component:
             return
 
+        # Reset tab cycling when user types (unless we're in the middle of cycling)
+        # We detect cycling by checking if current text matches a cycled completion
+        is_cycling = (
+            self._tab_cycle_matches
+            and self._tab_cycle_index < len(self._tab_cycle_matches)
+            and text == f"/{self._tab_cycle_matches[self._tab_cycle_index]} "
+        )
+        if not is_cycling:
+            self._tab_cycle_matches = []
+            self._tab_cycle_index = 0
+            self._tab_cycle_prefix = ""
+
         ghost_text = ""
 
         # Only show ghost text for slash commands at the start of input
@@ -242,6 +259,8 @@ class InteractiveAgentRunner:
     def _handle_tab_complete(self, text: str) -> str | None:
         """Handle tab completion for slash commands and model names.
 
+        Supports tab cycling: pressing Tab multiple times cycles through matches.
+
         Args:
             text: Current input text
 
@@ -255,7 +274,7 @@ class InteractiveAgentRunner:
         if not text.startswith("/"):
             return None
 
-        # Check for /model completion
+        # Check for /model completion (no cycling for model names, just common prefix)
         if text.startswith("/model "):
             arg = text[7:]  # After "/model "
 
@@ -281,24 +300,35 @@ class InteractiveAgentRunner:
                     return f"/model {common}"
             return None
 
-        # Check for command name completion
+        # Check for command name completion with tab cycling
         if " " not in text:
-            # Completing command name
             prefix = text[1:]  # Remove /
             commands = get_all_commands()
             matches = [c.name for c in commands if c.name.startswith(prefix)]
 
-            if len(matches) == 1:
-                # Single match - complete it
+            if not matches:
+                return None
+
+            # Check if we're continuing a tab cycle
+            # (text matches a previously completed command)
+            if (
+                self._tab_cycle_matches
+                and text.rstrip() == f"/{self._tab_cycle_matches[self._tab_cycle_index]}"
+            ):
+                # Continue cycling - move to next match
+                self._tab_cycle_index = (self._tab_cycle_index + 1) % len(self._tab_cycle_matches)
+                next_match = self._tab_cycle_matches[self._tab_cycle_index]
+                return f"/{next_match} "
+
+            # Start new cycle if we have matches
+            if len(matches) >= 1:
+                # Initialize cycling state
+                self._tab_cycle_matches = matches
+                self._tab_cycle_index = 0
+                self._tab_cycle_prefix = prefix
+
+                # Complete to first match
                 return f"/{matches[0]} "
-            elif len(matches) > 1:
-                # Find common prefix
-                common = matches[0]
-                for m in matches[1:]:
-                    while not m.startswith(common):
-                        common = common[:-1]
-                if len(common) > len(prefix):
-                    return f"/{common}"
 
         return None
 
