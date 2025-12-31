@@ -47,6 +47,12 @@ class Input(Component):
         # External editor callback (Ctrl+G)
         self._on_editor: Callable[[str], None] | None = None
 
+        # Tab completion callback (text -> completed_text or None)
+        self._on_tab_complete: Callable[[str], str | None] | None = None
+
+        # Ghost text for completion preview
+        self._ghost_text: str = ""
+
     def set_on_submit(self, callback: Callable[[str], None] | None) -> None:
         """Set callback for when user submits (Enter)."""
         self._on_submit = callback
@@ -62,6 +68,19 @@ class Input(Component):
     def set_on_editor(self, callback: Callable[[str], None] | None) -> None:
         """Set callback for when user requests external editor (Ctrl+G)."""
         self._on_editor = callback
+
+    def set_on_tab_complete(self, callback: Callable[[str], str | None] | None) -> None:
+        """Set callback for tab completion.
+
+        Args:
+            callback: Function that takes current text and returns completed text,
+                     or None if no completion available.
+        """
+        self._on_tab_complete = callback
+
+    def set_ghost_text(self, ghost: str) -> None:
+        """Set ghost text to show as completion preview."""
+        self._ghost_text = ghost
 
     def add_queued_message(self, message: str) -> None:
         """Add a message to the queued display."""
@@ -284,6 +303,11 @@ class Input(Component):
             self._cursor_col = len(self._lines[self._cursor_line])
             return
 
+        # Tab - trigger completion
+        if len(data) == 1 and ord(data[0]) == 9:
+            self._handle_tab_complete()
+            return
+
         # Ctrl+K - delete to end of line
         if len(data) == 1 and ord(data[0]) == 11:
             self._delete_to_end_of_line()
@@ -347,6 +371,26 @@ class Input(Component):
         if len(data) > 0 and ord(data[0]) >= 32:
             self._insert_character(data)
 
+    def _handle_tab_complete(self) -> None:
+        """Handle Tab key for completion."""
+        if not self._on_tab_complete:
+            return
+
+        text = self.get_text()
+        completed = self._on_tab_complete(text)
+
+        if completed and completed != text:
+            # Replace text with completed version
+            self._lines = completed.split("\n")
+            if not self._lines:
+                self._lines = [""]
+            self._cursor_line = len(self._lines) - 1
+            self._cursor_col = len(self._lines[self._cursor_line])
+            self._ghost_text = ""
+
+            if self._on_change:
+                self._on_change(completed)
+
     def _insert_character(self, char: str) -> None:
         """Insert character at cursor position."""
         line = self._lines[self._cursor_line]
@@ -354,6 +398,9 @@ class Input(Component):
         after = line[self._cursor_col :]
         self._lines[self._cursor_line] = before + char + after
         self._cursor_col += len(char)
+
+        # Clear ghost text on any character insertion
+        self._ghost_text = ""
 
         if self._on_change:
             self._on_change(self.get_text())

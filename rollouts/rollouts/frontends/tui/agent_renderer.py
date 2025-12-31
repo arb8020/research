@@ -59,6 +59,18 @@ class AgentRenderer:
 
         # Current streaming state
         self.current_message: AssistantMessage | None = None
+
+    def clear_chat(self) -> None:
+        """Clear all messages from the chat container.
+
+        Used when switching sessions to start fresh.
+        """
+        self.chat_container.clear()
+        self.current_message = None
+        self.current_thinking_index = None
+        self.current_text_index = None
+        self.pending_tools.clear()
+        self.content_blocks.clear()
         self.current_thinking_index: int | None = None
         self.current_text_index: int | None = None
 
@@ -402,6 +414,32 @@ class AgentRenderer:
             gutter_prefix="ℹ ",
         )
         self.chat_container.add_child(system_text)
+        self.tui.request_render()
+
+    def add_ghost_message(self, text: str) -> None:
+        """Add a ghost message - displays but is not part of conversation history.
+
+        Used for slash command output. Styled differently from system messages
+        to indicate it's ephemeral/informational.
+
+        Args:
+            text: Ghost message text
+        """
+        from .components.text import Text
+
+        self.chat_container.add_child(
+            Spacer(1, debug_label="before-ghost", debug_layout=self.debug_layout)
+        )
+        # Use dimmed style to indicate this is not part of the conversation
+        ghost_text = Text(
+            text,
+            padding_x=2,
+            padding_y=0,
+            theme=self.theme,
+            gutter_prefix="› ",
+            dim=True,  # Dimmed to show it's not part of conversation
+        )
+        self.chat_container.add_child(ghost_text)
         self.tui.request_render()
 
     def add_final_answer(self, answer: str) -> None:
