@@ -234,11 +234,16 @@ class InteractiveAgentRunner:
 
         # Reset tab cycling when user types (unless we're in the middle of cycling)
         # We detect cycling by checking if current text matches a cycled completion
-        is_cycling = (
-            self._tab_cycle_matches
-            and self._tab_cycle_index < len(self._tab_cycle_matches)
-            and text == f"/{self._tab_cycle_matches[self._tab_cycle_index]} "
-        )
+        is_cycling = False
+        if self._tab_cycle_matches and self._tab_cycle_index < len(self._tab_cycle_matches):
+            current_match = self._tab_cycle_matches[self._tab_cycle_index]
+            # Check for command cycling: /{command}
+            if text == f"/{current_match} ":
+                is_cycling = True
+            # Check for model cycling: /model {model}
+            elif self._tab_cycle_prefix.startswith("/model ") and text == f"/model {current_match}":
+                is_cycling = True
+
         if not is_cycling:
             self._tab_cycle_matches = []
             self._tab_cycle_index = 0
