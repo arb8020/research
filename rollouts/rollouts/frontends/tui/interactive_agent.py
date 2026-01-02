@@ -653,7 +653,14 @@ class InteractiveAgentRunner:
                         return
 
                     # Check for standalone Escape - interrupt current agent run
+                    # But if there's a focused component (like question selector),
+                    # route escape to it instead
                     if input_data == "\x1b":
+                        if self.tui and self.tui._focused_component is not None:
+                            # Route to focused component (e.g., question selector review)
+                            self.tui._handle_input(input_data)
+                            continue
+
                         if self.agent_cancel_scope:
                             self.escape_pressed = True
                             self.agent_cancel_scope.cancel()
@@ -900,6 +907,21 @@ class InteractiveAgentRunner:
         async def handle_no_tool_interactive(state: AgentState, rcfg: RunConfig) -> AgentState:
             """Wait for user input when LLM responds without tool calls."""
             from dataclasses import replace as dc_replace
+
+            # Update session_id from state (session created on first message)
+            with open("/tmp/rollouts_debug.log", "a") as f:
+                f.write(
+                    f"handle_no_tool_interactive: state.session_id={state.session_id}, self.session_id={self.session_id}\n"
+                )
+            if state.session_id and state.session_id != self.session_id:
+                self.session_id = state.session_id
+                set_active_session_id(self.session_id)
+                with open("/tmp/rollouts_debug.log", "a") as f:
+                    f.write(f"Updated self.session_id to {self.session_id}\n")
+                if self.status_line:
+                    self.status_line.set_session_id(self.session_id)
+                    with open("/tmp/rollouts_debug.log", "a") as f:
+                        f.write("Called status_line.set_session_id\n")
 
             self._update_token_counts(state)
             if self.tui:
