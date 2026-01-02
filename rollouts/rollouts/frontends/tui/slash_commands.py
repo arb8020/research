@@ -58,6 +58,7 @@ BUILTIN_COMMANDS: list[SlashCommand] = [
         "Slice session context",
         arg_hint="[0:5, summarize:5:20, 20:]",
     ),
+    SlashCommand("env", "Switch environment", arg_hint="[env_spec|list]"),
 ]
 
 
@@ -88,6 +89,8 @@ async def handle_slash_command(
         return await _handle_thinking(runner, args)
     elif command == "slice":
         return await _handle_slice(runner, args)
+    elif command == "env":
+        return await _handle_env(runner, args)
 
     # Try file-based commands
     file_commands = load_file_commands()
@@ -107,7 +110,7 @@ async def handle_slash_command(
     # No suggestion - just show error
     return SlashCommandResult(
         handled=True,
-        message=f"Unknown command: /{command}\nType /model, /thinking, or /slice",
+        message=f"Unknown command: /{command}\nType /model, /thinking, /slice, or /env",
     )
 
 
@@ -305,9 +308,15 @@ async def _handle_slice(runner: InteractiveAgentRunner, args: str) -> SlashComma
     if not args or args.lower() == "count":
         return SlashCommandResult(message=f"Session has {len(messages)} messages")
 
-    # Validate we have session store
-    if not runner.session_store or not runner.session_id:
-        return SlashCommandResult(message="Cannot slice: no session configured")
+    # Validate we have session store and session ID
+    if not runner.session_store:
+        return SlashCommandResult(
+            message="Cannot slice: no session store (use without --no-session)"
+        )
+    if not runner.session_id:
+        return SlashCommandResult(
+            message="Cannot slice: no session yet. Send a message first to create a session."
+        )
 
     # Parse spec to validate
     try:
@@ -343,6 +352,18 @@ async def _handle_slice(runner: InteractiveAgentRunner, args: str) -> SlashComma
         return SlashCommandResult(
             message=f"Created child session: {child.session_id}\n\nSwitch failed. Run:\n  rollouts -s {child.session_id}"
         )
+
+
+async def _handle_env(runner: InteractiveAgentRunner, args: str) -> SlashCommandResult:
+    """Handle /env command for switching environments.
+
+    Usage:
+      /env         - show current environment
+      /env list    - list available environments
+      /env <spec>  - switch to specified environment
+    """
+    # TODO: Implement environment switching
+    return SlashCommandResult(message="/env command not yet implemented")
 
 
 # =============================================================================
