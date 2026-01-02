@@ -964,19 +964,11 @@ class InteractiveAgentRunner:
             from dataclasses import replace as dc_replace
 
             # Update session_id from state (session created on first message)
-            with open("/tmp/rollouts_debug.log", "a") as f:
-                f.write(
-                    f"handle_no_tool_interactive: state.session_id={state.session_id}, self.session_id={self.session_id}\n"
-                )
             if state.session_id and state.session_id != self.session_id:
                 self.session_id = state.session_id
                 set_active_session_id(self.session_id)
-                with open("/tmp/rollouts_debug.log", "a") as f:
-                    f.write(f"Updated self.session_id to {self.session_id}\n")
                 if self.status_line:
                     self.status_line.set_session_id(self.session_id)
-                    with open("/tmp/rollouts_debug.log", "a") as f:
-                        f.write("Called status_line.set_session_id\n")
 
             self._update_token_counts(state)
             if self.tui:
@@ -992,9 +984,23 @@ class InteractiveAgentRunner:
             self._pending_user_messages = []
 
             new_trajectory = Trajectory(messages=state.actor.trajectory.messages + user_messages)
+
+            # Check if environment was changed by /env command
+            new_environment = state.environment
+            new_tools = state.actor.tools
+            if self._environment_changed and self.environment:
+                new_environment = self.environment
+                new_tools = self.environment.get_tools()
+                self._environment_changed = False  # Reset flag
+
             # Use self.endpoint to pick up any /model changes
-            new_actor = dc_replace(state.actor, trajectory=new_trajectory, endpoint=self.endpoint)
-            return dc_replace(state, actor=new_actor)
+            new_actor = dc_replace(
+                state.actor,
+                trajectory=new_trajectory,
+                endpoint=self.endpoint,
+                tools=new_tools,
+            )
+            return dc_replace(state, actor=new_actor, environment=new_environment)
 
         confirm_handler = confirm_tool_tui if self.confirm_tools else auto_confirm_tool
 
