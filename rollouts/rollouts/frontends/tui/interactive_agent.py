@@ -125,9 +125,22 @@ class InteractiveAgentRunner:
     @property
     def trajectory(self) -> Trajectory:
         """Get the current trajectory (for slash commands like /slice)."""
+        # Debug: log which trajectory we're returning
         if self._current_trajectory:
-            return self._current_trajectory
-        return self.initial_trajectory
+            result = self._current_trajectory
+            source = "_current_trajectory"
+        else:
+            result = self.initial_trajectory
+            source = "initial_trajectory"
+
+        # Log to help debug /slice issue
+        import sys
+
+        print(
+            f"[DEBUG trajectory] source={source}, messages={len(result.messages)}", file=sys.stderr
+        )
+
+        return result
 
     async def switch_session(self, new_session_id: str) -> bool:
         """Switch to a different session (e.g., after /slice).
