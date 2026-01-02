@@ -11,12 +11,30 @@ import unicodedata
 from collections.abc import Callable
 from typing import NamedTuple
 
+# Pattern for bracketed paste mode sequences and other terminal control sequences
+# These can leak into text content when returning from vim mode (Ctrl+G)
+TERMINAL_CONTROL_PATTERN = re.compile(
+    r"\x1b\[\?2004[hl]"  # Bracketed paste enable/disable
+    r"|\x1b\[20[01]~"  # Bracketed paste start/end markers
+    r"|\x1b\[\d+~"  # Other ~ terminated sequences (function keys, etc.)
+)
+
+
+def strip_terminal_control_sequences(text: str) -> str:
+    """Strip terminal control sequences that should never appear in content.
+
+    This includes bracketed paste sequences and other control codes that
+    can leak into text when returning from external editors.
+    """
+    return TERMINAL_CONTROL_PATTERN.sub("", text)
+
 
 def visible_width(text: str) -> int:
     """Calculate the visible width of a string in terminal columns.
 
     Handles:
     - ANSI escape sequences (zero width)
+    - Terminal control sequences like bracketed paste (zero width)
     - Wide characters (CJK, emoji = 2 columns)
     - Combining characters (zero width)
     - Tabs (converted to 3 spaces)
@@ -24,8 +42,12 @@ def visible_width(text: str) -> int:
     # Normalize tabs
     text = text.replace("\t", "   ")
 
-    # Strip ANSI escape sequences
-    ansi_pattern = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+    # Strip terminal control sequences (bracketed paste, etc.)
+    text = strip_terminal_control_sequences(text)
+
+    # Strip ANSI escape sequences (SGR codes and others)
+    # Include ~ terminated sequences (function keys, bracketed paste markers)
+    ansi_pattern = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z~]")
     text_no_ansi = ansi_pattern.sub("", text)
 
     width = 0
@@ -57,6 +79,11 @@ class AnsiCode(NamedTuple):
 def extract_ansi_code(text: str, pos: int) -> AnsiCode | None:
     """Extract ANSI escape sequence at given position.
 
+    Handles:
+    - SGR codes ending in m (colors, styles)
+    - Cursor codes ending in G, K, H, J
+    - Special sequences ending in ~ (function keys, bracketed paste)
+
     Returns None if no escape sequence at position.
     """
     if pos >= len(text) or text[pos] != "\x1b":
@@ -65,7 +92,8 @@ def extract_ansi_code(text: str, pos: int) -> AnsiCode | None:
         return None
 
     j = pos + 2
-    while j < len(text) and text[j] not in "mGKHJ":
+    # Include ~ for bracketed paste and function key sequences
+    while j < len(text) and text[j] not in "mGKHJ~":
         j += 1
 
     if j < len(text):
