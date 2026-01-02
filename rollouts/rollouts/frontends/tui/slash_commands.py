@@ -547,6 +547,10 @@ async def _handle_env(runner: InteractiveAgentRunner, args: str) -> SlashCommand
     # Update runner's environment before switching
     runner.environment = new_env
 
+    # Signal that environment changed (for TUI to update current_state)
+    if hasattr(runner, "_environment_changed"):
+        runner._environment_changed = True
+
     # Switch to the child session
     switched = await runner.switch_session(child_session.session_id)
 
