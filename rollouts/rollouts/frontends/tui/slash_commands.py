@@ -549,6 +549,17 @@ async def _handle_env(runner: InteractiveAgentRunner, args: str) -> SlashCommand
 
     # Switch to the child session
     switched = await runner.switch_session(child_session.session_id)
+
+    # For headless/json frontend, we need to exit and let the user resume
+    # because the agent loop's current_state still has the old environment
+    if hasattr(runner, "_input_exhausted"):
+        # HeadlessJsonFrontend - signal to exit cleanly
+        runner._input_exhausted = True
+        return SlashCommandResult(
+            message=f"Switched to session {child_session.session_id} with env {env_spec}\n"
+            f"Resume with: rollouts -s {child_session.session_id}"
+        )
+
     if switched:
         return SlashCommandResult(
             message=f"Switched to session {child_session.session_id} with env {env_spec}"
