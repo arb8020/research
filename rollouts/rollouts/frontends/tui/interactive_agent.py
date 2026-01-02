@@ -653,10 +653,15 @@ class InteractiveAgentRunner:
                         return
 
                     # Check for standalone Escape - interrupt current agent run
-                    # But if there's a focused component (like question selector),
-                    # route escape to it instead
+                    # But if there's a focused component that handles escape (like question selector),
+                    # route escape to it instead. The Input component doesn't handle escape,
+                    # so we skip routing to it to allow the interrupt to work.
                     if input_data == "\x1b":
-                        if self.tui and self.tui._focused_component is not None:
+                        if (
+                            self.tui
+                            and self.tui._focused_component is not None
+                            and self.tui._focused_component is not self.input_component
+                        ):
                             # Route to focused component (e.g., question selector review)
                             self.tui._handle_input(input_data)
                             continue
