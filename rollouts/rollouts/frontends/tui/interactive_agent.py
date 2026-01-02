@@ -117,6 +117,9 @@ class InteractiveAgentRunner:
         # Track current trajectory for slash commands (updated during agent loop)
         self._current_trajectory: Trajectory | None = None
 
+        # Flag set by /env when environment changes - signals main loop to update current_state
+        self._environment_changed: bool = False
+
         # Tab completion cycling state
         self._tab_cycle_matches: list[str] = []  # Current list of matches
         self._tab_cycle_index: int = 0  # Current position in cycle
@@ -1068,9 +1071,23 @@ class InteractiveAgentRunner:
         from dataclasses import replace as dc_replace
 
         new_trajectory = Trajectory(messages=new_messages)
+
+        # Check if environment was changed by /env command
+        new_environment = latest_state.environment
+        new_tools = latest_state.actor.tools
+        if self._environment_changed and self.environment:
+            new_environment = self.environment
+            new_tools = self.environment.get_tools()
+            self._environment_changed = False  # Reset flag
+
         return dc_replace(
             latest_state,
-            actor=dc_replace(latest_state.actor, trajectory=new_trajectory),
+            actor=dc_replace(
+                latest_state.actor,
+                trajectory=new_trajectory,
+                tools=new_tools,
+            ),
+            environment=new_environment,
             stop=None,
         )
 
@@ -1115,9 +1132,23 @@ class InteractiveAgentRunner:
         from dataclasses import replace as dc_replace
 
         new_trajectory = Trajectory(messages=new_messages)
+
+        # Check if environment was changed by /env command
+        new_environment = latest_state.environment
+        new_tools = latest_state.actor.tools
+        if self._environment_changed and self.environment:
+            new_environment = self.environment
+            new_tools = self.environment.get_tools()
+            self._environment_changed = False  # Reset flag
+
         return dc_replace(
             latest_state,
-            actor=dc_replace(latest_state.actor, trajectory=new_trajectory),
+            actor=dc_replace(
+                latest_state.actor,
+                trajectory=new_trajectory,
+                tools=new_tools,
+            ),
+            environment=new_environment,
             stop=None,  # Clear stop so agent continues
         )
 
@@ -1152,11 +1183,24 @@ class InteractiveAgentRunner:
 
         from dataclasses import replace as dc_replace
 
+        # Check if environment was changed by /env command
+        new_environment = current_state.environment
+        new_tools = current_state.actor.tools
+        if self._environment_changed and self.environment:
+            new_environment = self.environment
+            new_tools = self.environment.get_tools()
+            self._environment_changed = False  # Reset flag
+
         # Start fresh with user's new message
         new_trajectory = Trajectory(messages=[Message(role="user", content=user_input)])
         return dc_replace(
             current_state,
-            actor=dc_replace(current_state.actor, trajectory=new_trajectory),
+            actor=dc_replace(
+                current_state.actor,
+                trajectory=new_trajectory,
+                tools=new_tools,
+            ),
+            environment=new_environment,
             stop=None,
         )
 
