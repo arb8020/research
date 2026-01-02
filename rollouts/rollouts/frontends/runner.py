@@ -427,6 +427,13 @@ class InteractiveRunner:
 
     async def _handle_no_tool(self, state: AgentState, config: RunConfig) -> AgentState:
         """Handle response without tool calls - get next user input or stop."""
+        # Update session_id from state (session may have been created in run_agent)
+        if state.session_id:
+            self.session_id = state.session_id
+            # Also update frontend's session_id if it has one
+            if hasattr(self.frontend, "session_id"):
+                self.frontend.session_id = state.session_id
+
         # Update status
         self._update_frontend_status(state)
 

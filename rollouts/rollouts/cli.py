@@ -1208,6 +1208,7 @@ def apply_session_config(config: CLIConfig) -> bool:
     if config.env == PARSER_DEFAULTS["env"]:
         env_config = session_config.get("environment", {})
         env_type = env_config.get("type", "")
+        # Map class names (legacy) and spec strings (new) to env specs
         env_map = {
             "CalculatorEnvironment": "calculator",
             "LocalFilesystemEnvironment": "coding",
@@ -1215,6 +1216,9 @@ def apply_session_config(config: CLIConfig) -> bool:
         }
         if env_type in env_map:
             config.env = env_map[env_type]
+        elif env_type:
+            # Direct spec string (e.g., "coding", "coding+ask_user")
+            config.env = env_type
 
     # Thinking: inherit from session if not explicitly set
     if config.thinking == PARSER_DEFAULTS["thinking"]:
