@@ -443,6 +443,20 @@ def _create_environment_from_spec(
 
             # REPL requires context - use empty string for now
             environments.append(REPLEnvironment(context="", sub_endpoint=None))
+        elif env_name == "basic" or env_name == "none":
+            from rollouts.environments.no_tools import BasicEnvironment
+
+            environments.append(BasicEnvironment())
+        elif env_name == "binary_search":
+            from rollouts.environments.binary_search import BinarySearchEnvironment
+
+            environments.append(BinarySearchEnvironment())
+        elif env_name == "chess_puzzle":
+            # Chess puzzle requires a FEN position - can't instantiate via /env
+            return (
+                None,
+                "Chess puzzle environment requires a FEN position. Use --env with CLI instead.",
+            )
         else:
             available = _get_available_envs()
             return None, f"Unknown environment: {env_name}\nAvailable: {', '.join(available)}"
@@ -485,6 +499,15 @@ async def _handle_env(runner: InteractiveAgentRunner, args: str) -> SlashCommand
     if env_spec.lower() == current.lower():
         return SlashCommandResult(message=f"Already using environment: {current}")
 
+    # Try to create the new environment first (validates the spec before checking session)
+    working_dir = Path.cwd()
+    if runner.environment and hasattr(runner.environment, "working_dir"):
+        working_dir = runner.environment.working_dir
+
+    new_env, err = _create_environment_from_spec(env_spec, working_dir)
+    if err:
+        return SlashCommandResult(message=f"Cannot create environment: {err}")
+
     # Validate we have session store and session ID
     if not runner.session_store:
         return SlashCommandResult(
@@ -494,15 +517,6 @@ async def _handle_env(runner: InteractiveAgentRunner, args: str) -> SlashCommand
         return SlashCommandResult(
             message="Cannot switch env: no session yet. Send a message first."
         )
-
-    # Try to create the new environment (validates the spec)
-    working_dir = Path.cwd()
-    if runner.environment and hasattr(runner.environment, "working_dir"):
-        working_dir = runner.environment.working_dir
-
-    new_env, err = _create_environment_from_spec(env_spec, working_dir)
-    if err:
-        return SlashCommandResult(message=f"Cannot create environment: {err}")
 
     # Load current session to get messages and branch point
     session, err = await runner.session_store.get(runner.session_id)

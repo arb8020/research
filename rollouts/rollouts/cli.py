@@ -304,9 +304,9 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--frontend",
         type=str,
-        choices=["tui", "none", "textual"],
+        choices=["tui", "none", "textual", "json"],
         default="tui",
-        help="Frontend: tui (default Python TUI), none (stdout), textual (rich TUI)",
+        help="Frontend: tui (default Python TUI), none (stdout), textual (rich TUI), json (bidirectional NDJSON)",
     )
     parser.add_argument(
         "--theme",
@@ -1432,9 +1432,9 @@ async def run_agent(config: CLIConfig) -> int:
     else:
         trajectory = Trajectory(messages=[Message(role="system", content=system_prompt)])
 
-    # Check for stdin input
+    # Check for stdin input (but not for json frontend - it reads stdin directly)
     initial_prompt = config.initial_prompt
-    if initial_prompt is None and not sys.stdin.isatty():
+    if initial_prompt is None and not sys.stdin.isatty() and config.frontend != "json":
         initial_prompt = sys.stdin.read().strip() or None
 
     # Non-interactive print mode
@@ -1537,6 +1537,35 @@ async def _run_interactive_mode(
             file=sys.stderr,
         )
         return 1
+
+    if config.frontend == "json":
+        from rollouts.frontends import run_interactive
+        from rollouts.frontends.headless_json import HeadlessJsonFrontend
+
+        frontend = HeadlessJsonFrontend()
+        frontend.environment = config.environment
+        frontend.endpoint = config.endpoint
+        frontend.session_store = config.session_store
+        frontend.session_id = session_id
+
+        # For JSON frontend, don't use initial_prompt - let frontend read from stdin
+        # This allows slash commands in the first message to be processed
+        try:
+            await run_interactive(
+                trajectory,
+                config.endpoint,
+                frontend=frontend,
+                environment=config.environment,
+                session_store=config.session_store,
+                session_id=session_id,
+                parent_session_id=parent_session_id,
+                branch_point=branch_point,
+                confirm_tools=config.confirm_tools,
+                initial_prompt=None,  # Frontend reads from stdin, handles slash commands
+            )
+        except (KeyboardInterrupt, EOFError):
+            pass
+        return 0
 
     # Default: Python TUI
     from rollouts.frontends.tui.interactive_agent import run_interactive_agent
