@@ -302,27 +302,17 @@ async def _handle_slice(runner: InteractiveAgentRunner, args: str) -> SlashComma
     """Handle /slice command."""
     from rollouts.slice import parse_slice_spec, run_slice_command
 
-    # Get current message count
-    messages = runner.trajectory.messages if runner.trajectory else []
+    # Get message count from session store (authoritative source)
+    # The in-memory trajectory may be stale or not yet updated
+    if runner.session_store and runner.session_id:
+        session, _ = await runner.session_store.get(runner.session_id)
+        messages = session.messages if session else []
+    else:
+        # Fall back to in-memory trajectory if no session store
+        messages = runner.trajectory.messages if runner.trajectory else []
 
     if not args or args.lower() == "count":
-        # Debug: show message roles to understand what's in the trajectory
-        roles = [m.role for m in messages]
-
-        # Also check what's in session store
-        session_msg_count = "N/A"
-        if runner.session_store and runner.session_id:
-            session, _ = await runner.session_store.get(runner.session_id)
-            if session:
-                session_msg_count = str(len(session.messages))
-
-        return SlashCommandResult(
-            message=f"Session has {len(messages)} messages\n"
-            f"Roles: {roles}\n"
-            f"_current_trajectory set: {runner._current_trajectory is not None}\n"
-            f"session_id: {runner.session_id}\n"
-            f"session_store messages: {session_msg_count}"
-        )
+        return SlashCommandResult(message=f"Session has {len(messages)} messages")
 
     # Validate we have session store and session ID
     if not runner.session_store:
