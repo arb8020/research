@@ -144,7 +144,7 @@ rollouts -c -p "what was the last thing we did"
 
 ## Stream JSON Output
 
-For scripting and pipelines, use `--stream-json` to get NDJSON output:
+For scripting, pipelines, and sub-agent orchestration, use `--stream-json` to get NDJSON output:
 
 ```bash
 rollouts -p "calculate 5+3" --env calculator --stream-json
@@ -153,16 +153,32 @@ rollouts -p "calculate 5+3" --env calculator --stream-json
 Each line is a JSON object:
 
 ```json
-{"type":"system","subtype":"init","session_id":"","tools":["add","subtract",...]}
+{"type":"system","subtype":"init","session_id":"abc123","tools":["add","subtract",...]}
 {"type":"assistant","message":{"content":[{"type":"text","text":"I'll help..."},{"type":"tool_use","id":"...","name":"add","input":{"value":5}}]}}
 {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"...","content":"Added 5...","is_error":false}]}}
-{"type":"result","subtype":"success","session_id":"","num_turns":2,"duration_ms":1234}
+{"type":"result","subtype":"success","session_id":"abc123","num_turns":2,"duration_ms":1234}
 ```
+
+**Key events:**
+- `{"type": "system", "subtype": "init"}` — session started, lists available tools
+- `{"type": "assistant"}` — model response (text, thinking, tool calls)
+- `{"type": "user"}` — tool results
+- `{"type": "result"}` — **completion signal** with session_id, turn count, duration
 
 Process with jq:
 
 ```bash
-rollouts -p "task" --stream-json 2>/dev/null | jq '.message.content[]?'
+# Get all assistant text
+rollouts -p "task" --stream-json 2>/dev/null \
+    | jq -r 'select(.type=="assistant") | .message.content[] | select(.type=="text") | .text'
+
+# Get final result metadata
+rollouts -p "task" --stream-json 2>/dev/null \
+    | jq 'select(.type=="result")'
+
+# Get session ID for later inspection
+sid=$(rollouts -p "task" --stream-json 2>/dev/null | jq -r 'select(.type=="result") | .session_id')
+rollouts -s "$sid"  # resume or inspect
 ```
 
 ## Handoff (Context Transfer)
@@ -283,6 +299,98 @@ Compact preserves conversation structure but shrinks verbose tool outputs:
 | `edit` | Full diff | `🔧 [edit: +12/-5 lines]` |
 | `write` | Confirmation | `✏️ [wrote 156 lines]` |
 
+## Sub-Agents
+
+Spawn isolated agent instances for focused tasks. Sessions are persisted so you can inspect what the sub-agent did.
+
+### Blocking (Wait for Result)
+
+```bash
+# Simple: capture final output
+result=$(rollouts -p "analyze the auth module" --env coding -q 2>/dev/null)
+
+# With JSON stream: parse structured output  
+rollouts -p "find all TODO comments" --env coding --stream-json 2>/dev/null \
+    | jq -r 'select(.type=="assistant") | .message.content[0].text' \
+    | tail -1
+
+# With timeout (requires coreutils on macOS: brew install coreutils)
+timeout 120 rollouts -p "refactor the tests" --env coding
+```
+
+### Background (Parallel Work)
+
+```bash
+# Spawn parallel explorations
+rollouts -p "analyze approach A" --env coding --stream-json > /tmp/a.jsonl 2>&1 &
+PID_A=$!
+rollouts -p "analyze approach B" --env coding --stream-json > /tmp/b.jsonl 2>&1 &
+PID_B=$!
+
+# Wait for both
+wait $PID_A $PID_B
+
+# Check results (last line is {"type": "result", ...})
+jq -s '.[-1]' /tmp/a.jsonl
+jq -s '.[-1]' /tmp/b.jsonl
+```
+
+### Inspecting Sub-Agent Sessions
+
+Sessions are saved by default. Find and inspect them:
+
+```bash
+# List recent sessions
+rollouts -s
+
+# Resume a sub-agent's session to continue its work
+rollouts -s 20250102_143052_abc123
+
+# Export for review
+rollouts --export-md -s 20250102_143052_abc123 > subagent-work.md
+```
+
+### Read-Only Exploration
+
+For safe exploration that can't modify files:
+
+```bash
+rollouts -p "explain the architecture of src/auth/" --env coding --tools readonly
+```
+
+### Completion Detection
+
+The `--stream-json` output ends with a result line:
+
+```json
+{"type": "result", "subtype": "success", "session_id": "abc123", "num_turns": 5, "duration_ms": 12340}
+```
+
+Poll for completion:
+
+```bash
+rollouts -p "task" --env coding --stream-json > /tmp/out.jsonl 2>&1 &
+PID=$!
+
+# Wait for result line
+while ! grep -q '"type":\s*"result"' /tmp/out.jsonl 2>/dev/null; do
+    sleep 1
+done
+
+# Parse result
+jq 'select(.type=="result")' /tmp/out.jsonl
+```
+
+### Context Handoff to Sub-Agent
+
+Pass context from current session to a sub-agent:
+
+```bash
+# Extract relevant context, pipe to sub-agent
+rollouts --handoff "security review" -s $CURRENT_SESSION \
+    | rollouts -p --env coding --tools readonly
+```
+
 ## Context Management for Agents
 
 When an agent's context window fills up, it can manage its own context using bash:
@@ -292,13 +400,13 @@ When an agent's context window fills up, it can manage its own context using bas
 rollouts --doctor -s $SESSION_ID
 
 # Compact tool results to save tokens (keeps structure)
-rollouts --slice "compact:0:$(rollouts --doctor -s $SESSION_ID | grep Messages | cut -d: -f2)" -s $SESSION_ID
+rollouts --slice "compact:0:" -s $SESSION_ID
 
 # Summarize old work, keep recent context
 rollouts --slice "0:2, summarize:2:100:'key decisions', 100:" -s $SESSION_ID | xargs rollouts -s
 
 # Spawn a sub-agent for isolated exploration (doesn't pollute main context)
-rollouts --spawn --env coding -p "explore the auth module" --no-session
+rollouts -p "explore the auth module" --env coding --tools readonly
 ```
 
 ### When to Use What
@@ -307,7 +415,7 @@ rollouts --spawn --env coding -p "explore the auth module" --no-session
 |-----------|----------|
 | Tool results too verbose | `compact:START:END` |
 | Old context no longer relevant | `summarize:START:END:'goal'` |
-| Need isolated exploration | Spawn sub-agent via bash |
+| Need isolated exploration | Spawn sub-agent via bash (see above) |
 | Context window nearly full | Summarize first 80%, keep recent 20% |
 | Starting fresh with learnings | `--handoff "goal" \| rollouts` |
 
@@ -318,7 +426,7 @@ An agent approaching context limits can compact itself:
 ```bash
 # Get current session ID from environment or parse from rollouts output
 # Then create a compacted child session and continue there
-NEW_SESSION=$(rollouts --slice "0:2, summarize:2:80, compact:80:150, 150:" -s $CURRENT_SESSION)
+NEW_SESSION=$(rollouts --slice "0:2, summarize:2:80%, 80%:" -s $CURRENT_SESSION)
 echo "Continuing in compacted session: $NEW_SESSION"
 ```
 
@@ -403,3 +511,4 @@ rollouts --preset fast_coder
 
 - `docs/SESSION_DESIGN.md` - Session persistence and handoff design
 - `rollouts/agent_presets/README.md` - Creating custom presets
+- `rollouts/agent_presets/sonnet_4_subagent_03_02.py` - Sub-agent spawning preset with system prompt guidance
