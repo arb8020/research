@@ -306,7 +306,23 @@ async def _handle_slice(runner: InteractiveAgentRunner, args: str) -> SlashComma
     messages = runner.trajectory.messages if runner.trajectory else []
 
     if not args or args.lower() == "count":
-        return SlashCommandResult(message=f"Session has {len(messages)} messages")
+        # Debug: show message roles to understand what's in the trajectory
+        roles = [m.role for m in messages]
+
+        # Also check what's in session store
+        session_msg_count = "N/A"
+        if runner.session_store and runner.session_id:
+            session, _ = await runner.session_store.get(runner.session_id)
+            if session:
+                session_msg_count = str(len(session.messages))
+
+        return SlashCommandResult(
+            message=f"Session has {len(messages)} messages\n"
+            f"Roles: {roles}\n"
+            f"_current_trajectory set: {runner._current_trajectory is not None}\n"
+            f"session_id: {runner.session_id}\n"
+            f"session_store messages: {session_msg_count}"
+        )
 
     # Validate we have session store and session ID
     if not runner.session_store:
@@ -354,16 +370,180 @@ async def _handle_slice(runner: InteractiveAgentRunner, args: str) -> SlashComma
         )
 
 
-async def _handle_env(runner: InteractiveAgentRunner, args: str) -> SlashCommandResult:
-    """Handle /env command for switching environments.
+def _get_available_envs() -> list[str]:
+    """Get list of available environment names from the registry."""
+    from rollouts.environments.compose import _get_environment_registry
 
-    Usage:
-      /env         - show current environment
-      /env list    - list available environments
-      /env <spec>  - switch to specified environment
+    registry = _get_environment_registry()
+    return sorted(registry.keys())
+
+
+def _get_current_env_name(runner: InteractiveAgentRunner) -> str:
+    """Get the current environment name(s) from the runner."""
+    if runner.environment is None:
+        return "none"
+
+    # Check if it's a composed environment
+    if hasattr(runner.environment, "environments"):
+        # ComposedEnvironment - get names from sub-environments
+        names = []
+        for env in runner.environment.environments:
+            if hasattr(env, "get_name"):
+                names.append(env.get_name())
+            else:
+                names.append(type(env).__name__)
+        return "+".join(names) if names else "composed"
+
+    # Single environment
+    if hasattr(runner.environment, "get_name"):
+        return runner.environment.get_name()
+
+    return type(runner.environment).__name__
+
+
+def _create_environment_from_spec(
+    env_spec: str,
+    working_dir: Path | None = None,
+) -> tuple[Any, str | None]:
+    """Create environment(s) from a spec string like 'coding+ask_user'.
+
+    Returns (environment, error_message). On success, error is None.
     """
-    # TODO: Implement environment switching
-    return SlashCommandResult(message="/env command not yet implemented")
+    from rollouts.environments.ask_user import AskUserQuestionEnvironment
+    from rollouts.environments.calculator import CalculatorEnvironment
+    from rollouts.environments.coding import LocalFilesystemEnvironment
+    from rollouts.environments.compose import compose
+    from rollouts.environments.git_worktree import GitWorktreeEnvironment
+
+    if working_dir is None:
+        working_dir = Path.cwd()
+
+    env_names = env_spec.split("+")
+    environments = []
+
+    for env_name in env_names:
+        env_name = env_name.strip().lower()
+        if env_name == "coding":
+            environments.append(LocalFilesystemEnvironment(working_dir=working_dir))
+        elif env_name == "git" or env_name == "git_worktree":
+            environments.append(GitWorktreeEnvironment(working_dir=working_dir))
+        elif env_name == "calculator":
+            environments.append(CalculatorEnvironment())
+        elif env_name == "ask_user":
+            environments.append(AskUserQuestionEnvironment())
+        elif env_name == "browsing":
+            try:
+                from rollouts.environments.browsing import BrowsingEnvironment
+
+                environments.append(BrowsingEnvironment())
+            except ImportError:
+                return None, "Browsing environment not available (missing dependencies)"
+        elif env_name == "repl":
+            from rollouts.environments.repl import REPLEnvironment
+
+            # REPL requires context - use empty string for now
+            environments.append(REPLEnvironment(context="", sub_endpoint=None))
+        else:
+            available = _get_available_envs()
+            return None, f"Unknown environment: {env_name}\nAvailable: {', '.join(available)}"
+
+    if len(environments) == 0:
+        return None, "No environments specified"
+
+    try:
+        composed = compose(*environments)
+        return composed, None
+    except ValueError as e:
+        # Tool name collision
+        return None, str(e)
+
+
+async def _handle_env(runner: InteractiveAgentRunner, args: str) -> SlashCommandResult:
+    """Handle /env command.
+
+    /env           - Show current environment
+    /env list      - List available environments
+    /env <spec>    - Switch to new environment (creates child session)
+    """
+    from rollouts.dtypes import EnvironmentConfig
+
+    # /env (no args) - show current
+    if not args:
+        current = _get_current_env_name(runner)
+        return SlashCommandResult(message=f"Current environment: {current}")
+
+    # /env list - show available
+    if args.lower() == "list":
+        available = _get_available_envs()
+        return SlashCommandResult(message="Available environments:\n  " + "\n  ".join(available))
+
+    # /env <spec> - switch environment
+    env_spec = args.strip()
+
+    # Check if already on this env
+    current = _get_current_env_name(runner)
+    if env_spec.lower() == current.lower():
+        return SlashCommandResult(message=f"Already using environment: {current}")
+
+    # Validate we have session store and session ID
+    if not runner.session_store:
+        return SlashCommandResult(
+            message="Cannot switch env: no session store (use without --no-session)"
+        )
+    if not runner.session_id:
+        return SlashCommandResult(
+            message="Cannot switch env: no session yet. Send a message first."
+        )
+
+    # Try to create the new environment (validates the spec)
+    working_dir = Path.cwd()
+    if runner.environment and hasattr(runner.environment, "working_dir"):
+        working_dir = runner.environment.working_dir
+
+    new_env, err = _create_environment_from_spec(env_spec, working_dir)
+    if err:
+        return SlashCommandResult(message=f"Cannot create environment: {err}")
+
+    # Load current session to get messages and branch point
+    session, err = await runner.session_store.get(runner.session_id)
+    if err or not session:
+        return SlashCommandResult(message=f"Cannot load session: {err}")
+
+    # Create child session with new environment
+    new_env_config = EnvironmentConfig(type=env_spec)
+    child_session = await runner.session_store.create(
+        endpoint=runner.endpoint,
+        environment=new_env_config,
+        parent_id=runner.session_id,
+        branch_point=len(session.messages),
+    )
+
+    # Copy messages from parent to child
+    for msg in session.messages:
+        await runner.session_store.append_message(child_session.session_id, msg)
+
+    # Serialize and store the new environment state
+    if hasattr(new_env, "serialize"):
+        env_state = await new_env.serialize()
+        await runner.session_store.update(
+            child_session.session_id,
+            environment_state=env_state,
+        )
+
+    # Update runner's environment before switching
+    runner.environment = new_env
+
+    # Switch to the child session
+    switched = await runner.switch_session(child_session.session_id)
+    if switched:
+        return SlashCommandResult(
+            message=f"Switched to session {child_session.session_id} with env {env_spec}"
+        )
+    else:
+        return SlashCommandResult(
+            message=f"Created session {child_session.session_id} with env {env_spec}\n\n"
+            f"Switch failed. Run:\n  rollouts -s {child_session.session_id}"
+        )
 
 
 # =============================================================================

@@ -350,6 +350,40 @@ class InteractiveAgentRunner:
 
             return f"/model {matches[0]}"
 
+        # Check for /env completion with tab cycling
+        if text.startswith("/env "):
+            from .slash_commands import _get_available_envs
+
+            # Check if we're continuing a tab cycle for envs
+            if (
+                self._tab_cycle_matches
+                and self._tab_cycle_prefix.startswith("/env ")
+                and f"/env {self._tab_cycle_matches[self._tab_cycle_index]}" == text.rstrip()
+            ):
+                # Continue cycling - move to next match
+                self._tab_cycle_index = (self._tab_cycle_index + 1) % len(self._tab_cycle_matches)
+                return f"/env {self._tab_cycle_matches[self._tab_cycle_index]}"
+
+            arg = text[5:]  # After "/env "
+
+            # Get available environments
+            all_envs = _get_available_envs()
+            # Also add "list" as a completable option
+            all_options = ["list"] + all_envs
+
+            # Find matches
+            matches = [e for e in all_options if e.startswith(arg)]
+
+            if not matches:
+                return None
+
+            # Start new cycle
+            self._tab_cycle_matches = matches
+            self._tab_cycle_index = 0
+            self._tab_cycle_prefix = text
+
+            return f"/env {matches[0]}"
+
         # Check for command name completion with tab cycling
         if " " not in text:
             prefix = text[1:]  # Remove /

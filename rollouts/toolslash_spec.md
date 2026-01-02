@@ -59,15 +59,13 @@ Create a child session with the new environment and switch to it.
 1. Parse the env spec (e.g., `coding+ask_user`)
 2. Check if already on the same env → show "Already using env: coding+ask_user" and no-op
 3. Check for tool name collisions between combined envs → show error if collision exists
-4. Show confirmation: `Create session <session_id> with env coding+ask_user? [Y/n]`
-5. On confirm (y + enter):
-   - Create child session branched from current point
-   - Child session has: same messages up to branch point, new EnvironmentConfig.type, fresh environment_state
-   - Child session naturally gets the new env's system prompt
-   - Auto-switch to the child session
-6. Show simple confirmation: `Switched to session <session_id> with env coding+ask_user`
+4. Create child session branched from current point
+5. Child session has: same messages up to branch point, new EnvironmentConfig.type, fresh environment_state
+6. Child session naturally gets the new env's system prompt
+7. Auto-switch to the child session
+8. Show confirmation: `Switched to session <session_id> with env coding+ask_user`
 
-**Confirmation interaction**: Standard Y/n with enter to submit.
+**Note**: v1 executes immediately without Y/n confirmation (matching /model, /thinking, /slice behavior). Confirmation can be added later if needed.
 
 ## Session Semantics
 
@@ -121,23 +119,29 @@ On session resume (`rollouts -s <id>`), environment is restored from these field
 
 ## Implementation Notes
 
-### Files to Modify
+### Files Modified
 
 1. **`rollouts/frontends/tui/slash_commands.py`**
-   - Add `/env` to `BUILTIN_COMMANDS`
-   - Implement `_handle_env()` function
-   - Add tab completion for env names
+   - Added `env` to `BUILTIN_COMMANDS` with arg_hint `[env_spec|list]`
+   - Added `_get_available_envs()` - returns sorted list from environment registry
+   - Added `_get_current_env_name(runner)` - extracts env name(s) from runner
+   - Added `_create_environment_from_spec(spec, working_dir)` - parses spec and creates env
+   - Added `_handle_env(runner, args)` - main command handler
 
-2. **`rollouts/environments/__init__.py`** or new file
-   - Function to list available environments
-   - Function to parse env spec and instantiate composed environment
+2. **`rollouts/frontends/tui/interactive_agent.py`**
+   - Added tab completion for `/env` arguments (env names + "list")
 
-3. **`~/.rollouts/config`** (new or extend)
-   - Optional `allowed_envs` or similar field for configuring which envs appear in `/env list`
-
-### Key Functions to Use
+### Key Functions Used
 
 - `compose(*environments)` from `rollouts/environments/compose.py`
 - `_get_environment_registry()` for discovering available envs
-- `runner.switch_session()` for auto-switching (pattern from `/slice`)
+- `runner.switch_session()` for auto-switching after creating child session
 - `session_store.create()` for creating child session
+- `session_store.append_message()` for copying messages to child
+- `session_store.update()` for persisting environment state
+
+### Future Work
+
+- `~/.rollouts/config` support for `allowed_envs` (configurable env list)
+- Y/n confirmation before creating child session
+- Partial modification syntax (`/env +ask_user`, `/env -bash`)
