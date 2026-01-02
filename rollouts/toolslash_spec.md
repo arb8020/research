@@ -140,6 +140,30 @@ On session resume (`rollouts -s <id>`), environment is restored from these field
 - `session_store.append_message()` for copying messages to child
 - `session_store.update()` for persisting environment state
 
+### Testing with Headless JSON Frontend
+
+A new `--frontend json` option was added for programmatic testing:
+
+```bash
+# Test slash commands
+echo '{"type": "user", "text": "/env list"}' | rollouts --frontend json --env coding --no-session
+
+# Multiple commands
+echo '{"type": "user", "text": "/env"}
+{"type": "user", "text": "/env list"}
+{"type": "user", "text": "hello"}' | rollouts --frontend json --env coding --no-session
+```
+
+Output format (NDJSON):
+```json
+{"type": "system", "subtype": "init", "session_id": "", "tools": [], "environment": "coding"}
+{"type": "slash_command", "command": "/env list", "handled": true, "result": "Available environments:..."}
+{"type": "assistant", "message": {"content": [...]}}
+{"type": "result", "subtype": "success", "session_id": "", "num_turns": 1}
+```
+
+Implementation: `rollouts/frontends/headless_json.py`
+
 ### Future Work
 
 - `~/.rollouts/config` support for `allowed_envs` (configurable env list)
