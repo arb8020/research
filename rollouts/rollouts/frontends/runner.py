@@ -193,6 +193,35 @@ class InteractiveRunner:
         self._pending_messages: list[str] = []
         self._is_first_message = True
 
+    def _get_environment_updates(
+        self, current_state: AgentState
+    ) -> tuple[Environment | None, list, str | None]:
+        """Check if frontend's environment changed (e.g., via /env command).
+
+        Returns (new_environment, new_tools, new_session_id).
+        If nothing changed, returns (current_env, current_tools, current_session_id).
+        """
+        new_env = current_state.environment
+        new_tools = current_state.actor.tools
+        new_session_id = current_state.session_id
+
+        # Check if frontend has a different environment than current state
+        if hasattr(self.frontend, "environment") and self.frontend.environment is not None:
+            frontend_env = self.frontend.environment
+            if frontend_env is not current_state.environment:
+                # Environment changed - update our reference and return new env/tools
+                self.environment = frontend_env
+                new_env = frontend_env
+                new_tools = frontend_env.get_tools()
+
+        # Check if frontend's session_id changed (e.g., via /env creating child session)
+        if hasattr(self.frontend, "session_id") and self.frontend.session_id:
+            if self.frontend.session_id != self.session_id:
+                self.session_id = self.frontend.session_id
+                new_session_id = self.frontend.session_id
+
+        return new_env, new_tools, new_session_id
+
     async def run(self) -> list[AgentState]:
         """Run interactive agent loop.
 
@@ -304,13 +333,21 @@ class InteractiveRunner:
                             user_input = await self.frontend.get_input()
                             new_messages.append(Message(role="user", content=user_input))
 
+                            # Check if environment/session changed (e.g., via /env command)
+                            new_env, new_tools, new_session_id = self._get_environment_updates(
+                                latest_state
+                            )
+
                             # Continue with new state
                             current_state = dc_replace(
                                 latest_state,
                                 actor=dc_replace(
                                     latest_state.actor,
                                     trajectory=Trajectory(messages=new_messages),
+                                    tools=new_tools,
                                 ),
+                                environment=new_env,
+                                session_id=new_session_id,
                                 stop=None,
                             )
                         elif agent_states and agent_states[-1].stop == StopReason.TASK_COMPLETED:
@@ -344,12 +381,20 @@ class InteractiveRunner:
                             new_messages = list(latest_state.actor.trajectory.messages)
                             new_messages.append(Message(role="user", content=user_input))
 
+                            # Check if environment/session changed (e.g., via /env command)
+                            new_env, new_tools, new_session_id = self._get_environment_updates(
+                                latest_state
+                            )
+
                             current_state = dc_replace(
                                 latest_state,
                                 actor=dc_replace(
                                     latest_state.actor,
                                     trajectory=Trajectory(messages=new_messages),
+                                    tools=new_tools,
                                 ),
+                                environment=new_env,
+                                session_id=new_session_id,
                                 stop=None,
                             )
                         else:
@@ -387,14 +432,13 @@ class InteractiveRunner:
                         skip_check=True,
                     )
                 except Exception as e:
-                    import sys
-
                     print(f"[DEBUG] Feedback error: {e}", file=sys.stderr)
 
-            # Print session info
+            # Print session info (to stderr if frontend wants stdout clean for JSON)
             if self.session_id:
-                print(f"\nSession: {self.session_id}")
-                print(f"Resume with: --session {self.session_id}")
+                out = sys.stderr if getattr(self.frontend, "json_mode", False) else sys.stdout
+                print(f"\nSession: {self.session_id}", file=out)
+                print(f"Resume with: --session {self.session_id}", file=out)
 
     async def _handle_stream_event(self, event: StreamEvent) -> None:
         """Route stream event to frontend."""
@@ -452,9 +496,14 @@ class InteractiveRunner:
 
         new_trajectory = Trajectory(messages=state.actor.trajectory.messages + new_messages)
 
+        # Check if environment/session changed (e.g., via /env command)
+        new_env, new_tools, new_session_id = self._get_environment_updates(state)
+
         return dc_replace(
             state,
-            actor=dc_replace(state.actor, trajectory=new_trajectory),
+            actor=dc_replace(state.actor, trajectory=new_trajectory, tools=new_tools),
+            environment=new_env,
+            session_id=new_session_id,
         )
 
     def _handle_stop(self, state: AgentState) -> AgentState:
