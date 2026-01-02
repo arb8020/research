@@ -205,6 +205,8 @@ class InteractiveAgentRunner:
 
     def _handle_open_editor(self, current_text: str) -> None:
         """Handle Ctrl+G to open external editor for message composition."""
+        from .utils import strip_terminal_control_sequences
+
         if not self.terminal:
             return
 
@@ -218,6 +220,9 @@ class InteractiveAgentRunner:
 
         # If user saved content, update input and optionally submit
         if edited_content:
+            # Strip any terminal control sequences that may have leaked in
+            # (e.g., bracketed paste sequences from the editor session)
+            edited_content = strip_terminal_control_sequences(edited_content)
             if self.input_component:
                 self.input_component.set_text(edited_content)
             # Auto-submit the edited content
@@ -471,12 +476,18 @@ class InteractiveAgentRunner:
         Returns:
             User input string (either direct input or expanded file command)
         """
+        from .utils import strip_terminal_control_sequences
+
         if self.input_receive is None:
             raise RuntimeError("Input channel not initialized")
 
         # Loop until we get a message to send to LLM
         while True:
             user_input = await self._get_next_input()
+
+            # Strip any terminal control sequences that may have leaked in
+            # (e.g., bracketed paste sequences from vim mode / Ctrl+G)
+            user_input = strip_terminal_control_sequences(user_input)
 
             # Handle slash commands
             if user_input.startswith("/"):
