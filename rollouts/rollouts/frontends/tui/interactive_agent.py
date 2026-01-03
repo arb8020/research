@@ -120,6 +120,10 @@ class InteractiveAgentRunner:
         # Flag set by /env when environment changes - signals main loop to update current_state
         self._environment_changed: bool = False
 
+        # Flag set by /slice when session switches - signals main loop to rebuild state
+        # from self.initial_trajectory and self.endpoint
+        self._session_switched: bool = False
+
         # Tab completion cycling state
         self._tab_cycle_matches: list[str] = []  # Current list of matches
         self._tab_cycle_index: int = 0  # Current position in cycle
@@ -166,9 +170,17 @@ class InteractiveAgentRunner:
         self.session_id = new_session_id
         set_active_session_id(new_session_id)
 
+        # Update endpoint from the loaded session
+        # This is critical - /slice and /env create child sessions with specific endpoints
+        self.endpoint = session.endpoint
+
         # Update trajectory
         self.initial_trajectory = Trajectory(messages=session.messages)
         self._current_trajectory = self.initial_trajectory
+
+        # Signal main loop to rebuild state from self.initial_trajectory/endpoint
+        # This is critical - without this, the next agent loop iteration uses stale state
+        self._session_switched = True
 
         # Update status line
         if self.status_line:
@@ -987,6 +999,26 @@ class InteractiveAgentRunner:
 
             user_input = await rcfg.on_input("Enter your message: ")
 
+            # Check if session was switched by /slice command
+            # If so, rebuild state completely from self.initial_trajectory/endpoint
+            if self._session_switched:
+                self._session_switched = False  # Reset flag
+                new_trajectory = Trajectory(
+                    messages=list(self.initial_trajectory.messages)
+                    + [Message(role="user", content=user_input)]
+                )
+                new_environment = self.environment
+                new_tools = self.environment.get_tools() if self.environment else []
+                return AgentState(
+                    actor=Actor(
+                        trajectory=new_trajectory,
+                        endpoint=self.endpoint,
+                        tools=new_tools,
+                    ),
+                    environment=new_environment,
+                    session_id=self.session_id,
+                )
+
             user_messages = [Message(role="user", content=user_input)]
             for pending_msg in self._pending_user_messages:
                 if self.renderer:
@@ -1083,9 +1115,30 @@ class InteractiveAgentRunner:
             pass
 
         user_input = await self._tui_input_handler("Enter your message: ")
-        new_messages.append(Message(role="user", content=user_input))
 
         from dataclasses import replace as dc_replace
+
+        # Check if session was switched by /slice command
+        # If so, rebuild state completely from self.initial_trajectory/endpoint
+        if self._session_switched:
+            self._session_switched = False  # Reset flag
+            new_trajectory = Trajectory(
+                messages=list(self.initial_trajectory.messages)
+                + [Message(role="user", content=user_input)]
+            )
+            new_environment = self.environment
+            new_tools = self.environment.get_tools() if self.environment else []
+            return AgentState(
+                actor=Actor(
+                    trajectory=new_trajectory,
+                    endpoint=self.endpoint,
+                    tools=new_tools,
+                ),
+                environment=new_environment,
+                session_id=self.session_id,
+            )
+
+        new_messages.append(Message(role="user", content=user_input))
 
         new_trajectory = Trajectory(messages=new_messages)
 
@@ -1142,11 +1195,31 @@ class InteractiveAgentRunner:
         # Wait for next user input
         user_input = await self._tui_input_handler("Enter your message: ")
 
+        from dataclasses import replace as dc_replace
+
+        # Check if session was switched by /slice command
+        # If so, rebuild state completely from self.initial_trajectory/endpoint
+        if self._session_switched:
+            self._session_switched = False  # Reset flag
+            new_trajectory = Trajectory(
+                messages=list(self.initial_trajectory.messages)
+                + [Message(role="user", content=user_input)]
+            )
+            new_environment = self.environment
+            new_tools = self.environment.get_tools() if self.environment else []
+            return AgentState(
+                actor=Actor(
+                    trajectory=new_trajectory,
+                    endpoint=self.endpoint,
+                    tools=new_tools,
+                ),
+                environment=new_environment,
+                session_id=self.session_id,
+            )
+
         # Build new trajectory with user message
         new_messages = list(latest_state.actor.trajectory.messages)
         new_messages.append(Message(role="user", content=user_input))
-
-        from dataclasses import replace as dc_replace
 
         new_trajectory = Trajectory(messages=new_messages)
 
@@ -1199,6 +1272,26 @@ class InteractiveAgentRunner:
         user_input = await self._tui_input_handler("Enter your message: ")
 
         from dataclasses import replace as dc_replace
+
+        # Check if session was switched by /slice command
+        # If so, rebuild state completely from self.initial_trajectory/endpoint
+        if self._session_switched:
+            self._session_switched = False  # Reset flag
+            new_trajectory = Trajectory(
+                messages=list(self.initial_trajectory.messages)
+                + [Message(role="user", content=user_input)]
+            )
+            new_environment = self.environment
+            new_tools = self.environment.get_tools() if self.environment else []
+            return AgentState(
+                actor=Actor(
+                    trajectory=new_trajectory,
+                    endpoint=self.endpoint,
+                    tools=new_tools,
+                ),
+                environment=new_environment,
+                session_id=self.session_id,
+            )
 
         # Check if environment was changed by /env command
         new_environment = current_state.environment

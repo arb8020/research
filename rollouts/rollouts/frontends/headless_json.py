@@ -239,6 +239,10 @@ class HeadlessJsonFrontend:
         self.session_id = new_session_id
         self._session_id = new_session_id
 
+        # Update endpoint from the loaded session
+        # This is critical - /slice and /env create child sessions with specific endpoints
+        self.endpoint = session.endpoint
+
         # Update trajectory
         from rollouts.dtypes import Trajectory
 
