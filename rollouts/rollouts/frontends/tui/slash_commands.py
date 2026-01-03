@@ -302,10 +302,17 @@ async def _handle_slice(runner: InteractiveAgentRunner, args: str) -> SlashComma
     """Handle /slice command."""
     from rollouts.slice import parse_slice_spec, run_slice_command
 
+    # Determine which session to use for slicing:
+    # - If we have a session_id, use it (normal case)
+    # - If we're in fork mode (no session_id but have parent_session_id), use parent
+    #   This happens when resuming with different config - the child session isn't
+    #   created until the first agent turn, but we want /slice to work immediately
+    source_session_id = runner.session_id or runner.parent_session_id
+
     # Get message count from session store (authoritative source)
     # The in-memory trajectory may be stale or not yet updated
-    if runner.session_store and runner.session_id:
-        session, _ = await runner.session_store.get(runner.session_id)
+    if runner.session_store and source_session_id:
+        session, _ = await runner.session_store.get(source_session_id)
         messages = session.messages if session else []
     else:
         # Fall back to in-memory trajectory if no session store
@@ -314,12 +321,12 @@ async def _handle_slice(runner: InteractiveAgentRunner, args: str) -> SlashComma
     if not args or args.lower() == "count":
         return SlashCommandResult(message=f"Session has {len(messages)} messages")
 
-    # Validate we have session store and session ID
+    # Validate we have session store and a session to slice from
     if not runner.session_store:
         return SlashCommandResult(
             message="Cannot slice: no session store (use without --no-session)"
         )
-    if not runner.session_id:
+    if not source_session_id:
         return SlashCommandResult(
             message="Cannot slice: no session yet. Send a message first to create a session."
         )
@@ -331,7 +338,7 @@ async def _handle_slice(runner: InteractiveAgentRunner, args: str) -> SlashComma
         return SlashCommandResult(message=f"Invalid slice spec: {e}")
 
     # Load full session
-    session, err = await runner.session_store.get(runner.session_id)
+    session, err = await runner.session_store.get(source_session_id)
     if err or not session:
         return SlashCommandResult(message=f"Cannot load session: {err}")
 
@@ -349,8 +356,16 @@ async def _handle_slice(runner: InteractiveAgentRunner, args: str) -> SlashComma
     if not child:
         return SlashCommandResult(message="Slice produced no result")
 
+    # Save endpoint before switch (switch_session loads endpoint from stored session,
+    # but we want to keep our current endpoint which has the active OAuth token etc)
+    saved_endpoint = runner.endpoint
+
     # Switch to the child session
     switched = await runner.switch_session(child.session_id)
+
+    # Restore endpoint - switch_session loads from storage which may have stale auth
+    runner.endpoint = saved_endpoint
+
     if switched:
         return SlashCommandResult(message=f"Switched to child session: {child.session_id}")
     else:
@@ -541,8 +556,22 @@ async def _handle_env(runner: InteractiveAgentRunner, args: str) -> SlashCommand
     if hasattr(runner, "_environment_changed"):
         runner._environment_changed = True
 
+    # Save endpoint before switch (switch_session loads endpoint from stored session,
+    # but we want to keep our current endpoint which has the active OAuth token etc)
+    saved_endpoint = runner.endpoint
+
     # Switch to the child session
     switched = await runner.switch_session(child_session.session_id)
+
+    # Restore endpoint - switch_session loads from storage which may have stale auth
+    runner.endpoint = saved_endpoint
+
+    # Reset _session_switched since /env uses _environment_changed instead.
+    # switch_session sets _session_switched which would cause the handler to
+    # rebuild state from initial_trajectory (wrong system prompt). We want
+    # the _environment_changed path which keeps the trajectory but swaps env/tools.
+    if hasattr(runner, "_session_switched"):
+        runner._session_switched = False
 
     if switched:
         return SlashCommandResult(

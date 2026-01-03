@@ -192,6 +192,9 @@ class InteractiveAgentRunner:
             self.renderer.render_history(session.messages, skip_system=False)
 
         if self.tui:
+            # Reset render state to force complete re-render after session switch
+            # This clears cached previous_lines that may be stale
+            self.tui.reset_render_state()
             self.tui.request_render()
 
         return True
@@ -1037,13 +1040,20 @@ class InteractiveAgentRunner:
                 self._environment_changed = False  # Reset flag
 
             # Use self.endpoint to pick up any /model changes
+            # Use self.session_id to pick up session changes from /env
             new_actor = dc_replace(
                 state.actor,
                 trajectory=new_trajectory,
                 endpoint=self.endpoint,
                 tools=new_tools,
             )
-            return dc_replace(state, actor=new_actor, environment=new_environment)
+            result = dc_replace(
+                state,
+                actor=new_actor,
+                environment=new_environment,
+                session_id=self.session_id,
+            )
+            return result
 
         confirm_handler = confirm_tool_tui if self.confirm_tools else auto_confirm_tool
 
