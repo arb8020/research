@@ -133,7 +133,7 @@ async def run_stress_test(
         model=model,
         api_key=api_key,
         max_retries=max_retries,
-        max_tokens=300,  # ~200 word stories
+        max_tokens=2000,  # Long stories to keep requests in-flight
         temperature=0.7,  # Some variety
     )
 
