@@ -62,17 +62,29 @@ logger = logging.getLogger(__name__)
 
 
 def make_simple_dataset(n_samples: int) -> Iterator[dict[str, Any]]:
-    """Generate simple math problems for stress testing.
+    """Generate prompts for stress testing.
 
-    These are trivial problems so the model responds quickly,
-    maximizing request throughput to stress rate limits.
+    Uses prompts that generate longer responses to keep requests in-flight
+    longer, increasing concurrent connections and likelihood of hitting rate limits.
     """
+    topics = [
+        "a brave knight and a dragon",
+        "a robot learning to feel emotions",
+        "a time traveler stuck in ancient Rome",
+        "a detective solving a mystery on Mars",
+        "a chef who can taste memories",
+        "a librarian who discovers magic books",
+        "a musician whose songs come to life",
+        "a scientist who shrinks to atomic size",
+        "a painter whose art predicts the future",
+        "a gardener growing impossible plants",
+    ]
     for i in range(n_samples):
-        a, b = i + 1, i + 2
+        topic = topics[i % len(topics)]
         yield {
             "id": f"stress_{i:04d}",
-            "question": f"What is {a} + {b}? Reply with just the number.",
-            "answer": str(a + b),
+            "question": f"Tell me a short story (about 200 words) about {topic}.",
+            "answer": "",  # No specific answer expected
         }
 
 
@@ -121,8 +133,8 @@ async def run_stress_test(
         model=model,
         api_key=api_key,
         max_retries=max_retries,
-        max_tokens=50,  # Short responses for speed
-        temperature=0.0,  # Deterministic
+        max_tokens=300,  # ~200 word stories
+        temperature=0.7,  # Some variety
     )
 
     # Simple prepare_messages function for math problems
