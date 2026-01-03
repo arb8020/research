@@ -195,6 +195,20 @@ async def run_stress_test(
     )
     successful = total - provider_errors - other_errors
 
+    # Calculate total cost and tokens from completions
+    total_input_tokens = 0
+    total_output_tokens = 0
+    total_cost_usd = 0.0
+
+    for sample in report.sample_results:
+        if sample.trajectory and sample.trajectory.completions:
+            for completion in sample.trajectory.completions:
+                if completion.usage:
+                    total_input_tokens += completion.usage.input_tokens
+                    total_output_tokens += completion.usage.output_tokens
+                    if completion.usage.cost:
+                        total_cost_usd += completion.usage.cost.total
+
     summary = {
         "provider": provider,
         "model": model,
@@ -203,6 +217,11 @@ async def run_stress_test(
         "provider_errors": provider_errors,
         "other_errors": other_errors,
         "accuracy": report.summary_metrics.get("accuracy", 0),
+        "total_input_tokens": total_input_tokens,
+        "total_output_tokens": total_output_tokens,
+        "total_tokens": total_input_tokens + total_output_tokens,
+        "total_cost_usd": round(total_cost_usd, 4),
+        "elapsed_seconds": round(elapsed, 1),
     }
 
     return summary
