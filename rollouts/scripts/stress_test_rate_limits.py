@@ -154,6 +154,7 @@ async def run_stress_test(
         max_concurrent=max_concurrent,
         show_progress=True,
         verbose=False,  # Less noise
+        allow_dirty=True,  # Stress test doesn't need reproducibility guarantees
     )
 
     logger.info(f"Starting stress test: provider={provider}, model={model}")
