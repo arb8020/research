@@ -1355,6 +1355,9 @@ class EvalConfig:
     show_progress: bool = False  # Enable sample-level progress tracking
     stream_tokens: bool = False  # Stream LLM tokens to stdout (used if run_config is None)
 
+    # Reproducibility
+    allow_dirty: bool = False  # If False (default), error on uncommitted git changes
+
 
 # ── Session Types ──────────────────────────────────────────────────────────────
 # Types for persisting agent sessions (trajectories, config, environment state).

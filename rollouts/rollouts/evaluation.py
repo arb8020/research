@@ -46,6 +46,7 @@ class EvalReport:
     summary_metrics: dict[str, float]
     sample_results: list[Sample]
     config: dict[str, Any]
+    fingerprint: dict[str, Any] | None = None
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
     async def save(self, output_dir: Path) -> None:
@@ -69,6 +70,7 @@ class EvalReport:
             "total_samples": self.total_samples,
             "summary_metrics": self.summary_metrics,
             "config": self.config,
+            "fingerprint": self.fingerprint,
             "timestamp": self.timestamp,
             "sample_ids": [s.id for s in self.sample_results],
         }
@@ -436,6 +438,26 @@ async def evaluate(
         ... )
         >>> report = await evaluate(dataset, config)
     """
+    # Compute fingerprint early (will error on dirty git if allow_dirty=False)
+    from rollouts.fingerprint import fingerprint_eval
+
+    # Introspect tools from environment factory (if provided)
+    # We create one env to get the tool list, then discard it
+    tools: list[str] = []
+    if config.environment_factory:
+        try:
+            sample_env = await config.environment_factory({})
+            tools = [t.name for t in sample_env.get_tools()]
+        except Exception as e:
+            logger.warning(f"Could not introspect tools from environment factory: {e}")
+
+    fingerprint = fingerprint_eval(
+        config,
+        tools=tools,
+        dataset_path=None,  # TODO: Accept dataset_path parameter
+        allow_dirty=config.allow_dirty,
+    )
+
     # Collect samples to evaluate
     samples_to_eval = []
     for i, sample_data in enumerate(dataset):
@@ -448,6 +470,9 @@ async def evaluate(
         logger.info(f"starting evaluation: {config.eval_name}")
         logger.info(f"samples to evaluate: {len(samples_to_eval)}")
         logger.info(f"max concurrent: {config.max_concurrent}")
+        logger.debug(
+            f"fingerprint: {fingerprint.get('config_hash', 'N/A')[:8]}@{fingerprint.get('git_sha', 'N/A')}"
+        )
         logger.debug("=" * 50)
 
     # Evaluate samples (with concurrency control)
@@ -553,6 +578,7 @@ async def evaluate(
             "max_concurrent": config.max_concurrent,
             "evaluation_timestamp": datetime.now().isoformat(),
         },
+        fingerprint=fingerprint,
     )
 
     # Save if output directory specified
