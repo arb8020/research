@@ -193,6 +193,56 @@ class InteractiveRunner:
         self._pending_messages: list[str] = []
         self._is_first_message = True
 
+    def _check_session_switched(self, current_state: AgentState) -> bool:
+        """Check if frontend's session was switched (e.g., via /slice command).
+
+        Returns True if session was switched and state needs full rebuild.
+        """
+        # Check if frontend's session_id differs from runner's (indicates /slice or /env)
+        if hasattr(self.frontend, "session_id") and self.frontend.session_id:
+            if self.frontend.session_id != self.session_id:
+                return True
+        return False
+
+    def _rebuild_state_from_frontend(self, user_input: str) -> AgentState:
+        """Rebuild state from frontend after session switch (e.g., /slice).
+
+        After /slice, the frontend has updated trajectory/endpoint/session_id.
+        We need to build a fresh AgentState from those values.
+        """
+        frontend_trajectory = getattr(self.frontend, "trajectory", None)
+        frontend_endpoint = getattr(self.frontend, "endpoint", None)
+        frontend_env = getattr(self.frontend, "environment", None)
+
+        if frontend_trajectory is not None:
+            new_trajectory = Trajectory(
+                messages=list(frontend_trajectory.messages)
+                + [Message(role="user", content=user_input)]
+            )
+        else:
+            new_trajectory = Trajectory(messages=[Message(role="user", content=user_input)])
+
+        new_endpoint = frontend_endpoint or self.endpoint
+        new_env = frontend_env or self.environment
+        new_tools = new_env.get_tools() if new_env else []
+
+        # Update runner state
+        self.session_id = self.frontend.session_id
+        self.endpoint = new_endpoint
+        self.environment = new_env
+        if frontend_trajectory:
+            self.trajectory = frontend_trajectory
+
+        return AgentState(
+            actor=Actor(
+                trajectory=new_trajectory,
+                endpoint=new_endpoint,
+                tools=new_tools,
+            ),
+            environment=new_env,
+            session_id=self.frontend.session_id,
+        )
+
     def _get_environment_updates(
         self, current_state: AgentState
     ) -> tuple[Environment | None, list, str | None]:
@@ -331,25 +381,30 @@ class InteractiveRunner:
 
                             # Get next user input
                             user_input = await self.frontend.get_input()
-                            new_messages.append(Message(role="user", content=user_input))
 
-                            # Check if environment/session changed (e.g., via /env command)
-                            new_env, new_tools, new_session_id = self._get_environment_updates(
-                                latest_state
-                            )
+                            # Check if session was switched by /slice command
+                            if self._check_session_switched(latest_state):
+                                current_state = self._rebuild_state_from_frontend(user_input)
+                            else:
+                                new_messages.append(Message(role="user", content=user_input))
 
-                            # Continue with new state
-                            current_state = dc_replace(
-                                latest_state,
-                                actor=dc_replace(
-                                    latest_state.actor,
-                                    trajectory=Trajectory(messages=new_messages),
-                                    tools=new_tools,
-                                ),
-                                environment=new_env,
-                                session_id=new_session_id,
-                                stop=None,
-                            )
+                                # Check if environment/session changed (e.g., via /env command)
+                                new_env, new_tools, new_session_id = self._get_environment_updates(
+                                    latest_state
+                                )
+
+                                # Continue with new state
+                                current_state = dc_replace(
+                                    latest_state,
+                                    actor=dc_replace(
+                                        latest_state.actor,
+                                        trajectory=Trajectory(messages=new_messages),
+                                        tools=new_tools,
+                                    ),
+                                    environment=new_env,
+                                    session_id=new_session_id,
+                                    stop=None,
+                                )
                         elif agent_states and agent_states[-1].stop == StopReason.TASK_COMPLETED:
                             # Task completed - in interactive mode, show result and continue
                             latest_state = agent_states[-1]
@@ -378,25 +433,30 @@ class InteractiveRunner:
 
                             # Get next user input
                             user_input = await self.frontend.get_input()
-                            new_messages = list(latest_state.actor.trajectory.messages)
-                            new_messages.append(Message(role="user", content=user_input))
 
-                            # Check if environment/session changed (e.g., via /env command)
-                            new_env, new_tools, new_session_id = self._get_environment_updates(
-                                latest_state
-                            )
+                            # Check if session was switched by /slice command
+                            if self._check_session_switched(latest_state):
+                                current_state = self._rebuild_state_from_frontend(user_input)
+                            else:
+                                new_messages = list(latest_state.actor.trajectory.messages)
+                                new_messages.append(Message(role="user", content=user_input))
 
-                            current_state = dc_replace(
-                                latest_state,
-                                actor=dc_replace(
-                                    latest_state.actor,
-                                    trajectory=Trajectory(messages=new_messages),
-                                    tools=new_tools,
-                                ),
-                                environment=new_env,
-                                session_id=new_session_id,
-                                stop=None,
-                            )
+                                # Check if environment/session changed (e.g., via /env command)
+                                new_env, new_tools, new_session_id = self._get_environment_updates(
+                                    latest_state
+                                )
+
+                                current_state = dc_replace(
+                                    latest_state,
+                                    actor=dc_replace(
+                                        latest_state.actor,
+                                        trajectory=Trajectory(messages=new_messages),
+                                        tools=new_tools,
+                                    ),
+                                    environment=new_env,
+                                    session_id=new_session_id,
+                                    stop=None,
+                                )
                         else:
                             # Other stop reasons (MAX_TURNS, etc.) - exit
                             if agent_states:
@@ -488,7 +548,12 @@ class InteractiveRunner:
         # Get next input
         user_input = await config.on_input("Enter your message: ")
 
-        # Build new trajectory
+        # Check if session was switched by /slice command
+        # If so, rebuild state completely from frontend's trajectory/endpoint
+        if self._check_session_switched(state):
+            return self._rebuild_state_from_frontend(user_input)
+
+        # Build new trajectory (normal case - no session switch)
         new_messages = [Message(role="user", content=user_input)]
         for pending in self._pending_messages:
             new_messages.append(Message(role="user", content=pending))
