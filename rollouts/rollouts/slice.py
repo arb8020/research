@@ -172,18 +172,7 @@ def _parse_segment(part: str) -> SliceSegment:
             end=_parse_index(end_str),
         )
 
-    raise ValueError(
-        f"Invalid slice segment: {part!r}\n\n"
-        "Valid formats:\n"
-        "  0:10       - keep messages 0-9\n"
-        "  10:        - keep from message 10 to end\n"
-        "  :5         - keep first 5 messages\n"
-        "  50%:       - keep last 50% of messages\n"
-        "  compact:0:10  - compact messages 0-9 (shrink tool results)\n"
-        "  summarize:0:10:'goal'  - summarize messages 0-9 with optional goal\n"
-        "  inject:'text' - inject a user message\n\n"
-        "Combine with commas: 0:5, compact:5:20, 20:"
-    )
+    raise ValueError(f"Invalid slice segment: {part!r}")
 
 
 # ── Compact Logic ───────────────────────────────────────────────────────────

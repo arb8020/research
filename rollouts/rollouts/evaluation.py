@@ -27,10 +27,284 @@ from .dtypes import (
     StreamChunk,
     Trajectory,
 )
-from .progress import tqdm
+from .progress import MultiProgress
 from .training.types import Sample
 
 logger = logging.getLogger(__name__)
+
+# JSON-like recursive type for sanitize_api_keys
+# Using string literals for forward references to avoid import cycle
+JsonValue = dict[str, "JsonValue"] | list["JsonValue"] | str | int | float | bool | None
+
+
+# ── Progress Helpers ──────────────────────────────────────────────────────────
+
+
+def _get_progress_status_for_event(event: object) -> str | None:
+    """Extract progress status string from a streaming event.
+
+    Returns status string to display, or None if event doesn't affect status.
+    Pure function - no side effects.
+    """
+    # Handle StreamChunk events (turn lifecycle, modal progress)
+    if isinstance(event, StreamChunk):
+        if event.type == "turn_start":
+            return "waiting..."
+        elif event.type == "turn_end":
+            return ""  # Clear status
+        elif event.type == "modal_progress":
+            phase = event.data.get("phase", "")
+            return {
+                "importing": "importing...",
+                "compiling": "compiling...",
+                "correctness": "checking...",
+                "performance": "benchmarking...",
+            }.get(phase, phase)
+        return None
+
+    # Handle streaming events from LLM
+    event_type = getattr(event, "type", "")
+    if event_type == "start":
+        return "streaming..."
+    elif event_type == "text_delta":
+        return "streaming..."
+    elif event_type == "thinking_start":
+        return "thinking..."
+    elif event_type == "thinking_delta":
+        return "thinking..."
+    elif event_type == "toolcall_start":
+        tool_name = getattr(event, "name", "tool")
+        short_name = tool_name.replace("write_kernel", "eval").replace("ask_docs", "docs")
+        return f"calling {short_name}..."
+    elif event_type == "tool_execution_start":
+        tool_name = getattr(event, "tool_name", "tool")
+        short_name = tool_name.replace("write_kernel", "eval").replace("ask_docs", "docs")
+        return f"→ {short_name}..."
+    elif event_type == "tool_result":
+        is_error = getattr(event, "is_error", False)
+        if is_error:
+            return "tool error"
+    return None
+
+
+def _get_turn_from_event(event: object) -> int | None:
+    """Extract turn number from event if applicable."""
+    if isinstance(event, StreamChunk):
+        if event.type == "turn_start":
+            return event.data.get("turn", 0)
+        elif event.type == "turn_end":
+            return event.data.get("turn", 0) + 1
+    return None
+
+
+def _wrap_event_with_sample_id(event: object, sample_id: str) -> StreamChunk:
+    """Wrap event with sample_id for concurrent sample tracking."""
+    if isinstance(event, StreamChunk):
+        return StreamChunk(
+            type=event.type,
+            data={**event.data, "sample_id": sample_id},
+            timestamp=event.timestamp,
+        )
+    else:
+        return StreamChunk(
+            type="event_wrapper",
+            data={"sample_id": sample_id, "event": event},
+        )
+
+
+def _extract_text_from_content(content: object) -> str:
+    """Extract text from message content (str or list of ContentBlocks)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        texts = []
+        for block in content:
+            if hasattr(block, "text"):
+                texts.append(block.text)
+            elif hasattr(block, "content"):
+                texts.append(str(block.content))
+        return "\n".join(texts) if texts else ""
+    return str(content) if content else ""
+
+
+async def _evaluate_batch(
+    samples: list[tuple[str, dict[str, Any]]],
+    config: "EvalConfig",
+    api_limiter: trio.CapacityLimiter | None,
+    tool_limiter: trio.CapacityLimiter | None,
+    progress: MultiProgress | None,
+) -> list[Sample]:
+    """Evaluate a batch of samples, handling sequential vs parallel execution.
+
+    This is the core evaluation loop, used for both initial runs and retries.
+    """
+    results: list[Sample] = []
+
+    async def run_one(sample_id: str, sample_data: dict[str, Any]) -> Sample:
+        """Evaluate a single sample."""
+        task_name = sample_data.get("name", sample_id)
+        if progress:
+            progress.add_task(sample_id, name=task_name)
+
+        env = await config.environment_factory(sample_data) if config.environment_factory else None
+        result = await evaluate_sample(
+            sample_data=sample_data,
+            sample_id=sample_id,
+            config=config,
+            environment=env,
+            api_limiter=api_limiter,
+            tool_limiter=tool_limiter,
+            progress=progress,
+        )
+
+        # Mark task complete
+        if progress:
+            reward = result.score.reward if result.score else 0.0
+            success = result.metadata.get("status") == "success"
+            if success:
+                message = f"reward={reward:.2f}"
+            else:
+                error = result.metadata.get("error", "failed")
+                message = error[:30] if len(error) > 30 else error
+            progress.complete_task(sample_id, success=success, message=message)
+
+        return result
+
+    if config.max_concurrent == 1:
+        # Sequential
+        for sample_id, sample_data in samples:
+            results.append(await run_one(sample_id, sample_data))
+    else:
+        # Parallel
+        async with trio.open_nursery() as nursery:
+            limiter = trio.CapacityLimiter(config.max_concurrent)
+
+            async def run_with_limit(sid: str, sdata: dict[str, Any]) -> None:
+                async with limiter:
+                    results.append(await run_one(sid, sdata))
+
+            for sample_id, sample_data in samples:
+                nursery.start_soon(run_with_limit, sample_id, sample_data)
+
+    return results
+
+
+async def _compute_score(score_fn: Callable[..., Any], sample: Sample) -> Score:
+    """Compute score, handling both sync and async score functions."""
+    import inspect
+    from typing import cast
+
+    try:
+        score_result = score_fn(sample)
+        if inspect.iscoroutine(score_result):
+            return await score_result
+        else:
+            return cast(Score, score_result)
+    except Exception as e:
+        logger.exception(f"❌ SCORE COMPUTATION FAILED: {e}")
+        return Score(metrics=(Metric("error", 0.0, weight=1.0, metadata={"error": str(e)}),))
+
+
+def _log_sample_completion(
+    sample_id: str,
+    reward: float,
+    exec_metadata: dict[str, Any],
+    final_trajectory: Trajectory,
+    score: Score | None,
+    verbose: bool,
+) -> None:
+    """Log sample completion with structured logging and rollout record."""
+    duration_seconds = exec_metadata.get("duration_seconds", 0.0)
+
+    logger.info(
+        f"Sample {sample_id} completed: reward={reward:.3f}, "
+        f"turns={exec_metadata['turns_used']}, duration={duration_seconds:.2f}s, "
+        f"status={exec_metadata['status']}",
+        extra={
+            "sample_id": sample_id,
+            "reward": reward,
+            "turns": exec_metadata["turns_used"],
+            "duration_seconds": duration_seconds,
+            "status": exec_metadata["status"],
+            "stop_reason": exec_metadata.get("stop_reason"),
+        },
+    )
+
+    # Emit rollout record for TUI trace viewer (matches grpo.py format)
+    messages = [
+        {"role": m.role, "content": _extract_text_from_content(m.content)}
+        for m in final_trajectory.messages
+    ]
+    logger.info(
+        "rollout",
+        extra={
+            "step": sample_id,
+            "prompt": messages[0]["content"] if messages else "",
+            "response": messages[-1]["content"] if len(messages) > 1 else "",
+            "reward": reward,
+            "status": exec_metadata["status"],
+            "turns": exec_metadata["turns_used"],
+            "stop_reason": exec_metadata.get("stop_reason"),
+            "messages": messages,
+        },
+    )
+
+    if verbose and score:
+        metric_str = ", ".join(f"{m.name}={m.value:.3f}" for m in score.metrics[:3])
+        logger.info(f"  {metric_str}")
+
+
+def _build_base_run_config(
+    config: "EvalConfig",
+    api_limiter: trio.CapacityLimiter | None,
+    tool_limiter: trio.CapacityLimiter | None,
+) -> RunConfig:
+    """Build the base RunConfig from EvalConfig.
+
+    Handles:
+    - Using user-provided run_config or creating default
+    - Setting up on_chunk handler (streaming vs silent)
+    - Injecting concurrency limiters
+    """
+    show_turn_progress = config.show_progress and config.max_concurrent == 1
+
+    if config.run_config:
+        base_run_config = replace(config.run_config, show_progress=show_turn_progress)
+    else:
+        # Determine on_chunk handler based on stream_tokens flag
+        has_stream_tokens = hasattr(config, "stream_tokens")
+        stream_tokens_value = getattr(config, "stream_tokens", None)
+        logger.debug(
+            f"🔍 Checking stream_tokens: hasattr={has_stream_tokens}, value={stream_tokens_value}"
+        )
+
+        if has_stream_tokens and stream_tokens_value:
+            from .agents import stdout_handler
+
+            on_chunk_handler = stdout_handler
+            logger.debug("🔍 Using stdout_handler for token streaming")
+        else:
+
+            async def silent_chunk_handler(_: object) -> None:
+                await trio.lowlevel.checkpoint()
+
+            on_chunk_handler = silent_chunk_handler
+            logger.debug("🔍 Using silent mode (no token streaming)")
+
+        base_run_config = RunConfig(on_chunk=on_chunk_handler, show_progress=show_turn_progress)
+        logger.debug(
+            f"🔍 RunConfig.on_chunk: {on_chunk_handler.__name__ if hasattr(on_chunk_handler, '__name__') else type(on_chunk_handler)}"
+        )
+
+    # Inject two-level concurrency limiters if provided
+    if api_limiter is not None or tool_limiter is not None:
+        base_run_config = replace(
+            base_run_config,
+            api_limiter=api_limiter,
+            tool_limiter=tool_limiter,
+        )
+
+    return base_run_config
 
 
 # EvalSample deleted - use Sample from training.types instead
@@ -46,7 +320,6 @@ class EvalReport:
     summary_metrics: dict[str, float]
     sample_results: list[Sample]
     config: dict[str, Any]
-    fingerprint: dict[str, Any] | None = None
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
     async def save(self, output_dir: Path) -> None:
@@ -70,7 +343,6 @@ class EvalReport:
             "total_samples": self.total_samples,
             "summary_metrics": self.summary_metrics,
             "config": self.config,
-            "fingerprint": self.fingerprint,
             "timestamp": self.timestamp,
             "sample_ids": [s.id for s in self.sample_results],
         }
@@ -93,7 +365,7 @@ class EvalReport:
         logger.info(f"  trajectories: {trajectories_dir}")
 
 
-def sanitize_api_keys(data: Any) -> Any:
+def sanitize_api_keys(data: JsonValue) -> JsonValue:
     """Recursively sanitize API keys from nested data structures."""
     if isinstance(data, dict):
         sanitized = {}
@@ -114,6 +386,9 @@ async def evaluate_sample(
     sample_id: str,
     config: EvalConfig,
     environment: Environment | None = None,
+    api_limiter: trio.CapacityLimiter | None = None,
+    tool_limiter: trio.CapacityLimiter | None = None,
+    progress: MultiProgress | None = None,
 ) -> Sample:
     """Evaluate a single sample - analogous to run_agent_step.
 
@@ -125,6 +400,9 @@ async def evaluate_sample(
         sample_id: Unique identifier for this sample
         config: Evaluation configuration (includes endpoint, template/prepare_messages)
         environment: Fresh Environment instance for this sample (None for tool-free eval)
+        api_limiter: Optional limiter for API calls (for two-level concurrency)
+        tool_limiter: Optional limiter for tool executions (for two-level concurrency)
+        progress: Optional MultiProgress for turn-level progress display
 
     Returns:
         Sample with trajectory, score, and computed reward
@@ -146,61 +424,27 @@ async def evaluate_sample(
 
     initial_state = AgentState(actor=actor, environment=environment)
 
-    # Use run_config from EvalConfig (or default silent)
-    # If user provided run_config, respect it but override show_progress
-    # Disable inner turn-level progress bar during parallel execution to avoid conflicts
-    show_turn_progress = config.show_progress and config.max_concurrent == 1
-
-    if config.run_config:
-        base_run_config = replace(config.run_config, show_progress=show_turn_progress)
-    else:
-        # Determine on_chunk handler based on stream_tokens flag
-        # Debug logging
-        has_stream_tokens = hasattr(config, "stream_tokens")
-        stream_tokens_value = getattr(config, "stream_tokens", None)
-        logger.debug(
-            f"🔍 Checking stream_tokens: hasattr={has_stream_tokens}, value={stream_tokens_value}"
-        )
-
-        if has_stream_tokens and stream_tokens_value:
-            # Import stdout_handler for streaming
-            from .agents import stdout_handler
-
-            on_chunk_handler = stdout_handler
-            logger.debug("🔍 Using stdout_handler for token streaming")
-        else:
-            # Silent mode (default)
-            async def silent_chunk_handler(_: object) -> None:
-                await trio.lowlevel.checkpoint()
-
-            on_chunk_handler = silent_chunk_handler
-            logger.debug("🔍 Using silent mode (no token streaming)")
-
-        base_run_config = RunConfig(on_chunk=on_chunk_handler, show_progress=show_turn_progress)
-        logger.debug(
-            f"🔍 RunConfig.on_chunk: {on_chunk_handler.__name__ if hasattr(on_chunk_handler, '__name__') else type(on_chunk_handler)}"
-        )
+    # Build base run config with concurrency limiters
+    base_run_config = _build_base_run_config(config, api_limiter, tool_limiter)
 
     # Wrap on_chunk to inject sample_id context for concurrent sample tracking
-    # This allows handlers to know which sample each event belongs to
     base_on_chunk = base_run_config.on_chunk
 
     async def on_chunk_with_sample_id(event: object) -> None:
-        # Inject sample_id into StreamChunk events
-        if isinstance(event, StreamChunk):
-            event = StreamChunk(
-                type=event.type,
-                data={**event.data, "sample_id": sample_id},
-                timestamp=event.timestamp,
-            )
-        else:
-            # Wrap other event types in a StreamChunk with sample_id context
-            # This allows handlers to track which sample each event belongs to
-            event = StreamChunk(
-                type="event_wrapper",
-                data={"sample_id": sample_id, "event": event},
-            )
-        await base_on_chunk(event)
+        # Update MultiProgress on various events for granular status
+        if progress is not None:
+            status = _get_progress_status_for_event(event)
+            turn = _get_turn_from_event(event)
+            if status is not None or turn is not None:
+                progress.update_task(
+                    sample_id,
+                    turn=turn if turn is not None else None,
+                    status=status if status is not None else None,
+                )
+
+        # Wrap event with sample_id and forward to base handler
+        wrapped_event = _wrap_event_with_sample_id(event, sample_id)
+        await base_on_chunk(wrapped_event)
 
     run_config = replace(base_run_config, on_chunk=on_chunk_with_sample_id)
 
@@ -285,9 +529,10 @@ async def evaluate_sample(
 
     # Serialize environment state for score function (agentic evals)
     env_state = None
-    if states[-1].environment is not None:
+    final_env = states[-1].environment
+    if final_env is not None:
         try:
-            env_state = await states[-1].environment.serialize()
+            env_state = await final_env.serialize()
         except Exception as e:
             logger.warning(f"Failed to serialize environment state: {e}")
 
@@ -301,21 +546,8 @@ async def evaluate_sample(
         metadata=sample_data.get("metadata", {}),
     )
 
-    # Compute score: (Sample) -> Score
-    # Support both sync and async score functions
-    score: Score | None = None
-    try:
-        import inspect
-
-        score_result = config.score_fn(sample)
-        if inspect.iscoroutine(score_result):
-            score = await score_result
-        else:
-            score = score_result
-    except Exception as e:
-        logger.exception(f"❌ SCORE COMPUTATION FAILED: {e}")
-        # Return zero score on error
-        score = Score(metrics=(Metric("error", 0.0, weight=1.0, metadata={"error": str(e)}),))
+    # Compute score
+    score = await _compute_score(config.score_fn, sample)
 
     # Add execution metadata
     exec_metadata = {
@@ -327,75 +559,27 @@ async def evaluate_sample(
     # Include error if agent execution failed
     if error_message:
         exec_metadata["error"] = error_message
-        # Distinguish provider errors from actual failures
         exec_metadata["status"] = "provider_error" if is_provider_error else "failed"
     else:
         exec_metadata["status"] = "success"
 
-    # Compute duration
+    # Compute duration and log completion
     duration_seconds = time.time() - start_time
     exec_metadata["duration_seconds"] = duration_seconds
-
-    # Structured logging for sample completion (always logged at INFO level)
     reward = score.reward if score else 0.0
-    logger.info(
-        f"Sample {sample_id} completed: reward={reward:.3f}, "
-        f"turns={exec_metadata['turns_used']}, duration={duration_seconds:.2f}s, "
-        f"status={exec_metadata['status']}",
-        extra={
-            "sample_id": sample_id,
-            "reward": reward,
-            "turns": exec_metadata["turns_used"],
-            "duration_seconds": duration_seconds,
-            "status": exec_metadata["status"],
-            "stop_reason": exec_metadata.get("stop_reason"),
-        },
+
+    _log_sample_completion(
+        sample_id, reward, exec_metadata, final_trajectory, score, config.verbose
     )
-
-    # Emit rollout record for TUI trace viewer (matches grpo.py format)
-    def extract_text(content: object) -> str:
-        """Extract text from message content (str or list of ContentBlocks)."""
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            # Join text from TextContent blocks
-            texts = []
-            for block in content:
-                if hasattr(block, "text"):
-                    texts.append(block.text)
-                elif hasattr(block, "content"):
-                    texts.append(str(block.content))
-            return "\n".join(texts) if texts else ""
-        return str(content) if content else ""
-
-    messages = [
-        {"role": m.role, "content": extract_text(m.content)} for m in final_trajectory.messages
-    ]
-    logger.info(
-        "rollout",
-        extra={
-            "step": sample_id,
-            "prompt": messages[0]["content"] if messages else "",
-            "response": messages[-1]["content"] if len(messages) > 1 else "",
-            "reward": reward,
-            "status": exec_metadata["status"],
-            "turns": exec_metadata["turns_used"],
-            "stop_reason": exec_metadata.get("stop_reason"),
-            "messages": messages,
-        },
-    )
-
-    if config.verbose and score:
-        # Print metrics from Score
-        metric_str = ", ".join(f"{m.name}={m.value:.3f}" for m in score.metrics[:3])
-        logger.info(f"  {metric_str}")
 
     # Cleanup environment if it has a cleanup method
-    if environment and hasattr(environment, "cleanup"):
-        try:
-            await environment.cleanup()
-        except Exception as e:
-            logger.warning(f"Environment cleanup failed for {sample_id}: {e}")
+    if environment is not None:
+        cleanup_fn = getattr(environment, "cleanup", None)
+        if cleanup_fn is not None:
+            try:
+                await cleanup_fn()
+            except Exception as e:
+                logger.warning(f"Environment cleanup failed for {sample_id}: {e}")
 
     # Update sample with score and reward
     sample.score = score
@@ -438,126 +622,101 @@ async def evaluate(
         ... )
         >>> report = await evaluate(dataset, config)
     """
-    # Compute fingerprint early (will error on dirty git if allow_dirty=False)
-    from .fingerprint import fingerprint_eval
-
-    # Introspect tools from environment factory (if provided)
-    # We create one env to get the tool list, then discard it
-    tools: list[str] = []
-    if config.environment_factory:
-        try:
-            sample_env = await config.environment_factory({})
-            tools = [t.name for t in sample_env.get_tools()]
-        except Exception as e:
-            logger.warning(f"Could not introspect tools from environment factory: {e}")
-
-    fingerprint = fingerprint_eval(
-        config,
-        tools=tools,
-        dataset_path=None,  # TODO: Accept dataset_path parameter
-        allow_dirty=config.allow_dirty,
-    )
-
     # Collect samples to evaluate
-    samples_to_eval = []
+    samples_to_eval: list[tuple[str, dict[str, Any]]] = []
+    samples_to_eval_dict: dict[str, dict[str, Any]] = {}  # For retry lookup
     for i, sample_data in enumerate(dataset):
         if config.max_samples and len(samples_to_eval) >= config.max_samples:
             break
         sample_id = f"sample_{i:04d}"
         samples_to_eval.append((sample_id, sample_data))
+        samples_to_eval_dict[sample_id] = sample_data
 
     if config.verbose:
         logger.info(f"starting evaluation: {config.eval_name}")
         logger.info(f"samples to evaluate: {len(samples_to_eval)}")
         logger.info(f"max concurrent: {config.max_concurrent}")
-        logger.debug(
-            f"fingerprint: {fingerprint.get('config_hash', 'N/A')[:8]}@{fingerprint.get('git_sha', 'N/A')}"
-        )
         logger.debug("=" * 50)
 
     # Evaluate samples (with concurrency control)
     results = []
 
-    # Initialize outer progress bar for sample-level tracking
-    sample_pbar = None
+    # Initialize progress display for sample-level tracking
+    # MultiProgress shows each concurrent sample with turn-by-turn updates
+    progress: MultiProgress | None = None
     if config.show_progress:
-        sample_pbar = tqdm(
+        progress = MultiProgress(
             total=len(samples_to_eval),
-            desc=f"{config.eval_name}",
+            desc=config.eval_name,
             unit="sample",
-            disable=False,
-            # Show s/sample instead of sample/s for slow operations
-            # This makes more sense when each sample takes multiple seconds
-            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_inv_fmt}]",
+            verbose=config.verbose,  # verbose=True shows INFO logs, False shows only WARNING+
         )
+        progress.__enter__()
 
-    if config.max_concurrent == 1:
-        # Sequential evaluation - create fresh environment for each sample
-        for sample_id, sample_data in samples_to_eval:
-            env = (
-                await config.environment_factory(sample_data)
-                if config.environment_factory
-                else None
-            )
-            result = await evaluate_sample(
-                sample_data=sample_data,
-                sample_id=sample_id,
-                config=config,
-                environment=env,
-            )
-            results.append(result)
+    # Create two-level concurrency limiters if configured
+    api_limiter = (
+        trio.CapacityLimiter(config.max_api_concurrent)
+        if config.max_api_concurrent is not None
+        else None
+    )
+    tool_limiter = (
+        trio.CapacityLimiter(config.max_tool_concurrent)
+        if config.max_tool_concurrent is not None
+        else None
+    )
 
-            # Update outer progress bar with reward
-            if sample_pbar:
-                sample_pbar.update(1)
-                reward = result.score.reward if result.score else 0.0
-                postfix = {"reward": f"{reward:.3f}"}
-                if "turns_used" in result.metadata:
-                    postfix["turns"] = result.metadata["turns_used"]
-                sample_pbar.set_postfix(postfix)
-    else:
-        # Parallel evaluation with trio nursery - create fresh environment for each sample
-        results = []
+    # Run initial evaluation batch
+    results = await _evaluate_batch(samples_to_eval, config, api_limiter, tool_limiter, progress)
 
-        async def eval_task(sample_id: str, sample_data: dict[str, Any]) -> None:
-            env = (
-                await config.environment_factory(sample_data)
-                if config.environment_factory
-                else None
-            )
-            result = await evaluate_sample(
-                sample_data=sample_data,
-                sample_id=sample_id,
-                config=config,
-                environment=env,
-            )
-            results.append(result)
+    # Close progress display
+    if progress:
+        progress.__exit__(None, None, None)
 
-            # Update outer progress bar for parallel execution
-            if sample_pbar:
-                sample_pbar.update(1)
-                reward = result.score.reward if result.score else 0.0
-                postfix = {"reward": f"{reward:.3f}"}
-                if "turns_used" in result.metadata:
-                    postfix["turns"] = result.metadata["turns_used"]
-                sample_pbar.set_postfix(postfix)
+    # Sample-level retry for provider errors (rate limits, connection errors)
+    for retry_attempt in range(config.max_sample_retries):
+        failed_samples = [
+            (r.id, samples_to_eval_dict[r.id])
+            for r in results
+            if r.metadata.get("status") == "provider_error"
+        ]
 
-        # Run tasks in parallel with bounded concurrency
-        async with trio.open_nursery() as nursery:
-            limiter = trio.CapacityLimiter(config.max_concurrent)
-            for sample_id, sample_data in samples_to_eval:
+        if not failed_samples:
+            break  # All samples succeeded
 
-                async def run_with_limit(
-                    sid: str = sample_id, sdata: dict[str, Any] = sample_data
-                ) -> None:
-                    async with limiter:
-                        await eval_task(sid, sdata)
+        # Wait before retry (exponential backoff: 30s, 60s, 120s)
+        wait_seconds = min(30 * (2**retry_attempt), 120)
+        retry_msg = (
+            f"Retrying {len(failed_samples)} failed samples "
+            f"(attempt {retry_attempt + 1}/{config.max_sample_retries}, waiting {wait_seconds}s)"
+        )
+        if progress:
+            progress.log(retry_msg)
+        else:
+            logger.info(retry_msg)
+        await trio.sleep(wait_seconds)
 
-                nursery.start_soon(run_with_limit)
+        # Remove failed samples and retry
+        failed_ids = {sid for sid, _ in failed_samples}
+        results = [r for r in results if r.id not in failed_ids]
+        retry_results = await _evaluate_batch(
+            failed_samples,
+            config,
+            api_limiter,
+            tool_limiter,
+            None,  # No progress for retries
+        )
+        results.extend(retry_results)
 
-    # Close outer progress bar
-    if sample_pbar:
-        sample_pbar.close()
+        # Log retry results
+        still_failed = sum(1 for r in retry_results if r.metadata.get("status") == "provider_error")
+        succeeded = len(retry_results) - still_failed
+        retry_result_msg = (
+            f"Retry {retry_attempt + 1}: {succeeded} succeeded, {still_failed} still failing"
+        )
+        if progress:
+            progress.log(retry_result_msg)
+        else:
+            logger.info(retry_result_msg)
 
     # Compute summary metrics
     summary_metrics = compute_summary_metrics(results)
@@ -578,7 +737,6 @@ async def evaluate(
             "max_concurrent": config.max_concurrent,
             "evaluation_timestamp": datetime.now().isoformat(),
         },
-        fingerprint=fingerprint,
     )
 
     # Save if output directory specified
@@ -819,8 +977,6 @@ def summarize(results: list[Sample]) -> dict[str, float]:
     for r in results:
         if r.score is not None:
             rewards.append(r.score.reward)
-        elif "reward" in r.metrics:
-            rewards.append(r.metrics["reward"])
         else:
             rewards.append(0.0)
 

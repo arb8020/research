@@ -52,9 +52,6 @@ class JsonFrontend:
         self.include_thinking = include_thinking
         self.include_timing = include_timing
 
-        # Signal to runner that stdout should be kept clean (no status messages)
-        self.json_mode = True
-
         # State for aggregating turns
         self._current_text: list[str] = []
         self._current_thinking: list[str] = []

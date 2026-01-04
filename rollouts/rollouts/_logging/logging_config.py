@@ -75,11 +75,11 @@ def setup_logging(
         },
         "minimal": {"format": "%(message)s"},
         "color": {
-            "()": "rollouts._logging.color_formatter.ColorFormatter",
+            "()": "wafer_core.rollouts._logging.color_formatter.ColorFormatter",
             "show_timestamp": True,
         },
         "json": {
-            "()": "rollouts._logging.json_formatter.JSONFormatter",
+            "()": "wafer_core.rollouts._logging.json_formatter.JSONFormatter",
             "fmt_keys": {
                 "level": "levelname",
                 "logger": "name",

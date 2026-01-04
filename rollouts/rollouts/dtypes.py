@@ -655,11 +655,8 @@ class ChatCompletion(JsonSerializable):
 
 @dataclass
 class Trajectory(JsonSerializable):
-    # completions: API responses with usage/logprobs (for training)
-    # messages: full conversation including user msgs & tool results (for runtime)
-    # Both needed because ChatCompletion only captures assistant turns
     completions: list[ChatCompletion] = field(default_factory=list)
-    messages: list[Message] = field(default_factory=list)
+    messages: list[Message] = field(default_factory=list)  # debugging only
     rewards: float = 0.0
     group: int = 0
     replica: int = 0
@@ -1084,7 +1081,7 @@ class Endpoint(JsonSerializable):
     max_completion_tokens: int | None = None  # for openai
     thinking: dict[str, Any] | None = None  # for anthropic
     # Retry configuration
-    max_retries: int = 10  # Number of retries for rate limits/transient errors (increased from 3)
+    max_retries: int = 10  # Number of retries for rate limits/transient errors
     timeout: float = 120.0  # Timeout in seconds for API calls
     # Extra params merged into the raw chat request for custom servers
     extra_params: dict[str, Any] | None = None
@@ -1221,6 +1218,12 @@ class RunConfig:
     use_tito: bool = False
     tokenizer: Any | None = None  # HuggingFace tokenizer (required if use_tito=True)
     suffix_ids: tuple[int, ...] | None = None  # Pre-computed suffix tokens (computed if None)
+    # Two-level concurrency control for maximizing API throughput
+    # API limiter: controls concurrent LLM API calls (saturate tokens/min)
+    # Tool limiter: controls concurrent tool executions (respect file descriptors, GPU limits)
+    # When set, samples yield their slot while waiting for the other resource type
+    api_limiter: trio.CapacityLimiter | None = None
+    tool_limiter: trio.CapacityLimiter | None = None
 
 
 # ── Evaluation Types ──────────────────────────────────────────────────────────
@@ -1355,8 +1358,17 @@ class EvalConfig:
     show_progress: bool = False  # Enable sample-level progress tracking
     stream_tokens: bool = False  # Stream LLM tokens to stdout (used if run_config is None)
 
-    # Reproducibility
-    allow_dirty: bool = False  # If False (default), error on uncommitted git changes
+    # Sample-level retry for transient failures (rate limits, connection errors)
+    # Separates request-scale retries (SDK, seconds) from sample-scale retries (minutes)
+    max_sample_retries: int = 5  # Number of times to retry failed samples
+
+    # Two-level concurrency for maximizing API throughput during evals
+    # max_concurrent: total samples in flight (existing field)
+    # max_api_concurrent: max LLM API calls in flight (saturate tokens/min)
+    # max_tool_concurrent: max tool executions in flight (respect file descriptors, GPU limits)
+    # When both are set, samples yield their slot while waiting for the other resource type
+    max_api_concurrent: int | None = None  # None = use max_concurrent for API calls
+    max_tool_concurrent: int | None = None  # None = use max_concurrent for tool calls
 
 
 # ── Session Types ──────────────────────────────────────────────────────────────

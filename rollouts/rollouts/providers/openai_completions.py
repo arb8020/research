@@ -577,24 +577,8 @@ async def rollout_openai(
                     )
 
     try:
-        # Use with_streaming_response to access rate limit headers
-        async with client.chat.completions.with_streaming_response.create(**params) as response:
-            # Extract headers before consuming stream
-            headers = dict(response.headers)
-
-            # Parse and consume the stream
-            stream = await response.parse()
-            completion = await aggregate_stream(stream, on_chunk)
-
-            # Update rate limit state from headers
-            from .._rate_limit import update_rate_limit_from_headers
-
-            update_rate_limit_from_headers(
-                api_key=actor.endpoint.api_key,
-                provider="openai",
-                model=actor.endpoint.model,
-                headers=headers,
-            )
+        stream = await client.chat.completions.create(**params)
+        completion = await aggregate_stream(stream, on_chunk)
 
     except Exception as e:
         from openai import BadRequestError, RateLimitError
@@ -639,9 +623,13 @@ async def rollout_openai(
             ) from e
 
         # For other transient errors (network issues, 5xx, etc), wrap as ProviderError
+        import httpx
         from openai import APIConnectionError, APITimeoutError, InternalServerError
 
-        if isinstance(e, (APIConnectionError, APITimeoutError, InternalServerError)):
+        # Transient network/API errors that should trigger retry
+        if isinstance(
+            e, (APIConnectionError, APITimeoutError, InternalServerError, httpx.RemoteProtocolError)
+        ):
             from .base import ProviderError
 
             msg_list = params.get("messages", [])

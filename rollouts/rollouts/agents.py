@@ -1,18 +1,16 @@
 # Core agent execution framework
 
 import logging
-import os
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from typing import Any
+from typing import TYPE_CHECKING
 
 import trio
 
-from .progress import tqdm
+if TYPE_CHECKING:
+    from transformers import PreTrainedTokenizer
 
-logger = logging.getLogger(__name__)
-
-# Environment class and other core types are now imported from dtypes
+    from .store import SessionStore
 
 from .dtypes import (
     Actor,
@@ -35,6 +33,9 @@ from .dtypes import (
     ToolResult,
     ToolResultReceived,
 )
+from .progress import tqdm
+
+logger = logging.getLogger(__name__)
 
 # ── Core Design Philosophy ────────────────────────────────────────────────────
 #
@@ -128,13 +129,15 @@ async def confirm_tool_with_feedback(
     print("  [n] No, provide feedback")
     print("  [s] No, skip silently")
 
-    resp = input("Choice: ").strip().lower()
+    # Intentionally blocking - this is interactive terminal input
+    resp = input("Choice: ").strip().lower()  # noqa: ASYNC250
 
     if resp == "y":
         return state, ToolConfirmResult(proceed=True)
 
     elif resp == "n":
-        feedback = input("Why not? Provide guidance: \n").strip()
+        # Intentionally blocking - this is interactive terminal input
+        feedback = input("Why not? Provide guidance: \n").strip()  # noqa: ASYNC250
         result_with_feedback = ToolConfirmResult(
             proceed=False,
             tool_result=ToolResult(tool_call_id=tc.id, is_error=True, error="Rejected by user"),
@@ -382,7 +385,7 @@ FullAuto = RunConfig(
 )
 
 
-async def rollout(
+async def rollout(  # noqa: PLR0913 - args grouped by mode (core, anthropic, tito)
     actor: Actor,
     on_chunk: Callable[[StreamEvent], Awaitable[None]] = stdout_handler,
     user_message_for_thinking: str | None = None,
@@ -391,7 +394,7 @@ async def rollout(
     cancel_scope: trio.CancelScope | None = None,
     *,
     use_tito: bool = False,
-    tokenizer: Any | None = None,
+    tokenizer: "PreTrainedTokenizer | None" = None,
     suffix_ids: tuple[int, ...] | None = None,
 ) -> Actor:
     """Route to appropriate provider function using unified API type abstraction.
@@ -424,7 +427,10 @@ async def rollout(
         assert tokenizer is not None, "tokenizer is required when use_tito=True"
 
         from .inference.backends import compute_suffix_ids
-        from .providers import rollout_sglang_token_level, rollout_vllm_token_level
+        from .providers import (
+            rollout_sglang_token_level,
+            rollout_vllm_token_level,
+        )
 
         # Compute suffix_ids if not provided
         if suffix_ids is None:
@@ -528,17 +534,26 @@ async def run_agent_step(
         logger.debug(f"      Message {i} ({msg.role}): {content_len} chars - {content_preview}")
 
     # Make LLM call (with cancellation support)
-    next_actor = await rollout(
-        updated_actor,
-        rcfg.on_chunk,
-        rcfg.user_message_for_thinking,
-        state.turn_idx,
-        rcfg.inline_thinking,
-        cancel_scope=rcfg.cancel_scope,
-        use_tito=rcfg.use_tito,
-        tokenizer=rcfg.tokenizer,
-        suffix_ids=rcfg.suffix_ids,
-    )
+    # If api_limiter is set, acquire slot before making the call
+    # This enables two-level concurrency: samples waiting for tools don't hold API slots
+    async def do_rollout() -> Actor:
+        return await rollout(
+            updated_actor,
+            rcfg.on_chunk,
+            rcfg.user_message_for_thinking,
+            state.turn_idx,
+            rcfg.inline_thinking,
+            cancel_scope=rcfg.cancel_scope,
+            use_tito=rcfg.use_tito,
+            tokenizer=rcfg.tokenizer,
+            suffix_ids=rcfg.suffix_ids,
+        )
+
+    if rcfg.api_limiter is not None:
+        async with rcfg.api_limiter:
+            next_actor = await do_rollout()
+    else:
+        next_actor = await do_rollout()
 
     # DEBUG: Log what rollout returned
     logger.debug(f"🔍 AFTER rollout() - Turn {state.turn_idx}")
@@ -634,6 +649,7 @@ async def process_pending_tools(
     assert rcfg is not None
 
     current_state = state
+    assert current_state.environment is not None  # Narrowing for type checker
 
     # SERIALIZE environment state before tool processing
     env_data = await current_state.environment.serialize()
@@ -658,6 +674,7 @@ async def process_pending_tools(
 
             if confirm_result.proceed:
                 # DESERIALIZE fresh environment for each tool call
+                assert current_state.environment is not None  # Maintained through loop
                 fresh_env = await current_state.environment.__class__.deserialize(env_data)
 
                 # Update debug context for interrupt diagnostics
@@ -678,12 +695,25 @@ async def process_pending_tools(
                 )
 
                 # Execute tool on fresh environment with cancellation support
-                tool_result = await fresh_env.exec_tool(
-                    tool_call,
-                    current_state,
-                    rcfg,
-                    cancel_scope=rcfg.cancel_scope,
-                )
+                # If tool_limiter is set, acquire slot before executing
+                # This enables two-level concurrency: samples waiting for API don't hold tool slots
+                async def do_exec_tool(
+                    env: Environment = fresh_env,
+                    tc: ToolCall = tool_call,
+                    state: AgentState = current_state,
+                ) -> ToolResult:
+                    return await env.exec_tool(
+                        tc,
+                        state,
+                        rcfg,
+                        cancel_scope=rcfg.cancel_scope,
+                    )
+
+                if rcfg.tool_limiter is not None:
+                    async with rcfg.tool_limiter:
+                        tool_result = await do_exec_tool()
+                else:
+                    tool_result = await do_exec_tool()
 
                 # Update debug context - tool execution complete
                 try:
@@ -696,6 +726,7 @@ async def process_pending_tools(
                 env_data = await fresh_env.serialize()
 
                 # DESERIALIZE again to update current_state
+                assert current_state.environment is not None  # Maintained through loop
                 current_state = replace(
                     current_state,
                     environment=await current_state.environment.__class__.deserialize(env_data),
@@ -775,7 +806,7 @@ async def process_pending_tools(
 
 async def resume_session(
     session_id: str,
-    session_store: Any,
+    session_store: "SessionStore",
     endpoint: "Endpoint",
     environment: "Environment | None" = None,
 ) -> AgentState:
@@ -877,8 +908,6 @@ async def run_agent(
             branch_point=current_state.branch_point,
         )
         current_state = replace(current_state, session_id=session.session_id)
-        # Expose session ID to agent via environment variable
-        os.environ["ROLLOUTS_SESSION_ID"] = session.session_id
         if current_state.parent_session_id:
             logger.info(
                 f"Created child session: {session.session_id} (forked from {current_state.parent_session_id} at message {current_state.branch_point})"
@@ -891,8 +920,6 @@ async def run_agent(
             await session_store.append_message(session.session_id, msg)
 
     elif session_store and current_state.session_id:
-        # Expose session ID to agent via environment variable
-        os.environ["ROLLOUTS_SESSION_ID"] = current_state.session_id
         # Resuming existing session - check for messages added since last persist
         # (e.g., user added a new message before calling run_agent)
         session, _ = await session_store.get(current_state.session_id)

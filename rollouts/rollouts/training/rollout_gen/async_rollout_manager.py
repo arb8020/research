@@ -327,7 +327,7 @@ async def generate_rollout_batch(
         RolloutBatch ready for training
 
     Example:
-        >>> from rollouts import Score, Metric
+        >>> from wafer_core.rollouts import Score, Metric
         >>> batch = await generate_rollout_batch(
         ...     buffer=buffer,
         ...     config=config,

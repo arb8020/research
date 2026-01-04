@@ -2,7 +2,7 @@
 Session export to Markdown and HTML, plus session transformations.
 
 Usage:
-    from rollouts import session_to_markdown, session_to_html
+    from wafer_core.rollouts import session_to_markdown, session_to_html
     # or: from .export import session_to_markdown, session_to_html
 
     md = session_to_markdown(session)
