@@ -14,8 +14,8 @@ See docs/ROLLOUTMANAGER_DEPRECATION.md for migration guide.
 from collections.abc import Iterator
 from typing import Any
 
-from rollouts.training.datasets.data_buffer import DataBuffer
-from rollouts.training.types import RolloutBatch, RolloutConfig, Sample
+from ...training.datasets.data_buffer import DataBuffer
+from ...training.types import RolloutBatch, RolloutConfig, Sample
 
 
 def generate_rollout_batches(

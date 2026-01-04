@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from rollouts.dtypes import Message, Trajectory
+from ..dtypes import Message, Trajectory
 
 
 def load_screenspot(

@@ -3,9 +3,9 @@
 import torch
 from torch import Tensor
 
-from rollouts.inference.attention.config import CacheConfig
-from rollouts.inference.attention.mask import create_attention_mask
-from rollouts.inference.types import InferenceContext
+from ...inference.attention.config import CacheConfig
+from ...inference.attention.mask import create_attention_mask
+from ...inference.types import InferenceContext
 
 
 class FlexAttentionBackend:

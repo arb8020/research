@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 import trio
 
 if TYPE_CHECKING:
-    from rollouts.dtypes import StreamEvent, ToolCall
+    from ..dtypes import StreamEvent, ToolCall
 
 
 class NoneFrontend:
@@ -56,7 +56,7 @@ class NoneFrontend:
         Args:
             event: Streaming event from agent loop
         """
-        from rollouts.dtypes import (
+        from ..dtypes import (
             StreamDone,
             StreamError,
             TextDelta,

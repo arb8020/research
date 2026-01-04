@@ -135,7 +135,7 @@ async def _handle_model(runner: InteractiveAgentRunner, args: str) -> SlashComma
     """Handle /model command."""
     from dataclasses import replace as dc_replace
 
-    from rollouts.models import get_model, get_models, get_providers
+    from ...models import get_model, get_models, get_providers
 
     if not args:
         # Show current model
@@ -221,7 +221,7 @@ async def _handle_thinking(runner: InteractiveAgentRunner, args: str) -> SlashCo
     """Handle /thinking command."""
     from dataclasses import replace as dc_replace
 
-    from rollouts.models import get_model
+    from ...models import get_model
 
     model_meta = get_model(runner.endpoint.provider, runner.endpoint.model)  # type: ignore[arg-type]
 
@@ -300,7 +300,7 @@ async def _handle_thinking(runner: InteractiveAgentRunner, args: str) -> SlashCo
 
 async def _handle_slice(runner: InteractiveAgentRunner, args: str) -> SlashCommandResult:
     """Handle /slice command."""
-    from rollouts.slice import parse_slice_spec, run_slice_command
+    from ...slice import parse_slice_spec, run_slice_command
 
     # Determine which session to use for slicing:
     # - If we have a session_id, use it (normal case)
@@ -377,7 +377,7 @@ async def _handle_slice(runner: InteractiveAgentRunner, args: str) -> SlashComma
 
 def _get_available_envs() -> list[str]:
     """Get list of available environment names from the registry."""
-    from rollouts.environments.compose import _get_environment_registry
+    from ...environments.compose import _get_environment_registry
 
     registry = _get_environment_registry()
     return sorted(registry.keys())
@@ -414,11 +414,11 @@ def _create_environment_from_spec(
 
     Returns (environment, error_message). On success, error is None.
     """
-    from rollouts.environments.ask_user import AskUserQuestionEnvironment
-    from rollouts.environments.calculator import CalculatorEnvironment
-    from rollouts.environments.coding import LocalFilesystemEnvironment
-    from rollouts.environments.compose import compose
-    from rollouts.environments.git_worktree import GitWorktreeEnvironment
+    from ...environments.ask_user import AskUserQuestionEnvironment
+    from ...environments.calculator import CalculatorEnvironment
+    from ...environments.coding import LocalFilesystemEnvironment
+    from ...environments.compose import compose
+    from ...environments.git_worktree import GitWorktreeEnvironment
 
     if working_dir is None:
         working_dir = Path.cwd()
@@ -438,22 +438,22 @@ def _create_environment_from_spec(
             environments.append(AskUserQuestionEnvironment())
         elif env_name == "browsing":
             try:
-                from rollouts.environments.browsing import BrowsingEnvironment
+                from ...environments.browsing import BrowsingEnvironment
 
                 environments.append(BrowsingEnvironment())
             except ImportError:
                 return None, "Browsing environment not available (missing dependencies)"
         elif env_name == "repl":
-            from rollouts.environments.repl import REPLEnvironment
+            from ...environments.repl import REPLEnvironment
 
             # REPL requires context - use empty string for now
             environments.append(REPLEnvironment(context="", sub_endpoint=None))
         elif env_name == "basic" or env_name == "none":
-            from rollouts.environments.no_tools import BasicEnvironment
+            from ...environments.no_tools import BasicEnvironment
 
             environments.append(BasicEnvironment())
         elif env_name == "binary_search":
-            from rollouts.environments.binary_search import BinarySearchEnvironment
+            from ...environments.binary_search import BinarySearchEnvironment
 
             environments.append(BinarySearchEnvironment())
         elif env_name == "chess_puzzle":
@@ -484,7 +484,7 @@ async def _handle_env(runner: InteractiveAgentRunner, args: str) -> SlashCommand
     /env list      - List available environments
     /env <spec>    - Switch to new environment (creates child session)
     """
-    from rollouts.dtypes import EnvironmentConfig
+    from ...dtypes import EnvironmentConfig
 
     # /env (no args) - show current
     if not args:

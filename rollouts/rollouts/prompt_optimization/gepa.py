@@ -11,8 +11,7 @@ from typing import Any
 
 import trio
 
-from rollouts.dtypes import Endpoint, Message
-
+from ..dtypes import Endpoint, Message
 from .evaluation import EnvironmentFactory, ScoreFn, evaluate_template
 from .types import EvolutionaryConfig, GenerationStats, OptimizationResult, PromptTemplate
 
@@ -106,8 +105,8 @@ async def mutate_template(
     Returns:
         New PromptTemplate with mutated system prompt
     """
-    from rollouts.agents import rollout
-    from rollouts.dtypes import Actor, Trajectory
+    from ..agents import rollout
+    from ..dtypes import Actor, Trajectory
 
     # Build mutation prompt
     mutation_request = MUTATION_PROMPT.format(

@@ -23,7 +23,7 @@ import torch
 import torch.distributed as dist
 import trio
 
-from rollouts.training.types import TrainerConfig, TrainFuture
+from ...training.types import TrainerConfig, TrainFuture
 
 # FSDP checkpoint support (SLIME pattern)
 try:

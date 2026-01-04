@@ -3,8 +3,8 @@
 Pure functions that convert block allocator output to attention context.
 """
 
-from rollouts.inference.cache.paged import PagedKVCache
-from rollouts.inference.types import InferenceContext
+from ..inference.cache.paged import PagedKVCache
+from ..inference.types import InferenceContext
 
 
 def build_prefill_context(

@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
-    from rollouts.store import SessionStore
+    from .store import SessionStore
 
 from .dtypes import AgentSession, Endpoint, Message
 

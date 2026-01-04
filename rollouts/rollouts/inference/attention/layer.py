@@ -3,8 +3,8 @@
 import torch.nn as nn
 from torch import Tensor
 
-from rollouts.inference.attention.protocol import AttentionBackend
-from rollouts.inference.types import InferenceContext
+from ...inference.attention.protocol import AttentionBackend
+from ...inference.types import InferenceContext
 
 
 class Attention(nn.Module):

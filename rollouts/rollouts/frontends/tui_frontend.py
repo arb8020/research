@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 import trio
 
 if TYPE_CHECKING:
-    from rollouts.dtypes import Environment, StreamEvent, ToolCall
+    from ..dtypes import Environment, StreamEvent, ToolCall
 
 
 class TUIFrontend:

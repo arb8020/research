@@ -7,7 +7,7 @@ Designed for both evaluation (clicker) and RL training use cases.
 Tiger Style: Explicit parameters, tuple returns, comprehensive logging.
 
 Usage:
-    from rollouts.deploy import deploy_sglang_server, ServerConfig
+    from .deploy import deploy_sglang_server, ServerConfig
 
     config = ServerConfig(
         model="Qwen/Qwen2.5-VL-7B-Instruct",
@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any
 import trio
 
 if TYPE_CHECKING:
-    from rollouts.dtypes import Endpoint
+    from .dtypes import Endpoint
 
 logger = logging.getLogger(__name__)
 
@@ -1144,7 +1144,7 @@ def server_info_to_endpoint(server_info: ServerInfo) -> Endpoint:
 
     Tiger Style: Explicit conversion function.
     """
-    from rollouts.rollout import Endpoint
+    from .rollout import Endpoint
 
     return Endpoint(
         model=server_info.model,

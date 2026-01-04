@@ -10,8 +10,8 @@ from typing import Any
 
 import trio
 
-from rollouts.agents import rollout
-from rollouts.dtypes import (
+from ..agents import rollout
+from ..dtypes import (
     Actor,
     Endpoint,
     Environment,
@@ -20,8 +20,7 @@ from rollouts.dtypes import (
     StreamEvent,
     Trajectory,
 )
-from rollouts.training.types import Sample
-
+from ..training.types import Sample
 from .formatting import format_prompt
 from .types import PromptTemplate
 

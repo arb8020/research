@@ -16,7 +16,7 @@ import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from rollouts.dtypes import StreamEvent, ToolCall
+    from ..dtypes import StreamEvent, ToolCall
 
 
 class JsonFrontend:
@@ -129,7 +129,7 @@ class JsonFrontend:
         Args:
             event: StreamEvent from agent loop
         """
-        from rollouts.dtypes import (
+        from ..dtypes import (
             StreamDone,
             StreamError,
             TextDelta,

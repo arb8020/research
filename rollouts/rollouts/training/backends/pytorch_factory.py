@@ -45,7 +45,7 @@ import torch
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
-from rollouts.training.backends.pytorch import PyTorchTrainingBackend
+from ...training.backends.pytorch import PyTorchTrainingBackend
 
 # ============================================================================
 # TIER 1: Granular Primitives (Casey: Fine control, pure functions)
@@ -412,7 +412,7 @@ def create_pytorch_backend(
     )
 
     # Create trainer config for gradient accumulation
-    from rollouts.training.types import TrainerConfig
+    from ...training.types import TrainerConfig
 
     trainer_config = TrainerConfig(
         num_minibatches=num_minibatches,

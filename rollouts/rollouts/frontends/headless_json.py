@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Any
 import trio
 
 if TYPE_CHECKING:
-    from rollouts.dtypes import Endpoint, Environment, StreamEvent, ToolCall, Trajectory
+    from ..dtypes import Endpoint, Environment, StreamEvent, ToolCall, Trajectory
 
 
 @dataclass
@@ -134,7 +134,7 @@ class HeadlessJsonFrontend:
 
     async def handle_event(self, event: StreamEvent) -> None:
         """Handle streaming event by emitting JSON."""
-        from rollouts.dtypes import (
+        from ..dtypes import (
             StreamDone,
             StreamError,
             TextDelta,
@@ -244,7 +244,7 @@ class HeadlessJsonFrontend:
         self.endpoint = session.endpoint
 
         # Update trajectory
-        from rollouts.dtypes import Trajectory
+        from ..dtypes import Trajectory
 
         self.trajectory = Trajectory(messages=session.messages)
 
@@ -380,7 +380,7 @@ async def test_slash_command(
     """
     from io import StringIO
 
-    from rollouts.frontends.tui.slash_commands import (
+    from ..frontends.tui.slash_commands import (
         _create_environment_from_spec,
         handle_slash_command,
     )

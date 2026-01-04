@@ -20,13 +20,13 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
-from rollouts.training.distributed_utils import (
+from ...training.distributed_utils import (
     barrier,
     get_rank,
     get_world_size,
     is_main_process,
 )
-from rollouts.training.types import TrainFuture
+from ...training.types import TrainFuture
 
 logger = logging.getLogger(__name__)
 
@@ -343,7 +343,7 @@ class FSDPTrainingBackend:
             - Computes gradients (backward pass)
             - FSDP automatically shards and syncs gradients across GPUs
         """
-        from rollouts.training.types import ImmediateTrainFuture
+        from ...training.types import ImmediateTrainFuture
 
         # Tiger Style: Assert preconditions
         assert self._fsdp_model is not None, "Cannot call forward_backward before initialization"
@@ -430,7 +430,7 @@ class FSDPTrainingBackend:
             - Increments step counter
             - FSDP automatically syncs updated parameters
         """
-        from rollouts.training.types import ImmediateTrainFuture
+        from ...training.types import ImmediateTrainFuture
 
         # Tiger Style: Assert preconditions
         assert self.optimizer is not None, "Cannot call optim_step before initialization"
@@ -504,7 +504,7 @@ class FSDPTrainingBackend:
             get_model_state_dict,
         )
 
-        from rollouts.training.types import ImmediateTrainFuture
+        from ...training.types import ImmediateTrainFuture
 
         # Tiger Style: Assert preconditions
         assert dist.is_initialized(), "torch.distributed must be initialized for collective ops"
@@ -560,7 +560,7 @@ class FSDPTrainingBackend:
             - Loads weights into model
             - FSDP automatically shards weights across GPUs (or manual DTensor distribution)
         """
-        from rollouts.training.types import ImmediateTrainFuture
+        from ...training.types import ImmediateTrainFuture
 
         logger.debug(f"[FSDP DEBUG] Rank {self.rank}: Loading model state dict...")
 

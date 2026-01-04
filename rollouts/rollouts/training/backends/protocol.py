@@ -10,7 +10,7 @@ Tiger Style: Protocol-based, explicit operations.
 
 from typing import Any, Protocol
 
-from rollouts.training.types import TrainFuture
+from ...training.types import TrainFuture
 
 
 class TrainingBackend(Protocol):

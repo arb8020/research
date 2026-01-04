@@ -8,7 +8,7 @@ import re
 
 import trio
 
-from rollouts.dtypes import AgentState, Message, Tool, ToolCall, ToolResult
+from ..dtypes import AgentState, Message, Tool, ToolCall, ToolResult
 
 
 class ScreenSpotEnvironment:

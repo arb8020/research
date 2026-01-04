@@ -19,7 +19,7 @@ import markdownify
 import trio
 
 if TYPE_CHECKING:
-    from rollouts.frontends.tui.theme import Theme
+    from ..frontends.tui.theme import Theme
 
 from ..dtypes import (
     AgentState,

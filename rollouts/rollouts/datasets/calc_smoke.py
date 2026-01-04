@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from rollouts.dtypes import Message, Trajectory
+from ..dtypes import Message, Trajectory
 
 
 def load_calc_smoke(data_path: Path) -> list[dict[str, Any]]:

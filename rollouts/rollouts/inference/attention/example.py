@@ -8,10 +8,10 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from rollouts.inference.attention.config import CacheConfig
-from rollouts.inference.attention.flex_backend import FlexAttentionBackend
-from rollouts.inference.attention.layer import Attention
-from rollouts.inference.types import InferenceContext
+from ...inference.attention.config import CacheConfig
+from ...inference.attention.flex_backend import FlexAttentionBackend
+from ...inference.attention.layer import Attention
+from ...inference.types import InferenceContext
 
 
 class ExampleTransformerBlock(nn.Module):

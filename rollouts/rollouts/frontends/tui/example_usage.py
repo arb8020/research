@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import asyncio
 
-from rollouts.dtypes import RunConfig
-from rollouts.frontends.tui import TUI, AgentRenderer, ProcessTerminal
+from ...dtypes import RunConfig
+from ...frontends.tui import TUI, AgentRenderer, ProcessTerminal
 
 
 async def example_main() -> None:

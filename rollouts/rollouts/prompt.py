@@ -11,8 +11,8 @@ Builds system prompts with:
 from datetime import datetime
 from pathlib import Path
 
-from rollouts.dtypes import Tool
-from rollouts.paths import get_docs_dir, get_readme_path, get_version
+from .dtypes import Tool
+from .paths import get_docs_dir, get_readme_path, get_version
 
 # =============================================================================
 # Project Context Discovery

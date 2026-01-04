@@ -18,10 +18,10 @@ from pathlib import Path
 import trio
 from dotenv import load_dotenv
 
-from rollouts.agents import RunConfig, run_agent
-from rollouts.dtypes import Actor, AgentState, Endpoint
-from rollouts.logging_utils import init_rollout_logging
-from rollouts.progress import tqdm
+from .agents import RunConfig, run_agent
+from .dtypes import Actor, AgentState, Endpoint
+from .logging_utils import init_rollout_logging
+from .progress import tqdm
 
 # Load environment variables from .env file
 load_dotenv()

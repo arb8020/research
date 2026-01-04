@@ -20,7 +20,7 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
-from rollouts.dtypes import (
+from ..dtypes import (
     Actor,
     ChatCompletion,
     Choice,
@@ -46,7 +46,6 @@ from rollouts.dtypes import (
     Usage,
     parse_streaming_json,
 )
-
 from .base import (
     _prepare_messages_for_llm,
     calculate_cost_from_usage,
@@ -585,7 +584,7 @@ async def rollout_openai_responses(
     client = AsyncOpenAI(**client_kwargs)
 
     # Transform messages for cross-provider compatibility (like pi-ai does)
-    from rollouts.transform_messages import transform_messages
+    from ..transform_messages import transform_messages
 
     transformed_messages = transform_messages(
         actor.trajectory.messages,
@@ -621,7 +620,7 @@ async def rollout_openai_responses(
 
     # Add reasoning config for reasoning models
     # Check if model supports reasoning
-    from rollouts.models import get_model
+    from ..models import get_model
 
     try:
         model_metadata = get_model(actor.endpoint.provider, actor.endpoint.model)
@@ -683,7 +682,7 @@ async def rollout_openai_responses(
     except Exception as e:
         from openai import BadRequestError, NotFoundError, RateLimitError
 
-        from rollouts.store import log_crash
+        from ..store import log_crash
 
         sanitized = sanitize_request_for_logging(params)
 
@@ -777,7 +776,7 @@ async def rollout_openai_responses(
     )
 
     # Calculate cost if model pricing is available
-    from rollouts.models import get_model
+    from ..models import get_model
 
     model_meta = get_model(actor.endpoint.provider, actor.endpoint.model)
     if model_meta and model_meta.cost:

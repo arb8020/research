@@ -10,8 +10,7 @@ from typing import Any
 
 import trio
 
-from rollouts.dtypes import Endpoint, Message
-
+from ..dtypes import Endpoint, Message
 from .state import GEPAState
 from .types import Candidate
 
@@ -107,8 +106,8 @@ async def propose_mutation(
     Returns:
         New text for the component
     """
-    from rollouts.agents import rollout
-    from rollouts.dtypes import Actor, Trajectory
+    from ..agents import rollout
+    from ..dtypes import Actor, Trajectory
 
     current_instruction = candidate[component]
     examples_text = format_reflective_examples(reflective_data)

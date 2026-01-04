@@ -17,18 +17,18 @@ except ImportError:
     Dataset = None  # type: ignore[misc,assignment]
     load_dataset = None  # type: ignore[misc,assignment]
 
-from rollouts.training.types import Sample
+from ...training.types import Sample
 
 
 # Import tokenization functions lazily to avoid torch dependency at import time
 def _get_tokenize_conversation() -> Callable:
-    from rollouts.training.datasets.sft import tokenize_conversation
+    from ...training.datasets.sft import tokenize_conversation
 
     return tokenize_conversation
 
 
 def _get_compute_loss_mask() -> Callable:
-    from rollouts.training.datasets.sft import compute_loss_mask
+    from ...training.datasets.sft import compute_loss_mask
 
     return compute_loss_mask
 

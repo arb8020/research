@@ -13,15 +13,15 @@ Why this structure (following vLLM/SGLang patterns)?
 - Clear separation: config vs compute vs PyTorch integration
 """
 
-from rollouts.inference.attention.config import CacheConfig
-from rollouts.inference.attention.flex_backend import FlexAttentionBackend
-from rollouts.inference.attention.layer import Attention
-from rollouts.inference.attention.mask import (
+from ...inference.attention.config import CacheConfig
+from ...inference.attention.flex_backend import FlexAttentionBackend
+from ...inference.attention.layer import Attention
+from ...inference.attention.mask import (
     create_attention_mask,
     create_causal_block_mask,
     create_sliding_window_causal_mask,
 )
-from rollouts.inference.attention.protocol import AttentionBackend
+from ...inference.attention.protocol import AttentionBackend
 
 __all__ = [
     "CacheConfig",

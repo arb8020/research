@@ -20,7 +20,7 @@ from typing import Any, NoReturn
 import torch
 
 # import torchopt  # External dependency, install when implementing
-from rollouts.training.types import TrainFuture
+from ...training.types import TrainFuture
 
 
 @dataclass

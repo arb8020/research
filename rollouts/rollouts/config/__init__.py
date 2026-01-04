@@ -6,7 +6,7 @@ Projects can use, customize, or ignore them entirely.
 
 Usage:
     # Use base config as-is
-    from rollouts.config.base import BaseModelConfig
+    from ..config.base import BaseModelConfig
     config = BaseModelConfig()
 
     # Customize inline
@@ -24,16 +24,16 @@ Usage:
         def to_endpoint(self) -> Endpoint: ...
 """
 
-from rollouts.config.base import (
+from ..config.base import (
     BaseEnvironmentConfig,
     BaseEvaluationConfig,
     BaseModelConfig,
     BaseOutputConfig,
 )
-from rollouts.config.loader import (
+from ..config.loader import (
     load_config_from_file,
 )
-from rollouts.config.protocols import (
+from ..config.protocols import (
     HasEnvironmentConfig,
     HasEvaluationConfig,
     HasModelConfig,

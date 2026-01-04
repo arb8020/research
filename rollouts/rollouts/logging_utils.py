@@ -7,7 +7,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from rollouts._logging import setup_logging
+from ._logging import setup_logging
 
 
 def init_rollout_logging(

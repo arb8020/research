@@ -9,10 +9,10 @@ Available implementations:
 All backends implement the TrainingBackend protocol.
 """
 
-from rollouts.training.backends.jax_backend import JAXTrainingBackend
-from rollouts.training.backends.protocol import TrainingBackend
-from rollouts.training.backends.pytorch import PyTorchTrainingBackend
-from rollouts.training.backends.pytorch_factory import (
+from ...training.backends.jax_backend import JAXTrainingBackend
+from ...training.backends.protocol import TrainingBackend
+from ...training.backends.pytorch import PyTorchTrainingBackend
+from ...training.backends.pytorch_factory import (
     compute_device_map_single_gpu,
     create_adamw_optimizer,
     create_backend_with_scheduler,
@@ -24,8 +24,8 @@ from rollouts.training.backends.pytorch_factory import (
     # Tier 1: Granular (export for power users)
     parse_dtype,
 )
-from rollouts.training.backends.torch_func import TorchFuncTrainingBackend
-from rollouts.training.backends.torchax_backend import TorchaxTrainingBackend
+from ...training.backends.torch_func import TorchFuncTrainingBackend
+from ...training.backends.torchax_backend import TorchaxTrainingBackend
 
 __all__ = [
     "TrainingBackend",

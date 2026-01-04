@@ -3,23 +3,23 @@
 See docs/design/nano_inference.md for design documentation.
 """
 
-from rollouts.inference.attention import (
+from ..inference.attention import (
     Attention,
     AttentionBackend,
     CacheConfig,
     FlexAttentionBackend,
     create_causal_block_mask,
 )
-from rollouts.inference.context import (
+from ..inference.context import (
     allocate_and_build_context,
     build_decode_context,
     build_prefill_context,
     extend_and_build_context,
 )
-from rollouts.inference.engine import InferenceEngine
-from rollouts.inference.sampling import sample_with_logprobs
-from rollouts.inference.scheduler import schedule
-from rollouts.inference.types import (
+from ..inference.engine import InferenceEngine
+from ..inference.sampling import sample_with_logprobs
+from ..inference.scheduler import schedule
+from ..inference.types import (
     EngineConfig,
     InferenceContext,
     SamplingParams,

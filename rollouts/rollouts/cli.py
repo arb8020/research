@@ -23,17 +23,18 @@ from typing import TYPE_CHECKING
 import trio
 
 from rollouts import AgentSession
-from rollouts.dtypes import Endpoint, Message, Trajectory
-from rollouts.environments import (
+
+from .dtypes import Endpoint, Message, Trajectory
+from .environments import (
     CalculatorEnvironment,
     GitWorktreeEnvironment,
     LocalFilesystemEnvironment,
 )
-from rollouts.store import FileSessionStore
+from .store import FileSessionStore
 
 if TYPE_CHECKING:
-    from rollouts.environments.base import Environment
-    from rollouts.import_cc import ClaudeCodeSession
+    from .environments.base import Environment
+    from .import_cc import ClaudeCodeSession
 
 SYSTEM_PROMPTS = {
     "none": "You are a helpful assistant.",
@@ -524,7 +525,7 @@ def parse_model_string(model_str: str) -> tuple[str, str]:
 
 def get_oauth_client() -> object:
     """Get OAuth client for Anthropic. Lazy import to avoid TUI dependencies."""
-    from rollouts.frontends.tui.oauth import get_oauth_client as _get_oauth_client
+    from .frontends.tui.oauth import get_oauth_client as _get_oauth_client
 
     return _get_oauth_client()
 
@@ -539,7 +540,7 @@ def create_endpoint(
     """Create endpoint from CLI arguments."""
     import os
 
-    from rollouts.models import get_model
+    from .models import get_model
 
     # Parse model string
     provider, model = parse_model_string(model_str)
@@ -548,7 +549,7 @@ def create_endpoint(
     if thinking == "enabled":
         from typing import cast
 
-        from rollouts.models import Provider
+        from .models import Provider
 
         model_metadata = get_model(cast(Provider, provider), model)
         if model_metadata is not None:
@@ -645,7 +646,7 @@ def create_endpoint(
 
 def cmd_list_presets() -> int:
     """Handle --list-presets command."""
-    from rollouts.agent_presets import list_presets
+    from .agent_presets import list_presets
 
     presets = list_presets()
     if not presets:
@@ -663,8 +664,8 @@ def cmd_list_presets() -> int:
 
 def cmd_oauth(login: bool) -> int:
     """Handle --login-claude and --logout-claude commands."""
-    from rollouts.frontends.tui.oauth import OAuthError, logout
-    from rollouts.frontends.tui.oauth import login as do_login
+    from .frontends.tui.oauth import OAuthError, logout
+    from .frontends.tui.oauth import login as do_login
 
     if not login:
         logout()
@@ -690,7 +691,7 @@ def cmd_export(
     session_store: FileSessionStore,
 ) -> int:
     """Handle --export-md and --export-html commands."""
-    from rollouts.export import session_to_html, session_to_markdown
+    from .export import session_to_html, session_to_markdown
 
     async def export_action() -> int:
         if config.session is not None and config.session != "":
@@ -928,7 +929,7 @@ async def _trim_session(
 
 def cmd_handoff(config: CLIConfig, session_store: FileSessionStore) -> int:
     """Handle --handoff command."""
-    from rollouts.export import run_handoff_command
+    from .export import run_handoff_command
 
     async def handoff_action() -> int:
         if config.session is None:
@@ -969,7 +970,7 @@ def cmd_slice(config: CLIConfig, session_store: FileSessionStore) -> int:
     Output (stdout):
         <child_session_id>
     """
-    from rollouts.slice import run_slice_command
+    from .slice import run_slice_command
 
     def estimate_tokens(messages: list) -> int:
         """Rough token estimate: chars / 4."""
@@ -1045,7 +1046,7 @@ def cmd_slice(config: CLIConfig, session_store: FileSessionStore) -> int:
 
 def cmd_import_cc(config: CLIConfig, session_store: FileSessionStore) -> int:
     """Handle --import-cc command."""
-    from rollouts.import_cc import (
+    from .import_cc import (
         import_claude_code_session,
         list_claude_code_sessions,
     )
@@ -1096,7 +1097,7 @@ def cmd_import_cc(config: CLIConfig, session_store: FileSessionStore) -> int:
 
 async def pick_cc_session_async() -> ClaudeCodeSession | None:
     """Interactive Claude Code session picker."""
-    from rollouts.import_cc import list_claude_code_sessions
+    from .import_cc import list_claude_code_sessions
 
     sessions = list_claude_code_sessions(limit=20)
 
@@ -1145,7 +1146,7 @@ def apply_preset(config: CLIConfig) -> bool:
     if not config.preset:
         return True
 
-    from rollouts.agent_presets import load_preset
+    from .agent_presets import load_preset
 
     try:
         preset = load_preset(config.preset)
@@ -1241,7 +1242,7 @@ def create_environment(config: CLIConfig) -> tuple[Environment | None, bool]:
         return CalculatorEnvironment(), True
 
     if config.env == "coding":
-        from rollouts.environments.coding import TOOL_PRESETS
+        from .environments.coding import TOOL_PRESETS
 
         tools = config.tools or "full"
         if tools not in TOOL_PRESETS:
@@ -1256,7 +1257,7 @@ def create_environment(config: CLIConfig) -> tuple[Environment | None, bool]:
         return GitWorktreeEnvironment(working_dir=config.working_dir), True
 
     if config.env == "repl":
-        from rollouts.environments.repl import REPLEnvironment
+        from .environments.repl import REPLEnvironment
 
         # Context must be provided via --context or --context-file
         context = config.context or ""
@@ -1269,7 +1270,7 @@ def create_environment(config: CLIConfig) -> tuple[Environment | None, bool]:
         return REPLEnvironment(context=context, sub_endpoint=config.endpoint), True
 
     if config.env == "repl_blocks":
-        from rollouts.environments.repl import MessageParsingREPLEnvironment
+        from .environments.repl import MessageParsingREPLEnvironment
 
         context = config.context or ""
         if not context:
@@ -1284,9 +1285,9 @@ def create_environment(config: CLIConfig) -> tuple[Environment | None, bool]:
     # TODO: Consider auto-composition when --context is provided with coding/git envs
     # For now, explicit composition via comma-separated env names
     if "+" in config.env:
-        from rollouts.environments.ask_user import AskUserQuestionEnvironment
-        from rollouts.environments.compose import compose
-        from rollouts.environments.repl import REPLEnvironment
+        from .environments.ask_user import AskUserQuestionEnvironment
+        from .environments.compose import compose
+        from .environments.repl import REPLEnvironment
 
         env_names = config.env.split("+")
         environments = []
@@ -1329,7 +1330,7 @@ def create_environment(config: CLIConfig) -> tuple[Environment | None, bool]:
 
 async def run_agent(config: CLIConfig) -> int:
     """Run the interactive agent."""
-    from rollouts.agents import resume_session
+    from .agents import resume_session
 
     session_store = config.session_store
     session_id: str | None = None
@@ -1362,7 +1363,7 @@ async def run_agent(config: CLIConfig) -> int:
         system_prompt = config.system_prompt
     elif config.environment:
         # Build dynamic prompt with actual tools
-        from rollouts.prompt import build_system_prompt
+        from .prompt import build_system_prompt
 
         # Get environment-provided system prompt if available
         env_system_prompt = None
@@ -1460,7 +1461,7 @@ async def _run_print_mode(
     """Run in non-interactive print mode."""
     assert config.endpoint is not None, "endpoint must be set for print mode"
 
-    from rollouts.frontends import JsonFrontend, NoneFrontend, run_interactive
+    from .frontends import JsonFrontend, NoneFrontend, run_interactive
 
     query = config.print_mode
     if query == "-":
@@ -1515,7 +1516,7 @@ async def _run_interactive_mode(
     assert config.endpoint is not None, "endpoint must be set for interactive mode"
 
     if config.frontend == "none":
-        from rollouts.frontends import NoneFrontend, run_interactive
+        from .frontends import NoneFrontend, run_interactive
 
         frontend = NoneFrontend(show_tool_calls=True, show_thinking=True)
         try:
@@ -1543,8 +1544,8 @@ async def _run_interactive_mode(
         return 1
 
     if config.frontend == "json":
-        from rollouts.frontends import run_interactive
-        from rollouts.frontends.headless_json import HeadlessJsonFrontend
+        from .frontends import run_interactive
+        from .frontends.headless_json import HeadlessJsonFrontend
 
         frontend = HeadlessJsonFrontend()
         frontend.environment = config.environment
@@ -1572,7 +1573,7 @@ async def _run_interactive_mode(
         return 0
 
     # Default: Python TUI
-    from rollouts.frontends.tui.interactive_agent import run_interactive_agent
+    from .frontends.tui.interactive_agent import run_interactive_agent
 
     try:
         await run_interactive_agent(

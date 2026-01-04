@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from rollouts.dtypes import (
+from ...dtypes import (
     LLMCallStart,
     Message,
     StreamDone,
@@ -28,7 +28,6 @@ from rollouts.dtypes import (
     ToolExecutionStart,
     ToolResultReceived,
 )
-
 from .components.assistant_message import AssistantMessage
 from .components.spacer import Spacer
 from .components.system_message import SystemMessage
@@ -523,7 +522,7 @@ class AgentRenderer:
             messages: List of Message objects to render
             skip_system: Whether to skip system messages (default True)
         """
-        from rollouts.dtypes import Message
+        from ...dtypes import Message
 
         for msg in messages:
             if not isinstance(msg, Message):
@@ -600,7 +599,7 @@ class AgentRenderer:
 
         This ensures history rendering uses the exact same code path as live streaming.
         """
-        from rollouts.dtypes import TextContent, ThinkingContent, ToolCallContent
+        from ...dtypes import TextContent, ThinkingContent, ToolCallContent
 
         content = msg.content
         if content is None:
@@ -637,7 +636,7 @@ class AgentRenderer:
             elif isinstance(block, ToolCallContent):
                 # Simulate tool call: start -> end
                 # Create a minimal ToolCall object for the handler
-                from rollouts.dtypes import ToolCall
+                from ...dtypes import ToolCall
 
                 tool_call = ToolCall(id=block.id, name=block.name, args=dict(block.arguments))
                 self._handle_tool_call_start(content_index, block.id, block.name)
@@ -668,7 +667,7 @@ class AgentRenderer:
                     tool_id = block.get("id", "")
                     tool_args = block.get("input", block.get("arguments", {}))
 
-                    from rollouts.dtypes import ToolCall
+                    from ...dtypes import ToolCall
 
                     tool_call = ToolCall(id=tool_id, name=tool_name, args=tool_args)
                     self._handle_tool_call_start(content_index, tool_id, tool_name)

@@ -423,8 +423,8 @@ async def rollout(
     if use_tito:
         assert tokenizer is not None, "tokenizer is required when use_tito=True"
 
-        from rollouts.inference.backends import compute_suffix_ids
-        from rollouts.providers import rollout_sglang_token_level, rollout_vllm_token_level
+        from .inference.backends import compute_suffix_ids
+        from .providers import rollout_sglang_token_level, rollout_vllm_token_level
 
         # Compute suffix_ids if not provided
         if suffix_ids is None:
@@ -448,7 +448,7 @@ async def rollout(
         return new_actor
 
     # Standard mode: use text-based providers
-    from rollouts.providers import get_provider_function
+    from .providers import get_provider_function
 
     provider = actor.endpoint.provider
     model_id = actor.endpoint.model
@@ -490,7 +490,7 @@ async def run_agent_step(
 
     # Update debug context for interrupt diagnostics
     try:
-        from rollouts.frontends.runner import get_debug_context
+        from .frontends.runner import get_debug_context
 
         debug_ctx = get_debug_context()
         debug_ctx.turn = state.turn_idx
@@ -662,7 +662,7 @@ async def process_pending_tools(
 
                 # Update debug context for interrupt diagnostics
                 try:
-                    from rollouts.frontends.runner import get_debug_context
+                    from .frontends.runner import get_debug_context
 
                     debug_ctx = get_debug_context()
                     debug_ctx.set_tool(tool_call.name)

@@ -1,15 +1,15 @@
 """Provider-specific rollout helpers for the agents module.
 
 DEPRECATED: This module is a backwards-compatibility shim.
-Import from rollouts.providers instead:
+Import from .providers instead:
 
-    from rollouts.providers import rollout_anthropic, rollout_openai
+    from .providers import rollout_anthropic, rollout_openai
 """
 
 from __future__ import annotations
 
 # Re-export everything from the new providers package
-from rollouts.providers import (
+from .providers import (
     NonRetryableError,
     VLLMErrorType,
     add_cache_control_to_last_content,
@@ -23,10 +23,10 @@ from rollouts.providers import (
 )
 
 # Also re-export the aggregate functions for direct access
-from rollouts.providers.anthropic import aggregate_anthropic_stream
-from rollouts.providers.google import aggregate_google_stream
-from rollouts.providers.openai_completions import aggregate_stream
-from rollouts.providers.openai_responses import aggregate_openai_responses_stream
+from .providers.anthropic import aggregate_anthropic_stream
+from .providers.google import aggregate_google_stream
+from .providers.openai_completions import aggregate_stream
+from .providers.openai_responses import aggregate_openai_responses_stream
 
 __all__ = [
     # Provider functions

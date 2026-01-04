@@ -4,7 +4,7 @@ Unified node acquisition pattern from kerbal/tests/test_integration.py.
 Supports static SSH, existing broker instances, or provisioning new ones.
 
 Usage:
-    from rollouts.remote import acquire_node, get_broker_credentials
+    from .remote import acquire_node, get_broker_credentials
 
     # Static SSH
     client, instance = acquire_node(ssh="root@gpu:22")

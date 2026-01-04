@@ -11,9 +11,9 @@ from pathlib import Path
 
 import pytest
 
-from rollouts.dtypes import AgentSession, Endpoint, EnvironmentConfig, Message, SessionStatus
-from rollouts.slice import apply_slice, parse_slice_spec, slice_session
-from rollouts.store import FileSessionStore
+from ..dtypes import AgentSession, Endpoint, EnvironmentConfig, Message, SessionStatus
+from ..slice import apply_slice, parse_slice_spec, slice_session
+from ..store import FileSessionStore
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
 

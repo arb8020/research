@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 import trio
 
 if TYPE_CHECKING:
-    from rollouts.dtypes import StreamEvent, ToolCall
+    from ..dtypes import StreamEvent, ToolCall
 
 
 class TextualFrontend:
@@ -306,7 +306,7 @@ class TextualFrontend:
         if not self._app:
             return
 
-        from rollouts.dtypes import (
+        from ..dtypes import (
             LLMCallStart,
             StreamDone,
             StreamError,

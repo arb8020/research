@@ -49,7 +49,7 @@ def setup_logging(
         None. Configures Python's global logging state.
 
     Example:
-        >>> from rollouts._logging import setup_logging
+        >>> from .._logging import setup_logging
         >>> setup_logging(level="DEBUG", log_file="logs/app.jsonl")
         >>> import logging
         >>> logger = logging.getLogger(__name__)

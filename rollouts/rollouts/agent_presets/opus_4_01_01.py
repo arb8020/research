@@ -8,7 +8,7 @@ Claude Opus 4.5 is Anthropic's most capable model with:
 - Best for complex reasoning, architecture, and difficult problems
 """
 
-from rollouts.agent_presets.base_preset import AgentPresetConfig
+from ..agent_presets.base_preset import AgentPresetConfig
 
 config = AgentPresetConfig(
     name="opus_4",

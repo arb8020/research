@@ -6,7 +6,7 @@ Components:
 - terminal: Terminal abstraction (raw mode, input handling)
 """
 
-from rollouts.tui.monitor import (
+from ..tui.monitor import (
     EVAL_PANES,
     PANE_PRESETS,
     RL_TRAINING_PANES,

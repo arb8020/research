@@ -6,7 +6,7 @@ text responses without access to calculator, search, or other tools that might
 confuse the conversation.
 
 Example usage:
-    from rollouts.environments import BasicEnvironment
+    from ..environments import BasicEnvironment
     environment = BasicEnvironment()
 """
 

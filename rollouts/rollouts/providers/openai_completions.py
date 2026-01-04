@@ -12,7 +12,7 @@ from openai import AsyncOpenAI
 from openai.types import CompletionUsage
 from openai.types.chat import ChatCompletionMessageParam
 
-from rollouts.dtypes import (
+from ..dtypes import (
     Actor,
     ChatCompletion,
     Choice,
@@ -36,7 +36,6 @@ from rollouts.dtypes import (
     Usage,
     parse_streaming_json,
 )
-
 from .base import _prepare_messages_for_llm, calculate_cost_from_usage, sanitize_request_for_logging
 
 logger = logging.getLogger(__name__)
@@ -578,13 +577,29 @@ async def rollout_openai(
                     )
 
     try:
-        stream = await client.chat.completions.create(**params)
-        completion = await aggregate_stream(stream, on_chunk)
+        # Use with_streaming_response to access rate limit headers
+        async with client.chat.completions.with_streaming_response.create(**params) as response:
+            # Extract headers before consuming stream
+            headers = dict(response.headers)
+
+            # Parse and consume the stream
+            stream = await response.parse()
+            completion = await aggregate_stream(stream, on_chunk)
+
+            # Update rate limit state from headers
+            from .._rate_limit import update_rate_limit_from_headers
+
+            update_rate_limit_from_headers(
+                api_key=actor.endpoint.api_key,
+                provider="openai",
+                model=actor.endpoint.model,
+                headers=headers,
+            )
 
     except Exception as e:
         from openai import BadRequestError, RateLimitError
 
-        from rollouts.store import log_crash
+        from ..store import log_crash
 
         sanitized = sanitize_request_for_logging(params)
 
@@ -667,7 +682,7 @@ async def rollout_openai(
     completion = replace(completion, model=actor.endpoint.model)
 
     # Calculate cost if model pricing is available
-    from rollouts.models import get_model
+    from ..models import get_model
 
     model_meta = get_model(actor.endpoint.provider, actor.endpoint.model)
     if model_meta and model_meta.cost:

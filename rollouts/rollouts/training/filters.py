@@ -13,7 +13,7 @@ from collections.abc import Callable
 
 import torch
 
-from rollouts.training.types import Sample, Status
+from ..training.types import Sample, Status
 
 # ────────────────────── SLIME's Default Filter ──────────────────────
 

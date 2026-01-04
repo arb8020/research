@@ -43,7 +43,7 @@ def load_config_from_file(config_path: str | Path, config_name: str = "config") 
 
     Usage pattern in entrypoints:
         import sys
-        from rollouts.config import load_config_from_file
+        from ..config import load_config_from_file
 
         config = load_config_from_file(sys.argv[1])
         # Use config...
@@ -79,7 +79,7 @@ def validate_config_protocol(config: Any, protocol_class: type) -> list[str]:
         List of error messages (empty if valid)
 
     Example:
-        from rollouts.config import HasModelConfig, validate_config_protocol
+        from ..config import HasModelConfig, validate_config_protocol
 
         errors = validate_config_protocol(my_config, HasModelConfig)
         if errors:

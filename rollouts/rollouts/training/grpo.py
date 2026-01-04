@@ -5,7 +5,7 @@ Each task provides prompts, score_fn, and environment_cls - this module handles
 the rest: SGLang server, training backend, rollout generation, gradient updates.
 
 Usage:
-    from rollouts.training.grpo import GRPOConfig, grpo_train
+    from ..training.grpo import GRPOConfig, grpo_train
 
     config = GRPOConfig(model_name="Qwen/Qwen3-0.6B", num_steps=100)
     prompts = [{"messages": [...], "answer": "42"}, ...]
@@ -32,8 +32,8 @@ from typing import TYPE_CHECKING, Any
 import trio
 
 if TYPE_CHECKING:
-    from rollouts.dtypes import Environment, Score
-    from rollouts.training.types import Sample
+    from ..dtypes import Environment, Score
+    from ..training.types import Sample
 
 # ──────────────────────── Config ─────────────────────────────────────────────
 
@@ -134,8 +134,8 @@ def grpo_train(
         Dict with "metrics_history" list of per-step metrics
 
     Example:
-        >>> from rollouts.training.grpo import GRPOConfig, grpo_train
-        >>> from rollouts.environments.no_tools import BasicEnvironment
+        >>> from ..training.grpo import GRPOConfig, grpo_train
+        >>> from ..environments.no_tools import BasicEnvironment
         >>>
         >>> config = GRPOConfig(model_name="Qwen/Qwen3-0.6B", num_steps=10)
         >>> prompts = [
@@ -173,7 +173,7 @@ def _create_inference_engine(
     config: GRPOConfig, output_dir: Path
 ) -> Any:  # SGLangEngine | VLLMEngine
     """Create and configure inference engine."""
-    from rollouts.training.weight_sync import SGLangEngine, VLLMEngine
+    from ..training.weight_sync import SGLangEngine, VLLMEngine
 
     if config.inference_backend == "sglang":
         return SGLangEngine(
@@ -208,9 +208,9 @@ def _setup_training_backend(
     """
     from transformers import AutoTokenizer
 
-    from rollouts.dtypes import Endpoint
-    from rollouts.training.backends.pytorch_factory import create_pytorch_backend
-    from rollouts.training.losses import grpo_loss
+    from ..dtypes import Endpoint
+    from ..training.backends.pytorch_factory import create_pytorch_backend
+    from ..training.losses import grpo_loss
 
     gpu_rank = config.trainer_cuda_device_ids[0]
     backend = create_pytorch_backend(
@@ -265,8 +265,8 @@ def _create_tito_generate_fn(
     logger: logging.Logger,
 ) -> Callable:
     """Create TI/TO (token-level) generate function."""
-    from rollouts.inference.backends import compute_suffix_ids
-    from rollouts.providers import rollout_sglang_token_level, rollout_vllm_token_level
+    from ..inference.backends import compute_suffix_ids
+    from ..providers import rollout_sglang_token_level, rollout_vllm_token_level
 
     suffix_ids = compute_suffix_ids(tokenizer)
     tito_provider = (
@@ -276,7 +276,7 @@ def _create_tito_generate_fn(
     )
 
     async def generate_fn(batch_prompts: list[dict], **kwargs: Any) -> list:
-        from rollouts.dtypes import Actor, Message, Trajectory
+        from ..dtypes import Actor, Message, Trajectory
 
         results = []
         for prompt_data in batch_prompts:
@@ -325,7 +325,7 @@ def _create_agent_generate_fn(
     logger: logging.Logger,
 ) -> Callable:
     """Create standard agent rollout generate function."""
-    from rollouts.training.agent_integration import agent_rollout_to_sample
+    from ..training.agent_integration import agent_rollout_to_sample
 
     async def generate_fn(batch_prompts: list[dict], **kwargs: Any) -> list:
         results = []
@@ -375,7 +375,7 @@ async def _process_training_step(
 
     import torch
 
-    from rollouts.training.losses import compute_group_advantages
+    from ..training.losses import compute_group_advantages
 
     if not batch.tokens:
         logger.warning("No successful rollouts, skipping step")
@@ -463,7 +463,7 @@ async def _process_training_step(
         else:
             # Save temp checkpoint to RAM disk (/dev/shm) for fast I/O
             # This avoids slow disk writes when syncing every step
-            from rollouts.training.weight_sync import get_fast_sync_dir
+            from ..training.weight_sync import get_fast_sync_dir
 
             fast_dir = get_fast_sync_dir()
             sync_dir = await backend.save_checkpoint_to_path(
@@ -538,11 +538,11 @@ async def _grpo_train_async(
     """Async GRPO training implementation."""
     import os
 
-    from rollouts._logging import setup_logging
-    from rollouts.training.datasets.data_buffer import DataBuffer
-    from rollouts.training.metrics import JSONLLogger
-    from rollouts.training.rollout_gen.async_rollout_manager import AsyncRolloutManager
-    from rollouts.training.types import RolloutConfig
+    from .._logging import setup_logging
+    from ..training.datasets.data_buffer import DataBuffer
+    from ..training.metrics import JSONLLogger
+    from ..training.rollout_gen.async_rollout_manager import AsyncRolloutManager
+    from ..training.types import RolloutConfig
 
     # Setup logging
     use_json_logs = os.environ.get("ROLLOUTS_JSON_LOGS", "").lower() == "true"
@@ -700,7 +700,7 @@ def _trajectory_to_sample_tito_interleaved(
     metadata: dict[str, Any] | None = None,
 ) -> Sample:
     """Convert TI/TO trajectory to single sample (interleaved strategy)."""
-    from rollouts.training.types import Sample, Status
+    from ..training.types import Sample, Status
 
     assert trajectory is not None
     assert tokenizer is not None
@@ -776,7 +776,7 @@ def _trajectory_to_samples_tito_branching(
 
     This mirrors deployed usage exactly - each generation is independent.
     """
-    from rollouts.training.types import Sample, Status
+    from ..training.types import Sample, Status
 
     assert trajectory is not None
     assert tokenizer is not None
@@ -848,7 +848,7 @@ def _trajectory_to_samples_tito_branching(
 
 def _get_message_content(msg: Any) -> str:
     """Extract text content from a Message."""
-    from rollouts.dtypes import TextContent, ThinkingContent
+    from ..dtypes import TextContent, ThinkingContent
 
     content = msg.content
     if isinstance(content, str):

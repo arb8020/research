@@ -7,9 +7,9 @@ Provides standardized logging configuration with:
 - File rotation with bounded sizes
 """
 
-from rollouts._logging.color_formatter import ColorFormatter, Colors
-from rollouts._logging.json_formatter import JSONFormatter
-from rollouts._logging.logging_config import setup_logging
+from .._logging.color_formatter import ColorFormatter, Colors
+from .._logging.json_formatter import JSONFormatter
+from .._logging.logging_config import setup_logging
 
 __all__ = [
     "setup_logging",

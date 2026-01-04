@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar
 import trio
 
 if TYPE_CHECKING:
-    from rollouts.dtypes import Score, Trajectory
+    from ..dtypes import Score, Trajectory
 
 
 class Status(Enum):
@@ -138,7 +138,7 @@ class Sample:
                 if content is None:
                     continue
                 # Handle content blocks - extract text
-                from rollouts.dtypes import TextContent, ThinkingContent
+                from ..dtypes import TextContent, ThinkingContent
 
                 parts = []
                 for block in content:
@@ -169,7 +169,7 @@ class Sample:
         """
         import json
 
-        from rollouts.dtypes import Trajectory
+        from ..dtypes import Trajectory
 
         d: dict[str, Any] = {}
         for key, value in self.__dict__.items():
@@ -209,7 +209,7 @@ class Sample:
             >>> d = {"id": "001", "prompt": "Q", "status": "completed"}
             >>> sample = Sample.from_dict(d)
         """
-        from rollouts.dtypes import Metric, Score, Trajectory
+        from ..dtypes import Metric, Score, Trajectory
 
         data = data.copy()
         if "status" in data:

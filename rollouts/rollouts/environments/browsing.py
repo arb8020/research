@@ -17,7 +17,7 @@ import trio
 from curl_cffi import requests as curl_requests
 
 if TYPE_CHECKING:
-    from rollouts.frontends.tui.theme import Theme
+    from ..frontends.tui.theme import Theme
 
 from ..dtypes import (
     AgentState,

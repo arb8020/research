@@ -4,7 +4,7 @@ Pure functions for generating tokens via SGLang, vLLM, or HuggingFace,
 avoiding the retokenization problem that causes RL training collapse.
 
 Usage:
-    from rollouts.inference.backends import (
+    from ...inference.backends import (
         generate_sglang,
         generate_vllm,
         generate_hf,
@@ -27,13 +27,13 @@ Usage:
     result.logprobs     # Per-token logprobs
 """
 
-from rollouts.inference.backends.generate import (
+from ...inference.backends.generate import (
     GenerationOutput,
     generate_hf,
     generate_sglang,
     generate_vllm,
 )
-from rollouts.inference.backends.tokenize import (
+from ...inference.backends.tokenize import (
     append_suffix_with_overlap,
     build_loss_mask,
     check_token_mismatch,
