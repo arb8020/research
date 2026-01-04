@@ -21,9 +21,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import trio
-from wafer_core.rollouts import AgentSession
 
-from .dtypes import Endpoint, Message, Trajectory
+from .dtypes import AgentSession, Endpoint, Message, Trajectory
 from .environments import (
     CalculatorEnvironment,
     GitWorktreeEnvironment,
