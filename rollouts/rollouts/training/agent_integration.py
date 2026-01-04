@@ -2,7 +2,7 @@
 
 Bridge between rollouts.agents (multi-turn execution) and rollouts.training (RL).
 
-Based on ~/wafer_stuff/clicker/run_rollouts.py pattern:
+Design pattern:
 - User provides Environment class
 - We run_agent() to get trajectory
 - Convert trajectory → Sample with loss_mask

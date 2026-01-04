@@ -19,7 +19,7 @@ Keybindings:
 
 TODO: Support viewing old runs via results directory
     - Store experiment outputs in results/{experiment}_{timestamp}/ dirs
-      (like wafer_stuff/clicker: "07_sglang_smoke_08_20251108-040540")
+      (e.g., "grpo_01_01_20251216-143022")
     - Each dir contains: config.json, metrics.jsonl, training.log, sglang.log
     - Add CLI flag: python -m rollouts.tui.monitor --replay results/grpo_01_01_20251216-143022/
     - TUI reads from log files instead of stdin, allows scrubbing through history
