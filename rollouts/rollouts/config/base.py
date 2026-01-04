@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from rollouts.dtypes import Endpoint, EvalConfig, Message, PrepareMessagesFn, RunConfig
+from ..dtypes import Endpoint, EvalConfig, Message, PrepareMessagesFn, RunConfig
 
 
 def infer_provider_from_model(model_name: str) -> str:
@@ -94,7 +94,7 @@ class BaseModelConfig:
     max_tokens: int = 4096
 
     # Retry/timeout
-    max_retries: int = 3
+    max_retries: int = 10  # Increased from 3 to handle sustained rate limiting
     timeout: float = 120.0
 
     def to_endpoint(self) -> Endpoint:

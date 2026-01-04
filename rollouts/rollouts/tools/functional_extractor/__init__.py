@@ -1,6 +1,6 @@
 """Functional model extractor - convert HF models to single-file PyTorch code."""
 
-from rollouts.tools.functional_extractor.tools import (
+from ...tools.functional_extractor.tools import (
     IntermediateCapture,
     ModuleSource,
     WeightInfo,

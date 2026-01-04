@@ -6,8 +6,7 @@ Following: functions orchestrate objects, push ifs up.
 import logging
 from collections.abc import Callable, Sequence
 
-from rollouts.dtypes import Endpoint
-
+from ..dtypes import Endpoint
 from .adapter import GEPAAdapter
 from .operations import (
     propose_mutation,

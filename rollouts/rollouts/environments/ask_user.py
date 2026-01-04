@@ -7,8 +7,8 @@ composed with other environments (like LocalFilesystemEnvironment) to add
 interactive question-asking capability.
 
 Example usage:
-    from rollouts.environments import compose, LocalFilesystemEnvironment
-    from rollouts.environments.ask_user import AskUserQuestionEnvironment
+    from ..environments import compose, LocalFilesystemEnvironment
+    from ..environments.ask_user import AskUserQuestionEnvironment
 
     env = compose(
         LocalFilesystemEnvironment(working_dir=Path.cwd()),
@@ -37,7 +37,7 @@ from ..dtypes import (
 )
 
 if TYPE_CHECKING:
-    from rollouts.frontends.tui.theme import Theme
+    from ..frontends.tui.theme import Theme
 
 
 # Type for the question handler callback

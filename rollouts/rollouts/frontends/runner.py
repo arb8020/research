@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 
 import trio
 
-from rollouts.agents import Actor, AgentState, run_agent
+from ..agents import Actor, AgentState, run_agent
 
 
 # Global debug context for interrupt diagnostics
@@ -108,7 +108,7 @@ def get_debug_context() -> _DebugContext:
     return _debug_ctx
 
 
-from rollouts.dtypes import (
+from ..dtypes import (
     Endpoint,
     Environment,
     Message,
@@ -122,8 +122,7 @@ from rollouts.dtypes import (
 )
 
 if TYPE_CHECKING:
-    from rollouts.store import SessionStore
-
+    from ..store import SessionStore
     from .protocol import Frontend
 
 
@@ -482,7 +481,7 @@ class InteractiveRunner:
                     exit_reason = str(final_state.stop).split(".")[-1].lower()
 
                 try:
-                    from rollouts.feedback import run_exit_survey
+                    from ..feedback import run_exit_survey
 
                     await run_exit_survey(
                         final_state,

@@ -3,7 +3,7 @@
 Presets bundle (model, environment, system_prompt) for quick iteration on agent behavior.
 
 Usage:
-    >>> from rollouts.agent_presets import load_preset
+    >>> from ..agent_presets import load_preset
     >>> preset = load_preset("fast_coder_01_01")
     >>> cli_args = preset.to_cli_args()
 """

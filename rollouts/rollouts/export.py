@@ -3,7 +3,7 @@ Session export to Markdown and HTML, plus session transformations.
 
 Usage:
     from rollouts import session_to_markdown, session_to_html
-    # or: from rollouts.export import session_to_markdown, session_to_html
+    # or: from .export import session_to_markdown, session_to_html
 
     md = session_to_markdown(session)
     html = session_to_html(session)
@@ -18,7 +18,7 @@ import html
 import json
 from typing import TYPE_CHECKING, Any
 
-from rollouts.dtypes import AgentSession
+from .dtypes import AgentSession
 
 
 def format_content_block(block: dict[str, Any]) -> str:
@@ -306,8 +306,8 @@ async def run_handoff_command(
     """
     import sys
 
-    from rollouts.dtypes import Actor, Message, StreamEvent, TextDelta, Trajectory
-    from rollouts.providers import get_provider_function
+    from .dtypes import Actor, Message, StreamEvent, TextDelta, Trajectory
+    from .providers import get_provider_function
 
     print(f"Extracting context for: {goal}", file=sys.stderr)
     print(f"From session: {session.session_id} ({len(session.messages)} messages)", file=sys.stderr)
@@ -357,4 +357,4 @@ Output ONLY the markdown prompt - no preamble or explanation. The output will be
 
 # Type hint for SessionStore (avoid circular import)
 if TYPE_CHECKING:
-    from rollouts.dtypes import Endpoint
+    from .dtypes import Endpoint

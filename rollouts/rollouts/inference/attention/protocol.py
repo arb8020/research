@@ -4,7 +4,7 @@ from typing import Protocol
 
 from torch import Tensor
 
-from rollouts.inference.types import InferenceContext
+from ...inference.types import InferenceContext
 
 
 class AttentionBackend(Protocol):

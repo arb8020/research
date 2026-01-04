@@ -7,12 +7,12 @@ No classes, no hidden state - just explicit orchestration.
 import logging
 from typing import Any
 
-from rollouts.training.backends import PyTorchTrainingBackend
-from rollouts.training.datasets.data_buffer import DataBuffer
-from rollouts.training.metrics import MetricsLogger
-from rollouts.training.rollout_gen.async_rollout_manager import AsyncRolloutManager
-from rollouts.training.types import RLTrainingConfig, RolloutBatch
-from rollouts.training.weight_sync import InferenceEngine, sync_weights_to_engines
+from ...training.backends import PyTorchTrainingBackend
+from ...training.datasets.data_buffer import DataBuffer
+from ...training.metrics import MetricsLogger
+from ...training.rollout_gen.async_rollout_manager import AsyncRolloutManager
+from ...training.types import RLTrainingConfig, RolloutBatch
+from ...training.weight_sync import InferenceEngine, sync_weights_to_engines
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ async def run_rl_training(
         List of metrics dicts (one per step)
 
     Example:
-        >>> from rollouts.training.metrics import JSONLLogger
+        >>> from ...training.metrics import JSONLLogger
         >>>
         >>> backend = PyTorchTrainingBackend(...)
         >>> data_buffer = DataBuffer(prompts=[...])

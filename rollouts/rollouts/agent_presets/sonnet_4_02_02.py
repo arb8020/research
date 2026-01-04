@@ -9,7 +9,7 @@ Claude Sonnet 4.5 offers:
 - Good default choice for most tasks
 """
 
-from rollouts.agent_presets.base_preset import AgentPresetConfig
+from ..agent_presets.base_preset import AgentPresetConfig
 
 config = AgentPresetConfig(
     name="sonnet_4",

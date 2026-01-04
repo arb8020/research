@@ -15,7 +15,7 @@ Use cases:
 Reference: https://alexzhang13.github.io/blog/2025/rlm/
 """
 
-from rollouts.agent_presets.base_preset import AgentPresetConfig
+from ..agent_presets.base_preset import AgentPresetConfig
 
 # System prompt for tool-based RLM (uses repl, llm_query, final_answer tools)
 RLM_TOOL_SYSTEM_PROMPT = """You are an assistant with access to a REPL environment for processing large contexts.

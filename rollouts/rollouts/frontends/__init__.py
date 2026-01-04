@@ -11,7 +11,7 @@ Available frontends:
 - IPCFrontend: Bridge for external processes (Go/TS)
 
 Usage:
-    from rollouts.frontends import run_interactive, NoneFrontend, TUIFrontend
+    from ..frontends import run_interactive, NoneFrontend, TUIFrontend
 
     # Simple stdout mode
     frontend = NoneFrontend()

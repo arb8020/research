@@ -12,7 +12,7 @@ to allow importing Sample/types without torch installed.
 """
 
 # Types first - these don't need torch
-from rollouts.training.types import (
+from ..training.types import (
     RLTrainingConfig,
     RolloutBatch,
     RolloutConfig,
@@ -27,31 +27,31 @@ def __getattr__(name: str) -> object:
     """Lazy import torch-dependent modules."""
     # Backends (need torch)
     if name == "PyTorchTrainingBackend":
-        from rollouts.training.backends import PyTorchTrainingBackend
+        from ..training.backends import PyTorchTrainingBackend
 
         return PyTorchTrainingBackend
     if name == "TrainingBackend":
-        from rollouts.training.backends.protocol import TrainingBackend
+        from ..training.backends.protocol import TrainingBackend
 
         return TrainingBackend
 
     # Training loops (need torch)
     if name == "run_sft_training":
-        from rollouts.training.loops import run_sft_training
+        from ..training.loops import run_sft_training
 
         return run_sft_training
     if name == "run_rl_training":
-        from rollouts.training.loops import run_rl_training
+        from ..training.loops import run_rl_training
 
         return run_rl_training
 
     # Datasets
     if name == "DataBuffer":
-        from rollouts.training.datasets import DataBuffer
+        from ..training.datasets import DataBuffer
 
         return DataBuffer
     if name == "load_sft_dataset":
-        from rollouts.training.datasets import load_sft_dataset
+        from ..training.datasets import load_sft_dataset
 
         return load_sft_dataset
 
@@ -66,45 +66,45 @@ def __getattr__(name: str) -> object:
         "make_length_filter",
         "make_threshold_filter",
     ):
-        from rollouts.training import filters
+        from ..training import filters
 
         return getattr(filters, name)
 
     # Metrics
     if name == "JSONLLogger":
-        from rollouts.training.metrics import JSONLLogger
+        from ..training.metrics import JSONLLogger
 
         return JSONLLogger
     if name == "MetricsLogger":
-        from rollouts.training.metrics import MetricsLogger
+        from ..training.metrics import MetricsLogger
 
         return MetricsLogger
 
     # Rollout generation
     if name == "AsyncRolloutManager":
-        from rollouts.training.rollout_gen import AsyncRolloutManager
+        from ..training.rollout_gen import AsyncRolloutManager
 
         return AsyncRolloutManager
     if name == "generate_rollout_batches":
-        from rollouts.training.rollout_gen import generate_rollout_batches
+        from ..training.rollout_gen import generate_rollout_batches
 
         return generate_rollout_batches
 
     # Agent integration
     if name == "agent_rollout_to_sample":
-        from rollouts.training.agent_integration import agent_rollout_to_sample
+        from ..training.agent_integration import agent_rollout_to_sample
 
         return agent_rollout_to_sample
     if name == "generate_rollout_batch":
-        from rollouts.training.agent_integration import generate_rollout_batch
+        from ..training.agent_integration import generate_rollout_batch
 
         return generate_rollout_batch
     if name == "trajectory_to_sample":
-        from rollouts.training.agent_integration import trajectory_to_sample
+        from ..training.agent_integration import trajectory_to_sample
 
         return trajectory_to_sample
     if name == "trajectory_to_samples":
-        from rollouts.training.agent_integration import trajectory_to_samples
+        from ..training.agent_integration import trajectory_to_samples
 
         return trajectory_to_samples
 
@@ -119,17 +119,17 @@ def __getattr__(name: str) -> object:
         "LossOutput",
         "compute_group_advantages",
     ):
-        from rollouts.training import losses
+        from ..training import losses
 
         return getattr(losses, name)
 
     # GRPO training
     if name == "GRPOConfig":
-        from rollouts.training.grpo import GRPOConfig
+        from ..training.grpo import GRPOConfig
 
         return GRPOConfig
     if name == "grpo_train":
-        from rollouts.training.grpo import grpo_train
+        from ..training.grpo import grpo_train
 
         return grpo_train
 

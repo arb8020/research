@@ -5,8 +5,7 @@ Pure functions for converting PromptTemplate + sample -> LLM messages.
 
 from typing import Any
 
-from rollouts.dtypes import Message
-
+from ..dtypes import Message
 from .types import PromptTemplate
 
 

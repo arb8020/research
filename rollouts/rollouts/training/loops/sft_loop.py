@@ -9,9 +9,9 @@ Design: Casey Muratori (no retention), Tiger Style (explicit state).
 import logging
 from typing import Any
 
-from rollouts.training.backends import PyTorchTrainingBackend
-from rollouts.training.metrics import MetricsLogger
-from rollouts.training.types import Sample, SFTTrainingConfig
+from ...training.backends import PyTorchTrainingBackend
+from ...training.metrics import MetricsLogger
+from ...training.types import Sample, SFTTrainingConfig
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ async def run_sft_training(
         List of metrics dicts (one per step)
 
     Example:
-        >>> from rollouts.training.metrics import JSONLLogger
+        >>> from ...training.metrics import JSONLLogger
         >>>
         >>> backend = PyTorchTrainingBackend(model, optimizer, loss_fn)
         >>> samples = load_sft_samples("dataset.jsonl")

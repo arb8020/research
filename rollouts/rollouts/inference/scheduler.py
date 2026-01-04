@@ -4,7 +4,7 @@ Decides which sequences to prefill/decode each step.
 No state, no side effects.
 """
 
-from rollouts.inference.types import (
+from ..inference.types import (
     SchedulerConfig,
     SchedulerOutput,
     Sequence,

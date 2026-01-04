@@ -16,8 +16,8 @@ from typing import TYPE_CHECKING, Any
 
 import trio
 
-from rollouts.agents import Actor, AgentState, RunConfig, handle_stop_max_turns, run_agent
-from rollouts.dtypes import (
+from ..agents import Actor, AgentState, RunConfig, handle_stop_max_turns, run_agent
+from ..dtypes import (
     Endpoint,
     Message,
     TextContent,
@@ -25,10 +25,10 @@ from rollouts.dtypes import (
     ToolCallContent,
     Trajectory,
 )
-from rollouts.training.types import Sample, Status
+from ..training.types import Sample, Status
 
 if TYPE_CHECKING:
-    from rollouts.dtypes import Environment
+    from ..dtypes import Environment
 
 
 def _content_to_str(content: str | list | None) -> str:
@@ -100,7 +100,7 @@ async def agent_rollout_to_sample(
         Sample with loss_mask (1.0 for assistant, 0.0 for tool/user)
 
     Example (string prompt):
-        >>> from rollouts.environments.calculator import CalculatorEnvironment
+        >>> from ..environments.calculator import CalculatorEnvironment
         >>> sample = await agent_rollout_to_sample(
         ...     prompt="What is 5 + 3?",
         ...     environment_cls=CalculatorEnvironment,
@@ -109,7 +109,7 @@ async def agent_rollout_to_sample(
         ... )
 
     Example (messages with system prompt):
-        >>> from rollouts.environments.no_tools import BasicEnvironment
+        >>> from ..environments.no_tools import BasicEnvironment
         >>> messages = [
         ...     {"role": "system", "content": "You are a math tutor."},
         ...     {"role": "user", "content": "What is 5 + 3?"},
@@ -437,8 +437,8 @@ def _branching_trajectory_to_samples(
 
     This mirrors deployed usage exactly - each generation is independent.
     """
-    from rollouts.inference.backends import tokenize_chat
-    from rollouts.training.types import Sample, Status
+    from ..inference.backends import tokenize_chat
+    from ..training.types import Sample, Status
 
     samples = []
     completion_idx = 0
@@ -540,7 +540,7 @@ def _extract_tokens_from_trajectory(
     Returns:
         Token IDs for the full conversation
     """
-    from rollouts.inference.backends import (
+    from ..inference.backends import (
         append_suffix_with_overlap,
         compute_suffix_ids,
         tokenize_chat,

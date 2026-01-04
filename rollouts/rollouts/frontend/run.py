@@ -18,6 +18,6 @@ sys.path.insert(0, str(rollouts_root))
 
 # Server doesn't need trio - it's standalone
 if __name__ == "__main__":
-    from rollouts.frontend.server import main
+    from ..frontend.server import main
 
     main()

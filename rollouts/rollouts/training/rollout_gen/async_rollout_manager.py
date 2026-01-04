@@ -18,9 +18,9 @@ from typing import Any
 
 import trio
 
-from rollouts.training.datasets.data_buffer import DataBuffer
-from rollouts.training.rollout_gen.rollout_generation import convert_to_batch
-from rollouts.training.types import RolloutBatch, RolloutConfig, Sample
+from ...training.datasets.data_buffer import DataBuffer
+from ...training.rollout_gen.rollout_generation import convert_to_batch
+from ...training.types import RolloutBatch, RolloutConfig, Sample
 
 
 @dataclass

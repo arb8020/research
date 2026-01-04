@@ -6,8 +6,8 @@ import copy
 from dataclasses import replace
 from enum import Enum
 
-from rollouts.dtypes import Cost, Message, Usage
-from rollouts.models import ModelCost
+from ..dtypes import Cost, Message, Usage
+from ..models import ModelCost
 
 
 class NonRetryableError(Exception):

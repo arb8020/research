@@ -14,8 +14,8 @@ from typing import TYPE_CHECKING
 
 import trio
 
-from rollouts.agents import Actor, AgentState, run_agent
-from rollouts.dtypes import (
+from ...agents import Actor, AgentState, run_agent
+from ...dtypes import (
     Endpoint,
     Environment,
     Message,
@@ -27,8 +27,7 @@ from rollouts.dtypes import (
     ToolResult,
     Trajectory,
 )
-from rollouts.models import get_model
-
+from ...models import get_model
 from .agent_renderer import AgentRenderer
 from .components.input import Input
 from .components.loader_container import LoaderContainer
@@ -38,8 +37,7 @@ from .terminal import ProcessTerminal, set_active_session_id
 from .tui import TUI
 
 if TYPE_CHECKING:
-    from rollouts.store import SessionStore
-
+    from ...store import SessionStore
     from .components.status_line import StatusLine
 
 
@@ -261,8 +259,7 @@ class InteractiveAgentRunner:
         2. Argument hint: /model → " [provider/model]" (shows expected args)
         3. Model completion: /model anth → "ropic/claude-sonnet-4-20250514"
         """
-        from rollouts.models import get_models, get_providers
-
+        from ...models import get_models, get_providers
         from .slash_commands import get_all_commands, get_command_arg_hint
 
         if not self.input_component:
@@ -345,8 +342,7 @@ class InteractiveAgentRunner:
         Returns:
             Completed text, or None if no completion
         """
-        from rollouts.models import get_models, get_providers
-
+        from ...models import get_models, get_providers
         from .slash_commands import get_all_commands
 
         if not text.startswith("/"):
@@ -675,14 +671,14 @@ class InteractiveAgentRunner:
                         self._current_trajectory = agent_states[-1].actor.trajectory
                 except Exception as e:
                     # Check for context too long error
-                    from rollouts.providers.base import ContextTooLongError
+                    from ...providers.base import ContextTooLongError
 
                     if isinstance(e, ContextTooLongError):
                         current_state = await self._handle_context_too_long(e, current_state)
                         continue
 
                     # Check for OAuth expired error - prompt for re-login
-                    from rollouts.frontends.tui.oauth import OAuthExpiredError
+                    from ...frontends.tui.oauth import OAuthExpiredError
 
                     if isinstance(e, OAuthExpiredError):
                         current_state = await self._handle_oauth_expired(e, current_state)
@@ -1116,7 +1112,7 @@ class InteractiveAgentRunner:
             )
 
         try:
-            from rollouts.feedback import run_exit_survey
+            from ...feedback import run_exit_survey
 
             await run_exit_survey(
                 latest_state, self.endpoint, "yield", session_id=self.session_id, skip_check=True
@@ -1259,7 +1255,7 @@ class InteractiveAgentRunner:
 
         Shows a friendly error message and waits for user input.
         """
-        from rollouts.providers.base import ContextTooLongError
+        from ...providers.base import ContextTooLongError
 
         if self.tui:
             self.tui.hide_loader()
@@ -1368,7 +1364,7 @@ class InteractiveAgentRunner:
                 exit_reason = str(final_state.stop).split(".")[-1].lower()
 
             try:
-                from rollouts.feedback import run_exit_survey
+                from ...feedback import run_exit_survey
 
                 await run_exit_survey(
                     final_state,
@@ -1386,7 +1382,7 @@ class InteractiveAgentRunner:
             # Clear active session so atexit handler doesn't double-print
             set_active_session_id(None)
 
-            from rollouts.environments.git_worktree import GitWorktreeEnvironment
+            from ...environments.git_worktree import GitWorktreeEnvironment
 
             if (
                 isinstance(self.environment, GitWorktreeEnvironment)
@@ -1398,7 +1394,7 @@ class InteractiveAgentRunner:
         """Print git worktree information after session ends."""
         import subprocess
 
-        from rollouts.environments.git_worktree import GitWorktreeEnvironment
+        from ...environments.git_worktree import GitWorktreeEnvironment
 
         if not isinstance(self.environment, GitWorktreeEnvironment):
             return

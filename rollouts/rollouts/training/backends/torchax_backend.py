@@ -20,7 +20,7 @@ from typing import Any
 import torch
 
 # import torchax  # Experimental, v0.0.4
-from rollouts.training.types import TrainFuture
+from ...training.types import TrainFuture
 
 
 @dataclass

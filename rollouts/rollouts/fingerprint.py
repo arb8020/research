@@ -8,7 +8,7 @@ Provides stable hashes of configuration to enable:
 Design: Shared core utilities, domain-specific wrappers.
 
 Usage:
-    from rollouts.fingerprint import fingerprint_eval, require_clean_git
+    from .fingerprint import fingerprint_eval, require_clean_git
 
     # For evals (errors on dirty git by default)
     fp = fingerprint_eval(config, tools=["bash", "read"], dataset_path=Path("data.jsonl"))
@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from rollouts.dtypes import EvalConfig
+    from .dtypes import EvalConfig
 
 # ── Core Utilities ──────────────────────────────────────────────────────────
 

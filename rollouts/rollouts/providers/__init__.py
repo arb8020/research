@@ -34,7 +34,7 @@ from .sglang import (
 )
 
 if TYPE_CHECKING:
-    from rollouts.dtypes import Actor, StreamEvent
+    from ..dtypes import Actor, StreamEvent
 
 # Type alias for provider streaming functions
 # Note: Actual functions may accept additional kwargs (user_message_for_thinking, turn_idx, etc.)
@@ -63,7 +63,7 @@ def get_provider_function(provider: str, model_id: str | None = None) -> Provide
     Returns:
         Async function that streams completions from the provider
     """
-    from rollouts.models import get_api_type
+    from ..models import get_api_type
 
     api_type = get_api_type(provider, model_id)
     func = _PROVIDER_REGISTRY.get(api_type)

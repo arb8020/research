@@ -38,12 +38,12 @@ import warnings
 from collections.abc import Iterator
 from typing import Any
 
-from rollouts.training.datasets.data_buffer import DataBuffer
-from rollouts.training.rollout_gen.rollout_generation import (
+from ...training.datasets.data_buffer import DataBuffer
+from ...training.rollout_gen.rollout_generation import (
     apply_sample_transforms,
     convert_to_batch,
 )
-from rollouts.training.types import RolloutBatch, RolloutConfig
+from ...training.types import RolloutBatch, RolloutConfig
 
 
 class RolloutManager:

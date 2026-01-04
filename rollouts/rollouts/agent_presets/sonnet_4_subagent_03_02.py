@@ -14,7 +14,7 @@ Inspired by pi-coding-agent's philosophy:
 
 from dataclasses import replace
 
-from rollouts.agent_presets.sonnet_4_02_02 import config as parent_config
+from ..agent_presets.sonnet_4_02_02 import config as parent_config
 
 SUBAGENT_GUIDANCE = """
 

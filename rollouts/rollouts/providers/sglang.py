@@ -26,9 +26,8 @@ import httpx
 from dacite import from_dict
 from openai import AsyncOpenAI
 
-from rollouts._retry import async_retry
-from rollouts.dtypes import Actor, ChatCompletion, StreamEvent, ToolCallError
-
+from .._retry import async_retry
+from ..dtypes import Actor, ChatCompletion, StreamEvent, ToolCallError
 from .base import (
     NonRetryableError,
     VLLMErrorType,
@@ -410,7 +409,7 @@ async def rollout_sglang_token_level(
     import time
     from dataclasses import replace
 
-    from rollouts.dtypes import (
+    from ..dtypes import (
         ChatCompletion,
         Choice,
         Logprob,
@@ -420,7 +419,7 @@ async def rollout_sglang_token_level(
         ToolCallContent,
         Usage,
     )
-    from rollouts.inference.backends import (
+    from ..inference.backends import (
         compute_suffix_ids,
         generate_sglang,
         log_token_mismatch,
@@ -574,7 +573,7 @@ async def rollout_vllm_token_level(
     """
     import time
 
-    from rollouts.dtypes import (
+    from ..dtypes import (
         ChatCompletion,
         Choice,
         Logprob,
@@ -584,7 +583,7 @@ async def rollout_vllm_token_level(
         ToolCallContent,
         Usage,
     )
-    from rollouts.inference.backends import (
+    from ..inference.backends import (
         compute_suffix_ids,
         generate_vllm,
         log_token_mismatch,
@@ -733,7 +732,7 @@ def _build_input_ids_from_trajectory(
 
     This avoids retokenization of previous assistant responses.
     """
-    from rollouts.inference.backends import (
+    from ..inference.backends import (
         append_suffix_with_overlap,
         tokenize_chat,
     )
@@ -768,7 +767,7 @@ def _build_input_ids_from_trajectory(
                 msg_ids = tokenize_chat(tokenizer, [msg_dict])
             else:
                 # Use prefix trick for delimiter
-                from rollouts.inference.backends import tokenize_message_with_delimiter
+                from ..inference.backends import tokenize_message_with_delimiter
 
                 msg_ids = tokenize_message_with_delimiter(tokenizer, msg_dict)
 
@@ -784,7 +783,7 @@ def _build_input_ids_from_trajectory(
 
 def _msg_to_dict(msg: Any) -> dict[str, str]:
     """Convert Message to dict for tokenization."""
-    from rollouts.dtypes import TextContent, ThinkingContent
+    from ..dtypes import TextContent, ThinkingContent
 
     content = msg.content
     if isinstance(content, str):

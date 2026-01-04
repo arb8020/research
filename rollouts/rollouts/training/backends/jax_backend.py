@@ -22,7 +22,7 @@ from typing import Any
 # import jax.numpy as jnp
 # import optax
 # import orbax.checkpoint as ocp
-from rollouts.training.types import TrainFuture
+from ...training.types import TrainFuture
 
 
 @dataclass

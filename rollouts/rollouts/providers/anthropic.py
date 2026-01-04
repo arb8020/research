@@ -12,7 +12,7 @@ from typing import Any
 import trio
 from anthropic import AsyncAnthropic
 
-from rollouts.dtypes import (
+from ..dtypes import (
     Actor,
     ChatCompletion,
     Choice,
@@ -41,7 +41,6 @@ from rollouts.dtypes import (
     Usage,
     parse_streaming_json,
 )
-
 from .base import (
     _prepare_messages_for_llm,
     add_cache_control_to_last_content,
@@ -233,7 +232,7 @@ async def aggregate_anthropic_stream(
 
     # Update debug context for interrupt diagnostics
     try:
-        from rollouts.frontends.runner import get_debug_context
+        from ..frontends.runner import get_debug_context
 
         debug_ctx = get_debug_context()
         debug_ctx.set_streaming()
@@ -543,7 +542,7 @@ async def _get_fresh_oauth_token() -> str | None:
     Raises:
         OAuthExpiredError: If token refresh fails (re-login required).
     """
-    from rollouts.frontends.tui.oauth import get_oauth_client
+    from ..frontends.tui.oauth import get_oauth_client
 
     client = get_oauth_client()
     # Let OAuthExpiredError propagate up - caller should handle re-login
@@ -628,7 +627,7 @@ async def rollout_anthropic(
     )
 
     # Transform messages for cross-provider compatibility (like pi-ai does)
-    from rollouts.transform_messages import transform_messages
+    from ..transform_messages import transform_messages
 
     transformed_messages = transform_messages(
         actor.trajectory.messages,
@@ -761,11 +760,22 @@ async def rollout_anthropic(
                 extra_headers=extra_headers,
             ) as stream:
                 completion = await aggregate_anthropic_stream(stream, on_chunk)
+
+                # Extract rate limit headers from stream response
+                if hasattr(stream, "response") and hasattr(stream.response, "headers"):
+                    from .._rate_limit import update_rate_limit_from_headers
+
+                    update_rate_limit_from_headers(
+                        api_key=actor.endpoint.api_key or "",
+                        provider="anthropic",
+                        model=actor.endpoint.model,
+                        headers=dict(stream.response.headers),
+                    )
                 break
 
         except Exception as e:
             # Let OAuthExpiredError propagate immediately - handled by TUI for re-login
-            from rollouts.frontends.tui.oauth import OAuthExpiredError
+            from ..frontends.tui.oauth import OAuthExpiredError
 
             if isinstance(e, OAuthExpiredError):
                 raise
@@ -774,8 +784,7 @@ async def rollout_anthropic(
             # These indicate bugs in our code or invalid configuration, not transient issues
             import anthropic
 
-            from rollouts.store import log_crash
-
+            from ..store import log_crash
             from .base import ContextTooLongError
 
             if isinstance(e, anthropic.BadRequestError):
@@ -805,7 +814,7 @@ async def rollout_anthropic(
             if isinstance(e, anthropic.AuthenticationError):
                 if oauth_token and attempt == 0:
                     print("🔄 OAuth token rejected, attempting refresh...")
-                    from rollouts.frontends.tui.oauth import OAuthExpiredError
+                    from ..frontends.tui.oauth import OAuthExpiredError
 
                     try:
                         fresh_token = await _get_fresh_oauth_token()
@@ -876,7 +885,7 @@ async def rollout_anthropic(
     completion = replace(completion, model=actor.endpoint.model)
 
     # Calculate cost if model pricing is available
-    from rollouts.models import get_model
+    from ..models import get_model
 
     model_meta = get_model(actor.endpoint.provider, actor.endpoint.model)
     if model_meta and model_meta.cost:

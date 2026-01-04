@@ -10,7 +10,7 @@ from typing import Any
 
 import trio
 
-from rollouts.dtypes import (
+from ...dtypes import (
     AgentState,
     Endpoint,
     EvalConfig,
@@ -20,9 +20,8 @@ from rollouts.dtypes import (
     StopReason,
     StreamEvent,
 )
-from rollouts.evaluation import evaluate_sample
-from rollouts.training.types import Sample
-
+from ...evaluation import evaluate_sample
+from ...training.types import Sample
 from ..types import Candidate, EvaluationBatch
 
 logger = logging.getLogger(__name__)

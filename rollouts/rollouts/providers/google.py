@@ -11,7 +11,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-from rollouts.dtypes import (
+from ..dtypes import (
     Actor,
     ChatCompletion,
     Choice,
@@ -34,7 +34,6 @@ from rollouts.dtypes import (
     ToolCallStart,
     Usage,
 )
-
 from .base import calculate_cost_from_usage
 
 
@@ -355,7 +354,7 @@ async def rollout_google(
             )
 
     # Transform messages for cross-provider compatibility (like pi-ai does)
-    from rollouts.transform_messages import transform_messages
+    from ..transform_messages import transform_messages
 
     transformed_messages = transform_messages(
         actor.trajectory.messages,
@@ -467,7 +466,7 @@ async def rollout_google(
             return final_message, usage_data
 
         except Exception as e:
-            from rollouts.providers.base import ProviderError
+            from ..providers.base import ProviderError
 
             logger.exception(
                 f"Google Generative AI API call failed: {e}\n  Model: {actor.endpoint.model}",
@@ -497,7 +496,7 @@ async def rollout_google(
     )
 
     # Calculate cost if model pricing is available
-    from rollouts.models import get_model
+    from ..models import get_model
 
     model_meta = get_model(actor.endpoint.provider, actor.endpoint.model)
     if model_meta and model_meta.cost:

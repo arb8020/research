@@ -87,7 +87,7 @@ def debug_swa() -> None:
     # =====================================================
     print("\n--- FlexAttention (create_sliding_window_causal_mask) ---")
 
-    from rollouts.inference.attention.mask import create_sliding_window_causal_mask
+    from ...inference.attention.mask import create_sliding_window_causal_mask
 
     block_mask = create_sliding_window_causal_mask(
         batch_size=batch_size,
@@ -153,7 +153,7 @@ def debug_swa() -> None:
     # =====================================================
     print("\n--- Factory function (create_attention_mask) ---")
 
-    from rollouts.inference.attention.mask import create_attention_mask
+    from ...inference.attention.mask import create_attention_mask
 
     # With sliding window
     mask_swa = create_attention_mask(

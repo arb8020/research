@@ -164,7 +164,7 @@ async def evaluate_sample(
 
         if has_stream_tokens and stream_tokens_value:
             # Import stdout_handler for streaming
-            from rollouts.agents import stdout_handler
+            from .agents import stdout_handler
 
             on_chunk_handler = stdout_handler
             logger.debug("🔍 Using stdout_handler for token streaming")
@@ -235,7 +235,7 @@ async def evaluate_sample(
     # Distinguish provider errors from actual sample failures
     # Provider errors (rate limits, timeouts, 5xx) are excluded from accuracy calculation
     # Actual failures (model got it wrong) count against accuracy
-    from rollouts.providers.base import ProviderError
+    from .providers.base import ProviderError
 
     error_message = None
     is_provider_error = False
@@ -439,7 +439,7 @@ async def evaluate(
         >>> report = await evaluate(dataset, config)
     """
     # Compute fingerprint early (will error on dirty git if allow_dirty=False)
-    from rollouts.fingerprint import fingerprint_eval
+    from .fingerprint import fingerprint_eval
 
     # Introspect tools from environment factory (if provided)
     # We create one env to get the tool list, then discard it

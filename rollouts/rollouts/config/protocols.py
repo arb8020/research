@@ -11,9 +11,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-# Import types from rollouts.dtypes
+# Import types from ..dtypes
 # These are already defined and used across projects
-from rollouts.dtypes import Endpoint, EvalConfig, Message
+from ..dtypes import Endpoint, EvalConfig, Message
 
 
 @runtime_checkable

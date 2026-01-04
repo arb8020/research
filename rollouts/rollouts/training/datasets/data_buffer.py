@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 # Import Sample directly to avoid pulling in torch via training/__init__.py
-from rollouts.training.types import Sample
+from ...training.types import Sample
 
 
 @dataclass(frozen=True)

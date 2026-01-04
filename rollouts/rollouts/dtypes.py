@@ -1084,7 +1084,7 @@ class Endpoint(JsonSerializable):
     max_completion_tokens: int | None = None  # for openai
     thinking: dict[str, Any] | None = None  # for anthropic
     # Retry configuration
-    max_retries: int = 3  # Number of retries for rate limits/transient errors
+    max_retries: int = 10  # Number of retries for rate limits/transient errors (increased from 3)
     timeout: float = 120.0  # Timeout in seconds for API calls
     # Extra params merged into the raw chat request for custom servers
     extra_params: dict[str, Any] | None = None
@@ -1278,7 +1278,7 @@ class Score:
 
 
 # Sample is unified in training.types - import here for backward compatibility
-from rollouts.training.types import Sample  # noqa: E402
+from .training.types import Sample  # noqa: E402
 
 # Score function: pure transform from Sample -> Score
 # Sample has trajectory, ground_truth, input, etc. - access via sample.trajectory

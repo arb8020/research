@@ -8,9 +8,9 @@ import torch
 import torch.nn as nn
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from rollouts.inference.sampling import sample_with_logprobs
-from rollouts.inference.scheduler import schedule
-from rollouts.inference.types import (
+from ..inference.sampling import sample_with_logprobs
+from ..inference.scheduler import schedule
+from ..inference.types import (
     EngineConfig,
     SamplingParams,
     SchedulerConfig,

@@ -1253,8 +1253,8 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Dict, Any
 
-from rollouts.dtypes import Message, Tool
-from rollouts.config import BaseModelConfig, BaseEvaluationConfig
+from ..dtypes import Message, Tool
+from ..config import BaseModelConfig, BaseEvaluationConfig
 
 
 @dataclass

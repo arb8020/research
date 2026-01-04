@@ -6,9 +6,9 @@ Navigable tree structure:
 Based on pyvimdiff pattern: each level is a picker that opens the next level.
 
 Usage:
-    from rollouts.tui.traces import StepPicker, TraceData
+    from ..tui.traces import StepPicker, TraceData
 
-    # Load from rollouts.jsonl
+    # Load from ..jsonl
     data = TraceData.from_jsonl("results/rl/run_xxx/rollouts.jsonl")
     picker = StepPicker(data)
     picker.run()
@@ -120,7 +120,7 @@ class TraceData:
 
     @classmethod
     def from_jsonl(cls, path: str | Path) -> TraceData:
-        """Load trace data from rollouts.jsonl file."""
+        """Load trace data from ..jsonl file."""
         path = Path(path)
         if not path.exists():
             return cls()

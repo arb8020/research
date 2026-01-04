@@ -9,8 +9,8 @@ Three levels of API (continuous granularity):
 3. **GEPAAdapter protocol** - Full control: implement for multi-component systems
 
 Example (Level 1 - simplest):
-    >>> from rollouts.prompt_optimization import optimize_prompt, GEPAConfig
-    >>> from rollouts.dtypes import Endpoint
+    >>> from ..prompt_optimization import optimize_prompt, GEPAConfig
+    >>> from ..dtypes import Endpoint
     >>>
     >>> result = await optimize_prompt(
     ...     system="Classify the query into a banking intent.",
@@ -22,7 +22,7 @@ Example (Level 1 - simplest):
     >>> print(f"Best: {result.best_candidate['system']}")
 
 Example (Level 2 - more control):
-    >>> from rollouts.prompt_optimization import run_gepa, GEPAConfig, SinglePromptAdapter
+    >>> from ..prompt_optimization import run_gepa, GEPAConfig, SinglePromptAdapter
     >>>
     >>> adapter = SinglePromptAdapter(
     ...     endpoint=endpoint,

@@ -22,14 +22,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from rollouts.dtypes import (
+from .dtypes import (
     Endpoint,
     EnvironmentConfig,
     Message,
     TextContent,
     ToolCallContent,
 )
-from rollouts.store import FileSessionStore
+from .store import FileSessionStore
 
 # Claude Code stores projects with path encoded as dashes
 CLAUDE_CODE_DIR = Path.home() / ".claude"
