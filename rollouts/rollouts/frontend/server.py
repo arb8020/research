@@ -10,7 +10,7 @@ Provides:
 Usage:
     python -m rollouts.frontend.server
     python -m rollouts.frontend.server --port 8080
-    python -m rollouts.frontend.server --project ~/wafer_stuff/kernels-gpumode-agent
+    python -m rollouts.frontend.server --project ~/myproject
 """
 
 import argparse

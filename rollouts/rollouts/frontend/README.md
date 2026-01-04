@@ -15,7 +15,7 @@ Visual config builder and trace viewer for rollouts-based agents.
 From your agent project directory:
 
 ```bash
-cd ~/wafer_stuff/kernels-gpumode-agent
+cd ~/myproject
 ~/research/rollouts/rollouts/frontend/dev.sh
 ```
 
