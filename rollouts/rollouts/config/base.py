@@ -94,7 +94,7 @@ class BaseModelConfig:
     max_tokens: int = 4096
 
     # Retry/timeout
-    max_retries: int = 10  # Increased from 3 to handle sustained rate limiting
+    max_retries: int = 3
     timeout: float = 120.0
 
     def to_endpoint(self) -> Endpoint:

@@ -67,18 +67,6 @@ class AgentRenderer:
         # Track content blocks by index
         self.content_blocks: dict[int, dict[str, Any]] = {}
 
-    def clear_chat(self) -> None:
-        """Clear all messages from the chat container.
-
-        Used when switching sessions to start fresh.
-        """
-        self.chat_container.clear()
-        self.current_message = None
-        self.current_thinking_index = None
-        self.current_text_index = None
-        self.pending_tools.clear()
-        self.content_blocks.clear()
-
     async def handle_event(self, event: StreamEvent) -> None:
         """Route StreamEvent to appropriate handler.
 
@@ -240,12 +228,8 @@ class AgentRenderer:
         self, content_index: int, tool_call_id: str, tool_name: str
     ) -> None:
         """Handle tool call start - create tool component."""
-        # Show streaming loader while tool args are being generated
-        self.tui.show_loader(
-            f"Streaming {tool_name}... (Esc to interrupt)",
-            spinner_color_fn=self.theme.fg(self.theme.accent),
-            text_color_fn=self.theme.fg(self.theme.muted),
-        )
+        # Hide loader - we're now showing tool UI instead
+        self.tui.hide_loader()
 
         # Finalize current message if we have one
         if self.current_message:
@@ -302,9 +286,6 @@ class AgentRenderer:
 
     def _handle_tool_call_end(self, content_index: int, tool_call: ToolCall) -> None:
         """Handle tool call end - tool is complete (but not executed yet)."""
-        # Hide the streaming loader now that args are complete
-        self.tui.hide_loader()
-
         tool_id = tool_call.id
         if tool_id in self.pending_tools:
             # Update with final args
@@ -413,32 +394,6 @@ class AgentRenderer:
             gutter_prefix="ℹ ",
         )
         self.chat_container.add_child(system_text)
-        self.tui.request_render()
-
-    def add_ghost_message(self, text: str) -> None:
-        """Add a ghost message - displays but is not part of conversation history.
-
-        Used for slash command output. Styled differently from system messages
-        to indicate it's ephemeral/informational.
-
-        Args:
-            text: Ghost message text
-        """
-        from .components.text import Text
-
-        self.chat_container.add_child(
-            Spacer(1, debug_label="before-ghost", debug_layout=self.debug_layout)
-        )
-        # Use dimmed style to indicate this is not part of the conversation
-        ghost_text = Text(
-            text,
-            padding_x=2,
-            padding_y=0,
-            theme=self.theme,
-            gutter_prefix="› ",
-            dim=True,  # Dimmed to show it's not part of conversation
-        )
-        self.chat_container.add_child(ghost_text)
         self.tui.request_render()
 
     def add_final_answer(self, answer: str) -> None:

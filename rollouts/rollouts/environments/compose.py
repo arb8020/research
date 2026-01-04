@@ -38,7 +38,6 @@ def _get_environment_registry() -> dict[str, Callable[[dict], Coroutine[Any, Any
     """Get the environment registry, populating it lazily on first call."""
     if not _ENVIRONMENT_REGISTRY:
         # Import all environments and register them
-        from .ask_user import AskUserQuestionEnvironment
         from .binary_search import BinarySearchEnvironment
         from .calculator import CalculatorEnvironment
         from .coding import LocalFilesystemEnvironment
@@ -53,7 +52,6 @@ def _get_environment_registry() -> dict[str, Callable[[dict], Coroutine[Any, Any
             "calculator": CalculatorEnvironment.deserialize,
             "basic": BasicEnvironment.deserialize,
             "binary_search": BinarySearchEnvironment.deserialize,
-            "ask_user": AskUserQuestionEnvironment.deserialize,
         })
 
         # Optional environments with heavy dependencies (lazy import)

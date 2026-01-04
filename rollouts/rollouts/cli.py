@@ -21,8 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import trio
-
-from rollouts import AgentSession
+from wafer_core.rollouts import AgentSession
 
 from .dtypes import Endpoint, Message, Trajectory
 from .environments import (
@@ -34,7 +33,6 @@ from .store import FileSessionStore
 
 if TYPE_CHECKING:
     from .environments.base import Environment
-    from .import_cc import ClaudeCodeSession
 
 SYSTEM_PROMPTS = {
     "none": "You are a helpful assistant.",
@@ -163,7 +161,6 @@ class CLIConfig:
     handoff: str | None = None
     slice: str | None = None
     slice_goal: str | None = None
-    import_cc: str | None = None
     doctor: bool = False
     trim: int | None = None
     fix: bool = False
@@ -220,8 +217,8 @@ def create_parser() -> argparse.ArgumentParser:
         type=str,
         default=PARSER_DEFAULTS["env"],
         help=(
-            "Environment with tools. Options: none, calculator, coding, git, repl, repl_blocks, ask_user. "
-            "Compose with '+': coding+ask_user, git+repl (default: none)"
+            "Environment with tools. Options: none, calculator, coding, git, repl, repl_blocks. "
+            "Compose with '+': coding+repl, git+repl (default: none)"
         ),
     )
     parser.add_argument(
@@ -305,9 +302,9 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--frontend",
         type=str,
-        choices=["tui", "none", "textual", "json"],
+        choices=["tui", "none", "textual"],
         default="tui",
-        help="Frontend: tui (default Python TUI), none (stdout), textual (rich TUI), json (bidirectional NDJSON)",
+        help="Frontend: tui (default Python TUI), none (stdout), textual (rich TUI)",
     )
     parser.add_argument(
         "--theme",
@@ -398,17 +395,6 @@ def create_parser() -> argparse.ArgumentParser:
         type=str,
         metavar="GOAL",
         help="Focus summaries in --slice on this goal (optional)",
-    )
-
-    # Import from Claude Code
-    parser.add_argument(
-        "--import-cc",
-        type=str,
-        nargs="?",
-        const="",
-        default=None,
-        metavar="SESSION_ID",
-        help="Import session from Claude Code. Use --import-cc to list/pick, --import-cc <id> for specific session",
     )
 
     # Doctor (session repair)
@@ -827,11 +813,8 @@ def _diagnose_session_issues(
     for msg in session.messages:
         if msg.role == "assistant" and isinstance(msg.content, list):
             for block in msg.content:
-                # Handle both dict (raw JSON) and ToolCallContent (loaded via dacite)
                 if isinstance(block, dict) and block.get("type") == "toolCall":
                     tool_call_ids.add(block.get("id", ""))
-                elif hasattr(block, "type") and block.type == "toolCall":
-                    tool_call_ids.add(getattr(block, "id", ""))
 
     for i, msg in enumerate(session.messages):
         if msg.role == "tool" and msg.tool_call_id:
@@ -1044,98 +1027,6 @@ def cmd_slice(config: CLIConfig, session_store: FileSessionStore) -> int:
     return trio.run(slice_action)
 
 
-def cmd_import_cc(config: CLIConfig, session_store: FileSessionStore) -> int:
-    """Handle --import-cc command."""
-    from .import_cc import (
-        import_claude_code_session,
-        list_claude_code_sessions,
-    )
-
-    async def import_action() -> int:
-        # If session ID provided, find and import it directly
-        if config.import_cc and config.import_cc != "":
-            # Find session by ID (could be partial match)
-            sessions = list_claude_code_sessions(limit=100)
-            matches = [s for s in sessions if config.import_cc in s.session_id]
-
-            if not matches:
-                print(f"No Claude Code session found matching: {config.import_cc}", file=sys.stderr)
-                return 1
-
-            if len(matches) > 1:
-                print(f"Multiple sessions match '{config.import_cc}':", file=sys.stderr)
-                for s in matches[:5]:
-                    print(f"  {s.session_id} ({s.project_path.name})", file=sys.stderr)
-                print("Please provide a more specific ID", file=sys.stderr)
-                return 1
-
-            session = matches[0]
-        else:
-            # Interactive picker
-            session = await pick_cc_session_async()
-            if session is None:
-                return 0
-
-        # Import the session
-        print(f"Importing: {session.session_id}", file=sys.stderr)
-        print(f"  Project: {session.project_path}", file=sys.stderr)
-        print(f"  Messages: {session.message_count}", file=sys.stderr)
-        if session.model:
-            print(f"  Model: {session.model}", file=sys.stderr)
-
-        new_id, err = await import_claude_code_session(session, session_store)
-        if err:
-            print(f"Error: {err}", file=sys.stderr)
-            return 1
-
-        print(f"\nImported as: {new_id}", file=sys.stderr)
-        print(f"Resume with: rollouts -s {new_id}")
-        return 0
-
-    return trio.run(import_action)
-
-
-async def pick_cc_session_async() -> ClaudeCodeSession | None:
-    """Interactive Claude Code session picker."""
-    from .import_cc import list_claude_code_sessions
-
-    sessions = list_claude_code_sessions(limit=20)
-
-    if not sessions:
-        print("No Claude Code sessions found in ~/.claude/projects/")
-        return None
-
-    print("\nClaude Code sessions:\n")
-    for i, session in enumerate(sessions):
-        time_ago = format_time_ago(session.last_modified.isoformat())
-        model_short = session.model.split("-")[0] if session.model else "?"
-        project_name = session.project_path.name
-        print(
-            f"  [{i + 1:2}] {time_ago:>10}  {session.message_count:>4} msgs  "
-            f"{model_short:<10}  {project_name}/{session.session_id[:8]}"
-        )
-
-    print("\n  [0] Cancel")
-    print()
-
-    while True:
-        try:
-            choice = input("Select session to import: ").strip()
-            if not choice:
-                continue
-            num = int(choice)
-            if num == 0:
-                return None
-            if 1 <= num <= len(sessions):
-                return sessions[num - 1]
-            print(f"Please enter 0-{len(sessions)}")
-        except ValueError:
-            print("Please enter a number")
-        except (KeyboardInterrupt, EOFError):
-            print()
-            return None
-
-
 # =============================================================================
 # Config loading - preset and session config merging
 # =============================================================================
@@ -1209,7 +1100,6 @@ def apply_session_config(config: CLIConfig) -> bool:
     if config.env == PARSER_DEFAULTS["env"]:
         env_config = session_config.get("environment", {})
         env_type = env_config.get("type", "")
-        # Map class names (legacy) and spec strings (new) to env specs
         env_map = {
             "CalculatorEnvironment": "calculator",
             "LocalFilesystemEnvironment": "coding",
@@ -1217,9 +1107,6 @@ def apply_session_config(config: CLIConfig) -> bool:
         }
         if env_type in env_map:
             config.env = env_map[env_type]
-        elif env_type:
-            # Direct spec string (e.g., "coding", "coding+ask_user")
-            config.env = env_type
 
     # Thinking: inherit from session if not explicitly set
     if config.thinking == PARSER_DEFAULTS["thinking"]:
@@ -1285,7 +1172,6 @@ def create_environment(config: CLIConfig) -> tuple[Environment | None, bool]:
     # TODO: Consider auto-composition when --context is provided with coding/git envs
     # For now, explicit composition via comma-separated env names
     if "+" in config.env:
-        from .environments.ask_user import AskUserQuestionEnvironment
         from .environments.compose import compose
         from .environments.repl import REPLEnvironment
 
@@ -1312,8 +1198,6 @@ def create_environment(config: CLIConfig) -> tuple[Environment | None, bool]:
                 environments.append(REPLEnvironment(context=context, sub_endpoint=config.endpoint))
             elif env_name == "calculator":
                 environments.append(CalculatorEnvironment())
-            elif env_name == "ask_user":
-                environments.append(AskUserQuestionEnvironment())
             else:
                 print(f"Unknown environment in composition: {env_name}", file=sys.stderr)
                 return None, False
@@ -1437,9 +1321,9 @@ async def run_agent(config: CLIConfig) -> int:
     else:
         trajectory = Trajectory(messages=[Message(role="system", content=system_prompt)])
 
-    # Check for stdin input (but not for json frontend - it reads stdin directly)
+    # Check for stdin input
     initial_prompt = config.initial_prompt
-    if initial_prompt is None and not sys.stdin.isatty() and config.frontend != "json":
+    if initial_prompt is None and not sys.stdin.isatty():
         initial_prompt = sys.stdin.read().strip() or None
 
     # Non-interactive print mode
@@ -1543,35 +1427,6 @@ async def _run_interactive_mode(
         )
         return 1
 
-    if config.frontend == "json":
-        from .frontends import run_interactive
-        from .frontends.headless_json import HeadlessJsonFrontend
-
-        frontend = HeadlessJsonFrontend()
-        frontend.environment = config.environment
-        frontend.endpoint = config.endpoint
-        frontend.session_store = config.session_store
-        frontend.session_id = session_id
-
-        # For JSON frontend, don't use initial_prompt - let frontend read from stdin
-        # This allows slash commands in the first message to be processed
-        try:
-            await run_interactive(
-                trajectory,
-                config.endpoint,
-                frontend=frontend,
-                environment=config.environment,
-                session_store=config.session_store,
-                session_id=session_id,
-                parent_session_id=parent_session_id,
-                branch_point=branch_point,
-                confirm_tools=config.confirm_tools,
-                initial_prompt=None,  # Frontend reads from stdin, handles slash commands
-            )
-        except (KeyboardInterrupt, EOFError):
-            pass
-        return 0
-
     # Default: Python TUI
     from .frontends.tui.interactive_agent import run_interactive_agent
 
@@ -1645,7 +1500,6 @@ def main() -> int:
         handoff=args.handoff,
         slice=args.slice,
         slice_goal=args.slice_goal,
-        import_cc=args.import_cc,
         doctor=args.doctor,
         trim=args.trim,
         fix=args.fix,
@@ -1664,9 +1518,6 @@ def main() -> int:
 
     if config.doctor or config.trim is not None or config.fix:
         return cmd_doctor(config, FileSessionStore())
-
-    if config.import_cc is not None:
-        return cmd_import_cc(config, FileSessionStore())
 
     # === Commands requiring endpoint ===
 

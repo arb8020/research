@@ -680,17 +680,11 @@ async def rollout_openai_responses(
         final_message, usage_data = await aggregate_openai_responses_stream(stream, on_chunk)
 
     except Exception as e:
-        from openai import BadRequestError, NotFoundError, RateLimitError
+        from openai import BadRequestError, RateLimitError
 
         from ..store import log_crash
 
         sanitized = sanitize_request_for_logging(params)
-
-        if isinstance(e, NotFoundError):
-            raise AssertionError(
-                f"Model not found: {actor.endpoint.model}\n"
-                f"The model may not exist or may not be available to your API key."
-            ) from e
 
         if isinstance(e, BadRequestError):
             crash_file = log_crash(e, "openai_responses", actor.endpoint.model)
@@ -710,9 +704,13 @@ async def rollout_openai_responses(
             ) from e
 
         # For other transient errors, wrap as ProviderError
+        import httpx
         from openai import APIConnectionError, APITimeoutError, InternalServerError
 
-        if isinstance(e, (APIConnectionError, APITimeoutError, InternalServerError)):
+        # Transient network/API errors that should trigger retry
+        if isinstance(
+            e, (APIConnectionError, APITimeoutError, InternalServerError, httpx.RemoteProtocolError)
+        ):
             from .base import ProviderError
 
             logger.exception(
@@ -725,23 +723,6 @@ async def rollout_openai_responses(
             )
             raise ProviderError(
                 f"OpenAI Responses API error: {e}",
-                original_error=e,
-                attempts=actor.endpoint.max_retries,
-                provider="openai",
-            ) from e
-
-        # Handle httpx streaming disconnection (transient network error)
-        # This occurs when OpenAI closes the connection mid-stream
-        from httpx import RemoteProtocolError
-
-        if isinstance(e, RemoteProtocolError):
-            from .base import ProviderError
-
-            logger.warning(
-                f"OpenAI stream disconnected mid-response: {e}\n  Model: {actor.endpoint.model}"
-            )
-            raise ProviderError(
-                f"OpenAI stream disconnected: {e}",
                 original_error=e,
                 attempts=actor.endpoint.max_retries,
                 provider="openai",
