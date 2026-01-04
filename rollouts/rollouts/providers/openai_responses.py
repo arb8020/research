@@ -731,6 +731,23 @@ async def rollout_openai_responses(
                 provider="openai",
             ) from e
 
+        # Handle httpx streaming disconnection (transient network error)
+        # This occurs when OpenAI closes the connection mid-stream
+        from httpx import RemoteProtocolError
+
+        if isinstance(e, RemoteProtocolError):
+            from .base import ProviderError
+
+            logger.warning(
+                f"OpenAI stream disconnected mid-response: {e}\n  Model: {actor.endpoint.model}"
+            )
+            raise ProviderError(
+                f"OpenAI stream disconnected: {e}",
+                original_error=e,
+                attempts=actor.endpoint.max_retries,
+                provider="openai",
+            ) from e
+
         # Other errors - log and re-raise as-is
         logger.exception(
             f"OpenAI Responses API call failed: {e}\n  Model: {actor.endpoint.model}",
