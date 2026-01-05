@@ -1,100 +1,95 @@
-"""GEPAAdapter protocol.
+"""GEPA adapter types.
 
-Protocol (structural typing) - no inheritance required.
-Following: classes only for legitimate state, protocols for contracts.
+Type aliases for adapter functions - no Protocol needed.
+Following: pure functions, explicit data flow.
 """
 
-from collections.abc import Sequence
-from typing import Protocol
+from collections.abc import Awaitable, Callable, Sequence
+from typing import Any
 
 from .types import Candidate, EvaluationBatch
 
+# ─── Type Aliases ─────────────────────────────────────────────────────────────
 
-class GEPAAdapter(Protocol):
-    """Integration point between GEPA engine and task-specific logic.
+# Evaluate function: runs candidate on batch, returns scores and optional traces
+EvaluateFn = Callable[
+    [Sequence[dict[str, Any]], Candidate, bool],  # (batch, candidate, capture_traces)
+    Awaitable[EvaluationBatch],
+]
 
-    Protocol (structural typing) - implement these methods, no inheritance needed.
+# Make reflective dataset: extracts feedback from traces for LLM reflection
+MakeReflectiveFn = Callable[
+    [Candidate, EvaluationBatch, list[str]],  # (candidate, eval_batch, components_to_update)
+    dict[str, list[dict[str, Any]]],
+]
 
-    For multi-component systems like RAG pipelines, implement this protocol.
-    For simple single-prompt optimization, use optimize_prompt() instead.
 
-    Key insight from reference GEPA:
-    - evaluate() runs the candidate and returns scores
-    - make_reflective_dataset() extracts per-component feedback from traces
-    - This separation allows GEPA to optimize each component independently
+# ─── Documentation ────────────────────────────────────────────────────────────
 
-    Example:
-        >>> class MyAdapter:
-        ...     async def evaluate(self, batch, candidate, capture_traces=False):
-        ...         # Run candidate on batch, return EvaluationBatch
-        ...         ...
-        ...
-        ...     def make_reflective_dataset(self, candidate, eval_batch, components):
-        ...         # Extract feedback for each component
-        ...         ...
-    """
+"""
+GEPA uses two functions as its integration point:
 
+1. evaluate_fn(batch, candidate, capture_traces) -> EvaluationBatch
+   - Runs the candidate on a batch of samples
+   - Returns scores and optionally execution traces
+   - capture_traces=True needed for reflective mutation
+
+2. make_reflective_fn(candidate, eval_batch, components_to_update) -> dict
+   - Extracts per-component feedback from execution traces
+   - Returns dict mapping component name to list of feedback items
+   - Each item should have: Inputs, Generated Outputs, Feedback
+
+Example (simple single-prompt adapter):
+    
     async def evaluate(
-        self,
         batch: Sequence[dict],
         candidate: Candidate,
         capture_traces: bool = False,
     ) -> EvaluationBatch:
-        """Evaluate candidate on a batch of samples.
-
-        Args:
-            batch: List of sample dicts from dataset
-            candidate: Dict mapping component names to their text
-            capture_traces: If True, include execution traces in result
-                           (needed for reflective mutation)
-
-        Returns:
-            EvaluationBatch with:
-            - outputs: Raw outputs per sample
-            - scores: Scores per sample (0.0 to 1.0)
-            - trajectories: Execution traces if capture_traces=True
-        """
-        ...
-
-    def make_reflective_dataset(
-        self,
+        outputs = []
+        scores = []
+        for sample in batch:
+            output = await run_llm(candidate["system"], sample["query"])
+            score = 1.0 if output == sample["answer"] else 0.0
+            outputs.append(output)
+            scores.append(score)
+        return EvaluationBatch(outputs=tuple(outputs), scores=tuple(scores))
+    
+    def make_reflective(
         candidate: Candidate,
         eval_batch: EvaluationBatch,
         components_to_update: list[str],
     ) -> dict[str, list[dict]]:
-        """Extract per-component feedback from execution traces.
+        if "system" not in components_to_update:
+            return {}
+        items = [
+            {"Inputs": o, "Feedback": "Correct" if s == 1.0 else "Wrong"}
+            for o, s in zip(eval_batch.outputs, eval_batch.scores)
+        ]
+        return {"system": items}
+    
+    # Use with run_gepa
+    result = await run_gepa(
+        seed_candidate={"system": "You are a classifier."},
+        dataset=my_dataset,
+        evaluate_fn=evaluate,
+        make_reflective_fn=make_reflective,
+        config=GEPAConfig(max_evaluations=100),
+        reflection_endpoint=endpoint,
+    )
 
-        This is the key to reflective mutation. Instead of just saying
-        "improve this prompt", we show the LLM:
-        - What inputs the component received
-        - What outputs it produced
-        - What went wrong (feedback)
+Example (terminal-bench adapter with config):
 
-        Args:
-            candidate: Current candidate being optimized
-            eval_batch: Evaluation result with trajectories (must have been
-                       called with capture_traces=True)
-            components_to_update: Which components to extract feedback for
-
-        Returns:
-            Dict mapping component name to list of feedback items.
-            Each item should have keys like:
-            - "Inputs": What the component received
-            - "Generated Outputs": What the component produced
-            - "Feedback": What went wrong or could be improved
-
-        Example:
-            >>> feedback = adapter.make_reflective_dataset(
-            ...     candidate, eval_batch, ["system"]
-            ... )
-            >>> feedback["system"]
-            [
-                {
-                    "Inputs": "Query: How do I reset my PIN?",
-                    "Generated Outputs": "card_arrival",
-                    "Feedback": "Incorrect. Expected: change_pin",
-                },
-                ...
-            ]
-        """
-        ...
+    from functools import partial
+    
+    config = TerminalBenchConfig(endpoint=endpoint, max_turns=30)
+    
+    result = await run_gepa(
+        seed_candidate={"instruction_prompt": "You are a terminal agent..."},
+        dataset=[{"task_id": "fix-permissions"}],
+        evaluate_fn=partial(evaluate_terminal_bench, config),
+        make_reflective_fn=make_terminal_bench_reflective,
+        config=GEPAConfig(max_evaluations=100),
+        reflection_endpoint=endpoint,
+    )
+"""

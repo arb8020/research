@@ -1,11 +1,11 @@
 """GEPA optimization test for terminal-bench.
 
-Tests that GEPA can optimize prompts for terminal-bench tasks using our adapter.
+Tests that GEPA can optimize prompts for terminal-bench tasks using pure functions.
 
 This is a small-scale test:
 - 2 training tasks
-- 2 validation tasks
-- 1 GEPA iteration (2 evaluations)
+- 1 validation task
+- 4 evaluations total
 
 Run:
     python -m examples.prompt_optimization.tb_gepa_test
@@ -13,12 +13,18 @@ Run:
 
 import logging
 import os
+from functools import partial
 
 import trio
 
 from rollouts.dtypes import Endpoint
-from rollouts.prompt_optimization import GEPAConfig, run_gepa
-from rollouts.prompt_optimization.adapters.terminal_bench import TerminalBenchAdapter
+from rollouts.prompt_optimization import (
+    GEPAConfig,
+    TerminalBenchConfig,
+    evaluate_terminal_bench,
+    make_terminal_bench_reflective,
+    run_gepa,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -62,15 +68,14 @@ async def main() -> None:
         temperature=0.7,
     )
 
-    # Setup adapter
-    adapter = TerminalBenchAdapter(
+    # Setup config (frozen dataclass)
+    adapter_config = TerminalBenchConfig(
         endpoint=agent_endpoint,
         max_turns=15,
         max_concurrent=2,
     )
 
     # Small dataset for testing
-    # Using easy tasks that should complete quickly
     trainset = [
         {"task_id": "fix-permissions"},
         {"task_id": "log-summary"},
@@ -83,8 +88,8 @@ async def main() -> None:
     logger.info(f"Train tasks: {[t['task_id'] for t in trainset]}")
     logger.info(f"Val tasks: {[t['task_id'] for t in valset]}")
 
-    # Run GEPA with minimal budget for testing
-    config = GEPAConfig(
+    # Run GEPA with pure functions
+    gepa_config = GEPAConfig(
         max_evaluations=4,  # Very small for testing
         minibatch_size=1,
     )
@@ -92,8 +97,9 @@ async def main() -> None:
     result = await run_gepa(
         seed_candidate={"instruction_prompt": SEED_PROMPT},
         dataset=trainset,
-        adapter=adapter,
-        config=config,
+        evaluate_fn=partial(evaluate_terminal_bench, adapter_config),
+        make_reflective_fn=make_terminal_bench_reflective,
+        config=gepa_config,
         reflection_endpoint=reflection_endpoint,
         valset=valset,
         seed=42,

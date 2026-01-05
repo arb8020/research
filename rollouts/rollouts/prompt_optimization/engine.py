@@ -1,13 +1,14 @@
 """GEPA engine - mid and high level orchestration.
 
 Following: functions orchestrate objects, push ifs up.
+Pure functions with explicit data flow - no hidden state.
 """
 
 import logging
 from collections.abc import Callable, Sequence
 
 from ..dtypes import Endpoint
-from .adapter import GEPAAdapter
+from .adapter import EvaluateFn, MakeReflectiveFn
 from .operations import (
     propose_mutation,
     sample_minibatch,
@@ -25,14 +26,15 @@ logger = logging.getLogger(__name__)
 
 async def gepa_iteration(
     state: GEPAState,
-    adapter: GEPAAdapter,
+    evaluate_fn: EvaluateFn,
+    make_reflective_fn: MakeReflectiveFn,
     trainset: Sequence[dict],
     reflection_endpoint: Endpoint,
     config: GEPAConfig,
 ) -> Candidate | None:
     """Run one GEPA iteration.
 
-    Orchestration function - calls adapter methods and updates state.
+    Orchestration function - calls evaluate/reflect functions and updates state.
 
     Steps:
     1. Select candidate from Pareto front
@@ -48,7 +50,8 @@ async def gepa_iteration(
 
     Args:
         state: Mutable GEPA state
-        adapter: GEPAAdapter implementation
+        evaluate_fn: Function to evaluate candidates on batches
+        make_reflective_fn: Function to extract feedback from traces
         trainset: Training samples
         reflection_endpoint: LLM endpoint for mutations
         config: Optimization config
@@ -65,7 +68,7 @@ async def gepa_iteration(
     minibatch = [trainset[i] for i in minibatch_ids]
 
     # 3. Evaluate with traces
-    eval_batch = await adapter.evaluate(minibatch, candidate, capture_traces=True)
+    eval_batch = await evaluate_fn(minibatch, candidate, True)
     state.total_evaluations += len(minibatch)
 
     # 4. Skip if perfect
@@ -77,7 +80,7 @@ async def gepa_iteration(
     component = state.next_component()
 
     # 6. Build reflective dataset
-    reflective_data = adapter.make_reflective_dataset(candidate, eval_batch, [component])
+    reflective_data = make_reflective_fn(candidate, eval_batch, [component])
 
     if component not in reflective_data or not reflective_data[component]:
         logger.warning(f"No reflective data for component {component}")
@@ -92,7 +95,7 @@ async def gepa_iteration(
     new_candidate = {**candidate, component: new_text}
 
     # 9. Evaluate new candidate on same minibatch
-    new_eval = await adapter.evaluate(minibatch, new_candidate, capture_traces=False)
+    new_eval = await evaluate_fn(minibatch, new_candidate, False)
     state.total_evaluations += len(minibatch)
 
     # 10. Accept if improved
@@ -113,7 +116,8 @@ async def gepa_iteration(
 async def run_gepa(
     seed_candidate: Candidate,
     dataset: Sequence[dict],
-    adapter: GEPAAdapter,
+    evaluate_fn: EvaluateFn,
+    make_reflective_fn: MakeReflectiveFn,
     config: GEPAConfig,
     reflection_endpoint: Endpoint,
     valset: Sequence[dict] | None = None,
@@ -127,7 +131,8 @@ async def run_gepa(
     Args:
         seed_candidate: Initial candidate to start from
         dataset: Training samples (used for minibatches)
-        adapter: GEPAAdapter implementation
+        evaluate_fn: Function to evaluate candidates (batch, candidate, capture_traces) -> EvaluationBatch
+        make_reflective_fn: Function to extract feedback (candidate, eval_batch, components) -> dict
         config: Optimization hyperparameters
         reflection_endpoint: LLM endpoint for proposing mutations
         valset: Validation samples (defaults to dataset)
@@ -136,6 +141,16 @@ async def run_gepa(
 
     Returns:
         GEPAResult with best candidate and statistics
+
+    Example:
+        >>> result = await run_gepa(
+        ...     seed_candidate={"system": "You are a classifier."},
+        ...     dataset=my_dataset,
+        ...     evaluate_fn=my_evaluate,
+        ...     make_reflective_fn=my_make_reflective,
+        ...     config=GEPAConfig(max_evaluations=100),
+        ...     reflection_endpoint=endpoint,
+        ... )
     """
     valset = valset if valset is not None else dataset
     trainset = dataset
@@ -147,7 +162,7 @@ async def run_gepa(
 
     # Initial validation eval
     logger.info("Running initial validation evaluation...")
-    initial_eval = await adapter.evaluate(list(valset), seed_candidate, capture_traces=False)
+    initial_eval = await evaluate_fn(list(valset), seed_candidate, False)
     state.val_scores[0] = {i: s for i, s in enumerate(initial_eval.scores)}
     state.total_evaluations += len(valset)
 
@@ -163,11 +178,13 @@ async def run_gepa(
             f"candidates={len(state.candidates)}, front={len(state.pareto_front)}"
         )
 
-        new_candidate = await gepa_iteration(state, adapter, trainset, reflection_endpoint, config)
+        new_candidate = await gepa_iteration(
+            state, evaluate_fn, make_reflective_fn, trainset, reflection_endpoint, config
+        )
 
         if new_candidate is not None:
             # Full validation eval
-            val_eval = await adapter.evaluate(list(valset), new_candidate, capture_traces=False)
+            val_eval = await evaluate_fn(list(valset), new_candidate, False)
             state.total_evaluations += len(valset)
 
             # Add to population
@@ -228,7 +245,7 @@ async def optimize_prompt(
 ) -> GEPAResult:
     """Optimize a single system prompt.
 
-    Simplest API - wraps run_gepa with SystemPromptAdapter.
+    Simplest API - wraps run_gepa with system prompt evaluate/reflect functions.
 
     Args:
         system: Initial system prompt to optimize
@@ -256,9 +273,15 @@ async def optimize_prompt(
         ... )
         >>> print(result.best_candidate["system"])
     """
-    from .adapters.system_prompt import SystemPromptAdapter
+    from functools import partial
 
-    adapter = SystemPromptAdapter(
+    from .adapters.system_prompt import (
+        SystemPromptConfig,
+        evaluate_system_prompt,
+        make_system_prompt_reflective,
+    )
+
+    config_obj = SystemPromptConfig(
         endpoint=endpoint,
         user_template=user_template,
         score_fn=score_fn,
@@ -269,7 +292,8 @@ async def optimize_prompt(
     return await run_gepa(
         seed_candidate={"system": system},
         dataset=dataset,
-        adapter=adapter,
+        evaluate_fn=partial(evaluate_system_prompt, config_obj),
+        make_reflective_fn=make_system_prompt_reflective,
         config=config or GEPAConfig(),
         reflection_endpoint=reflection_endpoint or endpoint,
         valset=valset,

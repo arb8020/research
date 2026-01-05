@@ -141,7 +141,7 @@ def build_run_config(max_turns: int | None) -> RunConfig:
     )
 
 
-async def evaluate(
+async def evaluate_system_prompt(
     config: SystemPromptConfig,
     batch: Sequence[dict],
     candidate: Candidate,
@@ -220,8 +220,7 @@ async def evaluate(
     )
 
 
-def make_reflective_dataset(
-    config: SystemPromptConfig,
+def make_system_prompt_reflective(
     candidate: Candidate,
     eval_batch: EvaluationBatch,
     components_to_update: list[str],
@@ -264,7 +263,11 @@ def make_reflective_dataset(
                 input_text = msg.content if isinstance(msg.content, str) else str(msg.content)
                 break
 
-        if config.max_turns is not None:
+        # Check if multi-turn by counting assistant messages
+        assistant_msgs = [m for m in trace["messages"] if m.role == "assistant"]
+        is_multi_turn = len(assistant_msgs) > 1
+
+        if is_multi_turn:
             trajectory_text = format_trajectory(trace["messages"])
             items.append({
                 "Inputs": input_text,
@@ -341,7 +344,7 @@ class SystemPromptAdapter:
         candidate: Candidate,
         capture_traces: bool = False,
     ) -> EvaluationBatch:
-        return await evaluate(self.config, batch, candidate, capture_traces)
+        return await evaluate_system_prompt(self.config, batch, candidate, capture_traces)
 
     def make_reflective_dataset(
         self,
@@ -349,7 +352,7 @@ class SystemPromptAdapter:
         eval_batch: EvaluationBatch,
         components_to_update: list[str],
     ) -> dict[str, list[dict]]:
-        return make_reflective_dataset(self.config, candidate, eval_batch, components_to_update)
+        return make_system_prompt_reflective(candidate, eval_batch, components_to_update)
 
 
 # Backwards compatibility alias
