@@ -122,7 +122,7 @@ async def run_tests_and_score(
 
     # Parse results
     try:
-        parser = ParserFactory.create_parser(task.parser_name)
+        parser = ParserFactory.get_parser(task.parser_name)
         results = parser.parse(test_output)
 
         if results is None:
@@ -289,7 +289,8 @@ class TerminalBenchAdapter:
                 handle_stop=self._handle_stop_max_turns(self.config.max_turns),
             )
 
-            final_state = await run_agent(initial_state, run_config)
+            states = await run_agent(initial_state, run_config)
+            final_state = states[-1] if isinstance(states, list) else states
 
             # Run tests and score
             score, success, failure_reason = await run_tests_and_score(env)
