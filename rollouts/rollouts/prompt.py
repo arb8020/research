@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .dtypes import Tool
-from .paths import get_docs_dir, get_readme_path, get_version
+from .paths import get_config_dir, get_docs_dir, get_readme_path, get_version
 
 # =============================================================================
 # Project Context Discovery
@@ -22,24 +22,37 @@ from .paths import get_docs_dir, get_readme_path, get_version
 PROJECT_CONTEXT_FILES = ["ROLLOUTS.md", "AGENTS.md", "CLAUDE.md"]
 
 
-def load_project_context(cwd: Path) -> list[tuple[Path, str]]:
-    """Load project context files walking up from cwd.
+def _load_context_file_from_dir(directory: Path) -> tuple[Path, str] | None:
+    """Look for a context file in a directory.
 
-    Looks for ROLLOUTS.md, AGENTS.md, or CLAUDE.md in each directory
-    from cwd up to root. Returns list of (path, content) tuples,
-    ordered from root to cwd (so more specific context comes last).
+    Checks for ROLLOUTS.md, AGENTS.md, or CLAUDE.md (in that priority order).
+    Returns (path, content) tuple if found, None otherwise.
+    """
+    for name in PROJECT_CONTEXT_FILES:
+        ctx_file = directory / name
+        if ctx_file.exists():
+            try:
+                return (ctx_file, ctx_file.read_text())
+            except (OSError, PermissionError):
+                pass
+    return None
+
+
+def load_project_context(cwd: Path, config_dir: Path | None = None) -> list[tuple[Path, str]]:
+    """Load project context files from global config and project directories.
+
+    Loading order (most general to most specific):
+    1. Global: ~/.rollouts/AGENTS.md (or CLAUDE.md)
+    2. Ancestor directories: root → cwd (top-most parent first)
+
+    This allows user-wide defaults that project-specific files can override.
 
     Args:
-        cwd: Starting directory
+        cwd: Working directory to start walking up from
+        config_dir: Override config directory (for testing). Default: ~/.rollouts/
 
     Returns:
-        List of (path, content) tuples, root-first order
-
-    # TODO: Add global context from ~/.rollouts/AGENTS.md (or CLAUDE.md)
-    # See badlogic/pi-mono's loadProjectContextFiles for reference:
-    # 1. Load global context from agentDir first (~/.rollouts/)
-    # 2. Then walk up from cwd to root
-    # This allows user-wide defaults that project-specific files can override.
+        List of (path, content) tuples, ordered general → specific
     """
     assert cwd, "cwd required"
     assert isinstance(cwd, Path), "cwd must be a Path"
@@ -47,28 +60,34 @@ def load_project_context(cwd: Path) -> list[tuple[Path, str]]:
     context_files: list[tuple[Path, str]] = []
     seen_paths: set[Path] = set()
 
+    # 1. Load global context from config directory (~/.rollouts/)
+    resolved_config_dir = config_dir or get_config_dir()
+    global_context = _load_context_file_from_dir(resolved_config_dir)
+    if global_context:
+        context_files.append(global_context)
+        seen_paths.add(global_context[0])
+
+    # 2. Walk up from cwd to root, collecting context files
+    ancestor_files: list[tuple[Path, str]] = []
     current = cwd.resolve()
     root = Path(current.anchor)
 
     while current >= root:
-        for name in PROJECT_CONTEXT_FILES:
-            ctx_file = current / name
-            if ctx_file.exists() and ctx_file not in seen_paths:
-                try:
-                    content = ctx_file.read_text()
-                    context_files.append((ctx_file, content))
-                    seen_paths.add(ctx_file)
-                    break  # Only one per directory
-                except (OSError, PermissionError):
-                    pass
+        ctx = _load_context_file_from_dir(current)
+        if ctx and ctx[0] not in seen_paths:
+            # Prepend so we get top-most parent first after reversal
+            ancestor_files.insert(0, ctx)
+            seen_paths.add(ctx[0])
 
         parent = current.parent
         if parent == current:
             break
         current = parent
 
-    # Return in root-first order (reverse of how we collected)
-    return list(reversed(context_files))
+    # Add ancestor files (already in root → cwd order)
+    context_files.extend(ancestor_files)
+
+    return context_files
 
 
 # =============================================================================
