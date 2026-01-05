@@ -391,13 +391,14 @@ class ProviderCredentials:
     primeintellect: str = ""
     lambdalabs: str = ""
     vast: str = ""
+    digitalocean: str = ""
     # Add more providers as needed
 
     def __post_init__(self) -> None:
         # Tiger Style: assert at least one credential provided
-        assert self.runpod or self.primeintellect or self.lambdalabs or self.vast, (
-            "At least one provider credential required"
-        )
+        assert (
+            self.runpod or self.primeintellect or self.lambdalabs or self.vast or self.digitalocean
+        ), "At least one provider credential required"
 
         # Validate credential format (basic length check)
         if self.runpod:
@@ -414,10 +415,13 @@ class ProviderCredentials:
         if self.vast:
             assert len(self.vast) > 10, "Vast.ai API key appears invalid (too short)"
 
+        if self.digitalocean:
+            assert len(self.digitalocean) > 10, "DigitalOcean API key appears invalid (too short)"
+
         # Assert output invariant
-        assert self.runpod or self.primeintellect or self.lambdalabs or self.vast, (
-            "credentials validated"
-        )
+        assert (
+            self.runpod or self.primeintellect or self.lambdalabs or self.vast or self.digitalocean
+        ), "credentials validated"
 
     def get(self, provider: str) -> str | None:
         """Get credential for specific provider."""
@@ -429,6 +433,8 @@ class ProviderCredentials:
             return self.lambdalabs
         elif provider == "vast":
             return self.vast
+        elif provider == "digitalocean":
+            return self.digitalocean
         return None
 
     def to_dict(self) -> dict[str, str]:
@@ -442,6 +448,8 @@ class ProviderCredentials:
             result["lambdalabs"] = self.lambdalabs
         if self.vast:
             result["vast"] = self.vast
+        if self.digitalocean:
+            result["digitalocean"] = self.digitalocean
         return result
 
     @classmethod
@@ -452,6 +460,7 @@ class ProviderCredentials:
             primeintellect=credentials.get("primeintellect", ""),
             lambdalabs=credentials.get("lambdalabs", ""),
             vast=credentials.get("vast", ""),
+            digitalocean=credentials.get("digitalocean", ""),
         )
 
 

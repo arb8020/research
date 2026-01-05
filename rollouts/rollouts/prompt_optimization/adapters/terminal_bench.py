@@ -149,7 +149,7 @@ async def run_tests_and_score(
 class TerminalBenchAdapter:
     """GEPA adapter for terminal-bench tasks using our agent system.
 
-    The candidate is expected to have key "system_prompt" containing
+    The candidate is expected to have key "instruction_prompt" containing
     the system prompt for the agent.
 
     Example:
@@ -158,7 +158,7 @@ class TerminalBenchAdapter:
         ...     max_turns=30,
         ... )
         >>> result = await run_gepa(
-        ...     seed_candidate={"system_prompt": "You are a terminal agent..."},
+        ...     seed_candidate={"instruction_prompt": "You are a terminal agent..."},
         ...     dataset=[{"task_id": "hello-world"}],
         ...     adapter=adapter,
         ...     config=GEPAConfig(max_evaluations=100),
@@ -194,13 +194,13 @@ class TerminalBenchAdapter:
 
         Args:
             batch: List of task dicts with "task_id" key
-            candidate: Must have "system_prompt" key
+            candidate: Must have "instruction_prompt" key
             capture_traces: If True, capture full trajectories
 
         Returns:
             EvaluationBatch with outputs, scores, and optional trajectories
         """
-        system_prompt = candidate["system_prompt"]
+        instruction_prompt = candidate["instruction_prompt"]
 
         outputs: list[str] = []
         scores: list[float] = []
@@ -212,7 +212,7 @@ class TerminalBenchAdapter:
 
         async def eval_one(idx: int, task_data: dict) -> None:
             async with limiter:
-                result = await self._eval_single_task(task_data, system_prompt, capture_traces)
+                result = await self._eval_single_task(task_data, instruction_prompt, capture_traces)
                 results[idx] = result
 
         async with trio.open_nursery() as nursery:
@@ -242,7 +242,7 @@ class TerminalBenchAdapter:
     async def _eval_single_task(
         self,
         task_data: dict,
-        system_prompt: str,
+        instruction_prompt: str,
         capture_traces: bool,
     ) -> tuple[str, float, dict]:
         """Evaluate a single task."""
@@ -268,7 +268,9 @@ class TerminalBenchAdapter:
             # Build initial messages
             # The environment provides task-specific system prompt content
             env_system = env.get_system_prompt() or ""
-            full_system = f"{system_prompt}\n\n{env_system}" if system_prompt else env_system
+            full_system = (
+                f"{instruction_prompt}\n\n{env_system}" if instruction_prompt else env_system
+            )
 
             initial_messages = [
                 Message(role="system", content=full_system),
@@ -304,7 +306,7 @@ class TerminalBenchAdapter:
                     for m in final_state.actor.trajectory.messages
                 ],
                 "interactions": env.interactions,
-                "system_prompt": system_prompt,
+                "instruction_prompt": instruction_prompt,
                 "score": score,
                 "success": success,
                 "failure_reason": failure_reason,
@@ -324,7 +326,7 @@ class TerminalBenchAdapter:
                 {
                     "task_id": task_id,
                     "error": str(e),
-                    "system_prompt": system_prompt,
+                    "instruction_prompt": instruction_prompt,
                 },
             )
         finally:
@@ -347,12 +349,12 @@ class TerminalBenchAdapter:
         - Full message history (tool calls, outputs)
         - Success/failure status with reason
         """
-        if "system_prompt" not in components_to_update:
+        if "instruction_prompt" not in components_to_update:
             return {}
 
         if eval_batch.trajectories is None:
             logger.warning("No trajectories in eval_batch")
-            return {"system_prompt": []}
+            return {"instruction_prompt": []}
 
         items = []
         for trajectory in eval_batch.trajectories:
@@ -380,12 +382,12 @@ class TerminalBenchAdapter:
                 "Task ID": trajectory.get("task_id", "unknown"),
                 "Task Instruction": trajectory.get("instruction", "")[:500],
                 "Message History": formatted_messages,
-                "System Prompt Used": trajectory.get("system_prompt", ""),
+                "System Prompt Used": trajectory.get("instruction_prompt", ""),
                 "Score": trajectory.get("score", 0.0),
                 "Feedback": feedback,
             })
 
-        return {"system_prompt": items}
+        return {"instruction_prompt": items}
 
     @staticmethod
     async def _silent_chunk_handler(event: StreamEvent) -> None:

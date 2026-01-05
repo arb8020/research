@@ -37,6 +37,11 @@ def get_vast_key() -> str | None:
     return os.getenv("VAST_API_KEY")
 
 
+def get_digitalocean_key() -> str | None:
+    """Get DigitalOcean API key from environment"""
+    return os.getenv("DIGITALOCEAN_API_KEY")
+
+
 def get_modal_token() -> str | None:
     """Get Modal token from environment or ~/.modal.toml
 
@@ -115,6 +120,7 @@ RUNPOD_API_KEY=
 PRIME_API_KEY=
 LAMBDA_API_KEY=
 VAST_API_KEY=
+DIGITALOCEAN_API_KEY=
 SSH_KEY_PATH=~/.ssh/id_ed25519
 """
     else:  # bifrost

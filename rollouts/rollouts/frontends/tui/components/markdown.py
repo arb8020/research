@@ -95,6 +95,7 @@ class Markdown(Component):
         padding_y: int = 0,
         theme: MarkdownTheme | None = None,
         bg_fn: Callable[[str], str] | None = None,
+        fg_fn: Callable[[str], str] | None = None,
         gutter_prefix: str | None = None,
     ) -> None:
         self._text = text
@@ -102,6 +103,7 @@ class Markdown(Component):
         self._padding_y = padding_y
         self._theme = theme or DefaultMarkdownTheme()
         self._bg_fn = bg_fn
+        self._fg_fn = fg_fn
         self._gutter_prefix = gutter_prefix
 
         # Extract TUI theme if available (for use_compact_padding setting)
@@ -158,6 +160,10 @@ class Markdown(Component):
         wrapped_lines: list[str] = []
         for line in rendered_lines:
             wrapped_lines.extend(wrap_text_with_ansi(line, content_width))
+
+        # Apply foreground color if specified
+        if self._fg_fn:
+            wrapped_lines = [self._fg_fn(line) for line in wrapped_lines]
 
         # Render content lines with margins and background
         # If we have a gutter, render to reduced width so final line fits after adding gutter

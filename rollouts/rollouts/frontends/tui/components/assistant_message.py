@@ -124,6 +124,7 @@ class AssistantMessage(Component):
                 padding_y=self._theme.thinking_padding_y,
                 theme=DefaultMarkdownTheme(self._theme),
                 bg_fn=bg_fn,
+                fg_fn=self._theme.thinking_text_fg,
                 gutter_prefix=self._theme.assistant_gutter,
             )
             self._content_container.add_child(self._thinking_md)
