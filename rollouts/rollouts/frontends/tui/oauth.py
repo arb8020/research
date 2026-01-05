@@ -35,7 +35,7 @@ REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
 SCOPES = "org:create_api_key user:profile user:inference"
 
 # Token storage
-DEFAULT_TOKEN_PATH = Path.home() / ".rollouts" / "oauth" / "anthropic.json"
+OAUTH_DIR = Path.home() / ".rollouts" / "oauth"
 
 # Refresh tokens 3 minutes before expiry to avoid mid-request failures
 EXPIRY_BUFFER_MS = 3 * 60 * 1000
@@ -79,32 +79,139 @@ def _generate_pkce() -> tuple[str, str]:
     return verifier, challenge
 
 
-class TokenStorage:
-    """Persistent storage for OAuth tokens."""
+def validate_profile_name(profile: str) -> tuple[None, str | None]:
+    """Validate profile name is safe for filesystem.
 
-    def __init__(self, path: Path = DEFAULT_TOKEN_PATH) -> None:
-        self.path = path
+    Returns (None, error) where error is None on success.
+    """
+    if not profile:
+        return None, "Profile name cannot be empty"
 
-    def save(self, tokens: OAuthTokens) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.path, "w") as f:
+    # Allow alphanumeric, underscore, dash
+    import re
+
+    if not re.match(r"^[a-zA-Z0-9_-]+$", profile):
+        return (
+            None,
+            f"Profile name '{profile}' must contain only letters, numbers, underscore, and dash",
+        )
+
+    if len(profile) > 64:
+        return None, f"Profile name '{profile}' too long (max 64 characters)"
+
+    return None, None
+
+
+def _get_profile_path(profile: str) -> Path:
+    """Get path to profile token file."""
+    return OAUTH_DIR / f"{profile}.json"
+
+
+def save_tokens(tokens: OAuthTokens, profile: str) -> tuple[None, str | None]:
+    """Save tokens to profile file.
+
+    Returns (None, error) where error is None on success.
+    """
+    _, err = validate_profile_name(profile)
+    if err:
+        return None, err
+
+    path = _get_profile_path(profile)
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
             json.dump(tokens.to_dict(), f, indent=2)
-        os.chmod(self.path, 0o600)
+        os.chmod(path, 0o600)
+        return None, None
+    except OSError as e:
+        return None, f"Failed to save tokens: {e}"
 
-    def load(self) -> OAuthTokens | None:
-        if not self.path.exists():
-            return None
-        try:
-            with open(self.path) as f:
-                data = json.load(f)
-            return OAuthTokens.from_dict(data)
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
-            logger.warning(f"Failed to load tokens: {e}")
-            return None
 
-    def delete(self) -> None:
-        if self.path.exists():
-            self.path.unlink()
+def load_tokens(profile: str) -> tuple[OAuthTokens | None, str | None]:
+    """Load tokens from profile file.
+
+    Returns (tokens, error) where both are None if file doesn't exist.
+    """
+    _, err = validate_profile_name(profile)
+    if err:
+        return None, err
+
+    path = _get_profile_path(profile)
+
+    if not path.exists():
+        return None, None
+
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        tokens = OAuthTokens.from_dict(data)
+        return tokens, None
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        return None, f"Failed to load tokens: {e}"
+    except OSError as e:
+        return None, f"Failed to read token file: {e}"
+
+
+def delete_tokens(profile: str) -> tuple[None, str | None]:
+    """Delete profile tokens file.
+
+    Returns (None, error) where error is None on success.
+    """
+    _, err = validate_profile_name(profile)
+    if err:
+        return None, err
+
+    path = _get_profile_path(profile)
+
+    try:
+        if path.exists():
+            path.unlink()
+        return None, None
+    except OSError as e:
+        return None, f"Failed to delete tokens: {e}"
+
+
+def list_profiles() -> list[str]:
+    """List available profile names.
+
+    Returns list of profile names (without .json extension).
+    """
+    if not OAUTH_DIR.exists():
+        return []
+
+    profiles = []
+    for path in OAUTH_DIR.glob("*.json"):
+        profiles.append(path.stem)
+
+    return sorted(profiles)
+
+
+def set_default_profile(profile: str) -> tuple[None, str | None]:
+    """Set a profile as the default by copying it to default.json.
+
+    Returns (None, error) where error is None on success.
+    """
+    import shutil
+
+    _, err = validate_profile_name(profile)
+    if err:
+        return None, err
+
+    source_path = _get_profile_path(profile)
+    default_path = _get_profile_path("default")
+
+    if not source_path.exists():
+        return (
+            None,
+            f"Profile '{profile}' not found. Run: rollouts --login-claude --profile {profile}",
+        )
+
+    try:
+        shutil.copy2(source_path, default_path)
+        return None, None
+    except OSError as e:
+        return None, f"Failed to set default profile: {e}"
 
 
 class OAuthError(Exception):
@@ -120,17 +227,19 @@ class OAuthExpiredError(OAuthError):
 
 
 class OAuthClient:
-    """OAuth client for Claude authentication."""
+    """OAuth client for Claude authentication with profile support."""
 
-    def __init__(self, storage: TokenStorage | None = None) -> None:
-        self.storage = storage or TokenStorage()
+    def __init__(self, profile: str = "default") -> None:
+        self.profile = profile
         self._tokens: OAuthTokens | None = None
         self._verifier: str | None = None
 
     @property
     def tokens(self) -> OAuthTokens | None:
         if self._tokens is None:
-            self._tokens = self.storage.load()
+            self._tokens, err = load_tokens(self.profile)
+            if err:
+                logger.warning(f"Failed to load tokens for profile '{self.profile}': {err}")
         return self._tokens
 
     def is_logged_in(self) -> bool:
@@ -210,7 +319,9 @@ class OAuthClient:
             )
 
             self._tokens = tokens
-            self.storage.save(tokens)
+            _, err = save_tokens(tokens, self.profile)
+            if err:
+                raise OAuthError(f"Failed to save tokens: {err}")
             self._verifier = None
 
             return tokens
@@ -234,7 +345,9 @@ class OAuthClient:
 
             if response.status_code != 200:
                 # Token likely revoked
-                self.storage.delete()
+                _, err = delete_tokens(self.profile)
+                if err:
+                    logger.warning(f"Failed to delete tokens after refresh failure: {err}")
                 self._tokens = None
                 raise OAuthError(f"Token refresh failed: {response.status_code}")
 
@@ -247,7 +360,9 @@ class OAuthClient:
             )
 
             self._tokens = new_tokens
-            self.storage.save(new_tokens)
+            _, err = save_tokens(new_tokens, self.profile)
+            if err:
+                raise OAuthError(f"Failed to save refreshed tokens: {err}")
 
             return new_tokens
 
@@ -277,34 +392,41 @@ class OAuthClient:
 
     def logout(self) -> None:
         """Clear stored tokens."""
-        self.storage.delete()
+        _, err = delete_tokens(self.profile)
+        if err:
+            raise OAuthError(f"Failed to logout: {err}")
         self._tokens = None
-        print("✅ Logged out from Claude")
+        print(f"✅ Logged out from Claude (profile: {self.profile})")
 
 
-# Global client instance
-_global_client: OAuthClient | None = None
+# Global client instances per profile
+_global_clients: dict[str, OAuthClient] = {}
 
 
-def get_oauth_client() -> OAuthClient:
-    global _global_client
-    if _global_client is None:
-        _global_client = OAuthClient()
-    return _global_client
+def get_oauth_client(profile: str = "default") -> OAuthClient:
+    """Get or create OAuth client for profile."""
+    if profile not in _global_clients:
+        _global_clients[profile] = OAuthClient(profile)
+    return _global_clients[profile]
 
 
-def is_logged_in() -> bool:
-    return get_oauth_client().is_logged_in()
+def is_logged_in(profile: str = "default") -> bool:
+    """Check if profile has valid tokens."""
+    return get_oauth_client(profile).is_logged_in()
 
 
-async def login() -> OAuthTokens:
-    """Interactive login flow."""
+async def login(profile: str = "default") -> OAuthTokens:
+    """Interactive login flow for profile."""
+    _, err = validate_profile_name(profile)
+    if err:
+        raise OAuthError(err)
 
-    client = get_oauth_client()
+    client = get_oauth_client(profile)
 
     url = client.get_authorize_url("max")
 
-    print("\n🔐 Open this URL in your browser to log in:")
+    print(f"\n🔐 Logging in to profile: {profile}")
+    print("Open this URL in your browser to log in:")
     print(f"\n   {url}\n")
     print("After authorizing, you'll see a page with a code.")
     print("Copy the ENTIRE code (including any # and text after it).\n")
@@ -322,10 +444,11 @@ async def login() -> OAuthTokens:
         raise OAuthError("No code provided")
 
     tokens = await client.exchange_code(code)
-    print("✅ Successfully logged in to Claude!")
+    print(f"✅ Successfully logged in to Claude (profile: {profile})!")
 
     return tokens
 
 
-def logout() -> None:
-    get_oauth_client().logout()
+def logout(profile: str = "default") -> None:
+    """Logout from profile."""
+    get_oauth_client(profile).logout()

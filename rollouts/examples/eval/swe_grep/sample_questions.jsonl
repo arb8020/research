@@ -1,0 +1,58 @@
+{
+  "query_id": "Q001",
+  "query": "How do you configure TMA (Tensor Memory Accelerator) for loading data from shared memory in CUTLASS?",
+  "ground_truth": {
+    "sources": [
+      {
+        "file": "cutlass-docs/docs/cute/04-algorithms.md",
+        "start_line": 145,
+        "end_line": 178
+      },
+      {
+        "file": "cutlass-docs/docs/cute/03-tensor-ops.md",
+        "start_line": 89,
+        "end_line": 112
+      }
+    ],
+    "answer": "TMA is configured using tcgen05 operations like Ld16x32bx2Op. You specify the repeat pattern and pack mode, then use it with a TiledCopy to transfer data from shared memory to registers. The operation handles the address calculation and synchronization automatically."
+  },
+  "turn_budget": 10,
+  "latency_target_ms": 15000
+}
+{
+  "query_id": "Q002",
+  "query": "What are the constraints on tile sizes when using warp-specialized GEMM kernels?",
+  "ground_truth": {
+    "sources": [
+      {
+        "file": "cutlass-docs/docs/gemm/warp_specialized.md",
+        "start_line": 34,
+        "end_line": 67
+      }
+    ],
+    "answer": "Warp-specialized GEMM kernels require tile sizes to be multiples of the warp tile dimensions. For Hopper GPUs, the M and N dimensions must be divisible by 64, and the K dimension must be divisible by 16 for optimal performance. These constraints ensure proper alignment for TMA and warp matrix operations."
+  },
+  "turn_budget": 8,
+  "latency_target_ms": 12000
+}
+{
+  "query_id": "Q003",
+  "query": "How does CuTe handle broadcasting in tensor arithmetic operations?",
+  "ground_truth": {
+    "sources": [
+      {
+        "file": "cutlass-docs/docs/cute/02-layout-algebra.md",
+        "start_line": 203,
+        "end_line": 245
+      },
+      {
+        "file": "cutlass-docs/docs/cute/05-mma-atoms.md",
+        "start_line": 12,
+        "end_line": 28
+      }
+    ],
+    "answer": "CuTe uses stride-0 modes in layouts to implement broadcasting. When a mode has stride 0, that dimension is broadcast across all elements. The layout algebra automatically handles broadcasting during tensor operations by keeping strides at 0, which means the same memory location is accessed regardless of the logical index in that mode."
+  },
+  "turn_budget": 10,
+  "latency_target_ms": 15000
+}
