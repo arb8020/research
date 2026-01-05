@@ -155,6 +155,9 @@ class CLIConfig:
     list_presets: bool = False
     login_claude: bool = False
     logout_claude: bool = False
+    list_claude_profiles: bool = False
+    set_default_profile: str | None = None
+    profile: str | None = None
     export_md: str | None = None
     export_html: str | None = None
     handoff: str | None = None
@@ -352,6 +355,23 @@ def create_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Logout and revoke Claude OAuth tokens",
     )
+    parser.add_argument(
+        "--list-claude-profiles",
+        action="store_true",
+        help="List available Claude OAuth profiles",
+    )
+    parser.add_argument(
+        "--set-default-profile",
+        type=str,
+        metavar="PROFILE",
+        help="Set a profile as the default (copies to default.json)",
+    )
+    parser.add_argument(
+        "--profile",
+        type=str,
+        default=None,
+        help="Claude OAuth profile to use (default: 'default' or ROLLOUTS_PROFILE env var)",
+    )
 
     # Export
     parser.add_argument(
@@ -508,11 +528,11 @@ def parse_model_string(model_str: str) -> tuple[str, str]:
     return provider, model
 
 
-def get_oauth_client() -> object:
+def get_oauth_client(profile: str = "default") -> object:
     """Get OAuth client for Anthropic. Lazy import to avoid TUI dependencies."""
     from .frontends.tui.oauth import get_oauth_client as _get_oauth_client
 
-    return _get_oauth_client()
+    return _get_oauth_client(profile)
 
 
 def create_endpoint(
@@ -521,6 +541,7 @@ def create_endpoint(
     api_key: str | None = None,
     thinking: str = "enabled",
     quiet: bool = False,
+    profile: str = "default",
 ) -> Endpoint:
     """Create endpoint from CLI arguments."""
     import os
@@ -570,7 +591,7 @@ def create_endpoint(
             print("🔑 Using API key (explicit)", file=sys.stderr)
         else:
             # Try OAuth - never silently fall back to ANTHROPIC_API_KEY
-            client = get_oauth_client()
+            client = get_oauth_client(profile)
             tokens = client.tokens
             if tokens:
                 if tokens.is_expired():
@@ -588,12 +609,21 @@ def create_endpoint(
                 else:
                     oauth_token = tokens.access_token
                 if not quiet:
-                    print("🔐 Using OAuth authentication (Claude Pro/Max)", file=sys.stderr)
+                    profile_info = f" (profile: {profile})" if profile != "default" else ""
+                    print(
+                        f"🔐 Using OAuth authentication (Claude Pro/Max){profile_info}",
+                        file=sys.stderr,
+                    )
             else:
                 # No OAuth tokens - require explicit action
-                print("❌ No authentication configured for Anthropic", file=sys.stderr)
+                profile_info = f" --profile {profile}" if profile != "default" else ""
                 print(
-                    "   Run `rollouts login` to authenticate with Claude Pro/Max", file=sys.stderr
+                    f"❌ No authentication configured for Anthropic (profile: {profile})",
+                    file=sys.stderr,
+                )
+                print(
+                    f"   Run `rollouts --login-claude{profile_info}` to authenticate with Claude Pro/Max",
+                    file=sys.stderr,
                 )
                 print("   Or use --api-key to use API billing", file=sys.stderr)
                 sys.exit(1)
@@ -647,18 +677,18 @@ def cmd_list_presets() -> int:
     return 0
 
 
-def cmd_oauth(login: bool) -> int:
+def cmd_oauth(login: bool, profile: str) -> int:
     """Handle --login-claude and --logout-claude commands."""
     from .frontends.tui.oauth import OAuthError, logout
     from .frontends.tui.oauth import login as do_login
 
     if not login:
-        logout()
+        logout(profile)
         return 0
 
     async def oauth_action() -> int:
         try:
-            await do_login()
+            await do_login(profile)
         except OAuthError as e:
             print(f"❌ OAuth error: {e}", file=sys.stderr)
             return 1
@@ -669,6 +699,36 @@ def cmd_oauth(login: bool) -> int:
             return 0
 
     return trio.run(oauth_action)
+
+
+def cmd_list_profiles() -> int:
+    """Handle --list-claude-profiles command."""
+    from .frontends.tui.oauth import list_profiles
+
+    profiles = list_profiles()
+
+    if not profiles:
+        print("No Claude OAuth profiles found.")
+        print("Run: rollouts --login-claude")
+        return 0
+
+    for profile in profiles:
+        print(profile)
+
+    return 0
+
+
+def cmd_set_default_profile(profile: str) -> int:
+    """Handle --set-default-profile command."""
+    from .frontends.tui.oauth import set_default_profile
+
+    _, err = set_default_profile(profile)
+    if err:
+        print(f"❌ {err}", file=sys.stderr)
+        return 1
+
+    print(f"✅ Set '{profile}' as default profile")
+    return 0
 
 
 def cmd_export(
@@ -1494,6 +1554,9 @@ def main() -> int:
         list_presets=args.list_presets,
         login_claude=args.login_claude,
         logout_claude=args.logout_claude,
+        list_claude_profiles=args.list_claude_profiles,
+        set_default_profile=args.set_default_profile,
+        profile=args.profile,
         export_md=args.export_md,
         export_html=args.export_html,
         handoff=args.handoff,
@@ -1509,8 +1572,19 @@ def main() -> int:
     if config.list_presets:
         return cmd_list_presets()
 
+    # Determine profile from CLI arg or env var
+    import os
+
+    profile = config.profile or os.environ.get("ROLLOUTS_PROFILE", "default")
+
+    if config.list_claude_profiles:
+        return cmd_list_profiles()
+
+    if config.set_default_profile is not None:
+        return cmd_set_default_profile(config.set_default_profile)
+
     if config.login_claude or config.logout_claude:
-        return cmd_oauth(login=config.login_claude)
+        return cmd_oauth(login=config.login_claude, profile=profile)
 
     if config.export_md is not None or config.export_html is not None:
         return cmd_export(config, FileSessionStore())
@@ -1532,7 +1606,7 @@ def main() -> int:
     # Create endpoint
     try:
         config.endpoint = create_endpoint(
-            config.model, config.api_base, config.api_key, config.thinking, config.quiet
+            config.model, config.api_base, config.api_key, config.thinking, config.quiet, profile
         )
     except ValueError as e:
         print(f"❌ {e}", file=sys.stderr)
