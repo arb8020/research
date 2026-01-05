@@ -61,6 +61,15 @@ class SWEGrepConfig:
     grader_endpoint: Endpoint
     """Endpoint for grader model."""
 
+    tools: list[str] = field(default_factory=lambda: ["grep", "glob", "read", "submit"])
+    """Which tools to enable. Options: grep, glob, search, read, submit."""
+
+    search_backend: str | None = None
+    """Search backend: 'wafer' (API), 'tfidf' (local), or None."""
+
+    search_config: dict[str, Any] = field(default_factory=dict)
+    """Search backend configuration (API URL, credentials, etc.)."""
+
     max_turns: int = 15
     """Maximum agent turns per query."""
 
@@ -163,10 +172,12 @@ async def evaluate_sample(
 
     logger.info(f"Evaluating {query_id}: {query[:80]}...")
 
-    # Create environment
+    # Create environment with configured tools
     environment = SWEGrepEnvironment(
         corpus_path=config.corpus_path,
-        use_semantic_search=True,
+        tools=config.tools,
+        search_backend=config.search_backend,
+        search_config=config.search_config,
         max_results=50,
         max_file_lines=2000,
     )

@@ -18,19 +18,35 @@ from rollouts.dtypes import Tool, ToolCall, ToolFunction, ToolFunctionParameter
 class SWEGrepEnvironment:
     """Environment for SWE-grep style retrieval evaluation.
 
-    Provides tools:
+    Composable tool configuration - enable only the tools you need:
     - grep(pattern, path): Regex/literal search in files
     - glob(pattern): Find files by pattern
     - search(query, top_k): Semantic/TF-IDF search
     - read(path, start_line, end_line): Read file content
     - submit(sources, answer): Submit final answer with citations
+
+    Example configs:
+        # Classic SWE-grep (grep/glob/read only)
+        tools=["grep", "glob", "read", "submit"]
+
+        # Semantic search only
+        tools=["search", "read", "submit"]
+
+        # All tools
+        tools=["grep", "glob", "search", "read", "submit"]
     """
 
     corpus_path: Path
     """Path to document corpus directory."""
 
-    use_semantic_search: bool = True
-    """Whether to use semantic search (requires embeddings) or TF-IDF."""
+    tools: list[str] = field(default_factory=lambda: ["grep", "glob", "read", "submit"])
+    """Which tools to enable. Options: grep, glob, search, read, submit."""
+
+    search_backend: str | None = None
+    """Search backend: 'wafer' (API), 'tfidf' (local), or None (disabled)."""
+
+    search_config: dict[str, Any] = field(default_factory=dict)
+    """Configuration for search backend (API URL, credentials, etc.)."""
 
     max_results: int = 50
     """Maximum results to return from grep/glob/search."""
@@ -44,21 +60,43 @@ class SWEGrepEnvironment:
     _tool_calls: list[dict[str, Any]] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
-        """Validate corpus path exists."""
+        """Validate corpus path and tool configuration."""
         if not self.corpus_path.exists():
             raise ValueError(f"Corpus path does not exist: {self.corpus_path}")
         if not self.corpus_path.is_dir():
             raise ValueError(f"Corpus path is not a directory: {self.corpus_path}")
 
+        # Validate tool names
+        valid_tools = {"grep", "glob", "search", "read", "submit"}
+        invalid = set(self.tools) - valid_tools
+        if invalid:
+            raise ValueError(f"Invalid tools: {invalid}. Valid: {valid_tools}")
+
+        # Warn if search enabled but no backend
+        if "search" in self.tools and not self.search_backend:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Search tool enabled but no search_backend specified. "
+                "search() calls will fail. Set search_backend='wafer' or 'tfidf'."
+            )
+
     def get_tools(self) -> list[Tool]:
-        """Return all available tools."""
-        return [
-            self._grep_tool(),
-            self._glob_tool(),
-            self._search_tool(),
-            self._read_tool(),
-            self._submit_tool(),
-        ]
+        """Return enabled tools based on configuration."""
+        available_tools = []
+
+        if "grep" in self.tools:
+            available_tools.append(self._grep_tool())
+        if "glob" in self.tools:
+            available_tools.append(self._glob_tool())
+        if "search" in self.tools:
+            available_tools.append(self._search_tool())
+        if "read" in self.tools:
+            available_tools.append(self._read_tool())
+        if "submit" in self.tools:
+            available_tools.append(self._submit_tool())
+
+        return available_tools
 
     def _grep_tool(self) -> Tool:
         """Grep tool for regex/literal search."""
@@ -368,7 +406,7 @@ class SWEGrepEnvironment:
         return "\n".join(result_lines)
 
     async def _handle_search(self, tool_call: ToolCall) -> str:
-        """Handle search tool call."""
+        """Handle search tool call with configurable backend."""
         args = tool_call.arguments
         query = args.get("query")
         top_k = args.get("top_k", 10)
@@ -376,9 +414,66 @@ class SWEGrepEnvironment:
         if not query:
             return "Error: 'query' is required"
 
-        # TODO: Implement TF-IDF or semantic search
-        # For now, return a placeholder
-        return "Error: Search not yet implemented. Use grep or glob to find files, then read them."
+        # Dispatch to backend
+        if self.search_backend == "wafer":
+            return await self._search_wafer(query, top_k)
+        elif self.search_backend == "tfidf":
+            return await self._search_tfidf(query, top_k)
+        else:
+            return (
+                "Error: Search backend not configured. "
+                "Set search_backend='wafer' or 'tfidf' when creating environment."
+            )
+
+    async def _search_wafer(self, query: str, top_k: int) -> str:
+        """Search using Wafer API."""
+        import httpx
+
+        api_url = self.search_config.get("api_url")
+        api_key = self.search_config.get("api_key")
+
+        if not api_url:
+            return "Error: Wafer API URL not configured. Set search_config={'api_url': '...'}"
+
+        headers = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    api_url,
+                    json={"query": query, "top_k": top_k},
+                    headers=headers,
+                    timeout=30.0,
+                )
+                response.raise_for_status()
+                results = response.json()
+
+            # Format results
+            if not results:
+                return f"No results found for query: {query}"
+
+            result_lines = [f"Found {len(results)} results:"]
+            for i, result in enumerate(results, 1):
+                file_path = result.get("file", result.get("path", "unknown"))
+                score = result.get("score", 0.0)
+                excerpt = result.get("excerpt", result.get("content", ""))[:200]
+                result_lines.append(f"{i}. {file_path} (score: {score:.3f})")
+                result_lines.append(f"   {excerpt}")
+
+            return "\n".join(result_lines)
+
+        except Exception as e:
+            return f"Error calling Wafer API: {e}"
+
+    async def _search_tfidf(self, query: str, top_k: int) -> str:
+        """Search using local TF-IDF."""
+        # TODO: Implement TF-IDF search
+        return (
+            "Error: TF-IDF search not yet implemented. "
+            "Use search_backend='wafer' or use grep/glob tools."
+        )
 
     async def _handle_read(self, tool_call: ToolCall) -> str:
         """Handle read tool call."""
@@ -465,7 +560,9 @@ class SWEGrepEnvironment:
         """Deserialize environment from dict."""
         return cls(
             corpus_path=Path(data["corpus_path"]),
-            use_semantic_search=data.get("use_semantic_search", True),
+            tools=data.get("tools", ["grep", "glob", "read", "submit"]),
+            search_backend=data.get("search_backend"),
+            search_config=data.get("search_config", {}),
             max_results=data.get("max_results", 50),
             max_file_lines=data.get("max_file_lines", 5000),
         )
