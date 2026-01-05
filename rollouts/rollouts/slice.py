@@ -194,7 +194,7 @@ def _compact_tool_result(
     elif tool_name == "write":
         return _compact_write(content)
     elif tool_name == "edit":
-        return _compact_edit(content)
+        return _compact_edit(content, messages, idx, tool_call_id)
     elif tool_name == "bash":
         return _compact_bash(content)
     elif tool_name == "list_files":
@@ -242,26 +242,67 @@ def _compact_read(content: str) -> str:
     chars = len(content)
     # Try to extract filename from first line or content pattern
     first_line = content.split("\n")[0][:100] if content else ""
-    return f"📄 [read: {lines} lines, {chars:,} chars] {first_line}..."
+    return f"[read: {lines} lines, {chars:,} chars] {first_line}..."
 
 
 def _compact_write(content: str) -> str:
     """Compact a write tool result."""
-    # Write results are usually confirmations
-    if "wrote" in content.lower() or "created" in content.lower():
-        return f"✏️ {content[:200]}"
+    # Extract bytes and convert to lines if possible
+    import re
+
+    bytes_match = re.search(r"(\d+)\s*bytes", content.lower())
+    if bytes_match:
+        # Replace "X bytes" with "Y lines" in the original message
+        # We estimate ~40 chars per line as a rough average
+        bytes_written = int(bytes_match.group(1))
+        estimated_lines = max(1, bytes_written // 40)
+        return re.sub(r"\d+\s*bytes", f"{estimated_lines} lines", content, flags=re.IGNORECASE)
+
     lines = content.count("\n") + 1
-    return f"✏️ [wrote {lines} lines]"
+    return f"[wrote {lines} lines]"
 
 
-def _compact_edit(content: str) -> str:
+def _compact_edit(content: str, messages: list[Message], idx: int, tool_call_id: str | None) -> str:
     """Compact an edit tool result."""
-    # Count added/removed lines from diff-like output
+    import re
+
+    # Try to get line info from the details field of the original message
+    if idx < len(messages):
+        msg = messages[idx]
+        details = getattr(msg, "details", None) or (
+            msg.details if hasattr(msg, "details") else None
+        )
+
+        if details and isinstance(details, dict) and "diff" in details:
+            diff = details["diff"]
+            diff_lines = diff.split("\n")
+
+            # Count added/removed lines
+            # Format is like "13 + — Written by Claude" (line number, +/-, content)
+            added = sum(1 for line in diff_lines if re.match(r"^\s*\d+\s*\+", line))
+            removed = sum(1 for line in diff_lines if re.match(r"^\s*\d+\s*-", line))
+
+            # Extract line numbers from the diff (format like "10   But when...")
+            line_nums = []
+            for line in diff_lines:
+                match = re.match(r"^\s*(\d+)\s+", line)
+                if match:
+                    line_nums.append(int(match.group(1)))
+
+            if line_nums:
+                min_line, max_line = min(line_nums), max(line_nums)
+                line_range = f"L{min_line}-{max_line}" if min_line != max_line else f"L{min_line}"
+                return f"[edit: +{added}/-{removed} lines, {line_range}]"
+
+            if added or removed:
+                return f"[edit: +{added}/-{removed} lines]"
+
+    # Fallback: count from diff-like content
     added = content.count("\n+")
     removed = content.count("\n-")
     if added or removed:
-        return f"🔧 [edit: +{added}/-{removed} lines]"
-    return f"🔧 [edit applied] {content[:100]}..."
+        return f"[edit: +{added}/-{removed} lines]"
+    return "[edit applied]"
 
 
 def _compact_bash(content: str) -> str:
@@ -281,7 +322,7 @@ def _compact_list_files(content: str) -> str:
     """Compact a list_files tool result."""
     lines = content.strip().split("\n")
     count = len(lines)
-    return f"📁 [listed {count} files]"
+    return f"[listed {count} files]"
 
 
 def _compact_generic(content: str, tool_name: str | None) -> str:
@@ -294,7 +335,7 @@ def _compact_generic(content: str, tool_name: str | None) -> str:
         return content
 
     preview = content[:200].replace("\n", " ")
-    return f"🔧 [{name}: {lines} lines, {chars:,} chars] {preview}..."
+    return f"[{name}: {lines} lines, {chars:,} chars] {preview}..."
 
 
 def compact_messages(messages: list[Message]) -> list[Message]:
