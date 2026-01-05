@@ -537,7 +537,7 @@ async def run_tests_and_score(
 
     # Parse results using terminal-bench's parser
     try:
-        parser = ParserFactory.create_parser(task.parser_name)
+        parser = ParserFactory.get_parser(task.parser_name)
         results = parser.parse(test_output)
 
         if results is None:
