@@ -3,15 +3,37 @@
 Optimizes both the system prompt and user template (with wildcards preserved).
 Based on Synth's GEPA which optimizes multiple message patterns.
 
+Provides:
+- SystemUserPromptConfig: frozen config dataclass
+- evaluate_system_user_prompt: pure async function for evaluation
+- make_system_user_prompt_reflective: pure function for reflective dataset
+
 Candidate structure:
     {"system": "...", "user": "..."}
 
 The user template must contain wildcards like {query} that get filled from sample data.
 These wildcards are preserved during optimization - only the surrounding text changes.
 
-Supports both:
-- Single-turn evaluation (no tools, stops after first response)
-- Multi-turn tool-using agents (runs until agent stops or hits max_turns)
+Example:
+    from functools import partial
+
+    config = SystemUserPromptConfig(
+        endpoint=endpoint,
+        wildcards=("query",),
+        score_fn=score_fn,
+    )
+
+    result = await run_gepa(
+        seed_candidate={
+            "system": "You are a classifier.",
+            "user": "Classify this query: {query}",
+        },
+        dataset=my_dataset,
+        evaluate_fn=partial(evaluate_system_user_prompt, config),
+        make_reflective_fn=partial(make_system_user_prompt_reflective, config),
+        config=GEPAConfig(max_evaluations=500),
+        reflection_endpoint=endpoint,
+    )
 """
 
 import logging
@@ -62,7 +84,7 @@ class SystemUserPromptConfig:
     max_turns: int | None = None
 
 
-# ─── Pure Functions ───────────────────────────────────────────────────────────
+# ─── Helpers ──────────────────────────────────────────────────────────────────
 
 
 def extract_output(sample: Sample) -> str:
@@ -150,16 +172,40 @@ def build_run_config(max_turns: int | None) -> RunConfig:
     )
 
 
-async def evaluate(
+async def _silent_chunk_handler(_: StreamEvent) -> None:
+    """Silent handler for streaming events."""
+    await trio.lowlevel.checkpoint()
+
+
+async def _stop_after_response(state: AgentState, run_config: RunConfig) -> AgentState:
+    """Stop after first response."""
+    from dataclasses import replace
+
+    return replace(state, stop=StopReason.TASK_COMPLETED)
+
+
+async def _default_no_tool_handler(state: AgentState, run_config: RunConfig) -> AgentState:
+    """Stop when agent produces no tool call."""
+    from dataclasses import replace
+
+    return replace(state, stop=StopReason.TASK_COMPLETED)
+
+
+# ─── Pure Functions ───────────────────────────────────────────────────────────
+
+
+async def evaluate_system_user_prompt(
     config: SystemUserPromptConfig,
     batch: Sequence[dict],
     candidate: Candidate,
     capture_traces: bool = False,
 ) -> EvaluationBatch:
-    """Evaluate system+user prompt candidate on batch.
+    """Evaluate system+user candidate on batch.
+
+    Pure async function - takes config explicitly.
 
     Args:
-        config: Adapter configuration
+        config: SystemUserPromptConfig with endpoint, wildcards, score_fn, etc.
         batch: List of sample dicts
         candidate: Must have keys "system" and "user"
         capture_traces: If True, include execution traces
@@ -190,6 +236,7 @@ async def evaluate(
             environment=env,
         )
 
+    # Run with concurrency limit
     async with trio.open_nursery() as nursery:
         limiter = trio.CapacityLimiter(config.max_concurrent)
         results: list[Sample | None] = [None] * len(batch)
@@ -215,6 +262,7 @@ async def evaluate(
                 "output": extract_output(s),
                 "score": s.score.reward if s.score else 0.0,
                 "ground_truth": s.ground_truth,
+                "user_template": user_template,
             }
             for s in samples
         )
@@ -226,26 +274,28 @@ async def evaluate(
     )
 
 
-def make_reflective_dataset(
+def make_system_user_prompt_reflective(
     config: SystemUserPromptConfig,
     candidate: Candidate,
     eval_batch: EvaluationBatch,
     components_to_update: list[str],
 ) -> dict[str, list[dict]]:
-    """Extract feedback for system and/or user prompts from traces.
+    """Extract feedback for system and/or user prompt from traces.
+
+    Pure function.
 
     Args:
-        config: Adapter configuration
-        candidate: Current candidate with "system" and "user" keys
+        config: SystemUserPromptConfig (for max_turns check)
+        candidate: Current candidate
         eval_batch: Evaluation with trajectories
         components_to_update: Should include "system" and/or "user"
 
     Returns:
-        Dict with feedback items for each component to update
+        Dict with "system" and/or "user" keys containing feedback items
     """
     if eval_batch.trajectories is None:
-        logger.warning("No trajectories in eval_batch, cannot make reflective dataset")
-        return {comp: [] for comp in components_to_update}
+        logger.warning("No trajectories in eval_batch")
+        return {c: [] for c in components_to_update if c in ("system", "user")}
 
     result: dict[str, list[dict]] = {}
 
@@ -265,14 +315,17 @@ def make_reflective_dataset(
             else:
                 feedback = f"Incorrect. Expected: {ground_truth}"
 
-            # Get input (first user message after filling wildcards)
             input_text = ""
             for msg in trace["messages"]:
                 if msg.role == "user":
                     input_text = msg.content if isinstance(msg.content, str) else str(msg.content)
                     break
 
-            if config.max_turns is not None:
+            # Check if multi-turn by counting assistant messages
+            assistant_msgs = [m for m in trace["messages"] if m.role == "assistant"]
+            is_multi_turn = len(assistant_msgs) > 1
+
+            if is_multi_turn:
                 trajectory_text = format_trajectory(trace["messages"])
                 items.append({
                     "Inputs": input_text,
@@ -290,85 +343,3 @@ def make_reflective_dataset(
         result[component] = items
 
     return result
-
-
-# ─── Handlers ─────────────────────────────────────────────────────────────────
-
-
-async def _silent_chunk_handler(_: StreamEvent) -> None:
-    """Silent handler for streaming events."""
-    await trio.lowlevel.checkpoint()
-
-
-async def _stop_after_response(state: AgentState, run_config: RunConfig) -> AgentState:
-    """Stop after first response."""
-    from dataclasses import replace
-
-    return replace(state, stop=StopReason.TASK_COMPLETED)
-
-
-async def _default_no_tool_handler(state: AgentState, run_config: RunConfig) -> AgentState:
-    """Stop when agent produces no tool call."""
-    from dataclasses import replace
-
-    return replace(state, stop=StopReason.TASK_COMPLETED)
-
-
-# ─── Adapter Class ────────────────────────────────────────────────────────────
-
-
-class SystemUserPromptAdapter:
-    """Adapter for system + user prompt optimization.
-
-    Optimizes both the system prompt and user template.
-    Wildcards in the user template (e.g., {query}) are preserved.
-
-    Candidate structure:
-        {"system": "...", "user": "..."}
-
-    Example:
-        >>> adapter = SystemUserPromptAdapter(
-        ...     endpoint=endpoint,
-        ...     wildcards=("query",),
-        ...     score_fn=score_fn,
-        ... )
-        >>> # Initial candidate
-        >>> candidate = {
-        ...     "system": "You are a classifier.",
-        ...     "user": "Classify this query: {query}",
-        ... }
-    """
-
-    def __init__(
-        self,
-        endpoint: Endpoint,
-        wildcards: tuple[str, ...] | list[str],
-        score_fn: ScoreFn,
-        environment_factory: EnvironmentFactory | None = None,
-        max_concurrent: int = 10,
-        max_turns: int | None = None,
-    ) -> None:
-        self.config = SystemUserPromptConfig(
-            endpoint=endpoint,
-            wildcards=tuple(wildcards),
-            score_fn=score_fn,
-            environment_factory=environment_factory,
-            max_concurrent=max_concurrent,
-            max_turns=max_turns,
-        )
-
-    async def evaluate(
-        self,
-        batch: Sequence[dict],
-        candidate: Candidate,
-        capture_traces: bool = False,
-    ) -> EvaluationBatch:
-        return await evaluate(self.config, batch, candidate, capture_traces)
-
-    def make_reflective_dataset(
-        self,
-        candidate: Candidate,
-        eval_batch: EvaluationBatch,
-        components_to_update: list[str],
-    ) -> dict[str, list[dict]]:
-        return make_reflective_dataset(self.config, candidate, eval_batch, components_to_update)

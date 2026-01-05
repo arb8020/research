@@ -56,10 +56,6 @@ class SystemPromptConfig:
     max_turns: int | None = None  # None = single-turn, int = multi-turn with tools
 
 
-# Backwards compatibility alias
-SinglePromptConfig = SystemPromptConfig
-
-
 # ─── Pure Functions ───────────────────────────────────────────────────────────
 
 
@@ -305,55 +301,3 @@ async def _default_no_tool_handler(state: AgentState, run_config: RunConfig) -> 
     from dataclasses import replace
 
     return replace(state, stop=StopReason.TASK_COMPLETED)
-
-
-# ─── Adapter Class (wraps functions for GEPAAdapter protocol) ─────────────────
-
-
-class SystemPromptAdapter:
-    """Adapter for system prompt optimization.
-
-    Wraps pure functions to implement GEPAAdapter protocol.
-    The candidate is expected to have a single key "system"
-    containing the system prompt text. The user template is fixed.
-
-    For optimizing both system and user prompts, use SystemUserPromptAdapter.
-    """
-
-    def __init__(
-        self,
-        endpoint: Endpoint,
-        user_template: str,
-        score_fn: ScoreFn,
-        environment_factory: EnvironmentFactory | None = None,
-        max_concurrent: int = 10,
-        max_turns: int | None = None,
-    ) -> None:
-        self.config = SystemPromptConfig(
-            endpoint=endpoint,
-            user_template=user_template,
-            score_fn=score_fn,
-            environment_factory=environment_factory,
-            max_concurrent=max_concurrent,
-            max_turns=max_turns,
-        )
-
-    async def evaluate(
-        self,
-        batch: Sequence[dict],
-        candidate: Candidate,
-        capture_traces: bool = False,
-    ) -> EvaluationBatch:
-        return await evaluate_system_prompt(self.config, batch, candidate, capture_traces)
-
-    def make_reflective_dataset(
-        self,
-        candidate: Candidate,
-        eval_batch: EvaluationBatch,
-        components_to_update: list[str],
-    ) -> dict[str, list[dict]]:
-        return make_system_prompt_reflective(candidate, eval_batch, components_to_update)
-
-
-# Backwards compatibility alias
-SinglePromptAdapter = SystemPromptAdapter
