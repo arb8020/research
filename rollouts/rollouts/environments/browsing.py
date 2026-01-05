@@ -34,9 +34,13 @@ from ..dtypes import (
 WEB_FETCH_MAX_SIZE = 10 * 1024 * 1024  # 10MB max download
 WEB_FETCH_MAX_CONTENT = 100_000  # 100KB max content after conversion
 WEB_FETCH_TIMEOUT = 30  # seconds
+WEB_FETCH_CACHE_TTL = 900  # 15 minutes
 
 # Search constants
 SEARCH_MAX_RESULTS = 10
+
+# Simple in-memory cache for web fetches
+_web_fetch_cache: dict[str, tuple[float, dict]] = {}
 
 
 async def _ddg_search(query: str, max_results: int = SEARCH_MAX_RESULTS) -> list[dict]:
@@ -167,6 +171,16 @@ class BrowsingEnvironment:
                                 "type": "integer",
                                 "description": f"Maximum number of results (default: {SEARCH_MAX_RESULTS})",
                             },
+                            "allowed_domains": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Only include results from these domains (e.g., ['docs.python.org', 'stackoverflow.com'])",
+                            },
+                            "blocked_domains": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Exclude results from these domains",
+                            },
                         },
                     ),
                     required=["query"],
@@ -177,7 +191,7 @@ class BrowsingEnvironment:
                 type="function",
                 function=ToolFunction(
                     name="web_fetch",
-                    description="Fetch content from a URL. Converts HTML to markdown. Use after web_search to read promising results.",
+                    description="Fetch content from a URL. Converts HTML to markdown. Use after web_search to read promising results. Includes a 15-minute cache.",
                     parameters=ToolFunctionParameter(
                         type="object",
                         properties={
@@ -221,9 +235,11 @@ class BrowsingEnvironment:
             return ToolResult(tool_call_id=tool_call.id, is_error=True, content="", error=str(e))
 
     async def _exec_web_search(self, tool_call: ToolCall) -> ToolResult:
-        """Execute DuckDuckGo search."""
+        """Execute DuckDuckGo search with optional domain filtering."""
         query = tool_call.args["query"]
         max_results = tool_call.args.get("max_results", self.max_search_results)
+        allowed_domains = tool_call.args.get("allowed_domains", [])
+        blocked_domains = tool_call.args.get("blocked_domains", [])
 
         try:
             results = await _ddg_search(query, max_results=max_results)
@@ -234,6 +250,29 @@ class BrowsingEnvironment:
                 content="",
                 error=f"Search failed: {e}",
             )
+
+        # Filter results by domain
+        if allowed_domains or blocked_domains:
+            filtered_results = []
+            for result in results:
+                url = result.get("href", result.get("link", ""))
+                try:
+                    domain = urlparse(url).netloc.lower()
+                except Exception:
+                    continue
+
+                # Check allowed domains (if specified, must match one)
+                if allowed_domains:
+                    if not any(d.lower() in domain for d in allowed_domains):
+                        continue
+
+                # Check blocked domains
+                if blocked_domains:
+                    if any(d.lower() in domain for d in blocked_domains):
+                        continue
+
+                filtered_results.append(result)
+            results = filtered_results
 
         if not results:
             return ToolResult(
@@ -262,7 +301,9 @@ class BrowsingEnvironment:
         )
 
     async def _exec_web_fetch(self, tool_call: ToolCall) -> ToolResult:
-        """Fetch content from URL, convert to markdown."""
+        """Fetch content from URL, convert to markdown, with caching."""
+        import time
+
         url = tool_call.args["url"]
 
         # Validate URL
@@ -288,20 +329,68 @@ class BrowsingEnvironment:
             )
 
         # Upgrade http to https
+        original_host = parsed.netloc
         if parsed.scheme == "http":
             url = url.replace("http://", "https://", 1)
 
+        # Check cache
+        now = time.time()
+        if url in _web_fetch_cache:
+            cached_time, cached_result = _web_fetch_cache[url]
+            if now - cached_time < WEB_FETCH_CACHE_TTL:
+                return ToolResult(
+                    tool_call_id=tool_call.id,
+                    is_error=False,
+                    content=f"[Cached] URL: {url}\n\n---\n\n{cached_result['content']}",
+                )
+
         # Fetch the URL using curl_cffi (impersonates browser TLS fingerprint)
+        # Don't auto-follow redirects so we can detect cross-host
         def _fetch() -> curl_requests.Response:
             return curl_requests.get(
                 url,
                 impersonate="chrome",
                 timeout=WEB_FETCH_TIMEOUT,
-                allow_redirects=True,
+                allow_redirects=False,
             )
 
         try:
             response = await trio.to_thread.run_sync(_fetch)
+
+            # Handle redirects - detect cross-host redirects
+            redirect_count = 0
+            while response.status_code in (301, 302, 303, 307, 308) and redirect_count < 5:
+                redirect_url = response.headers.get("location", "")
+                if not redirect_url:
+                    break
+
+                # Make redirect URL absolute if relative
+                if redirect_url.startswith("/"):
+                    redirect_url = f"https://{urlparse(str(response.url)).netloc}{redirect_url}"
+
+                redirect_parsed = urlparse(redirect_url)
+                redirect_host = redirect_parsed.netloc
+
+                # Detect cross-host redirect
+                if redirect_host and redirect_host != original_host:
+                    return ToolResult(
+                        tool_call_id=tool_call.id,
+                        is_error=False,
+                        content=f"Redirect detected: {url} redirects to a different host.\n\nRedirect URL: {redirect_url}\n\nPlease make a new web_fetch request with this URL if you want to follow the redirect.",
+                    )
+
+                # Same host, follow redirect
+                def _follow_redirect(rurl: str = redirect_url) -> curl_requests.Response:
+                    return curl_requests.get(
+                        rurl,
+                        impersonate="chrome",
+                        timeout=WEB_FETCH_TIMEOUT,
+                        allow_redirects=False,
+                    )
+
+                response = await trio.to_thread.run_sync(_follow_redirect)
+                redirect_count += 1
+
         except Exception as e:
             error_msg = str(e)
             if "timeout" in error_msg.lower():
@@ -355,6 +444,15 @@ class BrowsingEnvironment:
         # Truncate if too large
         if len(text) > WEB_FETCH_MAX_CONTENT:
             text = text[:WEB_FETCH_MAX_CONTENT] + "\n\n...[content truncated]"
+
+        # Cache the result
+        _web_fetch_cache[url] = (now, {"content": text, "status": response.status_code})
+
+        # Clean old cache entries
+        for cached_url in list(_web_fetch_cache.keys()):
+            cached_time, _ = _web_fetch_cache[cached_url]
+            if now - cached_time > WEB_FETCH_CACHE_TTL:
+                del _web_fetch_cache[cached_url]
 
         return ToolResult(
             tool_call_id=tool_call.id,

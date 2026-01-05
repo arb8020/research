@@ -421,6 +421,73 @@ TOOL_PRESETS = {
 }
 
 
+# Threshold for AI summarization (characters) - below this, raw content is fine
+WEB_FETCH_SUMMARIZE_THRESHOLD = 5000
+
+
+async def _summarize_content(
+    content: str,
+    prompt: str,
+    provider: str,
+    model: str,
+) -> tuple[str | None, str | None]:
+    """Summarize web content using a small model. Pure function.
+
+    Returns (summary, None) on success, (None, error) on failure.
+    """
+    try:
+        if provider == "anthropic":
+            from anthropic import AsyncAnthropic
+
+            client = AsyncAnthropic()
+            response = await client.messages.create(
+                model=model,
+                max_tokens=4096,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": f"Extract the relevant information from this web page based on the following prompt. Be concise but complete.\n\nPrompt: {prompt}\n\n---\n\nWeb content:\n{content}",
+                    }
+                ],
+            )
+            await client.close()
+            text_block = response.content[0]
+            assert text_block.type == "text"
+            return text_block.text, None
+
+        elif provider == "openai":
+            from openai import AsyncOpenAI
+
+            client = AsyncOpenAI()
+            response = await client.chat.completions.create(
+                model=model,
+                max_tokens=4096,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": f"Extract the relevant information from this web page based on the following prompt. Be concise but complete.\n\nPrompt: {prompt}\n\n---\n\nWeb content:\n{content}",
+                    }
+                ],
+            )
+            await client.aclose()
+            return response.choices[0].message.content, None
+
+        elif provider == "google":
+            import google.generativeai as genai
+
+            model_client = genai.GenerativeModel(model)
+            response = await model_client.generate_content_async(
+                f"Extract the relevant information from this web page based on the following prompt. Be concise but complete.\n\nPrompt: {prompt}\n\n---\n\nWeb content:\n{content}"
+            )
+            return response.text, None
+
+        else:
+            return None, f"Unknown summarizer provider: {provider}"
+
+    except Exception as e:
+        return None, f"Summarization failed: {e}"
+
+
 @dataclass
 class LocalFilesystemEnvironment:
     """Local filesystem environment with read, write, edit, bash tools.
@@ -429,10 +496,16 @@ class LocalFilesystemEnvironment:
         working_dir: Working directory for file operations and bash commands
         tools: Tool filter - either a preset name ("full", "readonly", "no-write")
                or a list of tool names (e.g., ["read", "edit"]). Defaults to "full".
+        summarize_web_fetch: Whether to use AI to summarize fetched web content.
+        summarizer_provider: Provider for summarization ("anthropic", "openai", "google").
+        summarizer_model: Model to use for summarization.
     """
 
     working_dir: Path = field(default_factory=Path.cwd)
     tools: str | list[str] = "full"
+    summarize_web_fetch: bool = True
+    summarizer_provider: str = "anthropic"
+    summarizer_model: str = "claude-3-5-haiku-latest"
 
     def __post_init__(self) -> None:
         # Resolve preset name to tool list
@@ -464,6 +537,9 @@ class LocalFilesystemEnvironment:
             "env_kind": "coding",
             "working_dir": str(self.working_dir),
             "tools": self.tools,
+            "summarize_web_fetch": self.summarize_web_fetch,
+            "summarizer_provider": self.summarizer_provider,
+            "summarizer_model": self.summarizer_model,
         }
 
     @staticmethod
@@ -471,6 +547,9 @@ class LocalFilesystemEnvironment:
         return LocalFilesystemEnvironment(
             working_dir=Path(data["working_dir"]),
             tools=data.get("tools", "full"),
+            summarize_web_fetch=data.get("summarize_web_fetch", True),
+            summarizer_provider=data.get("summarizer_provider", "anthropic"),
+            summarizer_model=data.get("summarizer_model", "claude-3-5-haiku-latest"),
         )
 
     def requires_confirmation(self, tool_call: ToolCall) -> bool:
@@ -904,6 +983,7 @@ class LocalFilesystemEnvironment:
             )
 
         # Upgrade http to https
+        original_host = parsed.netloc
         if parsed.scheme == "http":
             url = url.replace("http://", "https://", 1)
 
@@ -919,12 +999,11 @@ class LocalFilesystemEnvironment:
                     content=f"[Cached] URL: {url}\nPrompt: {prompt}\n\n---\n\n{cached_result['content']}",
                 )
 
-        # Fetch the URL
+        # Fetch the URL (don't auto-follow redirects so we can detect cross-host)
         try:
             async with httpx.AsyncClient(
                 timeout=WEB_FETCH_TIMEOUT,
-                follow_redirects=True,
-                max_redirects=5,
+                follow_redirects=False,
             ) as client:
                 response = await client.get(
                     url,
@@ -933,6 +1012,39 @@ class LocalFilesystemEnvironment:
                         "Accept": "text/html, text/markdown, */*",
                     },
                 )
+
+                # Handle redirects - detect cross-host redirects
+                redirect_count = 0
+                while response.is_redirect and redirect_count < 5:
+                    redirect_url = response.headers.get("location", "")
+                    if not redirect_url:
+                        break
+
+                    # Make redirect URL absolute if relative
+                    if redirect_url.startswith("/"):
+                        redirect_url = f"https://{urlparse(str(response.url)).netloc}{redirect_url}"
+
+                    redirect_parsed = urlparse(redirect_url)
+                    redirect_host = redirect_parsed.netloc
+
+                    # Detect cross-host redirect
+                    if redirect_host and redirect_host != original_host:
+                        return ToolResult(
+                            tool_call_id=tool_call.id,
+                            is_error=False,
+                            content=f"Redirect detected: {url} redirects to a different host.\n\nRedirect URL: {redirect_url}\n\nPlease make a new web_fetch request with this URL if you want to follow the redirect.",
+                        )
+
+                    # Same host, follow redirect
+                    response = await client.get(
+                        redirect_url,
+                        headers={
+                            "User-Agent": "Mozilla/5.0 (compatible; rollouts/1.0)",
+                            "Accept": "text/html, text/markdown, */*",
+                        },
+                    )
+                    redirect_count += 1
+
                 response.raise_for_status()
 
         except httpx.TimeoutException:
@@ -984,11 +1096,7 @@ class LocalFilesystemEnvironment:
                 # Fall back to raw text if conversion fails
                 pass
 
-        # Truncate if too large
-        if len(text) > WEB_FETCH_MAX_CONTENT:
-            text = text[:WEB_FETCH_MAX_CONTENT] + "\n\n...[content truncated]"
-
-        # Cache the result
+        # Cache the raw result (before summarization)
         _web_fetch_cache[url] = (now, {"content": text, "status": response.status_code})
 
         # Clean old cache entries
@@ -997,8 +1105,33 @@ class LocalFilesystemEnvironment:
             if now - cached_time > WEB_FETCH_CACHE_TTL:
                 del _web_fetch_cache[cached_url]
 
+        # Summarize if enabled and content is large enough
+        final_content = text
+        summarized = False
+        if (
+            self.summarize_web_fetch
+            and len(text) > WEB_FETCH_SUMMARIZE_THRESHOLD
+            and prompt  # Need a prompt to guide summarization
+        ):
+            summary, error = await _summarize_content(
+                text, prompt, self.summarizer_provider, self.summarizer_model
+            )
+            if summary:
+                final_content = summary
+                summarized = True
+            # On error, fall back to truncated raw content (Claude Code behavior)
+
+        # Truncate if too large (fallback for non-summarized or failed summarization)
+        if len(final_content) > WEB_FETCH_MAX_CONTENT:
+            final_content = final_content[:WEB_FETCH_MAX_CONTENT] + "\n\n...[content truncated]"
+
+        header = f"URL: {url}"
+        if summarized:
+            header += f"\n[Summarized by {self.summarizer_model}]"
+        header += f"\nPrompt: {prompt}\n\n---\n\n"
+
         return ToolResult(
             tool_call_id=tool_call.id,
             is_error=False,
-            content=f"URL: {url}\nPrompt: {prompt}\n\n---\n\n{text}",
+            content=header + final_content,
         )
