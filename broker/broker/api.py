@@ -6,7 +6,7 @@ import logging
 from collections.abc import Callable
 from typing import Any, cast
 
-from .providers import lambdalabs, primeintellect, runpod, vast
+from .providers import digitalocean, lambdalabs, primeintellect, runpod, vast
 from .query import QueryType
 from .types import (
     GPUInstance,
@@ -26,6 +26,7 @@ PROVIDER_MODULES: dict[str, ProviderModule] = {
     "primeintellect": cast(ProviderModule, primeintellect),
     "lambdalabs": cast(ProviderModule, lambdalabs),
     "vast": cast(ProviderModule, vast),
+    "digitalocean": cast(ProviderModule, digitalocean),
 }
 
 
@@ -123,6 +124,19 @@ def search(  # noqa: PLR0913 - search API has many filter options
             )
             offers.extend(vast_offers)
 
+    if provider is None or provider == "digitalocean":
+        api_key = credentials.get("digitalocean") if credentials else None
+        if api_key:  # Only search if we have credentials
+            do_offers = digitalocean.search_gpu_offers(
+                cuda_version=cuda_version,
+                manufacturer=manufacturer,
+                memory_gb=memory_gb,
+                container_disk_gb=container_disk_gb,
+                gpu_count=gpu_count,
+                api_key=api_key,
+            )
+            offers.extend(do_offers)
+
     # Apply pandas-style query if provided
     if query is not None:
         offers = [offer for offer in offers if query.evaluate(offer)]
@@ -173,6 +187,10 @@ def get_instance(
         instance = lambdalabs.get_instance_details(instance_id, api_key=api_key)
         if instance:
             return instance
+    elif provider == "digitalocean":
+        instance = digitalocean.get_instance_details(instance_id, api_key=api_key)
+        if instance:
+            return instance
 
     return None
 
@@ -200,6 +218,9 @@ def terminate_instance(instance_id: str, provider: str, credentials: dict | None
             return True
     elif provider == "lambdalabs":
         if lambdalabs.terminate_instance(instance_id, api_key=api_key):
+            return True
+    elif provider == "digitalocean":
+        if digitalocean.terminate_instance(instance_id, api_key=api_key):
             return True
 
     return False

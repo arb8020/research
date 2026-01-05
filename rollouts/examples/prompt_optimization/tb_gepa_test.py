@@ -90,7 +90,7 @@ async def main() -> None:
     )
 
     result = await run_gepa(
-        seed_candidate={"system_prompt": SEED_PROMPT},
+        seed_candidate={"instruction_prompt": SEED_PROMPT},
         dataset=trainset,
         adapter=adapter,
         config=config,
@@ -109,8 +109,8 @@ async def main() -> None:
     print()
     print("Optimized prompt:")
     print("-" * 40)
-    print(result.best_candidate.get("system_prompt", "")[:500])
-    if len(result.best_candidate.get("system_prompt", "")) > 500:
+    print(result.best_candidate.get("instruction_prompt", "")[:500])
+    if len(result.best_candidate.get("instruction_prompt", "")) > 500:
         print("... [truncated]")
     print("-" * 40)
 

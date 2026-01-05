@@ -81,5 +81,9 @@ def get_provider_impl(provider_name: str):
         from . import vast
 
         return vast
+    elif provider_name == "digitalocean":
+        from . import digitalocean
+
+        return digitalocean
     else:
         raise ValueError(f"Unsupported provider: {provider_name}")

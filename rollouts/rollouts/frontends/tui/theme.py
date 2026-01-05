@@ -85,6 +85,9 @@ class Theme:
     thinking_medium: str = "#81a2be"
     thinking_high: str = "#b294bb"
 
+    # Thinking block text color (gray instead of white)
+    thinking_text: str = "#888888"
+
     # Helper methods for common operations
     def fg(self, hex_color: str) -> Callable[[str], str]:
         """Return a function that applies foreground color to text."""
@@ -147,6 +150,10 @@ class Theme:
         }
         color = colors.get(intensity, self.thinking_medium)
         return self.fg(color)
+
+    def thinking_text_fg(self, text: str) -> str:
+        """Apply gray color to thinking block text."""
+        return f"{hex_to_fg(self.thinking_text)}{text}{RESET}"
 
 
 # Default dark theme instance (minimal, no padding)

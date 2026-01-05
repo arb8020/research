@@ -11,6 +11,7 @@ from rich.table import Table
 from shared.config import (
     create_env_template,
     discover_ssh_keys,
+    get_digitalocean_key,
     get_lambda_key,
     get_prime_key,
     get_runpod_key,
@@ -131,13 +132,15 @@ def resolve_credentials(ctx) -> ProviderCredentials:
     prime_key = get_prime_key()
     lambda_key = get_lambda_key()
     vast_key = get_vast_key()
+    digitalocean_key = get_digitalocean_key()
 
-    if runpod_key or prime_key or lambda_key or vast_key:
+    if runpod_key or prime_key or lambda_key or vast_key or digitalocean_key:
         return ProviderCredentials(
             runpod=runpod_key or "",
             primeintellect=prime_key or "",
             lambdalabs=lambda_key or "",
             vast=vast_key or "",
+            digitalocean=digitalocean_key or "",
         )
 
     # Priority 4: Error with helpful message

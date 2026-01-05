@@ -27,6 +27,19 @@ When running concurrent evaluations (e.g., `max_concurrent=100`), we overwhelm L
 - LIFO queue ordering (use FIFO for now, revisit if needed)
 - Per-model rate limit configuration (use header-based adaptive limits)
 
+## Key Design Decision: State Key Granularity
+
+**Problem:** Different providers may scope rate limits differently:
+- **OpenAI:** Unclear — possibly per-org, possibly per-model. Documentation is vague.
+- **Anthropic:** Confirmed per-model-class (Sonnet 4.x shares a pool, Opus 4.x shares a pool, etc.)
+
+**Decision:** Key state by `(api_key, provider, model)` for all providers:
+- Assume per-model granularity everywhere (conservative)
+- For Anthropic only: normalize to model-class (e.g., `claude-sonnet-4-20250514` → `sonnet-4.x`) since we *know* they share pools
+- For OpenAI: use exact model name — if limits are actually org-wide, we just see more buckets (harmless for observability)
+
+**Tradeoff:** Potentially over-granular for OpenAI, but safe. Phase 3 (proactive limiting) can aggregate if we learn limits are org-wide.
+
 ## Solution
 
 A phased approach, implementing Phase 1 and 2 now:
@@ -71,9 +84,26 @@ Rate limit headers by provider:
 
 | Provider | Remaining Requests | Total Limit | Reset Time |
 |----------|-------------------|-------------|------------|
-| OpenAI | `x-ratelimit-remaining-requests` | `x-ratelimit-limit-requests` | `x-ratelimit-reset-requests` |
+| OpenAI Chat Completions | `x-ratelimit-remaining-requests` | `x-ratelimit-limit-requests` | `x-ratelimit-reset-requests` |
+| OpenAI Responses API (non-streaming) | `x-ratelimit-remaining-requests` | `x-ratelimit-limit-requests` | `x-ratelimit-reset-requests` |
+| OpenAI Responses API (streaming) | ❌ Not exposed | - | - |
 | Anthropic | `anthropic-ratelimit-requests-remaining` | `anthropic-ratelimit-requests-limit` | `anthropic-ratelimit-requests-reset` |
 | Google | Not consistently exposed | - | - |
+
+> ⚠️ **Note:** OpenAI's Responses API streaming does not return rate limit headers (tested Jan 2025 with gpt-4o-mini, gpt-4o, gpt-5.2). Non-streaming Responses API and Chat Completions both return headers. Since `openai_responses.py` uses streaming, we have no rate limit visibility for those calls.
+
+**Additional headers available (for future token-based limiting):**
+- OpenAI: `x-ratelimit-{limit,remaining}-tokens`
+- Anthropic: `anthropic-ratelimit-{input-tokens,output-tokens}-{limit,remaining,reset}`
+
+#### Rate Limit Scope by Provider
+
+| Provider | Limit Scope | Keying Strategy |
+|----------|-------------|-----------------|
+| **OpenAI** | Unknown (assume per-model to be safe) | `(api_key, provider, model)` |
+| **Anthropic** | Per-model-class (confirmed) | `(api_key, provider, model_class)` — normalize model to class |
+
+For Anthropic, we normalize model names to their class (e.g., `claude-sonnet-4-20250514` → `sonnet-4.x`) since models within a class share rate limit pools.
 
 ```python
 # rollouts/_rate_limit.py
@@ -81,7 +111,10 @@ Rate limit headers by provider:
 """Rate limit tracking and observability.
 
 Design notes:
-- Module-level state keyed by API key (not model - limits are org-wide)
+- Module-level state keyed by (api_key, provider, model) tuple
+  - OpenAI: limits are org-wide, but we track per-model for simplicity
+  - Anthropic: limits are per-model-class (Sonnet 4.x shares pool, etc.)
+  - Over-granular keying is fine for observability; Phase 3 may aggregate
 - Each request learns from its own response headers (no blocking for shared state)
 - Accept initial thundering herd; headers guide subsequent requests
 - Log only on interesting events (near limit, errors) per logging_sucks.md philosophy
@@ -116,12 +149,36 @@ class RateLimitState:
         return 100.0 * (1 - self.remaining_requests / self.total_requests)
 
 
-# Module-level state: API key -> RateLimitState
-_rate_limit_state: dict[str, RateLimitState] = {}
+# Module-level state: (api_key, provider, model) -> RateLimitState
+# Trio's cooperative multitasking means dict updates are atomic (no preemption mid-update)
+_rate_limit_state: dict[tuple[str, str, str], RateLimitState] = {}
 
 
-def _get_api_key_hash(api_key: str) -> str:
-    """Return truncated hash for logging (don't log full keys)."""
+def _make_state_key(api_key: str, provider: str, model: str) -> tuple[str, str, str]:
+    """Create state key. For Anthropic, normalize to model class (e.g., 'sonnet-4.x')."""
+    model_key = model
+    if provider == "anthropic":
+        # Anthropic limits are per model-class, not per exact model
+        # e.g., claude-sonnet-4-20250514 -> sonnet-4.x
+        model_lower = model.lower()
+        if "sonnet-4" in model_lower:
+            model_key = "sonnet-4.x"
+        elif "opus-4" in model_lower:
+            model_key = "opus-4.x"
+        elif "haiku-4" in model_lower:
+            model_key = "haiku-4.x"
+        elif "sonnet-3" in model_lower:
+            model_key = "sonnet-3.x"
+        elif "opus-3" in model_lower:
+            model_key = "opus-3.x"
+        elif "haiku-3" in model_lower:
+            model_key = "haiku-3.x"
+        # else: keep original model name
+    return (api_key, provider, model_key)
+
+
+def _get_api_key_display(api_key: str) -> str:
+    """Return masked key for logging (don't log full keys)."""
     if len(api_key) < 8:
         return "***"
     return f"{api_key[:4]}...{api_key[-4:]}"
@@ -130,6 +187,7 @@ def _get_api_key_hash(api_key: str) -> str:
 def update_rate_limit_from_headers(
     api_key: str,
     provider: str,
+    model: str,
     headers: dict[str, str],
 ) -> None:
     """Update rate limit state from response headers.
@@ -161,13 +219,14 @@ def update_rate_limit_from_headers(
     if remaining is None and total is None:
         return  # No rate limit info in headers
     
-    key_hash = _get_api_key_hash(api_key)
-    state = _rate_limit_state.get(api_key)
+    state_key = _make_state_key(api_key, provider, model)
+    key_display = _get_api_key_display(api_key)
+    state = _rate_limit_state.get(state_key)
     is_first_update = state is None
     
     if state is None:
         state = RateLimitState()
-        _rate_limit_state[api_key] = state
+        _rate_limit_state[state_key] = state
     
     state.remaining_requests = remaining
     state.total_requests = total
@@ -182,7 +241,8 @@ def update_rate_limit_from_headers(
             "rate_limit_discovered",
             extra={
                 "provider": provider,
-                "api_key": key_hash,
+                "model": state_key[2],  # model_class for anthropic, model for openai
+                "api_key": key_display,
                 "remaining_requests": remaining,
                 "total_requests": total,
                 "utilization_pct": utilization,
@@ -193,7 +253,8 @@ def update_rate_limit_from_headers(
             "rate_limit_high_utilization",
             extra={
                 "provider": provider,
-                "api_key": key_hash,
+                "model": state_key[2],
+                "api_key": key_display,
                 "remaining_requests": remaining,
                 "total_requests": total,
                 "utilization_pct": utilization,
@@ -205,16 +266,18 @@ def update_rate_limit_from_headers(
             "rate_limit_exhausted",
             extra={
                 "provider": provider,
-                "api_key": key_hash,
+                "model": state_key[2],
+                "api_key": key_display,
                 "total_requests": total,
                 "reset_time": reset_time,
             }
         )
 
 
-def get_rate_limit_state(api_key: str) -> RateLimitState | None:
-    """Get current rate limit state for an API key."""
-    return _rate_limit_state.get(api_key)
+def get_rate_limit_state(api_key: str, provider: str, model: str) -> RateLimitState | None:
+    """Get current rate limit state for an API key + provider + model combo."""
+    state_key = _make_state_key(api_key, provider, model)
+    return _rate_limit_state.get(state_key)
 
 
 def _parse_int(value: str | None) -> int | None:
@@ -285,6 +348,7 @@ async def stream_openai_responses(actor: Actor, on_chunk: OnChunk) -> tuple[Mess
         update_rate_limit_from_headers(
             api_key=actor.endpoint.api_key,
             provider="openai",
+            model=actor.endpoint.model,
             headers=headers,
         )
     
@@ -363,10 +427,10 @@ async def evaluate(
 1. `rollouts/config/base.py` - Bump `max_retries` default: 3 → 10
 2. `rollouts/dtypes.py` - Bump `max_retries` default in Endpoint: 3 → 10, add `max_sample_retries` to EvalConfig
 3. `rollouts/_rate_limit.py` - New file: header parsing, state tracking, structured logging
-4. `rollouts/providers/openai_responses.py` - Restructure to use `with_streaming_response`, call `update_rate_limit_from_headers`
-5. `rollouts/providers/openai_completions.py` - Restructure to use `with_streaming_response`, call `update_rate_limit_from_headers`
-6. `rollouts/providers/anthropic.py` - Add header parsing after stream completes
-7. `rollouts/evaluation.py` - Add sample-level retry loop in `evaluate()`
+4. `rollouts/providers/openai_completions.py` - ✅ Restructured to use `with_streaming_response`, calls `update_rate_limit_from_headers`
+5. `rollouts/providers/openai_responses.py` - ❌ Skipped (streaming doesn't expose headers)
+6. `rollouts/providers/anthropic.py` - ✅ Added header parsing via `stream.response.headers`
+7. `rollouts/evaluation.py` - 🔜 TODO: Add sample-level retry loop (Phase 2.5)
 
 ---
 

@@ -33,7 +33,7 @@ def validate_credentials(credentials: dict[str, str]) -> dict[str, str]:
     assert len(credentials) > 0, "credentials cannot be empty"
 
     # Validate each provider credential
-    valid_providers = {"runpod", "primeintellect", "lambdalabs", "vast"}
+    valid_providers = {"runpod", "primeintellect", "lambdalabs", "vast", "digitalocean"}
     for provider, api_key in credentials.items():
         # Assert provider is known
         assert isinstance(provider, str), f"Provider name must be string, got {type(provider)}"
