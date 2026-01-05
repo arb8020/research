@@ -113,6 +113,12 @@ class OAuthError(Exception):
     pass
 
 
+class OAuthExpiredError(OAuthError):
+    """OAuth token expired and refresh failed - re-login required."""
+
+    pass
+
+
 class OAuthClient:
     """OAuth client for Claude authentication."""
 
@@ -246,7 +252,14 @@ class OAuthClient:
             return new_tokens
 
     async def get_valid_access_token(self) -> str | None:
-        """Get a valid access token, refreshing if needed."""
+        """Get a valid access token, refreshing if needed.
+
+        Returns:
+            Valid access token, or None if not logged in.
+
+        Raises:
+            OAuthExpiredError: If token refresh fails (re-login required).
+        """
         tokens = self.tokens
         if tokens is None:
             return None
@@ -255,8 +268,10 @@ class OAuthClient:
             try:
                 tokens = await self.refresh_tokens()
             except OAuthError as e:
-                logger.exception(f"Failed to refresh tokens: {e}")
-                return None
+                logger.warning(f"OAuth token refresh failed: {e}")
+                raise OAuthExpiredError(
+                    "OAuth token expired and refresh failed. Please run /login to re-authenticate."
+                ) from e
 
         return tokens.access_token
 
