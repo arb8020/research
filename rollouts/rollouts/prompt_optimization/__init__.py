@@ -22,9 +22,9 @@ Example (Level 1 - simplest):
     >>> print(f"Best: {result.best_candidate['system']}")
 
 Example (Level 2 - more control):
-    >>> from ..prompt_optimization import run_gepa, GEPAConfig, SinglePromptAdapter
+    >>> from ..prompt_optimization import run_gepa, GEPAConfig, SystemPromptAdapter
     >>>
-    >>> adapter = SinglePromptAdapter(
+    >>> adapter = SystemPromptAdapter(
     ...     endpoint=endpoint,
     ...     user_template="Query: {query}\\nClassify:",
     ...     score_fn=exact_match_score,
@@ -60,7 +60,7 @@ Example (Level 3 - full control):
 from .adapter import GEPAAdapter
 
 # Adapters
-from .adapters import SinglePromptAdapter
+from .adapters import SinglePromptAdapter, SystemPromptAdapter, SystemUserPromptAdapter
 
 # Reflective mutation (engine.py)
 from .engine import gepa_iteration, optimize_prompt, run_gepa
@@ -123,4 +123,6 @@ __all__ = [
     "run_evolutionary_gepa",
     # Adapters
     "SinglePromptAdapter",
+    "SystemPromptAdapter",
+    "SystemUserPromptAdapter",
 ]

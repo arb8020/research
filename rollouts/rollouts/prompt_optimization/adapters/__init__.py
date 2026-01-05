@@ -1,5 +1,6 @@
 """GEPA adapters for common use cases."""
 
-from .single_prompt import SinglePromptAdapter
+from .system_prompt import SinglePromptAdapter, SystemPromptAdapter
+from .system_user_prompt import SystemUserPromptAdapter
 
-__all__ = ["SinglePromptAdapter"]
+__all__ = ["SinglePromptAdapter", "SystemPromptAdapter", "SystemUserPromptAdapter"]

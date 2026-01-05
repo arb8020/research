@@ -228,7 +228,7 @@ async def optimize_prompt(
 ) -> GEPAResult:
     """Optimize a single system prompt.
 
-    Simplest API - wraps run_gepa with SinglePromptAdapter.
+    Simplest API - wraps run_gepa with SystemPromptAdapter.
 
     Args:
         system: Initial system prompt to optimize
@@ -256,9 +256,9 @@ async def optimize_prompt(
         ... )
         >>> print(result.best_candidate["system"])
     """
-    from .adapters.single_prompt import SinglePromptAdapter
+    from .adapters.system_prompt import SystemPromptAdapter
 
-    adapter = SinglePromptAdapter(
+    adapter = SystemPromptAdapter(
         endpoint=endpoint,
         user_template=user_template,
         score_fn=score_fn,
