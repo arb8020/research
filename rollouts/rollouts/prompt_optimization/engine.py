@@ -222,6 +222,7 @@ async def optimize_prompt(
     reflection_endpoint: Endpoint | None = None,
     config: GEPAConfig | None = None,
     environment_factory: Callable | None = None,
+    max_turns: int | None = None,
     valset: Sequence[dict] | None = None,
     seed: int | None = None,
 ) -> GEPAResult:
@@ -238,6 +239,7 @@ async def optimize_prompt(
         reflection_endpoint: LLM endpoint for mutations (defaults to endpoint)
         config: Optimization config (defaults to GEPAConfig())
         environment_factory: Optional factory for tool-using agents
+        max_turns: Max turns for tool-using agents. If None, single-turn mode.
         valset: Validation samples (defaults to dataset)
         seed: Optional RNG seed for reproducibility
 
@@ -261,6 +263,7 @@ async def optimize_prompt(
         user_template=user_template,
         score_fn=score_fn,
         environment_factory=environment_factory,
+        max_turns=max_turns,
     )
 
     return await run_gepa(

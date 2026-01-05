@@ -1,8 +1,12 @@
-"""GEPA optimization for a Crafter game verifier.
+"""Evolutionary GEPA optimization for a Crafter game verifier.
 
 Crafter is a text-based RL environment where agents collect resources, build tools,
 and try to survive. This example demonstrates optimizing a verifier prompt that
 scores agent trajectories - useful for training RL agents with learned reward models.
+
+Evolutionary GEPA uses population-based search with mutation and crossover.
+Mutations are "blind" - the LLM only sees the score, not why it failed.
+For comparison, see crafter_verifier_gepa_reflective.py which uses trace-based feedback.
 
 Inspired by: https://docs.usesynth.ai/cookbooks/workflows/crafter-verifier
 
@@ -12,7 +16,7 @@ The verifier approach:
 3. Deploy the optimized verifier as a reward model for RL
 
 Run with:
-    python -m examples.prompt_optimization.crafter_verifier_gepa
+    python -m examples.prompt_optimization.crafter_verifier_gepa_evolutionary
 """
 
 import logging

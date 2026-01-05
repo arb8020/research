@@ -2,6 +2,10 @@
 
 The most common use case: optimize just the system prompt.
 Delegates to rollouts/evaluation.py for actual evaluation.
+
+Supports both:
+- Single-turn evaluation (no tools, stops after first response)
+- Multi-turn tool-using agents (runs until agent stops or hits max_turns)
 """
 
 import logging
@@ -10,6 +14,7 @@ from typing import Any
 
 import trio
 
+from ...agents import handle_stop_max_turns
 from ...dtypes import (
     AgentState,
     Endpoint,
@@ -43,6 +48,16 @@ async def _stop_after_response(state: AgentState, run_config: RunConfig) -> Agen
     return replace(state, stop=StopReason.TASK_COMPLETED)
 
 
+async def _default_no_tool_handler(state: AgentState, run_config: RunConfig) -> AgentState:
+    """Default handler when agent produces no tool call - stop the agent."""
+    from dataclasses import replace
+
+    return replace(state, stop=StopReason.TASK_COMPLETED)
+
+
+# TODO: Refactor to dataclass + pure functions. This class has no mutable state,
+# just bundles config with methods. Would be cleaner as:
+#   SinglePromptConfig (dataclass) + evaluate(config, batch, candidate) + make_reflective_dataset(...)
 class SinglePromptAdapter:
     """Adapter for single system prompt optimization.
 
@@ -60,6 +75,7 @@ class SinglePromptAdapter:
         score_fn: ScoreFn,
         environment_factory: EnvironmentFactory | None = None,
         max_concurrent: int = 10,
+        max_turns: int | None = None,
     ) -> None:
         """Initialize adapter.
 
@@ -69,12 +85,15 @@ class SinglePromptAdapter:
             score_fn: Function to compute score from Sample
             environment_factory: Optional factory for tool-using agents
             max_concurrent: Maximum parallel evaluations (default 10)
+            max_turns: Max agent turns for tool-using agents. If None, stops after
+                first response (single-turn mode). If set, runs multi-turn with tools.
         """
         self.endpoint = endpoint
         self.user_template = user_template
         self.score_fn = score_fn
         self.environment_factory = environment_factory
         self.max_concurrent = max_concurrent
+        self.max_turns = max_turns
 
     def _make_prepare_messages(self, system_prompt: str) -> Callable[[dict], list[Message]]:
         """Create prepare_messages function for EvalConfig."""
@@ -109,11 +128,20 @@ class SinglePromptAdapter:
         """
         system_prompt = candidate["system"]
 
-        # Build EvalConfig - this is the bridge to rollouts/evaluation.py
-        run_config = RunConfig(
-            on_chunk=_silent_chunk_handler,
-            handle_no_tool=_stop_after_response,  # Stop after first response
-        )
+        # Build RunConfig based on whether we're doing single-turn or multi-turn
+        if self.max_turns is not None:
+            # Multi-turn mode: run until agent stops or hits max_turns
+            run_config = RunConfig(
+                on_chunk=_silent_chunk_handler,
+                handle_stop=handle_stop_max_turns(self.max_turns),
+                handle_no_tool=_default_no_tool_handler,
+            )
+        else:
+            # Single-turn mode: stop after first response
+            run_config = RunConfig(
+                on_chunk=_silent_chunk_handler,
+                handle_no_tool=_stop_after_response,
+            )
 
         config = EvalConfig(
             endpoint=self.endpoint,
@@ -182,6 +210,8 @@ class SinglePromptAdapter:
     ) -> dict[str, list[dict]]:
         """Extract feedback for system prompt from traces.
 
+        For tool-using agents, includes the full trajectory with tool calls.
+
         Args:
             candidate: Current candidate
             eval_batch: Evaluation with trajectories
@@ -210,20 +240,62 @@ class SinglePromptAdapter:
             else:
                 feedback = f"Incorrect. Expected: {ground_truth}"
 
-            # Get input (user message)
+            # Get input (first user message)
             input_text = ""
             for msg in trace["messages"]:
                 if msg.role == "user":
                     input_text = msg.content if isinstance(msg.content, str) else str(msg.content)
                     break
 
-            items.append({
-                "Inputs": input_text,
-                "Generated Outputs": trace["output"],
-                "Feedback": feedback,
-            })
+            # For multi-turn, include full trajectory
+            if self.max_turns is not None:
+                trajectory_text = self._format_trajectory(trace["messages"])
+                items.append({
+                    "Inputs": input_text,
+                    "Trajectory": trajectory_text,
+                    "Final Output": trace["output"],
+                    "Feedback": feedback,
+                })
+            else:
+                items.append({
+                    "Inputs": input_text,
+                    "Generated Outputs": trace["output"],
+                    "Feedback": feedback,
+                })
 
         return {"system": items}
+
+    def _format_trajectory(self, messages: list[Message]) -> str:
+        """Format a multi-turn trajectory for reflection.
+
+        Includes tool calls and their results.
+        """
+        parts = []
+        for msg in messages:
+            if msg.role == "system":
+                continue  # Skip system message
+            if msg.role == "user":
+                content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                parts.append(f"User: {content}")
+            elif msg.role == "assistant":
+                if isinstance(msg.content, str):
+                    parts.append(f"Assistant: {msg.content}")
+                elif isinstance(msg.content, list):
+                    for block in msg.content:
+                        if hasattr(block, "text") and block.text:
+                            parts.append(f"Assistant: {block.text}")
+                        elif hasattr(block, "type") and block.type == "tool_use":
+                            tool_name = getattr(block, "name", "unknown")
+                            tool_input = getattr(block, "input", {})
+                            parts.append(f"Assistant [tool_call]: {tool_name}({tool_input})")
+            elif msg.role == "tool_result":
+                content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                # Truncate long tool results
+                if len(content) > 500:
+                    content = content[:500] + "... [truncated]"
+                parts.append(f"Tool Result: {content}")
+
+        return "\n".join(parts)
 
     def _extract_output(self, sample: Sample) -> str:
         """Extract output text from Sample's trajectory."""
