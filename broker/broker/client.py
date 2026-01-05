@@ -95,7 +95,14 @@ class GPUClient:
         if ssh_key_paths:
             assert isinstance(ssh_key_paths, dict), "ssh_key_paths must be dict"
             # Valid providers list (must match validation.py)
-            valid_providers = {"runpod", "primeintellect", "lambdalabs", "vast"}
+            valid_providers = {
+                "runpod",
+                "primeintellect",
+                "lambdalabs",
+                "vast",
+                "digitalocean",
+                "digitalocean_amd",
+            }
             for provider, key_path in ssh_key_paths.items():
                 assert isinstance(provider, str), f"provider must be string, got {type(provider)}"
                 assert provider in valid_providers, f"Unknown provider in ssh_key_paths: {provider}"
