@@ -392,12 +392,18 @@ class ProviderCredentials:
     lambdalabs: str = ""
     vast: str = ""
     digitalocean: str = ""
+    digitalocean_amd: str = ""
     # Add more providers as needed
 
     def __post_init__(self) -> None:
         # Tiger Style: assert at least one credential provided
         assert (
-            self.runpod or self.primeintellect or self.lambdalabs or self.vast or self.digitalocean
+            self.runpod
+            or self.primeintellect
+            or self.lambdalabs
+            or self.vast
+            or self.digitalocean
+            or self.digitalocean_amd
         ), "At least one provider credential required"
 
         # Validate credential format (basic length check)
@@ -418,9 +424,19 @@ class ProviderCredentials:
         if self.digitalocean:
             assert len(self.digitalocean) > 10, "DigitalOcean API key appears invalid (too short)"
 
+        if self.digitalocean_amd:
+            assert len(self.digitalocean_amd) > 10, (
+                "DigitalOcean AMD API key appears invalid (too short)"
+            )
+
         # Assert output invariant
         assert (
-            self.runpod or self.primeintellect or self.lambdalabs or self.vast or self.digitalocean
+            self.runpod
+            or self.primeintellect
+            or self.lambdalabs
+            or self.vast
+            or self.digitalocean
+            or self.digitalocean_amd
         ), "credentials validated"
 
     def get(self, provider: str) -> str | None:
@@ -435,6 +451,8 @@ class ProviderCredentials:
             return self.vast
         elif provider == "digitalocean":
             return self.digitalocean
+        elif provider == "digitalocean_amd":
+            return self.digitalocean_amd
         return None
 
     def to_dict(self) -> dict[str, str]:
@@ -450,6 +468,8 @@ class ProviderCredentials:
             result["vast"] = self.vast
         if self.digitalocean:
             result["digitalocean"] = self.digitalocean
+        if self.digitalocean_amd:
+            result["digitalocean_amd"] = self.digitalocean_amd
         return result
 
     @classmethod
@@ -461,6 +481,7 @@ class ProviderCredentials:
             lambdalabs=credentials.get("lambdalabs", ""),
             vast=credentials.get("vast", ""),
             digitalocean=credentials.get("digitalocean", ""),
+            digitalocean_amd=credentials.get("digitalocean_amd", ""),
         )
 
 

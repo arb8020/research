@@ -6,7 +6,7 @@ import logging
 from collections.abc import Callable
 from typing import Any, cast
 
-from .providers import digitalocean, lambdalabs, primeintellect, runpod, vast
+from .providers import digitalocean, digitalocean_amd, lambdalabs, primeintellect, runpod, vast
 from .query import QueryType
 from .types import (
     GPUInstance,
@@ -27,6 +27,7 @@ PROVIDER_MODULES: dict[str, ProviderModule] = {
     "lambdalabs": cast(ProviderModule, lambdalabs),
     "vast": cast(ProviderModule, vast),
     "digitalocean": cast(ProviderModule, digitalocean),
+    "digitalocean_amd": cast(ProviderModule, digitalocean_amd),
 }
 
 
@@ -137,6 +138,19 @@ def search(  # noqa: PLR0913 - search API has many filter options
             )
             offers.extend(do_offers)
 
+    if provider is None or provider == "digitalocean_amd":
+        api_key = credentials.get("digitalocean_amd") if credentials else None
+        if api_key:  # Only search if we have credentials
+            do_amd_offers = digitalocean_amd.search_gpu_offers(
+                cuda_version=cuda_version,
+                manufacturer=manufacturer,
+                memory_gb=memory_gb,
+                container_disk_gb=container_disk_gb,
+                gpu_count=gpu_count,
+                api_key=api_key,
+            )
+            offers.extend(do_amd_offers)
+
     # Apply pandas-style query if provided
     if query is not None:
         offers = [offer for offer in offers if query.evaluate(offer)]
@@ -191,6 +205,10 @@ def get_instance(
         instance = digitalocean.get_instance_details(instance_id, api_key=api_key)
         if instance:
             return instance
+    elif provider == "digitalocean_amd":
+        instance = digitalocean_amd.get_instance_details(instance_id, api_key=api_key)
+        if instance:
+            return instance
 
     return None
 
@@ -221,6 +239,9 @@ def terminate_instance(instance_id: str, provider: str, credentials: dict | None
             return True
     elif provider == "digitalocean":
         if digitalocean.terminate_instance(instance_id, api_key=api_key):
+            return True
+    elif provider == "digitalocean_amd":
+        if digitalocean_amd.terminate_instance(instance_id, api_key=api_key):
             return True
 
     return False
@@ -377,6 +398,12 @@ def _build_provision_request(  # noqa: PLR0913 - builder needs all provision par
         gpu_type_id = offer.id
     elif offer.provider == "vast":
         # For Vast.ai, use the offer ID which is in format "vast-{offer_id}"
+        gpu_type_id = offer.id
+    elif offer.provider == "digitalocean":
+        # For DigitalOcean, use the offer ID which contains slug and region
+        gpu_type_id = offer.id
+    elif offer.provider == "digitalocean_amd":
+        # For DigitalOcean AMD, use the offer ID which contains slug and region
         gpu_type_id = offer.id
 
     return ProvisionRequest(
@@ -696,5 +723,11 @@ def list_instances(
         if api_key:  # Only list if we have credentials
             vast_instances = vast.list_instances(api_key=api_key)
             instances.extend(vast_instances)
+
+    if provider is None or provider == "digitalocean_amd":
+        api_key = credentials.get("digitalocean_amd") if credentials else None
+        if api_key:  # Only list if we have credentials
+            do_amd_instances = digitalocean_amd.list_instances(api_key=api_key)
+            instances.extend(do_amd_instances)
 
     return instances

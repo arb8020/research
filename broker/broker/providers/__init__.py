@@ -85,5 +85,9 @@ def get_provider_impl(provider_name: str):
         from . import digitalocean
 
         return digitalocean
+    elif provider_name == "digitalocean_amd":
+        from . import digitalocean_amd
+
+        return digitalocean_amd
     else:
         raise ValueError(f"Unsupported provider: {provider_name}")
