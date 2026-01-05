@@ -14,6 +14,22 @@ from importlib.resources import files
 from pathlib import Path
 
 # =============================================================================
+# User Config Directory
+# =============================================================================
+
+
+def get_config_dir() -> Path:
+    """Get the rollouts config directory (~/.rollouts/).
+
+    This is where global user configuration lives:
+    - AGENTS.md or CLAUDE.md for global context
+    - sessions/ for session persistence
+    - Future: skills/, themes/, etc.
+    """
+    return Path.home() / ".rollouts"
+
+
+# =============================================================================
 # Version
 # =============================================================================
 
