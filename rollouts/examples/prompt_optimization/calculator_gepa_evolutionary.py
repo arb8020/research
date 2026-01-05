@@ -1,13 +1,17 @@
-"""GEPA prompt optimization example using the Calculator environment.
+"""Evolutionary GEPA prompt optimization using the Calculator environment.
 
 This example demonstrates:
 1. Defining a PromptTemplate for a tool-using agent
-2. Configuring GEPA optimization
+2. Configuring evolutionary GEPA optimization
 3. Running optimization to improve the system prompt
 4. Using the optimized prompt for evaluation
 
+Evolutionary GEPA uses population-based search with mutation and crossover.
+Mutations are "blind" - the LLM only sees the score, not why it failed.
+For comparison, see calculator_gepa_reflective.py which uses trace-based feedback.
+
 Run with:
-    python -m examples.prompt_optimization.calculator_gepa
+    python -m examples.prompt_optimization.calculator_gepa_evolutionary
 """
 
 import logging

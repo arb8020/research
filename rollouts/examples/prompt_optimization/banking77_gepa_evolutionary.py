@@ -1,12 +1,16 @@
-"""GEPA prompt optimization for Banking77 intent classification.
+"""Evolutionary GEPA prompt optimization for Banking77 intent classification.
 
 Banking77 is a dataset of 13,083 customer service queries labeled with 77 banking intents.
-This example demonstrates optimizing a classification prompt using GEPA.
+This example demonstrates optimizing a classification prompt using evolutionary GEPA.
+
+Evolutionary GEPA uses population-based search with mutation and crossover.
+Mutations are "blind" - the LLM only sees the score, not why it failed.
+For comparison, see banking77_gepa_reflective.py which uses trace-based feedback.
 
 Dataset: https://huggingface.co/datasets/PolyAI/banking77
 
 Run with:
-    python -m examples.prompt_optimization.banking77_gepa
+    python -m examples.prompt_optimization.banking77_gepa_evolutionary
 """
 
 import logging

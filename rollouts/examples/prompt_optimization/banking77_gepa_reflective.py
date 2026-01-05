@@ -1,12 +1,16 @@
-"""GEPA v2 prompt optimization for Banking77 intent classification.
+"""Reflective GEPA prompt optimization for Banking77 intent classification.
 
 Banking77 is a dataset of 13,083 customer service queries labeled with 77 banking intents.
 This example demonstrates the simplest API: optimize_prompt().
 
+Reflective GEPA uses Pareto-efficient search with trace-based feedback.
+The mutation LLM sees what went wrong (inputs, outputs, feedback) and proposes targeted fixes.
+For comparison, see banking77_gepa_evolutionary.py which uses blind mutations.
+
 Dataset: https://huggingface.co/datasets/PolyAI/banking77
 
 Run with:
-    python -m examples.prompt_optimization.banking77_gepa_v2
+    python -m examples.prompt_optimization.banking77_gepa_reflective
 """
 
 import logging
