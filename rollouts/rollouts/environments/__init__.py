@@ -21,6 +21,7 @@ __all__ = [
     "MessageParsingREPLEnvironment",
     "ComposedEnvironment",
     "compose",
+    "TerminalBenchEnvironment",
 ]
 
 
@@ -34,4 +35,8 @@ def __getattr__(name: str) -> type:
         from .chess_puzzle import ChessPuzzleEnvironment
 
         return ChessPuzzleEnvironment
+    if name == "TerminalBenchEnvironment":
+        from .terminal_bench import TerminalBenchEnvironment
+
+        return TerminalBenchEnvironment
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
