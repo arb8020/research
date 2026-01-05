@@ -3,54 +3,58 @@
 Each adapter provides:
 - A frozen dataclass for config
 - Pure functions: evaluate_* and make_*_reflective
-- Optional wrapper class for backwards compatibility
+
+Usage with run_gepa:
+    from functools import partial
+
+    config = SystemPromptConfig(endpoint=endpoint, user_template="{query}", score_fn=score)
+
+    result = await run_gepa(
+        seed_candidate={"system": "You are helpful."},
+        dataset=my_data,
+        evaluate_fn=partial(evaluate_system_prompt, config),
+        make_reflective_fn=make_system_prompt_reflective,
+        config=GEPAConfig(...),
+        reflection_endpoint=endpoint,
+    )
 """
 
 # System prompt adapter (single prompt optimization)
 from .system_prompt import (
-    SinglePromptAdapter,  # backwards compat alias
-    SinglePromptConfig,  # backwards compat alias
-    # Wrapper class (backwards compat)
-    SystemPromptAdapter,
-    # Config
     SystemPromptConfig,
-    # Pure functions
     evaluate_system_prompt,
     make_system_prompt_reflective,
 )
 
-# System + user prompt adapter
-from .system_user_prompt import SystemUserPromptAdapter
+# System + user prompt adapter (both prompts optimized)
+from .system_user_prompt import (
+    SystemUserPromptConfig,
+    evaluate_system_user_prompt,
+    make_system_user_prompt_reflective,
+)
 
 # Terminal-bench adapter
 from .terminal_bench import (
-    # Wrapper class (backwards compat)
-    TerminalBenchAdapter,
-    # Config
     TerminalBenchConfig,
     TerminalBenchTask,
-    # Pure functions
     evaluate_terminal_bench,
     make_terminal_bench_reflective,
-    # Scoring helper
     run_tests_and_score,
 )
 
 __all__ = [
     # System prompt
     "SystemPromptConfig",
-    "SinglePromptConfig",
     "evaluate_system_prompt",
     "make_system_prompt_reflective",
-    "SystemPromptAdapter",
-    "SinglePromptAdapter",
     # System + user prompt
-    "SystemUserPromptAdapter",
+    "SystemUserPromptConfig",
+    "evaluate_system_user_prompt",
+    "make_system_user_prompt_reflective",
     # Terminal-bench
     "TerminalBenchConfig",
     "TerminalBenchTask",
     "evaluate_terminal_bench",
     "make_terminal_bench_reflective",
     "run_tests_and_score",
-    "TerminalBenchAdapter",
 ]

@@ -1,11 +1,11 @@
-"""GEPA v2: Prompt optimization for rollouts.
+"""GEPA: Prompt optimization for rollouts.
 
 Multi-component prompt optimization using LLM-guided reflective mutations.
 
-Two levels of API (continuous granularity):
+Two levels of API:
 
 1. **optimize_prompt()** - Simplest: optimize a single system prompt
-2. **run_gepa()** - More control: custom evaluate/reflect functions, config, validation set
+2. **run_gepa()** - More control: custom evaluate/reflect functions
 
 Example (Level 1 - simplest):
     >>> from rollouts.prompt_optimization import optimize_prompt, GEPAConfig
@@ -20,11 +20,11 @@ Example (Level 1 - simplest):
     ... )
     >>> print(f"Best: {result.best_candidate['system']}")
 
-Example (Level 2 - more control with pure functions):
+Example (Level 2 - pure functions):
     >>> from functools import partial
-    >>> from rollouts.prompt_optimization import run_gepa, GEPAConfig
-    >>> from rollouts.prompt_optimization.adapters import (
-    ...     SystemPromptConfig, evaluate_system_prompt, make_system_prompt_reflective
+    >>> from rollouts.prompt_optimization import (
+    ...     run_gepa, GEPAConfig,
+    ...     SystemPromptConfig, evaluate_system_prompt, make_system_prompt_reflective,
     ... )
     >>>
     >>> config = SystemPromptConfig(
@@ -42,9 +42,9 @@ Example (Level 2 - more control with pure functions):
     ...     reflection_endpoint=reflection_endpoint,
     ... )
 
-Example (Terminal-bench with pure functions):
-    >>> from rollouts.prompt_optimization.adapters import (
-    ...     TerminalBenchConfig, evaluate_terminal_bench, make_terminal_bench_reflective
+Example (Terminal-bench):
+    >>> from rollouts.prompt_optimization import (
+    ...     TerminalBenchConfig, evaluate_terminal_bench, make_terminal_bench_reflective,
     ... )
     >>>
     >>> config = TerminalBenchConfig(endpoint=endpoint, max_turns=30)
@@ -62,22 +62,20 @@ Example (Terminal-bench with pure functions):
 # Type aliases for adapter functions
 from .adapter import EvaluateFn, MakeReflectiveFn
 
-# Adapters (configs, pure functions, wrapper classes)
+# Adapters (configs + pure functions)
 from .adapters import (
-    SinglePromptAdapter,
-    SinglePromptConfig,
-    SystemPromptAdapter,
     # System prompt
     SystemPromptConfig,
     # System + user prompt
-    SystemUserPromptAdapter,
-    TerminalBenchAdapter,
+    SystemUserPromptConfig,
     # Terminal-bench
     TerminalBenchConfig,
     TerminalBenchTask,
     evaluate_system_prompt,
+    evaluate_system_user_prompt,
     evaluate_terminal_bench,
     make_system_prompt_reflective,
+    make_system_user_prompt_reflective,
     make_terminal_bench_reflective,
     run_tests_and_score,
 )
@@ -102,10 +100,8 @@ from .state import GEPAState
 
 # Types
 from .types import (
-    # Reflective mutation types
     Candidate,
     EvaluationBatch,
-    # Evolutionary types
     EvolutionaryConfig,
     GenerationStats,
     GEPAConfig,
@@ -118,12 +114,11 @@ __all__ = [
     # Type aliases
     "EvaluateFn",
     "MakeReflectiveFn",
-    # Reflective mutation types
+    # Types
     "Candidate",
     "EvaluationBatch",
     "GEPAConfig",
     "GEPAResult",
-    # Evolutionary types
     "EvolutionaryConfig",
     "GenerationStats",
     "OptimizationResult",
@@ -136,26 +131,24 @@ __all__ = [
     "update_pareto_front",
     "dominates",
     "sample_minibatch",
-    # Reflective mutation
+    # Reflective GEPA
     "gepa_iteration",
     "run_gepa",
     "optimize_prompt",
-    # Evolutionary
+    # Evolutionary GEPA
     "run_evolutionary_gepa",
     # Adapters - system prompt
     "SystemPromptConfig",
-    "SinglePromptConfig",
     "evaluate_system_prompt",
     "make_system_prompt_reflective",
-    "SystemPromptAdapter",
-    "SinglePromptAdapter",
     # Adapters - system + user prompt
-    "SystemUserPromptAdapter",
+    "SystemUserPromptConfig",
+    "evaluate_system_user_prompt",
+    "make_system_user_prompt_reflective",
     # Adapters - terminal-bench
     "TerminalBenchConfig",
     "TerminalBenchTask",
     "evaluate_terminal_bench",
     "make_terminal_bench_reflective",
     "run_tests_and_score",
-    "TerminalBenchAdapter",
 ]
