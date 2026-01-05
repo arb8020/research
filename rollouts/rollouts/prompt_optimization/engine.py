@@ -2,6 +2,15 @@
 
 Following: functions orchestrate objects, push ifs up.
 Pure functions with explicit data flow - no hidden state.
+
+TODO(gepa-parity): Features from original GEPA to eventually support:
+- Sparse validation: Only evaluate on subset of valset (via dep-injected EvaluationPolicy)
+- Multiple frontier types: instance/objective/cartesian (via dep-injected FrontierType)
+- Merge proposer: Crossover between candidates (via dep-injected MergeProposer)
+- Candidate selection strategies: epsilon-greedy, current_best (via dep-injected CandidateSelector)
+- Module selectors: Beyond round-robin (via dep-injected ReflectionComponentSelector)
+
+All can be added via dependency injection without changing the functional core.
 """
 
 import logging
@@ -60,6 +69,7 @@ async def gepa_iteration(
         New candidate if one was accepted, None otherwise
     """
     # 1. Select candidate from Pareto front
+    # TODO(gepa-parity): Support other selection strategies (epsilon-greedy, current_best)
     candidate_idx = select_from_pareto_front(state)
     candidate = state.candidates[candidate_idx]
 
@@ -77,6 +87,7 @@ async def gepa_iteration(
         return None
 
     # 5. Select component (round-robin)
+    # TODO(gepa-parity): Support other component selectors (e.g., based on performance)
     component = state.next_component()
 
     # 6. Build reflective dataset
@@ -161,6 +172,7 @@ async def run_gepa(
         state.seed(seed)
 
     # Initial validation eval
+    # TODO(gepa-parity): Support sparse validation (only eval subset of valset)
     logger.info("Running initial validation evaluation...")
     initial_eval = await evaluate_fn(list(valset), seed_candidate, False)
     state.val_scores[0] = {i: s for i, s in enumerate(initial_eval.scores)}
@@ -184,6 +196,7 @@ async def run_gepa(
 
         if new_candidate is not None:
             # Full validation eval
+            # TODO(gepa-parity): Support merge proposer for crossover between candidates
             val_eval = await evaluate_fn(list(valset), new_candidate, False)
             state.total_evaluations += len(valset)
 
@@ -191,6 +204,7 @@ async def run_gepa(
             new_idx = state.add_candidate(new_candidate, val_eval.scores)
 
             # Update Pareto front
+            # TODO(gepa-parity): Support multiple frontier types (objective, cartesian)
             update_pareto_front(state, new_idx)
 
             # Record history
