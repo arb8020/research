@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .terminal import Terminal
 from .theme import DARK_THEME, Theme
-from .utils import visible_width
+from .utils import truncate_to_width, visible_width
 
 
 class Component(ABC):
@@ -444,22 +444,8 @@ class TUI(Container):
 
             line = new_lines[i]
             if visible_width(line) > width:
-                # Line too wide - write debug log and raise
-                crash_log_path = Path.home() / ".rollouts" / "crash.log"
-                crash_log_path.parent.mkdir(parents=True, exist_ok=True)
-                crash_data = [
-                    f"Crash at {datetime.now().isoformat()}",
-                    f"Terminal width: {width}",
-                    f"Line {i} visible width: {visible_width(line)}",
-                    "",
-                    "=== All rendered lines ===",
-                    *[f"[{idx}] (w={visible_width(ln)}) {ln}" for idx, ln in enumerate(new_lines)],
-                    "",
-                ]
-                crash_log_path.write_text("\n".join(crash_data))
-                raise ValueError(
-                    f"Rendered line {i} exceeds terminal width. Debug log: {crash_log_path}"
-                )
+                # Truncate oversized lines (e.g. progress bars from bash output)
+                line = truncate_to_width(line, width, ellipsis="…")
             buffer += line
 
         # If we had more lines before, clear them
