@@ -901,7 +901,7 @@ class InteractiveAgentRunner:
                         else:
                             state = self._add_user_message(state, text)
 
-                    case InputNewState(new_state, message):
+                    case InputNewState(new_state, _message):
                         # Slash command changed state
                         state = new_state
                         # Don't run agent yet - loop back to get actual message
@@ -929,7 +929,7 @@ class InteractiveAgentRunner:
                             state = dc_replace(state, stop=None)
                         # Loop back to get next input
 
-                    case AgentInterrupted(states, partial_response):
+                    case AgentInterrupted(states, _partial_response):
                         # User pressed Escape - show interrupt message and continue
                         state = states[-1] if states else state
                         if self.renderer:
@@ -1343,7 +1343,7 @@ class InteractiveAgentRunner:
 
         # Wait for user to run /login (or any other input)
         # The _tui_input_handler will process /login and loop back
-        user_input = await self._tui_input_handler("Run /login to continue: ")
+        _ = await self._tui_input_handler("Run /login to continue: ")
 
         # Return current state - the user's original message is still in trajectory
         # so when they re-authenticate and hit enter, it will retry

@@ -1032,7 +1032,7 @@ class LocalFilesystemEnvironment:
             and len(text) > WEB_FETCH_SUMMARIZE_THRESHOLD
             and prompt  # Need a prompt to guide summarization
         ):
-            summary, error = await _summarize_content(
+            summary, _error = await _summarize_content(
                 text, prompt, self.summarizer_provider, self.summarizer_model
             )
             if summary:

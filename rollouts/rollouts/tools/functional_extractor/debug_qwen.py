@@ -268,10 +268,12 @@ if __name__ == "__main__":
         print("No GPU available. Run on remote GPU.")
         import argparse
 
-        from verify import run_on_gpu
         from config import DeploymentConfig
+        from verify import run_on_gpu
 
         parser = argparse.ArgumentParser()
         parser.add_argument("--gpu-id", type=str)
         args = parser.parse_args()
-        run_on_gpu(__file__, deployment=DeploymentConfig(vram_gb=16), gpu_id=args.gpu_id, keep_alive=True)
+        run_on_gpu(
+            __file__, deployment=DeploymentConfig(vram_gb=16), gpu_id=args.gpu_id, keep_alive=True
+        )

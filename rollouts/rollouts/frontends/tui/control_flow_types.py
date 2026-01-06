@@ -9,7 +9,7 @@ See REFACTOR_DESIGN.md for the full design.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -123,7 +123,7 @@ AgentOutcome = AgentCompleted | AgentInterrupted | AgentExited | AgentError
 # ─── Helper to get final state from any outcome ────────────────────────────────
 
 
-def get_final_state(outcome: AgentOutcome) -> "AgentState | None":
+def get_final_state(outcome: AgentOutcome) -> AgentState | None:
     """Extract the final state from any AgentOutcome."""
     states = outcome.states
     return states[-1] if states else None

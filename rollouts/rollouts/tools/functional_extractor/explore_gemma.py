@@ -153,8 +153,8 @@ if __name__ == "__main__":
         explore()
     else:
         print("No local GPU. Running on remote GPU...")
-        from verify import run_on_gpu
         from config import DeploymentConfig
+        from verify import run_on_gpu
 
         run_on_gpu(
             __file__,
