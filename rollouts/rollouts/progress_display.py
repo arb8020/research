@@ -34,6 +34,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import FrameType
+from typing import TextIO
 
 # ANSI escape codes
 HIDE_CURSOR = "\x1b[?25l"
@@ -102,6 +103,7 @@ class SampleState:
     status: str = "started"  # started, complete, retry
     retry_attempt: int = 0
     start_time: float = field(default_factory=time.time)
+    last_update: float = field(default_factory=time.time)  # For sorting by recency
 
 
 @dataclass
@@ -143,20 +145,29 @@ def derive_state(events: list[dict]) -> RenderState:
 
         elif event_type == "sample_start":
             sample_id = event["id"]
+            now = time.time()
             state.samples[sample_id] = SampleState(
                 id=sample_id,
                 name=event.get("name", sample_id),
+                last_update=now,
+                phase="starting",  # Default phase so samples show immediately
             )
 
         elif event_type == "turn":
             sample_id = event["id"]
             if sample_id in state.samples:
                 state.samples[sample_id].turn = event.get("turn", 0)
+                state.samples[sample_id].last_update = time.time()
+                # Set phase from turn status if provided, or default to "running"
+                # This ensures samples show up even without modal_progress events
+                status = event.get("status", "running")
+                state.samples[sample_id].phase = status
 
         elif event_type == "modal_progress":
             sample_id = event["id"]
             if sample_id in state.samples:
                 state.samples[sample_id].phase = event.get("phase", "")
+                state.samples[sample_id].last_update = time.time()
 
         elif event_type == "sample_end":
             sample_id = event["id"]
@@ -216,9 +227,10 @@ def render(state: RenderState, width: int, height: int) -> list[str]:
 
     lines.append(header[:width])
 
-    # Sample list - only show active (have a phase), sorted by turn
+    # Sample list - only show active (have a phase), sorted by most recently updated
+    # This matches uv's behavior: most active items float to the top
     active = [s for s in state.samples.values() if s.status != "complete" and s.phase]
-    active.sort(key=lambda s: s.turn, reverse=True)
+    active.sort(key=lambda s: s.last_update, reverse=True)
 
     # Reserve lines: 1 header + 1 for "... and X more" + 1 for score summary
     max_samples = max(1, height - 4)
@@ -266,9 +278,15 @@ class ProgressDisplay:
     Similar to how MultiProgress and the rollouts chat CLI work.
     """
 
-    def __init__(self, events_file: Path, poll_interval: float = 0.2) -> None:
+    def __init__(
+        self,
+        events_file: Path,
+        poll_interval: float = 0.2,
+        output_stream: TextIO | None = None,
+    ) -> None:
         self.events_file = events_file
         self.poll_interval = poll_interval
+        self._output: TextIO = output_stream or sys.stdout
         self._stop_event = threading.Event()
         self._file_pos = 0
         self._events: list[dict] = []
@@ -277,8 +295,8 @@ class ProgressDisplay:
 
     def start(self) -> None:
         """Start rendering (hide cursor)."""
-        sys.stdout.write(HIDE_CURSOR)
-        sys.stdout.flush()
+        self._output.write(HIDE_CURSOR)
+        self._output.flush()
 
         # Install resize handler
         self._old_sigwinch = signal.signal(signal.SIGWINCH, self._handle_resize)
@@ -294,8 +312,8 @@ class ProgressDisplay:
     def _cleanup(self) -> None:
         """Restore terminal state."""
         # Show cursor
-        sys.stdout.write(SHOW_CURSOR)
-        sys.stdout.flush()
+        self._output.write(SHOW_CURSOR)
+        self._output.flush()
 
         # Restore signal handlers
         if self._old_sigwinch is not None:
@@ -378,8 +396,8 @@ class ProgressDisplay:
         buf.append(SYNC_END)  # End synchronized update
 
         # Single write + flush
-        sys.stdout.write("".join(buf))
-        sys.stdout.flush()
+        self._output.write("".join(buf))
+        self._output.flush()
         self._lines_rendered = len(lines)
 
 
@@ -387,6 +405,7 @@ class ProgressDisplay:
 def progress_display(
     output_dir: Path | str,
     disable: bool = False,
+    suppress_output: bool = True,
 ) -> Generator[Path, None, None]:
     """Context manager for clean progress display.
 
@@ -396,6 +415,7 @@ def progress_display(
     Args:
         output_dir: Directory containing events.jsonl (required - evaluate() writes here)
         disable: If True, skip progress display (verbose mode)
+        suppress_output: If True, redirect stdout/stderr to log file to prevent display glitches
 
     Usage:
         # The output_dir must match what you pass to EvalConfig
@@ -403,14 +423,27 @@ def progress_display(
             await evaluate(dataset, config)
     """
     if disable:
-        yield
+        yield Path(output_dir)
         return
 
     output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
     events_file = output_dir / "events.jsonl"
 
-    # Create and start display
-    display = ProgressDisplay(events_file)
+    # Save original stdout/stderr for display rendering
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    log_file = None
+
+    if suppress_output:
+        # Redirect stdout/stderr to a log file to prevent display glitches
+        # The progress display will write directly to original_stdout
+        log_file = open(output_dir / "output.log", "w")
+        sys.stdout = log_file
+        sys.stderr = log_file
+
+    # Create and start display (uses original_stdout for rendering)
+    display = ProgressDisplay(events_file, output_stream=original_stdout)
     display.start()
 
     # Run display in background thread
@@ -427,3 +460,9 @@ def progress_display(
         raise
     finally:
         display.stop()
+        # Restore stdout/stderr
+        if suppress_output:
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
+            if log_file:
+                log_file.close()
