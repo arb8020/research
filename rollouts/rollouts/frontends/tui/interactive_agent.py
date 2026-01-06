@@ -32,7 +32,16 @@ from .agent_renderer import AgentRenderer
 from .components.input import Input
 from .components.loader_container import LoaderContainer
 from .components.spacer import Spacer
-from .control_flow_types import InputMessage, InputNewState, InputResult
+from .control_flow_types import (
+    AgentCompleted,
+    AgentError,
+    AgentExited,
+    AgentInterrupted,
+    AgentOutcome,
+    InputMessage,
+    InputNewState,
+    InputResult,
+)
 from .slash_commands import SlashCommandResult, handle_slash_command
 from .terminal import ProcessTerminal, set_active_session_id
 from .tui import TUI
@@ -695,6 +704,86 @@ class InteractiveAgentRunner:
 
         return None
 
+    async def _run_agent_with_outcome(self, state: AgentState) -> AgentOutcome:
+        """Run agent and return explicit outcome type.
+
+        This wraps run_agent() and converts the various exit conditions
+        (exceptions, stop reasons, cancellation) into explicit AgentOutcome types.
+
+        Args:
+            state: Current agent state to run from
+
+        Returns:
+            AgentOutcome indicating what happened:
+            - AgentCompleted: Normal completion (task done or no tools)
+            - AgentInterrupted: User pressed Escape
+            - AgentExited: User pressed Ctrl+C
+            - AgentError: Recoverable error (context too long, OAuth expired)
+        """
+        self.agent_cancel_scope = trio.CancelScope()
+        run_config = self._create_run_config()
+        agent_states: list[AgentState] = []
+
+        try:
+            with self.agent_cancel_scope:
+                agent_states = await run_agent(state, run_config)
+
+            # Update trajectory for slash commands (e.g., /slice)
+            if agent_states:
+                self._current_trajectory = agent_states[-1].actor.trajectory
+
+        except Exception as e:
+            # Check for context too long error
+            from ...providers.base import ContextTooLongError
+
+            if isinstance(e, ContextTooLongError):
+                return AgentError(
+                    states=agent_states or [state],
+                    error=e,
+                    error_kind="context_too_long",
+                )
+
+            # Check for OAuth expired error
+            from ...frontends.tui.oauth import OAuthExpiredError
+
+            if isinstance(e, OAuthExpiredError):
+                return AgentError(
+                    states=agent_states or [state],
+                    error=e,
+                    error_kind="oauth_expired",
+                )
+
+            # Re-raise other exceptions
+            raise
+
+        finally:
+            self.agent_cancel_scope = None
+
+        # Check stop reason
+        if agent_states and agent_states[-1].stop == StopReason.ABORTED:
+            # Update session_id from final state
+            if agent_states[-1].session_id:
+                self.session_id = agent_states[-1].session_id
+                set_active_session_id(self.session_id)
+
+            if self.escape_pressed:
+                # Escape key - interrupted but can continue
+                self.escape_pressed = False
+                partial_response = None
+                if self.renderer:
+                    partial_response = self.renderer.get_partial_response()
+                    self.renderer.finalize_partial_response()
+                return AgentInterrupted(
+                    states=agent_states,
+                    partial_response=partial_response,
+                )
+            else:
+                # Ctrl+C - exit entirely
+                return AgentExited(states=agent_states)
+
+        # Normal completion (TASK_COMPLETED, MAX_TURNS, or no stop reason)
+        return AgentCompleted(states=agent_states)
+
     async def _handle_stream_event(self, event: StreamEvent) -> None:
         """Handle streaming event - render to TUI.
 
@@ -766,13 +855,21 @@ class InteractiveAgentRunner:
         return agent_states
 
     async def _run_agent_loop(self) -> list[AgentState]:
-        """Main agent loop with input handling."""
+        """Main agent loop with explicit control flow.
+
+        Two-phase loop:
+        1. Get user input (handles slash commands, returns InputResult)
+        2. Run agent (returns AgentOutcome)
+
+        Both phases return explicit types instead of using flags.
+        """
         self.input_send, self.input_receive = trio.open_memory_channel[str](10)
 
         if self.initial_prompt:
             self.input_send.send_nowait(self.initial_prompt)
 
-        agent_states: list[AgentState] = []
+        all_states: list[AgentState] = []
+        state: AgentState | None = None
 
         async with trio.open_nursery() as nursery:
             self.cancel_scope = nursery.cancel_scope
@@ -784,62 +881,125 @@ class InteractiveAgentRunner:
                 self.tui.set_focus(self.input_component)
                 self.tui.request_render()
 
-            first_message = await self._tui_input_handler("Enter your message: ")
-            current_state = self._create_initial_state(first_message)
-
-            # Main agent loop - handles interrupts and continues
+            # ══════════════════════════════════════════════════════════════
+            # MAIN LOOP - two phases: get input, run agent
+            # ══════════════════════════════════════════════════════════════
             while True:
-                self.agent_cancel_scope = trio.CancelScope()
-                run_config = self._create_run_config()
+                # ─── PHASE 1: Get user input ──────────────────────────────
+                input_result = await self._get_input_result(state)
 
-                try:
-                    with self.agent_cancel_scope:
-                        agent_states = await run_agent(current_state, run_config)
-                    # Update trajectory for slash commands (e.g., /slice)
-                    if agent_states:
-                        self._current_trajectory = agent_states[-1].actor.trajectory
-                except Exception as e:
-                    # Check for context too long error
-                    from ...providers.base import ContextTooLongError
+                match input_result:
+                    case InputMessage(text):
+                        # Create or update state with user message
+                        if state is None:
+                            state = self._create_initial_state(text)
+                        else:
+                            state = self._add_user_message(state, text)
 
-                    if isinstance(e, ContextTooLongError):
-                        current_state = await self._handle_context_too_long(e, current_state)
+                    case InputNewState(new_state, message):
+                        # Slash command changed state
+                        state = new_state
+                        # Don't run agent yet - loop back to get actual message
                         continue
 
-                    # Check for OAuth expired error - prompt for re-login
-                    from ...frontends.tui.oauth import OAuthExpiredError
+                # ─── PHASE 2: Run agent ───────────────────────────────────
+                outcome = await self._run_agent_with_outcome(state)
+                all_states.extend(outcome.states)
 
-                    if isinstance(e, OAuthExpiredError):
-                        current_state = await self._handle_oauth_expired(e, current_state)
-                        continue
+                match outcome:
+                    case AgentCompleted(states):
+                        # Normal completion - update state for next iteration
+                        state = states[-1] if states else state
+                        self._update_final_state(states)
+                        # Check if task completed vs just waiting for input
+                        if states and states[-1].stop == StopReason.TASK_COMPLETED:
+                            # Show final answer if present
+                            self._show_task_completed(states[-1])
+                        # Loop back to get next input
 
-                    raise  # Re-raise other exceptions
+                    case AgentInterrupted(states, partial_response):
+                        # User pressed Escape - show interrupt message and continue
+                        state = states[-1] if states else state
+                        if self.renderer:
+                            self.renderer.add_system_message("Interrupted")
+                        if self.tui:
+                            self.tui.hide_loader()
+                        self._update_final_state(states)
+                        # Loop back to get next input
 
-                if agent_states and agent_states[-1].stop == StopReason.ABORTED:
-                    if agent_states[-1].session_id:
-                        self.session_id = agent_states[-1].session_id
-                        set_active_session_id(self.session_id)
+                    case AgentExited(states):
+                        # User pressed Ctrl+C - exit the loop
+                        self._update_final_state(states)
+                        break
 
-                    if not self.escape_pressed:
-                        break  # Ctrl+C - exit the TUI
+                    case AgentError(states, error, error_kind):
+                        # Recoverable error - show message and continue
+                        state = states[-1] if states else state
+                        self._show_agent_error(error, error_kind)
+                        # Loop back to get next input
 
-                    # Escape key - interrupt but continue
-                    current_state = await self._handle_agent_interrupt(agent_states, current_state)
-                elif agent_states and agent_states[-1].stop == StopReason.TASK_COMPLETED:
-                    # Task completed - in interactive mode, show result and continue
-                    current_state = await self._handle_task_completed(agent_states)
-                else:
-                    # Other stop reasons (MAX_TURNS, etc.) - update state and exit
-                    self._update_final_state(agent_states)
-                    break
-
-                self.agent_cancel_scope = None
-
-        if agent_states and agent_states[-1].session_id:
-            self.session_id = agent_states[-1].session_id
+        # Update session_id from final state
+        if all_states and all_states[-1].session_id:
+            self.session_id = all_states[-1].session_id
             set_active_session_id(self.session_id)
 
-        return agent_states
+        return all_states
+
+    def _add_user_message(self, state: AgentState, text: str) -> AgentState:
+        """Add a user message to the agent state."""
+        from dataclasses import replace as dc_replace
+
+        new_messages = state.actor.trajectory.messages + [
+            Message(role="user", content=text)
+        ]
+        new_trajectory = Trajectory(messages=new_messages)
+        return dc_replace(
+            state,
+            actor=dc_replace(state.actor, trajectory=new_trajectory),
+        )
+
+    def _show_task_completed(self, state: AgentState) -> None:
+        """Show task completion UI if there's a final answer."""
+        if state.environment and hasattr(state.environment, "_final_answer"):
+            final_answer = getattr(state.environment, "_final_answer", None)
+            if final_answer and self.renderer:
+                self.renderer.add_final_answer(final_answer)
+                if self.tui:
+                    self.tui.request_render()
+
+    def _show_agent_error(self, error: Exception, error_kind: str) -> None:
+        """Show error message for recoverable agent errors."""
+        if self.tui:
+            self.tui.hide_loader()
+
+        if error_kind == "context_too_long":
+            from ...providers.base import ContextTooLongError
+
+            error_msg = "⚠️  Context too long"
+            if isinstance(error, ContextTooLongError):
+                if error.current_tokens and error.max_tokens:
+                    error_msg += f" ({error.current_tokens:,} tokens, max {error.max_tokens:,})"
+
+            if self.renderer:
+                self.renderer.add_system_message(
+                    f"{error_msg}\n\n"
+                    "The conversation has grown too long for the model's context window.\n"
+                    "Please start a new conversation or use /slice to trim context."
+                )
+
+        elif error_kind == "oauth_expired":
+            if self.renderer:
+                self.renderer.add_system_message(
+                    "🔐 OAuth token expired and refresh failed.\n"
+                    "   Run /login to re-authenticate."
+                )
+
+        else:
+            if self.renderer:
+                self.renderer.add_system_message(f"Error: {error}")
+
+        if self.tui:
+            self.tui.request_render()
 
     async def _input_reading_loop(self) -> None:
         """Read terminal input and route to TUI."""
