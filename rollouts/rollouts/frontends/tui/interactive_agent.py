@@ -576,9 +576,7 @@ class InteractiveAgentRunner:
 
         return user_input
 
-    async def _get_input_result(
-        self, current_state: AgentState | None
-    ) -> InputResult:
+    async def _get_input_result(self, current_state: AgentState | None) -> InputResult:
         """Get user input and return explicit result type.
 
         This is the new control-flow-explicit version of input handling.
@@ -615,9 +613,7 @@ class InteractiveAgentRunner:
 
                 if result.handled:
                     # Check if state changed - build new state if so
-                    new_state = self._build_state_from_slash_result(
-                        result, current_state
-                    )
+                    new_state = self._build_state_from_slash_result(result, current_state)
                     if new_state is not None:
                         return InputNewState(state=new_state, message=result.message)
                     # Command handled but no state change (e.g., /model with no args)
@@ -631,9 +627,7 @@ class InteractiveAgentRunner:
             # We have a message to send to LLM
             # Add to renderer for display
             if self.renderer:
-                self.renderer.add_user_message(
-                    user_input, is_first=self.is_first_user_message
-                )
+                self.renderer.add_user_message(user_input, is_first=self.is_first_user_message)
                 self.is_first_user_message = False
 
             return InputMessage(text=user_input)
@@ -658,9 +652,7 @@ class InteractiveAgentRunner:
             self._session_switched = False
             # Build state from self.initial_trajectory and self.endpoint
             # which were updated by switch_session()
-            new_trajectory = Trajectory(
-                messages=list(self.initial_trajectory.messages)
-            )
+            new_trajectory = Trajectory(messages=list(self.initial_trajectory.messages))
             new_tools = self.environment.get_tools() if self.environment else []
             return AgentState(
                 actor=Actor(
@@ -903,18 +895,25 @@ class InteractiveAgentRunner:
                         continue
 
                 # ─── PHASE 2: Run agent ───────────────────────────────────
+                assert state is not None, "State must be set after InputMessage"
                 outcome = await self._run_agent_with_outcome(state)
                 all_states.extend(outcome.states)
+
+                from dataclasses import replace as dc_replace
 
                 match outcome:
                     case AgentCompleted(states):
                         # Normal completion - update state for next iteration
                         state = states[-1] if states else state
                         self._update_final_state(states)
-                        # Check if task completed vs just waiting for input
+
+                        # Handle different stop reasons
                         if states and states[-1].stop == StopReason.TASK_COMPLETED:
                             # Show final answer if present
                             self._show_task_completed(states[-1])
+                        elif states and states[-1].stop == StopReason.NEEDS_INPUT:
+                            # Agent waiting for input - clear stop reason so next run continues
+                            state = dc_replace(state, stop=None)
                         # Loop back to get next input
 
                     case AgentInterrupted(states, partial_response):
@@ -925,6 +924,8 @@ class InteractiveAgentRunner:
                         if self.tui:
                             self.tui.hide_loader()
                         self._update_final_state(states)
+                        # Clear stop reason so next run continues
+                        state = dc_replace(state, stop=None)
                         # Loop back to get next input
 
                     case AgentExited(states):
@@ -936,6 +937,8 @@ class InteractiveAgentRunner:
                         # Recoverable error - show message and continue
                         state = states[-1] if states else state
                         self._show_agent_error(error, error_kind)
+                        # Clear stop reason so next run continues
+                        state = dc_replace(state, stop=None)
                         # Loop back to get next input
 
         # Update session_id from final state
@@ -949,9 +952,7 @@ class InteractiveAgentRunner:
         """Add a user message to the agent state."""
         from dataclasses import replace as dc_replace
 
-        new_messages = state.actor.trajectory.messages + [
-            Message(role="user", content=text)
-        ]
+        new_messages = state.actor.trajectory.messages + [Message(role="user", content=text)]
         new_trajectory = Trajectory(messages=new_messages)
         return dc_replace(
             state,
@@ -990,8 +991,7 @@ class InteractiveAgentRunner:
         elif error_kind == "oauth_expired":
             if self.renderer:
                 self.renderer.add_system_message(
-                    "🔐 OAuth token expired and refresh failed.\n"
-                    "   Run /login to re-authenticate."
+                    "🔐 OAuth token expired and refresh failed.\n   Run /login to re-authenticate."
                 )
 
         else:
@@ -1271,7 +1271,11 @@ class InteractiveAgentRunner:
                 )
 
         async def handle_no_tool_interactive(state: AgentState, rcfg: RunConfig) -> AgentState:
-            """Wait for user input when LLM responds without tool calls."""
+            """Signal that agent needs user input - return immediately without blocking.
+
+            Instead of blocking here to wait for input, we return with NEEDS_INPUT
+            so the outer loop can handle input gathering in one place.
+            """
             from dataclasses import replace as dc_replace
 
             # Update session_id from state (session created on first message)
@@ -1285,60 +1289,8 @@ class InteractiveAgentRunner:
             if self.tui:
                 self.tui.request_render()
 
-            user_input = await rcfg.on_input("Enter your message: ")
-
-            # Check if session was switched by /slice command
-            # If so, rebuild state completely from self.initial_trajectory/endpoint
-            if self._session_switched:
-                self._session_switched = False  # Reset flag
-                new_trajectory = Trajectory(
-                    messages=list(self.initial_trajectory.messages)
-                    + [Message(role="user", content=user_input)]
-                )
-                new_environment = self.environment
-                new_tools = self.environment.get_tools() if self.environment else []
-                return AgentState(
-                    actor=Actor(
-                        trajectory=new_trajectory,
-                        endpoint=self.endpoint,
-                        tools=new_tools,
-                    ),
-                    environment=new_environment,
-                    session_id=self.session_id,
-                )
-
-            user_messages = [Message(role="user", content=user_input)]
-            for pending_msg in self._pending_user_messages:
-                if self.renderer:
-                    self.renderer.add_user_message(pending_msg, is_first=False)
-                user_messages.append(Message(role="user", content=pending_msg))
-            self._pending_user_messages = []
-
-            new_trajectory = Trajectory(messages=state.actor.trajectory.messages + user_messages)
-
-            # Check if environment was changed by /env command
-            new_environment = state.environment
-            new_tools = state.actor.tools
-            if self._environment_changed and self.environment:
-                new_environment = self.environment
-                new_tools = self.environment.get_tools()
-                self._environment_changed = False  # Reset flag
-
-            # Use self.endpoint to pick up any /model changes
-            # Use self.session_id to pick up session changes from /env
-            new_actor = dc_replace(
-                state.actor,
-                trajectory=new_trajectory,
-                endpoint=self.endpoint,
-                tools=new_tools,
-            )
-            result = dc_replace(
-                state,
-                actor=new_actor,
-                environment=new_environment,
-                session_id=self.session_id,
-            )
-            return result
+            # Return immediately with NEEDS_INPUT - outer loop handles input
+            return dc_replace(state, stop=StopReason.NEEDS_INPUT)
 
         confirm_handler = confirm_tool_tui if self.confirm_tools else auto_confirm_tool
 
