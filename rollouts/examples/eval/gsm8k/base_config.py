@@ -89,6 +89,7 @@ class EvalRunConfig:
     max_turns: int = 10  # For multi-turn mode
     use_tools: bool = False  # Single-turn by default
     verbose: bool = True
+    show_progress: bool = True  # Show progress display
 
 
 @dataclass(frozen=True)
@@ -571,16 +572,19 @@ async def _eval_single_turn(config: GSM8KConfig) -> dict[str, Any]:
     from rollouts.dtypes import EvalConfig, Message, RunConfig
     from rollouts.evaluation import evaluate
 
-    setup_logging(level="INFO", use_color=True)
+    log_level = "INFO" if config.run.verbose else "WARNING"
+    setup_logging(level=log_level, use_color=True)
     logger = logging.getLogger(__name__)
 
-    logger.info("=" * 60)
-    logger.info(f"GSM8K Single-Turn Eval: {config.output.experiment_name}")
-    logger.info("=" * 60)
+    if config.run.verbose:
+        logger.info("=" * 60)
+        logger.info(f"GSM8K Single-Turn Eval: {config.output.experiment_name}")
+        logger.info("=" * 60)
 
     # Load dataset
     dataset = load_samples_from_config(config.dataset)
-    logger.info(f"Dataset: {len(dataset)} samples")
+    if config.run.verbose:
+        logger.info(f"Dataset: {len(dataset)} samples")
 
     # Single-turn: stop after 1 turn (use max_turns from config, default 1 for single-turn)
     max_turns = 1 if not config.run.use_tools else config.run.max_turns
@@ -618,11 +622,12 @@ async def _eval_single_turn(config: GSM8KConfig) -> dict[str, Any]:
     accuracy = report.summary_metrics.get("mean_correct", 0.0)
     total = report.total_samples
 
-    logger.info("=" * 60)
-    logger.info("Evaluation Complete")
-    logger.info("=" * 60)
-    logger.info(f"Accuracy: {accuracy:.1%}")
-    logger.info(f"Results: {config.output.output_dir}")
+    if config.run.verbose:
+        logger.info("=" * 60)
+        logger.info("Evaluation Complete")
+        logger.info("=" * 60)
+        logger.info(f"Accuracy: {accuracy:.1%}")
+        logger.info(f"Results: {config.output.output_dir}")
 
     return {"accuracy": accuracy, "total": total, **report.summary_metrics}
 
@@ -635,16 +640,19 @@ async def _eval_multi_turn(config: GSM8KConfig) -> dict[str, Any]:
     from rollouts.environments.calculator import CalculatorEnvironment
     from rollouts.evaluation import evaluate
 
-    setup_logging(level="INFO", use_color=True)
+    log_level = "INFO" if config.run.verbose else "WARNING"
+    setup_logging(level=log_level, use_color=True)
     logger = logging.getLogger(__name__)
 
-    logger.info("=" * 60)
-    logger.info(f"GSM8K Multi-Turn Eval: {config.output.experiment_name}")
-    logger.info("=" * 60)
+    if config.run.verbose:
+        logger.info("=" * 60)
+        logger.info(f"GSM8K Multi-Turn Eval: {config.output.experiment_name}")
+        logger.info("=" * 60)
 
     # Load dataset
     dataset = load_samples_from_config(config.dataset)
-    logger.info(f"Dataset: {len(dataset)} samples")
+    if config.run.verbose:
+        logger.info(f"Dataset: {len(dataset)} samples")
 
     async def environment_factory(sample_data: dict) -> CalculatorEnvironment:
         return CalculatorEnvironment()
@@ -680,19 +688,133 @@ async def _eval_multi_turn(config: GSM8KConfig) -> dict[str, Any]:
 
     report = await evaluate(iter(dataset), eval_config)
 
-    logger.info("=" * 60)
-    logger.info("Evaluation Complete")
-    logger.info("=" * 60)
-    logger.info(f"Samples: {report.total_samples}")
-    logger.info(f"Mean reward: {report.summary_metrics.get('mean_reward', 0):.3f}")
-    logger.info(f"Results: {config.output.output_dir}")
+    if config.run.verbose:
+        logger.info("=" * 60)
+        logger.info("Evaluation Complete")
+        logger.info("=" * 60)
+        logger.info(f"Samples: {report.total_samples}")
+        logger.info(f"Mean reward: {report.summary_metrics.get('mean_reward', 0):.3f}")
+        logger.info(f"Results: {config.output.output_dir}")
 
     return report.summary_metrics
 
 
 def evaluate_gsm8k(config: GSM8KConfig) -> dict[str, Any]:
     """Run GSM8K evaluation."""
-    if config.run.use_tools:
+    if config.run.show_progress:
+        return _run_with_progress(config)
+    elif config.run.use_tools:
         return trio.run(_eval_multi_turn, config)
     else:
         return trio.run(_eval_single_turn, config)
+
+
+def _run_with_progress(config: GSM8KConfig) -> dict[str, Any]:
+    """Run evaluation with progress display."""
+    from dataclasses import replace
+
+    from rollouts.progress_display import progress_display
+
+    # Ensure output dir exists
+    config.output.output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Suppress all logs when showing progress (they'd glitch the display)
+    logging.getLogger().setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+    # Override verbose=False so eval internals don't log
+    quiet_config = replace(config, run=replace(config.run, verbose=False))
+
+    with progress_display(output_dir=config.output.output_dir):
+        if quiet_config.run.use_tools:
+            return trio.run(_eval_multi_turn, quiet_config)
+        else:
+            return trio.run(_eval_single_turn, quiet_config)
+
+
+def run_with_tui(config: GSM8KConfig) -> dict[str, Any]:
+    """Run evaluation with TUI monitor.
+
+    Spawns eval in background thread, runs TUI in foreground.
+    Press 'q' to quit TUI.
+    """
+    import threading
+    import time
+    from pathlib import Path
+
+    from rollouts.tui.monitor import EVAL_PANES, TrainingMonitor
+
+    output_dir = Path(config.output.output_dir)
+    events_file = output_dir / "events.jsonl"
+
+    # Result holder
+    result: dict[str, Any] = {}
+
+    def run_eval() -> None:
+        nonlocal result
+        result = evaluate_gsm8k(config)
+
+    # Start eval in background
+    eval_thread = threading.Thread(target=run_eval, daemon=True)
+    eval_thread.start()
+
+    # Wait for events file
+    print(f"Output: {output_dir}")
+    print("Waiting for events...")
+    for _ in range(30):
+        if events_file.exists():
+            break
+        time.sleep(1)
+    else:
+        print(f"Timeout waiting for {events_file}")
+        return {}
+
+    # Run TUI
+    lines_queue: list[str] = []
+    monitor = TrainingMonitor(pane_configs=EVAL_PANES, line_queue=lines_queue)
+    monitor._running = True
+    monitor.terminal.start(on_input=lambda x: None, on_resize=monitor._on_resize)
+
+    stop_event = threading.Event()
+
+    def tail_events() -> None:
+        with open(events_file) as f:
+            while not stop_event.is_set():
+                line = f.readline()
+                if line:
+                    lines_queue.append(line.strip())
+                else:
+                    time.sleep(0.1)
+
+    tailer = threading.Thread(target=tail_events, daemon=True)
+    tailer.start()
+
+    try:
+        while monitor._running:
+            while lines_queue:
+                monitor.feed_line(lines_queue.pop(0))
+
+            data = monitor.terminal.read_input()
+            if data:
+                monitor._handle_input(data)
+
+            if monitor._needs_redraw:
+                monitor._render()
+                monitor._needs_redraw = False
+
+            # Check if eval finished
+            if not eval_thread.is_alive():
+                time.sleep(0.5)
+                while lines_queue:
+                    monitor.feed_line(lines_queue.pop(0))
+                monitor._render()
+
+            time.sleep(0.05)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop_event.set()
+        monitor.terminal.stop()
+
+    return result
