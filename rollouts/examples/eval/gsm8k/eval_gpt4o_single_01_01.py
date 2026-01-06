@@ -11,10 +11,13 @@ Model answers directly with \\boxed{} format.
 
 Usage:
     python examples/eval/gsm8k/eval_gpt4o_single_01_01.py
+    python examples/eval/gsm8k/eval_gpt4o_single_01_01.py --tui  # With TUI
 
 Requires:
     OPENAI_API_KEY environment variable
 """
+
+import argparse
 
 from base_config import (
     DatasetConfig,
@@ -23,6 +26,7 @@ from base_config import (
     GSM8KConfig,
     OutputConfig,
     evaluate_gsm8k,
+    run_with_tui,
 )
 
 config = GSM8KConfig(
@@ -44,5 +48,13 @@ config = GSM8KConfig(
 
 
 if __name__ == "__main__":
-    metrics = evaluate_gsm8k(config)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--tui", action="store_true", help="Show TUI monitor")
+    args = parser.parse_args()
+
+    if args.tui:
+        metrics = run_with_tui(config)
+    else:
+        metrics = evaluate_gsm8k(config)
+
     print(f"\nAccuracy: {metrics.get('accuracy', 0):.1%}")
