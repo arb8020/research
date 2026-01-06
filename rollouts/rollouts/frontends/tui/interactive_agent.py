@@ -125,13 +125,6 @@ class InteractiveAgentRunner:
         # Track current trajectory for slash commands (updated during agent loop)
         self._current_trajectory: Trajectory | None = None
 
-        # Flag set by /env when environment changes - signals main loop to update current_state
-        self._environment_changed: bool = False
-
-        # Flag set by /slice when session switches - signals main loop to rebuild state
-        # from self.initial_trajectory and self.endpoint
-        self._session_switched: bool = False
-
         # Tab completion cycling state
         self._tab_cycle_matches: list[str] = []  # Current list of matches
         self._tab_cycle_index: int = 0  # Current position in cycle
@@ -186,9 +179,9 @@ class InteractiveAgentRunner:
         self.initial_trajectory = Trajectory(messages=session.messages)
         self._current_trajectory = self.initial_trajectory
 
-        # Signal main loop to rebuild state from self.initial_trajectory/endpoint
-        # This is critical - without this, the next agent loop iteration uses stale state
-        self._session_switched = True
+        # Note: Slash commands now return explicit state changes via SlashCommandResult
+        # instead of setting flags. This method is kept for backwards compatibility
+        # but callers should use the explicit returns from _build_state_from_slash_result.
 
         # Update status line
         if self.status_line:
@@ -607,16 +600,18 @@ class InteractiveAgentRunner:
             if user_input.startswith("/"):
                 result = await handle_slash_command(self, user_input)
 
-                # Show any message from the command
-                if result.message and self.renderer:
-                    self.renderer.add_ghost_message(result.message)
-
                 if result.handled:
                     # Check if state changed - build new state if so
-                    new_state = self._build_state_from_slash_result(result, current_state)
+                    new_state = await self._build_state_from_slash_result(result, current_state)
                     if new_state is not None:
+                        # Message shown inside _build_state_from_slash_result for session switches
                         return InputNewState(state=new_state, message=result.message)
                     # Command handled but no state change (e.g., /model with no args)
+                    # Show message here since _build_state_from_slash_result didn't
+                    if result.message and self.renderer:
+                        self.renderer.add_ghost_message(result.message)
+                        if self.tui:
+                            self.tui.request_render()
                     continue
 
                 if result.expanded_text:
@@ -632,65 +627,83 @@ class InteractiveAgentRunner:
 
             return InputMessage(text=user_input)
 
-    def _build_state_from_slash_result(
+    async def _build_state_from_slash_result(
         self,
         result: SlashCommandResult,
         current_state: AgentState | None,
     ) -> AgentState | None:
-        """Build new AgentState if slash command changed something.
+        """Build new AgentState from slash command result.
 
         Returns None if no state change occurred.
 
-        This checks the flags that slash commands currently set and builds
-        a new state. Eventually, slash commands will return the changes
-        directly and we won't need flags.
+        Uses explicit returns from SlashCommandResult instead of checking flags.
         """
         from dataclasses import replace as dc_replace
 
-        # Check if session was switched (by /slice or /env calling switch_session)
-        if self._session_switched:
-            self._session_switched = False
-            # Build state from self.initial_trajectory and self.endpoint
-            # which were updated by switch_session()
-            new_trajectory = Trajectory(messages=list(self.initial_trajectory.messages))
-            new_tools = self.environment.get_tools() if self.environment else []
+        # Check if session/trajectory changed (/slice or /env)
+        if result.new_session_id and result.new_trajectory:
+            # Update runner state for TUI/persistence
+            self.session_id = result.new_session_id
+            self.initial_trajectory = result.new_trajectory
+            set_active_session_id(self.session_id)
+            if self.status_line:
+                self.status_line.set_session_id(self.session_id)
+
+            # Update environment if provided (/env)
+            new_environment = result.new_environment or self.environment
+            if result.new_environment:
+                self.environment = result.new_environment
+
+            # Update chat display
+            if self.renderer and self.tui:
+                self.renderer.clear_chat()
+                self.renderer.render_history(result.new_trajectory.messages)
+                # Show the command result message after re-rendering history
+                if result.message:
+                    self.renderer.add_ghost_message(result.message)
+                self.tui.reset_render_state()
+                self.tui.request_render()
+
+            # Build new state from the new trajectory
+            new_tools = new_environment.get_tools() if new_environment else []
             return AgentState(
                 actor=Actor(
-                    trajectory=new_trajectory,
+                    trajectory=result.new_trajectory,
                     endpoint=self.endpoint,
                     tools=new_tools,
                 ),
-                environment=self.environment,
-                session_id=self.session_id,
+                environment=new_environment,
+                session_id=result.new_session_id,
             )
 
-        # Check if environment changed (by /env)
-        if self._environment_changed:
-            self._environment_changed = False
+        # Check if endpoint changed (/model or /thinking)
+        if result.new_endpoint:
+            # Update runner state
+            self.endpoint = result.new_endpoint
+
+            # Persist to session
+            if self.session_store and self.session_id:
+                await self.session_store.update(
+                    self.session_id,
+                    endpoint=result.new_endpoint,
+                )
+
+            # Show the command result message
+            if result.message and self.renderer:
+                self.renderer.add_ghost_message(result.message)
+                if self.tui:
+                    self.tui.request_render()
+
             if current_state is None:
-                # No current state - can't update environment
+                # No current state yet - just update runner.endpoint
+                # State will be created when user sends first message
                 return None
-            new_tools = self.environment.get_tools() if self.environment else []
-            return dc_replace(
-                current_state,
-                actor=dc_replace(
-                    current_state.actor,
-                    endpoint=self.endpoint,
-                    tools=new_tools,
-                ),
-                environment=self.environment,
-                session_id=self.session_id,
-            )
 
-        # Check if endpoint changed (by /model or /thinking)
-        # These don't set flags, but they do update self.endpoint
-        # We need to check if endpoint differs from current state
-        if current_state is not None and self.endpoint != current_state.actor.endpoint:
             return dc_replace(
                 current_state,
                 actor=dc_replace(
                     current_state.actor,
-                    endpoint=self.endpoint,
+                    endpoint=result.new_endpoint,
                 ),
             )
 
@@ -1304,262 +1317,9 @@ class InteractiveAgentRunner:
             cancel_scope=self.agent_cancel_scope,
         )
 
-    async def _handle_agent_interrupt(
-        self, agent_states: list[AgentState], current_state: AgentState
-    ) -> AgentState:
-        """Handle agent interruption (Escape key). Returns new state to continue."""
-        self.escape_pressed = False
-        if self.tui:
-            self.tui.hide_loader()
-
-        partial_response = None
-        if self.renderer:
-            partial_response = self.renderer.get_partial_response()
-            self.renderer.finalize_partial_response()
-            self.renderer.add_system_message("Interrupted")
-
-        latest_state = agent_states[-1] if agent_states else current_state
-
-        if latest_state.session_id and latest_state.session_id != self.session_id:
-            self.session_id = latest_state.session_id
-            set_active_session_id(self.session_id)
-            if self.status_line:
-                self.status_line.set_session_id(self.session_id)
-            self._update_env_status_info()
-
-        if self.status_line and self.tui:
-            self._update_token_counts(latest_state)
-            self.tui.request_render()
-
-        # Load messages from session store - this includes any assistant messages
-        # that were persisted during the interrupted turn but aren't in the in-memory state
-        new_messages = []
-        if self.session_store and latest_state.session_id:
-            try:
-                session, _ = await self.session_store.get(latest_state.session_id)
-                if session and session.messages:
-                    new_messages = list(session.messages)
-            except Exception:
-                pass
-
-        # Fall back to in-memory trajectory if session store load failed
-        if not new_messages:
-            new_messages = list(latest_state.actor.trajectory.messages)
-
-        # Add partial response if we interrupted during streaming
-        if partial_response:
-            new_messages.append(
-                Message(role="assistant", content=partial_response + "\n\n[interrupted]")
-            )
-
-        try:
-            from ...feedback import run_exit_survey
-
-            await run_exit_survey(
-                latest_state, self.endpoint, "yield", session_id=self.session_id, skip_check=True
-            )
-        except Exception:
-            pass
-
-        user_input = await self._tui_input_handler("Enter your message: ")
-
-        from dataclasses import replace as dc_replace
-
-        # Check if session was switched by /slice command
-        # If so, rebuild state completely from self.initial_trajectory/endpoint
-        if self._session_switched:
-            self._session_switched = False  # Reset flag
-            new_trajectory = Trajectory(
-                messages=list(self.initial_trajectory.messages)
-                + [Message(role="user", content=user_input)]
-            )
-            new_environment = self.environment
-            new_tools = self.environment.get_tools() if self.environment else []
-            return AgentState(
-                actor=Actor(
-                    trajectory=new_trajectory,
-                    endpoint=self.endpoint,
-                    tools=new_tools,
-                ),
-                environment=new_environment,
-                session_id=self.session_id,
-            )
-
-        new_messages.append(Message(role="user", content=user_input))
-
-        new_trajectory = Trajectory(messages=new_messages)
-
-        # Check if environment was changed by /env command
-        new_environment = latest_state.environment
-        new_tools = latest_state.actor.tools
-        if self._environment_changed and self.environment:
-            new_environment = self.environment
-            new_tools = self.environment.get_tools()
-            self._environment_changed = False  # Reset flag
-
-        return dc_replace(
-            latest_state,
-            actor=dc_replace(
-                latest_state.actor,
-                trajectory=new_trajectory,
-                tools=new_tools,
-            ),
-            environment=new_environment,
-            stop=None,
-        )
-
-    async def _handle_task_completed(self, agent_states: list[AgentState]) -> AgentState:
-        """Handle TASK_COMPLETED in interactive mode - show result and continue.
-
-        Unlike batch mode where TASK_COMPLETED exits, interactive mode should
-        display the result and wait for more user input.
-        """
-        if self.tui:
-            self.tui.hide_loader()
-
-        latest_state = agent_states[-1]
-
-        # Update session tracking
-        if latest_state.session_id and latest_state.session_id != self.session_id:
-            self.session_id = latest_state.session_id
-            set_active_session_id(self.session_id)
-            if self.status_line:
-                self.status_line.set_session_id(self.session_id)
-            self._update_env_status_info()
-
-        if self.status_line and self.tui:
-            self._update_token_counts(latest_state)
-            self.tui.request_render()
-
-        # Check if environment has a final_answer to display
-        if latest_state.environment and hasattr(latest_state.environment, "_final_answer"):
-            final_answer = getattr(latest_state.environment, "_final_answer", None)
-            if final_answer and self.renderer:
-                self.renderer.add_final_answer(final_answer)
-                if self.tui:
-                    self.tui.request_render()
-
-        # Wait for next user input
-        user_input = await self._tui_input_handler("Enter your message: ")
-
-        from dataclasses import replace as dc_replace
-
-        # Check if session was switched by /slice command
-        # If so, rebuild state completely from self.initial_trajectory/endpoint
-        if self._session_switched:
-            self._session_switched = False  # Reset flag
-            new_trajectory = Trajectory(
-                messages=list(self.initial_trajectory.messages)
-                + [Message(role="user", content=user_input)]
-            )
-            new_environment = self.environment
-            new_tools = self.environment.get_tools() if self.environment else []
-            return AgentState(
-                actor=Actor(
-                    trajectory=new_trajectory,
-                    endpoint=self.endpoint,
-                    tools=new_tools,
-                ),
-                environment=new_environment,
-                session_id=self.session_id,
-            )
-
-        # Build new trajectory with user message
-        new_messages = list(latest_state.actor.trajectory.messages)
-        new_messages.append(Message(role="user", content=user_input))
-
-        new_trajectory = Trajectory(messages=new_messages)
-
-        # Check if environment was changed by /env command
-        new_environment = latest_state.environment
-        new_tools = latest_state.actor.tools
-        if self._environment_changed and self.environment:
-            new_environment = self.environment
-            new_tools = self.environment.get_tools()
-            self._environment_changed = False  # Reset flag
-
-        return dc_replace(
-            latest_state,
-            actor=dc_replace(
-                latest_state.actor,
-                trajectory=new_trajectory,
-                tools=new_tools,
-            ),
-            environment=new_environment,
-            stop=None,  # Clear stop so agent continues
-        )
-
-    async def _handle_context_too_long(
-        self, error: Exception, current_state: AgentState
-    ) -> AgentState:
-        """Handle context too long error gracefully.
-
-        Shows a friendly error message and waits for user input.
-        """
-        from ...providers.base import ContextTooLongError
-
-        if self.tui:
-            self.tui.hide_loader()
-
-        # Display error message
-        error_msg = "⚠️  Context too long"
-        if isinstance(error, ContextTooLongError) and error.current_tokens and error.max_tokens:
-            error_msg += f" ({error.current_tokens:,} tokens, max {error.max_tokens:,})"
-
-        if self.renderer:
-            self.renderer.add_user_message(
-                f"{error_msg}\n\n"
-                "The conversation has grown too long for the model's context window.\n"
-                "Please start a new conversation."
-            )
-            if self.tui:
-                self.tui.request_render()
-
-        # Wait for user input
-        user_input = await self._tui_input_handler("Enter your message: ")
-
-        from dataclasses import replace as dc_replace
-
-        # Check if session was switched by /slice command
-        # If so, rebuild state completely from self.initial_trajectory/endpoint
-        if self._session_switched:
-            self._session_switched = False  # Reset flag
-            new_trajectory = Trajectory(
-                messages=list(self.initial_trajectory.messages)
-                + [Message(role="user", content=user_input)]
-            )
-            new_environment = self.environment
-            new_tools = self.environment.get_tools() if self.environment else []
-            return AgentState(
-                actor=Actor(
-                    trajectory=new_trajectory,
-                    endpoint=self.endpoint,
-                    tools=new_tools,
-                ),
-                environment=new_environment,
-                session_id=self.session_id,
-            )
-
-        # Check if environment was changed by /env command
-        new_environment = current_state.environment
-        new_tools = current_state.actor.tools
-        if self._environment_changed and self.environment:
-            new_environment = self.environment
-            new_tools = self.environment.get_tools()
-            self._environment_changed = False  # Reset flag
-
-        # Start fresh with user's new message
-        new_trajectory = Trajectory(messages=[Message(role="user", content=user_input)])
-        return dc_replace(
-            current_state,
-            actor=dc_replace(
-                current_state.actor,
-                trajectory=new_trajectory,
-                tools=new_tools,
-            ),
-            environment=new_environment,
-            stop=None,
-        )
+    # NOTE: Old handler methods (_handle_agent_interrupt, _handle_task_completed,
+    # _handle_context_too_long) were removed. The new _run_agent_loop handles these
+    # cases via the AgentOutcome match statement in a cleaner way.
 
     async def _handle_oauth_expired(
         self, error: Exception, current_state: AgentState
