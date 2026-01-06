@@ -897,6 +897,7 @@ class StopReason(Enum):
     NO_TOOL_CALLED = "NO_TOOL_CALLED"
     TASK_COMPLETED = "TASK_COMPLETED"
     ABORTED = "ABORTED"
+    NEEDS_INPUT = "NEEDS_INPUT"  # Agent waiting for user input (interactive mode)
 
 
 @dataclass(frozen=True)
