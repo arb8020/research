@@ -16,7 +16,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from ...dtypes import Endpoint, Trajectory
+    from ...environments.compose import ComposedEnvironment
     from .interactive_agent import InteractiveAgentRunner
+
+    Environment = ComposedEnvironment  # Type alias for any environment
 
 
 # =============================================================================
@@ -37,12 +41,21 @@ class SlashCommand:
 
 @dataclass
 class SlashCommandResult:
-    """Result of executing a slash command."""
+    """Result of executing a slash command.
+
+    Commands return explicit changes instead of mutating runner state.
+    The caller builds new AgentState from these fields.
+    """
 
     handled: bool = True  # If False, pass the message to the LLM
     message: str | None = None  # Display to user (ghost message)
     expanded_text: str | None = None  # For file commands, send this to LLM instead
-    persist_changes: dict[str, Any] | None = None  # Session metadata to persist
+
+    # Explicit state changes (replaces flag-based mutation)
+    new_endpoint: Endpoint | None = None  # /model, /thinking changed endpoint
+    new_environment: Environment | None = None  # /env changed environment
+    new_session_id: str | None = None  # /slice, /env created new session
+    new_trajectory: Trajectory | None = None  # /slice changed message history
 
 
 # =============================================================================
@@ -132,8 +145,11 @@ def _find_similar_command(command: str) -> str | None:
 
 
 async def _handle_model(runner: InteractiveAgentRunner, args: str) -> SlashCommandResult:
-    """Handle /model command."""
+    """Handle /model command.
 
+    Returns new_endpoint instead of mutating runner.endpoint.
+    Caller is responsible for updating state and persisting.
+    """
     from ...models import get_model, get_models, get_providers
 
     if not args:
@@ -187,7 +203,7 @@ async def _handle_model(runner: InteractiveAgentRunner, args: str) -> SlashComma
     from ...dtypes import Endpoint
 
     old_endpoint = runner.endpoint
-    
+
     # Get API key for the new provider
     if old_endpoint.provider == provider:
         # Same provider - keep existing auth
@@ -201,12 +217,14 @@ async def _handle_model(runner: InteractiveAgentRunner, args: str) -> SlashComma
         elif provider == "anthropic":
             new_api_key = os.environ.get("ANTHROPIC_API_KEY", "")
         elif provider == "google":
-            new_api_key = os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", "")
+            new_api_key = os.environ.get("GEMINI_API_KEY", "") or os.environ.get(
+                "GOOGLE_API_KEY", ""
+            )
         else:
             # For other providers, try generic pattern
             new_api_key = os.environ.get(f"{provider.upper()}_API_KEY", "")
-    
-    runner.endpoint = Endpoint(
+
+    new_endpoint = Endpoint(
         provider=provider,
         model=model_id,
         # Preserve generic settings that apply to all providers
@@ -224,15 +242,9 @@ async def _handle_model(runner: InteractiveAgentRunner, args: str) -> SlashComma
         # - max_completion_tokens=None (OpenAI-only)
     )
 
-    # Persist to session
-    if runner.session_store and runner.session_id:
-        await runner.session_store.update(
-            runner.session_id,
-            endpoint=runner.endpoint,
-        )
-
     return SlashCommandResult(
         message=f"Switched to: {provider}/{model_id}",
+        new_endpoint=new_endpoint,
     )
 
 
@@ -259,7 +271,12 @@ def _make_thinking_config(budget: int | None) -> dict[str, Any] | None:
 
 
 async def _handle_thinking(runner: InteractiveAgentRunner, args: str) -> SlashCommandResult:
-    """Handle /thinking command."""
+    """Handle /thinking command.
+
+    Returns new_endpoint instead of mutating runner.endpoint.
+    Caller is responsible for updating state and persisting.
+    """
+    from dataclasses import replace as dc_replace
 
     from ...models import get_model
 
@@ -311,28 +328,22 @@ async def _handle_thinking(runner: InteractiveAgentRunner, args: str) -> SlashCo
             new_max_tokens = new_budget + 4096  # Give room for response
         new_temperature = 1.0  # Anthropic requires temp=1.0 with thinking
 
-    from dataclasses import replace as dc_replace
-
-    runner.endpoint = dc_replace(
+    new_endpoint = dc_replace(
         runner.endpoint,
         thinking=new_thinking,
         max_tokens=new_max_tokens,
         temperature=new_temperature,
     )
 
-    # Persist to session
-    if runner.session_store and runner.session_id:
-        await runner.session_store.update(
-            runner.session_id,
-            endpoint=runner.endpoint,
-        )
-
     if new_budget:
         status = f"on (budget: {new_budget} tokens)"
     else:
         status = "off"
 
-    return SlashCommandResult(message=f"Thinking: {status}")
+    return SlashCommandResult(
+        message=f"Thinking: {status}",
+        new_endpoint=new_endpoint,
+    )
 
 
 # =============================================================================
@@ -341,7 +352,12 @@ async def _handle_thinking(runner: InteractiveAgentRunner, args: str) -> SlashCo
 
 
 async def _handle_slice(runner: InteractiveAgentRunner, args: str) -> SlashCommandResult:
-    """Handle /slice command."""
+    """Handle /slice command.
+
+    Returns new_session_id and new_trajectory instead of calling switch_session.
+    Caller is responsible for updating state and TUI.
+    """
+    from ...dtypes import Trajectory
     from ...slice import parse_slice_spec, run_slice_command
 
     # Determine which session to use for slicing:
@@ -375,7 +391,7 @@ async def _handle_slice(runner: InteractiveAgentRunner, args: str) -> SlashComma
 
     # Parse spec to validate
     try:
-        segments = parse_slice_spec(args)
+        parse_slice_spec(args)
     except ValueError as e:
         return SlashCommandResult(message=f"Invalid slice spec: {e}")
 
@@ -398,23 +414,18 @@ async def _handle_slice(runner: InteractiveAgentRunner, args: str) -> SlashComma
     if not child:
         return SlashCommandResult(message="Slice produced no result")
 
-    # Save endpoint before switch (switch_session loads endpoint from stored session,
-    # but we want to keep our current endpoint which has the active OAuth token etc)
-    saved_endpoint = runner.endpoint
+    # Reload the child session to get the actual messages
+    # (run_slice_command returns session object before messages are appended)
+    child_reloaded, err = await runner.session_store.get(child.session_id)
+    if err or not child_reloaded:
+        return SlashCommandResult(message=f"Slice created but failed to reload: {err}")
 
-    # Switch to the child session
-    switched = await runner.switch_session(child.session_id)
-
-    # Restore endpoint - switch_session loads from storage which may have stale auth
-    runner.endpoint = saved_endpoint
-
-    if switched:
-        return SlashCommandResult(message=f"Switched to child session: {child.session_id}")
-    else:
-        # Fallback if switch failed
-        return SlashCommandResult(
-            message=f"Created child session: {child.session_id}\n\nSwitch failed. Run:\n  rollouts -s {child.session_id}"
-        )
+    # Return the new session info - caller handles the switch
+    return SlashCommandResult(
+        message=f"Switched to child session: {child.session_id}",
+        new_session_id=child.session_id,
+        new_trajectory=Trajectory(messages=list(child_reloaded.messages)),
+    )
 
 
 def _get_available_envs() -> list[str]:
@@ -525,8 +536,11 @@ async def _handle_env(runner: InteractiveAgentRunner, args: str) -> SlashCommand
     /env           - Show current environment
     /env list      - List available environments
     /env <spec>    - Switch to new environment (creates child session)
+
+    Returns new_environment and new_session_id instead of mutating runner.
+    Caller is responsible for updating state and TUI.
     """
-    from ...dtypes import EnvironmentConfig
+    from ...dtypes import EnvironmentConfig, Trajectory
 
     # /env (no args) - show current
     if not args:
@@ -570,6 +584,32 @@ async def _handle_env(runner: InteractiveAgentRunner, args: str) -> SlashCommand
     if err or not session:
         return SlashCommandResult(message=f"Cannot load session: {err}")
 
+    # Build new system prompt for the new environment's tools
+    from ...dtypes import Message
+    from ...prompt import build_system_prompt
+
+    new_tools = new_env.get_tools()
+    env_system_prompt = new_env.get_system_prompt() if hasattr(new_env, "get_system_prompt") else None
+    new_system_prompt = build_system_prompt(
+        env_name=env_spec,
+        tools=new_tools,
+        cwd=working_dir,
+        env_system_prompt=env_system_prompt,
+    )
+
+    # Build new messages: replace system prompt, keep conversation history
+    new_messages: list[Message] = []
+    for msg in session.messages:
+        if msg.role == "system":
+            # Replace with new system prompt
+            new_messages.append(Message(role="system", content=new_system_prompt))
+        else:
+            new_messages.append(msg)
+
+    # If no system message existed, prepend one
+    if not any(m.role == "system" for m in new_messages):
+        new_messages.insert(0, Message(role="system", content=new_system_prompt))
+
     # Create child session with new environment
     new_env_config = EnvironmentConfig(type=env_spec)
     child_session = await runner.session_store.create(
@@ -579,8 +619,8 @@ async def _handle_env(runner: InteractiveAgentRunner, args: str) -> SlashCommand
         branch_point=len(session.messages),
     )
 
-    # Copy messages from parent to child
-    for msg in session.messages:
+    # Copy messages to child (with updated system prompt)
+    for msg in new_messages:
         await runner.session_store.append_message(child_session.session_id, msg)
 
     # Serialize and store the new environment state
@@ -591,39 +631,13 @@ async def _handle_env(runner: InteractiveAgentRunner, args: str) -> SlashCommand
             environment_state=env_state,
         )
 
-    # Update runner's environment before switching
-    runner.environment = new_env
-
-    # Signal that environment changed (for TUI to update current_state)
-    if hasattr(runner, "_environment_changed"):
-        runner._environment_changed = True
-
-    # Save endpoint before switch (switch_session loads endpoint from stored session,
-    # but we want to keep our current endpoint which has the active OAuth token etc)
-    saved_endpoint = runner.endpoint
-
-    # Switch to the child session
-    switched = await runner.switch_session(child_session.session_id)
-
-    # Restore endpoint - switch_session loads from storage which may have stale auth
-    runner.endpoint = saved_endpoint
-
-    # Reset _session_switched since /env uses _environment_changed instead.
-    # switch_session sets _session_switched which would cause the handler to
-    # rebuild state from initial_trajectory (wrong system prompt). We want
-    # the _environment_changed path which keeps the trajectory but swaps env/tools.
-    if hasattr(runner, "_session_switched"):
-        runner._session_switched = False
-
-    if switched:
-        return SlashCommandResult(
-            message=f"Switched to session {child_session.session_id} with env {env_spec}"
-        )
-    else:
-        return SlashCommandResult(
-            message=f"Created session {child_session.session_id} with env {env_spec}\n\n"
-            f"Switch failed. Run:\n  rollouts -s {child_session.session_id}"
-        )
+    # Return the new session and environment - caller handles the switch
+    return SlashCommandResult(
+        message=f"Switched to session {child_session.session_id} with env {env_spec}",
+        new_session_id=child_session.session_id,
+        new_environment=new_env,
+        new_trajectory=Trajectory(messages=new_messages),
+    )
 
 
 # =============================================================================
