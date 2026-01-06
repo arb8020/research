@@ -41,6 +41,7 @@ from ..dtypes import (
     ToolFunctionParameter,
     ToolResult,
 )
+from ._formatting import format_tool_output, get_text_output
 
 # Safe builtins for REPL execution
 SAFE_BUILTINS = {
@@ -95,19 +96,6 @@ MAX_OUTPUT_SIZE = 50_000  # 50KB max stdout capture
 # ── Tool Formatters ───────────────────────────────────────────────────────────
 
 
-def _get_text_output(result: dict | None) -> str:
-    """Extract text output from tool result."""
-    if not result:
-        return ""
-    content = result.get("content", "")
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        text_blocks = [c for c in content if isinstance(c, dict) and c.get("type") == "text"]
-        return "\n".join(c.get("text", "") for c in text_blocks if c.get("text"))
-    return ""
-
-
 def format_final_answer(
     tool_name: str, args: dict, result: dict | None, expanded: bool, theme: Theme | None = None
 ) -> str:
@@ -153,7 +141,7 @@ def format_repl(
     text = f"repl()\n```python\n{display_code}\n```"
 
     if result:
-        output = _get_text_output(result).strip()
+        output = get_text_output(result).strip()
         if output:
             is_error = result.get("isError", False)
             lines = output.split("\n")
@@ -186,23 +174,16 @@ def format_agent(
     task_preview = task[:100] + "..." if len(task) > 100 else task
     context_len = len(context)
 
-    text = f"agent(task={repr(task_preview)}, context=<{context_len:,} chars>)"
-
-    if result:
-        output = _get_text_output(result).strip()
-        if output:
-            is_error = result.get("isError", False)
-            lines = output.split("\n")
-            max_lines = len(lines) if expanded else 15
-
-            summary = "Sub-agent failed" if is_error else "Sub-agent result"
-            text += f"\n⎿ {summary}:"
-            for line in lines[:max_lines]:
-                text += "\n  " + line
-            if len(lines) > max_lines:
-                text += f"\n  ... ({len(lines) - max_lines} more lines)"
-
-    return text
+    header = f"agent(task={repr(task_preview)}, context=<{context_len:,} chars>)"
+    return format_tool_output(
+        header,
+        result,
+        expanded,
+        theme,
+        max_lines=15,
+        success_summary="Sub-agent result:",
+        error_summary="Sub-agent failed:",
+    )
 
 
 def format_llm_query(
@@ -210,27 +191,17 @@ def format_llm_query(
 ) -> str:
     """Format llm_query tool - show prompt summary and response."""
     prompt = args.get("prompt", "")
-
-    # Show truncated prompt
-    prompt_preview = prompt[:80] + "..." if len(prompt) > 80 else prompt
-    prompt_preview = prompt_preview.replace("\n", "\\n")
-    text = f"llm_query({repr(prompt_preview)})"
-
-    if result:
-        output = _get_text_output(result).strip()
-        if output:
-            is_error = result.get("isError", False)
-            lines = output.split("\n")
-            max_lines = len(lines) if expanded else 10
-
-            summary = "Error" if is_error else "Response"
-            text += f"\n⎿ {summary}:"
-            for line in lines[:max_lines]:
-                text += "\n  " + line
-            if len(lines) > max_lines:
-                text += f"\n  ... ({len(lines) - max_lines} more lines)"
-
-    return text
+    prompt_preview = (prompt[:80] + "..." if len(prompt) > 80 else prompt).replace("\n", "\\n")
+    header = f"llm_query({repr(prompt_preview)})"
+    return format_tool_output(
+        header,
+        result,
+        expanded,
+        theme,
+        max_lines=10,
+        success_summary="Response:",
+        error_summary="Error:",
+    )
 
 
 def _create_namespace(

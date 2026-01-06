@@ -62,9 +62,9 @@ def format_web_search(
     text = f"web_search(query={repr(query[:50] + '...' if len(query) > 50 else query)})"
 
     if result:
-        from .coding import _get_text_output
+        from ._formatting import get_text_output
 
-        output = _get_text_output(result).strip()
+        output = get_text_output(result).strip()
         is_error = result.get("isError", False)
 
         if is_error:
@@ -100,9 +100,9 @@ def format_web_fetch(
     text = f"web_fetch(url={repr(display_url)})"
 
     if result:
-        from .coding import _get_text_output
+        from ._formatting import get_text_output
 
-        output = _get_text_output(result).strip()
+        output = get_text_output(result).strip()
         is_error = result.get("isError", False)
 
         if is_error:
