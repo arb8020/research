@@ -1262,6 +1262,10 @@ def create_environment(config: CLIConfig) -> tuple[Environment | None, bool]:
                 environments.append(REPLEnvironment(context=context, sub_endpoint=config.endpoint))
             elif env_name == "calculator":
                 environments.append(CalculatorEnvironment())
+            elif env_name == "ask_user":
+                from .environments.ask_user import AskUserQuestionEnvironment
+
+                environments.append(AskUserQuestionEnvironment())
             else:
                 print(f"Unknown environment in composition: {env_name}", file=sys.stderr)
                 return None, False
