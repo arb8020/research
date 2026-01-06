@@ -224,6 +224,15 @@ async def _handle_model(runner: InteractiveAgentRunner, args: str) -> SlashComma
         # - max_completion_tokens=None (OpenAI-only)
     )
 
+    # DEBUG: Print the new endpoint to stderr
+    import sys
+    print(f"[DEBUG /model] Created new endpoint:", file=sys.stderr)
+    print(f"  provider={runner.endpoint.provider}", file=sys.stderr)
+    print(f"  model={runner.endpoint.model}", file=sys.stderr)
+    print(f"  api_base='{runner.endpoint.api_base}'", file=sys.stderr)
+    print(f"  api_key={runner.endpoint.api_key[:10] if runner.endpoint.api_key else '(none)'}...", file=sys.stderr)
+    print(f"  thinking={runner.endpoint.thinking}", file=sys.stderr)
+
     # Persist to session
     if runner.session_store and runner.session_id:
         await runner.session_store.update(
