@@ -14,6 +14,11 @@ For Anthropic: auto-uses OAuth if logged in, otherwise ANTHROPIC_API_KEY.
 
 from __future__ import annotations
 
+# Load .env file for API keys (if present)
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import argparse
 import sys
 from dataclasses import dataclass, field
