@@ -32,7 +32,8 @@ from .agent_renderer import AgentRenderer
 from .components.input import Input
 from .components.loader_container import LoaderContainer
 from .components.spacer import Spacer
-from .slash_commands import handle_slash_command
+from .control_flow_types import InputMessage, InputNewState, InputResult
+from .slash_commands import SlashCommandResult, handle_slash_command
 from .terminal import ProcessTerminal, set_active_session_id
 from .tui import TUI
 
@@ -565,6 +566,134 @@ class InteractiveAgentRunner:
             self.input_component.set_text("")
 
         return user_input
+
+    async def _get_input_result(
+        self, current_state: AgentState | None
+    ) -> InputResult:
+        """Get user input and return explicit result type.
+
+        This is the new control-flow-explicit version of input handling.
+        Instead of slash commands mutating self.* and setting flags,
+        we return what happened so the caller can handle it explicitly.
+
+        Args:
+            current_state: Current agent state (None before first message)
+
+        Returns:
+            InputResult indicating what happened:
+            - InputExit: User wants to quit
+            - InputContinue: Slash command handled, get more input
+            - InputNewState: State changed (model/env/session switch)
+            - InputMessage: User message to send to LLM
+        """
+        from .utils import strip_terminal_control_sequences
+
+        if self.input_receive is None:
+            raise RuntimeError("Input channel not initialized")
+
+        # Loop until we get a result to return
+        while True:
+            user_input = await self._get_next_input()
+            user_input = strip_terminal_control_sequences(user_input)
+
+            # Handle slash commands
+            if user_input.startswith("/"):
+                result = await handle_slash_command(self, user_input)
+
+                # Show any message from the command
+                if result.message and self.renderer:
+                    self.renderer.add_ghost_message(result.message)
+
+                if result.handled:
+                    # Check if state changed - build new state if so
+                    new_state = self._build_state_from_slash_result(
+                        result, current_state
+                    )
+                    if new_state is not None:
+                        return InputNewState(state=new_state, message=result.message)
+                    # Command handled but no state change (e.g., /model with no args)
+                    continue
+
+                if result.expanded_text:
+                    # File-based command expanded, treat as user message
+                    user_input = result.expanded_text
+                # else: unknown command, pass through to LLM as-is
+
+            # We have a message to send to LLM
+            # Add to renderer for display
+            if self.renderer:
+                self.renderer.add_user_message(
+                    user_input, is_first=self.is_first_user_message
+                )
+                self.is_first_user_message = False
+
+            return InputMessage(text=user_input)
+
+    def _build_state_from_slash_result(
+        self,
+        result: SlashCommandResult,
+        current_state: AgentState | None,
+    ) -> AgentState | None:
+        """Build new AgentState if slash command changed something.
+
+        Returns None if no state change occurred.
+
+        This checks the flags that slash commands currently set and builds
+        a new state. Eventually, slash commands will return the changes
+        directly and we won't need flags.
+        """
+        from dataclasses import replace as dc_replace
+
+        # Check if session was switched (by /slice or /env calling switch_session)
+        if self._session_switched:
+            self._session_switched = False
+            # Build state from self.initial_trajectory and self.endpoint
+            # which were updated by switch_session()
+            new_trajectory = Trajectory(
+                messages=list(self.initial_trajectory.messages)
+            )
+            new_tools = self.environment.get_tools() if self.environment else []
+            return AgentState(
+                actor=Actor(
+                    trajectory=new_trajectory,
+                    endpoint=self.endpoint,
+                    tools=new_tools,
+                ),
+                environment=self.environment,
+                session_id=self.session_id,
+            )
+
+        # Check if environment changed (by /env)
+        if self._environment_changed:
+            self._environment_changed = False
+            if current_state is None:
+                # No current state - can't update environment
+                return None
+            new_tools = self.environment.get_tools() if self.environment else []
+            return dc_replace(
+                current_state,
+                actor=dc_replace(
+                    current_state.actor,
+                    endpoint=self.endpoint,
+                    tools=new_tools,
+                ),
+                environment=self.environment,
+                session_id=self.session_id,
+            )
+
+        # Check if endpoint changed (by /model or /thinking)
+        # These don't set flags, but they do update self.endpoint
+        # We need to check if endpoint differs from current state
+        if current_state is not None and self.endpoint != current_state.actor.endpoint:
+            return dc_replace(
+                current_state,
+                actor=dc_replace(
+                    current_state.actor,
+                    endpoint=self.endpoint,
+                ),
+            )
+
+        return None
 
     async def _handle_stream_event(self, event: StreamEvent) -> None:
         """Handle streaming event - render to TUI.
