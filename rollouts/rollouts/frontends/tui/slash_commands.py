@@ -180,8 +180,21 @@ async def _handle_model(runner: InteractiveAgentRunner, args: str) -> SlashComma
 
         return SlashCommandResult(message=msg)
 
-    # Update endpoint
-    runner.endpoint = dc_replace(runner.endpoint, provider=provider, model=model_id)
+    # Update endpoint - reset provider-specific fields when switching providers
+    old_provider = runner.endpoint.provider
+    new_endpoint_kwargs = {"provider": provider, "model": model_id}
+
+    # If switching providers, reset provider-specific settings
+    if old_provider != provider:
+        # Reset api_base to default (empty string = use provider default)
+        new_endpoint_kwargs["api_base"] = ""
+        # Reset thinking (Anthropic-only feature)
+        new_endpoint_kwargs["thinking"] = None
+        # Reset OpenAI-specific fields
+        new_endpoint_kwargs["reasoning_effort"] = None
+        new_endpoint_kwargs["max_completion_tokens"] = None
+
+    runner.endpoint = dc_replace(runner.endpoint, **new_endpoint_kwargs)
 
     # Persist to session
     if runner.session_store and runner.session_id:
