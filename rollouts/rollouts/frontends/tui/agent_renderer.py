@@ -10,6 +10,8 @@ from typing import Any
 from ...dtypes import (
     LLMCallStart,
     Message,
+    RetryEnd,
+    RetryStart,
     StreamDone,
     StreamError,
     StreamEvent,
@@ -135,6 +137,18 @@ class AgentRenderer:
 
             case StreamError(error=err):
                 self._handle_stream_error(err)
+
+            case RetryStart(
+                attempt=attempt,
+                max_attempts=max_attempts,
+                delay_seconds=delay,
+                error_message=error_msg,
+                provider=provider,
+            ):
+                self._handle_retry_start(attempt, max_attempts, delay, error_msg, provider)
+
+            case RetryEnd(success=success, attempt=attempt, final_error=final_error):
+                self._handle_retry_end(success, attempt, final_error)
 
         self.tui.request_render()
 
@@ -377,6 +391,39 @@ class AgentRenderer:
 
         error_text = Text(f"Error: {error}", padding_x=1, padding_y=0)
         self.chat_container.add_child(error_text)
+
+    def _handle_retry_start(
+        self,
+        attempt: int,
+        max_attempts: int,
+        delay_seconds: float,
+        error_message: str,
+        provider: str,
+    ) -> None:
+        """Handle retry start - show retry status in loader with error reason."""
+        delay_int = int(delay_seconds)
+        # Truncate error message to keep loader line reasonable
+        error_short = error_message[:50] + "..." if len(error_message) > 50 else error_message
+        self.tui.show_loader(
+            f"Retrying ({attempt}/{max_attempts}) in {delay_int}s: {error_short}",
+            spinner_color_fn=self.theme.fg(self.theme.warning),
+            text_color_fn=self.theme.fg(self.theme.muted),
+        )
+
+    def _handle_retry_end(self, success: bool, attempt: int, final_error: str | None) -> None:
+        """Handle retry end - clear retry status."""
+        self.tui.hide_loader()
+
+        # If failed, show error message
+        if not success and final_error:
+            from .components.text import Text
+
+            error_text = Text(
+                f"Retry failed after {attempt} attempts: {final_error[:100]}",
+                padding_x=1,
+                padding_y=0,
+            )
+            self.chat_container.add_child(error_text)
 
     def add_user_message(self, text: str, is_first: bool = False) -> None:
         """Add a user message to the chat.

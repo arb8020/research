@@ -39,6 +39,7 @@ class Theme:
     muted: str = "#666666"
     dim: str = "#505050"
     text: str = "#cccccc"
+    warning: str = "#f0c674"  # Yellow/amber for warnings and retries
 
     # Message backgrounds
     user_message_bg: str = "#343541"

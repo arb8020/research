@@ -19,6 +19,8 @@ from ..dtypes import (
     ImageContent,
     LLMCallStart,
     Message,
+    RetryEnd,
+    RetryStart,
     StreamDone,
     StreamError,
     StreamEvent,
@@ -49,6 +51,60 @@ from .base import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _format_rate_limit_error(exc: Exception) -> str:
+    """Format rate limit error with human-readable time until reset.
+
+    Parses the retry-after header or anthropic-ratelimit headers to show
+    something like "Rate limited (42m until reset)" instead of raw error JSON.
+    """
+    import anthropic
+
+    if not isinstance(exc, anthropic.RateLimitError):
+        # Not a rate limit error, return truncated message
+        return str(exc)[:100]
+
+    # Try to get retry-after from response headers
+    retry_after_seconds: int | None = None
+
+    if hasattr(exc, "response") and exc.response is not None:
+        headers = exc.response.headers
+
+        # Check retry-after header (in seconds)
+        retry_after = headers.get("retry-after")
+        if retry_after:
+            try:
+                retry_after_seconds = int(retry_after)
+            except ValueError:
+                pass
+
+        # Fallback: check anthropic-ratelimit-unified-reset (Unix timestamp)
+        if retry_after_seconds is None:
+            reset_timestamp = headers.get("anthropic-ratelimit-unified-reset")
+            if reset_timestamp:
+                try:
+                    reset_ts = int(reset_timestamp)
+                    retry_after_seconds = max(0, reset_ts - int(time.time()))
+                except ValueError:
+                    pass
+
+    # Format the message
+    if retry_after_seconds is not None:
+        if retry_after_seconds >= 3600:
+            hours = retry_after_seconds // 3600
+            mins = (retry_after_seconds % 3600) // 60
+            time_str = f"{hours}h {mins}m" if mins > 0 else f"{hours}h"
+        elif retry_after_seconds >= 60:
+            mins = retry_after_seconds // 60
+            time_str = f"{mins}m"
+        else:
+            time_str = f"{retry_after_seconds}s"
+
+        return f"Rate limited ({time_str} until reset)"
+
+    # Fallback to generic message
+    return "Rate limited"
 
 
 def _apply_inline_thinking_template(
@@ -743,10 +799,12 @@ async def rollout_anthropic(
     max_retries = 10
     base_delay = 2
     completion = None
+    retrying = False  # Track if we emitted a RetryStart (to emit RetryEnd on success)
 
     for attempt in range(max_retries + 1):
         try:
             # Emit LLMCallStart before making the API call
+            logger.debug(f"Anthropic API call attempt {attempt + 1}/{max_retries + 1}")
             await on_chunk(LLMCallStart())
 
             # Build extra headers - include oauth beta header if using oauth
@@ -759,6 +817,9 @@ async def rollout_anthropic(
                 extra_headers=extra_headers,
             ) as stream:
                 completion = await aggregate_anthropic_stream(stream, on_chunk)
+                # If we were retrying and succeeded, emit RetryEnd
+                if retrying:
+                    await on_chunk(RetryEnd(success=True, attempt=attempt + 1))
                 break
 
         except Exception as e:
@@ -795,7 +856,16 @@ async def rollout_anthropic(
             # For OAuth: try to refresh token and retry once on auth errors
             if isinstance(e, anthropic.AuthenticationError):
                 if oauth_token and attempt == 0:
-                    print("🔄 OAuth token rejected, attempting refresh...")
+                    # Emit retry event for OAuth refresh
+                    await on_chunk(
+                        RetryStart(
+                            attempt=1,
+                            max_attempts=2,
+                            delay_seconds=0,
+                            error_message="OAuth token rejected, attempting refresh",
+                            provider="anthropic",
+                        )
+                    )
                     fresh_token = await _get_fresh_oauth_token()
                     if fresh_token and fresh_token != oauth_token:
                         oauth_token = fresh_token
@@ -808,7 +878,6 @@ async def rollout_anthropic(
                             max_retries=actor.endpoint.max_retries,
                             timeout=actor.endpoint.timeout,
                         )
-                        print("🔐 OAuth token refreshed, retrying...")
                         continue
                 raise RuntimeError(
                     f"Authentication failed: {e}\nCheck your API key or OAuth token."
@@ -818,19 +887,34 @@ async def rollout_anthropic(
             if isinstance(e, ValueError):
                 raise
 
-            print(f"🔄 Anthropic API error (attempt {attempt + 1}/{max_retries + 1}): {str(e)}")
-            if attempt == 0:  # Log detailed error info on first attempt
-                print(f"   Endpoint model: {actor.endpoint.model}")
-                print(f"   Endpoint api_base: {actor.endpoint.api_base}")
-
+            # Transient error - emit retry event and wait
             if attempt < max_retries:
                 delay = base_delay * (2**attempt)
-                print(f"   Retrying in {delay}s...")
+                error_msg = _format_rate_limit_error(e)
+                await on_chunk(
+                    RetryStart(
+                        attempt=attempt + 1,
+                        max_attempts=max_retries + 1,
+                        delay_seconds=delay,
+                        error_message=error_msg,
+                        provider="anthropic",
+                    )
+                )
+                retrying = True
                 await trio.sleep(delay)
                 continue
 
-            # All retries exhausted - raise ProviderError (excluded from accuracy)
+            # All retries exhausted - emit RetryEnd and raise ProviderError
             from .base import ProviderError
+
+            error_msg = _format_rate_limit_error(e)
+            await on_chunk(
+                RetryEnd(
+                    success=False,
+                    attempt=max_retries + 1,
+                    final_error=error_msg,
+                )
+            )
 
             sanitized = sanitize_request_for_logging(params)
             logger.exception(

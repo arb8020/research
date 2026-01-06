@@ -354,6 +354,37 @@ class StreamError(JsonSerializable):
     timestamp: float = field(default_factory=time.time)
 
 
+@dataclass(frozen=True)
+class RetryStart(JsonSerializable):
+    """Emitted when starting a retry attempt after a transient error.
+
+    Allows TUI to show retry status (e.g., "Retrying (1/3) in 2s... (esc to cancel)")
+    instead of raw print() statements that mess up the display.
+    """
+
+    attempt: int  # Current attempt number (1-indexed)
+    max_attempts: int  # Total number of attempts allowed
+    delay_seconds: float  # Seconds until retry
+    error_message: str  # What error triggered the retry
+    provider: str  # "anthropic", "openai", etc.
+    type: Literal["retry_start"] = "retry_start"
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class RetryEnd(JsonSerializable):
+    """Emitted when retry completes (either success or final failure).
+
+    Allows TUI to clean up retry display and show appropriate status.
+    """
+
+    success: bool  # True if retry succeeded, False if all attempts exhausted
+    attempt: int  # Final attempt number
+    final_error: str | None = None  # Error message if failed
+    type: Literal["retry_end"] = "retry_end"
+    timestamp: float = field(default_factory=time.time)
+
+
 # Union type for all streaming events
 StreamEvent = (
     LLMCallStart
@@ -372,6 +403,8 @@ StreamEvent = (
     | ToolResultReceived
     | StreamDone
     | StreamError
+    | RetryStart
+    | RetryEnd
     | StreamChunk  # DEPRECATED: Included for backwards compatibility, will be removed
 )
 
