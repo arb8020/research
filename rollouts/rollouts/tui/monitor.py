@@ -126,7 +126,7 @@ RL_TRAINING_PANES = (
 )
 
 EVAL_PANES = (
-    PaneConfig.create("Eval", ["eval", "kernelbench", "research"]),
+    PaneConfig.create("Eval", ["eval", "kernelbench", "research", "gepa", "prompt_optimization"]),
     PaneConfig.create("Modal", ["modal"]),
     PaneConfig.create("Agent", ["agent", "agents"]),
     PaneConfig.create(
@@ -218,6 +218,19 @@ class TrainingMonitor:
         # Line queue for passing to streaming viewer (shared with caller)
         self._line_queue = line_queue
 
+        # Eval progress tracking (for sample-level progress display)
+        self._eval_name: str = ""
+        self._eval_samples: dict[str, dict] = {}  # sample_id -> {name, turn, phase, score, ...}
+        self._eval_sample_order: list[str] = []  # Preserve insertion order
+        self._eval_total: int = 0
+        self._eval_completed: int = 0
+
+        # GEPA progress tracking
+        self._gepa_iteration: int = 0
+        self._gepa_evals_used: int = 0
+        self._gepa_evals_budget: int = 0
+        self._gepa_best_score: float = 0.0
+
     def _get_active_pane_config(self) -> PaneConfig:
         """Get the PaneConfig for the currently active pane."""
         for cfg in self.pane_configs:
@@ -252,6 +265,49 @@ class TrainingMonitor:
             pane_name = self.route_log_line(log_line)
             self.panes[pane_name].add_line(log_line)
             self._needs_redraw = True
+
+    def _handle_eval_event(self, event_type: str, data: dict) -> None:
+        """Handle eval/GEPA events and update progress state."""
+        if event_type == "eval_start":
+            self._eval_name = data.get("name", "eval")
+            self._eval_total = data.get("total", 0)
+
+        elif event_type == "sample_start":
+            sample_id = data.get("id", "")
+            self._eval_samples[sample_id] = {
+                "name": data.get("name", sample_id),
+                "turn": 0,
+                "phase": "",
+                "score": None,
+            }
+            if sample_id not in self._eval_sample_order:
+                self._eval_sample_order.append(sample_id)
+
+        elif event_type == "turn":
+            sample_id = data.get("id", "")
+            if sample_id in self._eval_samples:
+                self._eval_samples[sample_id]["turn"] = data.get("turn", 0)
+                self._eval_samples[sample_id]["status"] = data.get("status", "")
+
+        elif event_type == "modal_progress":
+            sample_id = data.get("id", "")
+            if sample_id in self._eval_samples:
+                self._eval_samples[sample_id]["phase"] = data.get("phase", "")
+
+        elif event_type == "sample_end":
+            sample_id = data.get("id", "")
+            if sample_id in self._eval_samples:
+                self._eval_samples[sample_id]["score"] = data.get("score")
+                self._eval_samples[sample_id]["phase"] = ""
+                self._eval_completed += 1
+
+        elif event_type == "gepa_start":
+            self._gepa_evals_budget = data.get("max_evaluations", 0)
+
+        elif event_type == "gepa_iteration":
+            self._gepa_iteration = data.get("iteration", 0)
+            self._gepa_evals_used = data.get("evals_used", 0)
+            self._gepa_best_score = data.get("best_score", 0.0)
 
     def parse_jsonl_line(self, raw: str) -> LogLine | None:
         """Parse a JSONL line into LogLine."""
@@ -307,6 +363,55 @@ class TrainingMonitor:
                         level="INFO",
                         extra=data,
                     )
+
+            # Check if this is an eval event (from events.py EventEmitter)
+            event_type = data.get("type", "")
+            if event_type:
+                self._handle_eval_event(event_type, data)
+                # Also create a log line for the pane
+                if event_type in ("sample_start", "sample_end", "modal_progress", "turn"):
+                    sample_id = data.get("id", "")
+                    sample = self._eval_samples.get(sample_id, {})
+                    name = sample.get("name", sample_id)[:20]
+                    if event_type == "sample_start":
+                        return LogLine(
+                            logger="eval",
+                            message=f"▶ {name} started",
+                            level="INFO",
+                            extra=data,
+                        )
+                    elif event_type == "sample_end":
+                        score = data.get("score", 0)
+                        return LogLine(
+                            logger="eval",
+                            message=f"✓ {name} score={score:.2f}",
+                            level="INFO",
+                            extra=data,
+                        )
+                    elif event_type == "modal_progress":
+                        phase = data.get("phase", "")
+                        return LogLine(
+                            logger="modal",
+                            message=f"  {name}: {phase}",
+                            level="DEBUG",
+                            extra=data,
+                        )
+                elif event_type.startswith("gepa_"):
+                    if event_type == "gepa_iteration":
+                        return LogLine(
+                            logger="eval",
+                            message=f"GEPA iter {data.get('iteration', 0)}: best={data.get('best_score', 0):.2%}",
+                            level="INFO",
+                            extra=data,
+                        )
+                    elif event_type in ("gepa_accepted", "gepa_rejected"):
+                        action = "✓ accepted" if "accepted" in event_type else "✗ rejected"
+                        return LogLine(
+                            logger="eval",
+                            message=f"  {action}: {data.get('old_score', 0):.2f} → {data.get('new_score', 0):.2f}",
+                            level="INFO",
+                            extra=data,
+                        )
 
             # Check if this is a metrics entry (has step + numeric values)
             if "step" in data and any(
@@ -543,6 +648,12 @@ class TrainingMonitor:
         # Tab bar
         output.append(self._render_tab_bar(width))
 
+        # Eval/GEPA progress header (if we have eval data)
+        progress_lines = self._render_eval_progress(width)
+        if progress_lines:
+            output.extend(progress_lines)
+            content_height -= len(progress_lines)
+
         # Content - special handling for metrics and traces panes
         if pane_config.is_metrics and self._metrics:
             # Use plotext chart (takes most of the space)
@@ -587,6 +698,57 @@ class TrainingMonitor:
         # Write to terminal
         for i, line in enumerate(output):
             self.terminal.write(f"\x1b[{i + 1};1H{line}")
+
+    def _render_eval_progress(self, width: int) -> list[str]:
+        """Render eval/GEPA progress header if we have eval data."""
+        if not self._eval_samples and not self._gepa_evals_budget:
+            return []
+
+        lines = []
+
+        # GEPA header
+        if self._gepa_evals_budget > 0:
+            pct = self._gepa_evals_used / self._gepa_evals_budget * 100
+            header = (
+                f"{BOLD}GEPA iter {self._gepa_iteration} │ "
+                f"evals: {self._gepa_evals_used}/{self._gepa_evals_budget} ({pct:.0f}%) │ "
+                f"best: {self._gepa_best_score:.2%}{RESET}"
+            )
+            lines.append(header[:width])
+        elif self._eval_name:
+            pct = self._eval_completed / max(self._eval_total, 1) * 100
+            header = f"{BOLD}{self._eval_name}: {self._eval_completed}/{self._eval_total} ({pct:.0f}%){RESET}"
+            lines.append(header[:width])
+
+        # Separator
+        lines.append(f"{DIM}{'─' * min(width, 60)}{RESET}")
+
+        # Show last few samples with their status
+        sample_ids = self._eval_sample_order[-8:]  # Show last 8
+        for sample_id in sample_ids:
+            sample = self._eval_samples.get(sample_id, {})
+            name = sample.get("name", sample_id)[:25].ljust(25)
+
+            score = sample.get("score")
+            phase = sample.get("phase", "")
+            turn = sample.get("turn", 0)
+            status = sample.get("status", "")
+
+            if score is not None:
+                # Completed
+                color = GREEN if score > 0.5 else YELLOW if score > 0 else RED
+                status_str = f"{color}✓{RESET} T:{turn} score={score:.2f}"
+            elif phase:
+                # Modal eval in progress
+                status_str = f"{CYAN}{phase}...{RESET}"
+            elif status == "streaming":
+                status_str = f"{DIM}streaming...{RESET}"
+            else:
+                status_str = f"{DIM}T:{turn}{RESET}"
+
+            lines.append(f"  {name} {status_str}"[:width])
+
+        return lines
 
     def _render_sparklines(self, width: int) -> list[str]:
         """Render sparkline header for metrics pane."""

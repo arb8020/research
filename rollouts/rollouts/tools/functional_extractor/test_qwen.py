@@ -246,8 +246,8 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.remote:
-        from tools.functional_extractor.verify import run_on_gpu
         from tools.functional_extractor.config import DeploymentConfig
+        from tools.functional_extractor.verify import run_on_gpu
 
         run_on_gpu(
             script_path=__file__,

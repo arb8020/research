@@ -786,7 +786,7 @@ async def evaluate(
         logger.info(f"Samples evaluated: {len(results)}")
         for key, value in summary_metrics.items():
             # Handle both numeric and non-numeric values
-            if isinstance(value, (int, float)):
+            if isinstance(value, int | float):
                 logger.info(f"{key}: {value:.3f}")
             else:
                 logger.info(f"{key}: {value}")

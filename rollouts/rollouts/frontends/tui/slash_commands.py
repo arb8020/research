@@ -479,8 +479,8 @@ def _create_environment_from_spec(
     env_names = env_spec.split("+")
     environments = []
 
-    for env_name in env_names:
-        env_name = env_name.strip().lower()
+    for raw_env_name in env_names:
+        env_name = raw_env_name.strip().lower()
         if env_name == "coding":
             environments.append(LocalFilesystemEnvironment(working_dir=working_dir))
         elif env_name == "git" or env_name == "git_worktree":
@@ -589,7 +589,9 @@ async def _handle_env(runner: InteractiveAgentRunner, args: str) -> SlashCommand
     from ...prompt import build_system_prompt
 
     new_tools = new_env.get_tools()
-    env_system_prompt = new_env.get_system_prompt() if hasattr(new_env, "get_system_prompt") else None
+    env_system_prompt = (
+        new_env.get_system_prompt() if hasattr(new_env, "get_system_prompt") else None
+    )
     new_system_prompt = build_system_prompt(
         env_name=env_spec,
         tools=new_tools,

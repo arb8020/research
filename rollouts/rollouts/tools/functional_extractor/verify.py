@@ -36,9 +36,8 @@ from typing import TYPE_CHECKING
 from .config import DeploymentConfig, VerificationConfig
 
 if TYPE_CHECKING:
-    from broker.client import ClientGPUInstance, GPUClient
-
     from bifrost import BifrostClient
+    from broker.client import ClientGPUInstance, GPUClient
 
 
 @dataclass(frozen=True)
@@ -100,9 +99,8 @@ def provision_gpu(
     Returns:
         GPUHandle if successful, None if provisioning failed
     """
-    from broker.client import GPUClient
-
     from bifrost import BifrostClient
+    from broker.client import GPUClient
 
     runpod_key, ssh_key_path = _load_env()
     client = GPUClient(credentials={"runpod": runpod_key}, ssh_key_path=ssh_key_path)
