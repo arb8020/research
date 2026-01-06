@@ -182,9 +182,30 @@ async def _handle_model(runner: InteractiveAgentRunner, args: str) -> SlashComma
     # Create new Endpoint for the new provider/model
     # This ensures provider-specific fields get proper defaults instead of
     # inheriting stale values from the old provider (e.g., api_base, thinking)
+    import os
+
     from ...dtypes import Endpoint
 
     old_endpoint = runner.endpoint
+    
+    # Get API key for the new provider
+    if old_endpoint.provider == provider:
+        # Same provider - keep existing auth
+        new_api_key = old_endpoint.api_key
+        new_oauth_token = old_endpoint.oauth_token
+    else:
+        # Different provider - get API key from environment
+        new_oauth_token = ""
+        if provider == "openai":
+            new_api_key = os.environ.get("OPENAI_API_KEY", "")
+        elif provider == "anthropic":
+            new_api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        elif provider == "google":
+            new_api_key = os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", "")
+        else:
+            # For other providers, try generic pattern
+            new_api_key = os.environ.get(f"{provider.upper()}_API_KEY", "")
+    
     runner.endpoint = Endpoint(
         provider=provider,
         model=model_id,
@@ -193,9 +214,9 @@ async def _handle_model(runner: InteractiveAgentRunner, args: str) -> SlashComma
         temperature=old_endpoint.temperature,
         max_retries=old_endpoint.max_retries,
         timeout=old_endpoint.timeout,
-        # Preserve auth only if staying with same provider
-        api_key=old_endpoint.api_key if old_endpoint.provider == provider else "",
-        oauth_token=old_endpoint.oauth_token if old_endpoint.provider == provider else "",
+        # Auth for the new provider
+        api_key=new_api_key,
+        oauth_token=new_oauth_token,
         # Let provider-specific fields use defaults:
         # - api_base="" (provider uses its default URL)
         # - thinking=None (Anthropic-only)
