@@ -133,7 +133,6 @@ def _find_similar_command(command: str) -> str | None:
 
 async def _handle_model(runner: InteractiveAgentRunner, args: str) -> SlashCommandResult:
     """Handle /model command."""
-    from dataclasses import replace as dc_replace
 
     from ...models import get_model, get_models, get_providers
 
@@ -180,21 +179,29 @@ async def _handle_model(runner: InteractiveAgentRunner, args: str) -> SlashComma
 
         return SlashCommandResult(message=msg)
 
-    # Update endpoint - reset provider-specific fields when switching providers
-    old_provider = runner.endpoint.provider
-    new_endpoint_kwargs = {"provider": provider, "model": model_id}
+    # Create new Endpoint for the new provider/model
+    # This ensures provider-specific fields get proper defaults instead of
+    # inheriting stale values from the old provider (e.g., api_base, thinking)
+    from ...dtypes import Endpoint
 
-    # If switching providers, reset provider-specific settings
-    if old_provider != provider:
-        # Reset api_base to default (empty string = use provider default)
-        new_endpoint_kwargs["api_base"] = ""
-        # Reset thinking (Anthropic-only feature)
-        new_endpoint_kwargs["thinking"] = None
-        # Reset OpenAI-specific fields
-        new_endpoint_kwargs["reasoning_effort"] = None
-        new_endpoint_kwargs["max_completion_tokens"] = None
-
-    runner.endpoint = dc_replace(runner.endpoint, **new_endpoint_kwargs)
+    old_endpoint = runner.endpoint
+    runner.endpoint = Endpoint(
+        provider=provider,
+        model=model_id,
+        # Preserve generic settings that apply to all providers
+        max_tokens=old_endpoint.max_tokens,
+        temperature=old_endpoint.temperature,
+        max_retries=old_endpoint.max_retries,
+        timeout=old_endpoint.timeout,
+        # Preserve auth only if staying with same provider
+        api_key=old_endpoint.api_key if old_endpoint.provider == provider else "",
+        oauth_token=old_endpoint.oauth_token if old_endpoint.provider == provider else "",
+        # Let provider-specific fields use defaults:
+        # - api_base="" (provider uses its default URL)
+        # - thinking=None (Anthropic-only)
+        # - reasoning_effort=None (OpenAI-only)
+        # - max_completion_tokens=None (OpenAI-only)
+    )
 
     # Persist to session
     if runner.session_store and runner.session_id:
@@ -232,7 +239,6 @@ def _make_thinking_config(budget: int | None) -> dict[str, Any] | None:
 
 async def _handle_thinking(runner: InteractiveAgentRunner, args: str) -> SlashCommandResult:
     """Handle /thinking command."""
-    from dataclasses import replace as dc_replace
 
     from ...models import get_model
 
@@ -283,6 +289,8 @@ async def _handle_thinking(runner: InteractiveAgentRunner, args: str) -> SlashCo
         if new_max_tokens <= new_budget:
             new_max_tokens = new_budget + 4096  # Give room for response
         new_temperature = 1.0  # Anthropic requires temp=1.0 with thinking
+
+    from dataclasses import replace as dc_replace
 
     runner.endpoint = dc_replace(
         runner.endpoint,
