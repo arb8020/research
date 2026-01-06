@@ -27,6 +27,7 @@ from .dtypes import (
     StreamChunk,
     Trajectory,
 )
+from .events import EventEmitter, emit_event
 from .progress import MultiProgress
 from .training.types import Sample
 
@@ -62,7 +63,7 @@ def _get_progress_status_for_event(event: object) -> str | None:
             }.get(phase, phase)
         return None
 
-    # Handle streaming events from LLM
+    # Handle streaming events from LLM (generic - works with any tool names)
     event_type = getattr(event, "type", "")
     if event_type == "start":
         return "streaming..."
@@ -74,11 +75,12 @@ def _get_progress_status_for_event(event: object) -> str | None:
         return "thinking..."
     elif event_type == "toolcall_start":
         tool_name = getattr(event, "name", "tool")
-        short_name = tool_name.replace("write_kernel", "eval").replace("ask_docs", "docs")
+        # Truncate long tool names for display
+        short_name = tool_name[:12] + "…" if len(tool_name) > 12 else tool_name
         return f"calling {short_name}..."
     elif event_type == "tool_execution_start":
         tool_name = getattr(event, "tool_name", "tool")
-        short_name = tool_name.replace("write_kernel", "eval").replace("ask_docs", "docs")
+        short_name = tool_name[:12] + "…" if len(tool_name) > 12 else tool_name
         return f"→ {short_name}..."
     elif event_type == "tool_result":
         is_error = getattr(event, "is_error", False)
@@ -429,18 +431,35 @@ async def evaluate_sample(
 
     # Wrap on_chunk to inject sample_id context for concurrent sample tracking
     base_on_chunk = base_run_config.on_chunk
+    last_status: dict[str, str] = {}  # Track last status to avoid duplicate events
 
     async def on_chunk_with_sample_id(event: object) -> None:
+        nonlocal last_status
+
         # Update MultiProgress on various events for granular status
+        status = _get_progress_status_for_event(event)
+        turn = _get_turn_from_event(event)
+
         if progress is not None:
-            status = _get_progress_status_for_event(event)
-            turn = _get_turn_from_event(event)
             if status is not None or turn is not None:
                 progress.update_task(
                     sample_id,
                     turn=turn if turn is not None else None,
                     status=status if status is not None else None,
                 )
+
+        # Emit to file for TUI - only on status changes to avoid flooding
+        if isinstance(event, StreamChunk):
+            if event.type == "turn_start":
+                emit_event("turn", id=sample_id, turn=event.data.get("turn", 0), status="waiting")
+                last_status[sample_id] = "waiting"
+            elif event.type == "modal_progress":
+                emit_event("modal_progress", id=sample_id, phase=event.data.get("phase", ""))
+
+        # Emit status changes for LLM events (streaming, thinking, tool calls)
+        if status is not None and status != last_status.get(sample_id):
+            emit_event("turn", id=sample_id, status=status)
+            last_status[sample_id] = status
 
         # Wrap event with sample_id and forward to base handler
         wrapped_event = _wrap_event_with_sample_id(event, sample_id)
@@ -475,6 +494,10 @@ async def evaluate_sample(
             },
         )
     )
+
+    # Also emit to file for TUI (if emitter configured)
+    sample_name = sample_data.get("name", sample_id)
+    emit_event("sample_start", id=sample_id, name=sample_name)
 
     # Distinguish provider errors from actual sample failures
     # Provider errors (rate limits, timeouts, 5xx) are excluded from accuracy calculation
@@ -594,6 +617,9 @@ async def evaluate_sample(
         )
     )
 
+    # Also emit to file for TUI (if emitter configured)
+    emit_event("sample_end", id=sample_id, score=reward)
+
     return sample
 
 
@@ -637,6 +663,14 @@ async def evaluate(
         logger.info(f"samples to evaluate: {len(samples_to_eval)}")
         logger.info(f"max concurrent: {config.max_concurrent}")
         logger.debug("=" * 50)
+
+    # Initialize event emitter for TUI progress (writes to events.jsonl)
+    # This is separate from MultiProgress - events go to file for external TUI
+    emitter: EventEmitter | None = None
+    if config.output_dir:
+        emitter = EventEmitter(output_dir=config.output_dir)
+        emitter.as_context()  # Make available via get_emitter()
+        emitter.emit("eval_start", name=config.eval_name, total=len(samples_to_eval))
 
     # Evaluate samples (with concurrency control)
     results = []
@@ -756,6 +790,11 @@ async def evaluate(
                 logger.info(f"{key}: {value:.3f}")
             else:
                 logger.info(f"{key}: {value}")
+
+    # Close event emitter
+    if emitter:
+        emitter.emit("eval_end", name=config.eval_name, total=len(results))
+        emitter.close()
 
     return report
 
