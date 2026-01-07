@@ -770,6 +770,8 @@ class InteractiveAgentRunner:
             if agent_states[-1].session_id:
                 self.session_id = agent_states[-1].session_id
                 set_active_session_id(self.session_id)
+                if self.status_line:
+                    self.status_line.set_session_id(self.session_id)
 
             if self.escape_pressed:
                 # Escape key - interrupted but can continue
@@ -958,6 +960,11 @@ class InteractiveAgentRunner:
         if all_states and all_states[-1].session_id:
             self.session_id = all_states[-1].session_id
             set_active_session_id(self.session_id)
+            # Update status line to show new session ID
+            if self.status_line:
+                self.status_line.set_session_id(self.session_id)
+                if self.tui:
+                    self.tui.request_render()
 
         return all_states
 
