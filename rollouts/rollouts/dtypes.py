@@ -26,8 +26,49 @@ import trio
 # Current: Simple fallback for type hints - actual tensor handling is done at runtime via hasattr checks
 TorchTensor = Any
 
-# TUI formatter type - receives (tool_name, args, result, expanded) and returns formatted string
-ToolFormatter = Callable[[str, dict[str, Any], dict[str, Any] | None, bool], str]
+# TUI formatter type - receives (tool_name, args, result, expanded, theme) and returns formatted string
+# Theme is optional to allow headless/non-TUI usage
+ToolFormatter = Callable[[str, dict[str, Any], dict[str, Any] | None, bool, Any], str]
+
+
+@dataclass
+class ToolRenderConfig:
+    """Rendering config for tool output in TUI.
+
+    Environments can optionally provide this to customize how tools render.
+    All fields have sensible defaults, so most tools need no config at all.
+
+    For simple tools: just override header_fn and maybe summaries
+    For complex tools: provide custom_formatter for full control
+
+    Example:
+        # Simple tool - just customize header
+        ToolRenderConfig(
+            header_fn=lambda name, args: f"bash(command={repr(args.get('command', '...'))})",
+            success_summary="Command completed",
+        )
+
+        # Complex tool - full control
+        ToolRenderConfig(custom_formatter=my_custom_format_fn)
+    """
+
+    # How to build the header line
+    # If None, uses default: tool_name(arg1=..., arg2=...)
+    header_fn: Callable[[str, dict[str, Any]], str] | None = None
+
+    # Output display settings
+    max_lines: int = 10
+    style_fn: str = "diff_context_fg"  # Theme method name for styling output lines
+
+    # Summary lines (shown after header, before output)
+    # If None, no summary shown - tool name is usually self-documenting
+    success_summary: str | None = None
+    error_summary: str | None = None
+
+    # For complex tools that need full control over rendering
+    # If provided, all other fields are ignored
+    # Signature: (tool_name, args, result, expanded, theme) -> str
+    custom_formatter: ToolFormatter | None = None
 
 
 # Verbose function for debugging

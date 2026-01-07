@@ -29,10 +29,11 @@ from ..dtypes import (
     ToolCall,
     ToolFunction,
     ToolFunctionParameter,
+    ToolRenderConfig,
     ToolResult,
 )
 from ._formatting import (
-    format_tool_output,
+    format_tool,
     get_text_output,
     replace_tabs,
     shorten_path,
@@ -66,22 +67,15 @@ def expand_path(file_path: str) -> Path:
 # Signature: (tool_name, args, result, expanded, theme) -> str
 
 
-def format_bash(
-    tool_name: str, args: dict, result: dict | None, expanded: bool, theme: Theme | None = None
-) -> str:
-    """Format bash tool execution."""
-    command = args.get("command", "")
-    header = f"bash(command={repr(command or '...')})"
-    return format_tool_output(
-        header,
-        result,
-        expanded,
-        theme,
-        max_lines=5,
-        success_summary="Command completed",
-        error_summary="Command failed",
-        style_fn="diff_context_fg",
-    )
+# ── Tool Render Configs ────────────────────────────────────────────────────────
+# Simple tools just define a config. Complex tools (edit, write) use custom_formatter.
+
+BASH_RENDER_CONFIG = ToolRenderConfig(
+    header_fn=lambda name, args: f"bash(command={repr(args.get('command', '...'))})",
+    max_lines=5,
+    success_summary="Command completed",
+    error_summary="Command failed",
+)
 
 
 def format_read(
@@ -475,24 +469,41 @@ class LocalFilesystemEnvironment:
         """Only bash commands require confirmation by default."""
         return tool_call.name == "bash"
 
+    def get_tool_render_config(self, tool_name: str) -> ToolRenderConfig | None:
+        """Return render config for the given tool.
+
+        Returns None for unknown tools (uses default rendering).
+
+        Simple tools use ToolRenderConfig with header_fn and summaries.
+        Complex tools use ToolRenderConfig with custom_formatter for full control.
+        """
+        configs: dict[str, ToolRenderConfig] = {
+            # Simple: just config
+            "bash": BASH_RENDER_CONFIG,
+            # Complex: custom formatter for special rendering
+            "read": ToolRenderConfig(custom_formatter=format_read),
+            "write": ToolRenderConfig(custom_formatter=format_write),
+            "edit": ToolRenderConfig(custom_formatter=format_edit),
+            "web_fetch": ToolRenderConfig(custom_formatter=format_web_fetch),
+        }
+        return configs.get(tool_name)
+
     def get_tool_formatter(
         self, tool_name: str
     ) -> Callable[[str, dict, dict | None, bool, Theme | None], str] | None:
-        """Return formatter function for the given tool.
+        """Legacy method - returns formatter function for the given tool.
 
-        Returns a function with signature:
-            (tool_name, args, result, expanded, theme) -> str
-
-        Returns None for unknown tools (uses generic fallback).
+        Prefer get_tool_render_config() for new code.
         """
-        formatters = {
-            "bash": format_bash,
-            "read": format_read,
-            "write": format_write,
-            "edit": format_edit,
-            "web_fetch": format_web_fetch,
-        }
-        return formatters.get(tool_name)
+        config = self.get_tool_render_config(tool_name)
+        if config and config.custom_formatter:
+            return config.custom_formatter
+        if config:
+            # Wrap config in a formatter function
+            return lambda name, args, result, expanded, theme: format_tool(
+                name, args, result, expanded, theme, config
+            )
+        return None
 
     def get_tools(self) -> list[Tool]:
         all_tools = self._get_all_tools()
