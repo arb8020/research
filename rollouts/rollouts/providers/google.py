@@ -449,6 +449,19 @@ async def rollout_google(
         tools.append(types.Tool(function_declarations=function_declarations))
         config.tools = tools
 
+    # Wide event logging for API request
+    from .base import log_api_request
+
+    log_api_request(
+        provider="google",
+        model=actor.endpoint.model,
+        api_base=None,  # Google doesn't use custom base URLs
+        messages=[{"role": c.role, "parts": len(c.parts)} for c in contents],
+        tools=[t.function.name for t in actor.tools] if actor.tools else [],
+        temperature=actor.endpoint.temperature if hasattr(actor.endpoint, "temperature") else None,
+        max_tokens=actor.endpoint.max_tokens if hasattr(actor.endpoint, "max_tokens") else None,
+    )
+
     # The actual API call in asyncio context
     async def _call_google_in_asyncio() -> ChatCompletion:
         # Create client inside asyncio context
@@ -466,14 +479,15 @@ async def rollout_google(
             return final_message, usage_data
 
         except Exception as e:
-            from ..providers.base import ProviderError
+            from ..providers.base import ProviderError, log_api_response
 
-            logger.exception(
-                f"Google Generative AI API call failed: {e}\n  Model: {actor.endpoint.model}",
-                extra={
-                    "exception": str(e),
-                    "model": actor.endpoint.model,
-                },
+            log_api_response(
+                provider="google",
+                model=actor.endpoint.model,
+                attempt=1,
+                success=False,
+                error_type=type(e).__name__,
+                error_message=str(e),
             )
             raise ProviderError(
                 f"Google API error: {e}",
@@ -485,6 +499,24 @@ async def rollout_google(
     # Run the asyncio function from trio context using trio-asyncio loop
     async with trio_asyncio.open_loop() as _loop:
         final_message, usage_data = await trio_asyncio.aio_as_trio(_call_google_in_asyncio)()
+
+    # Wide event for successful response
+    from .base import log_api_response
+
+    log_api_response(
+        provider="google",
+        model=actor.endpoint.model,
+        attempt=1,
+        success=True,
+        input_tokens=usage_data.get("input_tokens", 0),
+        output_tokens=usage_data.get("output_tokens", 0),
+        reasoning_tokens=usage_data.get("reasoning_tokens", 0),
+        cache_read_tokens=usage_data.get("cache_read_tokens", 0),
+        has_tool_calls=any(
+            isinstance(b, ToolCallContent)
+            for b in (final_message.content if isinstance(final_message.content, list) else [])
+        ),
+    )
 
     # Build completion object with granular token breakdown
     usage = Usage(

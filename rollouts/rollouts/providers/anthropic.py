@@ -47,7 +47,6 @@ from .base import (
     _prepare_messages_for_llm,
     add_cache_control_to_last_content,
     calculate_cost_from_usage,
-    sanitize_request_for_logging,
 )
 
 logger = logging.getLogger(__name__)
@@ -835,15 +834,13 @@ async def rollout_anthropic(
     for attempt in range(max_retries + 1):
         try:
             # Emit LLMCallStart before making the API call
-            logger.debug(
-                "anthropic_api_attempt",
-                extra={
-                    "event": "api_attempt",
-                    "provider": "anthropic",
-                    "model": actor.endpoint.model,
-                    "attempt": attempt + 1,
-                    "max_attempts": max_retries + 1,
-                },
+            from .base import log_api_attempt
+
+            log_api_attempt(
+                provider="anthropic",
+                model=actor.endpoint.model,
+                attempt=attempt + 1,
+                max_attempts=max_retries + 1,
             )
             await on_chunk(LLMCallStart())
 
@@ -984,19 +981,15 @@ async def rollout_anthropic(
                 )
             )
 
-            sanitized = sanitize_request_for_logging(params)
-            logger.exception(
-                "anthropic_api_response",
-                extra={
-                    "event": "api_response",
-                    "provider": "anthropic",
-                    "model": actor.endpoint.model,
-                    "attempt": max_retries + 1,
-                    "success": False,
-                    "error_type": type(e).__name__,
-                    "error_message": str(e),
-                    "request_params": sanitized,
-                },
+            from .base import log_api_response
+
+            log_api_response(
+                provider="anthropic",
+                model=actor.endpoint.model,
+                attempt=max_retries + 1,
+                success=False,
+                error_type=type(e).__name__,
+                error_message=str(e),
             )
             raise ProviderError(
                 f"Anthropic API failed after {max_retries + 1} attempts: {e}",

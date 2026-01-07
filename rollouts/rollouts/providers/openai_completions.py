@@ -548,6 +548,20 @@ async def rollout_openai(
     if hasattr(actor.endpoint, "extra_params") and actor.endpoint.extra_params:
         params.update(actor.endpoint.extra_params)
 
+    # Wide event logging for API request
+    from .base import log_api_request
+
+    _tool_names = [t.function.name for t in actor.tools] if actor.tools else []
+    log_api_request(
+        provider="openai",
+        model=actor.endpoint.model,
+        api_base=actor.endpoint.api_base,
+        messages=params["messages"],
+        tools=_tool_names,
+        temperature=actor.endpoint.temperature,
+        max_tokens=params.get("max_tokens") or params.get("max_completion_tokens"),
+    )
+
     # Tiger Style: Minimal validation to catch common bugs before API call
     import json
     from typing import cast
@@ -579,6 +593,24 @@ async def rollout_openai(
     try:
         stream = await client.chat.completions.create(**params)
         completion = await aggregate_stream(stream, on_chunk)
+
+        # Wide event for successful response
+        from .base import log_api_response
+
+        log_api_response(
+            provider="openai",
+            model=actor.endpoint.model,
+            attempt=1,
+            success=True,
+            input_tokens=completion.usage.input_tokens if completion.usage else None,
+            output_tokens=completion.usage.output_tokens if completion.usage else None,
+            cache_read_tokens=completion.usage.cache_read_tokens if completion.usage else None,
+            reasoning_tokens=completion.usage.reasoning_tokens if completion.usage else None,
+            stop_reason=completion.choices[0].stop_reason if completion.choices else None,
+            has_tool_calls=bool(completion.choices[0].message.tool_calls)
+            if completion.choices
+            else False,
+        )
 
     except Exception as e:
         from openai import BadRequestError, RateLimitError

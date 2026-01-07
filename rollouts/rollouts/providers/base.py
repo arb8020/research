@@ -246,6 +246,140 @@ def verbose(level: int) -> bool:
     return True
 
 
+# =============================================================================
+# Wide Event Logging Helpers
+# =============================================================================
+# Per logging_sucks.md: emit one structured event per API call with all context.
+# These helpers provide consistent logging across all providers.
+
+import logging
+
+_provider_logger = logging.getLogger(__name__)
+
+
+def _summarize_messages_for_log(messages: list[dict]) -> list[dict]:
+    """Summarize messages for logging without full content."""
+    summaries = []
+    for msg in messages:
+        role = msg.get("role", "unknown")
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            summaries.append({"role": role, "chars": len(content), "preview": content[:100]})
+        elif isinstance(content, list):
+            summaries.append({"role": role, "blocks": len(content)})
+        else:
+            summaries.append({"role": role, "type": type(content).__name__})
+    return summaries
+
+
+def log_api_request(
+    provider: str,
+    model: str,
+    api_base: str | None,
+    messages: list[dict],
+    system_prompt: str | None = None,
+    tools: list[str] | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    thinking_enabled: bool = False,
+    turn_idx: int = 0,
+    **extra: object,
+) -> None:
+    """Log a wide event for an API request.
+
+    Call this before making the API call. Captures all context needed
+    for debugging without logging full message content.
+    """
+    _provider_logger.debug(
+        f"{provider}_api_request",
+        extra={
+            "event": "api_request",
+            "provider": provider,
+            "model": model,
+            "api_base": api_base,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "thinking_enabled": thinking_enabled,
+            "system_prompt_chars": len(system_prompt) if system_prompt else 0,
+            "system_prompt_preview": (
+                (system_prompt[:200] + "...")
+                if system_prompt and len(system_prompt) > 200
+                else system_prompt
+            ),
+            "message_count": len(messages),
+            "messages_summary": _summarize_messages_for_log(messages),
+            "tool_names": tools or [],
+            "turn_idx": turn_idx,
+            **extra,
+        },
+    )
+
+
+def log_api_attempt(
+    provider: str,
+    model: str,
+    attempt: int,
+    max_attempts: int,
+) -> None:
+    """Log a wide event for an API attempt (retry tracking)."""
+    _provider_logger.debug(
+        f"{provider}_api_attempt",
+        extra={
+            "event": "api_attempt",
+            "provider": provider,
+            "model": model,
+            "attempt": attempt,
+            "max_attempts": max_attempts,
+        },
+    )
+
+
+def log_api_response(
+    provider: str,
+    model: str,
+    attempt: int,
+    success: bool,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+    cache_read_tokens: int | None = None,
+    cache_write_tokens: int | None = None,
+    reasoning_tokens: int | None = None,
+    stop_reason: str | None = None,
+    has_tool_calls: bool = False,
+    error_type: str | None = None,
+    error_message: str | None = None,
+    **extra: object,
+) -> None:
+    """Log a wide event for an API response (success or failure)."""
+    log_data = {
+        "event": "api_response",
+        "provider": provider,
+        "model": model,
+        "attempt": attempt,
+        "success": success,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "stop_reason": stop_reason,
+        "has_tool_calls": has_tool_calls,
+        **extra,
+    }
+
+    # Add optional token fields only if present
+    if cache_read_tokens is not None:
+        log_data["cache_read_tokens"] = cache_read_tokens
+    if cache_write_tokens is not None:
+        log_data["cache_write_tokens"] = cache_write_tokens
+    if reasoning_tokens is not None:
+        log_data["reasoning_tokens"] = reasoning_tokens
+
+    # Add error fields for failures
+    if not success:
+        log_data["error_type"] = error_type
+        log_data["error_message"] = error_message
+
+    _provider_logger.debug(f"{provider}_api_response", extra=log_data)
+
+
 def calculate_cost_from_usage(usage: Usage, model_cost: ModelCost | None) -> Cost:
     """Pure function: Usage + ModelCost -> Cost.
 
