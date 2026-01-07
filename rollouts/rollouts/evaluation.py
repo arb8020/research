@@ -33,6 +33,26 @@ from .training.types import Sample
 
 logger = logging.getLogger(__name__)
 
+
+# ── Runtime Context ───────────────────────────────────────────────────────────
+
+
+@dataclass
+class EvalRuntime:
+    """Runtime context for evaluation execution.
+
+    Bundles EvalConfig with instantiated handles (limiters, progress).
+    Config stays pure/serializable; runtime holds live execution state.
+
+    Created once in evaluate(), passed to all evaluate_sample() calls.
+    """
+
+    config: EvalConfig
+    api_limiter: trio.CapacityLimiter | None = None
+    tool_limiter: trio.CapacityLimiter | None = None
+    progress: MultiProgress | None = None
+
+
 # JSON-like recursive type for sanitize_api_keys
 # Using string literals for forward references to avoid import cycle
 JsonValue = dict[str, "JsonValue"] | list["JsonValue"] | str | int | float | bool | None
@@ -131,15 +151,14 @@ def _extract_text_from_content(content: object) -> str:
 
 async def _evaluate_batch(
     samples: list[tuple[str, dict[str, Any]]],
-    config: "EvalConfig",
-    api_limiter: trio.CapacityLimiter | None,
-    tool_limiter: trio.CapacityLimiter | None,
-    progress: MultiProgress | None,
+    runtime: EvalRuntime,
 ) -> list[Sample]:
     """Evaluate a batch of samples, handling sequential vs parallel execution.
 
     This is the core evaluation loop, used for both initial runs and retries.
     """
+    config = runtime.config
+    progress = runtime.progress
     results: list[Sample] = []
 
     async def run_one(sample_id: str, sample_data: dict[str, Any]) -> Sample:
@@ -152,11 +171,8 @@ async def _evaluate_batch(
         result = await evaluate_sample(
             sample_data=sample_data,
             sample_id=sample_id,
-            config=config,
+            runtime=runtime,
             environment=env,
-            api_limiter=api_limiter,
-            tool_limiter=tool_limiter,
-            progress=progress,
         )
 
         # Mark task complete
@@ -383,14 +399,94 @@ def sanitize_api_keys(data: JsonValue) -> JsonValue:
         return data
 
 
+@dataclass
+class _AgentRunResult:
+    """Result of running agent with error handling."""
+
+    states: list[AgentState]
+    final_trajectory: Trajectory
+    error_message: str | None = None
+    is_provider_error: bool = False
+
+
+async def _cleanup_environment(environment: Environment | None, sample_id: str) -> None:
+    """Cleanup environment if it has a cleanup method."""
+    if environment is None:
+        return
+    cleanup_fn = getattr(environment, "cleanup", None)
+    if cleanup_fn is None:
+        return
+    try:
+        await cleanup_fn()
+    except Exception as e:
+        logger.warning(f"Environment cleanup failed for {sample_id}: {e}")
+
+
+async def _run_agent_with_error_handling(
+    initial_state: AgentState,
+    run_config: RunConfig,
+    sample_id: str,
+) -> _AgentRunResult:
+    """Run agent and handle errors, returning structured result.
+
+    Distinguishes provider errors (rate limits, timeouts) from actual failures.
+    Provider errors are excluded from accuracy calculation.
+    """
+    from .providers.base import ProviderError
+
+    try:
+        states = await run_agent(initial_state, run_config)
+        return _AgentRunResult(
+            states=states,
+            final_trajectory=states[-1].actor.trajectory,
+        )
+
+    except ProviderError as e:
+        error_message = f"ProviderError[{e.provider}]: {str(e)}"
+        logger.warning(
+            f"Sample {sample_id} provider_error: {error_message} (attempts: {e.attempts})"
+        )
+        final_trajectory = replace(
+            initial_state.actor.trajectory,
+            metadata={
+                **initial_state.actor.trajectory.metadata,
+                "error": error_message,
+                "error_type": "provider_error",
+                "provider": e.provider,
+                "attempts": e.attempts,
+            },
+        )
+        return _AgentRunResult(
+            states=[initial_state],
+            final_trajectory=final_trajectory,
+            error_message=error_message,
+            is_provider_error=True,
+        )
+
+    except Exception as e:
+        error_message = f"{type(e).__name__}: {str(e)}"
+        logger.warning(f"Sample {sample_id} failed: {error_message}")
+        final_trajectory = replace(
+            initial_state.actor.trajectory,
+            metadata={
+                **initial_state.actor.trajectory.metadata,
+                "error": error_message,
+                "error_type": "failed",
+            },
+        )
+        return _AgentRunResult(
+            states=[initial_state],
+            final_trajectory=final_trajectory,
+            error_message=error_message,
+            is_provider_error=False,
+        )
+
+
 async def evaluate_sample(
     sample_data: dict[str, Any],
     sample_id: str,
-    config: EvalConfig,
+    runtime: EvalRuntime,
     environment: Environment | None = None,
-    api_limiter: trio.CapacityLimiter | None = None,
-    tool_limiter: trio.CapacityLimiter | None = None,
-    progress: MultiProgress | None = None,
 ) -> Sample:
     """Evaluate a single sample - analogous to run_agent_step.
 
@@ -400,15 +496,16 @@ async def evaluate_sample(
     Args:
         sample_data: The raw sample data
         sample_id: Unique identifier for this sample
-        config: Evaluation configuration (includes endpoint, template/prepare_messages)
+        runtime: Runtime context (config + instantiated limiters/progress)
         environment: Fresh Environment instance for this sample (None for tool-free eval)
-        api_limiter: Optional limiter for API calls (for two-level concurrency)
-        tool_limiter: Optional limiter for tool executions (for two-level concurrency)
-        progress: Optional MultiProgress for turn-level progress display
 
     Returns:
         Sample with trajectory, score, and computed reward
     """
+    # Unpack runtime for convenience
+    config = runtime.config
+    progress = runtime.progress
+
     # Prepare initial messages from sample
     initial_messages = config.prepare_messages(sample_data)
 
@@ -427,7 +524,7 @@ async def evaluate_sample(
     initial_state = AgentState(actor=actor, environment=environment)
 
     # Build base run config with concurrency limiters
-    base_run_config = _build_base_run_config(config, api_limiter, tool_limiter)
+    base_run_config = _build_base_run_config(config, runtime.api_limiter, runtime.tool_limiter)
 
     # Wrap on_chunk to inject sample_id context for concurrent sample tracking
     base_on_chunk = base_run_config.on_chunk
@@ -499,56 +596,12 @@ async def evaluate_sample(
     sample_name = sample_data.get("name", sample_id)
     emit_event("sample_start", id=sample_id, name=sample_name)
 
-    # Distinguish provider errors from actual sample failures
-    # Provider errors (rate limits, timeouts, 5xx) are excluded from accuracy calculation
-    # Actual failures (model got it wrong) count against accuracy
-    from .providers.base import ProviderError
-
-    error_message = None
-    is_provider_error = False
-
-    try:
-        states = await run_agent(initial_state, run_config)
-        final_trajectory = states[-1].actor.trajectory
-
-    except ProviderError as e:
-        # Provider infrastructure error - exclude from accuracy calculation
-        is_provider_error = True
-        error_message = f"ProviderError[{e.provider}]: {str(e)}"
-        logger.warning(
-            f"Sample {sample_id} provider_error: {error_message} (attempts: {e.attempts})"
-        )
-
-        # Create minimal trajectory with error
-        states = [initial_state]
-        final_trajectory = initial_state.actor.trajectory
-        final_trajectory = replace(
-            final_trajectory,
-            metadata={
-                **final_trajectory.metadata,
-                "error": error_message,
-                "error_type": "provider_error",
-                "provider": e.provider,
-                "attempts": e.attempts,
-            },
-        )
-
-    except Exception as e:
-        # Actual failure - counts against accuracy
-        error_message = f"{type(e).__name__}: {str(e)}"
-        logger.warning(f"Sample {sample_id} failed: {error_message}")
-
-        # Create minimal trajectory with error
-        states = [initial_state]
-        final_trajectory = initial_state.actor.trajectory
-        final_trajectory = replace(
-            final_trajectory,
-            metadata={
-                **final_trajectory.metadata,
-                "error": error_message,
-                "error_type": "failed",
-            },
-        )
+    # Run agent with error handling
+    result = await _run_agent_with_error_handling(initial_state, run_config, sample_id)
+    states = result.states
+    final_trajectory = result.final_trajectory
+    error_message = result.error_message
+    is_provider_error = result.is_provider_error
 
     # Serialize environment state for score function (agentic evals)
     env_state = None
@@ -595,14 +648,8 @@ async def evaluate_sample(
         sample_id, reward, exec_metadata, final_trajectory, score, config.verbose
     )
 
-    # Cleanup environment if it has a cleanup method
-    if environment is not None:
-        cleanup_fn = getattr(environment, "cleanup", None)
-        if cleanup_fn is not None:
-            try:
-                await cleanup_fn()
-            except Exception as e:
-                logger.warning(f"Environment cleanup failed for {sample_id}: {e}")
+    # Cleanup environment
+    await _cleanup_environment(environment, sample_id)
 
     # Update sample with score and reward
     sample.score = score
@@ -699,8 +746,16 @@ async def evaluate(
         else None
     )
 
+    # Create runtime context (bundles config + instantiated handles)
+    runtime = EvalRuntime(
+        config=config,
+        api_limiter=api_limiter,
+        tool_limiter=tool_limiter,
+        progress=progress,
+    )
+
     # Run initial evaluation batch
-    results = await _evaluate_batch(samples_to_eval, config, api_limiter, tool_limiter, progress)
+    results = await _evaluate_batch(samples_to_eval, runtime)
 
     # Close progress display
     if progress:
@@ -732,13 +787,14 @@ async def evaluate(
         # Remove failed samples and retry
         failed_ids = {sid for sid, _ in failed_samples}
         results = [r for r in results if r.id not in failed_ids]
-        retry_results = await _evaluate_batch(
-            failed_samples,
-            config,
-            api_limiter,
-            tool_limiter,
-            None,  # No progress for retries
+        # Create runtime without progress for retries
+        retry_runtime = EvalRuntime(
+            config=config,
+            api_limiter=api_limiter,
+            tool_limiter=tool_limiter,
+            progress=None,
         )
+        retry_results = await _evaluate_batch(failed_samples, retry_runtime)
         results.extend(retry_results)
 
         # Log retry results
