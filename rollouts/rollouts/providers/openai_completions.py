@@ -607,7 +607,7 @@ async def rollout_openai(
             cache_read_tokens=completion.usage.cache_read_tokens if completion.usage else None,
             reasoning_tokens=completion.usage.reasoning_tokens if completion.usage else None,
             stop_reason=completion.choices[0].stop_reason if completion.choices else None,
-            has_tool_calls=bool(completion.choices[0].message.tool_calls)
+            has_tool_calls=bool(completion.choices[0].message.get_tool_calls())
             if completion.choices
             else False,
         )

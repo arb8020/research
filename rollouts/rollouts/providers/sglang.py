@@ -407,7 +407,7 @@ async def rollout_sglang_streaming(
             input_tokens=completion.usage.input_tokens if completion.usage else None,
             output_tokens=completion.usage.output_tokens if completion.usage else None,
             stop_reason=completion.choices[0].stop_reason if completion.choices else None,
-            has_tool_calls=bool(completion.choices[0].message.tool_calls)
+            has_tool_calls=bool(completion.choices[0].message.get_tool_calls())
             if completion.choices
             else False,
         )
