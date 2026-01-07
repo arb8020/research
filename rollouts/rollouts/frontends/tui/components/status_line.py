@@ -119,8 +119,10 @@ class StatusLine(Component):
 
         lines: list[str] = []
 
-        # Line 1: model and env info
+        # Line 1: session, model and env info
         line1_parts: list[str] = []
+        if self._session_id:
+            line1_parts.append(f"session:{self._session_id}")
         if self._model:
             line1_parts.append(f"model:{self._model}")
         if self._env_info:
