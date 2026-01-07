@@ -699,8 +699,22 @@ async def rollout_anthropic(
     for m in llm_messages:
         if m.role == "system":
             # Extract text from ContentBlocks
-            text_blocks = [b for b in m.content if isinstance(b, TextContent)]
-            system_prompt = "\n".join(b.text for b in text_blocks) if text_blocks else ""
+            # Content can be: str, list[ContentBlock], or list[str]
+            if isinstance(m.content, str):
+                system_prompt = m.content
+            elif isinstance(m.content, list):
+                text_blocks = [b for b in m.content if isinstance(b, TextContent)]
+                if text_blocks:
+                    system_prompt = "\n".join(b.text for b in text_blocks)
+                else:
+                    # Maybe it's a list of strings?
+                    str_blocks = [b for b in m.content if isinstance(b, str)]
+                    system_prompt = "\n".join(str_blocks) if str_blocks else ""
+            else:
+                system_prompt = ""
+            logger.debug(
+                f"Extracted system_prompt: {len(system_prompt) if system_prompt else 0} chars"
+            )
         elif m.role == "tool":
             # Extract text from tool result content (handle both string and ContentBlock list)
             if isinstance(m.content, str):
