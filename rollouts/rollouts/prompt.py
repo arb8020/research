@@ -207,6 +207,13 @@ def build_tool_guidelines(tools: list[Tool]) -> list[str]:
             "Use edit for surgical changes, write only for new files or complete rewrites."
         )
 
+    # Large bash output handling
+    if has_bash and has_read:
+        guidelines.append(
+            "Large bash outputs (>30KB) are saved to files. "
+            "Use the provided file path to read specific sections if needed."
+        )
+
     return guidelines
 
 
