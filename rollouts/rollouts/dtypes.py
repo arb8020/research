@@ -1138,6 +1138,9 @@ class Endpoint(JsonSerializable):
     api_base: str = ""
     api_key: str = ""
     oauth_token: str = ""  # OAuth bearer token (takes precedence over api_key for Anthropic)
+    is_claude_code_api_key: bool = (
+        False  # API key created via Claude Code OAuth (requires special headers)
+    )
     max_tokens: int = 8192
     # TODO: Document temperature choice for evaluations
     # Article quote: "Evaluators must also decide on the sampling parameters that models will
