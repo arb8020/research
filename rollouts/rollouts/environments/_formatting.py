@@ -3,6 +3,7 @@
 Provides consistent formatting across all environments for:
 - Extracting text from tool results
 - Formatting tool output with truncation and theming
+- Default tool rendering (works for any tool with zero config)
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from ..dtypes import ToolRenderConfig
     from ..frontends.tui.theme import Theme
 
 
@@ -59,15 +61,37 @@ def _strip_ansi(text: str) -> str:
     return text.replace("\r", "")
 
 
+def _default_header(tool_name: str, args: dict[str, Any]) -> str:
+    """Generate default header for a tool call.
+
+    Format: tool_name(arg1=..., arg2=...)
+    Truncates long values to keep header readable.
+    """
+    if not args:
+        return f"{tool_name}()"
+
+    parts = []
+    for key, value in list(args.items())[:3]:  # Max 3 args in header
+        if isinstance(value, str):
+            display = repr(value[:30] + "..." if len(value) > 30 else value)
+        else:
+            display = repr(value)
+            if len(display) > 30:
+                display = display[:30] + "..."
+        parts.append(f"{key}={display}")
+
+    if len(args) > 3:
+        parts.append("...")
+
+    return f"{tool_name}({', '.join(parts)})"
+
+
 def format_tool_output(
     header: str,
     result: dict[str, Any] | None,
     expanded: bool,
     theme: Theme | None = None,
-    max_lines: int = 10,
-    success_summary: str | None = None,
-    error_summary: str | None = None,
-    style_fn: str | None = None,
+    config: ToolRenderConfig | None = None,
 ) -> str:
     """Format tool output with consistent styling.
 
@@ -76,14 +100,17 @@ def format_tool_output(
         result: Tool result dict with 'content' and optional 'isError'
         expanded: Whether to show full output or truncate
         theme: Optional theme for styling
-        max_lines: Max lines to show when not expanded
-        success_summary: Summary text for successful execution
-        error_summary: Summary text for failed execution
-        style_fn: Theme method name to style output lines (e.g., 'diff_context_fg')
+        config: Optional render config (uses defaults if None)
 
     Returns:
         Formatted string for TUI display.
     """
+    # Import here to avoid circular imports
+    from ..dtypes import ToolRenderConfig
+
+    if config is None:
+        config = ToolRenderConfig()
+
     text = header
 
     if not result:
@@ -95,20 +122,20 @@ def format_tool_output(
 
     is_error = result.get("isError", False)
     lines = output.split("\n")
-    display_count = len(lines) if expanded else max_lines
+    display_count = len(lines) if expanded else config.max_lines
     display_lines = lines[:display_count]
     remaining = len(lines) - display_count
 
     # Add summary line if provided
-    summary = error_summary if is_error else success_summary
+    summary = config.error_summary if is_error else config.success_summary
     if summary:
         text += f"\n⎿ {summary}"
 
     # Style and append lines
     for line in display_lines:
         styled_line = line
-        if theme and style_fn:
-            style_method = getattr(theme, style_fn, None)
+        if theme and config.style_fn:
+            style_method = getattr(theme, config.style_fn, None)
             if style_method:
                 styled_line = style_method(line)
         text += f"\n  {styled_line}"
@@ -117,6 +144,51 @@ def format_tool_output(
         text += f"\n  ... ({remaining} more lines)"
 
     return text
+
+
+def format_tool(
+    tool_name: str,
+    args: dict[str, Any],
+    result: dict[str, Any] | None,
+    expanded: bool,
+    theme: Theme | None = None,
+    config: ToolRenderConfig | None = None,
+) -> str:
+    """Format any tool output using config or sensible defaults.
+
+    This is the main entry point for tool formatting. It handles:
+    - Custom formatters (for complex tools like edit/write)
+    - Custom headers (for tools that want specific arg display)
+    - Default formatting (works for any tool with zero config)
+
+    Args:
+        tool_name: Name of the tool
+        args: Tool arguments
+        result: Tool result dict
+        expanded: Whether to show full output
+        theme: Optional theme for styling
+        config: Optional render config (uses defaults if None)
+
+    Returns:
+        Formatted string for TUI display.
+    """
+    # Import here to avoid circular imports
+    from ..dtypes import ToolRenderConfig
+
+    if config is None:
+        config = ToolRenderConfig()
+
+    # If custom formatter provided, use it exclusively
+    if config.custom_formatter:
+        return config.custom_formatter(tool_name, args, result, expanded, theme)
+
+    # Build header
+    if config.header_fn:
+        header = config.header_fn(tool_name, args)
+    else:
+        header = _default_header(tool_name, args)
+
+    return format_tool_output(header, result, expanded, theme, config)
 
 
 def shorten_path(path: str) -> str:

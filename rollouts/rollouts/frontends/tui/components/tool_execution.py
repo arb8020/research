@@ -24,6 +24,7 @@ class ToolExecution(Container):
         theme: Any | None = None,
         formatter: Callable[[str, dict[str, Any], dict[str, Any] | None, bool, Any], str]
         | None = None,
+        render_config: Any | None = None,  # ToolRenderConfig, Any to avoid circular import
     ) -> None:
         """Initialize tool execution component.
 
@@ -34,7 +35,8 @@ class ToolExecution(Container):
             bg_fn_success: Background color function for success state
             bg_fn_error: Background color function for error state
             theme: Theme for styling
-            formatter: Formatter function from environment: (tool_name, args, result, expanded, theme) -> str
+            formatter: Legacy formatter function (prefer render_config)
+            render_config: ToolRenderConfig from environment (preferred)
         """
         super().__init__()
         self._tool_name = tool_name
@@ -43,6 +45,7 @@ class ToolExecution(Container):
         self._expanded = False
         self._theme = theme
         self._formatter = formatter
+        self._render_config = render_config
 
         # Default background functions (can be overridden)
         self._bg_fn_pending = bg_fn_pending or (lambda x: x)
@@ -154,46 +157,29 @@ class ToolExecution(Container):
     def _format_tool_execution(self) -> str:
         """Format tool execution display.
 
-        Uses environment-provided formatter if available, otherwise falls back
-        to a generic format showing tool name and arguments.
+        Priority:
+        1. render_config (new, preferred)
+        2. formatter (legacy)
+        3. default formatting (works for any tool)
         """
-        # Use environment formatter if provided
+        from ....environments._formatting import format_tool
+
+        # Use render_config if provided (preferred)
+        if self._render_config:
+            return format_tool(
+                self._tool_name,
+                self._args,
+                self._result,
+                self._expanded,
+                self._theme,
+                self._render_config,
+            )
+
+        # Use legacy formatter if provided
         if self._formatter:
             return self._formatter(
                 self._tool_name, self._args, self._result, self._expanded, self._theme
             )
 
-        # Generic fallback for tools without a formatter
-        return self._format_generic()
-
-    def _format_generic(self) -> str:
-        """Generic tool formatter - shows name(params) and output."""
-        if self._args:
-            params_list = []
-            for key, value in self._args.items():
-                if isinstance(value, str):
-                    # Truncate long strings
-                    display_value = value if len(value) <= 50 else value[:47] + "..."
-                    params_list.append(f"{key}={repr(display_value)}")
-                else:
-                    params_list.append(f"{key}={value}")
-            params_str = ", ".join(params_list)
-            text = f"{self._tool_name}({params_str})"
-        else:
-            text = f"{self._tool_name}()"
-
-        if self._result:
-            output = self._get_text_output()
-            if output:
-                is_error = self._result.get("isError", False)
-                summary = "Failed" if is_error else "Completed"
-                text += f"\n⎿ {summary}"
-                lines = output.split("\n")
-                max_lines = len(lines) if self._expanded else 10
-                for line in lines[:max_lines]:
-                    text += "\n  " + line
-                remaining = len(lines) - max_lines
-                if remaining > 0:
-                    text += f"\n  ... ({remaining} more lines)"
-
-        return text
+        # Default formatting - works for any tool with zero config
+        return format_tool(self._tool_name, self._args, self._result, self._expanded, self._theme)

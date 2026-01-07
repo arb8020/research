@@ -279,10 +279,15 @@ class AgentRenderer:
 
         # Create tool execution component
         if tool_call_id not in self.pending_tools:
-            # Get formatter from environment if available
+            # Get render config or formatter from environment
+            # Prefer get_tool_render_config (new), fall back to get_tool_formatter (legacy)
+            render_config = None
             formatter = None
-            if self.environment and hasattr(self.environment, "get_tool_formatter"):
-                formatter = self.environment.get_tool_formatter(tool_name)
+            if self.environment:
+                if hasattr(self.environment, "get_tool_render_config"):
+                    render_config = self.environment.get_tool_render_config(tool_name)
+                elif hasattr(self.environment, "get_tool_formatter"):
+                    formatter = self.environment.get_tool_formatter(tool_name)
 
             tool_component = ToolExecution(
                 tool_name,
@@ -292,6 +297,7 @@ class AgentRenderer:
                 bg_fn_error=self.theme.tool_error_bg_fn,
                 theme=self.theme,
                 formatter=formatter,
+                render_config=render_config,
             )
             self.chat_container.add_child(tool_component)
             self.pending_tools[tool_call_id] = tool_component
