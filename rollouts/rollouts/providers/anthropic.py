@@ -948,8 +948,8 @@ async def rollout_anthropic(
                     f"Authentication failed: {e}\nCheck your API key or OAuth token."
                 ) from e
 
-            # Fail fast on ValueError - these are programming errors (e.g., empty message)
-            if isinstance(e, ValueError):
+            # Fail fast on programming errors - these are bugs in our code, not transient issues
+            if isinstance(e, (ValueError, AttributeError, TypeError, KeyError)):
                 raise
 
             # Transient error - emit retry event and wait

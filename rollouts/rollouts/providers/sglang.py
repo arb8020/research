@@ -414,6 +414,9 @@ async def rollout_sglang_streaming(
     except NonRetryableError:
         # Context length, invalid params - re-raise as-is
         raise
+    except (ValueError, AttributeError, TypeError, KeyError):
+        # Programming errors - fail fast, don't wrap
+        raise
     except Exception as e:
         from .base import ProviderError, log_api_response
 
