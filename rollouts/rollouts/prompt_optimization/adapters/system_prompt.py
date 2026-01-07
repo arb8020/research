@@ -26,7 +26,7 @@ from ...dtypes import (
     StopReason,
     StreamEvent,
 )
-from ...evaluation import evaluate_sample
+from ...evaluation import EvalRuntime, evaluate_sample
 from ...training.types import Sample
 from ..types import Candidate, EvaluationBatch
 
@@ -170,12 +170,15 @@ async def evaluate_system_prompt(
         max_concurrent=config.max_concurrent,
     )
 
+    # Create runtime context for evaluate_sample calls
+    runtime = EvalRuntime(config=eval_config)
+
     async def eval_one(idx: int, sample_data: dict) -> Sample:
         env = await config.environment_factory(sample_data) if config.environment_factory else None
         return await evaluate_sample(
             sample_data=sample_data,
             sample_id=f"gepa_{idx}",
-            config=eval_config,
+            runtime=runtime,
             environment=env,
         )
 
