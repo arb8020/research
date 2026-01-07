@@ -792,26 +792,40 @@ async def rollout_anthropic(
     if actor.endpoint.thinking is not None:
         params["thinking"] = actor.endpoint.thinking
 
-    # Debug logging - show what we're sending (only at DEBUG level)
-    logger.debug(f"\n{'=' * 60}")
-    logger.debug("Anthropic API Request:")
-    logger.debug(f"{'=' * 60}")
-    logger.debug(f"Model: {actor.endpoint.model}")
-    logger.debug(f"Max tokens: {actor.endpoint.max_tokens}")
-    logger.debug(f"Temperature: {actor.endpoint.temperature}")
-    logger.debug(f"API base: {actor.endpoint.api_base}")
-    logger.debug(f"Messages count: {len(params['messages'])}")
-    if system_prompt:
-        logger.debug(f"System prompt length: {len(system_prompt)} chars")
-        logger.debug(f"System prompt preview: {system_prompt[:200]}...")
-    for i, msg in enumerate(params["messages"]):
-        role = msg.get("role", "unknown")
-        content = msg.get("content", "")
-        if isinstance(content, str):
-            logger.debug(f"Message {i} ({role}): {len(content)} chars - {content[:100]}...")
-        elif isinstance(content, list):
-            logger.debug(f"Message {i} ({role}): {len(content)} content blocks")
-    logger.debug(f"{'=' * 60}\n")
+    # Wide event logging for API request (structured for queryability)
+    # This single log line captures everything needed to debug API issues
+    def _summarize_messages(msgs: list[dict]) -> list[dict]:
+        """Summarize messages for logging without full content."""
+        summaries = []
+        for msg in msgs:
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                summaries.append({"role": role, "chars": len(content), "preview": content[:100]})
+            elif isinstance(content, list):
+                summaries.append({"role": role, "blocks": len(content)})
+        return summaries
+
+    logger.debug(
+        "anthropic_api_request",
+        extra={
+            "event": "api_request",
+            "provider": "anthropic",
+            "model": actor.endpoint.model,
+            "api_base": actor.endpoint.api_base,
+            "max_tokens": actor.endpoint.max_tokens,
+            "temperature": actor.endpoint.temperature,
+            "thinking_enabled": actor.endpoint.thinking is not None,
+            "system_prompt_chars": len(system_prompt) if system_prompt else 0,
+            "system_prompt_preview": (system_prompt[:200] + "...")
+            if system_prompt and len(system_prompt) > 200
+            else system_prompt,
+            "message_count": len(params["messages"]),
+            "messages_summary": _summarize_messages(params["messages"]),
+            "tool_names": [t["name"] for t in params.get("tools", [])],
+            "turn_idx": turn_idx,
+        },
+    )
 
     max_retries = 10
     base_delay = 2
@@ -821,7 +835,16 @@ async def rollout_anthropic(
     for attempt in range(max_retries + 1):
         try:
             # Emit LLMCallStart before making the API call
-            logger.debug(f"Anthropic API call attempt {attempt + 1}/{max_retries + 1}")
+            logger.debug(
+                "anthropic_api_attempt",
+                extra={
+                    "event": "api_attempt",
+                    "provider": "anthropic",
+                    "model": actor.endpoint.model,
+                    "attempt": attempt + 1,
+                    "max_attempts": max_retries + 1,
+                },
+            )
             await on_chunk(LLMCallStart())
 
             # Build extra headers - include oauth beta header if using oauth or Claude Code API key
@@ -837,6 +860,34 @@ async def rollout_anthropic(
                 # If we were retrying and succeeded, emit RetryEnd
                 if retrying:
                     await on_chunk(RetryEnd(success=True, attempt=attempt + 1))
+
+                # Wide event for successful API response
+                logger.debug(
+                    "anthropic_api_response",
+                    extra={
+                        "event": "api_response",
+                        "provider": "anthropic",
+                        "model": actor.endpoint.model,
+                        "attempt": attempt + 1,
+                        "success": True,
+                        "input_tokens": completion.usage.input_tokens if completion.usage else None,
+                        "output_tokens": completion.usage.output_tokens
+                        if completion.usage
+                        else None,
+                        "cache_read_tokens": completion.usage.cache_read_tokens
+                        if completion.usage
+                        else None,
+                        "cache_write_tokens": completion.usage.cache_write_tokens
+                        if completion.usage
+                        else None,
+                        "stop_reason": completion.choices[0].stop_reason
+                        if completion.choices
+                        else None,
+                        "has_tool_calls": bool(completion.choices[0].message.tool_calls)
+                        if completion.choices
+                        else False,
+                    },
+                )
                 break
 
         except Exception as e:
@@ -935,12 +986,16 @@ async def rollout_anthropic(
 
             sanitized = sanitize_request_for_logging(params)
             logger.exception(
-                "Anthropic API call failed after all retries",
+                "anthropic_api_response",
                 extra={
-                    "exception": str(e),
-                    "request_params": sanitized,
+                    "event": "api_response",
+                    "provider": "anthropic",
                     "model": actor.endpoint.model,
-                    "max_retries": max_retries,
+                    "attempt": max_retries + 1,
+                    "success": False,
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "request_params": sanitized,
                 },
             )
             raise ProviderError(
