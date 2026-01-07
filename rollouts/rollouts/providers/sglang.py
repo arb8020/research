@@ -229,11 +229,42 @@ async def rollout_sglang(
     api_base = _normalize_vllm_api_base(actor.endpoint.api_base)
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
 
+    # Wide event logging for API request
+    from .base import log_api_request
+
+    _tool_names = [t.function.name for t in actor.tools] if actor.tools else []
+    log_api_request(
+        provider="sglang",
+        model=actor.endpoint.model,
+        api_base=api_base,
+        messages=params["messages"],
+        tools=_tool_names,
+        temperature=actor.endpoint.temperature,
+        max_tokens=actor.endpoint.max_tokens,
+    )
+
     # Execute API call
     completion = await _execute_vllm_request(
         api_base, params, headers, max_api_retries, backoff_base, timeout
     )
     assert completion
+
+    # Wide event for response
+    from .base import log_api_response
+
+    usage = completion.get("usage", {})
+    log_api_response(
+        provider="sglang",
+        model=actor.endpoint.model,
+        attempt=1,
+        success=True,
+        input_tokens=usage.get("prompt_tokens"),
+        output_tokens=usage.get("completion_tokens"),
+        stop_reason=completion.get("choices", [{}])[0].get("finish_reason"),
+        has_tool_calls=bool(
+            completion.get("choices", [{}])[0].get("message", {}).get("tool_calls")
+        ),
+    )
 
     # Process tool calls with error handling
     message = completion["choices"][0]["message"]
@@ -345,18 +376,55 @@ async def rollout_sglang_streaming(
     if hasattr(actor.endpoint, "extra_params") and actor.endpoint.extra_params:
         params.update(actor.endpoint.extra_params)
 
+    # Wide event logging for API request
+    from .base import log_api_request
+
+    _tool_names_stream = [t.function.name for t in actor.tools] if actor.tools else []
+    log_api_request(
+        provider="sglang_streaming",
+        model=actor.endpoint.model,
+        api_base=api_base,
+        messages=params["messages"],
+        tools=_tool_names_stream,
+        temperature=actor.endpoint.temperature,
+        max_tokens=actor.endpoint.max_tokens,
+    )
+
     # Execute streaming request - reuse aggregate_stream from openai_completions
     # This handles ToolCallError gracefully when JSON parsing fails
     try:
         stream = await client.chat.completions.create(**params)
         completion = await aggregate_stream(stream, on_chunk)
+
+        # Wide event for successful response
+        from .base import log_api_response
+
+        log_api_response(
+            provider="sglang_streaming",
+            model=actor.endpoint.model,
+            attempt=1,
+            success=True,
+            input_tokens=completion.usage.input_tokens if completion.usage else None,
+            output_tokens=completion.usage.output_tokens if completion.usage else None,
+            stop_reason=completion.choices[0].stop_reason if completion.choices else None,
+            has_tool_calls=bool(completion.choices[0].message.tool_calls)
+            if completion.choices
+            else False,
+        )
     except NonRetryableError:
         # Context length, invalid params - re-raise as-is
         raise
     except Exception as e:
-        from .base import ProviderError
+        from .base import ProviderError, log_api_response
 
-        logger.exception(f"SGLang streaming request failed: {e}")
+        log_api_response(
+            provider="sglang_streaming",
+            model=actor.endpoint.model,
+            attempt=1,
+            success=False,
+            error_type=type(e).__name__,
+            error_message=str(e),
+        )
         raise ProviderError(
             f"SGLang API error: {e}",
             original_error=e,
