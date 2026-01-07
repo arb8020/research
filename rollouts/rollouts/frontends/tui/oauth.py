@@ -30,9 +30,15 @@ logger = logging.getLogger(__name__)
 CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 TOKEN_URL = "https://console.anthropic.com/v1/oauth/token"
 REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
+API_KEY_URL = "https://api.anthropic.com/api/oauth/claude_cli/create_api_key"
 
-# Scopes for Claude Pro/Max
-SCOPES = "org:create_api_key user:profile user:inference"
+# Scopes - match Claude Code's scope set
+# Console scopes: org:create_api_key, user:profile
+# Claude.ai scopes: user:profile, user:inference, user:sessions:claude_code
+SCOPES = "org:create_api_key user:profile user:inference user:sessions:claude_code"
+
+# The scope that indicates direct OAuth inference is available
+INFERENCE_SCOPE = "user:inference"
 
 # Token storage
 OAUTH_DIR = Path.home() / ".rollouts" / "oauth"
@@ -48,17 +54,30 @@ class OAuthTokens:
     access_token: str
     refresh_token: str
     expires_at: float  # Unix timestamp in milliseconds
+    scopes: str | None = None  # Space-separated scopes granted by the token
+    api_key: str | None = None  # API key created via OAuth (for console accounts)
 
     def is_expired(self) -> bool:
         """Check if token is expired."""
         return time.time() * 1000 >= self.expires_at
 
+    def has_inference_scope(self) -> bool:
+        """Check if token has user:inference scope for direct OAuth inference."""
+        if self.scopes is None:
+            return False
+        return INFERENCE_SCOPE in self.scopes.split()
+
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "access_token": self.access_token,
             "refresh_token": self.refresh_token,
             "expires_at": self.expires_at,
         }
+        if self.scopes:
+            result["scopes"] = self.scopes
+        if self.api_key:
+            result["api_key"] = self.api_key
+        return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> OAuthTokens:
@@ -66,6 +85,8 @@ class OAuthTokens:
             access_token=data["access_token"],
             refresh_token=data["refresh_token"],
             expires_at=data["expires_at"],
+            scopes=data.get("scopes"),
+            api_key=data.get("api_key"),
         )
 
 
@@ -312,10 +333,14 @@ class OAuthClient:
 
             data = response.json()
 
+            # Capture scopes from response (space-separated string)
+            scopes = data.get("scope", "")
+
             tokens = OAuthTokens(
                 access_token=data["access_token"],
                 refresh_token=data["refresh_token"],
                 expires_at=time.time() * 1000 + data["expires_in"] * 1000 - EXPIRY_BUFFER_MS,
+                scopes=scopes,
             )
 
             self._tokens = tokens
@@ -353,10 +378,15 @@ class OAuthClient:
 
             data = response.json()
 
+            # Preserve scopes and api_key from original tokens
             new_tokens = OAuthTokens(
                 access_token=data["access_token"],
                 refresh_token=data.get("refresh_token", tokens.refresh_token),
                 expires_at=time.time() * 1000 + data["expires_in"] * 1000 - EXPIRY_BUFFER_MS,
+                scopes=data.get(
+                    "scope", tokens.scopes
+                ),  # Use new scopes if provided, else keep old
+                api_key=tokens.api_key,  # Preserve API key
             )
 
             self._tokens = new_tokens
@@ -390,6 +420,50 @@ class OAuthClient:
 
         return tokens.access_token
 
+    async def create_api_key(self) -> str:
+        """Create an API key using the OAuth token.
+
+        This is used for accounts that have org:create_api_key scope but not user:inference.
+        (e.g., enterprise/developer console accounts)
+
+        Returns:
+            The created API key.
+
+        Raises:
+            OAuthError: If API key creation fails.
+        """
+        tokens = self.tokens
+        if tokens is None:
+            raise OAuthError("No tokens - login first")
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                API_KEY_URL,
+                json=None,
+                headers={
+                    "Authorization": f"Bearer {tokens.access_token}",
+                    "Content-Type": "application/json",
+                },
+            )
+
+            if response.status_code != 200:
+                raise OAuthError(f"API key creation failed: {response.status_code} {response.text}")
+
+            data = response.json()
+            api_key = data.get("raw_key")
+
+            if not api_key:
+                raise OAuthError("API key creation response missing raw_key")
+
+            # Update tokens with API key and save
+            tokens.api_key = api_key
+            self._tokens = tokens
+            _, err = save_tokens(tokens, self.profile)
+            if err:
+                raise OAuthError(f"Failed to save API key: {err}")
+
+            return api_key
+
     def logout(self) -> None:
         """Clear stored tokens."""
         _, err = delete_tokens(self.profile)
@@ -415,15 +489,44 @@ def is_logged_in(profile: str = "default") -> bool:
     return get_oauth_client(profile).is_logged_in()
 
 
-async def login(profile: str = "default") -> OAuthTokens:
-    """Interactive login flow for profile."""
+async def login(profile: str = "default", mode: str | None = None) -> OAuthTokens:
+    """Interactive login flow for profile.
+
+    Args:
+        profile: Profile name to save tokens under
+        mode: Login mode - "claude" for Claude subscription (Pro/Max/Team/Enterprise),
+              "console" for Anthropic Console (API billing). If None, prompts user.
+    """
     _, err = validate_profile_name(profile)
     if err:
         raise OAuthError(err)
 
     client = get_oauth_client(profile)
 
-    url = client.get_authorize_url("max")
+    # Prompt for login method if not specified
+    if mode is None:
+        print("\n🔐 Claude Code can be used with your Claude subscription or")
+        print("   billed based on API usage through your Console account.\n")
+        print("   Select login method:\n")
+        print("   1. Claude account with subscription · Pro, Max, Team, or Enterprise")
+        print("   2. Anthropic Console account · API usage billing\n")
+
+        while True:
+            try:
+                choice = input("Enter 1 or 2: ").strip()
+                if choice == "1":
+                    mode = "max"
+                    break
+                elif choice == "2":
+                    mode = "console"
+                    break
+                else:
+                    print("Please enter 1 or 2")
+            except (KeyboardInterrupt, EOFError) as e:
+                print("\n⚠️  Login cancelled")
+                raise KeyboardInterrupt() from e
+
+    url = client.get_authorize_url(mode)
 
     print(f"\n🔐 Logging in to profile: {profile}")
     print("Open this URL in your browser to log in:")
@@ -444,7 +547,20 @@ async def login(profile: str = "default") -> OAuthTokens:
         raise OAuthError("No code provided")
 
     tokens = await client.exchange_code(code)
-    print(f"✅ Successfully logged in to Claude (profile: {profile})!")
+
+    # Check if we have inference scope for direct OAuth usage
+    if tokens.has_inference_scope():
+        print(f"✅ Successfully logged in to Claude (profile: {profile})!")
+    else:
+        # No inference scope - need to create an API key (console/developer accounts)
+        print("🔑 Creating API key for inference...")
+        try:
+            api_key = await client.create_api_key()
+            print(f"✅ Successfully logged in to Claude (profile: {profile})!")
+            print(f"   Using API key for inference (key prefix: {api_key[:15]}...)")
+        except OAuthError as e:
+            print(f"⚠️  Logged in but API key creation failed: {e}")
+            print("   You may need to use --api-key manually")
 
     return tokens
 

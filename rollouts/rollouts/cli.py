@@ -582,9 +582,10 @@ def create_endpoint(
 
     # Explicit auth flow - no silent fallbacks to avoid surprise billing
     # 1. --api-key flag → use that (user's explicit choice)
-    # 2. No flag + OAuth exists → use OAuth
+    # 2. No flag + OAuth exists → use OAuth (or stored API key for console accounts)
     # 3. No flag + no OAuth → ERROR (prompt to login)
     oauth_token = ""
+    is_claude_code_api_key = False  # Track if using API key created via Claude Code OAuth
     if provider == "anthropic":
         if api_key is not None:
             # User explicitly passed --api-key, use it
@@ -597,7 +598,6 @@ def create_endpoint(
                 if tokens.is_expired():
                     try:
                         tokens = trio.run(client.refresh_tokens)
-                        oauth_token = tokens.access_token
                         print("🔐 OAuth token refreshed", file=sys.stderr)
                     except Exception as e:
                         print(f"❌ OAuth token expired and refresh failed: {e}", file=sys.stderr)
@@ -606,14 +606,41 @@ def create_endpoint(
                             file=sys.stderr,
                         )
                         sys.exit(1)
-                else:
+
+                # Check if we have inference scope for direct OAuth, or use stored API key
+                profile_info = (
+                    f" (default profile: {profile})"
+                    if profile == "default"
+                    else f" (profile: {profile})"
+                )
+                if tokens.has_inference_scope():
+                    # Pro/Max account - use OAuth token directly
                     oauth_token = tokens.access_token
-                if not quiet:
-                    profile_info = f" (profile: {profile})" if profile != "default" else ""
+                    if not quiet:
+                        print(
+                            f"🔐 Using OAuth authentication (Claude Pro/Max){profile_info}",
+                            file=sys.stderr,
+                        )
+                elif tokens.api_key:
+                    # Console/developer account - use stored API key (Claude Code restricted)
+                    api_key = tokens.api_key
+                    is_claude_code_api_key = True  # This API key requires Claude Code headers
+                    if not quiet:
+                        print(
+                            f"🔑 Using API key (Console account){profile_info}",
+                            file=sys.stderr,
+                        )
+                else:
+                    # Has OAuth but no inference scope and no API key - need to re-login
                     print(
-                        f"🔐 Using OAuth authentication (Claude Pro/Max){profile_info}",
+                        f"❌ OAuth token missing inference scope and no API key stored{profile_info}",
                         file=sys.stderr,
                     )
+                    print(
+                        f"   Run `rollouts --login-claude --profile {profile}` to re-authenticate",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
             else:
                 # No OAuth tokens - require explicit action
                 profile_info = f" --profile {profile}" if profile != "default" else ""
@@ -627,7 +654,6 @@ def create_endpoint(
                 )
                 print("   Or use --api-key to use API billing", file=sys.stderr)
                 sys.exit(1)
-            api_key = ""  # Ensure no API key when using OAuth
 
     if api_key is None:
         if provider == "openai":
@@ -649,6 +675,7 @@ def create_endpoint(
         api_base=api_base,
         api_key=api_key,
         oauth_token=oauth_token,
+        is_claude_code_api_key=is_claude_code_api_key,
         thinking=thinking_config,
         max_tokens=max_tokens,
     )

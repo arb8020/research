@@ -743,9 +743,12 @@ async def rollout_anthropic(
         "temperature": actor.endpoint.temperature,
     }
 
-    # For OAuth tokens, we MUST include Claude Code identity prefix
-    # This is required by Anthropic's API for OAuth authentication
-    if actor.endpoint.oauth_token:
+    # For OAuth tokens or Claude Code API keys, we MUST include Claude Code identity prefix
+    # This is required by Anthropic's API for OAuth authentication and Claude Code restricted API keys
+    requires_claude_code_identity = (
+        actor.endpoint.oauth_token or actor.endpoint.is_claude_code_api_key
+    )
+    if requires_claude_code_identity:
         claude_code_identity = "You are Claude Code, Anthropic's official CLI for Claude."
         if system_prompt:
             # Prepend Claude Code identity to existing system prompt
@@ -807,9 +810,9 @@ async def rollout_anthropic(
             logger.debug(f"Anthropic API call attempt {attempt + 1}/{max_retries + 1}")
             await on_chunk(LLMCallStart())
 
-            # Build extra headers - include oauth beta header if using oauth
+            # Build extra headers - include oauth beta header if using oauth or Claude Code API key
             extra_headers = {"anthropic-beta": "prompt-caching-2024-07-31"}
-            if oauth_token:
+            if oauth_token or actor.endpoint.is_claude_code_api_key:
                 extra_headers["anthropic-beta"] = "oauth-2025-04-20,prompt-caching-2024-07-31"
 
             async with client.messages.stream(  # type: ignore[missing-argument]
