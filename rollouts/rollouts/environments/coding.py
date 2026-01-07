@@ -43,6 +43,9 @@ MAX_LINES = 2000
 MAX_LINE_LENGTH = 2000
 MAX_OUTPUT_SIZE = 30_000  # 30KB (matches Claude Code's default)
 
+# Directory for storing large tool outputs
+TOOL_OUTPUT_DIR = Path.home() / ".rollouts" / "tool_outputs"
+
 # Web fetch constants
 WEB_FETCH_MAX_SIZE = 10 * 1024 * 1024  # 10MB max download
 WEB_FETCH_MAX_CONTENT = 100_000  # 100KB max content after conversion
@@ -649,7 +652,7 @@ class LocalFilesystemEnvironment:
             elif tool_call.name == "edit":
                 return await self._exec_edit(tool_call)
             elif tool_call.name == "bash":
-                return await self._exec_bash(tool_call, cancel_scope)
+                return await self._exec_bash(tool_call, current_state.session_id, cancel_scope)
             elif tool_call.name == "web_fetch":
                 return await self._exec_web_fetch(tool_call)
             else:
@@ -832,9 +835,17 @@ class LocalFilesystemEnvironment:
         )
 
     async def _exec_bash(
-        self, tool_call: ToolCall, cancel_scope: trio.CancelScope | None = None
+        self,
+        tool_call: ToolCall,
+        session_id: str | None = None,
+        cancel_scope: trio.CancelScope | None = None,
     ) -> ToolResult:
-        """Execute bash command with proper cancellation support."""
+        """Execute bash command with proper cancellation support.
+
+        Large outputs (>30KB) are written to a file instead of being truncated,
+        following Cursor's dynamic context discovery pattern. The agent can then
+        read specific portions of the output file as needed.
+        """
         from ._subprocess import run_command
 
         command = tool_call.args["command"]
@@ -853,12 +864,27 @@ class LocalFilesystemEnvironment:
                     output += "\n"
                 output += stderr
 
-            # Truncate if too large
+            # For large outputs, write to file instead of truncating (lossless)
+            output_file_path: str | None = None
             if len(output) > MAX_OUTPUT_SIZE:
-                removed_kb = (len(output) - MAX_OUTPUT_SIZE) // 1024
+                output_file_path = self._write_large_output(output, tool_call.id, session_id)
+                total_lines = output.count("\n") + 1
+                total_kb = len(output) // 1024
+
+                # Show truncated preview + file reference
+                # Include the last few lines (often most relevant for errors)
+                preview_size = MAX_OUTPUT_SIZE // 2
+                head = output[:preview_size]
+                tail = output[-preview_size:]
+
                 output = (
-                    output[:MAX_OUTPUT_SIZE]
-                    + f"\n\n... [output truncated - {removed_kb}KB removed]"
+                    f"{head}\n\n"
+                    f"... [{total_kb}KB total, {total_lines} lines - full output saved to file]\n\n"
+                    f"... (last {preview_size // 1024}KB of output):\n\n"
+                    f"{tail}\n\n"
+                    f"Full output: {output_file_path}\n"
+                    f"Use `read path={output_file_path}` to see specific sections, "
+                    f"or `bash command='tail -100 {output_file_path}'` to see the end."
                 )
 
             if returncode != 0:
@@ -867,10 +893,14 @@ class LocalFilesystemEnvironment:
                     is_error=True,
                     content=output or "(no output)",
                     error=f"Command exited with code {returncode}",
+                    details={"output_file": output_file_path} if output_file_path else None,
                 )
 
             return ToolResult(
-                tool_call_id=tool_call.id, is_error=False, content=output or "(no output)"
+                tool_call_id=tool_call.id,
+                is_error=False,
+                content=output or "(no output)",
+                details={"output_file": output_file_path} if output_file_path else None,
             )
 
         except TimeoutError:
@@ -882,6 +912,22 @@ class LocalFilesystemEnvironment:
             )
         except trio.Cancelled:
             raise  # Re-raise so the agent loop handles it
+
+    def _write_large_output(self, output: str, tool_call_id: str, session_id: str | None) -> str:
+        """Write large command output to a file for later retrieval.
+
+        Returns the path to the output file.
+        """
+        # Organize by session if available, otherwise use 'anonymous'
+        session_dir = session_id or "anonymous"
+        output_dir = TOOL_OUTPUT_DIR / session_dir
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Use tool_call_id for unique filename
+        output_file = output_dir / f"{tool_call_id}.txt"
+        output_file.write_text(output, encoding="utf-8")
+
+        return str(output_file)
 
     async def _exec_web_fetch(self, tool_call: ToolCall) -> ToolResult:
         """Fetch content from URL, convert to markdown, return with context."""
