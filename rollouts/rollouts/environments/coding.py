@@ -654,7 +654,7 @@ class LocalFilesystemEnvironment:
             elif tool_call.name == "bash":
                 return await self._exec_bash(tool_call, current_state.session_id, cancel_scope)
             elif tool_call.name == "web_fetch":
-                return await self._exec_web_fetch(tool_call)
+                return await self._exec_web_fetch(tool_call, current_state.session_id)
             else:
                 return ToolResult(
                     tool_call_id=tool_call.id,
@@ -929,8 +929,14 @@ class LocalFilesystemEnvironment:
 
         return str(output_file)
 
-    async def _exec_web_fetch(self, tool_call: ToolCall) -> ToolResult:
-        """Fetch content from URL, convert to markdown, return with context."""
+    async def _exec_web_fetch(
+        self, tool_call: ToolCall, session_id: str | None = None
+    ) -> ToolResult:
+        """Fetch content from URL, convert to markdown, return with context.
+
+        Large content (>100KB) is saved to a file instead of being truncated,
+        following the same pattern as bash outputs.
+        """
         import time
 
         url = tool_call.args["url"]
@@ -1097,17 +1103,37 @@ class LocalFilesystemEnvironment:
                 summarized = True
             # On error, fall back to truncated raw content (Claude Code behavior)
 
-        # Truncate if too large (fallback for non-summarized or failed summarization)
-        if len(final_content) > WEB_FETCH_MAX_CONTENT:
-            final_content = final_content[:WEB_FETCH_MAX_CONTENT] + "\n\n...[content truncated]"
-
+        # Build header
         header = f"URL: {url}"
         if summarized:
             header += f"\n[Summarized by {self.summarizer_model}]"
         header += f"\nPrompt: {prompt}\n\n---\n\n"
 
+        # For large content, save to file instead of truncating (lossless)
+        output_file_path: str | None = None
+        if len(final_content) > WEB_FETCH_MAX_CONTENT:
+            output_file_path = self._write_large_output(
+                header + final_content, tool_call.id, session_id
+            )
+            total_kb = len(final_content) // 1024
+
+            # Show truncated preview + file reference
+            preview_size = WEB_FETCH_MAX_CONTENT // 2
+            head = final_content[:preview_size]
+            tail = final_content[-preview_size:]
+
+            final_content = (
+                f"{head}\n\n"
+                f"... [{total_kb}KB total - full content saved to file]\n\n"
+                f"... (last {preview_size // 1024}KB):\n\n"
+                f"{tail}\n\n"
+                f"Full content: {output_file_path}\n"
+                f"Use `read path={output_file_path}` to see specific sections."
+            )
+
         return ToolResult(
             tool_call_id=tool_call.id,
             is_error=False,
             content=header + final_content,
+            details={"output_file": output_file_path} if output_file_path else None,
         )
