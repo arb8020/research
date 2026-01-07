@@ -146,6 +146,7 @@ class CLIConfig:
     theme: str = "minimal"
     debug: bool = False
     debug_layout: bool = False
+    log_file: str | None = None
 
     # Preset
     preset: str | None = None
@@ -336,12 +337,17 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--debug",
         action="store_true",
-        help="Enable debug logging",
+        help="Enable debug logging (sets LOG_LEVEL=DEBUG)",
     )
     parser.add_argument(
         "--debug-layout",
         action="store_true",
         help="Show TUI component boundaries",
+    )
+    parser.add_argument(
+        "--log-file",
+        type=str,
+        help="Write logs to file (JSONL format, includes API requests at DEBUG level)",
     )
 
     # OAuth (Claude Pro/Max)
@@ -1555,6 +1561,23 @@ def main() -> int:
     parser = create_parser()
     args = parser.parse_args()
 
+    # Setup logging early (before any other imports that might log)
+    # --debug sets DEBUG level, --log-file writes JSONL to file
+    if args.debug or args.log_file:
+        from ._logging import setup_logging
+
+        setup_logging(
+            level="DEBUG" if args.debug else "INFO",
+            log_file=args.log_file,
+            use_color=True,  # Colorized console output
+            logger_levels={
+                # Suppress noisy third-party loggers unless we're debugging
+                "httpx": "WARNING",
+                "httpcore": "WARNING",
+                "anthropic": "DEBUG" if args.debug else "WARNING",
+            },
+        )
+
     # Build config from parsed args
     # Handle context from --context or --context-file
     context = args.context
@@ -1585,6 +1608,7 @@ def main() -> int:
         theme=args.theme,
         debug=args.debug,
         debug_layout=args.debug_layout,
+        log_file=args.log_file,
         preset=args.preset,
         system_prompt=args.system_prompt,
         list_presets=args.list_presets,
