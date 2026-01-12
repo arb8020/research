@@ -3,6 +3,16 @@
 Replaces the simple tqdm-style single bar with a multi-row display
 showing all concurrent tasks, similar to uv's download progress.
 
+Supports nested/hierarchical progress displays via ProgressGroup:
+
+    with ProgressGroup("GEPA Optimization", total=10) as outer:
+        for i in range(10):
+            outer.update(completed=i, status=f"iteration {i}")
+            with ProgressGroup("Minibatch Eval", total=3, parent=outer) as inner:
+                inner.add_task("task1", name="ReLU")
+                inner.update_task("task1", status="compiling...")
+                inner.complete_task("task1", success=True)
+
 Usage:
     # As a drop-in tqdm replacement (single task)
     with tqdm(total=100, desc="Processing") as pbar:
@@ -89,6 +99,353 @@ class TaskState:
     def elapsed(self) -> float:
         end = self.end_time or time.perf_counter()
         return end - self.start_time
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Nested Progress System
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class _ProgressRenderer:
+    """Global singleton that renders the entire progress tree.
+
+    All ProgressGroups register with this renderer. It handles:
+    - Tracking all active groups in a tree structure
+    - Single atomic render of the entire tree
+    - Cursor management across all groups
+    """
+
+    _instance: _ProgressRenderer | None = None
+
+    def __new__(cls) -> _ProgressRenderer:
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+
+    def __init__(self) -> None:
+        if self._initialized:
+            return
+        self._initialized = True
+        self._lock = Lock()
+        self._root_groups: list[ProgressGroup] = []
+        self._lines_rendered = 0
+        self._last_render = 0.0
+        self._render_interval = 0.05  # 20 FPS
+        self._active = False
+        self._saved_log_level: int | None = None
+
+    def register(self, group: ProgressGroup) -> None:
+        """Register a new progress group."""
+        with self._lock:
+            if group.parent is None:
+                self._root_groups.append(group)
+            # Start rendering if this is the first group
+            if not self._active:
+                self._active = True
+                sys.stderr.write(HIDE_CURSOR)
+                sys.stderr.flush()
+                self._saved_log_level = logging.root.level
+                logging.root.setLevel(logging.WARNING)
+
+    def unregister(self, group: ProgressGroup) -> None:
+        """Unregister a progress group."""
+        should_cleanup = False
+        with self._lock:
+            if group.parent is None and group in self._root_groups:
+                self._root_groups.remove(group)
+            # Check if we need to stop rendering
+            if not self._root_groups and self._active:
+                self._active = False
+                should_cleanup = True
+
+        # Do cleanup outside the lock to avoid deadlock with _render
+        if should_cleanup:
+            self._render(force=True, final=True)
+            sys.stderr.write(SHOW_CURSOR)
+            sys.stderr.flush()
+            if self._saved_log_level is not None:
+                logging.root.setLevel(self._saved_log_level)
+            self._lines_rendered = 0
+
+    def request_render(self) -> None:
+        """Request a render (rate-limited)."""
+        if not self._active:
+            return
+        now = time.perf_counter()
+        if (now - self._last_render) < self._render_interval:
+            return
+        self._render()
+
+    def _render(self, force: bool = False, final: bool = False) -> None:
+        """Render the entire progress tree."""
+        now = time.perf_counter()
+        if not force and (now - self._last_render) < self._render_interval:
+            return
+        self._last_render = now
+
+        with self._lock:
+            lines = self._build_tree_display()
+
+        # Move cursor up to overwrite previous render
+        if self._lines_rendered > 0:
+            sys.stderr.write(CURSOR_UP.format(n=self._lines_rendered))
+
+        # Write new lines
+        for line in lines:
+            sys.stderr.write(CLEAR_LINE + line + "\n")
+
+        # Clear extra lines from previous render
+        extra_lines = self._lines_rendered - len(lines)
+        for _ in range(extra_lines):
+            sys.stderr.write(CLEAR_LINE + "\n")
+        if extra_lines > 0:
+            sys.stderr.write(CURSOR_UP.format(n=extra_lines))
+
+        sys.stderr.flush()
+        self._lines_rendered = len(lines)
+
+    def _build_tree_display(self) -> list[str]:
+        """Build display lines for the entire tree."""
+        lines: list[str] = []
+        width = shutil.get_terminal_size().columns
+
+        for group in self._root_groups:
+            lines.extend(group._build_lines(width, depth=0))
+
+        return lines
+
+
+# Global renderer singleton
+def _get_renderer() -> _ProgressRenderer:
+    return _ProgressRenderer()
+
+
+class ProgressGroup:
+    """A group of related progress items at one nesting level.
+
+    ProgressGroups can be nested to create hierarchical progress displays:
+
+        with ProgressGroup("Outer", total=10) as outer:
+            for i in range(10):
+                outer.update(completed=i)
+                with ProgressGroup("Inner", total=5) as inner:
+                    for j in range(5):
+                        inner.add_task(f"task_{j}", name=f"Item {j}")
+                        inner.complete_task(f"task_{j}", success=True)
+
+    The global renderer handles cursor management and renders the entire
+    tree atomically.
+    """
+
+    def __init__(
+        self,
+        desc: str = "",
+        total: int | None = None,
+        unit: str = "item",
+        disable: bool = False,
+        keep_completed: bool = True,
+        max_visible: int | None = 8,
+    ) -> None:
+        self.desc = desc
+        self.total = total
+        self.unit = unit
+        self.disable = disable
+        self.keep_completed = keep_completed
+        self.max_visible = max_visible
+
+        self.completed_count = 0
+        self.status = ""
+        self.start_time = time.perf_counter()
+
+        self.tasks: dict[str, TaskState] = {}
+        self.task_order: list[str] = []
+        self.children: list[ProgressGroup] = []
+        self.parent: ProgressGroup | None = None
+
+        self._lock = Lock()
+
+    def __enter__(self) -> ProgressGroup:
+        if not self.disable:
+            # Find parent from stack
+            renderer = _get_renderer()
+            if renderer._root_groups:
+                # Find the deepest active group to be our parent
+                def find_deepest(groups: list[ProgressGroup]) -> ProgressGroup | None:
+                    for g in reversed(groups):
+                        if g.children:
+                            deep = find_deepest(g.children)
+                            if deep:
+                                return deep
+                        return g
+                    return None
+
+                self.parent = find_deepest(renderer._root_groups)
+                if self.parent:
+                    self.parent.children.append(self)
+
+            renderer.register(self)
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        if not self.disable:
+            renderer = _get_renderer()
+            if self.parent:
+                self.parent.children.remove(self)
+            renderer.unregister(self)
+            renderer.request_render()
+
+    async def __aenter__(self) -> ProgressGroup:
+        return self.__enter__()
+
+    async def __aexit__(self, *args: object) -> None:
+        self.__exit__(*args)
+
+    def update(
+        self,
+        completed: int | None = None,
+        status: str | None = None,
+    ) -> None:
+        """Update the group's progress."""
+        with self._lock:
+            if completed is not None:
+                self.completed_count = completed
+            if status is not None:
+                self.status = status
+        _get_renderer().request_render()
+
+    def add_task(self, task_id: str, name: str = "") -> None:
+        """Add a task to this group."""
+        with self._lock:
+            self.tasks[task_id] = TaskState(
+                task_id=task_id,
+                name=name or task_id,
+            )
+            self.task_order.append(task_id)
+        _get_renderer().request_render()
+
+    def update_task(
+        self,
+        task_id: str,
+        turn: int | None = None,
+        status: str | None = None,
+    ) -> None:
+        """Update a task's status."""
+        with self._lock:
+            task = self.tasks.get(task_id)
+            if not task:
+                return
+            if turn is not None:
+                task.turn = turn
+            if status is not None:
+                task.status = status
+        _get_renderer().request_render()
+
+    def complete_task(
+        self,
+        task_id: str,
+        success: bool = True,
+        message: str = "",
+    ) -> None:
+        """Mark a task as complete."""
+        with self._lock:
+            task = self.tasks.get(task_id)
+            if not task:
+                return
+            task.success = success
+            task.message = message
+            task.end_time = time.perf_counter()
+            self.completed_count += 1
+        _get_renderer().request_render()
+
+    def _build_lines(self, width: int, depth: int) -> list[str]:
+        """Build display lines for this group and its children."""
+        lines: list[str] = []
+        indent = "│  " * depth
+        branch = "├─ " if depth > 0 else ""
+
+        # Header line with progress
+        elapsed = time.perf_counter() - self.start_time
+        if self.total:
+            progress = self.completed_count / self.total
+            bar_width = min(20, max(10, width - len(self.desc) - 30 - depth * 3))
+            bar = _format_bar(progress, bar_width)
+            header = (
+                f"{indent}{branch}{BOLD}{self.desc}{RESET}: "
+                f"{self.completed_count}/{self.total} "
+                f"|{bar}| {100 * progress:3.0f}% "
+                f"[{_format_time(elapsed)}]"
+            )
+        else:
+            header = (
+                f"{indent}{branch}{BOLD}{self.desc}{RESET}: "
+                f"{self.completed_count} {self.unit}s "
+                f"[{_format_time(elapsed)}]"
+            )
+
+        if self.status:
+            header += f" {DIM}{self.status}{RESET}"
+
+        lines.append(header[:width])
+
+        # Task rows
+        child_indent = "│  " * (depth + 1) if self.children or depth > 0 else "   "
+        visible_tasks = self._get_visible_tasks()
+
+        for task in visible_tasks:
+            line = self._format_task_row(task, child_indent, width)
+            lines.append(line)
+
+        # Hidden tasks count
+        if self.max_visible is not None:
+            all_tasks = [self.tasks[tid] for tid in self.task_order if tid in self.tasks]
+            hidden = len(all_tasks) - len(visible_tasks)
+            if hidden > 0:
+                lines.append(f"{child_indent}{DIM}... and {hidden} more{RESET}")
+
+        # Recursively add children
+        for child in self.children:
+            lines.extend(child._build_lines(width, depth + 1))
+
+        return lines
+
+    def _get_visible_tasks(self) -> list[TaskState]:
+        """Get tasks to display."""
+        in_progress = []
+        completed = []
+
+        for task_id in self.task_order:
+            task = self.tasks.get(task_id)
+            if not task:
+                continue
+            if task.is_done:
+                if self.keep_completed:
+                    completed.append(task)
+            else:
+                in_progress.append(task)
+
+        visible = in_progress + list(reversed(completed))
+        if self.max_visible is not None:
+            return visible[: self.max_visible]
+        return visible
+
+    def _format_task_row(self, task: TaskState, indent: str, width: int) -> str:
+        """Format a single task row."""
+        name = task.name[:20].ljust(20)
+
+        if task.is_done:
+            if task.success:
+                icon = f"{GREEN}✓{RESET}"
+                msg = task.message or "done"
+            else:
+                icon = f"{RED}✗{RESET}"
+                msg = task.message or "failed"
+            elapsed = _format_time(task.elapsed)
+            return f"{indent}{name} {icon} {msg} {DIM}({elapsed}){RESET}"
+        else:
+            turn_info = f"T:{task.turn}" if task.turn > 0 else ""
+            status = task.status or "running..."
+            return f"{indent}{name} {turn_info:>4} {CYAN}{status}{RESET}"
 
 
 class MultiProgress:
