@@ -923,8 +923,20 @@ class LocalFilesystemEnvironment:
         output_dir = TOOL_OUTPUT_DIR / session_dir
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Use tool_call_id for unique filename
-        output_file = output_dir / f"{tool_call_id}.txt"
+        # Sanitize tool_call_id to prevent path traversal attacks
+        # tool_call_id comes from the model/provider and could contain malicious paths
+        safe_id = "".join(c for c in tool_call_id if c.isalnum() or c in "-_")[:64]
+        if not safe_id:
+            import uuid
+
+            safe_id = str(uuid.uuid4())
+
+        output_file = output_dir / f"{safe_id}.txt"
+
+        # Defense in depth: verify resolved path stays within output_dir
+        resolved = output_file.resolve()
+        assert resolved.is_relative_to(output_dir.resolve()), "Path traversal detected"
+
         output_file.write_text(output, encoding="utf-8")
 
         return str(output_file)
