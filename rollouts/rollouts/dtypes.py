@@ -4,7 +4,7 @@ import time
 from collections.abc import Awaitable, Callable, Iterator, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from enum import Enum
+from enum import Enum, IntEnum
 from pathlib import Path
 from typing import (
     Any,
@@ -26,9 +26,24 @@ import trio
 # Current: Simple fallback for type hints - actual tensor handling is done at runtime via hasattr checks
 TorchTensor = Any
 
-# TUI formatter type - receives (tool_name, args, result, expanded, theme) and returns formatted string
+# TUI formatter type - receives (tool_name, args, result, detail_level, theme) and returns formatted string
 # Theme is optional to allow headless/non-TUI usage
-ToolFormatter = Callable[[str, dict[str, Any], dict[str, Any] | None, bool, Any], str]
+ToolFormatter = Callable[[str, dict[str, Any], dict[str, Any] | None, "DetailLevel", Any], str]
+
+
+class DetailLevel(IntEnum):
+    """Detail level for displaying content in TUI.
+
+    Controls how much information is shown for tool outputs, messages, and errors.
+    Use +/- keys to cycle through levels globally.
+    """
+
+    COMPACT = 0  # Header + 1-2 line summary only
+    STANDARD = 1  # Default preview (5-10 lines)
+    EXPANDED = 2  # Full output, no truncation
+    # Future levels (not yet implemented):
+    # VERBOSE = 3   # Full output + metadata
+    # DEBUG = 4     # Everything including internal state
 
 
 @dataclass
@@ -56,8 +71,15 @@ class ToolRenderConfig:
     # If None, uses default: tool_name(arg1=..., arg2=...)
     header_fn: Callable[[str, dict[str, Any]], str] | None = None
 
-    # Output display settings
+    # Output display settings - lines shown at each detail level
+    # COMPACT: minimal preview, STANDARD: default, EXPANDED: full output
+    lines_compact: int = 2  # Header + 1-2 lines
+    lines_standard: int = 10  # Default preview
+    lines_expanded: int = -1  # -1 = unlimited
+
+    # Legacy field for backward compatibility (maps to lines_standard)
     max_lines: int = 10
+
     style_fn: str = "diff_context_fg"  # Theme method name for styling output lines
 
     # Summary lines (shown after header, before output)
@@ -67,8 +89,24 @@ class ToolRenderConfig:
 
     # For complex tools that need full control over rendering
     # If provided, all other fields are ignored
-    # Signature: (tool_name, args, result, expanded, theme) -> str
+    # Signature: (tool_name, args, result, detail_level, theme) -> str
     custom_formatter: ToolFormatter | None = None
+
+    def get_max_lines(self, level: DetailLevel) -> int:
+        """Get the max lines for a given detail level.
+
+        Args:
+            level: The detail level to get lines for
+
+        Returns:
+            Max lines to display (-1 for unlimited)
+        """
+        if level == DetailLevel.COMPACT:
+            return self.lines_compact
+        elif level == DetailLevel.STANDARD:
+            return self.lines_standard
+        else:  # EXPANDED or higher
+            return self.lines_expanded
 
 
 # Verbose function for debugging
@@ -1260,8 +1298,10 @@ async def default_confirm_tool(
 
 
 async def default_no_tool_handler(state: "AgentState", run_config: "RunConfig") -> "AgentState":
-    """Default no-tool handler - do nothing."""
-    return state
+    """Default no-tool handler - mark task as complete."""
+    from dataclasses import replace
+
+    return replace(state, stop=StopReason.TASK_COMPLETED)
 
 
 @dataclass(frozen=True)
