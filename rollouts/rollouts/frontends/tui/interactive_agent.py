@@ -16,6 +16,7 @@ import trio
 
 from ...agents import Actor, AgentState, run_agent
 from ...dtypes import (
+    DetailLevel,
     Endpoint,
     Environment,
     Message,
@@ -129,6 +130,9 @@ class InteractiveAgentRunner:
         self._tab_cycle_matches: list[str] = []  # Current list of matches
         self._tab_cycle_index: int = 0  # Current position in cycle
         self._tab_cycle_prefix: str = ""  # Original prefix before cycling started
+
+        # Global detail level for tool outputs (toggled with +/-)
+        self._detail_level: DetailLevel = DetailLevel.STANDARD
 
     @property
     def trajectory(self) -> Trajectory:
@@ -450,6 +454,42 @@ class InteractiveAgentRunner:
                 return f"/{matches[0]} "
 
         return None
+
+    def _increase_detail_level(self) -> None:
+        """Increase detail level for all tool outputs (+ key)."""
+        if self._detail_level < DetailLevel.EXPANDED:
+            self._detail_level = DetailLevel(self._detail_level + 1)
+            self._update_all_detail_levels()
+            if self.renderer:
+                level_name = self._detail_level.name.lower()
+                self.renderer.add_system_message(f"Detail level: {level_name}")
+
+    def _decrease_detail_level(self) -> None:
+        """Decrease detail level for all tool outputs (- key)."""
+        if self._detail_level > DetailLevel.COMPACT:
+            self._detail_level = DetailLevel(self._detail_level - 1)
+            self._update_all_detail_levels()
+            if self.renderer:
+                level_name = self._detail_level.name.lower()
+                self.renderer.add_system_message(f"Detail level: {level_name}")
+
+    def _update_all_detail_levels(self) -> None:
+        """Update detail level on all tool execution components in chat.
+
+        Currently applies global detail level to all components.
+        Future: Add per-component expansion (scroll to component, expand just that one).
+        """
+        if not self.renderer or not self.renderer.chat_container:
+            return
+
+        from .components.tool_execution import ToolExecution
+
+        for child in self.renderer.chat_container.children:
+            if isinstance(child, ToolExecution):
+                child.set_detail_level(self._detail_level)
+
+        if self.tui:
+            self.tui.request_render()
 
     async def _handle_slash_command(self, command: str) -> tuple[bool, str | None]:
         """Handle slash commands.
@@ -926,10 +966,9 @@ class InteractiveAgentRunner:
                         if states and states[-1].stop == StopReason.TASK_COMPLETED:
                             # Show final answer if present
                             self._show_task_completed(states[-1])
-                        elif states and states[-1].stop == StopReason.NEEDS_INPUT:
-                            # Agent waiting for input - clear stop reason so next run continues
-                            state = dc_replace(state, stop=None)
-                        # Loop back to get next input
+                        # Always clear stop reason so next run continues
+                        # (Interactive mode continues conversation after any completion)
+                        state = dc_replace(state, stop=None)
 
                     case AgentInterrupted(states, _partial_response):
                         # User pressed Escape - show interrupt message and continue
@@ -1032,6 +1071,20 @@ class InteractiveAgentRunner:
                         if self.cancel_scope:
                             self.cancel_scope.cancel()
                         return
+
+                    # Check for +/- keys to toggle detail level
+                    # Only handle when input is empty (not while typing)
+                    if input_data in ("+", "=") and self.input_component:
+                        # Check if input is empty
+                        if not self.input_component.get_text().strip():
+                            self._increase_detail_level()
+                            continue
+
+                    if input_data == "-" and self.input_component:
+                        # Check if input is empty
+                        if not self.input_component.get_text().strip():
+                            self._decrease_detail_level()
+                            continue
 
                     # Check for standalone Escape - interrupt current agent run
                     # But if there's a focused component that handles escape (like question selector),
