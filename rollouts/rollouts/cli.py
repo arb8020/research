@@ -162,6 +162,7 @@ class CLIConfig:
     export_md: str | None = None
     export_html: str | None = None
     handoff: str | None = None
+    fast_handoff: bool = False  # Use fast single-call mode for handoff
     slice: str | None = None
     slice_goal: str | None = None
     doctor: bool = False
@@ -405,6 +406,11 @@ def create_parser() -> argparse.ArgumentParser:
         type=str,
         metavar="GOAL",
         help="Extract goal-directed context from session to stdout (markdown)",
+    )
+    parser.add_argument(
+        "--fast",
+        action="store_true",
+        help="Use fast single-call handoff (default uses agent mode for better context)",
     )
     parser.add_argument(
         "--slice",
@@ -1023,7 +1029,36 @@ def cmd_handoff(config: CLIConfig, session_store: FileSessionStore) -> int:
 
         assert config.endpoint is not None
         assert config.handoff is not None
-        handoff_md, err = await run_handoff_command(session, config.endpoint, config.handoff)
+
+        if config.fast_handoff:
+            # Fast mode: single LLM call summarization
+            print(f"Extracting context (fast) for: {config.handoff}", file=sys.stderr)
+            print(
+                f"From session: {session.session_id} ({len(session.messages)} messages)",
+                file=sys.stderr,
+            )
+            print(file=sys.stderr)
+
+            handoff_md, err = await run_handoff_command(session, config.endpoint, config.handoff)
+        else:
+            # Default: agent mode - use sub-agent with tools for better context
+            from .environments.handoff import generate_handoff_context_agent
+
+            print(f"Extracting context for: {config.handoff}", file=sys.stderr)
+            print(
+                f"From session: {session.session_id} ({len(session.messages)} messages)",
+                file=sys.stderr,
+            )
+            print(file=sys.stderr)
+
+            handoff_md, err = await generate_handoff_context_agent(
+                session_id=session.session_id,
+                goal=config.handoff,
+                endpoint=config.endpoint,
+                sessions_dir=session_store.base_dir,
+                working_dir=Path.cwd(),
+            )
+
         if err:
             print(f"Error: {err}", file=sys.stderr)
             return 1
@@ -1620,6 +1655,7 @@ def main() -> int:
         export_md=args.export_md,
         export_html=args.export_html,
         handoff=args.handoff,
+        fast_handoff=args.fast,
         slice=args.slice,
         slice_goal=args.slice_goal,
         doctor=args.doctor,

@@ -600,13 +600,29 @@ async def run_agent_step(
             # Re-raise to maintain error handling flow
             raise
 
-    # If no tools, we're done with this turn
+    # If no tools, check if model signaled completion
     if not tool_calls:
+        # Check finish_reason from the completion
+        # end_turn (Anthropic) or stop (OpenAI) with no tool calls = model is done
+        finish_reason = None
+        if next_actor.trajectory.completions:
+            last_completion = next_actor.trajectory.completions[-1]
+            if last_completion.choices:
+                finish_reason = last_completion.choices[0].finish_reason
+
+        # Model explicitly ended turn with no tool calls - task is complete
+        if finish_reason in ("end_turn", "stop"):
+            return replace(
+                current_state,
+                stop=StopReason.TASK_COMPLETED,
+                turn_idx=current_state.turn_idx + 1,
+                pending_tool_calls=[],
+            )
+
+        # Otherwise let handler decide (e.g., inject user message, continue, etc.)
         current_state = await rcfg.handle_no_tool(current_state, rcfg)
-        # Check if handler added a stop reason
         if current_state.stop:
             return current_state
-        # Otherwise increment turn and continue
         return replace(current_state, turn_idx=current_state.turn_idx + 1, pending_tool_calls=[])
 
     # Process the pending tools

@@ -21,32 +21,54 @@ from typing import TYPE_CHECKING, Any
 from .dtypes import AgentSession
 
 
-def format_content_block(block: dict[str, Any]) -> str:
-    """Format a single content block to markdown."""
-    block_type = block.get("type", "")
+def format_content_block(block: dict[str, Any] | Any) -> str:
+    """Format a single content block to markdown.
+
+    Handles both dict-style blocks and typed dataclass blocks.
+    """
+    # Handle dataclass objects by converting to dict-like access
+    if hasattr(block, "type"):
+        block_type = block.type
+    elif isinstance(block, dict):
+        block_type = block.get("type", "")
+    else:
+        # Unknown structure - dump as string
+        return str(block)
+
+    def get_attr(name: str, default: Any = "") -> Any:
+        """Get attribute from dict or dataclass."""
+        if hasattr(block, name):
+            return getattr(block, name, default)
+        elif isinstance(block, dict):
+            return block.get(name, default)
+        return default
 
     if block_type == "text":
-        return block.get("text", "")
+        return get_attr("text", "")
 
     elif block_type == "thinking":
-        thinking = block.get("thinking", "")
+        thinking = get_attr("thinking", "")
         return f"*<thinking>*\n{thinking}\n*</thinking>*"
 
     elif block_type == "toolCall":
-        name = block.get("name", "unknown")
-        args = block.get("arguments", {})
+        name = get_attr("name", "unknown")
+        args = get_attr("arguments", {})
         args_str = json.dumps(args, indent=2)
         return f"**Tool Call: {name}**\n```json\n{args_str}\n```"
 
     elif block_type == "image":
-        url = block.get("image_url", "")
+        url = get_attr("image_url", "")
         if url.startswith("data:"):
             return "[Embedded Image]"
         return f"![Image]({url})"
 
     else:
-        # Unknown block type - dump as JSON
-        return f"```json\n{json.dumps(block, indent=2)}\n```"
+        # Unknown block type - try to serialize
+        if hasattr(block, "to_dict"):
+            return f"```json\n{json.dumps(block.to_dict(), indent=2)}\n```"
+        elif isinstance(block, dict):
+            return f"```json\n{json.dumps(block, indent=2)}\n```"
+        return str(block)
 
 
 def format_message_content(content: str | list[dict[str, Any]]) -> str:
@@ -308,10 +330,6 @@ async def run_handoff_command(
 
     from .dtypes import Actor, Message, StreamEvent, TextDelta, Trajectory
     from .providers import get_provider_function
-
-    print(f"Extracting context for: {goal}", file=sys.stderr)
-    print(f"From session: {session.session_id} ({len(session.messages)} messages)", file=sys.stderr)
-    print(file=sys.stderr)
 
     # Convert session to markdown for LLM
     session_md = session_to_markdown(session, include_metadata=False)

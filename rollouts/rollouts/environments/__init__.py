@@ -4,6 +4,7 @@ from .calculator import CalculatorEnvironment
 from .coding import LocalFilesystemEnvironment
 from .compose import ComposedEnvironment, compose
 from .git_worktree import GitWorktreeEnvironment
+from .handoff import HandoffEnvironment
 from .no_tools import BasicEnvironment, NoToolsEnvironment
 from .repl import MessageParsingREPLEnvironment, REPLEnvironment
 
@@ -15,6 +16,7 @@ __all__ = [
     "NoToolsEnvironment",
     "LocalFilesystemEnvironment",
     "GitWorktreeEnvironment",
+    "HandoffEnvironment",
     "BrowsingEnvironment",
     "ChessPuzzleEnvironment",
     "REPLEnvironment",
