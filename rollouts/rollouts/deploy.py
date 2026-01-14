@@ -447,15 +447,18 @@ def check_remote_prerequisites(ssh_connection: str, ssh_key: str) -> tuple[bool,
         if install_result.exit_code != 0:
             missing.append("tmux (auto-install failed)")
 
-    # Check for libnuma (required by sgl_kernel), install if missing
-    result = bifrost_client.exec('ldconfig -p | grep -q libnuma && echo "OK" || echo "MISSING"')
+    # Check for libnuma and python-dev (required by sgl_kernel/triton), install if missing
+    result = bifrost_client.exec(
+        'ldconfig -p | grep -q libnuma && test -f /usr/include/python3.10/Python.h && echo "OK" || echo "MISSING"'
+    )
     if result.stdout.strip() != "OK":
-        print("Installing libnuma...")
+        print("Installing libnuma and python3-dev...")
         install_result = bifrost_client.exec(
-            'apt-get update -qq && apt-get install -y -qq libnuma-dev >/dev/null 2>&1 && ldconfig -p | grep libnuma'
+            'apt-get update -qq && apt-get install -y -qq libnuma-dev python3-dev >/dev/null 2>&1 && '
+            'ldconfig -p | grep libnuma && test -f /usr/include/python3.10/Python.h'
         )
         if install_result.exit_code != 0:
-            missing.append("libnuma (auto-install failed)")
+            missing.append("libnuma/python3-dev (auto-install failed)")
 
     # Check for nvidia-smi
     result = bifrost_client.exec(
