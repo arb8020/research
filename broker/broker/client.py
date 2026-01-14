@@ -204,7 +204,7 @@ class GPUClient:
     def create(  # noqa: PLR0913 - create API has many configuration options
         self,
         query: QueryType | list[GPUOffer] | GPUOffer | None,
-        image: str = "runpod/pytorch:1.0.0-cu1281-torch280-ubuntu2204",
+        image: str = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04",
         name: str | None = None,
         gpu_count: int = 1,
         exposed_ports: list[int] | None = None,

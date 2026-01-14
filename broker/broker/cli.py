@@ -391,7 +391,7 @@ def create(  # noqa: PLR0913 - CLI create has many configuration options
         help="Cloud type: secure (default, guaranteed) or community (spot, cheaper but can be interrupted)",
     ),
     image: str = typer.Option(
-        "runpod/pytorch:1.0.0-cu1281-torch280-ubuntu2204", "--image", help="Docker image to use"
+        "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04", "--image", help="Docker image to use"
     ),
     min_cuda_version: str | None = typer.Option(
         None,

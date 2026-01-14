@@ -279,7 +279,7 @@ class ProvisionRequest:
 
     gpu_type: str | None = None
     gpu_count: int = 1
-    image: str = "runpod/pytorch:1.0.0-cu1281-torch280-ubuntu2204"
+    image: str = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
     name: str | None = None
     max_price_per_hour: float | None = None
     provider: str | None = None  # If None, search all providers
