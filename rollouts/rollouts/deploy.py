@@ -423,18 +423,39 @@ def check_remote_prerequisites(ssh_connection: str, ssh_key: str) -> tuple[bool,
     bifrost_client = BifrostClient(ssh_connection, ssh_key)
     missing = []
 
-    # Check for uv
+    # Check for uv, install if missing
     result = bifrost_client.exec(
         'export PATH="$HOME/.local/bin:$PATH" && '
         'command -v uv >/dev/null 2>&1 && echo "OK" || echo "MISSING"'
     )
     if result.stdout.strip() != "OK":
-        missing.append("uv (install: curl -LsSf https://astral.sh/uv/install.sh | sh)")
+        print("Installing uv...")
+        install_result = bifrost_client.exec(
+            'curl -LsSf https://astral.sh/uv/install.sh | sh && '
+            'export PATH="$HOME/.local/bin:$PATH" && uv --version'
+        )
+        if install_result.exit_code != 0:
+            missing.append("uv (auto-install failed)")
 
-    # Check for tmux
+    # Check for tmux, install if missing
     result = bifrost_client.exec('command -v tmux >/dev/null 2>&1 && echo "OK" || echo "MISSING"')
     if result.stdout.strip() != "OK":
-        missing.append("tmux (install: apt install tmux or yum install tmux)")
+        print("Installing tmux...")
+        install_result = bifrost_client.exec(
+            'apt-get update -qq && apt-get install -y -qq tmux >/dev/null 2>&1 && tmux -V'
+        )
+        if install_result.exit_code != 0:
+            missing.append("tmux (auto-install failed)")
+
+    # Check for libnuma (required by sgl_kernel), install if missing
+    result = bifrost_client.exec('ldconfig -p | grep -q libnuma && echo "OK" || echo "MISSING"')
+    if result.stdout.strip() != "OK":
+        print("Installing libnuma...")
+        install_result = bifrost_client.exec(
+            'apt-get update -qq && apt-get install -y -qq libnuma-dev >/dev/null 2>&1 && ldconfig -p | grep libnuma'
+        )
+        if install_result.exit_code != 0:
+            missing.append("libnuma (auto-install failed)")
 
     # Check for nvidia-smi
     result = bifrost_client.exec(
