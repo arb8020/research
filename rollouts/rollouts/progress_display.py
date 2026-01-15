@@ -141,7 +141,13 @@ def derive_state(events: list[dict]) -> RenderState:
         if event_type == "eval_start":
             state.eval_name = event.get("name", "eval")
             state.total = event.get("total", 0)
-            state.start_time = time.time()
+            # Use event timestamp if available, otherwise fall back to now
+            if ts := event.get("timestamp"):
+                from datetime import datetime
+
+                state.start_time = datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+            else:
+                state.start_time = time.time()
 
         elif event_type == "sample_start":
             sample_id = event["id"]
@@ -156,7 +162,9 @@ def derive_state(events: list[dict]) -> RenderState:
         elif event_type == "turn":
             sample_id = event["id"]
             if sample_id in state.samples:
-                state.samples[sample_id].turn = event.get("turn", 0)
+                # Only update turn if explicitly provided (status updates don't include turn)
+                if "turn" in event:
+                    state.samples[sample_id].turn = event["turn"]
                 state.samples[sample_id].last_update = time.time()
                 # Set phase from turn status if provided, or default to "running"
                 # This ensures samples show up even without modal_progress events

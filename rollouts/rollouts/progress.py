@@ -147,6 +147,8 @@ class _ProgressRenderer:
                 sys.stderr.flush()
                 self._saved_log_level = logging.root.level
                 logging.root.setLevel(logging.WARNING)
+        # Force render so nested groups appear immediately
+        self._render(force=True)
 
     def unregister(self, group: ProgressGroup) -> None:
         """Unregister a progress group."""
@@ -179,31 +181,31 @@ class _ProgressRenderer:
 
     def _render(self, force: bool = False, final: bool = False) -> None:
         """Render the entire progress tree."""
-        now = time.perf_counter()
-        if not force and (now - self._last_render) < self._render_interval:
-            return
-        self._last_render = now
-
         with self._lock:
+            now = time.perf_counter()
+            if not force and (now - self._last_render) < self._render_interval:
+                return
+            self._last_render = now
+
             lines = self._build_tree_display()
 
-        # Move cursor up to overwrite previous render
-        if self._lines_rendered > 0:
-            sys.stderr.write(CURSOR_UP.format(n=self._lines_rendered))
+            # Move cursor up to overwrite previous render
+            if self._lines_rendered > 0:
+                sys.stderr.write(CURSOR_UP.format(n=self._lines_rendered))
 
-        # Write new lines
-        for line in lines:
-            sys.stderr.write(CLEAR_LINE + line + "\n")
+            # Write new lines
+            for line in lines:
+                sys.stderr.write(CLEAR_LINE + line + "\n")
 
-        # Clear extra lines from previous render
-        extra_lines = self._lines_rendered - len(lines)
-        for _ in range(extra_lines):
-            sys.stderr.write(CLEAR_LINE + "\n")
-        if extra_lines > 0:
-            sys.stderr.write(CURSOR_UP.format(n=extra_lines))
+            # Clear extra lines from previous render
+            extra_lines = self._lines_rendered - len(lines)
+            for _ in range(extra_lines):
+                sys.stderr.write(CLEAR_LINE + "\n")
+            if extra_lines > 0:
+                sys.stderr.write(CURSOR_UP.format(n=extra_lines))
 
-        sys.stderr.flush()
-        self._lines_rendered = len(lines)
+            sys.stderr.flush()
+            self._lines_rendered = len(lines)
 
     def _build_tree_display(self) -> list[str]:
         """Build display lines for the entire tree."""
@@ -313,6 +315,14 @@ class ProgressGroup:
             if status is not None:
                 self.status = status
         _get_renderer().request_render()
+
+    def flush(self) -> None:
+        """Force an immediate render.
+
+        Call this after adding tasks and before blocking work to ensure
+        the current state is visible.
+        """
+        _get_renderer()._render(force=True)
 
     def add_task(self, task_id: str, name: str = "") -> None:
         """Add a task to this group."""

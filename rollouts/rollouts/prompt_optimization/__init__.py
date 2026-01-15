@@ -80,11 +80,8 @@ from .adapters import (
     run_tests_and_score,
 )
 
-# Reflective mutation (engine.py)
-from .engine import gepa_iteration, optimize_prompt, run_gepa
-
-# Evolutionary (gepa.py)
-from .gepa import run_evolutionary_gepa
+# Evolutionary GEPA (population-based genetic algorithm)
+from .evolutionary import run_evolutionary_gepa
 
 # Low-level operations (for advanced use)
 from .operations import (
@@ -94,6 +91,9 @@ from .operations import (
     select_from_pareto_front,
     update_pareto_front,
 )
+
+# Reflective mutation GEPA (official algorithm)
+from .reflective import gepa_iteration, optimize_prompt, run_gepa
 
 # State (for advanced use)
 from .state import GEPAState

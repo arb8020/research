@@ -5,10 +5,13 @@ Tool execution component - displays tool calls with arguments and results.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..tui import Container
 from .text import Text
+
+if TYPE_CHECKING:
+    from ....dtypes import DetailLevel
 
 
 class ToolExecution(Container):
@@ -42,7 +45,10 @@ class ToolExecution(Container):
         self._tool_name = tool_name
         self._args = args or {}
         self._result: dict[str, Any] | None = None
-        self._expanded = False
+        # Import here to avoid circular imports at module level
+        from ....dtypes import DetailLevel
+
+        self._detail_level: DetailLevel = DetailLevel.STANDARD
         self._theme = theme
         self._formatter = formatter
         self._render_config = render_config
@@ -82,8 +88,15 @@ class ToolExecution(Container):
         self._rebuild_display()
 
     def set_expanded(self, expanded: bool) -> None:
-        """Set whether to show expanded output."""
-        self._expanded = expanded
+        """Set whether to show expanded output (legacy, prefer set_detail_level)."""
+        from ....dtypes import DetailLevel
+
+        self._detail_level = DetailLevel.EXPANDED if expanded else DetailLevel.STANDARD
+        self._rebuild_display()
+
+    def set_detail_level(self, level: DetailLevel) -> None:
+        """Set the detail level for output display."""
+        self._detail_level = level
         self._rebuild_display()
 
     def _rebuild_display(self) -> None:
@@ -170,16 +183,22 @@ class ToolExecution(Container):
                 self._tool_name,
                 self._args,
                 self._result,
-                self._expanded,
+                self._detail_level,
                 self._theme,
                 self._render_config,
             )
 
         # Use legacy formatter if provided
         if self._formatter:
+            # Legacy formatters expect bool, convert detail_level
+            from ....dtypes import DetailLevel
+
+            expanded_bool = self._detail_level >= DetailLevel.EXPANDED
             return self._formatter(
-                self._tool_name, self._args, self._result, self._expanded, self._theme
+                self._tool_name, self._args, self._result, expanded_bool, self._theme
             )
 
         # Default formatting - works for any tool with zero config
-        return format_tool(self._tool_name, self._args, self._result, self._expanded, self._theme)
+        return format_tool(
+            self._tool_name, self._args, self._result, self._detail_level, self._theme
+        )

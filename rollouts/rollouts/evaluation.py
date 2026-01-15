@@ -328,6 +328,99 @@ def _build_base_run_config(
 # EvalSample deleted - use Sample from training.types instead
 
 
+def get_config_path(file_path: str) -> str | None:
+    """Get config file path relative to git repository root.
+
+    Args:
+        file_path: Absolute or relative path to config file (usually __file__)
+
+    Returns:
+        Path relative to git root, or None if not in a git repo
+    """
+    import subprocess
+    from pathlib import Path
+
+    try:
+        # Get git root
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return None
+
+        git_root = Path(result.stdout.strip())
+        config_abs = Path(file_path).resolve()
+
+        # Get relative path from git root
+        try:
+            return str(config_abs.relative_to(git_root))
+        except ValueError:
+            # Config file is outside git repo
+            return None
+
+    except Exception:
+        return None
+
+
+def _get_git_info() -> dict[str, Any]:
+    """Get git repository info for reproducibility.
+
+    Returns dict with:
+        commit: Current commit hash (short)
+        branch: Current branch name
+        dirty: Whether working directory has uncommitted changes
+        commit_full: Full commit hash
+    """
+    import subprocess
+
+    info: dict[str, Any] = {
+        "commit": None,
+        "branch": None,
+        "dirty": None,
+        "commit_full": None,
+    }
+
+    try:
+        # Get commit hash
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            info["commit_full"] = result.stdout.strip()
+            info["commit"] = info["commit_full"][:8]
+
+        # Get branch name
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            info["branch"] = result.stdout.strip()
+
+        # Check if dirty
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            info["dirty"] = len(result.stdout.strip()) > 0
+
+    except Exception:
+        pass  # Git info is best-effort
+
+    return info
+
+
 @dataclass
 class EvalReport:
     """Summary report for an evaluation run."""
@@ -339,6 +432,8 @@ class EvalReport:
     sample_results: list[Sample]
     config: dict[str, Any]
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    git_info: dict[str, Any] = field(default_factory=_get_git_info)
+    config_path: str | None = None  # Path to config file relative to repo root
 
     async def save(self, output_dir: Path) -> None:
         """Save evaluation results to directory."""
@@ -362,6 +457,8 @@ class EvalReport:
             "summary_metrics": self.summary_metrics,
             "config": self.config,
             "timestamp": self.timestamp,
+            "git_info": self.git_info,
+            "config_path": self.config_path,
             "sample_ids": [s.id for s in self.sample_results],
         }
         # Sanitize API keys in the summary before saving
@@ -827,6 +924,7 @@ async def evaluate(
             "max_concurrent": config.max_concurrent,
             "evaluation_timestamp": datetime.now().isoformat(),
         },
+        config_path=config.config_path,
     )
 
     # Save if output directory specified

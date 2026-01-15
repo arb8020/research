@@ -1,6 +1,7 @@
 # Core agent execution framework
 
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import TYPE_CHECKING
@@ -18,6 +19,7 @@ from .dtypes import (
     Endpoint,
     Environment,
     EnvironmentConfig,
+    LLMCallEnd,
     Message,
     RunConfig,
     SessionStatus,
@@ -46,6 +48,12 @@ logger = logging.getLogger(__name__)
 # STATE IMMUTABILITY: All core data structures are frozen dataclasses.
 # Benefits: time-travel debugging, safe concurrency, easy rollback.
 # Cost: O(n) allocations per turn. Assumption: allocation cheaper than debugging.
+#
+# PROFILING EVENTS: We emit LLMCallEnd and ToolExecutionEnd events with timing data
+# for profiling eval throughput. Currently this is inline in the agent logic.
+# TODO: Consider a decorator or context manager pattern to separate timing/logging
+# concerns from core agent logic while keeping the code easy to read. The current
+# inline approach is explicit but adds noise to the control flow.
 #
 # TODO: Document scaffold versioning for reproducibility
 # Article quote: "On SWE-bench Verified, a popular agentic coding benchmark, simply switching
@@ -549,11 +557,39 @@ async def run_agent_step(
             suffix_ids=rcfg.suffix_ids,
         )
 
-    if rcfg.api_limiter is not None:
-        async with rcfg.api_limiter:
+    # Wide event: time the full LLM call including retries
+    llm_start_time = time.perf_counter()
+    llm_error: str | None = None
+    try:
+        if rcfg.api_limiter is not None:
+            async with rcfg.api_limiter:
+                next_actor = await do_rollout()
+        else:
             next_actor = await do_rollout()
-    else:
-        next_actor = await do_rollout()
+    except Exception as e:
+        llm_error = f"{type(e).__name__}: {e}"
+        raise
+    finally:
+        llm_duration_ms = (time.perf_counter() - llm_start_time) * 1000
+        # Extract token counts from completion if available
+        tokens_in: int | None = None
+        tokens_out: int | None = None
+        if "next_actor" in dir() and next_actor.trajectory.completions:
+            last_completion = next_actor.trajectory.completions[-1]
+            if hasattr(last_completion, "usage") and last_completion.usage:
+                tokens_in = getattr(last_completion.usage, "input_tokens", None)
+                tokens_out = getattr(last_completion.usage, "output_tokens", None)
+        await rcfg.on_chunk(
+            LLMCallEnd(
+                duration_ms=llm_duration_ms,
+                provider=updated_actor.endpoint.provider,
+                model=updated_actor.endpoint.model,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                status="error" if llm_error else "success",
+                error=llm_error,
+            )
+        )
 
     # DEBUG: Log what rollout returned
     logger.debug(f"🔍 AFTER rollout() - Turn {state.turn_idx}")
@@ -600,12 +636,13 @@ async def run_agent_step(
             # Re-raise to maintain error handling flow
             raise
 
-    # If no tools, let handler decide what to do
-    # (interactive mode: wait for user input, batch mode: mark complete)
+    # If no tools, we're done with this turn
     if not tool_calls:
         current_state = await rcfg.handle_no_tool(current_state, rcfg)
+        # Check if handler added a stop reason
         if current_state.stop:
             return current_state
+        # Otherwise increment turn and continue
         return replace(current_state, turn_idx=current_state.turn_idx + 1, pending_tool_calls=[])
 
     # Process the pending tools

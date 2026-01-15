@@ -1,6 +1,7 @@
 """TUI Components."""
 
 from .assistant_message import AssistantMessage
+from .error_display import ErrorDisplay, RetryErrorDisplay
 from .input import Input
 from .loader_container import LoaderContainer
 from .markdown import DefaultMarkdownTheme, Markdown
@@ -21,4 +22,6 @@ __all__ = [
     "ToolExecution",
     "Input",
     "LoaderContainer",
+    "ErrorDisplay",
+    "RetryErrorDisplay",
 ]

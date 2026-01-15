@@ -12,7 +12,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from ..dtypes import ToolRenderConfig
+    from ..dtypes import DetailLevel, ToolRenderConfig
     from ..frontends.tui.theme import Theme
 
 
@@ -89,7 +89,7 @@ def _default_header(tool_name: str, args: dict[str, Any]) -> str:
 def format_tool_output(
     header: str,
     result: dict[str, Any] | None,
-    expanded: bool,
+    detail_level: DetailLevel | bool,
     theme: Theme | None = None,
     config: ToolRenderConfig | None = None,
 ) -> str:
@@ -98,7 +98,7 @@ def format_tool_output(
     Args:
         header: Tool call header line (e.g., "bash(command='ls')")
         result: Tool result dict with 'content' and optional 'isError'
-        expanded: Whether to show full output or truncate
+        detail_level: DetailLevel enum or bool for backward compat (True=EXPANDED, False=STANDARD)
         theme: Optional theme for styling
         config: Optional render config (uses defaults if None)
 
@@ -106,10 +106,14 @@ def format_tool_output(
         Formatted string for TUI display.
     """
     # Import here to avoid circular imports
-    from ..dtypes import ToolRenderConfig
+    from ..dtypes import DetailLevel, ToolRenderConfig
 
     if config is None:
         config = ToolRenderConfig()
+
+    # Handle backward compatibility: bool -> DetailLevel
+    if isinstance(detail_level, bool):
+        detail_level = DetailLevel.EXPANDED if detail_level else DetailLevel.STANDARD
 
     text = header
 
@@ -122,7 +126,14 @@ def format_tool_output(
 
     is_error = result.get("isError", False)
     lines = output.split("\n")
-    display_count = len(lines) if expanded else config.max_lines
+
+    # Get max lines for this detail level
+    max_lines = config.get_max_lines(detail_level)
+    if max_lines < 0:  # -1 = unlimited
+        display_count = len(lines)
+    else:
+        display_count = min(len(lines), max_lines)
+
     display_lines = lines[:display_count]
     remaining = len(lines) - display_count
 
@@ -150,7 +161,7 @@ def format_tool(
     tool_name: str,
     args: dict[str, Any],
     result: dict[str, Any] | None,
-    expanded: bool,
+    detail_level: DetailLevel | bool,
     theme: Theme | None = None,
     config: ToolRenderConfig | None = None,
 ) -> str:
@@ -165,7 +176,7 @@ def format_tool(
         tool_name: Name of the tool
         args: Tool arguments
         result: Tool result dict
-        expanded: Whether to show full output
+        detail_level: DetailLevel enum or bool for backward compat (True=EXPANDED, False=STANDARD)
         theme: Optional theme for styling
         config: Optional render config (uses defaults if None)
 
@@ -173,14 +184,18 @@ def format_tool(
         Formatted string for TUI display.
     """
     # Import here to avoid circular imports
-    from ..dtypes import ToolRenderConfig
+    from ..dtypes import DetailLevel, ToolRenderConfig
 
     if config is None:
         config = ToolRenderConfig()
 
+    # Handle backward compatibility: bool -> DetailLevel
+    if isinstance(detail_level, bool):
+        detail_level = DetailLevel.EXPANDED if detail_level else DetailLevel.STANDARD
+
     # If custom formatter provided, use it exclusively
     if config.custom_formatter:
-        return config.custom_formatter(tool_name, args, result, expanded, theme)
+        return config.custom_formatter(tool_name, args, result, detail_level, theme)
 
     # Build header
     if config.header_fn:
@@ -188,7 +203,7 @@ def format_tool(
     else:
         header = _default_header(tool_name, args)
 
-    return format_tool_output(header, result, expanded, theme, config)
+    return format_tool_output(header, result, detail_level, theme, config)
 
 
 def shorten_path(path: str) -> str:
