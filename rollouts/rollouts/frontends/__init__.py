@@ -25,7 +25,7 @@ Usage:
 from .json_frontend import JsonFrontend
 from .none import NoneFrontend
 from .protocol import Frontend, FrontendWithStatus
-from .runner import InteractiveRunner, run_interactive
+from .runner import InteractiveRunner, RunnerConfig, run_interactive
 from .textual_frontend import TextualFrontend
 from .tui_frontend import TUIFrontend
 
@@ -35,6 +35,7 @@ __all__ = [
     "FrontendWithStatus",
     # Runner
     "InteractiveRunner",
+    "RunnerConfig",
     "run_interactive",
     # Implementations
     "JsonFrontend",

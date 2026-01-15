@@ -12,6 +12,12 @@ The frontend is responsible for:
 - Rendering stream events
 - Collecting user input
 - Displaying loading indicators
+
+Design: Uses run_agent() with proper callbacks instead of wrapping it in
+an outer loop. All control flow is handled via RunConfig callbacks:
+- handle_no_tool: Get input and continue, or stop for detached/single_turn
+- handle_stop: Check stop conditions
+- on_input: Get user input via frontend
 """
 
 from __future__ import annotations
@@ -19,6 +25,7 @@ from __future__ import annotations
 import signal
 import sys
 import time
+from dataclasses import dataclass
 from dataclasses import replace as dc_replace
 from types import FrameType
 from typing import TYPE_CHECKING
@@ -26,10 +33,49 @@ from typing import TYPE_CHECKING
 import trio
 
 from ..agents import Actor, AgentState, run_agent
+from ..dtypes import (
+    Endpoint,
+    Environment,
+    Message,
+    RunConfig,
+    StopReason,
+    StreamEvent,
+    ToolCall,
+    ToolConfirmResult,
+    ToolResult,
+    Trajectory,
+)
+
+if TYPE_CHECKING:
+    from ..store import SessionStore
+    from .protocol import Frontend
 
 
-# Global debug context for interrupt diagnostics
-# Thread-safe since signal handlers run on main thread
+@dataclass(frozen=True)
+class RunnerConfig:
+    """Configuration for InteractiveRunner.
+
+    Groups session management and behavior flags to reduce constructor arity.
+    """
+
+    # Session management
+    session_store: SessionStore | None = None
+    session_id: str | None = None
+    parent_session_id: str | None = None
+    branch_point: int | None = None
+
+    # Behavior flags
+    confirm_tools: bool = False
+    initial_prompt: str | None = None
+    single_turn: bool = False
+    detached: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Debug context for interrupt diagnostics
+# ---------------------------------------------------------------------------
+
+
 class _DebugContext:
     """Tracks agent state for debugging hangs/interrupts."""
 
@@ -61,42 +107,30 @@ class _DebugContext:
         self._track_operation(f"tool:{name}")
 
     def _track_operation(self, op: str) -> None:
-        """Track operation timing and log if previous operation was slow."""
         now = time.time()
         if self.last_operation_time and self.last_operation:
             elapsed = now - self.last_operation_time
-            if elapsed > 5.0:  # Log operations that took >5s
+            if elapsed > 5.0:
                 self._log_slow_operation(self.last_operation, elapsed)
         self.last_operation = op
         self.last_operation_time = now
 
     def _log_slow_operation(self, operation: str, elapsed: float) -> None:
-        """Log slow operation to debug file."""
         from datetime import datetime
         from pathlib import Path
 
         log_path = Path.home() / ".rollouts" / "tui-debug.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with open(log_path, "a") as f:
-            f.write(
-                f"{datetime.now().isoformat()} SLOW_OPERATION: {operation} took {elapsed:.1f}s\n"
-            )
-            f.write(f"  turn={self.turn}, phase={self.phase}\n")
+            f.write(f"{datetime.now().isoformat()} SLOW: {operation} took {elapsed:.1f}s\n")
 
     def dump(self) -> str:
-        """Return debug info string for interrupt diagnostics."""
         lines = [f"Phase: {self.phase}", f"Turn: {self.turn}"]
         if self.tool_name and self.phase == "tool_execution":
             lines.append(f"Tool: {self.tool_name}")
         if self.stream_start_time and self.phase == "streaming":
             elapsed = time.time() - self.stream_start_time
             lines.append(f"Streaming for: {elapsed:.1f}s")
-            if self.last_stream_event_time:
-                since_last = time.time() - self.last_stream_event_time
-                lines.append(f"Time since last event: {since_last:.1f}s")
-        if self.last_operation and self.last_operation_time:
-            elapsed = time.time() - self.last_operation_time
-            lines.append(f"Last operation: {self.last_operation} ({elapsed:.1f}s ago)")
         return "\n".join(lines)
 
 
@@ -108,37 +142,23 @@ def get_debug_context() -> _DebugContext:
     return _debug_ctx
 
 
-from ..dtypes import (
-    Endpoint,
-    Environment,
-    Message,
-    RunConfig,
-    StopReason,
-    StreamEvent,
-    ToolCall,
-    ToolConfirmResult,
-    ToolResult,
-    Trajectory,
-)
-
-if TYPE_CHECKING:
-    from ..store import SessionStore
-    from .protocol import Frontend
+# ---------------------------------------------------------------------------
+# InteractiveRunner
+# ---------------------------------------------------------------------------
 
 
 class InteractiveRunner:
     """Frontend-agnostic interactive agent runner.
 
-    This handles the core agent loop logic, delegating all UI to the frontend.
+    Uses run_agent() with callbacks - no outer while loop needed.
+    Control flow is handled via:
+    - handle_no_tool: Gets input and returns updated state to continue
+    - handle_stop: Checks single_turn/detached flags
+    - Cancellation: SIGINT cancels the agent scope
 
-    Example usage:
-        frontend = NoneFrontend()  # or TUIFrontend(), TextualFrontend(), etc.
-        runner = InteractiveRunner(
-            trajectory=trajectory,
-            endpoint=endpoint,
-            frontend=frontend,
-            environment=env,
-        )
+    Example:
+        frontend = NoneFrontend()
+        runner = InteractiveRunner(trajectory, endpoint, frontend, env)
         states = await runner.run()
     """
 
@@ -148,333 +168,208 @@ class InteractiveRunner:
         endpoint: Endpoint,
         frontend: Frontend,
         environment: Environment | None = None,
-        session_store: SessionStore | None = None,
-        session_id: str | None = None,
-        parent_session_id: str | None = None,
-        branch_point: int | None = None,
-        confirm_tools: bool = False,
-        initial_prompt: str | None = None,
-        single_turn: bool = False,
+        config: RunnerConfig | None = None,
     ) -> None:
-        """Initialize runner.
-
-        Args:
-            trajectory: Initial conversation trajectory
-            endpoint: LLM endpoint configuration
-            frontend: Frontend implementation for UI
-            environment: Optional environment for tool execution
-            session_store: Optional session store for persistence
-            session_id: Optional session ID for resumption
-            parent_session_id: Parent session ID when forking
-            branch_point: Message index where forking from parent
-            confirm_tools: Require confirmation before executing tools
-            initial_prompt: Optional initial prompt to send immediately
-            single_turn: If True, exit after agent responds (no interactive loop)
-        """
         self.trajectory = trajectory
         self.endpoint = endpoint
         self.frontend = frontend
         self.environment = environment
-        self.session_store = session_store
-        self.session_id = session_id
-        self.parent_session_id = parent_session_id
-        self.branch_point = branch_point
-        self.confirm_tools = confirm_tools
-        self.initial_prompt = initial_prompt
-        self.single_turn = single_turn
 
-        # Cancellation scopes
+        cfg = config or RunnerConfig()
+        self.session_store = cfg.session_store
+        self.session_id = cfg.session_id
+        self.parent_session_id = cfg.parent_session_id
+        self.branch_point = cfg.branch_point
+        self.confirm_tools = cfg.confirm_tools
+        self.initial_prompt = cfg.initial_prompt
+        self.single_turn = cfg.single_turn
+        self.detached = cfg.detached
+
         self._cancel_scope: trio.CancelScope | None = None
-        self._agent_cancel_scope: trio.CancelScope | None = None
-        self._interrupted = False
-
-        # Message queuing for batch input
-        self._pending_messages: list[str] = []
-        self._is_first_message = True
 
     async def run(self) -> list[AgentState]:
         """Run interactive agent loop.
 
-        Returns:
-            List of agent states from the run
+        Returns list of agent states from the run.
         """
-        agent_states: list[AgentState] = []
-
-        # Set up signal handler
         original_handler = signal.getsignal(signal.SIGINT)
         signal.signal(signal.SIGINT, self._handle_sigint)
 
         try:
             await self.frontend.start()
-
-            # Render history if resuming
-            if self.trajectory.messages:
-                if hasattr(self.frontend, "render_history"):
-                    self.frontend.render_history(self.trajectory.messages)
-                self._is_first_message = False
-
-            # Update status if frontend supports it
+            self._render_history_if_resuming()
             self._update_frontend_status()
 
-            try:
-                async with trio.open_nursery() as nursery:
-                    self._cancel_scope = nursery.cancel_scope
+            initial_state = await self._create_initial_state()
+            run_config = self._create_run_config()
 
-                    # Start frontend input loop if it has one
-                    if hasattr(self.frontend, "run_input_loop"):
-                        await self.frontend.run_input_loop(nursery)
+            self._cancel_scope = trio.CancelScope()
+            with self._cancel_scope:
+                states = await run_agent(initial_state, run_config)
 
-                    # Queue initial prompt if provided
-                    first_input = self.initial_prompt
-
-                    # Get first user input
-                    if not first_input:
-                        first_input = await self.frontend.get_input()
-
-                    # Create initial state
-                    initial_trajectory = Trajectory(
-                        messages=self.trajectory.messages
-                        + [Message(role="user", content=first_input)]
-                    )
-
-                    current_state = AgentState(
-                        actor=Actor(
-                            trajectory=initial_trajectory,
-                            endpoint=self.endpoint,
-                            tools=self.environment.get_tools() if self.environment else [],
-                        ),
-                        environment=self.environment,
-                        session_id=self.session_id,
-                        parent_session_id=self.parent_session_id,
-                        branch_point=self.branch_point,
-                        confirm_tools=self.confirm_tools,
-                    )
-
-                    # Main agent loop
-                    while True:
-                        self._agent_cancel_scope = trio.CancelScope()
-
-                        run_config = RunConfig(
-                            on_chunk=self._handle_stream_event,
-                            on_input=self._handle_input,
-                            confirm_tool=self._handle_tool_confirm,
-                            handle_stop=self._handle_stop,
-                            handle_no_tool=self._handle_no_tool,
-                            session_store=self.session_store,
-                            cancel_scope=self._agent_cancel_scope,
-                        )
-
-                        with self._agent_cancel_scope:
-                            agent_states = await run_agent(current_state, run_config)
-
-                        # Check for abort
-                        if agent_states and agent_states[-1].stop == StopReason.ABORTED:
-                            latest_state = agent_states[-1]
-                            self.session_id = latest_state.session_id or self.session_id
-
-                            if not self._interrupted:
-                                # Hard exit (Ctrl+C)
-                                break
-
-                            # Soft interrupt (Escape) - continue
-                            self._interrupted = False
-                            self.frontend.hide_loader()
-
-                            # Get partial response
-                            partial_response = None
-                            if hasattr(self.frontend, "get_partial_response"):
-                                partial_response = self.frontend.get_partial_response()
-                            if hasattr(self.frontend, "finalize_partial_response"):
-                                self.frontend.finalize_partial_response()
-                            if hasattr(self.frontend, "add_system_message"):
-                                self.frontend.add_system_message("Interrupted")
-
-                            # Build new messages
-                            new_messages = list(latest_state.actor.trajectory.messages)
-                            if partial_response:
-                                new_messages.append(
-                                    Message(
-                                        role="assistant",
-                                        content=partial_response + "\n\n[interrupted]",
-                                    )
-                                )
-
-                            # Get next user input
-                            user_input = await self.frontend.get_input()
-                            new_messages.append(Message(role="user", content=user_input))
-
-                            # Continue with new state
-                            current_state = dc_replace(
-                                latest_state,
-                                actor=dc_replace(
-                                    latest_state.actor,
-                                    trajectory=Trajectory(messages=new_messages),
-                                ),
-                                stop=None,
-                            )
-                        elif agent_states and agent_states[-1].stop == StopReason.TASK_COMPLETED:
-                            # Task completed - in interactive mode, show result and continue
-                            latest_state = agent_states[-1]
-                            self.session_id = latest_state.session_id or self.session_id
-                            self.frontend.hide_loader()
-
-                            # Check if environment has a final_answer to display
-                            if latest_state.environment and hasattr(
-                                latest_state.environment, "_final_answer"
-                            ):
-                                final_answer = getattr(
-                                    latest_state.environment, "_final_answer", None
-                                )
-                                if final_answer:
-                                    # Use add_final_answer if available (TUI), otherwise add_system_message
-                                    if hasattr(self.frontend, "add_final_answer"):
-                                        self.frontend.add_final_answer(final_answer)
-                                    elif hasattr(self.frontend, "add_system_message"):
-                                        self.frontend.add_system_message(
-                                            f"final_answer()\n\n{final_answer}"
-                                        )
-
-                            # In single_turn mode, exit after completion
-                            if self.single_turn:
-                                break
-
-                            # Get next user input
-                            user_input = await self.frontend.get_input()
-                            new_messages = list(latest_state.actor.trajectory.messages)
-                            new_messages.append(Message(role="user", content=user_input))
-
-                            current_state = dc_replace(
-                                latest_state,
-                                actor=dc_replace(
-                                    latest_state.actor,
-                                    trajectory=Trajectory(messages=new_messages),
-                                ),
-                                stop=None,
-                            )
-                        else:
-                            # Other stop reasons (MAX_TURNS, etc.) - exit
-                            if agent_states:
-                                self.session_id = agent_states[-1].session_id or self.session_id
-                            break
-
-                        self._agent_cancel_scope = None
-            except BaseException:
-                # Collect feedback even on errors (e.g., EOF, exception groups)
-                pass
-
-            return agent_states
+            self._update_session_id_from_states(states)
+            return states
 
         finally:
             signal.signal(signal.SIGINT, original_handler)
-            await self.frontend.stop()
+            await self._cleanup()
 
-            # Collect exit feedback
-            if agent_states:
-                final_state = agent_states[-1]
-                exit_reason = "unknown"
-                if final_state.stop:
-                    exit_reason = str(final_state.stop).split(".")[-1].lower()
+    # -----------------------------------------------------------------------
+    # Setup helpers
+    # -----------------------------------------------------------------------
 
-                try:
-                    from ..feedback import run_exit_survey
+    def _render_history_if_resuming(self) -> None:
+        if self.trajectory.messages and hasattr(self.frontend, "render_history"):
+            self.frontend.render_history(self.trajectory.messages)
 
-                    await run_exit_survey(
-                        final_state,
-                        self.endpoint,
-                        exit_reason,
-                        session_id=self.session_id,
-                        skip_check=True,
-                    )
-                except Exception as e:
-                    import sys
+    async def _create_initial_state(self) -> AgentState:
+        """Create initial agent state with first user message."""
+        first_input = self.initial_prompt
+        if not first_input:
+            first_input = await self.frontend.get_input()
 
-                    print(f"[DEBUG] Feedback error: {e}", file=sys.stderr)
+        initial_trajectory = Trajectory(
+            messages=self.trajectory.messages + [Message(role="user", content=first_input)]
+        )
 
-            # Print session info
-            if self.session_id:
-                print(f"\nSession: {self.session_id}")
-                print(f"Resume with: --session {self.session_id}")
+        return AgentState(
+            actor=Actor(
+                trajectory=initial_trajectory,
+                endpoint=self.endpoint,
+                tools=self.environment.get_tools() if self.environment else [],
+            ),
+            environment=self.environment,
+            session_id=self.session_id,
+            parent_session_id=self.parent_session_id,
+            branch_point=self.branch_point,
+            confirm_tools=self.confirm_tools,
+        )
 
-    async def _handle_stream_event(self, event: StreamEvent) -> None:
+    def _create_run_config(self) -> RunConfig:
+        """Create RunConfig with all callbacks."""
+        return RunConfig(
+            on_chunk=self._on_stream_event,
+            on_input=self._on_input,
+            confirm_tool=self._on_confirm_tool,
+            handle_stop=self._on_stop,
+            handle_no_tool=self._on_no_tool,
+            session_store=self.session_store,
+            cancel_scope=self._cancel_scope,
+        )
+
+    # -----------------------------------------------------------------------
+    # RunConfig callbacks
+    # -----------------------------------------------------------------------
+
+    async def _on_stream_event(self, event: StreamEvent) -> None:
         """Route stream event to frontend."""
         await self.frontend.handle_event(event)
 
-    async def _handle_input(self, prompt: str) -> str:
+    async def _on_input(self, prompt: str) -> str:
         """Get user input via frontend."""
         return await self.frontend.get_input(prompt)
 
-    async def _handle_tool_confirm(
+    async def _on_confirm_tool(
         self, tool_call: ToolCall, state: AgentState, config: RunConfig
     ) -> tuple[AgentState, ToolConfirmResult]:
-        """Handle tool confirmation."""
+        """Handle tool confirmation via frontend."""
         if not state.confirm_tools:
             return state, ToolConfirmResult(proceed=True)
 
         approved = await self.frontend.confirm_tool(tool_call)
-
         if approved:
             return state, ToolConfirmResult(proceed=True)
-        else:
-            return state, ToolConfirmResult(
-                proceed=False,
-                tool_result=ToolResult(
-                    tool_call_id=tool_call.id,
-                    is_error=True,
-                    error="Rejected by user",
-                ),
-            )
 
-    async def _handle_no_tool(self, state: AgentState, config: RunConfig) -> AgentState:
-        """Handle response without tool calls - get next user input or stop."""
-        # Update status
+        return state, ToolConfirmResult(
+            proceed=False,
+            tool_result=ToolResult(
+                tool_call_id=tool_call.id, is_error=True, error="Rejected by user"
+            ),
+        )
+
+    def _on_stop(self, state: AgentState) -> AgentState:
+        """Check stop conditions. No max turns in interactive mode."""
+        return state
+
+    async def _on_no_tool(self, state: AgentState, config: RunConfig) -> AgentState:
+        """Handle response without tool calls.
+
+        This is the key callback that controls interactive behavior:
+        - single_turn: Stop immediately
+        - detached: Write pending_input and stop
+        - interactive: Get input and continue
+        """
         self._update_frontend_status(state)
 
-        # In single_turn mode, stop after first response without tools
         if self.single_turn:
             return dc_replace(state, stop=StopReason.NO_TOOL)
 
-        # Get next input
+        if self.detached:
+            await self._write_pending_input(state)
+            return dc_replace(state, stop=StopReason.NEEDS_INPUT)
+
+        # Interactive: get input and continue
         user_input = await config.on_input("Enter your message: ")
+        new_trajectory = Trajectory(
+            messages=state.actor.trajectory.messages + [Message(role="user", content=user_input)]
+        )
+        return dc_replace(state, actor=dc_replace(state.actor, trajectory=new_trajectory))
 
-        # Build new trajectory
-        new_messages = [Message(role="user", content=user_input)]
-        for pending in self._pending_messages:
-            new_messages.append(Message(role="user", content=pending))
-        self._pending_messages = []
+    # -----------------------------------------------------------------------
+    # Helpers
+    # -----------------------------------------------------------------------
 
-        new_trajectory = Trajectory(messages=state.actor.trajectory.messages + new_messages)
+    async def _write_pending_input(self, state: AgentState) -> None:
+        """Write pending_input.json for detached mode."""
+        session_id = state.session_id or self.session_id
+        if not (self.session_store and session_id):
+            return
 
-        return dc_replace(
-            state,
-            actor=dc_replace(state.actor, trajectory=new_trajectory),
+        last_message = self._extract_last_assistant_message(state)
+        await self.session_store.write_pending_input(
+            session_id, {"type": "no_tools", "last_message": last_message}
         )
 
-    def _handle_stop(self, state: AgentState) -> AgentState:
-        """Check stop conditions. No max turns limit in interactive mode."""
-        return state
+    def _extract_last_assistant_message(self, state: AgentState) -> str:
+        """Extract text from the last assistant message for pending_input context."""
+        for msg in reversed(state.actor.trajectory.messages):
+            if msg.role == "assistant":
+                content = msg.content
+                if isinstance(content, str):
+                    return content[:500]
+                if isinstance(content, list):
+                    texts = [
+                        b.get("text", "")
+                        for b in content
+                        if isinstance(b, dict) and b.get("type") == "text"
+                    ]
+                    return " ".join(texts)[:500]
+        return ""
+
+    def _update_session_id_from_states(self, states: list[AgentState]) -> None:
+        """Update self.session_id from final state."""
+        if states and states[-1].session_id:
+            self.session_id = states[-1].session_id
 
     def _handle_sigint(self, signum: int, frame: FrameType | None) -> None:
-        """Handle SIGINT - cancel and dump debug context."""
-        # Dump debug info to help diagnose hangs
+        """Handle SIGINT - cancel agent and dump debug context."""
         print("\n[SIGINT] Interrupting agent...", file=sys.stderr)
         print(f"[DEBUG] {_debug_ctx.dump()}", file=sys.stderr)
-
         if self._cancel_scope:
             self._cancel_scope.cancel()
 
     def _update_frontend_status(self, state: AgentState | None = None) -> None:
-        """Update frontend status if supported."""
+        """Update frontend status bar if supported."""
         if not hasattr(self.frontend, "set_status"):
             return
 
-        model = f"{self.endpoint.provider}/{self.endpoint.model}"
-        kwargs = {"model": model, "session_id": self.session_id}
+        kwargs: dict = {
+            "model": f"{self.endpoint.provider}/{self.endpoint.model}",
+            "session_id": self.session_id,
+        }
 
         if state:
-            # Calculate token counts
-            total_input = 0
-            total_output = 0
-            total_cost = 0.0
+            total_input, total_output, total_cost = 0, 0, 0.0
             for completion in state.actor.trajectory.completions:
                 if completion.usage:
                     total_input += (
@@ -484,14 +379,25 @@ class InteractiveRunner:
                         completion.usage.output_tokens + completion.usage.reasoning_tokens
                     )
                     total_cost += completion.usage.cost.total
-            kwargs["input_tokens"] = total_input
-            kwargs["output_tokens"] = total_output
-            kwargs["cost"] = total_cost
+            kwargs.update(input_tokens=total_input, output_tokens=total_output, cost=total_cost)
 
         if self.environment and hasattr(self.environment, "get_status_info"):
             kwargs["env_info"] = self.environment.get_status_info()
 
         self.frontend.set_status(**kwargs)
+
+    async def _cleanup(self) -> None:
+        """Stop frontend and print session info."""
+        await self.frontend.stop()
+
+        if self.session_id:
+            print(f"\nSession: {self.session_id}")
+            print(f"Resume with: --session {self.session_id}")
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 
 async def run_interactive(
@@ -499,13 +405,7 @@ async def run_interactive(
     endpoint: Endpoint,
     frontend: Frontend,
     environment: Environment | None = None,
-    session_store: SessionStore | None = None,
-    session_id: str | None = None,
-    parent_session_id: str | None = None,
-    branch_point: int | None = None,
-    confirm_tools: bool = False,
-    initial_prompt: str | None = None,
-    single_turn: bool = False,
+    config: RunnerConfig | None = None,
 ) -> list[AgentState]:
     """Run an interactive agent with any frontend.
 
@@ -514,13 +414,7 @@ async def run_interactive(
         endpoint: LLM endpoint configuration
         frontend: Frontend implementation
         environment: Optional environment for tool execution
-        session_store: Optional session store for persistence
-        session_id: Optional session ID for resumption
-        parent_session_id: Parent session ID when forking
-        branch_point: Message index where forking from parent
-        confirm_tools: Require confirmation before executing tools
-        initial_prompt: Optional initial prompt to send immediately
-        single_turn: If True, exit after agent responds (no interactive loop)
+        config: Runner configuration (session management and behavior flags)
 
     Returns:
         List of agent states from the run
@@ -530,12 +424,6 @@ async def run_interactive(
         endpoint=endpoint,
         frontend=frontend,
         environment=environment,
-        session_store=session_store,
-        session_id=session_id,
-        parent_session_id=parent_session_id,
-        branch_point=branch_point,
-        confirm_tools=confirm_tools,
-        initial_prompt=initial_prompt,
-        single_turn=single_turn,
+        config=config,
     )
     return await runner.run()
