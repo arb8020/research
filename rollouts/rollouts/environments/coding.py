@@ -412,6 +412,9 @@ class LocalFilesystemEnvironment:
         working_dir: Working directory for file operations and bash commands
         tools: Tool filter - either a preset name ("full", "readonly", "no-write")
                or a list of tool names (e.g., ["read", "edit"]). Defaults to "full".
+        bash_allowlist: List of allowed bash command prefixes. If set, only commands
+            starting with one of these prefixes will be allowed. None means all
+            commands are allowed. Example: ["wafer evaluate", "jq", "python -c"]
         summarize_web_fetch: Whether to use AI to summarize fetched web content.
         summarizer_provider: Provider for summarization ("anthropic", "openai", "google").
         summarizer_model: Model to use for summarization.
@@ -419,6 +422,7 @@ class LocalFilesystemEnvironment:
 
     working_dir: Path = field(default_factory=Path.cwd)
     tools: str | list[str] = "full"
+    bash_allowlist: list[str] | None = None
     summarize_web_fetch: bool = True
     summarizer_provider: str = "anthropic"
     summarizer_model: str = "claude-3-5-haiku-latest"
@@ -453,6 +457,7 @@ class LocalFilesystemEnvironment:
             "env_kind": "coding",
             "working_dir": str(self.working_dir),
             "tools": self.tools,
+            "bash_allowlist": self.bash_allowlist,
             "summarize_web_fetch": self.summarize_web_fetch,
             "summarizer_provider": self.summarizer_provider,
             "summarizer_model": self.summarizer_model,
@@ -463,6 +468,7 @@ class LocalFilesystemEnvironment:
         return LocalFilesystemEnvironment(
             working_dir=Path(data["working_dir"]),
             tools=data.get("tools", "full"),
+            bash_allowlist=data.get("bash_allowlist"),
             summarize_web_fetch=data.get("summarize_web_fetch", True),
             summarizer_provider=data.get("summarizer_provider", "anthropic"),
             summarizer_model=data.get("summarizer_model", "claude-3-5-haiku-latest"),
@@ -511,6 +517,14 @@ class LocalFilesystemEnvironment:
     def get_tools(self) -> list[Tool]:
         all_tools = self._get_all_tools()
         return [t for t in all_tools if t.function.name in self._tool_filter]
+
+    def _get_bash_description(self) -> str:
+        """Get bash tool description, including allowlist info if set."""
+        base = "Execute a bash command in the current working directory. Returns stdout and stderr."
+        if self.bash_allowlist:
+            allowed = ", ".join(f"'{p}'" for p in self.bash_allowlist)
+            return f"{base} RESTRICTION: Only commands starting with: {allowed}"
+        return base
 
     def _get_all_tools(self) -> list[Tool]:
         """Return all available tools (before filtering)."""
@@ -594,7 +608,7 @@ class LocalFilesystemEnvironment:
                 type="function",
                 function=ToolFunction(
                     name="bash",
-                    description="Execute a bash command in the current working directory. Returns stdout and stderr.",
+                    description=self._get_bash_description(),
                     parameters=ToolFunctionParameter(
                         type="object",
                         properties={
@@ -834,6 +848,28 @@ class LocalFilesystemEnvironment:
             details={"diff": diff_str},
         )
 
+    def _check_bash_allowlist(self, command: str) -> str | None:
+        """Check if command is allowed by bash_allowlist.
+
+        Returns None if allowed, or an error message if blocked.
+        """
+        if self.bash_allowlist is None:
+            return None  # No allowlist = all commands allowed
+
+        # Strip leading whitespace for matching
+        cmd = command.lstrip()
+
+        for prefix in self.bash_allowlist:
+            if cmd.startswith(prefix):
+                return None  # Allowed
+
+        # Command not in allowlist
+        allowed_str = ", ".join(f"'{p}'" for p in self.bash_allowlist)
+        return (
+            f"Command not allowed. This environment only permits commands starting with: {allowed_str}\n"
+            f"Attempted command: {command[:100]}{'...' if len(command) > 100 else ''}"
+        )
+
     async def _exec_bash(
         self,
         tool_call: ToolCall,
@@ -850,6 +886,15 @@ class LocalFilesystemEnvironment:
 
         command = tool_call.args["command"]
         timeout = tool_call.args.get("timeout", 120)
+
+        # Check bash allowlist before executing
+        if error := self._check_bash_allowlist(command):
+            return ToolResult(
+                tool_call_id=tool_call.id,
+                is_error=True,
+                content="",
+                error=error,
+            )
 
         try:
             returncode, stdout, stderr = await run_command(

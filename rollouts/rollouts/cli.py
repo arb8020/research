@@ -152,6 +152,14 @@ class CLIConfig:
     preset: str | None = None
     system_prompt: str | None = None
 
+    # Template mode (-t)
+    template: str | None = None
+    template_args: dict[str, str] | None = None
+    interactive: bool = False  # -i to attach TUI with template
+    list_templates: bool = False
+    _template_config: object | None = None  # Loaded TemplateConfig (internal)
+    _bash_allowlist: list[str] | None = None  # From template (internal)
+
     # Commands (mutually exclusive actions)
     list_presets: bool = False
     login_claude: bool = False
@@ -341,6 +349,34 @@ def create_parser() -> argparse.ArgumentParser:
         "--list-presets",
         action="store_true",
         help="List available agent presets and exit",
+    )
+
+    # Template mode
+    parser.add_argument(
+        "-t",
+        "--template",
+        type=str,
+        default=None,
+        help="Run with a template (constrained agent). Defaults to detached mode. Use -i to attach TUI.",
+    )
+    parser.add_argument(
+        "--args",
+        type=str,
+        action="append",
+        default=None,
+        metavar="KEY=VALUE",
+        help="Template variable (can be repeated). Example: --args corpus=./docs/ --args format=json",
+    )
+    parser.add_argument(
+        "-i",
+        "--interactive",
+        action="store_true",
+        help="Attach TUI when using -t template (default is detached/headless)",
+    )
+    parser.add_argument(
+        "--list-templates",
+        action="store_true",
+        help="List available templates and exit",
     )
 
     # Debug
@@ -767,6 +803,28 @@ def cmd_list_presets() -> int:
 
     print("\nUsage: rollouts --preset <name>")
     print("Example: rollouts --preset sonnet_4")
+    return 0
+
+
+def cmd_list_templates() -> int:
+    """Handle --list-templates command."""
+    from .templates import list_templates
+
+    templates = list_templates()
+    if not templates:
+        print("No templates found.")
+        print("Templates are searched in:")
+        print("  - ./rollouts/templates/ (project)")
+        print("  - ~/.rollouts/templates/ (user)")
+        print("  - rollouts/templates/ (built-in)")
+        return 0
+
+    print("Available templates:")
+    for template_name in templates:
+        print(f"  - {template_name}")
+
+    print('\nUsage: rollouts -t <template> [--args key=value] "prompt"')
+    print('Example: rollouts -t ask-docs "How do bank conflicts occur?"')
     return 0
 
 
@@ -1401,6 +1459,51 @@ def apply_preset(config: CLIConfig) -> bool:
     return True
 
 
+def apply_template(config: CLIConfig) -> bool:
+    """Apply template configuration if specified. Returns False on error."""
+    if not config.template:
+        return True
+
+    from .templates import TemplateConfig, load_template
+
+    try:
+        template: TemplateConfig = load_template(config.template)
+    except Exception as e:
+        print(f"Error loading template '{config.template}': {e}", file=sys.stderr)
+        return False
+
+    # Store loaded template for later use
+    config._template_config = template
+
+    # Model: only override if template specifies one and CLI didn't override
+    if template.model is not None and config.model == PARSER_DEFAULTS["model"]:
+        config.model = template.model
+
+    # Thinking: apply template value if specified
+    if template.thinking is not None and config.thinking == PARSER_DEFAULTS["thinking"]:
+        config.thinking = "enabled" if template.thinking else "disabled"
+
+    # Force coding environment for templates (they use file tools)
+    config.env = "coding"
+
+    # Store tools filter and bash allowlist
+    config.tools = ",".join(template.tools)  # Will be parsed by create_environment
+    config._bash_allowlist = template.bash_allowlist
+
+    # Interpolate system prompt with template args
+    try:
+        config.system_prompt = template.interpolate_prompt(config.template_args)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return False
+
+    # Template mode: detached by default unless -i specified
+    if not config.interactive:
+        config.detached = True
+
+    return True
+
+
 def apply_session_config(config: CLIConfig) -> bool:
     """Apply session configuration if resuming. Returns False on error."""
     session_id_for_config: str | None = None
@@ -1465,13 +1568,28 @@ def create_environment(config: CLIConfig) -> tuple[Environment | None, bool]:
         from .environments.coding import TOOL_PRESETS
 
         tools = config.tools or "full"
+
+        # Handle template tools (comma-separated list like "read,grep,bash")
+        if "," in tools:
+            tools_list = [t.strip() for t in tools.split(",")]
+            return LocalFilesystemEnvironment(
+                working_dir=config.working_dir,
+                tools=tools_list,
+                bash_allowlist=config._bash_allowlist,
+            ), True
+
+        # Handle preset names
         if tools not in TOOL_PRESETS:
             print(
                 f"Unknown tool preset: {tools}. Available: {', '.join(TOOL_PRESETS.keys())}",
                 file=sys.stderr,
             )
             return None, False
-        return LocalFilesystemEnvironment(working_dir=config.working_dir, tools=tools), True
+        return LocalFilesystemEnvironment(
+            working_dir=config.working_dir,
+            tools=tools,
+            bash_allowlist=config._bash_allowlist,
+        ), True
 
     if config.env == "git":
         return GitWorktreeEnvironment(working_dir=config.working_dir), True
@@ -1866,6 +1984,17 @@ def main() -> int:
             print(f"Error reading context file: {e}", file=sys.stderr)
             return 1
 
+    # Parse --args into dict
+    template_args: dict[str, str] | None = None
+    if args.args:
+        template_args = {}
+        for arg in args.args:
+            if "=" not in arg:
+                print(f"Invalid --args format: {arg!r}. Use KEY=VALUE", file=sys.stderr)
+                return 1
+            key, value = arg.split("=", 1)
+            template_args[key] = value
+
     config = CLIConfig(
         model=args.model,
         api_base=args.api_base,
@@ -1911,12 +2040,19 @@ def main() -> int:
         ls=args.ls,
         ls_all=args.ls_all,
         detached=args.detached,
+        template=args.template,
+        template_args=template_args,
+        interactive=args.interactive,
+        list_templates=args.list_templates,
     )
 
     # === Commands that don't need endpoint ===
 
     if config.list_presets:
         return cmd_list_presets()
+
+    if config.list_templates:
+        return cmd_list_templates()
 
     # Determine profile from CLI arg or env var
     import os
@@ -1976,8 +2112,10 @@ def main() -> int:
 
     # === Commands requiring endpoint ===
 
-    # Apply preset and session config
+    # Apply preset, template, and session config
     if not apply_preset(config):
+        return 1
+    if not apply_template(config):
         return 1
     if not apply_session_config(config):
         return 1
