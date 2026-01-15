@@ -575,7 +575,7 @@ def _try_provision_from_offer(
 
 def create(  # noqa: PLR0913 - create API has many configuration options
     query: QueryType | list[GPUOffer] | GPUOffer | None = None,
-    image: str = "runpod/pytorch:1.0.0-cu1281-torch280-ubuntu2204",
+    image: str = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04",
     name: str | None = None,
     # Search parameters for when query is a filter
     gpu_type: str | None = None,
