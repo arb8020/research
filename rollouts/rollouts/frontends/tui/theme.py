@@ -40,6 +40,7 @@ class Theme:
     dim: str = "#505050"
     text: str = "#cccccc"
     warning: str = "#f0c674"  # Yellow/amber for warnings and retries
+    error: str = "#cc6666"  # Red for errors
 
     # Message backgrounds
     user_message_bg: str = "#343541"
@@ -115,6 +116,21 @@ class Theme:
 
     def border_fg(self, text: str) -> str:
         return f"{hex_to_fg(self.border)}{text}{RESET}"
+
+    def warning_fg(self, text: str) -> str:
+        return f"{hex_to_fg(self.warning)}{text}{RESET}"
+
+    def error_fg(self, text: str) -> str:
+        return f"{hex_to_fg(self.error)}{text}{RESET}"
+
+    # Subtle backgrounds for error/warning blocks
+    def warning_subtle_bg(self, text: str) -> str:
+        """Subtle warning background (darker yellow tint)."""
+        return f"{hex_to_bg('#3a3520')}{text}{RESET}"
+
+    def error_subtle_bg(self, text: str) -> str:
+        """Subtle error background (darker red tint)."""
+        return f"{hex_to_bg('#3c2828')}{text}{RESET}"
 
     # Tool backgrounds
     def tool_pending_bg_fn(self, text: str) -> str:

@@ -464,9 +464,46 @@ class RetryEnd(JsonSerializable):
     timestamp: float = field(default_factory=time.time)
 
 
+@dataclass(frozen=True)
+class LLMCallEnd(JsonSerializable):
+    """Emitted after LLM API call completes (success or error).
+
+    Wide event: includes all context needed for profiling without correlation.
+    """
+
+    duration_ms: float
+    provider: str  # "anthropic", "openai", etc.
+    model: str
+    tokens_in: int | None = None
+    tokens_out: int | None = None
+    status: Literal["success", "error"] = "success"
+    error: str | None = None
+    type: Literal["llm_call_end"] = "llm_call_end"
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class ToolExecutionEnd(JsonSerializable):
+    """Emitted after tool execution completes (success or error).
+
+    Wide event: includes result summary for profiling without correlation.
+    """
+
+    tool_call_id: str
+    tool_name: str
+    duration_ms: float
+    status: Literal["success", "error"] = "success"
+    is_error: bool = False  # Tool returned error result
+    # Result summary (tool-specific, optional)
+    result_summary: dict[str, Any] | None = None
+    type: Literal["tool_execution_end"] = "tool_execution_end"
+    timestamp: float = field(default_factory=time.time)
+
+
 # Union type for all streaming events
 StreamEvent = (
     LLMCallStart
+    | LLMCallEnd
     | StreamStart
     | TextStart
     | TextDelta
@@ -479,6 +516,7 @@ StreamEvent = (
     | ToolCallEnd
     | ToolCallError
     | ToolExecutionStart
+    | ToolExecutionEnd
     | ToolResultReceived
     | StreamDone
     | StreamError
@@ -1469,6 +1507,9 @@ class EvalConfig:
     # Output
     output_dir: Path | None = None
     eval_name: str = "evaluation"
+    config_path: str | None = (
+        None  # Path to config file relative to repo root (for dashboard links)
+    )
 
     # Logging
     # TODO: Consider consolidating verbose/show_progress/stream_tokens into single output mode

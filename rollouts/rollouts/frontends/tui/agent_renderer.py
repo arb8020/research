@@ -389,14 +389,19 @@ class AgentRenderer:
         self.current_thinking_index = None
 
     def _handle_stream_error(self, error: str) -> None:
-        """Handle stream error - show error message."""
+        """Handle stream error - show error message as distinct block."""
         self.tui.hide_loader()
 
-        # Show error in chat
-        from .components.text import Text
+        # Show error in chat as distinct block
+        from .components.error_display import ErrorDisplay
 
-        error_text = Text(f"Error: {error}", padding_x=1, padding_y=0)
-        self.chat_container.add_child(error_text)
+        error_display = ErrorDisplay(
+            title="Stream Error",
+            message=error,
+            theme=self.theme,
+            error_type="error",
+        )
+        self.chat_container.add_child(error_display)
 
     def _handle_retry_start(
         self,
@@ -406,12 +411,24 @@ class AgentRenderer:
         error_message: str,
         provider: str,
     ) -> None:
-        """Handle retry start - show retry status in loader with error reason."""
+        """Handle retry start - show full error in chat, brief status in loader."""
+        from .components.error_display import RetryErrorDisplay
+
+        # Add full error to chat (not truncated)
+        error_display = RetryErrorDisplay(
+            error_message=error_message,
+            attempt=attempt,
+            max_attempts=max_attempts,
+            delay_seconds=delay_seconds,
+            theme=self.theme,
+            is_final=False,
+        )
+        self.chat_container.add_child(error_display)
+
+        # Show brief retry status in loader
         delay_int = int(delay_seconds)
-        # Truncate error message to keep loader line reasonable
-        error_short = error_message[:50] + "..." if len(error_message) > 50 else error_message
         self.tui.show_loader(
-            f"Retrying ({attempt}/{max_attempts}) in {delay_int}s: {error_short}",
+            f"Retrying ({attempt}/{max_attempts}) in {delay_int}s...",
             spinner_color_fn=self.theme.fg(self.theme.warning),
             text_color_fn=self.theme.fg(self.theme.muted),
         )
@@ -420,16 +437,19 @@ class AgentRenderer:
         """Handle retry end - clear retry status."""
         self.tui.hide_loader()
 
-        # If failed, show error message
+        # If failed (all retries exhausted), show final error
         if not success and final_error:
-            from .components.text import Text
+            from .components.error_display import RetryErrorDisplay
 
-            error_text = Text(
-                f"Retry failed after {attempt} attempts: {final_error[:100]}",
-                padding_x=1,
-                padding_y=0,
+            error_display = RetryErrorDisplay(
+                error_message=final_error,
+                attempt=attempt,
+                max_attempts=attempt,  # All attempts used
+                delay_seconds=None,
+                theme=self.theme,
+                is_final=True,
             )
-            self.chat_container.add_child(error_text)
+            self.chat_container.add_child(error_display)
 
     def add_user_message(self, text: str, is_first: bool = False) -> None:
         """Add a user message to the chat.

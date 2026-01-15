@@ -204,14 +204,19 @@ async def _handle_model(runner: InteractiveAgentRunner, args: str) -> SlashComma
 
     old_endpoint = runner.endpoint
 
-    # Get API key for the new provider
-    if old_endpoint.provider == provider:
-        # Same provider - keep existing auth
+    # Get auth config for the new provider
+    same_provider = old_endpoint.provider == provider
+    if same_provider:
+        # Same provider - keep existing auth (including OAuth, api_base, etc.)
         new_api_key = old_endpoint.api_key
         new_oauth_token = old_endpoint.oauth_token
+        new_api_base = old_endpoint.api_base
+        new_is_claude_code_api_key = old_endpoint.is_claude_code_api_key
     else:
         # Different provider - get API key from environment
         new_oauth_token = ""
+        new_api_base = ""
+        new_is_claude_code_api_key = False
         if provider == "openai":
             new_api_key = os.environ.get("OPENAI_API_KEY", "")
         elif provider == "anthropic":
@@ -235,8 +240,9 @@ async def _handle_model(runner: InteractiveAgentRunner, args: str) -> SlashComma
         # Auth for the new provider
         api_key=new_api_key,
         oauth_token=new_oauth_token,
+        api_base=new_api_base,
+        is_claude_code_api_key=new_is_claude_code_api_key,
         # Let provider-specific fields use defaults:
-        # - api_base="" (provider uses its default URL)
         # - thinking=None (Anthropic-only)
         # - reasoning_effort=None (OpenAI-only)
         # - max_completion_tokens=None (OpenAI-only)
