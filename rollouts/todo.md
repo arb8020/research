@@ -2,6 +2,18 @@ https://mariozechner.at/posts/2025-11-30-pi-coding-agent/#toc_3
 
 https://github.com/letta-ai/letta-code.git
 
+## RLM Design
+
+[ ] Verify REPL/RLM design matches true RLM expressiveness (Omar Khattab discussion)
+    - Sub-agents as tool calls aren't expressive enough for true RLMs
+    - O(N) sub-calls: model can't verbalize N explicit sub-prompts as tool calls
+      → recursion must be symbolic through code, not tool calls
+    - Prompt-as-pointer: large prompts must be accessible as objects/file paths
+      → allows symbolic recursion through prompts, not just external context
+    - Current design: `context` var + `llm_query()`/`agent()` from code
+    - Question: does calling `agent(task, subset)` N times from code satisfy this?
+    - Ref: https://x.com/lateinteraction/status/1878896620499075500
+
 [ ] vim input with ctrlG is fragile
 
 
