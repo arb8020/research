@@ -169,6 +169,15 @@ class CLIConfig:
     trim: int | None = None
     fix: bool = False
 
+    # Tmux-style session management
+    send: tuple[str, str] | None = None  # (session_id, message)
+    send_file: tuple[str, str] | None = None  # (session_id, file_path)
+    attach: str | None = None  # session_id to attach
+    status: str | None = None  # session_id or "" for list
+    ls: bool = False
+    ls_all: bool = False
+    detached: bool = False
+
     # Derived (populated after arg processing)
     working_dir: Path = field(default_factory=Path.cwd)
     endpoint: Endpoint | None = None
@@ -444,6 +453,51 @@ def create_parser() -> argparse.ArgumentParser:
         "--fix",
         action="store_true",
         help="Auto-fix detected issues (duplicate tool results, etc.)",
+    )
+
+    # Tmux-style session management
+    parser.add_argument(
+        "--send",
+        type=str,
+        nargs=2,
+        metavar=("SESSION_ID", "MESSAGE"),
+        help="Send message to waiting session and resume",
+    )
+    parser.add_argument(
+        "--send-file",
+        type=str,
+        nargs=2,
+        metavar=("SESSION_ID", "FILE"),
+        help="Send file contents to waiting session and resume",
+    )
+    parser.add_argument(
+        "--attach",
+        type=str,
+        metavar="SESSION_ID",
+        help="Attach TUI to existing session",
+    )
+    parser.add_argument(
+        "--status",
+        type=str,
+        nargs="?",
+        const="",
+        metavar="SESSION_ID",
+        help="Show session status (list active if no ID)",
+    )
+    parser.add_argument(
+        "--ls",
+        action="store_true",
+        help="List active sessions (running/waiting)",
+    )
+    parser.add_argument(
+        "--ls-all",
+        action="store_true",
+        help="List all sessions including completed/failed",
+    )
+    parser.add_argument(
+        "--detached",
+        action="store_true",
+        help="Run detached: exit when agent needs input instead of blocking",
     )
 
     return parser
@@ -1155,6 +1209,158 @@ def cmd_slice(config: CLIConfig, session_store: FileSessionStore) -> int:
 
 
 # =============================================================================
+# Tmux-style session management commands
+# =============================================================================
+
+
+def cmd_ls(session_store: FileSessionStore, include_all: bool = False) -> int:
+    """Handle --ls and --ls-all commands."""
+    from .dtypes import SessionStatus
+
+    async def ls_action() -> int:
+        # Get all sessions
+        sessions = await session_store.list(limit=100)
+
+        if not include_all:
+            # Filter to active only (pending, waiting)
+            sessions = [
+                s for s in sessions if s.status in (SessionStatus.PENDING, SessionStatus.WAITING)
+            ]
+
+        if not sessions:
+            if include_all:
+                print("No sessions found.")
+            else:
+                print("No active sessions. Use --ls-all to see all sessions.")
+            return 0
+
+        # Print header
+        print(f"{'SESSION ID':<28} {'STATUS':<12} {'MODEL':<25} {'UPDATED':<12}")
+        print("-" * 77)
+
+        for session in sessions:
+            status_str = session.status.value
+            if session.status == SessionStatus.WAITING:
+                # Check if there's a pending input
+                pending = await session_store.read_pending_input(session.session_id)
+                if pending:
+                    q_type = pending.get("type", "")
+                    if q_type == "ask_user":
+                        questions = pending.get("questions", [])
+                        if questions:
+                            status_str = f"waiting: {questions[0].get('question', '')[:20]}..."
+                    else:
+                        status_str = "waiting: input needed"
+
+            model = f"{session.endpoint.provider}/{session.endpoint.model}"
+            if len(model) > 25:
+                model = model[:22] + "..."
+
+            updated = format_time_ago(session.updated_at) if session.updated_at else "?"
+
+            print(f"{session.session_id:<28} {status_str:<12} {model:<25} {updated:<12}")
+
+        return 0
+
+    return trio.run(ls_action)
+
+
+def cmd_status(session_store: FileSessionStore, session_id: str) -> int:
+    """Handle --status command."""
+    from .dtypes import SessionStatus
+
+    async def status_action() -> int:
+        session, err = await session_store.get(session_id)
+        if err or not session:
+            print(f"Session not found: {session_id}", file=sys.stderr)
+            return 1
+
+        print(f"Session: {session.session_id}")
+        print(f"Status:  {session.status.value}")
+        print(f"Model:   {session.endpoint.provider}/{session.endpoint.model}")
+        print(f"Messages: {len(session.messages)}")
+        if session.updated_at:
+            print(f"Updated: {session.updated_at}")
+
+        # Show pending input if waiting
+        if session.status == SessionStatus.WAITING:
+            pending = await session_store.read_pending_input(session_id)
+            if pending:
+                print("\n--- Pending Input ---")
+                p_type = pending.get("type", "unknown")
+                if p_type == "ask_user":
+                    for q in pending.get("questions", []):
+                        print(f"Q: {q.get('question', '')}")
+                        options = q.get("options", [])
+                        if options:
+                            print(f"   Options: {', '.join(options)}")
+                elif p_type == "no_tools":
+                    last_msg = pending.get("last_message", "")
+                    print(f"Agent stopped. Last message:\n{last_msg[:200]}...")
+
+        return 0
+
+    return trio.run(status_action)
+
+
+def cmd_send(
+    config: CLIConfig,
+    session_store: FileSessionStore,
+    session_id: str,
+    message: str,
+) -> int:
+    """Handle --send command: send message to waiting session and resume."""
+    from .dtypes import SessionStatus
+
+    async def send_action() -> int | None:
+        # Check session exists and is waiting
+        session, err = await session_store.get(session_id)
+        if err or not session:
+            print(f"Session not found: {session_id}", file=sys.stderr)
+            return 1
+
+        if session.status != SessionStatus.WAITING:
+            print(
+                f"Session is not waiting for input (status: {session.status.value})",
+                file=sys.stderr,
+            )
+            return 1
+
+        # Clear pending input
+        await session_store.clear_pending_input(session_id)
+
+        print(f"Resuming {session_id}...", file=sys.stderr)
+
+        # Set up config to resume with the message as initial prompt.
+        # TODO(cleanup): We use initial_prompt instead of appending to messages.jsonl
+        # because the runner waits for input before running the agent. When resuming,
+        # it sees the existing trajectory and asks for new input, ignoring any message
+        # we append. Using initial_prompt bypasses this. A cleaner fix would be for the
+        # runner to detect "trajectory has unprocessed user message" and skip waiting.
+        config.session = session_id
+        config.initial_prompt = message
+        # Keep detached mode for send (no TUI)
+        config.detached = True
+
+        return None  # Signal to continue to main agent flow
+
+    result = trio.run(send_action)
+    if result is None:
+        # Continue to main agent flow
+        return -1  # Special return code to continue
+    return result
+
+
+def cmd_attach(config: CLIConfig, session_id: str) -> int:
+    """Handle --attach command: attach TUI to existing session."""
+    # Just set up config to resume the session with TUI
+    config.session = session_id
+    config.frontend = "tui"
+    config.detached = False  # Attached mode
+    return -1  # Signal to continue to main agent flow
+
+
+# =============================================================================
 # Config loading - preset and session config merging
 # =============================================================================
 
@@ -1494,16 +1700,20 @@ async def _run_print_mode(
     else:
         frontend = NoneFrontend(show_tool_calls=True, show_thinking=False)
 
+    from .frontends.runner import RunnerConfig
+
     try:
         await run_interactive(
             trajectory,
             config.endpoint,
             frontend=frontend,
             environment=config.environment,
-            session_store=config.session_store,
-            session_id=session_id,
-            initial_prompt=query,
-            single_turn=True,
+            config=RunnerConfig(
+                session_store=config.session_store,
+                session_id=session_id,
+                initial_prompt=query,
+                single_turn=True,
+            ),
         )
     except KeyboardInterrupt:
         return 0
@@ -1532,6 +1742,7 @@ async def _run_interactive_mode(
 
     if config.frontend == "none":
         from .frontends import NoneFrontend, run_interactive
+        from .frontends.runner import RunnerConfig
 
         frontend = NoneFrontend(show_tool_calls=True, show_thinking=True)
         try:
@@ -1540,12 +1751,15 @@ async def _run_interactive_mode(
                 config.endpoint,
                 frontend=frontend,
                 environment=config.environment,
-                session_store=config.session_store,
-                session_id=session_id,
-                parent_session_id=parent_session_id,
-                branch_point=branch_point,
-                confirm_tools=config.confirm_tools,
-                initial_prompt=initial_prompt,
+                config=RunnerConfig(
+                    session_store=config.session_store,
+                    session_id=session_id,
+                    parent_session_id=parent_session_id,
+                    branch_point=branch_point,
+                    confirm_tools=config.confirm_tools,
+                    initial_prompt=initial_prompt,
+                    detached=config.detached,
+                ),
             )
         except KeyboardInterrupt:
             print("\n\n✅ Agent stopped")
@@ -1557,6 +1771,35 @@ async def _run_interactive_mode(
             file=sys.stderr,
         )
         return 1
+
+    # Detached mode: use simple frontend, not TUI
+    if config.detached:
+        from .frontends import NoneFrontend, run_interactive
+        from .frontends.runner import RunnerConfig
+
+        frontend = NoneFrontend(show_tool_calls=True, show_thinking=False)
+        try:
+            states = await run_interactive(
+                trajectory,
+                config.endpoint,
+                frontend=frontend,
+                environment=config.environment,
+                config=RunnerConfig(
+                    session_store=config.session_store,
+                    session_id=session_id,
+                    parent_session_id=parent_session_id,
+                    branch_point=branch_point,
+                    confirm_tools=config.confirm_tools,
+                    initial_prompt=initial_prompt,
+                    detached=True,
+                ),
+            )
+            # Print session ID for scripting
+            if states and states[-1].session_id:
+                print(states[-1].session_id)
+        except KeyboardInterrupt:
+            print("\n\n✅ Agent stopped")
+        return 0
 
     # Default: Python TUI
     from .frontends.tui.interactive_agent import run_interactive_agent
@@ -1661,6 +1904,13 @@ def main() -> int:
         doctor=args.doctor,
         trim=args.trim,
         fix=args.fix,
+        send=tuple(args.send) if args.send else None,
+        send_file=tuple(args.send_file) if args.send_file else None,
+        attach=args.attach,
+        status=args.status,
+        ls=args.ls,
+        ls_all=args.ls_all,
+        detached=args.detached,
     )
 
     # === Commands that don't need endpoint ===
@@ -1687,6 +1937,42 @@ def main() -> int:
 
     if config.doctor or config.trim is not None or config.fix:
         return cmd_doctor(config, FileSessionStore())
+
+    # === Tmux-style session commands (don't need endpoint) ===
+
+    if config.ls or config.ls_all:
+        return cmd_ls(FileSessionStore(), include_all=config.ls_all)
+
+    if config.status is not None:
+        if config.status == "":
+            # No session ID, show list instead
+            return cmd_ls(FileSessionStore(), include_all=False)
+        return cmd_status(FileSessionStore(), config.status)
+
+    if config.send:
+        session_id, message = config.send
+        result = cmd_send(config, FileSessionStore(), session_id, message)
+        if result != -1:
+            return result
+        # result == -1 means continue to main agent flow
+
+    if config.send_file:
+        session_id, file_path = config.send_file
+        try:
+            message = Path(file_path).read_text()
+        except Exception as e:
+            print(f"Error reading file: {e}", file=sys.stderr)
+            return 1
+        result = cmd_send(config, FileSessionStore(), session_id, message)
+        if result != -1:
+            return result
+        # result == -1 means continue to main agent flow
+
+    if config.attach:
+        result = cmd_attach(config, config.attach)
+        if result != -1:
+            return result
+        # result == -1 means continue to main agent flow
 
     # === Commands requiring endpoint ===
 
