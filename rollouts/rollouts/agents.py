@@ -4,7 +4,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import trio
 
@@ -31,6 +31,7 @@ from .dtypes import (
     ToolCall,
     ToolCallEnd,
     ToolConfirmResult,
+    ToolExecutionEnd,
     ToolExecutionStart,
     ToolResult,
     ToolResultReceived,
@@ -696,6 +697,9 @@ async def process_pending_tools(
 
         # Check for parse error - if tool call JSON was malformed, return error to model
         # (like verifiers pattern: send parse errors back so model can retry)
+        # Track tool execution time (only set if tool actually executes)
+        tool_duration_ms: float | None = None
+
         if tool_call.parse_error:
             tool_result = ToolResult(
                 tool_call_id=tool_call.id,
@@ -721,6 +725,9 @@ async def process_pending_tools(
                     debug_ctx.set_tool(tool_call.name)
                 except ImportError:
                     pass
+
+                # Wide event: time the full tool execution
+                tool_start_time = time.perf_counter()
 
                 # Emit tool execution start event (for TUI spinner)
                 await rcfg.on_chunk(
@@ -750,6 +757,9 @@ async def process_pending_tools(
                         tool_result = await do_exec_tool()
                 else:
                     tool_result = await do_exec_tool()
+
+                # Calculate tool duration for profiling
+                tool_duration_ms = (time.perf_counter() - tool_start_time) * 1000
 
                 # Update debug context - tool execution complete
                 try:
@@ -789,6 +799,28 @@ async def process_pending_tools(
             debug_ctx.set_phase("tool_result_emitted")
         except (NameError, UnboundLocalError):
             pass
+
+        # Wide event: emit tool execution end with timing (only if tool actually executed)
+        if tool_duration_ms is not None:
+            # Build result summary from tool_result.details if available
+            result_summary: dict[str, Any] | None = None
+            if tool_result.details:
+                # Extract key metrics for profiling (e.g., compiled, correct for kernelbench)
+                result_summary = {
+                    k: v
+                    for k, v in tool_result.details.items()
+                    if k in ("compiled", "correct", "speedup", "runtime_us", "error")
+                }
+            await rcfg.on_chunk(
+                ToolExecutionEnd(
+                    tool_call_id=tool_call.id,
+                    tool_name=tool_call.name,
+                    duration_ms=tool_duration_ms,
+                    status="error" if tool_result.is_error else "success",
+                    is_error=tool_result.is_error,
+                    result_summary=result_summary if result_summary else None,
+                )
+            )
 
         # Add tool result message
         # Always include content - it has structured stdout/stderr even on error

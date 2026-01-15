@@ -216,24 +216,92 @@ def _message_to_anthropic(m: Message, inline_thinking: str | None = None) -> dic
 
 
 def _merge_consecutive_api_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Merge consecutive messages with the same role.
+    """Merge consecutive messages with the same role and filter empty assistant messages.
 
     The Anthropic API silently merges consecutive same-role messages server-side,
     which can cause issues with tool_result ordering. By merging explicitly,
     we ensure the content array order is correct.
 
+    Also filters out assistant messages with empty content, as the Anthropic API
+    rejects these (except for the optional final assistant message).
+    When an assistant message with tool_use is filtered, we also remove any
+    corresponding tool_result messages to avoid orphaned tool results.
+
     Args:
         messages: List of API-format messages (dict with role/content)
 
     Returns:
-        Messages with consecutive same-role entries merged
+        Messages with consecutive same-role entries merged and empty assistants filtered
     """
     if not messages:
         return []
 
+    # First pass: collect tool_use IDs from assistant messages that will be kept
+    valid_tool_use_ids = set()
+    for msg in messages:
+        if msg["role"] == "assistant":
+            content = msg["content"]
+            is_empty = (
+                content == ""
+                or content == []
+                or (
+                    isinstance(content, list)
+                    and all(
+                        (
+                            isinstance(b, dict)
+                            and b.get("type") == "text"
+                            and b.get("text", "") == ""
+                        )
+                        for b in content
+                    )
+                )
+            )
+            if not is_empty and isinstance(content, list):
+                # Collect tool_use IDs from non-empty assistant messages
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        valid_tool_use_ids.add(block.get("id"))
+
     result: list[dict[str, Any]] = []
 
     for msg in messages:
+        # Skip empty assistant messages (Anthropic API rejects them)
+        if msg["role"] == "assistant":
+            content = msg["content"]
+            is_empty = (
+                content == ""
+                or content == []
+                or (
+                    isinstance(content, list)
+                    and all(
+                        (
+                            isinstance(b, dict)
+                            and b.get("type") == "text"
+                            and b.get("text", "") == ""
+                        )
+                        for b in content
+                    )
+                )
+            )
+            if is_empty:
+                continue  # Skip empty assistant messages
+
+        # Filter out orphaned tool_results from user messages
+        if msg["role"] == "user" and isinstance(msg["content"], list):
+            filtered_content = []
+            for block in msg["content"]:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    tool_use_id = block.get("tool_use_id")
+                    if tool_use_id not in valid_tool_use_ids:
+                        continue  # Skip orphaned tool_result
+                filtered_content.append(block)
+
+            # Skip user message if all content was filtered out
+            if not filtered_content:
+                continue
+
+            msg = {"role": msg["role"], "content": filtered_content}
+
         if not result or result[-1]["role"] != msg["role"]:
             # Different role or first message - add as-is (copy to avoid mutation)
             result.append({"role": msg["role"], "content": msg["content"]})
@@ -680,359 +748,328 @@ async def rollout_anthropic(
         timeout=actor.endpoint.timeout,
     )
 
-    # Transform messages for cross-provider compatibility (like pi-ai does)
-    from ..transform_messages import transform_messages
+    # Ensure client is closed even on exception. This prevents httpx connection cleanup
+    # from racing with trio_asyncio teardown, which causes "Task got bad yield" errors.
+    # Alternative fix: isolate trio_asyncio.open_loop() to only SSH operations, so httpx
+    # runs in pure trio. But that's a larger refactor - this try/finally is sufficient.
+    try:
+        # Transform messages for cross-provider compatibility (like pi-ai does)
+        from ..transform_messages import transform_messages
 
-    transformed_messages = transform_messages(
-        actor.trajectory.messages,
-        target_provider=actor.endpoint.provider,
-        target_api="anthropic-messages",
-    )
+        transformed_messages = transform_messages(
+            actor.trajectory.messages,
+            target_provider=actor.endpoint.provider,
+            target_api="anthropic-messages",
+        )
 
-    # Strip details before sending to LLM
-    llm_messages = _prepare_messages_for_llm(transformed_messages)
+        # Strip details before sending to LLM
+        llm_messages = _prepare_messages_for_llm(transformed_messages)
 
-    system_prompt = None
-    messages = []
+        system_prompt = None
+        messages = []
 
-    for m in llm_messages:
-        if m.role == "system":
-            # Extract text from ContentBlocks
-            # Content can be: str, list[ContentBlock], or list[str]
-            if isinstance(m.content, str):
-                system_prompt = m.content
-            elif isinstance(m.content, list):
+        for m in llm_messages:
+            if m.role == "system":
+                # Extract text from ContentBlocks
                 text_blocks = [b for b in m.content if isinstance(b, TextContent)]
-                if text_blocks:
-                    system_prompt = "\n".join(b.text for b in text_blocks)
+                system_prompt = "\n".join(b.text for b in text_blocks) if text_blocks else ""
+            elif m.role == "tool":
+                # Extract text from tool result content (handle both string and ContentBlock list)
+                if isinstance(m.content, str):
+                    tool_result_text = m.content
+                elif isinstance(m.content, list):
+                    text_blocks = [b for b in m.content if isinstance(b, TextContent)]
+                    tool_result_text = "\n".join(b.text for b in text_blocks) if text_blocks else ""
                 else:
-                    # Maybe it's a list of strings?
-                    str_blocks = [b for b in m.content if isinstance(b, str)]
-                    system_prompt = "\n".join(str_blocks) if str_blocks else ""
+                    tool_result_text = ""
+                messages.append({
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": m.tool_call_id,
+                            "content": tool_result_text,
+                        }
+                    ],
+                })
             else:
-                system_prompt = ""
-            logger.debug(
-                f"Extracted system_prompt: {len(system_prompt) if system_prompt else 0} chars"
-            )
-        elif m.role == "tool":
-            # Extract text from tool result content (handle both string and ContentBlock list)
-            if isinstance(m.content, str):
-                tool_result_text = m.content
-            elif isinstance(m.content, list):
-                text_blocks = [b for b in m.content if isinstance(b, TextContent)]
-                tool_result_text = "\n".join(b.text for b in text_blocks) if text_blocks else ""
-            else:
-                tool_result_text = ""
-            messages.append({
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": m.tool_call_id,
-                        "content": tool_result_text,
-                    }
-                ],
-            })
-        else:
-            messages.append(_message_to_anthropic(m, inline_thinking))
+                messages.append(_message_to_anthropic(m, inline_thinking))
 
-    if user_message_for_thinking and turn_idx > 0:
-        messages.append({"role": "user", "content": user_message_for_thinking})
+        if user_message_for_thinking and turn_idx > 0:
+            messages.append({"role": "user", "content": user_message_for_thinking})
 
-    if messages and messages[0]["role"] != "user":
-        messages.insert(0, {"role": "user", "content": "Begin."})
+        if messages and messages[0]["role"] != "user":
+            messages.insert(0, {"role": "user", "content": "Begin."})
 
-    # Merge consecutive same-role messages to avoid API rejection
-    # The Anthropic API silently merges them server-side, but this can cause
-    # tool_result ordering issues. Merge explicitly to control the order.
-    messages = _merge_consecutive_api_messages(messages)
+        # Merge consecutive same-role messages to avoid API rejection
+        # The Anthropic API silently merges them server-side, but this can cause
+        # tool_result ordering issues. Merge explicitly to control the order.
+        messages = _merge_consecutive_api_messages(messages)
 
-    messages_with_cache = add_cache_control_to_last_content(messages)
+        messages_with_cache = add_cache_control_to_last_content(messages)
 
-    params: dict[str, Any] = {
-        "max_tokens": actor.endpoint.max_tokens,
-        "messages": messages_with_cache,
-        "model": actor.endpoint.model,
-        "temperature": actor.endpoint.temperature,
-    }
-
-    # For OAuth tokens or Claude Code API keys, we MUST include Claude Code identity prefix
-    # This is required by Anthropic's API for OAuth authentication and Claude Code restricted API keys
-    requires_claude_code_identity = (
-        actor.endpoint.oauth_token or actor.endpoint.is_claude_code_api_key
-    )
-    if requires_claude_code_identity:
-        claude_code_identity = "You are Claude Code, Anthropic's official CLI for Claude."
-        if system_prompt:
-            # Prepend Claude Code identity to existing system prompt
-            params["system"] = [
-                {
-                    "type": "text",
-                    "text": claude_code_identity,
-                    "cache_control": {"type": "ephemeral"},
-                },
-                {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}},
-            ]
-        else:
-            # Just the Claude Code identity
-            params["system"] = [
-                {
-                    "type": "text",
-                    "text": claude_code_identity,
-                    "cache_control": {"type": "ephemeral"},
-                },
-            ]
-    elif system_prompt:
-        params["system"] = system_prompt
-
-    if actor.tools:
-        params["tools"] = [_tool_to_anthropic(t) for t in actor.tools]
-
-    if actor.endpoint.thinking is not None:
-        params["thinking"] = actor.endpoint.thinking
-
-    # Wide event logging for API request (structured for queryability)
-    # This single log line captures everything needed to debug API issues
-    def _summarize_messages(msgs: list[dict]) -> list[dict]:
-        """Summarize messages for logging without full content."""
-        summaries = []
-        for msg in msgs:
-            role = msg.get("role", "unknown")
-            content = msg.get("content", "")
-            if isinstance(content, str):
-                summaries.append({"role": role, "chars": len(content), "preview": content[:100]})
-            elif isinstance(content, list):
-                summaries.append({"role": role, "blocks": len(content)})
-        return summaries
-
-    logger.debug(
-        "anthropic_api_request",
-        extra={
-            "event": "api_request",
-            "provider": "anthropic",
-            "model": actor.endpoint.model,
-            "api_base": actor.endpoint.api_base,
+        params: dict[str, Any] = {
             "max_tokens": actor.endpoint.max_tokens,
+            "messages": messages_with_cache,
+            "model": actor.endpoint.model,
             "temperature": actor.endpoint.temperature,
-            "thinking_enabled": actor.endpoint.thinking is not None,
-            "system_prompt_chars": len(system_prompt) if system_prompt else 0,
-            "system_prompt_preview": (system_prompt[:200] + "...")
-            if system_prompt and len(system_prompt) > 200
-            else system_prompt,
-            "message_count": len(params["messages"]),
-            "messages_summary": _summarize_messages(params["messages"]),
-            "tool_names": [t["name"] for t in params.get("tools", [])],
-            "turn_idx": turn_idx,
-        },
-    )
+        }
 
-    max_retries = 10
-    base_delay = 2
-    completion = None
-    retrying = False  # Track if we emitted a RetryStart (to emit RetryEnd on success)
+        # For OAuth tokens or Claude Code API keys, we MUST include Claude Code identity prefix
+        # This is required by Anthropic's API for OAuth authentication and Claude Code restricted API keys
+        requires_claude_code_identity = (
+            actor.endpoint.oauth_token or actor.endpoint.is_claude_code_api_key
+        )
+        if requires_claude_code_identity:
+            claude_code_identity = "You are Claude Code, Anthropic's official CLI for Claude."
+            if system_prompt:
+                # Prepend Claude Code identity to existing system prompt
+                params["system"] = [
+                    {
+                        "type": "text",
+                        "text": claude_code_identity,
+                        "cache_control": {"type": "ephemeral"},
+                    },
+                    {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}},
+                ]
+            else:
+                # Just the Claude Code identity
+                params["system"] = [
+                    {
+                        "type": "text",
+                        "text": claude_code_identity,
+                        "cache_control": {"type": "ephemeral"},
+                    },
+                ]
+        elif system_prompt:
+            params["system"] = system_prompt
 
-    for attempt in range(max_retries + 1):
-        try:
-            # Emit LLMCallStart before making the API call
-            from .base import log_api_attempt
+        if actor.tools:
+            params["tools"] = [_tool_to_anthropic(t) for t in actor.tools]
 
-            log_api_attempt(
-                provider="anthropic",
-                model=actor.endpoint.model,
-                attempt=attempt + 1,
-                max_attempts=max_retries + 1,
-            )
-            await on_chunk(LLMCallStart())
+        if actor.endpoint.thinking is not None:
+            params["thinking"] = actor.endpoint.thinking
 
-            # Build extra headers - include oauth beta header if using oauth or Claude Code API key
-            extra_headers = {"anthropic-beta": "prompt-caching-2024-07-31"}
-            if oauth_token or actor.endpoint.is_claude_code_api_key:
-                extra_headers["anthropic-beta"] = "oauth-2025-04-20,prompt-caching-2024-07-31"
+        # Wide event logging for API request (structured for queryability)
+        # This single log line captures everything needed to debug API issues
+        from .base import log_api_request
 
-            async with client.messages.stream(  # type: ignore[missing-argument]
-                **params,
-                extra_headers=extra_headers,
-            ) as stream:
-                completion = await aggregate_anthropic_stream(stream, on_chunk)
-                # If we were retrying and succeeded, emit RetryEnd
-                if retrying:
-                    await on_chunk(RetryEnd(success=True, attempt=attempt + 1))
+        _tool_names = [t.function.name for t in actor.tools] if actor.tools else []
+        log_api_request(
+            provider="anthropic",
+            model=actor.endpoint.model,
+            api_base=actor.endpoint.api_base,
+            messages=params["messages"],
+            system_prompt=system_prompt,
+            tools=_tool_names,
+            temperature=actor.endpoint.temperature,
+            max_tokens=actor.endpoint.max_tokens,
+            thinking_enabled=actor.endpoint.thinking is not None,
+            turn_idx=turn_idx,
+        )
 
-                # Wide event for successful API response
-                logger.debug(
-                    "anthropic_api_response",
-                    extra={
-                        "event": "api_response",
-                        "provider": "anthropic",
-                        "model": actor.endpoint.model,
-                        "attempt": attempt + 1,
-                        "success": True,
-                        "input_tokens": completion.usage.input_tokens if completion.usage else None,
-                        "output_tokens": completion.usage.output_tokens
+        max_retries = 10
+        base_delay = 2
+        completion = None
+        retrying = False  # Track if we emitted a RetryStart (to emit RetryEnd on success)
+
+        for attempt in range(max_retries + 1):
+            try:
+                # Emit LLMCallStart before making the API call
+                from .base import log_api_attempt
+
+                log_api_attempt(
+                    provider="anthropic",
+                    model=actor.endpoint.model,
+                    attempt=attempt + 1,
+                    max_attempts=max_retries + 1,
+                )
+                await on_chunk(LLMCallStart())
+
+                # Build extra headers - include oauth beta header if using oauth or Claude Code API key
+                extra_headers = {"anthropic-beta": "prompt-caching-2024-07-31"}
+                if oauth_token or actor.endpoint.is_claude_code_api_key:
+                    extra_headers["anthropic-beta"] = "oauth-2025-04-20,prompt-caching-2024-07-31"
+
+                async with client.messages.stream(  # type: ignore[missing-argument]
+                    **params,
+                    extra_headers=extra_headers,
+                ) as stream:
+                    completion = await aggregate_anthropic_stream(stream, on_chunk)
+                    # If we were retrying and succeeded, emit RetryEnd
+                    if retrying:
+                        await on_chunk(RetryEnd(success=True, attempt=attempt + 1))
+
+                    # Wide event for successful response
+                    from .base import log_api_response
+
+                    log_api_response(
+                        provider="anthropic",
+                        model=actor.endpoint.model,
+                        attempt=attempt + 1,
+                        success=True,
+                        input_tokens=completion.usage.input_tokens if completion.usage else None,
+                        output_tokens=completion.usage.output_tokens if completion.usage else None,
+                        cache_read_tokens=completion.usage.cache_read_tokens
                         if completion.usage
                         else None,
-                        "cache_read_tokens": completion.usage.cache_read_tokens
+                        cache_write_tokens=completion.usage.cache_write_tokens
                         if completion.usage
                         else None,
-                        "cache_write_tokens": completion.usage.cache_write_tokens
-                        if completion.usage
-                        else None,
-                        "stop_reason": completion.choices[0].stop_reason
+                        stop_reason=completion.choices[0].stop_reason
                         if completion.choices
                         else None,
-                        "has_tool_calls": bool(completion.choices[0].message.get_tool_calls())
+                        has_tool_calls=bool(completion.choices[0].message.get_tool_calls())
                         if completion.choices
                         else False,
-                    },
-                )
-                break
+                    )
+                    break
 
-        except Exception as e:
-            # Tiger Style: Fail fast on 400 errors (invalid requests)
-            # These indicate bugs in our code or invalid configuration, not transient issues
-            import anthropic
+            except Exception as e:
+                # Tiger Style: Fail fast on 400 errors (invalid requests)
+                # These indicate bugs in our code or invalid configuration, not transient issues
+                import anthropic
 
-            from ..store import log_crash
-            from .base import ContextTooLongError
+                from ..store import log_crash
+                from .base import ContextTooLongError
 
-            if isinstance(e, anthropic.BadRequestError):
-                error_str = str(e)
-                # Check for context length errors - these are recoverable, not crashes
-                if "prompt is too long" in error_str or "too many tokens" in error_str.lower():
-                    # Try to extract token counts from error message
-                    import re
+                if isinstance(e, anthropic.BadRequestError):
+                    error_str = str(e)
+                    # Check for context length errors - these are recoverable, not crashes
+                    if "prompt is too long" in error_str or "too many tokens" in error_str.lower():
+                        # Try to extract token counts from error message
+                        import re
 
-                    match = re.search(r"(\d+)\s*tokens?\s*>\s*(\d+)", error_str)
-                    current_tokens = int(match.group(1)) if match else None
-                    max_tokens = int(match.group(2)) if match else None
-                    raise ContextTooLongError(
-                        f"Context too long: {current_tokens:,} tokens (max: {max_tokens:,})",
-                        current_tokens=current_tokens,
-                        max_tokens=max_tokens,
+                        match = re.search(r"(\d+)\s*tokens?\s*>\s*(\d+)", error_str)
+                        current_tokens = int(match.group(1)) if match else None
+                        max_tokens = int(match.group(2)) if match else None
+                        raise ContextTooLongError(
+                            f"Context too long: {current_tokens:,} tokens (max: {max_tokens:,})",
+                            current_tokens=current_tokens,
+                            max_tokens=max_tokens,
+                        ) from e
+
+                    # Other 400 errors are likely bugs - log and fail
+                    crash_file = log_crash(e, "anthropic", actor.endpoint.model, messages=messages)
+                    # Fail immediately - don't retry configuration errors
+                    raise AssertionError(
+                        f"API returned 400 Bad Request: {e}\nCrash details written to: {crash_file}"
                     ) from e
 
-                # Other 400 errors are likely bugs - log and fail
-                crash_file = log_crash(e, "anthropic", actor.endpoint.model, messages=messages)
-                # Fail immediately - don't retry configuration errors
-                raise AssertionError(
-                    f"API returned 400 Bad Request: {e}\nCrash details written to: {crash_file}"
-                ) from e
+                # For OAuth: try to refresh token and retry once on auth errors
+                if isinstance(e, anthropic.AuthenticationError):
+                    if oauth_token and attempt == 0:
+                        # Emit retry event for OAuth refresh
+                        await on_chunk(
+                            RetryStart(
+                                attempt=1,
+                                max_attempts=2,
+                                delay_seconds=0,
+                                error_message="OAuth token rejected, attempting refresh",
+                                provider="anthropic",
+                            )
+                        )
+                        fresh_token = await _get_fresh_oauth_token()
+                        if fresh_token and fresh_token != oauth_token:
+                            oauth_token = fresh_token
+                            # Recreate client with new token
+                            await client.close()
+                            client = _create_anthropic_client(
+                                oauth_token=oauth_token,
+                                api_key=actor.endpoint.api_key,
+                                api_base=actor.endpoint.api_base,
+                                max_retries=actor.endpoint.max_retries,
+                                timeout=actor.endpoint.timeout,
+                            )
+                            continue
+                    raise RuntimeError(
+                        f"Authentication failed: {e}\nCheck your API key or OAuth token."
+                    ) from e
 
-            # For OAuth: try to refresh token and retry once on auth errors
-            if isinstance(e, anthropic.AuthenticationError):
-                if oauth_token and attempt == 0:
-                    # Emit retry event for OAuth refresh
+                # Fail fast on programming errors - these are bugs in our code, not transient issues
+                if isinstance(e, ValueError | AttributeError | TypeError | KeyError):
+                    raise
+
+                # Transient error - emit retry event and wait
+                if attempt < max_retries:
+                    delay = base_delay * (2**attempt)
+                    error_msg = _format_rate_limit_error(e)
                     await on_chunk(
                         RetryStart(
-                            attempt=1,
-                            max_attempts=2,
-                            delay_seconds=0,
-                            error_message="OAuth token rejected, attempting refresh",
+                            attempt=attempt + 1,
+                            max_attempts=max_retries + 1,
+                            delay_seconds=delay,
+                            error_message=error_msg,
                             provider="anthropic",
                         )
                     )
-                    fresh_token = await _get_fresh_oauth_token()
-                    if fresh_token and fresh_token != oauth_token:
-                        oauth_token = fresh_token
-                        # Recreate client with new token
-                        await client.close()
-                        client = _create_anthropic_client(
-                            oauth_token=oauth_token,
-                            api_key=actor.endpoint.api_key,
-                            api_base=actor.endpoint.api_base,
-                            max_retries=actor.endpoint.max_retries,
-                            timeout=actor.endpoint.timeout,
-                        )
-                        continue
-                raise RuntimeError(
-                    f"Authentication failed: {e}\nCheck your API key or OAuth token."
-                ) from e
+                    retrying = True
+                    await trio.sleep(delay)
+                    continue
 
-            # Fail fast on programming errors - these are bugs in our code, not transient issues
-            if isinstance(e, (ValueError, AttributeError, TypeError, KeyError)):
-                raise
+                # All retries exhausted - emit RetryEnd and raise ProviderError
+                from .base import ProviderError, log_api_response
 
-            # Transient error - emit retry event and wait
-            if attempt < max_retries:
-                delay = base_delay * (2**attempt)
                 error_msg = _format_rate_limit_error(e)
                 await on_chunk(
-                    RetryStart(
-                        attempt=attempt + 1,
-                        max_attempts=max_retries + 1,
-                        delay_seconds=delay,
-                        error_message=error_msg,
-                        provider="anthropic",
+                    RetryEnd(
+                        success=False,
+                        attempt=max_retries + 1,
+                        final_error=error_msg,
                     )
                 )
-                retrying = True
-                await trio.sleep(delay)
-                continue
 
-            # All retries exhausted - emit RetryEnd and raise ProviderError
+                log_api_response(
+                    provider="anthropic",
+                    model=actor.endpoint.model,
+                    attempt=max_retries + 1,
+                    success=False,
+                    error_type=type(e).__name__,
+                    error_message=str(e),
+                )
+                raise ProviderError(
+                    f"Anthropic API failed after {max_retries + 1} attempts: {e}",
+                    original_error=e,
+                    attempts=max_retries + 1,
+                    provider="anthropic",
+                ) from e
+
+        if completion is None:
             from .base import ProviderError
 
-            error_msg = _format_rate_limit_error(e)
-            await on_chunk(
-                RetryEnd(
-                    success=False,
-                    attempt=max_retries + 1,
-                    final_error=error_msg,
-                )
-            )
-
-            from .base import log_api_response
-
-            log_api_response(
-                provider="anthropic",
-                model=actor.endpoint.model,
-                attempt=max_retries + 1,
-                success=False,
-                error_type=type(e).__name__,
-                error_message=str(e),
-            )
             raise ProviderError(
-                f"Anthropic API failed after {max_retries + 1} attempts: {e}",
-                original_error=e,
+                "Failed to get completion after all retries",
                 attempts=max_retries + 1,
                 provider="anthropic",
-            ) from e
+            )
 
-    if completion is None:
-        from .base import ProviderError
+        completion = replace(completion, model=actor.endpoint.model)
 
-        raise ProviderError(
-            "Failed to get completion after all retries",
-            attempts=max_retries + 1,
-            provider="anthropic",
+        # Calculate cost if model pricing is available
+        from ..models import get_model
+
+        model_meta = get_model(actor.endpoint.provider, actor.endpoint.model)
+        if model_meta and model_meta.cost:
+            cost = calculate_cost_from_usage(completion.usage, model_meta.cost)
+            usage_with_cost = replace(completion.usage, cost=cost)
+            completion = replace(completion, usage=usage_with_cost)
+
+        final_message = completion.choices[0].message
+
+        # Enrich message with provider/api/model metadata for cross-provider handoff
+        final_message = replace(
+            final_message,
+            provider=actor.endpoint.provider,
+            api="anthropic-messages",
+            model=actor.endpoint.model,
         )
 
-    completion = replace(completion, model=actor.endpoint.model)
+        new_trajectory = replace(
+            actor.trajectory,
+            messages=actor.trajectory.messages + [final_message],
+            completions=actor.trajectory.completions + [completion],
+        )
 
-    # Calculate cost if model pricing is available
-    from ..models import get_model
-
-    model_meta = get_model(actor.endpoint.provider, actor.endpoint.model)
-    if model_meta and model_meta.cost:
-        cost = calculate_cost_from_usage(completion.usage, model_meta.cost)
-        usage_with_cost = replace(completion.usage, cost=cost)
-        completion = replace(completion, usage=usage_with_cost)
-
-    final_message = completion.choices[0].message
-
-    # Enrich message with provider/api/model metadata for cross-provider handoff
-    final_message = replace(
-        final_message,
-        provider=actor.endpoint.provider,
-        api="anthropic-messages",
-        model=actor.endpoint.model,
-    )
-
-    new_trajectory = replace(
-        actor.trajectory,
-        messages=actor.trajectory.messages + [final_message],
-        completions=actor.trajectory.completions + [completion],
-    )
-
-    await client.close()
-    return replace(actor, trajectory=new_trajectory)
+        return replace(actor, trajectory=new_trajectory)
+    finally:
+        await client.close()

@@ -690,6 +690,10 @@ async def evaluate_sample(
     )
 
     # Also emit to file for TUI (if emitter configured)
+    # TODO: Retry logic can emit multiple sample_start events for the same sample_id
+    # without a corresponding sample_end, causing progress display to show 100/100
+    # while a sample is still running. Either emit sample_end before retry, or
+    # don't emit sample_start on retries. See: chiraag/supabase-eval-traces PR #504
     sample_name = sample_data.get("name", sample_id)
     emit_event("sample_start", id=sample_id, name=sample_name)
 
