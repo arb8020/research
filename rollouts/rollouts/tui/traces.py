@@ -748,7 +748,8 @@ class TraceViewer:
         hints = f"j/k:move  Space:fold  zR/zM:all  {wrap_hint}  q:back"
         messages = self._get_all_messages()
         num_messages = len(messages)
-        pos = f"msg {self.cursor + 1}/{num_messages}"
+        total_lines = len(self._rendered_lines)
+        pos = f"line {self.scroll + 1}/{total_lines} ({num_messages} msgs)"
 
         padding = width - len(hints) - len(pos) - 4
         return (

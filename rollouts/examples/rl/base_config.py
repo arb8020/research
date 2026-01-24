@@ -15,6 +15,8 @@ def run_remote(
     node_id: str | None = None,
     use_tui: bool = False,
     tui_debug: bool = False,
+    gpu_count: int = 1,
+    gpu_type: str = "A100",
 ) -> None:
     """Run training script on remote GPU via broker/bifrost.
 
@@ -44,8 +46,10 @@ def run_remote(
         print(f"Connected to existing instance: {node_id}")
     else:
         # Provision new instance
-        print("Provisioning 2x GPU...")
-        bifrost, instance = acquire_node(provision=GPUQuery(type="A100", count=2, min_cuda="12.8"))
+        print(f"Provisioning {gpu_count}x {gpu_type}...")
+        bifrost, instance = acquire_node(
+            provision=GPUQuery(type=gpu_type, count=gpu_count, min_cuda="12.8")
+        )
         if instance:
             print(f"Instance: {instance.provider}:{instance.id}")
 
@@ -60,8 +64,10 @@ def run_remote(
         # Deploy code with bootstrap
         print("Deploying code...")
         bootstrap = [
-            "cd rollouts && uv python install 3.12 && uv sync --python 3.12",
-            "uv pip install torch transformers datasets accelerate sglang[all] curl_cffi",
+            "apt-get update && apt-get install -y tmux libnuma1 || true",  # Install tmux and libnuma
+            "curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.local/bin/env",
+            "cd rollouts && ~/.local/bin/uv python install 3.12 && ~/.local/bin/uv sync --python 3.12",
+            "~/.local/bin/uv pip install torch transformers datasets accelerate sglang[all] curl_cffi",
         ]
         workspace = bifrost.push("~/.bifrost/workspaces/rollouts-rl", bootstrap_cmd=bootstrap)
         print("Code deployed")
@@ -80,7 +86,7 @@ def run_remote(
         print(f"Starting training run: {run_name}")
         job = bifrost.submit(
             ProcessSpec(
-                command="uv",
+                command="/root/.local/bin/uv",
                 args=("run", "python", str(script_rel_path)),
                 cwd=f"{workspace}/rollouts",
                 env=env_vars,
