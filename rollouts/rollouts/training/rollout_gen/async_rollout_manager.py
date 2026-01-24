@@ -12,6 +12,7 @@ Tiger Style: Explicit abort handling, clear state transitions.
 SLIME: Dynamic sampling strategy, quality filtering.
 """
 
+import inspect
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -148,8 +149,12 @@ class AsyncRolloutManager:
 
         # Step 4: Compute rewards from score_fn if provided
         if score_fn is not None:
+            is_async = inspect.iscoroutinefunction(score_fn)
             for sample in collected_samples:
-                score = score_fn(sample)
+                if is_async:
+                    score = await score_fn(sample)
+                else:
+                    score = score_fn(sample)
                 sample.reward = score.reward
 
         # Step 5: Convert to batch

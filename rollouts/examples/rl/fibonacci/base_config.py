@@ -8,8 +8,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import trio
-
 from rollouts.dtypes import Metric, Score
 from rollouts.environments.ttt.code_challenge import (
     FIBONACCI_TEST_CASES,
@@ -59,7 +57,7 @@ def load_fibonacci_prompts(n_prompts: int = 8) -> list[dict[str, Any]]:
 # ──────────────────────── Score Function ──────────────────────────────────────
 
 
-def fibonacci_score_fn(sample: Sample) -> Score:
+async def fibonacci_score_fn(sample: Sample) -> Score:
     """Score function for Fibonacci task.
 
     Extracts code from response, runs it, grades correctness + speed.
@@ -76,9 +74,8 @@ def fibonacci_score_fn(sample: Sample) -> Score:
             )
         )
 
-    # Run grading (score_fn must be sync, so we use trio.run)
-    result = trio.run(
-        run_code_with_tests,
+    # Run grading (async)
+    result = await run_code_with_tests(
         code,
         "fib",
         FIBONACCI_TEST_CASES,
