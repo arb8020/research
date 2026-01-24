@@ -34,6 +34,12 @@ if __name__ == "__main__":
     parser.add_argument("--provision", action="store_true", help="Provision new GPU instance")
     parser.add_argument("--keep-alive", action="store_true", help="Keep GPU after completion")
     parser.add_argument("--node-id", type=str, help="Reuse existing instance ID")
+    parser.add_argument("--tui", action="store_true", help="Show TUI monitor for logs")
+    parser.add_argument("--tui-debug", action="store_true", help="Print raw JSONL instead of TUI")
+    parser.add_argument(
+        "--gpu-count", type=int, default=1, help="Number of GPUs to provision (default: 1)"
+    )
+    parser.add_argument("--gpu-type", type=str, default="A100", help="GPU type (default: A100)")
     args = parser.parse_args()
 
     if args.provision or args.node_id:
@@ -43,6 +49,10 @@ if __name__ == "__main__":
             __file__,
             keep_alive=args.keep_alive,
             node_id=args.node_id,
+            use_tui=args.tui,
+            tui_debug=args.tui_debug,
+            gpu_count=args.gpu_count,
+            gpu_type=args.gpu_type,
         )
     else:
         results = train(config=config, n_prompts=16)
