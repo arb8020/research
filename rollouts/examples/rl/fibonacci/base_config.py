@@ -24,15 +24,13 @@ from rollouts.training.types import Sample
 # ──────────────────────── Environment Factory ─────────────────────────────────
 
 
-class FibonacciEnvFactory:
+def FibonacciEnvFactory() -> CodeChallengeEnvironment:
     """Factory for GRPO - creates configured FibonacciEnvironment.
 
     GRPO calls environment_cls() with no args, so we need a callable
     that returns a configured environment.
     """
-
-    def __call__(self) -> CodeChallengeEnvironment:
-        return FibonacciEnvironment(timeout=2.0)
+    return FibonacciEnvironment(timeout=2.0)
 
 
 # ──────────────────────── Dataset ─────────────────────────────────────────────
