@@ -236,8 +236,12 @@ def create_adamw_optimizer(
     assert eps > 0, f"eps must be positive, got {eps}"
     assert weight_decay >= 0, f"weight_decay must be >= 0, got {weight_decay}"
 
+    # Only optimize trainable parameters (important for LoRA where base is frozen)
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    assert len(trainable_params) > 0, "No trainable parameters found"
+
     return torch.optim.AdamW(
-        model.parameters(),
+        trainable_params,
         lr=lr,
         betas=betas,
         eps=eps,
