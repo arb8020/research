@@ -1,0 +1,63 @@
+"""Fibonacci GRPO training with LoRA (test-time training).
+
+Run with:
+    # Remote (provisions GPU automatically)
+    python examples/rl/fibonacci/grpo_lora_01.py --provision
+
+    # Reuse existing instance
+    python examples/rl/fibonacci/grpo_lora_01.py --node-id runpod:xyz123
+"""
+
+from examples.rl.fibonacci.base_config import train
+from rollouts.training.grpo import GRPOConfig
+
+config = GRPOConfig(
+    experiment_name="fibonacci_grpo_lora_01",
+    model_name="Qwen/Qwen2.5-0.5B-Instruct",
+    num_steps=10,
+    checkpoint_every=5,
+    batch_size=4,
+    n_samples_per_prompt=4,
+    temperature=0.8,
+    # LoRA settings
+    use_lora=True,
+    lora_rank=16,
+    lora_alpha=32,
+    lr=1e-4,  # 100x higher than full fine-tuning (per Tinker docs)
+    max_seq_len=1024,
+    max_tokens=512,
+    max_turns=1,
+    inference_cuda_device_ids=(0,),
+    trainer_cuda_device_ids=(0,),
+)
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Fibonacci GRPO training with LoRA")
+    parser.add_argument("--provision", action="store_true", help="Provision new GPU instance")
+    parser.add_argument("--keep-alive", action="store_true", help="Keep GPU after completion")
+    parser.add_argument("--node-id", type=str, help="Reuse existing instance ID")
+    parser.add_argument("--tui", action="store_true", help="Show TUI monitor for logs")
+    parser.add_argument("--tui-debug", action="store_true", help="Print raw JSONL instead of TUI")
+    parser.add_argument(
+        "--gpu-count", type=int, default=1, help="Number of GPUs to provision (default: 1)"
+    )
+    parser.add_argument("--gpu-type", type=str, default="A100", help="GPU type (default: A100)")
+    args = parser.parse_args()
+
+    if args.provision or args.node_id:
+        from examples.rl.base_config import run_remote
+
+        run_remote(
+            __file__,
+            keep_alive=args.keep_alive,
+            node_id=args.node_id,
+            use_tui=args.tui,
+            tui_debug=args.tui_debug,
+            gpu_count=args.gpu_count,
+            gpu_type=args.gpu_type,
+        )
+    else:
+        results = train(config=config, n_prompts=16)
+        print(f"Training complete. {len(results.get('metrics_history', []))} steps")

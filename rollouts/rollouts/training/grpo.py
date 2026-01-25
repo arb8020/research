@@ -93,6 +93,11 @@ class GRPOConfig:
     checkpoint_every: int = 20  # Save to disk (for recovery/resuming)
     sync_weights_every: int = 1  # Sync to inference engine (for on-policy vs off-policy)
 
+    # LoRA (for efficient test-time training)
+    use_lora: bool = False
+    lora_rank: int = 16
+    lora_alpha: int = 32
+
     # Output
     output_dir: str = "results/rl"
     experiment_name: str = "grpo"
@@ -224,6 +229,9 @@ def _setup_training_backend(
         loss_fn=lambda logits, batch: grpo_loss(logits, batch),
         num_minibatches=config.num_minibatches,
         max_grad_norm=config.max_grad_norm,
+        use_lora=config.use_lora,
+        lora_rank=config.lora_rank,
+        lora_alpha=config.lora_alpha,
     )
 
     tokenizer = AutoTokenizer.from_pretrained(config.model_name)
@@ -455,20 +463,12 @@ async def _process_training_step(
         logger.info(f"Saved checkpoint: {ckpt_dir}")
 
     # Sync weights to inference engine (for on-policy training)
-    # If we just checkpointed, use that. Otherwise save a temp checkpoint to RAM disk.
+    # Use save_weights_for_sampler which handles LoRA merging (Tinker pattern)
     if should_sync:
-        if should_checkpoint:
-            # Reuse the checkpoint we just saved
-            sync_dir = ckpt_dir
-        else:
-            # Save temp checkpoint to RAM disk (/dev/shm) for fast I/O
-            # This avoids slow disk writes when syncing every step
-            from ..training.weight_sync import get_fast_sync_dir
+        from ..training.weight_sync import get_fast_sync_dir
 
-            fast_dir = get_fast_sync_dir()
-            sync_dir = await backend.save_checkpoint_to_path(
-                fast_dir / "sync_latest", accumulated_metrics
-            )
+        fast_dir = get_fast_sync_dir()
+        sync_dir = await backend.save_weights_for_sampler(fast_dir / "sync_latest")
         logger.info(f"Syncing weights to {inference_engine.name}...")
         await inference_engine.update_weights_from_checkpoint(str(sync_dir))
         logger.info("Weight sync complete")
