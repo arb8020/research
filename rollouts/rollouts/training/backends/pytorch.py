@@ -193,6 +193,15 @@ class PyTorchTrainingBackend:
                 else:
                     logits = output
 
+                # Debug: check if logits have grad_fn (needed for backprop)
+                if not logits.requires_grad:
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.warning(f"logits.requires_grad=False, logits.grad_fn={logits.grad_fn}")
+                    # Check trainable params
+                    trainable = sum(1 for p in self.model.parameters() if p.requires_grad)
+                    logger.warning(f"Model has {trainable} trainable parameters")
+
                 # Compute loss (loss_fn returns (loss, metrics) or just loss)
                 loss_result = self.loss_fn(logits, micro_batch)
 
