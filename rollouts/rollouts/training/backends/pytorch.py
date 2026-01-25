@@ -72,6 +72,7 @@ class PyTorchTrainingBackend:
     )
     device: torch.device | None = None  # Tiger Style: Explicit device (optional for CPU-only)
     trainer_config: TrainerConfig = field(default_factory=TrainerConfig)
+    is_lora: bool = False  # Track if model is PEFT LoRA-wrapped
 
     # State (SLIME-inspired)
     weight_version: int = 0
@@ -615,6 +616,62 @@ class PyTorchTrainingBackend:
         # Barrier for coordination
         if dist.is_initialized():
             dist.barrier()
+
+        return path
+
+    async def save_weights_for_sampler(
+        self,
+        path: Path | str,
+    ) -> Path:
+        """Save merged weights ready for inference engine (Tinker-inspired).
+
+        If using LoRA, merges adapter weights into base model before saving.
+        Saves as HuggingFace format for SGLang/vLLM compatibility.
+
+        This is the weight sync primitive for TTT - it produces inference-ready
+        weights that can be loaded via update_weights_from_disk.
+
+        Args:
+            path: Directory to save merged weights
+
+        Returns:
+            Path to the saved directory
+
+        Tiger Style: Assert postconditions.
+
+        Example:
+            >>> sync_dir = await backend.save_weights_for_sampler("/dev/shm/sync")
+            >>> await inference_engine.update_weights_from_checkpoint(str(sync_dir))
+        """
+        import logging
+
+        logger = logging.getLogger(__name__)
+        path = Path(path)
+        path.mkdir(parents=True, exist_ok=True)
+
+        rank = dist.get_rank() if dist.is_initialized() else 0
+
+        # Only rank 0 saves
+        if rank == 0:
+            if self.is_lora:
+                # LoRA: merge adapters into base model, then save
+                # W' = W + BA (low-rank merge)
+                logger.info(f"Merging LoRA weights for inference sync to {path}")
+                merged_model = self.model.merge_and_unload()
+                await trio.to_thread.run_sync(merged_model.save_pretrained, path)
+                logger.info("LoRA merge and save complete")
+            else:
+                # Regular model: save directly
+                logger.info(f"Saving weights for inference sync to {path}")
+                await trio.to_thread.run_sync(self.model.save_pretrained, path)
+
+        # Barrier for coordination
+        if dist.is_initialized():
+            dist.barrier()
+
+        # Tiger Style: assert postcondition
+        config_path = path / "config.json"
+        assert config_path.exists(), f"save_pretrained must create config.json at {config_path}"
 
         return path
 

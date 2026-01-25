@@ -113,6 +113,47 @@ def compute_device_map_single_gpu(
         return None  # CPU/MPS don't use device_map
 
 
+def wrap_model_with_lora(
+    model: torch.nn.Module,
+    lora_rank: int = 16,
+    lora_alpha: int = 32,
+) -> torch.nn.Module:
+    """Wrap model with PEFT LoRA adapters.
+
+    Args:
+        model: HuggingFace model to wrap
+        lora_rank: LoRA rank (r parameter)
+        lora_alpha: LoRA alpha for scaling
+
+    Returns:
+        PEFT model with LoRA adapters
+
+    Tiger Style: Assert preconditions.
+    Note: LoRA needs ~20-100x higher LR than full fine-tuning.
+
+    Example:
+        >>> model = load_hf_model("Qwen/Qwen2.5-0.5B", torch.bfloat16, {"": 0})
+        >>> lora_model = wrap_model_with_lora(model, lora_rank=16)
+        >>> # Only LoRA params are trainable
+        >>> trainable = sum(p.numel() for p in lora_model.parameters() if p.requires_grad)
+    """
+    from peft import LoraConfig, get_peft_model
+
+    assert model is not None, "model cannot be None"
+    assert lora_rank > 0, f"lora_rank must be positive, got {lora_rank}"
+    assert lora_alpha > 0, f"lora_alpha must be positive, got {lora_alpha}"
+
+    lora_config = LoraConfig(
+        r=lora_rank,
+        lora_alpha=lora_alpha,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        lora_dropout=0.0,
+        bias="none",
+        task_type="CAUSAL_LM",
+    )
+    return get_peft_model(model, lora_config)
+
+
 def load_hf_model(
     model_name: str,
     torch_dtype: torch.dtype,
@@ -341,6 +382,9 @@ def create_pytorch_backend(
     loss_fn: Callable | None = None,
     num_minibatches: int | None = None,
     max_grad_norm: float | None = 1.0,
+    use_lora: bool = False,
+    lora_rank: int = 16,
+    lora_alpha: int = 32,
 ) -> PyTorchTrainingBackend:
     """Create PyTorch backend with sensible defaults (Tier 2 convenience).
 
@@ -365,6 +409,9 @@ def create_pytorch_backend(
             If None, processes full batch at once (no accumulation).
         max_grad_norm: Clip gradients to this norm. If None, no clipping.
             Default: 1.0 (standard practice for language models)
+        use_lora: If True, wrap model with PEFT LoRA adapters (for efficient TTT)
+        lora_rank: LoRA rank parameter (default: 16)
+        lora_alpha: LoRA alpha scaling (default: 32)
 
     Returns:
         Ready-to-use PyTorchTrainingBackend
@@ -391,6 +438,12 @@ def create_pytorch_backend(
 
     # Tier 1: Load model
     model = load_hf_model(model_name, torch_dtype, device_map)
+
+    # Tier 1: Wrap with LoRA if requested
+    is_lora = False
+    if use_lora:
+        model = wrap_model_with_lora(model, lora_rank=lora_rank, lora_alpha=lora_alpha)
+        is_lora = True
 
     # Tier 1: Create optimizer
     optimizer = create_adamw_optimizer(
@@ -427,6 +480,7 @@ def create_pytorch_backend(
         checkpoint_dir=checkpoint_dir,
         device=device,
         trainer_config=trainer_config,
+        is_lora=is_lora,
     )
 
 
