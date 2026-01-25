@@ -30,6 +30,7 @@ eval = [
 training = [
     "torch>=2.0.0",
     "datasets>=4.4.1",
+    "peft>=0.7.0",
 ]
 
 # Deployment (GPU provisioning + server management)
