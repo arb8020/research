@@ -211,6 +211,8 @@ def _setup_training_backend(
     Returns:
         Tuple of (backend, tokenizer, endpoint)
     """
+    # TODO: Remove HF transformers dependency. Use tokenizers library directly
+    # or load tokenizer.json with custom wrapper.
     from transformers import AutoTokenizer
 
     from ..dtypes import Endpoint

@@ -82,9 +82,19 @@ BASH_RENDER_CONFIG = ToolRenderConfig(
 
 
 def format_read(
-    tool_name: str, args: dict, result: dict | None, expanded: bool, theme: Theme | None = None
+    tool_name: str,
+    args: dict,
+    result: dict | None,
+    detail_level: "DetailLevel | bool",
+    theme: Theme | None = None,
 ) -> str:
     """Format read tool execution."""
+    from ..dtypes import DetailLevel
+
+    # Handle backward compat: bool -> DetailLevel
+    if isinstance(detail_level, bool):
+        detail_level = DetailLevel.EXPANDED if detail_level else DetailLevel.STANDARD
+
     path = shorten_path(args.get("file_path") or args.get("path") or "")
     offset = args.get("offset")
     limit = args.get("limit")
@@ -95,7 +105,17 @@ def format_read(
     if limit is not None:
         params += f", limit={limit}"
 
-    text = f"read({params})"
+    header = f"read({params})"
+
+    # Compact mode: one-liner with success/fail indicator
+    if detail_level == DetailLevel.COMPACT:
+        if result is None:
+            return header
+        is_error = result.get("isError", False)
+        indicator = "✗" if is_error else "✓"
+        return f"{header} {indicator}"
+
+    text = header
 
     # Just show line count summary (not full content)
     if result:
@@ -107,23 +127,54 @@ def format_read(
 
 
 def format_write(
-    tool_name: str, args: dict, result: dict | None, expanded: bool, theme: Theme | None = None
+    tool_name: str,
+    args: dict,
+    result: dict | None,
+    detail_level: "DetailLevel | bool",
+    theme: Theme | None = None,
 ) -> str:
-    """Format write tool execution with line numbers and gray styling."""
+    """Format write tool execution with line numbers and gray styling.
+
+    Args:
+        detail_level: DetailLevel enum or bool for backward compat.
+            - COMPACT: one-liner with ✓/✗
+            - STANDARD: 10 lines
+            - EXPANDED: all lines
+    """
+    from ..dtypes import DetailLevel
+
+    # Handle backward compat: bool -> DetailLevel
+    if isinstance(detail_level, bool):
+        detail_level = DetailLevel.EXPANDED if detail_level else DetailLevel.STANDARD
+
     path = shorten_path(args.get("file_path") or args.get("path") or "")
     file_content = args.get("content", "")
     lines = file_content.split("\n") if file_content else []
     total_lines = len(lines)
 
-    text = f"write(file_path={repr(path if path else '...')})"
+    header = f"write(file_path={repr(path if path else '...')})"
+
+    # Compact mode: one-liner with success/fail indicator
+    if detail_level == DetailLevel.COMPACT:
+        if result is None:
+            return header
+        is_error = result.get("isError", False)
+        indicator = "✗" if is_error else "✓"
+        return f"{header} {indicator}"
 
     if not file_content:
-        return text
+        return header
 
-    max_lines = len(lines) if expanded else 10
+    # Standard vs Expanded line counts
+    if detail_level == DetailLevel.EXPANDED:
+        max_lines = len(lines)
+    else:
+        max_lines = 10
+
     display_lines = lines[:max_lines]
     remaining = len(lines) - max_lines
 
+    text = header
     text += f"\n⎿ Wrote {total_lines} line{'s' if total_lines != 1 else ''} to {path or '...'}"
 
     # Format with line numbers
@@ -140,12 +191,32 @@ def format_write(
 
 
 def format_edit(
-    tool_name: str, args: dict, result: dict | None, expanded: bool, theme: Theme | None = None
+    tool_name: str,
+    args: dict,
+    result: dict | None,
+    detail_level: "DetailLevel | bool",
+    theme: Theme | None = None,
 ) -> str:
     """Format edit tool execution with colored diff."""
+    from ..dtypes import DetailLevel
+
+    # Handle backward compat: bool -> DetailLevel
+    if isinstance(detail_level, bool):
+        detail_level = DetailLevel.EXPANDED if detail_level else DetailLevel.STANDARD
+
     path = shorten_path(args.get("file_path") or args.get("path") or "")
 
-    text = f"edit(file_path={repr(path if path else '...')}, old_string=..., new_string=...)"
+    header = f"edit(file_path={repr(path if path else '...')}, ...)"
+
+    # Compact mode: one-liner with success/fail indicator
+    if detail_level == DetailLevel.COMPACT:
+        if result is None:
+            return header
+        is_error = result.get("isError", False)
+        indicator = "✗" if is_error else "✓"
+        return f"{header} {indicator}"
+
+    text = header
 
     if result:
         # Check for diff in details
@@ -218,9 +289,19 @@ def format_edit(
 
 
 def format_web_fetch(
-    tool_name: str, args: dict, result: dict | None, expanded: bool, theme: Theme | None = None
+    tool_name: str,
+    args: dict,
+    result: dict | None,
+    detail_level: "DetailLevel | bool",
+    theme: Theme | None = None,
 ) -> str:
     """Format web_fetch tool execution."""
+    from ..dtypes import DetailLevel
+
+    # Handle backward compat: bool -> DetailLevel
+    if isinstance(detail_level, bool):
+        detail_level = DetailLevel.EXPANDED if detail_level else DetailLevel.STANDARD
+
     url = args.get("url", "")
     _prompt = args.get("prompt", "")  # Available for future display use
 
@@ -235,7 +316,17 @@ def format_web_fetch(
     except Exception:
         display_url = url[:50] + "..." if len(url) > 50 else url
 
-    text = f"web_fetch(url={repr(display_url)})"
+    header = f"web_fetch(url={repr(display_url)})"
+
+    # Compact mode: one-liner with success/fail indicator
+    if detail_level == DetailLevel.COMPACT:
+        if result is None:
+            return header
+        is_error = result.get("isError", False)
+        indicator = "✗" if is_error else "✓"
+        return f"{header} {indicator}"
+
+    text = header
 
     if result:
         output = get_text_output(result).strip()
@@ -248,6 +339,7 @@ def format_web_fetch(
         else:
             # Show truncated response
             lines = output.split("\n") if output else []
+            expanded = detail_level == DetailLevel.EXPANDED
             max_lines = len(lines) if expanded else 8
             display_lines = lines[:max_lines]
             remaining = len(lines) - max_lines

@@ -1,69 +1,24 @@
 # Code Style Guide
 
-## Start Here
+## Working Set
 
-These are my handwritten docs on how I think about code:
+- **[favorites.md](favorites.md)** - Top patterns, error handling decision tree, classes vs functions
+- **[keeping_llm_code_honest.md](keeping_llm_code_honest.md)** - LLM workflow: compression over working code, verification loops
+- **[code_philosophy.md](code_philosophy.md)** - Full philosophy writeup
 
-- **[code_philosophy.md](code_philosophy.md)** - The full philosophy: usage code first, state is the enemy, parse at boundaries, classes vs functions
-- **[keeping_llm_code_honest.md](keeping_llm_code_honest.md)** - How to work with LLMs: compression over working code, friction is feedback, verification loops
+**Casey Muratori:** [semantic_compression](casey_semantic_compression.md), [granularity](casey_granularity.md), [worst_api](casey_worst_api.md)
 
----
+**Other:** [tiger_style](tiger_style.md), [sean_goedecke_system_design](sean_goedecke_system_design.md), [simon_willison_code_review](simon_willison_code_review.md)
 
-## Quick Reference
-
-| Need | Go To |
-|------|-------|
-| General principles & patterns | [core-ai/CHEATSHEET.md](core-ai/CHEATSHEET.md) |
-| Error handling decision | [core-ai/ERROR_HANDLING.md](core-ai/ERROR_HANDLING.md) |
-| Class vs function? | [core-ai/CLASSES_VS_FUNCTIONAL.md](core-ai/CLASSES_VS_FUNCTIONAL.md) |
-| ML experiment configs | [core-ai/experiment_config.md](core-ai/experiment_config.md) |
-| Tensor shape naming | [domain/shape_suffixes_shazeer.md](domain/shape_suffixes_shazeer.md) |
-| Frontend patterns | [frontend/](frontend/) |
-| Async Python | [domain/anyio_advice.md](domain/anyio_advice.md) |
+**Testing/Debugging:** [grugbrain_testing](grugbrain_testing.md), [logging_sucks](logging_sucks.md), [why_not_coverage](why_not_coverage.md)
 
 ---
 
-## Directory Structure
+## Archive
 
-### Core
-- **[core-ai/](core-ai/)** - Synthesized guides (AI-assisted, under review)
-  - FAVORITES.md - Top 10 patterns
-  - CHEATSHEET.md - Consolidated reference
-  - ERROR_HANDLING.md - When to use exceptions vs tuples vs assertions
-  - CLASSES_VS_FUNCTIONAL.md - Decision framework
-  - IMMUTABILITY_AND_FP.md - Frozen dataclasses, pure functions
-  - experiment_config.md - ML config patterns
-  - LOGGING_LEVELS_RECOMMENDATIONS.md - INFO vs DEBUG
-  - CURSOR_AI_SLOP_DRAFT.md - Cleaning AI-generated code
+Everything else is in [archive/](archive/) - raw sources, domain-specific notes, drafts.
 
-### External Sources
-- **[references/](references/)** - Notes on foundational sources
-  - Casey Muratori: semantic compression, granularity, worst API
-  - Tiger Style: safety-critical code rules
-  - Sean Goedecke: system design, API design
-  - CodeAesthetic: abstraction = coupling
-
-- **[review/](review/)** - Code review in the LLM era
-  - ezyang, simon willison, sean goedecke on reviewing AI code
-
-### Domain-Specific
-- **[frontend/](frontend/)** - UI patterns, React, design philosophy
-- **[logging/](logging/)** - Observability, logging dysfunction
-- **[testing/](testing/)** - Testing philosophy, error patterns
-- **[domain/](domain/)** - Async Python, multiprocessing, tensor naming, Midori
-
-### Other
-- **[templates/](templates/)** - Design doc template, commit conventions
-- **[miscellaneous/](miscellaneous/)** - Rough notes, raw transcripts, drafts
-
----
-
-## Key Principles (TL;DR)
-
-1. **Write usage code first** - What do you *want* to write?
-2. **Don't abstract until 2+ examples** - Make it work before reusable
-3. **State is the enemy** - Minimize owners, make it explicit
-4. **Parse at boundaries, assert internally** - Guards at the gates
-5. **Push ifs up, fors down** - Parent has control flow, helpers compute
-6. **Single assignment** - Name each transformation
-7. **Friction is feedback** - If it's hard to write, something's wrong
+Notable:
+- `archive/logging/mcoding_logging.md` - Python logging setup (dictConfig, JSON logs, QueueHandler)
+- `archive/core-ai/ERROR_HANDLING.md` - Full error handling guide with Result types
+- `archive/core-ai/CLASSES_VS_FUNCTIONAL.md` - Extended classes vs functions examples

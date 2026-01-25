@@ -1,0 +1,9 @@
+{"version": 2, "width": 160, "height": 40, "timestamp": 1767644198, "env": {"SHELL": "/bin/bash", "TERM": "tmux-256color"}}
+[0.002029, "o", "\u001b[?2004hroot@d2b2dbba9d1c:/app# "]
+[3.013148, "i", "clear\r"]
+[3.013521, "o", "clear\r\n\u001b[?2004l\r"]
+[3.01476, "o", "\u001b[H\u001b[J\u001b[3J"]
+[3.015084, "o", "\u001b[?2004h"]
+[3.015263, "o", "root@d2b2dbba9d1c:/app# "]
+[9.985484, "i", "ls -la process_data.sh"]
+[9.985751, "o", "ls -la process_data.sh"]

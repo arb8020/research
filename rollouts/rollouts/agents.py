@@ -203,6 +203,11 @@ def inject_turn_warning(max_turns: int, warning_at: int = 2) -> Callable[[AgentS
                 role="user",
                 content=f"⚠️ You have {warning_at} turns remaining. Please complete your task quickly.",
             )
+            # TODO(replace-chains): This nested replace pattern appears ~5 times in codebase:
+            # replace(state, actor=replace(state.actor, trajectory=...))
+            # A helper like `update_trajectory(state, messages)` would reduce repetition.
+            # See also: agents.py:382, runner.py:316, dtypes.py:1144 (triple nested)
+            # Low priority - it's one repeated idiom, not blocking.
             new_trajectory = replace(
                 state.actor.trajectory, messages=state.actor.trajectory.messages + [warning]
             )

@@ -1583,6 +1583,13 @@ class AgentSession:
     """
 
     # Identity
+    # TODO(naming): AgentSession vs AgentState has justified separation (persistence vs runtime)
+    # but some friction:
+    # - parent_id here vs parent_session_id in AgentState (same semantic, different names)
+    # - Lossy conversion: Environment Protocol -> EnvironmentConfig loses config details
+    # - Completions lost on persist (Trajectory.completions not stored, only messages)
+    # - Status mapping in agents.py:1067 has gaps (some StopReasons -> PENDING)
+    # Not blocking, but worth aligning names and documenting the lossy conversions
     session_id: str
     parent_id: str | None = None  # None for root sessions
     branch_point: int | None = None  # message index where branched from parent
@@ -1597,6 +1604,13 @@ class AgentSession:
     message_count: int | None = None  # Set when listing (without loading messages)
 
     # Environment state (opaque, env-specific)
+    # TODO(environment_state): This opaque dict has several issues:
+    # - No schema validation: env changes shape silently break resume
+    # - Missing serialize() in some envs (swe_grep crashes on persist)
+    # - Some envs can't deserialize from cold storage (terminal_bench, handoff)
+    # - Version fields exist (repl) but are ignored during deserialize
+    # - agents.py:714 silently swallows serialize errors (env_state becomes None)
+    # Consider: typed Protocol for env state, or at minimum validate env_kind + version
     environment_state: dict[str, Any] | None = None
 
     # Outcome

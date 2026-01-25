@@ -120,6 +120,11 @@ def wrap_model_with_lora(
 ) -> torch.nn.Module:
     """Wrap model with PEFT LoRA adapters.
 
+    TODO: Remove peft dependency. Hand-roll LoRA in custom nn.Module:
+    - Add lora_A, lora_B params to attention projections
+    - Forward: output = W @ x + (lora_A @ lora_B @ x) * (alpha / rank)
+    - Merge: W_merged = W + lora_A @ lora_B * (alpha / rank)
+
     Args:
         model: HuggingFace model to wrap
         lora_rank: LoRA rank (r parameter)
@@ -160,6 +165,11 @@ def load_hf_model(
     device_map: dict[str, int] | None,
 ) -> torch.nn.Module:
     """Load HuggingFace model with explicit parameters.
+
+    TODO: Remove HF transformers dependency. Replace with:
+    - safetensors.torch.load_file() for weight loading
+    - Custom nn.Module classes (like nmoe) that match HF weight names
+    - See rollouts/tools/functional_extractor/ for architecture reference
 
     Args:
         model_name: HuggingFace model ID (e.g., "Qwen/Qwen2.5-0.5B")

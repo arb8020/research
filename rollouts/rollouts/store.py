@@ -3,6 +3,33 @@
 SessionStore protocol and FileSessionStore implementation.
 """
 
+# TODO(database): Consider migrating to database backend for session storage
+#
+# Motivation:
+# - Full-text search on message content (find sessions by conversation)
+# - Complex queries for training data (filter by model, reward, status, etc.)
+# - Atomic transactions (fixes read-modify-write races in update())
+# - Better multi-process safety (WAL mode vs current filesystem races)
+#
+# Implementation approach:
+# - Create new DatabaseSessionStore implementing SessionStore protocol
+# - Keep FileSessionStore as fallback (human-readable, easy debugging)
+# - Select via config/env var at runtime
+#
+# Open questions:
+# - SQLite vs DuckDB: SQLite better for write-heavy (append_message),
+#   DuckDB better for analytics (aggregate rewards across sessions)
+# - ORM (SQLAlchemy) vs raw SQL: ORM convenient if schema evolves often
+# - Migration tooling: Alembic (heavy, needs ORM) vs yoyo-migrations (lightweight)
+#   vs manual PRAGMA user_version (simple but manual)
+#
+# Schema sketch:
+# - sessions: id, parent_id, branch_point, endpoint_json, environment_json,
+#             status, reward_json, tags_json, created_at, updated_at
+# - messages: id, session_id (FK), role, content_json, provider, model,
+#             timestamp, position (for ordering)
+# - FTS virtual table on message content for search
+
 from __future__ import annotations
 
 import json
@@ -101,6 +128,14 @@ class SessionStore(Protocol):
     async def delete(self, session_id: str) -> tuple[None, str | None]:
         """Delete session and associated data."""
         ...
+
+    # TODO(pending_input): These methods are called in cli.py and runner.py but NOT implemented:
+    # - write_pending_input(session_id, data) - called in runner.py:329 for detached mode
+    # - read_pending_input(session_id) -> data | None - called in cli.py:1303, 1345
+    # - clear_pending_input(session_id) - called in cli.py:1388
+    # Design doc exists: docs/design/tmux_sessions.md
+    # Will crash at runtime if detached mode or --ls/--status hit waiting sessions.
+    # Either implement or remove the call sites.
 
 
 @dataclass(frozen=True)
