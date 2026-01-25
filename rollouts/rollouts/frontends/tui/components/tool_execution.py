@@ -103,8 +103,18 @@ class ToolExecution(Container):
         """Rebuild the display from current state."""
         self.clear()
 
+        # Check if we're in compact mode
+        is_compact = (
+            self._theme
+            and hasattr(self._theme, "tool_display")
+            and self._theme.tool_display == "compact"
+        )
+
         # Determine background function based on state
-        if self._result:
+        # In compact mode, no backgrounds
+        if is_compact:
+            bg_fn = lambda x: x  # noqa: E731
+        elif self._result:
             bg_fn = self._bg_fn_error if self._result.get("isError") else self._bg_fn_success
         else:
             bg_fn = self._bg_fn_pending
@@ -115,23 +125,31 @@ class ToolExecution(Container):
         # Create text component with background and gutter prefix
         # Get gutter and padding from theme if available
         if self._theme:
-            if self._result:
-                gutter = (
-                    self._theme.tool_error_gutter
-                    if self._result.get("isError")
-                    else self._theme.tool_success_gutter
-                )
+            if is_compact:
+                # Compact mode: indent with spaces, no emoji, nested under assistant
+                gutter = "     "  # 5 spaces to align under assistant text
+                padding_x = 2
+                padding_y = 0
             else:
-                gutter = self._theme.tool_success_gutter  # Pending state uses success gutter
-            padding_y = self._theme.tool_padding_y if hasattr(self._theme, "tool_padding_y") else 0
+                if self._result:
+                    gutter = (
+                        self._theme.tool_error_gutter
+                        if self._result.get("isError")
+                        else self._theme.tool_success_gutter
+                    )
+                else:
+                    gutter = self._theme.tool_success_gutter  # Pending state uses success gutter
+                padding_x = 2
+                padding_y = self._theme.tool_padding_y if hasattr(self._theme, "tool_padding_y") else 0
         else:
             # Fallback if no theme provided
             gutter = "☹ " if (self._result and self._result.get("isError")) else "☺ "
+            padding_x = 2
             padding_y = 0
 
         self._content_text = Text(
             formatted_text,
-            padding_x=2,
+            padding_x=padding_x,
             padding_y=padding_y,
             custom_bg_fn=bg_fn,
             gutter_prefix=gutter,
@@ -170,35 +188,17 @@ class ToolExecution(Container):
     def _format_tool_execution(self) -> str:
         """Format tool execution display.
 
-        Priority:
-        1. render_config (new, preferred)
-        2. formatter (legacy)
-        3. default formatting (works for any tool)
+        Uses theme's tool_display mode (compact/standard/expanded) for formatting.
+        Falls back to legacy formatting if no theme available.
         """
-        from ....environments._formatting import format_tool
+        from ....environments._formatting import format_tool_themed
 
-        # Use render_config if provided (preferred)
-        if self._render_config:
-            return format_tool(
-                self._tool_name,
-                self._args,
-                self._result,
-                self._detail_level,
-                self._theme,
-                self._render_config,
-            )
-
-        # Use legacy formatter if provided
-        if self._formatter:
-            # Legacy formatters expect bool, convert detail_level
-            from ....dtypes import DetailLevel
-
-            expanded_bool = self._detail_level >= DetailLevel.EXPANDED
-            return self._formatter(
-                self._tool_name, self._args, self._result, expanded_bool, self._theme
-            )
-
-        # Default formatting - works for any tool with zero config
-        return format_tool(
-            self._tool_name, self._args, self._result, self._detail_level, self._theme
+        # Use theme-based formatting (preferred)
+        # This respects theme.tool_display mode
+        return format_tool_themed(
+            self._tool_name,
+            self._args,
+            self._result,
+            self._theme,
+            self._render_config,
         )

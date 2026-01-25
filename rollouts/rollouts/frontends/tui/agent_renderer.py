@@ -265,7 +265,13 @@ class AgentRenderer:
         if self.current_message:
             # Add spacer after thinking/text before first tool
             self.chat_container.add_child(
-                Spacer(1, debug_label="before-tool", debug_layout=self.debug_layout)
+                Spacer(
+                    1,
+                    debug_label="before-tool",
+                    debug_layout=self.debug_layout,
+                    theme=self.theme,
+                    collapse_in_compact=True,
+                )
             )
             # Message is complete, clear reference
             self.current_message = None
@@ -273,8 +279,15 @@ class AgentRenderer:
             self.current_thinking_index = None
         else:
             # Add spacer between consecutive tool calls
+            # Collapses in compact mode for dense tool list
             self.chat_container.add_child(
-                Spacer(1, debug_label="between-tools", debug_layout=self.debug_layout)
+                Spacer(
+                    1,
+                    debug_label="between-tools",
+                    debug_layout=self.debug_layout,
+                    theme=self.theme,
+                    collapse_in_compact=True,
+                )
             )
 
         # Create tool execution component

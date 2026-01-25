@@ -308,51 +308,40 @@ Only exception: 0, 1, -1 in obvious contexts (like `count = 0`).
 
 ---
 
-## Error Handling: Composable Results
+## Error Handling Decision Tree
 
-> "Don't litter core logic with defensive try/except. Use composable Result types for clean control flow and concurrent error collection."
+```
+Is this a programmer error (bug in my code)?
+  YES → assert (dev only, stripped with -O)
+  NO ↓
 
-**The problem:**
-```python
-# BAD - defensive exception spam obscures logic
-try:
-    result1 = step1(data)
-except Step1Error:
-    return None
+Is this input validation at a system boundary?
+  YES → raise exception (parse, validate, fail fast)
+  NO ↓
 
-try:
-    result2 = step2(result1)
-except Step2Error:
-    return None
+Can the caller meaningfully recover or retry?
+  YES → tuple return (result, error) or Result type
+  NO → raise exception
 ```
 
-**The solution:**
+| Pattern | When | Example |
+|---------|------|---------|
+| `assert` | Internal invariants, programmer bugs | `assert len(items) > 0` |
+| `raise` | Boundary violations, invalid input, can't continue | `raise ConfigNotFoundError(path)` |
+| `(result, err)` | Operational failures, caller decides recovery | `return None, "SSH failed"` |
+
+**Same error, different contexts:**
 ```python
-# GOOD - railway-oriented programming
-def process_pipeline(data) -> Result[Output, str]:
-    return (
-        step1(data)
-        .and_then(step2)
-        .and_then(step3)
-    )  # Auto short-circuit, no try/except
+# Config missing at startup → Exception (fix config and retry)
+if not config_path.exists():
+    raise ConfigNotFoundError(config_path)
+
+# SSH key missing during deployment → Tuple (try alternatives)
+if not key_path.exists():
+    return None, f"SSH key not found: {key_path}"
 ```
 
-**Critical: Assertions vs Production Invariants**
-
-**Never use `assert` for production checks** - Python's `-O` flag strips them!
-
-```python
-# WRONG - stripped with python -O
-assert amount > 0  # DISAPPEARS in production!
-
-# RIGHT - always enforced
-if amount <= 0:
-    raise ValueError(f"Amount must be positive, got {amount}")
-```
-
-**Use `assert` only for:** Development checks, documenting assumptions, catching programmer errors during testing.
-
-**See [ERROR_HANDLING.md](ERROR_HANDLING.md) for:** Railway-oriented programming, concurrent error collection, the diagnostic sink pattern, and when to use exceptions vs Results.
+**Critical:** Never use `assert` for production checks - Python's `-O` flag strips them!
 
 ---
 
@@ -401,12 +390,33 @@ def transform_result(data, format):  # ~20 lines, pure computation
 
 ---
 
-## Related Deep Dives
+## Classes vs Functions
 
-For more on these topics, see:
-- **[ERROR_HANDLING.md](ERROR_HANDLING.md)** - Composable Results, railway-oriented programming, concurrent error collection, assertions vs invariants
-- **[IMMUTABILITY_AND_FP.md](IMMUTABILITY_AND_FP.md)** - Frozen dataclasses, pure functions, and explicit state boundaries
-- **[CLASSES_VS_FUNCTIONAL.md](CLASSES_VS_FUNCTIONAL.md)** - When to use classes vs functions, with real examples from rollouts/miniray
+**The test:**
+1. Does it own a resource (socket, process, file)? → **Class**
+2. Does it need cleanup (`shutdown()`, `close()`)? → **Class**
+3. Is it just data? → **Frozen dataclass**
+4. Is it computation/orchestration? → **Pure function**
+
+| Use Case | Pattern |
+|----------|---------|
+| Config, metrics, data | `@dataclass(frozen=True)` |
+| Resource ownership, lifecycle | Regular class |
+| Math, transforms, batch prep | Pure function |
+| Training loops, orchestration | Pure function calling objects |
+
+**The pattern: Functions orchestrate objects**
+```python
+# Objects encapsulate state
+backend = PyTorchBackend(model, optimizer)  # owns model state
+buffer = DataBuffer(dataset)                 # owns iteration state
+
+# Functions orchestrate (explicit inputs/outputs)
+result, err = run_training(config, backend, buffer)
+loss = compute_loss(logprobs, advantages, beta)
+```
+
+**When in doubt, start with a function. Upgrade to class only when you have legitimate persistent state.**
 
 ---
 

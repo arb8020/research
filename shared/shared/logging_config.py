@@ -155,11 +155,8 @@ def setup_logging(
     assert isinstance(loggers_config, dict), "loggers must be dict"
 
     for logger_name, logger_level in logger_levels.items():
-        loggers_config[logger_name] = {
-            "level": logger_level,
-            "handlers": handler_list,
-            "propagate": False,  # Don't propagate to root to avoid duplicate logs
-        }
+        # mCoding: only set level, no handlers - let messages propagate to root
+        loggers_config[logger_name] = {"level": logger_level}
 
     logging.config.dictConfig(config)
 

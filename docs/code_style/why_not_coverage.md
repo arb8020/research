@@ -18,7 +18,7 @@ To hit 99% diff-coverage we need to cover branches like "what happens when the A
 
 It's even worse if your coverage % is <99. Then you can get code coverage by covering stupid areas. It's like we're trying to create a guardrail on a thin bridge. But the guardrail is made of string and leaning on it makes you fall. Just remove the guardrail and ask people to pay attention. Or come up with a guardrail that actually works, like making the bridge bigger or setting up more structure as you walk the bridge (regression testing, etc).
 
-[PLACEHOLDER: Goodhart's law framing - the moment you make coverage a target, people optimize for the number instead of "is my code actually tested in ways that matter"]
+THIS IS GOODHART'S LAW: THE MOMENT YOU MAKE COVERAGE A TARGET, PEOPLE OPTIMIZE FOR THE NUMBER INSTEAD OF "IS MY CODE ACTUALLY TESTED IN WAYS THAT MATTER." AN AGENT WROTE A MOCK TEST WITH `REPORT_ID` INSTEAD OF `REPORTID` BECAUSE IT ASSUMED THE INPUT SCHEMA. TEST PASSED, GAVE FALSE CONFIDENCE, COVERED SIMPLE CODE THAT DIDN'T NEED TESTING. THE REAL FIX WAS TYPES AT THE BOUNDARY.
 
 ## Why Mocks Are the Problem
 
@@ -28,7 +28,7 @@ My main problem with mocks is that they encode assumptions about external system
 
 Mocks are behavioral claims about external systems that live in a separate file and only run sometimes. They specify assumptions in a parallel universe of test code instead of trusting the actual boundary code you wrote.
 
-[PLACEHOLDER: when mocks ARE okay - expensive to run, checking complex runtime logic, etc. The issue is mocks written to satisfy a coverage number rather than to verify something you care about]
+WHEN MOCKS ARE OKAY: MOCK ONLY WHEN YOU'RE TESTING INTERNAL COMPLEXITY AND THE BOUNDARIES ARE ALREADY COVERED BY REAL INTEGRATION TESTS. THE MOCK IS TESTING THE LOGIC, NOT THE INTEGRATION—BECAUSE INTEGRATION IS ALREADY HANDLED. THE ISSUE IS MOCKS WRITTEN TO SATISFY A COVERAGE NUMBER RATHER THAN TO VERIFY SOMETHING YOU CARE ABOUT.
 
 ## What Actually Works
 
@@ -59,6 +59,8 @@ Integration tests and assertions actually catch/encode boundary behavior in a wa
 
 Integration tests test the boundary logic that you're worried about breaking—the stuff that actually breaks in practice—instead of your clean hotpath.
 
+INTEGRATION AND E2E SERVE THE SAME PURPOSE—BOUNDARY LOGIC AND CALLER UX—BUT E2E IS MORE EXPENSIVE. INTEGRATION GIVES YOU MOST OF THE VALUE AT LOWER COST.
+
 Unit tests make sense for complicated runtime logic, but for API boundary code we are just encoding assumptions that might change and then we have annoying chore tests to update.
 
 ## On Mechanical Enforcement
@@ -71,15 +73,13 @@ Coverage % fails because it pretends the second thing is the first thing—it me
 
 ## The Unsolvable Problem
 
-[PLACEHOLDER: behavior verification is a general software problem that isn't solved anywhere because it's not really solvable. For typical business logic in Python/TS, behavior verification isn't practically solvable, so don't pretend it is.]
+SOME THINGS ARE MECHANICALLY VERIFIABLE: TYPES CHECK, INVARIANTS HOLD, ASSERTIONS PASS. BUT "DOES THIS CODE DO WHAT THE USER WANTED" ISN'T—IT REQUIRES JUDGMENT. COVERAGE % PRETENDS THE SECOND IS THE FIRST. THE NUMBER TELLS YOU CODE RAN, NOT THAT IT DID THE RIGHT THING.
 
 The honest answer is "we can't mechanically verify behavior, so we use judgment and accept some risk." Coverage % hides that uncertainty behind a number.
 
 ## On Scaling
 
-[PLACEHOLDER: "best intentions should be enough" is fuzzy. Sharper version:]
-
-If someone ships something bad, you sit down with them and figure out what went wrong in their/our process. Ex: someone breaks prod, they write a regression test, we figure out how they managed to break prod (branch protection could have helped? maybe insufficient edge case thinking as a programmer, etc?)
+IF SOMEONE SHIPS SOMETHING BAD, YOU SIT DOWN WITH THEM AND FIGURE OUT WHAT WENT WRONG IN THEIR PROCESS. YOU DON'T PREVENT BAD SHIPS WITH COVERAGE %—YOU FIX THE PROCESS THAT LED TO IT. Ex: someone breaks prod, they write a regression test, we figure out how they managed to break prod (branch protection could have helped? maybe insufficient edge case thinking as a programmer, etc?)
 
 I don't know what the right enforcement is at 50 people, and I'm skeptical anyone does. It depends on requirements and team setup. A 7-person team doing security-critical software might be more strict than a 100-person team doing SaaS.
 

@@ -6,6 +6,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Literal
+
+# Tool display modes
+ToolDisplayMode = Literal["compact", "standard", "expanded"]
 
 
 def hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
@@ -89,6 +93,12 @@ class Theme:
 
     # Thinking block text color (gray instead of white)
     thinking_text: str = "#888888"
+
+    # Tool display mode: compact (one-liner), standard (truncated), expanded (full)
+    tool_display: ToolDisplayMode = "standard"
+
+    # Lines shown in standard mode (expanded = unlimited, compact = 0)
+    tool_lines_standard: int = 10
 
     # Helper methods for common operations
     def fg(self, hex_color: str) -> Callable[[str], str]:

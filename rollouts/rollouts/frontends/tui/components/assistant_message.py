@@ -58,7 +58,17 @@ class AssistantMessage(Component):
         self._thinking_content += delta
         if self._thinking_md:
             # Update existing component
-            thinking_text = f"thinking()\n\n{self._thinking_content.strip()}"
+            is_compact = (
+                hasattr(self._theme, "tool_display") and self._theme.tool_display == "compact"
+            )
+            if is_compact:
+                # Compact mode: one-liner, truncated
+                content = self._thinking_content.strip().replace("\n", " ")
+                if len(content) > 60:
+                    content = content[:57] + "..."
+                thinking_text = f"thinking() {content}"
+            else:
+                thinking_text = f"thinking()\n\n{self._thinking_content.strip()}"
             self._thinking_md.set_text(thinking_text)
         else:
             # Create component on first delta
@@ -101,27 +111,43 @@ class AssistantMessage(Component):
         self._text_md = None
         self._thinking_spacer = None
 
+        # Check if we're in compact mode
+        is_compact = (
+            hasattr(self._theme, "tool_display") and self._theme.tool_display == "compact"
+        )
+
         # Note: We don't add a spacer here - the previous component (UserMessage)
         # already has padding_y=1 which provides spacing. Adding a spacer here
         # would overwrite that colored padding during differential re-rendering.
 
         # Render thinking blocks first (if any)
         if self._thinking_content and self._thinking_content.strip():
-            # Format thinking like a tool call with background and gutter prefix
-            thinking_text = f"thinking()\n\n{self._thinking_content.strip()}"
-
-            # Use theme's thinking_bg_fn if available (MinimalTheme), otherwise default
-            if hasattr(self._theme, "thinking_bg_fn"):
-                bg_fn = self._theme.thinking_bg_fn
+            if is_compact:
+                # Compact mode: one-liner, truncated
+                # Take first line or first 60 chars, whichever is shorter
+                content = self._thinking_content.strip().replace("\n", " ")
+                if len(content) > 60:
+                    content = content[:57] + "..."
+                thinking_text = f"thinking() {content}"
+                bg_fn = lambda x: x  # No background in compact mode  # noqa: E731
+                padding_y = 0
             else:
+                # Standard mode: full thinking block with background
+                thinking_text = f"thinking()\n\n{self._thinking_content.strip()}"
+                # Use theme's thinking_bg_fn if available (MinimalTheme), otherwise default
+                if hasattr(self._theme, "thinking_bg_fn"):
+                    bg_fn = self._theme.thinking_bg_fn
+                else:
 
-                def bg_fn(x: str) -> str:
-                    return f"{hex_to_bg(self._theme.tool_pending_bg)}{x}{RESET}"
+                    def bg_fn(x: str) -> str:
+                        return f"{hex_to_bg(self._theme.tool_pending_bg)}{x}{RESET}"
+
+                padding_y = self._theme.thinking_padding_y
 
             self._thinking_md = Markdown(
                 thinking_text,
                 padding_x=2,
-                padding_y=self._theme.thinking_padding_y,
+                padding_y=padding_y,
                 theme=DefaultMarkdownTheme(self._theme),
                 bg_fn=bg_fn,
                 fg_fn=self._theme.thinking_text_fg,

@@ -16,7 +16,6 @@ import trio
 
 from ...agents import Actor, AgentState, run_agent
 from ...dtypes import (
-    DetailLevel,
     Endpoint,
     Environment,
     Message,
@@ -131,8 +130,9 @@ class InteractiveAgentRunner:
         self._tab_cycle_index: int = 0  # Current position in cycle
         self._tab_cycle_prefix: str = ""  # Original prefix before cycling started
 
-        # Global detail level for tool outputs (toggled with +/-)
-        self._detail_level: DetailLevel = DetailLevel.STANDARD
+        # Display mode cycling order (toggled with +/-)
+        # Note: actual mode is stored in self.tui.theme.tool_display
+        self._display_modes: list[str] = ["compact", "standard", "expanded"]
 
     @property
     def trajectory(self) -> Trajectory:
@@ -455,38 +455,55 @@ class InteractiveAgentRunner:
 
         return None
 
-    def _increase_detail_level(self) -> None:
-        """Increase detail level for all tool outputs (+ key)."""
-        if self._detail_level < DetailLevel.EXPANDED:
-            self._detail_level = DetailLevel(self._detail_level + 1)
-            self._update_all_detail_levels()
-            if self.renderer:
-                level_name = self._detail_level.name.lower()
-                self.renderer.add_system_message(f"Detail level: {level_name}")
+    def _increase_display_mode(self) -> None:
+        """Increase tool display mode (+ key): compact → standard → expanded."""
+        if not self.tui or not self.tui.theme:
+            return
 
-    def _decrease_detail_level(self) -> None:
-        """Decrease detail level for all tool outputs (- key)."""
-        if self._detail_level > DetailLevel.COMPACT:
-            self._detail_level = DetailLevel(self._detail_level - 1)
-            self._update_all_detail_levels()
-            if self.renderer:
-                level_name = self._detail_level.name.lower()
-                self.renderer.add_system_message(f"Detail level: {level_name}")
+        current = getattr(self.tui.theme, "tool_display", "standard")
+        try:
+            idx = self._display_modes.index(current)
+        except ValueError:
+            idx = 1  # Default to standard
 
-    def _update_all_detail_levels(self) -> None:
-        """Update detail level on all tool execution components in chat.
+        if idx < len(self._display_modes) - 1:
+            new_mode = self._display_modes[idx + 1]
+            self.tui.theme.tool_display = new_mode  # type: ignore[attr-defined]
+            self._refresh_all_components()
 
-        Currently applies global detail level to all components.
-        Future: Add per-component expansion (scroll to component, expand just that one).
+    def _decrease_display_mode(self) -> None:
+        """Decrease tool display mode (- key): expanded → standard → compact."""
+        if not self.tui or not self.tui.theme:
+            return
+
+        current = getattr(self.tui.theme, "tool_display", "standard")
+        try:
+            idx = self._display_modes.index(current)
+        except ValueError:
+            idx = 1  # Default to standard
+
+        if idx > 0:
+            new_mode = self._display_modes[idx - 1]
+            self.tui.theme.tool_display = new_mode  # type: ignore[attr-defined]
+            self._refresh_all_components()
+
+    def _refresh_all_components(self) -> None:
+        """Refresh all display components to reflect theme changes.
+
+        Triggers rebuild on ToolExecution and AssistantMessage components,
+        which read the updated theme.tool_display mode.
         """
         if not self.renderer or not self.renderer.chat_container:
             return
 
+        from .components.assistant_message import AssistantMessage
         from .components.tool_execution import ToolExecution
 
         for child in self.renderer.chat_container.children:
             if isinstance(child, ToolExecution):
-                child.set_detail_level(self._detail_level)
+                child._rebuild_display()
+            elif isinstance(child, AssistantMessage):
+                child._rebuild_content()
 
         if self.tui:
             self.tui.request_render()
@@ -1077,13 +1094,13 @@ class InteractiveAgentRunner:
                     if input_data in ("+", "=") and self.input_component:
                         # Check if input is empty
                         if not self.input_component.get_text().strip():
-                            self._increase_detail_level()
+                            self._increase_display_mode()
                             continue
 
                     if input_data == "-" and self.input_component:
                         # Check if input is empty
                         if not self.input_component.get_text().strip():
-                            self._decrease_detail_level()
+                            self._decrease_display_mode()
                             continue
 
                     # Check for standalone Escape - interrupt current agent run
