@@ -196,6 +196,7 @@ class PyTorchTrainingBackend:
                 # Debug: check if logits have grad_fn (needed for backprop)
                 if not logits.requires_grad:
                     import logging
+
                     logger = logging.getLogger(__name__)
                     logger.warning(f"logits.requires_grad=False, logits.grad_fn={logits.grad_fn}")
                     # Check trainable params
@@ -663,11 +664,16 @@ class PyTorchTrainingBackend:
         # Only rank 0 saves
         if rank == 0:
             if self.is_lora:
-                # LoRA: merge adapters into base model, then save
+                # LoRA: merge adapters temporarily for inference sync
                 # W' = W + BA (low-rank merge)
+                # IMPORTANT: Use merge_adapter() + unmerge_adapter() to preserve LoRA structure
+                # merge_and_unload() would permanently destroy the LoRA adapters!
                 logger.info(f"Merging LoRA weights for inference sync to {path}")
-                merged_model = self.model.merge_and_unload()
-                await trio.to_thread.run_sync(merged_model.save_pretrained, path)
+                self.model.merge_adapter()  # Merge LoRA into base weights temporarily
+                await trio.to_thread.run_sync(
+                    lambda: self.model.base_model.model.save_pretrained(path)
+                )
+                self.model.unmerge_adapter()  # Restore LoRA structure for continued training
                 logger.info("LoRA merge and save complete")
             else:
                 # Regular model: save directly
