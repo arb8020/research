@@ -15,8 +15,6 @@ dependencies = [
     "zstandard>=0.25.0",
     "python-chess>=1.999",
     "python-dotenv>=1.0.0",
-    # TODO: Remove peft - hand-roll LoRA in custom model (see pytorch_factory.py)
-    "peft>=0.7.0",
 ]
 
 [project.scripts]
@@ -29,11 +27,11 @@ eval = [
 ]
 
 # Training (RL, torch, etc.)
-# Note: peft is in base deps for now (used in LoRA training path)
-# TODO: Remove peft - hand-roll LoRA in custom model
+# TODO: Remove peft - hand-roll LoRA in custom model (see pytorch_factory.py)
 training = [
     "torch>=2.0.0",
     "datasets>=4.4.1",
+    "peft>=0.7.0",
 ]
 
 # Deployment (GPU provisioning + server management)

@@ -67,7 +67,7 @@ def run_remote(
             "apt-get update && apt-get install -y tmux libnuma1 || true",  # Install tmux and libnuma
             "curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.local/bin/env",
             "cd rollouts && ~/.local/bin/uv python install 3.12 && ~/.local/bin/uv sync --python 3.12",
-            "~/.local/bin/uv pip install torch transformers datasets accelerate sglang[all] curl_cffi",
+            "~/.local/bin/uv pip install torch transformers datasets accelerate sglang[all] curl_cffi peft",
         ]
         workspace = bifrost.push("~/.bifrost/workspaces/rollouts-rl", bootstrap_cmd=bootstrap)
         print("Code deployed")
