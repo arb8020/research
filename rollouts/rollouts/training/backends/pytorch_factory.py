@@ -459,6 +459,9 @@ def create_pytorch_backend(
         model = wrap_model_with_lora(model, lora_rank=lora_rank, lora_alpha=lora_alpha)
         is_lora = True
 
+    # Set model to training mode (HuggingFace loads in eval mode by default)
+    model.train()
+
     # Tier 1: Create optimizer
     optimizer = create_adamw_optimizer(
         model,
