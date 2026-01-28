@@ -40,12 +40,17 @@ async def _deploy_and_submit(
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     run_name = f"run_{timestamp}"
 
+    from pytui import Spinner
+
     # Acquire node
+    spinner = Spinner("Provisioning..." if not node_id else "Connecting...")
+    spinner.start()
+
     if node_id:
         bifrost, instance = await acquire_node(node_id=node_id)
-        print(f"Connected to existing instance: {node_id}")
+        spinner.stop(f"Connected to {node_id}")
     else:
-        print(f"Provisioning {gpu_count}x {gpu_type}...")
+        spinner.update(f"Provisioning {gpu_count}x {gpu_type}...")
         bifrost, instance = await acquire_node(
             provision=GPUQuery(
                 type=gpu_type,
@@ -56,14 +61,15 @@ async def _deploy_and_submit(
                 name=f"rollouts/{run_name}",
             )
         )
-        if instance:
-            print(f"Instance: {instance.provider}:{instance.id}")
+        node_str = f"{instance.provider}:{instance.id}" if instance else "?"
+        spinner.stop(f"Provisioned {node_str}")
 
     # Deploy code
     repo_root = Path(__file__).parent.parent.parent
     script_rel_path = Path(script_path).relative_to(repo_root)
 
-    print("Deploying code...")
+    spinner = Spinner("Deploying code...")
+    spinner.start()
     bootstrap = [
         "apt-get update && apt-get install -y tmux libnuma1 || true",
         "curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.local/bin/env",
@@ -71,7 +77,7 @@ async def _deploy_and_submit(
         "~/.local/bin/uv pip install torch transformers datasets accelerate sglang[all] curl_cffi peft",
     ]
     workspace = bifrost.push("~/.bifrost/workspaces/rollouts-rl", bootstrap_cmd=bootstrap)
-    print("Code deployed")
+    spinner.stop("Code deployed")
 
     # Create run output directory
     remote_output_dir = f"{workspace}/rollouts/results/rl/{run_name}"
@@ -84,7 +90,8 @@ async def _deploy_and_submit(
         env_vars["ROLLOUTS_JSON_LOGS"] = "true"
 
     # Submit training job
-    print(f"Starting training run: {run_name}")
+    spinner = Spinner(f"Starting {run_name}...")
+    spinner.start()
     job = bifrost.submit(
         ProcessSpec(
             command="/root/.local/bin/uv",
@@ -96,9 +103,7 @@ async def _deploy_and_submit(
         log_file=training_log,
         workspace=f"{workspace}/rollouts",
     )
-
-    print(f"Training started in tmux session: {job.tmux_session}")
-    print(f"Log file: {job.log_file}")
+    spinner.stop(f"Training started ({job.tmux_session})")
 
     return bifrost, instance, job, run_name, remote_output_dir, workspace
 

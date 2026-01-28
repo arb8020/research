@@ -43,6 +43,9 @@ from .text import (
     wrap_text_with_ansi,
 )
 
+# Spinner
+from .spinner import Spinner
+
 # Theme
 from .theme import (
     DARK_THEME,
@@ -81,6 +84,8 @@ __all__ = [
     "strip_terminal_control_sequences",
     "AnsiCode",
     "AnsiCodeTracker",
+    # Spinner
+    "Spinner",
     # Theme
     "Theme",
     "MinimalTheme",
