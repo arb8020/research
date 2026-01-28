@@ -63,6 +63,7 @@ if __name__ == "__main__":
             node_id=args.node_id,
             use_tui=args.tui,
             tui_debug=args.tui_debug,
+            fire_and_forget=args.provision,
         )
     else:
         results = train(config=config, max_samples=12)

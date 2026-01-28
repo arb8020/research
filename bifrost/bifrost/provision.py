@@ -42,6 +42,8 @@ class GPUQuery:
     cloud_type: str = "secure"
     container_disk_gb: int = 100
     volume_disk_gb: int = 0
+    exposed_ports: tuple[int, ...] = ()
+    enable_http_proxy: bool = True  # False for raw TCP ports (e.g. LogsServer)
 
     # Provider credentials (optional - falls back to env vars)
     credentials: dict[str, str] = field(default_factory=dict)
@@ -158,6 +160,8 @@ def acquire_node(
         cloud_type=provision.cloud_type,
         container_disk_gb=provision.container_disk_gb,
         volume_disk_gb=provision.volume_disk_gb,
+        exposed_ports=list(provision.exposed_ports) if provision.exposed_ports else None,
+        enable_http_proxy=provision.enable_http_proxy,
         sort=lambda x: x.price_per_hour,
         min_cuda_version=provision.min_cuda,
     )
