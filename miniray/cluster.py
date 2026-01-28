@@ -8,11 +8,14 @@ Tiger Style: Explicit cluster operations, clear lifecycle.
 Heinrich Kuttler: Simple distributed workers, no magic.
 """
 
+import logging
 import subprocess
 import time
 from dataclasses import dataclass, field
 
 from miniray.remote_worker import RemoteWorker
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -133,12 +136,12 @@ class Cluster:
 
         if verbose:
             total_workers = sum(node.num_workers for node in self.nodes)
-            print(f"[MiniRay] Launching {total_workers} servers on {len(self.nodes)} nodes")
+            logger.info("Launching %s servers on %s nodes", total_workers, len(self.nodes))
 
         self._launch_worker_servers(work_fn, verbose)
 
         if verbose:
-            print(f"[MiniRay] Launched {len(self.processes)} server processes")
+            logger.info("Launched %s server processes", len(self.processes))
 
         return len(self.processes)
 
@@ -174,12 +177,12 @@ class Cluster:
         assert len(self.processes) > 0, "No servers launched - call launch_servers() first"
 
         if verbose:
-            print("[MiniRay] Connecting to workers...")
+            logger.info("Connecting to workers...")
 
         self._connect_workers(verbose)
 
         if verbose:
-            print(f"[MiniRay] Connected to {len(self.workers)} workers")
+            logger.info("Connected to %s workers", len(self.workers))
 
         return self.workers
 
@@ -219,21 +222,21 @@ class Cluster:
 
         if verbose:
             total_workers = sum(node.num_workers for node in self.nodes)
-            print(f"[MiniRay] Starting cluster: {len(self.nodes)} nodes, {total_workers} workers")
+            logger.info("Starting cluster: %s nodes, %s workers", len(self.nodes), total_workers)
 
         # Phase 1: Launch
         self.launch_servers(work_fn, verbose)
 
         # Phase 2: Wait
         if verbose:
-            print(f"[MiniRay] Waiting {wait_time}s for servers to start...")
+            logger.info("Waiting %ss for servers to start...", wait_time)
         time.sleep(wait_time)
 
         # Phase 3: Connect
         self.connect_to_servers(verbose=verbose)
 
         if verbose:
-            print(f"[MiniRay] Cluster ready: {len(self.workers)} workers")
+            logger.info("Cluster ready: %s workers", len(self.workers))
 
         # Tiger Style: Assert postcondition
         assert len(self.workers) > 0, "No workers connected"
@@ -275,7 +278,7 @@ class Cluster:
                 ssh_cmd.extend(remote_cmd)
 
                 if verbose:
-                    print(f"[MiniRay]   Launching worker on {node.host}:{port}")
+                    logger.info("  Launching worker on %s:%s", node.host, port)
 
                 # Launch via SSH (runs in background)
                 proc = subprocess.Popen(
@@ -296,16 +299,18 @@ class Cluster:
                 port = node.base_port + worker_idx
 
                 if verbose:
-                    print(f"[MiniRay]   Connecting to {node.host}:{port}")
+                    logger.info("  Connecting to %s:%s", node.host, port)
 
                 try:
                     worker = RemoteWorker(node.host, port)
                     worker.connect()  # Explicit connection
                     self.workers.append(worker)
-                except (ConnectionRefusedError, TimeoutError) as e:
-                    print(f"[MiniRay] ERROR: Cannot connect to {node.host}:{port}")
-                    print(f"[MiniRay]        {e}")
-                    print("[MiniRay]        Check that worker_server.py is running")
+                except (ConnectionRefusedError, TimeoutError):
+                    logger.exception(
+                        "Cannot connect to %s:%s - check that worker_server.py is running",
+                        node.host,
+                        port,
+                    )
                     # Continue connecting to other workers
                     continue
 
@@ -321,7 +326,7 @@ class Cluster:
             - Closes RemoteWorker connections
         """
         if verbose:
-            print(f"[MiniRay] Stopping cluster ({len(self.workers)} workers)...")
+            logger.info("Stopping cluster (%s workers)...", len(self.workers))
 
         # Phase 1: Send shutdown command to all workers
         for worker in self.workers:
@@ -330,7 +335,7 @@ class Cluster:
             except Exception as e:
                 # Worker may have already died
                 if verbose:
-                    print(f"[MiniRay]   Warning: Failed to shutdown worker: {e}")
+                    logger.warning("  Failed to shutdown worker: %s", e)
 
         # Phase 2: Close all RemoteWorker connections
         for worker in self.workers:
@@ -349,7 +354,7 @@ class Cluster:
                     proc.kill()
 
         if verbose:
-            print("[MiniRay] Cluster stopped")
+            logger.info("Cluster stopped")
 
         # Clear state
         self.workers.clear()

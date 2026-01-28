@@ -116,7 +116,7 @@ def setup_logging(
                 "class": "logging.StreamHandler",
                 "level": "DEBUG",  # Let loggers control their own levels
                 "formatter": console_formatter,
-                "stream": "ext://sys.stdout",
+                "stream": "ext://sys.stderr",
             }
         }
 

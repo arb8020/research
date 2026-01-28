@@ -8,12 +8,15 @@ Tiger Style: Explicit server lifecycle, clear error messages.
 Heinrich Kuttler: fork + TCP = distributed workers.
 """
 
+import logging
 import os
 import signal
 import socket
 import sys
 from collections.abc import Callable
 from types import FrameType
+
+logger = logging.getLogger(__name__)
 
 
 class WorkerServer:
@@ -79,7 +82,7 @@ class WorkerServer:
         """
 
         def signal_handler(signum: int, frame: FrameType | None) -> None:
-            print(f"\n[WorkerServer] Received signal {signum}, shutting down...")
+            logger.info("Received signal %s, shutting down...", signum)
             self._shutdown()
             sys.exit(0)
 
@@ -88,7 +91,7 @@ class WorkerServer:
 
     def _shutdown(self) -> None:
         """Shut down all workers and close server socket."""
-        print(f"[WorkerServer] Shutting down {len(self.workers)} workers...")
+        logger.info("Shutting down %s workers...", len(self.workers))
 
         # Send SIGTERM to all worker processes
         for pid, _addr in self.workers:
@@ -108,7 +111,7 @@ class WorkerServer:
         if self.listen_sock:
             self.listen_sock.close()
 
-        print("[WorkerServer] Shutdown complete")
+        logger.info("Shutdown complete")
 
     def serve_forever(self) -> None:
         """Start server and spawn workers.
@@ -142,15 +145,15 @@ class WorkerServer:
 
         self.listen_sock.listen(self.num_workers)
 
-        print(f"[WorkerServer] Listening on {self.host}:{self.port}")
-        print(f"[WorkerServer] Ready to spawn {self.num_workers} workers")
+        logger.info("Listening on %s:%s", self.host, self.port)
+        logger.info("Ready to spawn %s workers", self.num_workers)
 
         # Accept connections and spawn workers
         while len(self.workers) < self.num_workers:
             try:
                 # Accept connection
                 client_sock, client_addr = self.listen_sock.accept()
-                print(f"[WorkerServer] Connection from {client_addr}")
+                logger.info("Connection from %s", client_addr)
 
                 # Spawn worker process (Heinrich pattern)
                 pid = os.fork()
@@ -167,17 +170,16 @@ class WorkerServer:
 
                 # Track worker
                 self.workers.append((pid, client_addr))
-                print(
-                    f"[WorkerServer] Spawned worker {pid} "
-                    f"(total: {len(self.workers)}/{self.num_workers})"
+                logger.info(
+                    "Spawned worker %s (total: %s/%s)", pid, len(self.workers), self.num_workers
                 )
 
             except KeyboardInterrupt:
-                print("\n[WorkerServer] Interrupted")
+                logger.info("Interrupted")
                 self._shutdown()
                 break
 
-        print(f"[WorkerServer] All {self.num_workers} workers spawned")
+        logger.info("All %s workers spawned", self.num_workers)
 
         # Wait for all workers to exit
         self._wait_for_workers()
@@ -211,24 +213,21 @@ class WorkerServer:
         handle.w = w
         handle.pid = os.getpid()
 
-        print(f"[Worker {os.getpid()}] Started, serving {client_addr}")
+        logger.info("Worker %s started, serving %s", os.getpid(), client_addr)
 
         try:
             # Run work function
             self.work_fn(handle)
-            print(f"[Worker {os.getpid()}] Completed successfully")
+            logger.info("Worker %s completed successfully", os.getpid())
             os._exit(0)
 
-        except Exception as e:
-            import traceback
-
-            print(f"[Worker {os.getpid()}] Failed: {e}", file=sys.stderr)
-            traceback.print_exc()
+        except Exception:
+            logger.exception("Worker %s failed", os.getpid())
             os._exit(1)
 
     def _wait_for_workers(self) -> None:
         """Wait for all worker processes to exit."""
-        print("[WorkerServer] Waiting for workers to complete...")
+        logger.info("Waiting for workers to complete...")
 
         for pid, _addr in self.workers:
             try:
@@ -236,16 +235,13 @@ class WorkerServer:
                 exit_code = os.waitstatus_to_exitcode(status)
 
                 if exit_code != 0:
-                    print(
-                        f"[WorkerServer] Worker {pid} exited with code {exit_code}",
-                        file=sys.stderr,
-                    )
+                    logger.error("Worker %s exited with code %s", pid, exit_code)
 
             except ChildProcessError:
                 # Already reaped (e.g., by signal handler)
                 pass
 
-        print("[WorkerServer] All workers exited")
+        logger.info("All workers exited")
 
 
 # ============================================================================

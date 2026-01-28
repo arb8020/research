@@ -35,11 +35,14 @@ Usage:
 from __future__ import annotations
 
 import json
+import logging
 import signal
 import socket
 import threading
 from pathlib import Path
 from types import FrameType
+
+logger = logging.getLogger(__name__)
 
 
 def serve_client(sock: socket.socket, watch_dir: Path) -> None:
@@ -124,7 +127,7 @@ def serve_client(sock: socket.socket, watch_dir: Path) -> None:
                 send({"error": f"unknown command: {cmd}"})
 
     except (json.JSONDecodeError, AssertionError, BrokenPipeError, ConnectionResetError) as e:
-        print(f"[LogsServer] Client error: {e}")
+        logger.warning("Client error: %s", e)
     finally:
         r.close()
         w.close()
@@ -164,19 +167,19 @@ class LogsServer:
 
         # Signal handlers
         def on_signal(signum: int, frame: FrameType | None) -> None:
-            print(f"\n[LogsServer] Signal {signum}, shutting down...")
+            logger.info("Signal %s, shutting down...", signum)
             self._shutdown = True
 
         signal.signal(signal.SIGTERM, on_signal)
         signal.signal(signal.SIGINT, on_signal)
 
-        print(f"[LogsServer] Serving {self.watch_dir}")
-        print(f"[LogsServer] Listening on {self.host}:{self.port}")
+        logger.info("Serving %s", self.watch_dir)
+        logger.info("Listening on %s:%s", self.host, self.port)
 
         while not self._shutdown:
             try:
                 client_sock, client_addr = self._sock.accept()
-                print(f"[LogsServer] Client connected: {client_addr}")
+                logger.info("Client connected: %s", client_addr)
                 t = threading.Thread(
                     target=serve_client,
                     args=(client_sock, self.watch_dir),
@@ -187,7 +190,7 @@ class LogsServer:
                 continue  # Check _shutdown flag
 
         self._sock.close()
-        print("[LogsServer] Stopped")
+        logger.info("Stopped")
 
 
 # ============================================================================
