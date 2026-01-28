@@ -1,180 +1,136 @@
-Handoff: Modal Provider + Broker Async Migration
+Handoff: Broker Async Migration (trio)
 
-GOAL: broker supports Modal Sandboxes as a compute provider AND
-  broker's provider interface migrates to async (trio).
-  These are a single task because adding Modal forces touching
-  every provider callsite anyway.
+DONE (committed fc68b3d on main):
+  - broker/broker/providers/modal.py — full Modal provider, async via
+    trio.to_thread.run_sync(). Smoke tested: T4 provision → nvidia-smi
+    → PyTorch CUDA → terminate. All working.
+  - broker/providers/__init__.py — "modal" case added
+  - broker/api.py — "modal" in PROVIDER_MODULES
+  - broker/types.py — modal_token_id + modal_token_secret in ProviderCredentials
+  - broker/pyproject.toml — modal>=0.64.0, trio, httpx, anyio added
+  - docs/code_style/drafts/outside_in.md — draft on outside-in programming
 
-CONTEXT (design decisions already made):
-  - Modal sandboxes don't have SSH. bifrost is SSH-only.
-    Wrapping Modal in a fake SSH layer would be "dishonest about
-    problem shape" (see keeping_llm_code_honest.md). So: Modal
-    provider returns GPUInstances that exec() directly via
-    sandbox.exec(), no bifrost in the loop.
-  - broker is currently 100% sync (requests library, no trio/anyio).
-    Per anyio_advice.md: use trio for personal projects where
-    correctness is paramount. Bridge to asyncio (Modal SDK) via
-    trio.to_thread.run_sync() — Modal's SDK is sync-looking but
-    runs asyncio internally. If trio_asyncio import conflicts
-    surface (as they did in wafer), fall back to subprocess
-    isolation pattern from wafer.
-  - "Don't abstract until you've done something twice." Modal is
-    the second compute backend with a non-SSH exec model (first
-    was... well, there wasn't one). So we DON'T create a unified
-    transport abstraction yet. Modal gets its own codepath.
-    When/if a third non-SSH provider appears, compress then.
+GOAL (this handoff): Migrate broker's existing providers from sync
+  (requests) to async (trio + httpx). Modal provider is already async.
+  The rest of broker is sync. Make it all async.
 
-READ (lowest-level primitives — Modal's action space):
-  Modal Sandbox API:
-    modal.Sandbox.create(app, image, gpu, timeout, volumes, ...) → Sandbox
-    sandbox.exec("bash", "-c", cmd, timeout, workdir) → ContainerProcess
-    process.stdout  — iterable, streams line-by-line in real-time
-    process.stderr  — iterable
-    process.wait()  — blocks until done
-    process.returncode — int
-    sandbox.terminate()
-    modal.Sandbox.from_id(sandbox_id) → reconnect to existing
-    modal.Sandbox.from_name(app_name, name) → lookup by name
-    sandbox.object_id — string identifier
+ASYNC LAYERING (decided):
+  trio (core) <-> anyio (compat layer) <-> asyncio (Modal SDK bridge)
+  - Broker code: trio directly (task groups, cancel scopes, trio.sleep)
+  - Shared/reusable code: anyio (portable)
+  - Modal SDK: trio.to_thread.run_sync() wrapping sync API
+    (Modal's .aio() methods are asyncio coroutines, not trio-compatible.
+    Confirmed: awaiting modal.Sandbox.create.aio() from trio fails with
+    "unrecognized yield message <Future pending>")
+  - httpx: native anyio support, no bridge needed
 
-  File upload: NO direct upload API. Two options:
-    (a) image.add_local_file() at build time (baked into image)
-    (b) sandbox.exec("bash", "-c", "printf '%s' '{b64}' | base64 -d > /path")
-    Wafer uses (b) for runtime file sync: shell_app.py:884-895
-
-  GPU types (plain strings):
-    "T4" (~$0.59/hr), "L4" (~$0.80/hr), "A10G" (~$1.10/hr),
-    "L40S" (~$1.95/hr), "A100-40GB" (~$2.10/hr), "A100-80GB" (~$2.50/hr),
-    "H100" (~$3.95/hr), "H200" (~$4.54/hr), "B200" (~$6.25/hr)
-  Multi-GPU: "H100:4" or modal.gpu.A100(count=4). Up to 8 GPUs.
-  Max sandbox lifetime: 24 hours. Also supports idle_timeout.
-  No search/pricing API — hardcode known GPU types.
-
-  Auth: reads ~/.modal.toml automatically. Already configured
-    (arb8020 account, active=true). No env vars needed unless
-    overriding. ProviderCredentials doesn't need a modal field
-    for basic usage — but add modal_token_id + modal_token_secret
-    fields for explicit credential passing.
-
-READ (existing broker code to modify):
-  ~/research/broker/broker/providers/__init__.py — provider registry
-  ~/research/broker/broker/providers/runpod.py — template for new provider
-  ~/research/broker/broker/types.py — GPUInstance, ProviderModule protocol
-  ~/research/broker/broker/api.py — PROVIDER_MODULES dict, search/create flows
-  ~/research/broker/broker/ssh_clients_compat.py — SSH exec wrappers
-
-READ (reference implementations):
-  ~/research/dev/jax_basic/run_integration_test_modal.py — clean Sandbox usage
-  ~/wafer/services/wafer-api/src/modal/shell_app.py:606-730 — Named Sandbox
-  ~/wafer/packages/wafer-core/wafer_core/utils/modal_execution/modal_execution.py
-    — subprocess isolation pattern (trio_asyncio conflict workaround)
+READ:
+  ~/research/broker/broker/providers/runpod.py — template sync provider
+  ~/research/broker/broker/api.py — PROVIDER_MODULES, search/create flows
+  ~/research/broker/broker/types.py — ProviderModule protocol (currently sync)
+  ~/research/shared/shared/retry.py — has async_retry() using trio.sleep()
   ~/research/docs/code_style/archive/domain/anyio_advice.md — async style guide
 
-READ (usage code — what callers want to write):
-  ~/research/rollouts/examples/sft/base_config.py — SFT remote execution
-  ~/research/rollouts/examples/rl/base_config.py — RL remote execution
-  ~/research/examples/provision_and_serve.py — inference serving
-
-CHANGE 1: Modal provider (new file)
-  ~/research/broker/broker/providers/modal.py
-  Implements ProviderModule protocol:
-    async def provision_instance(request, ssh_startup_script, api_key) → GPUInstance | None
-      - modal.Sandbox.create(app, image, gpu=request.gpu_type, timeout=86400)
-      - Store sandbox.object_id as instance ID
-      - Return GPUInstance with provider="modal", no public_ip/ssh_port
-    async def get_instance_details(instance_id, api_key) → GPUInstance | None
-      - modal.Sandbox.from_id(instance_id), check if still alive
-    async def list_instances(api_key) → list[GPUInstance]
-      - May not be possible (Modal has no list-my-sandboxes API)
-      - Return empty list or use modal.Sandbox.list() if it exists
-    async def terminate_instance(instance_id, api_key) → bool
-      - modal.Sandbox.from_id(instance_id).terminate()
+CHANGE 1: ProviderModule protocol → async
+  ~/research/broker/broker/types.py lines 493-524
+  All methods become async:
+    async def provision_instance(...) → GPUInstance | None
+    async def get_instance_details(...) → GPUInstance | None
+    async def list_instances(...) → list[GPUInstance]
+    async def terminate_instance(...) → bool
     async def search_gpu_offers(...) → list[GPUOffer]
-      - Return hardcoded offers for known GPU types + pricing
-      - No availability check (Modal handles this at create time)
 
-  GPUInstance.exec() override for Modal:
-    Option: ModalGPUInstance subclass that overrides exec()/aexec()
-    to call sandbox.exec() instead of SSH. Store sandbox reference
-    in raw_data or as a dedicated field.
+CHANGE 2: Migrate each provider (6 total)
+  For each of runpod, lambdalabs, vast, primeintellect, digitalocean,
+  digitalocean_amd:
+    - Replace `import requests` with `import httpx`
+    - All public functions → async def
+    - requests.get/post/put/delete → async with httpx.AsyncClient() as client:
+        response = await client.get/post/put/delete(...)
+    - Replace shared/retry.py's retry() with async_retry() where used
+    - response.json() stays the same (httpx has .json() too)
+    - response.status_code → response.status_code (same)
+    - response.raise_for_status() → response.raise_for_status() (same)
 
-  All Modal SDK calls wrapped in trio.to_thread.run_sync() since
-  they're blocking. If trio_asyncio assertion errors appear, switch
-  to wafer's subprocess isolation pattern.
+  Start with runpod.py (most used, good template). Then do the rest.
 
-CHANGE 2: Async migration of existing providers
-  All provider functions become async def.
-  Replace `requests` with `httpx` (async client).
-  Add trio, httpx to broker/pyproject.toml dependencies.
-  Update ProviderModule protocol to async.
-  Update api.py dispatch to await provider calls.
+CHANGE 3: api.py → async
+  ~/research/broker/broker/api.py
+  - search() → async def search()
+  - create() → async def create()
+  - terminate_instance() → async def terminate_instance()
+  - get_instance() → async def get_instance()
+  - list_instances() → async def list_instances()
+  - _try_provision_from_offer() → async def
+  - All provider_module.X() calls become await provider_module.X()
 
-  Migration per provider (runpod, lambdalabs, vast, primeintellect,
-  digitalocean, digitalocean_amd):
-    - import httpx instead of requests
-    - async def for all public functions
-    - httpx.AsyncClient() for HTTP calls
-    - Keep retry decorator (update shared/retry.py if needed for async)
+CHANGE 4: GPUInstance methods → async
+  types.py GPUInstance:
+  - exec() → keep sync (for backward compat) but add aexec() that
+    works for both SSH and Modal
+  - terminate() → consider async version
+  - wait_until_ready() → async with trio.sleep instead of time.sleep
+  - wait_until_ssh_ready() → async
 
-CHANGE 3: Registry + types updates
-  ~/research/broker/broker/providers/__init__.py — add "modal" case
-  ~/research/broker/broker/types.py:
-    - Add modal_token_id, modal_token_secret to ProviderCredentials
-    - Update ProviderModule protocol methods to async
-    - Consider ModalGPUInstance subclass for exec() override
-  ~/research/broker/broker/api.py:
-    - Add "modal" to PROVIDER_MODULES
-    - Make search/create/terminate async
-
-CHANGE 4: Dependencies
-  ~/research/broker/pyproject.toml:
-    - Add modal>=0.64.0
-    - Add trio
-    - Add httpx
-    - Add anyio (comes with httpx but be explicit)
+CHANGE 5: Client/CLI layer
+  - broker/client.py — GPUClient methods → async
+  - broker/cli.py — typer commands may need trio.run() wrappers
+    (typer is sync, so CLI entrypoints do trio.run(async_main))
 
 VERIFY:
-  # Basic import
-  python -c "from broker.providers.modal import provision_instance; print('ok')"
-
-  # Smoke test: create sandbox, exec nvidia-smi, terminate
-  python -c "
+  # Modal still works (no regression)
+  uv run python << 'EOF'
   import trio
-  from broker.providers import modal as modal_provider
+  from broker.providers.modal import provision_instance, terminate_instance, exec_on_sandbox
   from broker.types import ProvisionRequest
-
   async def main():
-      request = ProvisionRequest(gpu_type='T4', gpu_count=1, name='broker-test')
-      instance = await modal_provider.provision_instance(request)
+      request = ProvisionRequest(gpu_type="T4", gpu_count=1, name="verify")
+      instance = await provision_instance(request)
       assert instance is not None
-      result = instance.exec('nvidia-smi')
-      print(result.stdout)
+      result = await exec_on_sandbox(instance.id, "nvidia-smi")
       assert result.success
-      await modal_provider.terminate_instance(instance.id)
-      print('PASS')
-
+      await terminate_instance(instance.id)
+      print("Modal PASS")
   trio.run(main)
-  "
+  EOF
 
-  # Verify existing providers still work after async migration
-  python -c "
+  # RunPod search works async
+  uv run python << 'EOF'
   import trio
   from broker.providers import runpod
   async def main():
-      offers = await runpod.search_gpu_offers(gpu_count=1, api_key='...')
-      print(f'{len(offers)} offers')
+      offers = await runpod.search_gpu_offers(gpu_count=1, api_key="...")
+      print(f"{len(offers)} RunPod offers")
   trio.run(main)
-  "
+  EOF
+
+  # Full create flow works async
+  uv run python << 'EOF'
+  import trio
+  from broker.api import search
+  async def main():
+      offers = await search(provider="modal")
+      for o in offers:
+          print(f"{o.gpu_type} ${o.price_per_hour}/hr")
+  trio.run(main)
+  EOF
 
 KEY RISKS:
-  1. trio_asyncio conflict: Modal SDK uses asyncio internally.
-     If trio is the event loop and trio_asyncio gets imported,
-     Modal crashes with AssertionError. Mitigation: don't depend
-     on trio_asyncio. If conflict appears, use subprocess isolation.
-  2. Async migration scope: 6 providers + api.py + types.py + tests.
-     May want to do providers incrementally (Modal first as async,
-     others one-by-one) rather than big-bang.
-  3. shared/retry.py may need async variant for httpx calls.
+  1. shared/retry.py async_retry() uses trio.sleep() — good, but check
+     all retry callsites in providers to make sure they switch.
+  2. broker/cli.py uses typer (sync). Entrypoints need trio.run() wrappers.
+     typer doesn't natively support async commands.
+  3. Tests (pytest-asyncio) may need pytest-trio instead.
+  4. GPUInstance.wait_until_ready() uses time.sleep(15) in a loop —
+     must become await trio.sleep(15) in async version.
 
-KEYWORDS: modal.Sandbox, sandbox.exec, trio.to_thread.run_sync,
-  ProviderModule, PROVIDER_MODULES, httpx.AsyncClient, provision_instance
+ORDER:
+  1. ProviderModule protocol → async (types.py)
+  2. runpod.py → async (template)
+  3. Remaining providers one by one
+  4. api.py → async
+  5. client.py / cli.py → async wrappers
+  6. Run all verify scripts
+
+KEYWORDS: trio, httpx, async_retry, ProviderModule, PROVIDER_MODULES,
+  httpx.AsyncClient, trio.run, trio.sleep
