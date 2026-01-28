@@ -28,6 +28,7 @@ from broker.types import GPUOffer, InstanceStatus
 # ---------------------------------------------------------------------------
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "../../.env"))
+load_dotenv(os.path.expanduser("~/wafer/.env"))
 
 
 def _get_credentials() -> dict[str, str]:
@@ -41,8 +42,16 @@ def _get_credentials() -> dict[str, str]:
         "digitalocean": "DIGITALOCEAN_API_KEY",
         "digitalocean_amd": "AMD_DIGITALOCEAN_API_KEY",
     }
+    # Override env vars: prefer funded keys (e.g. wafer RunPod key)
+    overrides = {
+        "runpod": "WAFER_RUNPOD_API_KEY",
+    }
     for provider, env_var in key_map.items():
-        val = os.getenv(env_var)
+        # Check override first, then default
+        override = overrides.get(provider)
+        val = os.getenv(override) if override else None
+        if not val:
+            val = os.getenv(env_var)
         if val:
             creds[provider] = val
     return creds
