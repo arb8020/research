@@ -10,7 +10,6 @@ Two modes:
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -18,20 +17,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from bifrost import BifrostClient, JobInfo
     from broker import ClientGPUInstance
-
-ACTIVE_RUNS_PATH = Path("results/rl/.active_runs.json")
-
-
-def _save_active_run(run_info: dict) -> None:
-    """Append a run entry to .active_runs.json."""
-    ACTIVE_RUNS_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-    runs: list[dict] = []
-    if ACTIVE_RUNS_PATH.exists():
-        runs = json.loads(ACTIVE_RUNS_PATH.read_text())
-
-    runs.append(run_info)
-    ACTIVE_RUNS_PATH.write_text(json.dumps(runs, indent=2) + "\n")
 
 
 async def _deploy_and_submit(
@@ -68,6 +53,7 @@ async def _deploy_and_submit(
                 min_cuda="12.8",
                 exposed_ports=exposed_ports,
                 enable_http_proxy=not exposed_ports,  # raw TCP for LogsServer
+                name=f"rollouts/{run_name}",
             )
         )
         if instance:
@@ -323,41 +309,19 @@ async def run_remote(
         workspace=workspace,
     )
 
-    # Resolve public host:port for LogsServer.
-    # RunPod maps container ports to random public ports (e.g. 9100 → 31066).
-    # The monitor needs the public mapping, not the container port.
-    logs_host = instance.public_ip
-    assert logs_host, f"Instance has no public IP — cannot serve logs: {node_id_str}"
+    # Register job in ~/.rollouts/jobs.json
+    from rollouts.jobs import make_job
 
-    public_logs_port = logs_port  # default: assume container port = public port
-    raw = instance.raw_data or {}
-    runtime = raw.get("runtime") or {}
-    runtime_ports = runtime.get("ports") or []
-    for p in runtime_ports:
-        if p.get("privatePort") == logs_port and p.get("isIpPublic"):
-            logs_host = p["ip"]
-            public_logs_port = p["publicPort"]
-            break
-
-    print(f"LogsServer: {logs_host}:{public_logs_port}")
-
-    # Save run metadata for rollouts monitor --attach
-    run_info = {
-        "run_id": run_name,
-        "node_id": node_id_str,
-        "logs_host": logs_host,
-        "logs_port": public_logs_port,
-        "remote_output_dir": remote_output_dir,
-        "tmux_session": job.tmux_session,
-        "log_file": job.log_file,
-        "started_at": datetime.now(timezone.utc).isoformat(),
-    }
-    _save_active_run(run_info)
+    make_job(
+        job_id=run_name,
+        provider=instance.provider,
+        node_id=instance.id,
+        script=script_path,
+    )
 
     print("\nTraining submitted (fire-and-forget).")
     print(f"  Run:       {run_name}")
     print(f"  Node:      {node_id_str}")
-    print(f"  Logs:      {logs_host}:{public_logs_port}")
     print(f"  Remote:    {remote_output_dir}")
     print("\nAttach later:")
     print(f"  rollouts monitor --attach {run_name}")

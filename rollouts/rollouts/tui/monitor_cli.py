@@ -6,12 +6,13 @@ Usage:
     rollouts monitor --latest results/sft/           # Most recent in a custom dir
     rollouts monitor --attach run_20250127-143052    # Attach to remote run by ID
     rollouts monitor --attach --latest               # Attach to most recent active run
+    rollouts monitor --runs                          # List jobs from ~/.rollouts/jobs.json
+    rollouts monitor --runs --probe                  # + check broker liveness & LogsServer
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import socket
 import sys
@@ -19,7 +20,77 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
-ACTIVE_RUNS_PATH = Path("results/rl/.active_runs.json")
+
+def _broker_credentials() -> dict[str, str]:
+    """Load broker credentials from environment."""
+    credentials: dict[str, str] = {}
+    for env_key, provider in [
+        ("RUNPOD_API_KEY", "runpod"),
+        ("WAFER_RUNPOD_API_KEY", "runpod"),
+    ]:
+        val = os.environ.get(env_key)
+        if val and provider not in credentials:
+            credentials[provider] = val
+    return credentials
+
+
+def _get_instance(provider: str, node_id: str) -> object | None:
+    """Query broker for a single instance. Returns ClientGPUInstance or None."""
+    import trio
+
+    from broker.client import GPUClient
+
+    credentials = _broker_credentials()
+    assert credentials, "No broker credentials found. Set RUNPOD_API_KEY."
+
+    async def _fetch() -> object | None:
+        client = GPUClient(credentials=credentials)
+        return await client.get_instance(node_id, provider)
+
+    return trio.run(_fetch)
+
+
+def _get_live_instance_ids() -> set[str]:
+    """Query broker for all live instance IDs."""
+    import trio
+
+    from broker.client import GPUClient
+
+    credentials = _broker_credentials()
+    if not credentials:
+        return set()
+
+    async def _fetch() -> set[str]:
+        client = GPUClient(credentials=credentials)
+        instances = await client.list_instances()
+        return {inst.id for inst in instances}
+
+    try:
+        return trio.run(_fetch)
+    except Exception as e:
+        print(f"Warning: could not query broker: {e}", file=sys.stderr)
+        return set()
+
+
+def _resolve_logs_endpoint(instance: object) -> tuple[str | None, int | None]:
+    """Extract LogsServer host:port from instance runtime port mapping.
+
+    RunPod maps container ports to random public ports.
+    Returns (host, public_port) or (None, None) if not found.
+    """
+    raw = instance.raw_data or {}
+    runtime = raw.get("runtime") or {}
+    runtime_ports = runtime.get("ports") or []
+
+    for p in runtime_ports:
+        if p.get("privatePort") == 9100 and p.get("isIpPublic"):
+            return p["ip"], p["publicPort"]
+
+    # Fallback: try public_ip with container port
+    if instance.public_ip:
+        return instance.public_ip, 9100
+
+    return None, None
 
 
 def find_latest_run(base_dir: str = "results") -> Path | None:
@@ -50,26 +121,46 @@ def find_latest_run(base_dir: str = "results") -> Path | None:
     return candidates[0]
 
 
-def _load_active_runs() -> list[dict]:
-    """Load .active_runs.json, return [] if missing."""
-    if not ACTIVE_RUNS_PATH.exists():
-        return []
-    return json.loads(ACTIVE_RUNS_PATH.read_text())
+def _resolve_job_connection(job_id: str | None) -> dict:
+    """Resolve a job to its LogsServer connection info.
 
+    Reads job→node mapping from ~/.rollouts/jobs.json,
+    then queries broker for live port data.
 
-def _find_active_run(run_id: str | None) -> dict:
-    """Find an active run by run_id, or the latest one."""
-    runs = _load_active_runs()
-    assert runs, f"No active runs found in {ACTIVE_RUNS_PATH}"
+    Returns dict with: run_id, node_id, logs_host, logs_port.
+    """
+    from dotenv import load_dotenv
 
-    if run_id is None:
-        return runs[-1]
+    from rollouts.jobs import get_job, get_latest_job
 
-    for run in reversed(runs):
-        if run["run_id"] == run_id:
-            return run
+    load_dotenv()
 
-    raise AssertionError(f"No active run found with id {run_id!r}")
+    job = get_latest_job() if job_id is None else get_job(job_id)
+
+    # For now, connect to the first node (single-node jobs).
+    # Multi-node: would pick the rank-0 / training node.
+    assert job.nodes, f"Job {job.job_id} has no nodes"
+    node = job.nodes[0]
+
+    # Query broker for live instance data (ports, IPs)
+    instance = _get_instance(node.provider, node.node_id)
+    node_id_str = f"{node.provider}:{node.node_id}"
+
+    if instance is None:
+        return {
+            "run_id": job.job_id,
+            "node_id": node_id_str,
+            "logs_host": None,
+            "logs_port": None,
+        }
+
+    logs_host, logs_port = _resolve_logs_endpoint(instance)
+    return {
+        "run_id": job.job_id,
+        "node_id": node_id_str,
+        "logs_host": logs_host,
+        "logs_port": logs_port,
+    }
 
 
 def _open_ssh_tunnel(
@@ -89,18 +180,16 @@ def _open_ssh_tunnel(
 
     provider, instance_id = node_id.split(":", 1)
 
-    # Load API key
     from dotenv import load_dotenv
 
     load_dotenv()
 
-    credentials = {}
-    api_key = os.environ.get("RUNPOD_API_KEY") or os.environ.get("WAFER_RUNPOD_API_KEY")
-    if api_key and provider == "runpod":
-        credentials["runpod"] = api_key
-
+    credentials = _broker_credentials()
     client = GPUClient(credentials=credentials)
-    instance = client.get_instance(instance_id, provider)
+
+    import trio
+
+    instance = trio.run(client.get_instance, instance_id, provider)
     assert instance is not None, f"Instance not found: {node_id}"
 
     ssh_key = client.get_ssh_key_path(provider) or os.path.expanduser("~/.ssh/id_ed25519")
@@ -176,16 +265,17 @@ def _run_attached(run_id: str | None) -> int:
     """Attach to a remote training run via LogsServer.
 
     Two transport modes:
-      - Direct TCP: If logs_host + logs_port in run metadata (exposed_ports).
-      - SSH tunnel: If only node_id (legacy instances without exposed_ports).
+      - Direct TCP: If logs_host + logs_port resolved from broker runtime ports.
+      - SSH tunnel: If only node_id (instances without exposed_ports).
         Opens paramiko tunnel to remote localhost:9100.
 
     Flow:
-    1. Resolve run metadata from .active_runs.json
-    2. Connect to LogsServer (direct or via SSH tunnel)
-    3. Start background sync thread (tail commands every 2s)
-    4. Launch monitor TUI watching the local sync dir
-    5. On quit: final sync, optionally terminate instance
+    1. Resolve job→node from ~/.rollouts/jobs.json
+    2. Query broker for live port data
+    3. Connect to LogsServer (direct or via SSH tunnel)
+    4. Start background sync thread (tail commands every 2s)
+    5. Launch monitor TUI watching the local sync dir
+    6. On quit: final sync, optionally terminate instance
     """
     import time
 
@@ -193,7 +283,7 @@ def _run_attached(run_id: str | None) -> int:
 
     from .rlmon import make_app
 
-    run = _find_active_run(run_id)
+    run = _resolve_job_connection(run_id)
     resolved_run_id = run["run_id"]
     logs_host = run.get("logs_host")
     logs_port = run.get("logs_port")
@@ -206,7 +296,7 @@ def _run_attached(run_id: str | None) -> int:
         print(f"Attaching to run: {resolved_run_id}")
         print(f"LogsServer: {logs_host}:{logs_port} (direct TCP)")
     elif node_id:
-        # SSH tunnel — legacy instance without exposed_ports
+        # SSH tunnel — instance without exposed_ports
         print(f"Attaching to run: {resolved_run_id}")
         print(f"Opening SSH tunnel to {node_id}...")
         local_port, tunnel_cleanup = _open_ssh_tunnel(node_id, remote_port=9100)
@@ -214,7 +304,7 @@ def _run_attached(run_id: str | None) -> int:
         logs_port = local_port
         print(f"LogsServer: localhost:{logs_port} (SSH tunnel)")
     else:
-        print(f"Run {resolved_run_id} has no logs_host and no node_id — cannot attach")
+        print(f"Run {resolved_run_id} has no live instance — cannot attach")
         return 1
 
     worker = RemoteWorker(logs_host, logs_port)
@@ -302,19 +392,25 @@ def _run_attached(run_id: str | None) -> int:
     if tunnel_cleanup is not None:
         tunnel_cleanup()
 
-    # Optional: terminate instance (requires bifrost + API key)
+    # Optional: terminate instance
     if node_id:
         answer = input(f"\nTerminate instance {node_id}? [y/n] ").strip().lower()
         if answer == "y":
-            from dotenv import load_dotenv
+            import trio
 
-            from bifrost import acquire_node
+            from broker.client import GPUClient
 
-            load_dotenv()
-            bifrost, instance = acquire_node(node_id=node_id)
-            assert instance is not None, f"Instance not found: {node_id}"
+            credentials = _broker_credentials()
+            provider, instance_id = node_id.split(":", 1)
+
+            async def _terminate() -> None:
+                client = GPUClient(credentials=credentials)
+                inst = await client.get_instance(instance_id, provider)
+                assert inst is not None, f"Instance not found: {node_id}"
+                await inst.terminate()
+
             print(f"Terminating {node_id}...")
-            instance.terminate()
+            trio.run(_terminate)
             print("Terminated.")
         else:
             print(f"Instance kept alive: {node_id}")
@@ -347,56 +443,83 @@ def monitor_main(argv: list[str] | None = None) -> int:
         help="Attach to remote run by ID (e.g. run_20250127-143052). No value = latest.",
     )
     parser.add_argument(
-        "--list",
+        "--runs",
         action="store_true",
-        help="List active remote runs from .active_runs.json",
+        help="List jobs from ~/.rollouts/jobs.json",
     )
     parser.add_argument(
         "--probe",
         action="store_true",
-        help="With --list, probe LogsServer reachability (adds STATUS column)",
+        help="With --runs, check broker liveness and probe LogsServer",
     )
     args = parser.parse_args(argv)
 
     # ── List mode ──
-    if args.list:
-        if not ACTIVE_RUNS_PATH.exists():
-            print("No active runs file found.", file=sys.stderr)
-            return 1
-        runs = json.loads(ACTIVE_RUNS_PATH.read_text())
-        if not runs:
-            print("No active runs.")
+    if args.runs:
+        from dotenv import load_dotenv
+
+        from rollouts.jobs import list_jobs, prune_jobs
+
+        load_dotenv()
+
+        jobs = list_jobs()
+        if not jobs:
+            print("No jobs found. Run a training job first.")
             return 0
 
+        # When probing, query broker for live instances and prune dead jobs
+        live_ids: set[str] | None = None
         if args.probe:
-            print(f"{'RUN ID':<30} {'NODE':<25} {'LOGS':<25} {'STATUS':<10} {'STARTED'}")
-            print("-" * 115)
-        else:
-            print(f"{'RUN ID':<30} {'NODE':<25} {'LOGS':<25} {'STARTED'}")
-            print("-" * 100)
+            live_ids = _get_live_instance_ids()
 
-        for run in runs:
-            run_id = run.get("run_id", "?")
-            node_id = run.get("node_id", "?")
-            logs_host = run.get("logs_host")
-            logs_port = run.get("logs_port")
-            logs = f"{logs_host or '?'}:{logs_port or '?'}"
-            started = run.get("started_at", "?")[:19] if run.get("started_at") else "?"
+        header = f"{'JOB ID':<30} {'NODE':<25} {'SCRIPT':<35} {'STARTED':<20}"
+        if args.probe:
+            header += f" {'STATUS':<10}"
+        print(header)
+        print("-" * len(header))
 
-            if args.probe:
-                status = "?"
-                if logs_host and logs_port:
-                    try:
-                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                        sock.settimeout(2.0)
-                        sock.connect((logs_host, int(logs_port)))
-                        sock.close()
-                        status = "✓ up"
-                    except (OSError, ValueError):
-                        status = "✗ down"
-                print(f"{run_id:<30} {node_id:<25} {logs:<25} {status:<10} {started}")
-            else:
-                print(f"{run_id:<30} {node_id:<25} {logs:<25} {started}")
+        for job in jobs:
+            node_str = ", ".join(job.node_ids) if job.nodes else "?"
+            script = job.script
+            # Truncate long paths
+            if len(script) > 33:
+                script = "..." + script[-30:]
+            started = job.started_at[:19] if len(job.started_at) >= 19 else job.started_at
+
+            row = f"{job.job_id:<30} {node_str:<25} {script:<35} {started:<20}"
+
+            if args.probe and live_ids is not None:
+                # Check if any node is still alive
+                has_live = any(n.node_id in live_ids for n in job.nodes)
+                if not has_live:
+                    continue  # skip dead jobs (will be pruned below)
+
+                # Probe LogsServer on first node
+                status = "alive"
+                node = job.nodes[0]
+                try:
+                    inst = _get_instance(node.provider, node.node_id)
+                    if inst:
+                        logs_host, logs_port = _resolve_logs_endpoint(inst)
+                        if logs_host and logs_port:
+                            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                            sock.settimeout(2.0)
+                            sock.connect((logs_host, int(logs_port)))
+                            sock.close()
+                            status = "logs ok"
+                except (OSError, ValueError, Exception):
+                    status = "no logs"
+
+                row += f" {status:<10}"
+
+            print(row)
+
+        # Prune dead jobs
+        if args.probe and live_ids is not None:
+            pruned = prune_jobs(live_ids)
+            if pruned > 0:
+                print(f"\nPruned {pruned} dead job(s)")
+
         return 0
 
     # ── Attach mode ──

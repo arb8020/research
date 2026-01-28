@@ -44,6 +44,7 @@ class GPUQuery:
     volume_disk_gb: int = 0
     exposed_ports: tuple[int, ...] = ()
     enable_http_proxy: bool = True  # False for raw TCP ports (e.g. LogsServer)
+    name: str | None = None  # Instance name (e.g. "rollouts/run_20250127-143052")
 
     # Provider credentials (optional - falls back to env vars)
     credentials: dict[str, str] = field(default_factory=dict)
@@ -156,6 +157,7 @@ async def acquire_node(
     print(f"Provisioning new instance ({provision.count}x {provision.type})...")
     instance = await broker.create(
         broker.gpu_type.contains(provision.type),
+        name=provision.name,
         gpu_count=provision.count,
         cloud_type=provision.cloud_type,
         container_disk_gb=provision.container_disk_gb,
