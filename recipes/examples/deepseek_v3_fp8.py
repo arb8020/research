@@ -4,7 +4,14 @@ MoE model with FP8 quantization for memory efficiency.
 Requires 8x H100 for the full model.
 """
 
-from recipes.schema import ServingRecipe, ModelConfig, EngineConfig, TargetConfig, EnvConfig
+from recipes.schema import (
+    DepsConfig,
+    EngineConfig,
+    EnvConfig,
+    ModelConfig,
+    ServingRecipe,
+    TargetConfig,
+)
 
 recipe = ServingRecipe(
     name="deepseek-v3-fp8-h100x8",
@@ -27,6 +34,14 @@ recipe = ServingRecipe(
     target=TargetConfig(
         gpu_type="H100",
         gpu_count=8,
+    ),
+    deps=DepsConfig(
+        pip_packages=("torch>=2.4",),
+        pip_index_url="https://download.pytorch.org/whl/cu124",
+        pip_extra_index_url="https://pypi.org/simple",
+        bootstrap_commands=(
+            "pip install -e 'git+https://github.com/sgl-project/sglang.git@main#egg=sglang[all]'",
+        ),
     ),
     env=EnvConfig(
         sglang_allow_longer_context=True,
