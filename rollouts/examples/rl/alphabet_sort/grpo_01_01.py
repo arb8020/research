@@ -12,20 +12,27 @@ Run with:
 """
 
 from examples.rl.alphabet_sort.base_config import train
-from rollouts.training.grpo import GRPOConfig
+from rollouts.training.grpo import (
+    CheckpointConfig,
+    GRPOConfig,
+    GRPOOutputConfig,
+    ModelConfig,
+    RolloutConfig,
+    TrainerConfig,
+)
 
 config = GRPOConfig(
-    experiment_name="alphabet_sort_grpo_01",
-    model_name="Qwen/Qwen3-0.6B",
-    num_steps=100,
-    checkpoint_every=20,
-    batch_size=4,
-    n_samples_per_prompt=8,
-    temperature=0.7,
-    lr=1e-6,
-    num_minibatches=4,
-    max_seq_len=1024,
-    max_tokens=256,
+    output=GRPOOutputConfig(experiment_name="alphabet_sort_grpo_01"),
+    model=ModelConfig(name="Qwen/Qwen3-0.6B"),
+    checkpoint=CheckpointConfig(num_steps=100, checkpoint_every=20),
+    rollout=RolloutConfig(
+        batch_size=4,
+        n_samples_per_prompt=8,
+        temperature=0.7,
+        max_seq_len=1024,
+        max_tokens=256,
+    ),
+    trainer=TrainerConfig(lr=1e-6, num_minibatches=4),
 )
 
 if __name__ == "__main__":

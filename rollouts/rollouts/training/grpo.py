@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -35,72 +35,50 @@ if TYPE_CHECKING:
     from ..dtypes import Environment, Score
     from ..training.types import Sample
 
-# ──────────────────────── Config ─────────────────────────────────────────────
+# ──────────────────────── Sub-Configs (re-exported from shared) ───────────────
+
+from ..training.configs import (  # noqa: E402
+    CheckpointConfig,
+    InferenceConfig,
+    ModelConfig,
+    OutputConfig,
+    RolloutConfig,
+    TrainerConfig,
+)
+
+# GRPO-specific output defaults
+GRPOOutputConfig = OutputConfig  # Alias for backwards compat
+
+
+# ──────────────────────── Composed Config ────────────────────────────────────
 
 
 @dataclass(frozen=True)
 class GRPOConfig:
     """Configuration for GRPO training.
 
-    Groups related settings into a flat, explicit config.
+    Composed from sub-configs that separate concerns cleanly.
+    Use replace() for inheritance (see docs/code_style/experiment_config.md).
+
+    Example:
+        config = GRPOConfig(
+            model=ModelConfig(name="Qwen/Qwen2.5-0.5B-Instruct"),
+            trainer=TrainerConfig(lr=1e-5),
+            rollout=RolloutConfig(batch_size=4, n_samples_per_prompt=4),
+        )
+
+        # Derive a variant:
+        fast = replace(config, trainer=replace(config.trainer, lr=1e-4))
     """
 
-    # Model
-    model_name: str = "Qwen/Qwen3-0.6B"
-    dtype: str = "bfloat16"
-
-    # Inference server
-    inference_backend: str = "sglang"  # "sglang" or "vllm"
-    inference_port: int = 30000
-    inference_cuda_device_ids: tuple[int, ...] = (0,)
-    mem_fraction: float = 0.7
-
-    # Trainer
-    trainer_cuda_device_ids: tuple[int, ...] = (0,)
-    lr: float = 1e-6
-    weight_decay: float = 0.0
-    max_grad_norm: float = 1.0
-    num_minibatches: int = 8
-
-    # Rollout generation
-    batch_size: int = 8  # Unique prompts per step
-    n_samples_per_prompt: int = 8  # Completions per prompt (the "G" in GRPO)
-    max_seq_len: int = 1024
-    max_tokens: int = 512
-    temperature: float = 0.8
-    max_turns: int = 1  # For multi-turn environments
-
-    # TI/TO (Tokens-In/Tokens-Out) - avoids retokenization collapse
-    # When True, uses token-level generation via /generate endpoint
-    # and stores rollout logprobs for off-policy correction
-    use_tito: bool = False
-
-    # Trajectory strategy for multi-turn rollouts
-    # - "interleaved": Full conversation as one sequence (efficient, prefix sharing)
-    # - "branching": Each assistant turn is a separate sample (safer, mirrors deployment)
-    trajectory_strategy: str = "interleaved"  # Literal["interleaved", "branching"]
-
-    # Checkpoint loading (for SFT → RL pipeline)
-    # If set, loads weights from this checkpoint before training.
-    # Can be:
-    #   - Path to HuggingFace-format directory (with config.json)
-    #   - Path to pytorch checkpoint directory (with pytorch_model.bin)
-    checkpoint_path: str | None = None
-
-    # Training loop
-    num_steps: int = 100
-    log_every: int = 1
-    checkpoint_every: int = 20  # Save to disk (for recovery/resuming)
-    sync_weights_every: int = 1  # Sync to inference engine (for on-policy vs off-policy)
-
-    # LoRA (for efficient test-time training)
-    use_lora: bool = False
-    lora_rank: int = 16
-    lora_alpha: int = 32
-
-    # Output
-    output_dir: str = "results/rl"
-    experiment_name: str = "grpo"
+    model: ModelConfig = field(default_factory=ModelConfig)
+    inference: InferenceConfig = field(default_factory=InferenceConfig)
+    trainer: TrainerConfig = field(default_factory=TrainerConfig)
+    rollout: RolloutConfig = field(default_factory=RolloutConfig)
+    checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
+    output: OutputConfig = field(
+        default_factory=lambda: OutputConfig(output_dir="results/rl", experiment_name="grpo")
+    )
 
     def save(self, path: Path | str) -> None:
         """Save config to JSON."""
@@ -165,11 +143,11 @@ def _setup_output_dir(config: GRPOConfig) -> tuple[Path, str]:
 
     run_name = os.environ.get("ROLLOUTS_RUN_NAME")
     if run_name:
-        output_dir = Path(config.output_dir) / run_name
+        output_dir = Path(config.output.output_dir) / run_name
     else:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        run_name = f"{config.experiment_name}_{timestamp}"
-        output_dir = Path(config.output_dir) / run_name
+        run_name = f"{config.output.experiment_name}_{timestamp}"
+        output_dir = Path(config.output.output_dir) / run_name
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir, run_name
 
@@ -180,26 +158,26 @@ def _create_inference_engine(
     """Create and configure inference engine."""
     from ..training.weight_sync import SGLangEngine, VLLMEngine
 
-    if config.inference_backend == "sglang":
+    if config.inference.backend == "sglang":
         return SGLangEngine(
-            model_name=config.model_name,
-            port=config.inference_port,
-            cuda_device_ids=config.inference_cuda_device_ids,
+            model_name=config.model.name,
+            port=config.inference.port,
+            cuda_device_ids=config.inference.cuda_device_ids,
             output_dir=output_dir,
-            dtype=config.dtype,
-            mem_fraction=config.mem_fraction,
+            dtype=config.model.dtype,
+            mem_fraction=config.inference.mem_fraction,
         )
-    elif config.inference_backend == "vllm":
+    elif config.inference.backend == "vllm":
         return VLLMEngine(
-            model_name=config.model_name,
-            port=config.inference_port,
-            cuda_device_ids=config.inference_cuda_device_ids,
+            model_name=config.model.name,
+            port=config.inference.port,
+            cuda_device_ids=config.inference.cuda_device_ids,
             output_dir=output_dir,
-            dtype=config.dtype,
-            gpu_memory_utilization=config.mem_fraction,
+            dtype=config.model.dtype,
+            gpu_memory_utilization=config.inference.mem_fraction,
         )
     else:
-        msg = f"Unknown inference backend: {config.inference_backend}"
+        msg = f"Unknown inference backend: {config.inference.backend}"
         raise ValueError(msg)
 
 
@@ -219,33 +197,33 @@ def _setup_training_backend(
     from ..training.backends.pytorch_factory import create_pytorch_backend
     from ..training.losses import grpo_loss
 
-    gpu_rank = config.trainer_cuda_device_ids[0]
+    gpu_rank = config.trainer.cuda_device_ids[0]
     backend = create_pytorch_backend(
-        model_name=config.model_name,
+        model_name=config.model.name,
         checkpoint_dir=output_dir,
         device_type="cuda",
-        dtype=config.dtype,
+        dtype=config.model.dtype,
         gpu_rank=gpu_rank,
-        learning_rate=config.lr,
-        weight_decay=config.weight_decay,
+        learning_rate=config.trainer.lr,
+        weight_decay=config.trainer.weight_decay,
         loss_fn=lambda logits, batch: grpo_loss(logits, batch),
-        num_minibatches=config.num_minibatches,
-        max_grad_norm=config.max_grad_norm,
-        use_lora=config.use_lora,
-        lora_rank=config.lora_rank,
-        lora_alpha=config.lora_alpha,
+        num_minibatches=config.trainer.num_minibatches,
+        max_grad_norm=config.trainer.max_grad_norm,
+        use_lora=config.model.use_lora,
+        lora_rank=config.model.lora_rank,
+        lora_alpha=config.model.lora_alpha,
     )
 
-    tokenizer = AutoTokenizer.from_pretrained(config.model_name)
+    tokenizer = AutoTokenizer.from_pretrained(config.model.name)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     endpoint = Endpoint(
         provider="openai",
-        model=config.model_name,
+        model=config.model.name,
         api_base=inference_engine.api_base,
-        temperature=config.temperature,
-        max_tokens=config.max_tokens,
+        temperature=config.rollout.temperature,
+        max_tokens=config.rollout.max_tokens,
     )
 
     return backend, tokenizer, endpoint
@@ -260,7 +238,7 @@ def _create_generate_fn(
     logger: logging.Logger,
 ) -> Callable:
     """Create the generate function for rollout generation."""
-    if config.use_tito:
+    if config.rollout.use_tito:
         return _create_tito_generate_fn(config, endpoint, tokenizer, metadata_key, logger)
     return _create_agent_generate_fn(
         config, endpoint, tokenizer, environment_cls, metadata_key, logger
@@ -281,7 +259,7 @@ def _create_tito_generate_fn(
     suffix_ids = compute_suffix_ids(tokenizer)
     tito_provider = (
         rollout_sglang_token_level
-        if config.inference_backend == "sglang"
+        if config.inference.backend == "sglang"
         else rollout_vllm_token_level
     )
 
@@ -311,7 +289,7 @@ def _create_tito_generate_fn(
                 samples = _trajectory_to_samples_tito(
                     trajectory=updated_actor.trajectory,
                     tokenizer=tokenizer,
-                    strategy=config.trajectory_strategy,
+                    strategy=config.rollout.trajectory_strategy,
                     metadata=metadata,
                 )
                 results.extend(samples)
@@ -352,7 +330,7 @@ def _create_agent_generate_fn(
                     environment_cls=environment_cls,
                     endpoint=endpoint,
                     tokenizer=tokenizer,
-                    max_turns=config.max_turns,
+                    max_turns=config.rollout.max_turns,
                     metadata=metadata,
                 )
                 results.append(sample)
@@ -450,15 +428,15 @@ async def _process_training_step(
     metrics_logger.log(step_metrics, step=step + 1)
     logger.info("metrics", extra={"step": step + 1, **step_metrics})
 
-    if (step + 1) % config.log_every == 0:
+    if (step + 1) % config.checkpoint.log_every == 0:
         logger.info(
             f"Step {step + 1}: reward={mean_reward:.3f} | "
             f"pg_loss={pg_loss:.4f} | entropy={entropy:.2f}"
         )
 
     # Checkpoint (save to disk for recovery)
-    should_checkpoint = (step + 1) % config.checkpoint_every == 0
-    should_sync = (step + 1) % config.sync_weights_every == 0
+    should_checkpoint = (step + 1) % config.checkpoint.checkpoint_every == 0
+    should_sync = (step + 1) % config.checkpoint.sync_weights_every == 0
 
     if should_checkpoint:
         ckpt_dir = await backend.save_checkpoint(step + 1, accumulated_metrics)
@@ -488,7 +466,7 @@ def _prepare_training_batch(
     """Prepare tensors for training step."""
     import torch
 
-    max_len = min(max(len(t) for t in batch.tokens), config.max_seq_len)
+    max_len = min(max(len(t) for t in batch.tokens), config.rollout.max_seq_len)
 
     batch_tokens = []
     batch_loss_masks = []
@@ -562,10 +540,12 @@ async def _grpo_train_async(
     logger.info("=" * 60)
     logger.info(f"GRPO Training: {run_name}")
     logger.info("=" * 60)
-    logger.info(f"Model: {config.model_name}")
-    logger.info(f"Backend: {config.inference_backend}")
-    logger.info(f"Steps: {config.num_steps}")
-    logger.info(f"Batch: {config.batch_size} prompts x {config.n_samples_per_prompt} samples")
+    logger.info(f"Model: {config.model.name}")
+    logger.info(f"Backend: {config.inference.backend}")
+    logger.info(f"Steps: {config.checkpoint.num_steps}")
+    logger.info(
+        f"Batch: {config.rollout.batch_size} prompts x {config.rollout.n_samples_per_prompt} samples"
+    )
     logger.info(f"Output: {output_dir}")
 
     config.save(output_dir / "config.json")
@@ -573,7 +553,7 @@ async def _grpo_train_async(
 
     # Launch inference engine
     inference_engine = _create_inference_engine(config, output_dir)
-    gpu_str = ",".join(str(g) for g in config.inference_cuda_device_ids)
+    gpu_str = ",".join(str(g) for g in config.inference.cuda_device_ids)
     logger.info(f"Launching {inference_engine.name} on GPU {gpu_str}...")
 
     inference_engine.launch()
@@ -585,11 +565,11 @@ async def _grpo_train_async(
 
         # Setup training backend
         backend, tokenizer, endpoint = _setup_training_backend(config, output_dir, inference_engine)
-        device = f"cuda:{config.trainer_cuda_device_ids[0]}"
+        device = f"cuda:{config.trainer.cuda_device_ids[0]}"
 
         # Load checkpoint if provided (for SFT → RL pipeline)
-        if config.checkpoint_path:
-            ckpt_path = Path(config.checkpoint_path)
+        if config.model.checkpoint_path:
+            ckpt_path = Path(config.model.checkpoint_path)
             if (ckpt_path / "pytorch_model.bin").exists():
                 # Our checkpoint format
                 logger.info(f"Loading checkpoint from {ckpt_path}")
@@ -611,8 +591,8 @@ async def _grpo_train_async(
         )
 
         rollout_config = RolloutConfig(
-            batch_size=config.batch_size,
-            n_samples_per_prompt=config.n_samples_per_prompt,
+            batch_size=config.rollout.batch_size,
+            n_samples_per_prompt=config.rollout.n_samples_per_prompt,
             over_sampling_factor=1.0,
             generate_fn=generate_fn,
             score_fn=score_fn,
@@ -622,8 +602,8 @@ async def _grpo_train_async(
         metrics_history = []
 
         async with AsyncRolloutManager(data_buffer, rollout_config) as rollout_manager:
-            for step in range(config.num_steps):
-                logger.info(f"\n--- Step {step + 1}/{config.num_steps} ---")
+            for step in range(config.checkpoint.num_steps):
+                logger.info(f"\n--- Step {step + 1}/{config.checkpoint.num_steps} ---")
 
                 batch = await rollout_manager.generate_batch(score_fn=score_fn)
                 step_metrics = await _process_training_step(

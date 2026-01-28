@@ -154,15 +154,25 @@ def train(
         Dict with metrics_history.
     """
     if config is None:
+        from rollouts.training.grpo import (
+            CheckpointConfig,
+            GRPOOutputConfig,
+            ModelConfig,
+            RolloutConfig,
+            TrainerConfig,
+        )
+
         config = GRPOConfig(
-            experiment_name="reverse_text_grpo",
-            model_name="PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT",
-            lr=3e-6,  # Prime-RL uses 3e-6
-            n_samples_per_prompt=16,  # Prime-RL uses 16
-            temperature=0.7,
-            num_steps=20,  # Prime-RL uses 20 steps
-            max_seq_len=256,
-            max_tokens=128,
+            output=GRPOOutputConfig(experiment_name="reverse_text_grpo"),
+            model=ModelConfig(name="PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"),
+            trainer=TrainerConfig(lr=3e-6),  # Prime-RL uses 3e-6
+            rollout=RolloutConfig(
+                n_samples_per_prompt=16,  # Prime-RL uses 16
+                temperature=0.7,
+                max_seq_len=256,
+                max_tokens=128,
+            ),
+            checkpoint=CheckpointConfig(num_steps=20),  # Prime-RL uses 20 steps
         )
 
     # Load Prime's actual RL dataset (not random gibberish!)

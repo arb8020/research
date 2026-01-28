@@ -227,15 +227,24 @@ def train(
         Dict with metrics_history.
     """
     if config is None:
+        from rollouts.training.grpo import (
+            CheckpointConfig,
+            GRPOOutputConfig,
+            RolloutConfig,
+            TrainerConfig,
+        )
+
         config = GRPOConfig(
-            experiment_name="alphabet_sort_grpo",
-            lr=1e-6,
-            n_samples_per_prompt=8,
-            temperature=0.7,
-            num_steps=100,
-            batch_size=4,
-            max_seq_len=1024,
-            max_tokens=256,
+            output=GRPOOutputConfig(experiment_name="alphabet_sort_grpo"),
+            trainer=TrainerConfig(lr=1e-6),
+            rollout=RolloutConfig(
+                n_samples_per_prompt=8,
+                temperature=0.7,
+                batch_size=4,
+                max_seq_len=1024,
+                max_tokens=256,
+            ),
+            checkpoint=CheckpointConfig(num_steps=100),
         )
 
     prompts = generate_alphabet_sort_prompts(num_episodes=num_episodes)

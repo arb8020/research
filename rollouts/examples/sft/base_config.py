@@ -9,6 +9,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from rollouts.training.configs import (
+    CheckpointConfig,
+    ModelConfig,
+    OutputConfig,
+    TrainerConfig,
+)
+
 if TYPE_CHECKING:
     import torch
 
@@ -47,27 +54,42 @@ class DatasetConfig:
 
 
 @dataclass(frozen=True)
-class BaseConfig:
-    """Base SFT configuration. Override in experiment files."""
+class SFTConfig:
+    """SFT configuration. Composes shared sub-configs from training.configs.
 
-    # Model
-    model_name: str = "Qwen/Qwen2.5-0.5B"
+    Shared with GRPO: ModelConfig, TrainerConfig, CheckpointConfig, OutputConfig.
+    SFT-specific: DatasetConfig, batch_size.
 
-    # Data
+    Example:
+        config = SFTConfig(
+            model=ModelConfig(name="Qwen/Qwen2.5-0.5B"),
+            trainer=TrainerConfig(lr=1e-4),
+            checkpoint=CheckpointConfig(num_steps=100, log_every=10),
+        )
+
+        # Derive a variant:
+        fast = replace(config, trainer=replace(config.trainer, lr=1e-3))
+    """
+
+    model: ModelConfig = field(default_factory=lambda: ModelConfig(name="Qwen/Qwen2.5-0.5B"))
+    trainer: TrainerConfig = field(default_factory=lambda: TrainerConfig(lr=1e-4))
+    checkpoint: CheckpointConfig = field(
+        default_factory=lambda: CheckpointConfig(num_steps=100, log_every=10, checkpoint_every=50)
+    )
+    output: OutputConfig = field(
+        default_factory=lambda: OutputConfig(output_dir="/tmp/rollouts_sft", experiment_name="sft")
+    )
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
 
-    # Training
-    num_steps: int = 100
+    # SFT-specific: training batch size (not same as GRPO's rollout batch_size)
     batch_size: int = 4
-    lr: float = 1e-4
-    log_every: int = 10
-    checkpoint_every: int = 50
 
-    # Hardware
+    # Hardware (str for torch.device compat)
     device: str = "cuda:0"
 
-    # Output
-    output_dir: str = "/tmp/rollouts_sft"
+
+# Backwards compat alias
+BaseConfig = SFTConfig
 
 
 def load_samples_from_config(config: DatasetConfig) -> list:
@@ -178,7 +200,7 @@ async def _train_async(config: BaseConfig) -> list[dict]:
     setup_logging(level="INFO", use_color=True)
     logger = logging.getLogger(__name__)
 
-    logger.info(f"Model: {config.model_name}")
+    logger.info(f"Model: {config.model.name}")
     logger.info(
         f"Dataset: {config.dataset.source} - {config.dataset.hf_dataset or config.dataset.path}"
     )
@@ -186,7 +208,7 @@ async def _train_async(config: BaseConfig) -> list[dict]:
 
     # Load tokenizer and data
     logger.info("Loading tokenizer...")
-    tokenizer = load_tokenizer(config.model_name)
+    tokenizer = load_tokenizer(config.model.name)
 
     logger.info("Loading data...")
     # Convert to SFT dataset format (tokenized with loss masks)
@@ -200,12 +222,12 @@ async def _train_async(config: BaseConfig) -> list[dict]:
 
     # Load model
     logger.info("Loading model...")
-    model, optimizer = load_model(config.model_name, config.device, config.lr)
+    model, optimizer = load_model(config.model.name, config.device, config.trainer.lr)
     param_count = sum(p.numel() for p in model.parameters())
     logger.info(f"Model: {param_count / 1e6:.1f}M params")
 
     # Create backend
-    output_dir = Path(config.output_dir)
+    output_dir = Path(config.output.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     backend = PyTorchTrainingBackend(
@@ -222,10 +244,10 @@ async def _train_async(config: BaseConfig) -> list[dict]:
     logger.info("=" * 50)
 
     training_config = SFTTrainingConfig(
-        num_steps=config.num_steps,
+        num_steps=config.checkpoint.num_steps,
         batch_size=config.batch_size,
-        log_every=config.log_every,
-        checkpoint_every=config.checkpoint_every,
+        log_every=config.checkpoint.log_every,
+        checkpoint_every=config.checkpoint.checkpoint_every,
     )
 
     metrics = await run_sft_training(
