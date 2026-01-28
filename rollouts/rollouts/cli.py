@@ -1949,6 +1949,12 @@ async def _run_interactive_mode(
 
 def main() -> int:
     """Main CLI entry point - dispatcher for all CLI commands."""
+    # Intercept subcommands before argparse (flat parser doesn't support subparsers)
+    if len(sys.argv) > 1 and sys.argv[1] == "monitor":
+        from .tui.monitor_cli import monitor_main
+
+        return monitor_main(sys.argv[2:])
+
     # Load .env file for API keys (if present)
     from dotenv import load_dotenv
 
