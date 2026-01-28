@@ -40,6 +40,7 @@ def _deploy_and_submit(
     gpu_count: int,
     gpu_type: str,
     use_json_logs: bool,
+    exposed_ports: tuple[int, ...] = (),
 ) -> tuple:
     """Provision node, deploy code, submit training job.
 
@@ -61,7 +62,12 @@ def _deploy_and_submit(
     else:
         print(f"Provisioning {gpu_count}x {gpu_type}...")
         bifrost, instance = acquire_node(
-            provision=GPUQuery(type=gpu_type, count=gpu_count, min_cuda="12.8")
+            provision=GPUQuery(
+                type=gpu_type,
+                count=gpu_count,
+                min_cuda="12.8",
+                exposed_ports=exposed_ports,
+            )
         )
         if instance:
             print(f"Instance: {instance.provider}:{instance.id}")
@@ -259,12 +265,17 @@ def run_remote(
     """
     use_json_logs = use_tui or tui_debug or fire_and_forget
 
+    # Expose LogsServer port for fire-and-forget monitoring
+    logs_port = 9100
+    exposed_ports = (logs_port,) if fire_and_forget else ()
+
     bifrost, instance, job, run_name, remote_output_dir, workspace = _deploy_and_submit(
         script_path=script_path,
         node_id=node_id,
         gpu_count=gpu_count,
         gpu_type=gpu_type,
         use_json_logs=use_json_logs,
+        exposed_ports=exposed_ports,
     )
 
     if not fire_and_forget:
@@ -284,10 +295,38 @@ def run_remote(
     assert instance is not None, "fire-and-forget requires a provisioned instance"
     node_id_str = f"{instance.provider}:{instance.id}"
 
+    # Start LogsServer on the remote node
+    from bifrost import ProcessSpec
+
+    print("Starting LogsServer...")
+    bifrost.submit(
+        ProcessSpec(
+            command="python3",
+            args=(
+                "-m",
+                "miniray.logs_server",
+                "--port",
+                str(logs_port),
+                "--dir",
+                remote_output_dir,
+            ),
+            cwd=workspace,  # Root so `python3 -m miniray.logs_server` can find miniray/
+        ),
+        name="logs-server",
+        log_file=f"{remote_output_dir}/logs_server.log",
+        workspace=workspace,
+    )
+
+    logs_host = instance.public_ip
+    assert logs_host, f"Instance has no public IP — cannot serve logs: {node_id_str}"
+    print(f"LogsServer: {logs_host}:{logs_port}")
+
     # Save run metadata for rollouts monitor --attach
     run_info = {
         "run_id": run_name,
         "node_id": node_id_str,
+        "logs_host": logs_host,
+        "logs_port": logs_port,
         "remote_output_dir": remote_output_dir,
         "tmux_session": job.tmux_session,
         "log_file": job.log_file,
@@ -298,6 +337,7 @@ def run_remote(
     print("\nTraining submitted (fire-and-forget).")
     print(f"  Run:       {run_name}")
     print(f"  Node:      {node_id_str}")
+    print(f"  Logs:      {logs_host}:{logs_port}")
     print(f"  Remote:    {remote_output_dir}")
     print("\nAttach later:")
     print(f"  rollouts monitor --attach {run_name}")
