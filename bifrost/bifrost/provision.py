@@ -49,7 +49,7 @@ class GPUQuery:
     credentials: dict[str, str] = field(default_factory=dict)
 
 
-def acquire_node(
+async def acquire_node(
     ssh: str | None = None,
     node_id: str | None = None,
     provision: GPUQuery | None = None,
@@ -137,12 +137,12 @@ def acquire_node(
         provider, instance_id = node_id.split(":", 1)
 
         print(f"Connecting to existing instance: {node_id}")
-        instance = broker.get_instance(instance_id, provider)
+        instance = await broker.get_instance(instance_id, provider)
         assert instance is not None, f"Instance not found: {node_id}"
 
         print(f"  GPU: {instance.gpu_count}x {instance.gpu_type}")
         print("  Waiting for SSH...")
-        instance.wait_until_ssh_ready(timeout=ssh_timeout)
+        await instance.wait_until_ssh_ready(timeout=ssh_timeout)
 
         key_path = broker.get_ssh_key_path(provider)
         if key_path is None:
@@ -154,7 +154,7 @@ def acquire_node(
     assert provision is not None  # Type narrowing
 
     print(f"Provisioning new instance ({provision.count}x {provision.type})...")
-    instance = broker.create(
+    instance = await broker.create(
         broker.gpu_type.contains(provision.type),
         gpu_count=provision.count,
         cloud_type=provision.cloud_type,
@@ -171,7 +171,7 @@ def acquire_node(
     print(f"  GPU: {instance.gpu_count}x {instance.gpu_type}")
 
     print("  Waiting for SSH...")
-    instance.wait_until_ssh_ready(timeout=ssh_timeout)
+    await instance.wait_until_ssh_ready(timeout=ssh_timeout)
 
     key_path = broker.get_ssh_key_path(instance.provider)
     if key_path is None:
