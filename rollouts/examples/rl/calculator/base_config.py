@@ -112,14 +112,23 @@ def train(
         Dict with metrics_history.
     """
     if config is None:
+        from rollouts.training.grpo import (
+            CheckpointConfig,
+            GRPOOutputConfig,
+            RolloutConfig,
+            TrainerConfig,
+        )
+
         config = GRPOConfig(
-            experiment_name="calculator_grpo",
-            lr=1e-5,
-            n_samples_per_prompt=4,
-            temperature=0.7,
-            num_steps=10,
-            max_turns=10,  # Multi-turn for tool use
-            max_seq_len=2048,
+            output=GRPOOutputConfig(experiment_name="calculator_grpo"),
+            trainer=TrainerConfig(lr=1e-5),
+            rollout=RolloutConfig(
+                n_samples_per_prompt=4,
+                temperature=0.7,
+                max_turns=10,  # Multi-turn for tool use
+                max_seq_len=2048,
+            ),
+            checkpoint=CheckpointConfig(num_steps=10),
         )
 
     prompts = load_calculator_prompts(max_samples=max_samples)

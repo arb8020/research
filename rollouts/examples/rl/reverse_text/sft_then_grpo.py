@@ -234,17 +234,29 @@ def run_grpo(config: PipelineConfig, sft_checkpoint: Path | str) -> dict[str, An
         )
 
     # GRPO config
+    from rollouts.training.grpo import (
+        CheckpointConfig,
+        GRPOOutputConfig,
+        ModelConfig,
+        RolloutConfig,
+        TrainerConfig,
+    )
+
     grpo_config = GRPOConfig(
-        experiment_name="reverse_text_sft_grpo",
-        model_name=str(sft_checkpoint),
-        num_steps=config.rl_num_steps,
-        batch_size=config.rl_batch_size,
-        n_samples_per_prompt=config.rl_n_samples_per_prompt,
-        lr=config.rl_lr,
-        temperature=config.rl_temperature,
-        max_tokens=config.rl_max_tokens,
-        max_seq_len=512,
-        output_dir=str(Path(config.output_dir) / "grpo"),
+        output=GRPOOutputConfig(
+            experiment_name="reverse_text_sft_grpo",
+            output_dir=str(Path(config.output_dir) / "grpo"),
+        ),
+        model=ModelConfig(name=str(sft_checkpoint)),
+        checkpoint=CheckpointConfig(num_steps=config.rl_num_steps),
+        rollout=RolloutConfig(
+            batch_size=config.rl_batch_size,
+            n_samples_per_prompt=config.rl_n_samples_per_prompt,
+            temperature=config.rl_temperature,
+            max_tokens=config.rl_max_tokens,
+            max_seq_len=512,
+        ),
+        trainer=TrainerConfig(lr=config.rl_lr),
     )
 
     # Run GRPO

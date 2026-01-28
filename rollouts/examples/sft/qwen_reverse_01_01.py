@@ -12,12 +12,12 @@ from dataclasses import replace
 
 from base_config import BaseConfig, run_remote, train
 
+from rollouts.training.configs import CheckpointConfig
+
 config = replace(
     BaseConfig(),
-    num_steps=100,
-    max_samples=1000,
-    log_every=10,
-    checkpoint_every=50,
+    checkpoint=CheckpointConfig(num_steps=100, log_every=10, checkpoint_every=50),
+    dataset=replace(BaseConfig().dataset, max_samples=1000),
 )
 
 if __name__ == "__main__":

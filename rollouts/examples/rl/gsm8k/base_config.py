@@ -143,11 +143,19 @@ def train(
         Dict with metrics_history.
     """
     if config is None:
+        from rollouts.training.grpo import (
+            GRPOOutputConfig,
+            RolloutConfig,
+            TrainerConfig,
+        )
+
         config = GRPOConfig(
-            experiment_name="gsm8k_grpo",
-            lr=1e-6,
-            n_samples_per_prompt=8,
-            temperature=0.8,
+            output=GRPOOutputConfig(experiment_name="gsm8k_grpo"),
+            trainer=TrainerConfig(lr=1e-6),
+            rollout=RolloutConfig(
+                n_samples_per_prompt=8,
+                temperature=0.8,
+            ),
         )
 
     prompts = load_gsm8k_prompts(max_samples=max_samples)

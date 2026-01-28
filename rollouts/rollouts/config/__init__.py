@@ -39,14 +39,25 @@ from ..config.protocols import (
     HasModelConfig,
     HasOutputConfig,
 )
+from ..config.tiers import (
+    EndpointConfig,
+    OutputConfig,
+    RunConfig,
+    save_config,
+)
 
 __all__ = [
+    # Config tiers (recommended)
+    "EndpointConfig",
+    "RunConfig",
+    "OutputConfig",
+    "save_config",
     # Protocols
     "HasModelConfig",
     "HasEnvironmentConfig",
     "HasEvaluationConfig",
     "HasOutputConfig",
-    # Base configs
+    # Base configs (legacy)
     "BaseModelConfig",
     "BaseEnvironmentConfig",
     "BaseEvaluationConfig",

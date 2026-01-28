@@ -25,7 +25,14 @@ Note:
 """
 
 from examples.rl.reverse_text.base_config import train
-from rollouts.training.grpo import GRPOConfig
+from rollouts.training.grpo import (
+    CheckpointConfig,
+    GRPOConfig,
+    GRPOOutputConfig,
+    ModelConfig,
+    RolloutConfig,
+    TrainerConfig,
+)
 
 # Default: Use Prime's pre-trained SFT model (recommended)
 # This model already knows how to reverse text, so RL can refine it
@@ -42,17 +49,21 @@ BASE_MODEL = "Qwen/Qwen3-0.6B"
 #   - seq_len=512-2048
 #   - sync_weights_every=1 (on-policy, max_async_level=1)
 config = GRPOConfig(
-    experiment_name="reverse_text_grpo_01",
-    model_name=DEFAULT_MODEL,
-    num_steps=100,  # verifiers uses 100, prime-rl uses 20
-    checkpoint_every=25,  # Save to disk every 25 steps (for recovery)
-    sync_weights_every=1,  # Sync to inference every step (on-policy)
-    batch_size=8,  # prompts per step (× 16 rollouts = 128 total)
-    n_samples_per_prompt=16,
-    temperature=1.0,  # Prime uses default (1.0), not 0.7
-    lr=3e-6,
-    max_seq_len=512,  # verifiers uses 512
-    max_tokens=128,  # both use 128
+    output=GRPOOutputConfig(experiment_name="reverse_text_grpo_01"),
+    model=ModelConfig(name=DEFAULT_MODEL),
+    checkpoint=CheckpointConfig(
+        num_steps=100,  # verifiers uses 100, prime-rl uses 20
+        checkpoint_every=25,  # Save to disk every 25 steps (for recovery)
+        sync_weights_every=1,  # Sync to inference every step (on-policy)
+    ),
+    rollout=RolloutConfig(
+        batch_size=8,  # prompts per step (× 16 rollouts = 128 total)
+        n_samples_per_prompt=16,
+        temperature=1.0,  # Prime uses default (1.0), not 0.7
+        max_seq_len=512,  # verifiers uses 512
+        max_tokens=128,  # both use 128
+    ),
+    trainer=TrainerConfig(lr=3e-6),
 )
 
 if __name__ == "__main__":

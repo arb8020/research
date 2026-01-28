@@ -123,16 +123,26 @@ def train(
         Dict with metrics_history.
     """
     if config is None:
+        from rollouts.training.grpo import (
+            CheckpointConfig,
+            GRPOOutputConfig,
+            ModelConfig,
+            RolloutConfig,
+            TrainerConfig,
+        )
+
         config = GRPOConfig(
-            experiment_name="fibonacci_grpo",
-            model_name="Qwen/Qwen2.5-0.5B-Instruct",
-            lr=1e-6,
-            n_samples_per_prompt=4,
-            temperature=0.8,
-            num_steps=10,
-            max_turns=1,  # Single turn - just generate code
-            max_seq_len=1024,
-            max_tokens=512,
+            output=GRPOOutputConfig(experiment_name="fibonacci_grpo"),
+            model=ModelConfig(name="Qwen/Qwen2.5-0.5B-Instruct"),
+            trainer=TrainerConfig(lr=1e-6),
+            rollout=RolloutConfig(
+                n_samples_per_prompt=4,
+                temperature=0.8,
+                max_turns=1,  # Single turn - just generate code
+                max_seq_len=1024,
+                max_tokens=512,
+            ),
+            checkpoint=CheckpointConfig(num_steps=10),
         )
 
     prompts = load_fibonacci_prompts(n_prompts=n_prompts)
