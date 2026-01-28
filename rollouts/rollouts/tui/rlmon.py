@@ -724,12 +724,129 @@ def _detect_type(watch_dir: str) -> Callable:
     return _detect
 
 
-def make_app(watch_dir: str) -> App:
-    """Create the monitor App for a given output directory."""
+def frame_debug_snapshot(model: Model, width: int, height: int) -> dict:
+    """Pure function: compute a wide event describing the current frame layout.
+
+    Returns a dict suitable for JSON serialization. Contains terminal dims,
+    computed panel sizes, model state summary, and truncation info.
+    """
+    config_w = min(28, width // 3)
+    metrics_w = width - config_w
+
+    # Recompute layout heights (mirrors view())
+    metrics_content_h = max(len(model.metrics), 1)
+    config_content_h = len(_view_config_box(model, config_w))
+    top_h = max(metrics_content_h, config_content_h, 3)
+    top_box_h = top_h + 2  # +2 for border top/bottom
+
+    header_lines = 1
+    footer_lines = 1
+    remaining = height - header_lines - top_box_h - footer_lines
+
+    log_boxes: list[dict] = []
+    match model.experiment_type:
+        case ExperimentType.RL:
+            training_h = max(3, int(remaining * 0.6))
+            sglang_h = max(3, remaining - training_h)
+            log_boxes.append({
+                "name": "Training",
+                "width": width,
+                "height": training_h,
+                "lines": len(model.training_lines),
+            })
+            log_boxes.append({
+                "name": "SGLang",
+                "width": width,
+                "height": sglang_h,
+                "lines": len(model.sglang_lines),
+            })
+        case ExperimentType.SFT:
+            log_boxes.append({
+                "name": "Training",
+                "width": width,
+                "height": remaining,
+                "lines": len(model.training_lines),
+            })
+        case ExperimentType.EVAL:
+            log_boxes.append({
+                "name": "Events",
+                "width": width,
+                "height": remaining,
+                "lines": len(model.event_lines),
+            })
+        case ExperimentType.GENERIC:
+            all_lines = model.generic_lines or model.training_lines or model.event_lines
+            log_boxes.append({
+                "name": "Logs",
+                "width": width,
+                "height": remaining,
+                "lines": len(all_lines),
+            })
+
+    return {
+        "terminal": {"width": width, "height": height},
+        "layout": {
+            "header_lines": header_lines,
+            "metrics_box": {"width": metrics_w, "height": top_box_h},
+            "config_box": {"width": config_w, "height": top_box_h},
+            "log_boxes": log_boxes,
+            "footer_lines": footer_lines,
+            "remaining_for_logs": remaining,
+        },
+        "model": {
+            "experiment_type": model.experiment_type.name,
+            "step": f"{model.current_step}/{model.total_steps}"
+            if model.total_steps
+            else str(model.current_step),
+            "metric_names": [m.name for m in model.metrics],
+            "metric_counts": [len(m.values) for m in model.metrics],
+            "training_lines": len(model.training_lines),
+            "sglang_lines": len(model.sglang_lines),
+            "event_lines": len(model.event_lines),
+            "generic_lines": len(model.generic_lines),
+            "active_panel": model.active_panel,
+            "scroll": model.scroll,
+            "auto_scroll": model.auto_scroll,
+            "config_keys": list(model.config.keys()) if model.config else [],
+        },
+    }
+
+
+DEBUG_LOG_PATH = "/tmp/rlmon-debug.jsonl"
+
+
+def _make_debug_fn(debug_path: str = DEBUG_LOG_PATH) -> Callable:
+    """Create a debug callback that appends frame snapshots to a JSONL file."""
+    import os
+
+    def _debug(model: Model, width: int, height: int, frame_count: int) -> None:
+        snapshot = frame_debug_snapshot(model, width, height)
+        snapshot["frame"] = frame_count
+        with open(debug_path, "a") as f:
+            f.write(json.dumps(snapshot) + "\n")
+
+    # Truncate on startup so we only see this session's frames
+    with open(debug_path, "w") as f:
+        pass
+    os.chmod(debug_path, 0o644)
+
+    return _debug
+
+
+def make_app(watch_dir: str, debug: bool = False, debug_frame_interval: int = 100) -> App:
+    """Create the monitor App for a given output directory.
+
+    Args:
+        watch_dir: Path to the experiment output directory to watch.
+        debug: If True, dump frame layout snapshots to /tmp/rlmon-debug.jsonl.
+        debug_frame_interval: Dump every N rendered frames (default 100 = ~5s at 20fps).
+    """
     # Detect type eagerly for initial subscriptions (before first Cmd runs)
     experiment_type = detect_experiment_type(watch_dir)
     init_model = Model(watch_dir=watch_dir, experiment_type=experiment_type)
     init_cmd = Cmd.task(_load_init(watch_dir))
+
+    debug_fn = _make_debug_fn() if debug else None
 
     return App(
         init=(init_model, init_cmd),
@@ -738,4 +855,6 @@ def make_app(watch_dir: str) -> App:
         subscriptions=subscriptions,
         alternate_screen=True,
         fps=20,
+        debug_fn=debug_fn,
+        debug_frame_interval=debug_frame_interval,
     )
