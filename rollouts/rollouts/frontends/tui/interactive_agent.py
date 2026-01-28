@@ -468,7 +468,7 @@ class InteractiveAgentRunner:
 
         if idx < len(self._display_modes) - 1:
             new_mode = self._display_modes[idx + 1]
-            self.tui.theme.tool_display = new_mode  # type: ignore[attr-defined]
+            self.tui.theme.tool_display = new_mode
             self._refresh_all_components()
 
     def _decrease_display_mode(self) -> None:
@@ -484,7 +484,7 @@ class InteractiveAgentRunner:
 
         if idx > 0:
             new_mode = self._display_modes[idx - 1]
-            self.tui.theme.tool_display = new_mode  # type: ignore[attr-defined]
+            self.tui.theme.tool_display = new_mode
             self._refresh_all_components()
 
     def _refresh_all_components(self) -> None:
@@ -1212,7 +1212,7 @@ class InteractiveAgentRunner:
         # Create status line below input
         self.status_line = StatusLine(theme=self.tui.theme)
         self.status_line.set_session_id(self.session_id)
-        model_meta = get_model(self.endpoint.provider, self.endpoint.model)  # type: ignore[arg-type]
+        model_meta = get_model(self.endpoint.provider, self.endpoint.model)
         context_window = model_meta.context_window if model_meta else None
         self.status_line.set_model(
             f"{self.endpoint.provider}/{self.endpoint.model}", context_window=context_window

@@ -46,7 +46,7 @@ class DetailLevel(IntEnum):
     # DEBUG = 4     # Everything including internal state
 
 
-@dataclass
+@dataclass(frozen=True)
 class ToolRenderConfig:
     """Rendering config for tool output in TUI.
 
@@ -222,7 +222,7 @@ class JsonSerializable:
     def to_json(self) -> str:
         """Serialize to JSON string"""
         assert self is not None
-        result = json.dumps(asdict(self), ensure_ascii=False)  # type:ignore
+        result = json.dumps(asdict(self), ensure_ascii=False)
         assert result is not None
         assert isinstance(result, str)
         assert len(result) > 0
@@ -827,7 +827,7 @@ class ChatCompletion(JsonSerializable):
     prompt_logprobs: list[PromptLogprob] | None = None
 
 
-@dataclass
+@dataclass(frozen=True)
 class Trajectory(JsonSerializable):
     completions: list[ChatCompletion] = field(default_factory=list)
     messages: list[Message] = field(default_factory=list)  # debugging only
@@ -1584,7 +1584,7 @@ class SessionStatus(Enum):
 # EndpointConfig deleted - use Endpoint.to_dict(exclude_secrets=True) instead
 
 
-@dataclass
+@dataclass(frozen=True)
 class EnvironmentConfig:
     """Environment configuration.
 
@@ -1612,7 +1612,7 @@ class EnvironmentConfig:
 # SessionMessage deleted - use Message with optional timestamp instead
 
 
-@dataclass
+@dataclass(frozen=True)
 class AgentSession:
     """A persisted agent session.
 

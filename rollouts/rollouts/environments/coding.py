@@ -19,6 +19,7 @@ import markdownify
 import trio
 
 if TYPE_CHECKING:
+    from ..dtypes import DetailLevel
     from ..frontends.tui.theme import Theme
 
 from ..dtypes import (
@@ -85,7 +86,7 @@ def format_read(
     tool_name: str,
     args: dict,
     result: dict | None,
-    detail_level: "DetailLevel | bool",
+    detail_level: DetailLevel | bool,
     theme: Theme | None = None,
 ) -> str:
     """Format read tool execution."""
@@ -130,7 +131,7 @@ def format_write(
     tool_name: str,
     args: dict,
     result: dict | None,
-    detail_level: "DetailLevel | bool",
+    detail_level: DetailLevel | bool,
     theme: Theme | None = None,
 ) -> str:
     """Format write tool execution with line numbers and gray styling.
@@ -194,7 +195,7 @@ def format_edit(
     tool_name: str,
     args: dict,
     result: dict | None,
-    detail_level: "DetailLevel | bool",
+    detail_level: DetailLevel | bool,
     theme: Theme | None = None,
 ) -> str:
     """Format edit tool execution with colored diff."""
@@ -292,7 +293,7 @@ def format_web_fetch(
     tool_name: str,
     args: dict,
     result: dict | None,
-    detail_level: "DetailLevel | bool",
+    detail_level: DetailLevel | bool,
     theme: Theme | None = None,
 ) -> str:
     """Format web_fetch tool execution."""

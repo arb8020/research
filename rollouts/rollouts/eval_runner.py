@@ -215,7 +215,7 @@ def run_eval_from_spec(  # noqa: PLR0913
         if spec.per_sample_environment:
             environment_factory = spec.make_environment
         else:
-            environment = spec.make_environment()
+            environment = spec.make_environment()  # type: ignore[missing-argument]  # nullary when not per_sample
 
     # ── Stop handlers ──
     from .agents import handle_stop_max_turns

@@ -27,6 +27,10 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from recipes.schema import ServingRecipe
 
 # Add repo root to path for local development
 # examples/ is one level down from repo root
@@ -44,6 +48,7 @@ sys.path.insert(0, str(repo_root))
 env_file = repo_root / ".env"
 if env_file.exists():
     import os
+
     for line in env_file.read_text().splitlines():
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
@@ -53,10 +58,11 @@ if env_file.exists():
 import trio
 
 
-def load_recipe(recipe_path: str) -> "ServingRecipe":
+def load_recipe(recipe_path: str) -> ServingRecipe:
     """Load recipe from .py or .json file."""
-    from recipes.schema import ServingRecipe
     import importlib.util
+
+    from recipes.schema import ServingRecipe
 
     path = Path(recipe_path)
     if not path.exists():
@@ -71,7 +77,7 @@ def load_recipe(recipe_path: str) -> "ServingRecipe":
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        assert hasattr(module, "recipe"), f"Recipe file must define 'recipe' variable"
+        assert hasattr(module, "recipe"), "Recipe file must define 'recipe' variable"
         return module.recipe
     else:
         raise ValueError(f"Recipe must be .py or .json, got: {path.suffix}")
@@ -147,8 +153,8 @@ async def main() -> int:
 
     # Import here to get better error messages if deps missing
     try:
-        from bifrost import acquire_node, GPUQuery
-        from rollouts.deploy import deploy_sglang_server, ServerConfig
+        from bifrost import GPUQuery, acquire_node
+        from rollouts.deploy import ServerConfig, deploy_sglang_server
     except ImportError as e:
         print(f"Missing dependency: {e}")
         print("Install with: pip install -e rollouts[deploy] bifrost broker")
@@ -186,6 +192,7 @@ async def main() -> int:
         ssh_connection = instance.ssh_connection_string()
     else:
         import os
+
         cloud_type = "community" if args.community else "secure"
 
         # Use wafer account if requested
@@ -196,7 +203,7 @@ async def main() -> int:
                 print("Error: --wafer flag requires WAFER_RUNPOD_API_KEY in .env")
                 return 1
             credentials["runpod"] = wafer_key
-            print(f"Using wafer RunPod account")
+            print("Using wafer RunPod account")
 
         print(f"Provisioning new instance: {gpu_count}x {gpu_type} ({cloud_type})")
         client, instance = acquire_node(
@@ -273,7 +280,7 @@ async def main() -> int:
     print(f"  ssh {ssh_connection} 'tmux attach -t {server_info.tmux_session}'")
     print()
     if instance:
-        print(f"To terminate instance:")
+        print("To terminate instance:")
         print(f"  broker terminate {instance.provider}:{instance.id}")
 
     return 0

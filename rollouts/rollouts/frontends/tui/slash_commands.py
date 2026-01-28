@@ -180,11 +180,11 @@ async def _handle_model(runner: InteractiveAgentRunner, args: str) -> SlashComma
     provider, model_id = args.split("/", 1)
 
     # Validate model exists
-    model_meta = get_model(provider, model_id)  # type: ignore[arg-type]
+    model_meta = get_model(provider, model_id)
     if not model_meta:
         # Show similar models
         available = []
-        for m in get_models(provider):  # type: ignore[arg-type]
+        for m in get_models(provider):
             if model_id.lower() in m.id.lower():
                 available.append(f"  {provider}/{m.id}")
 
@@ -286,7 +286,7 @@ async def _handle_thinking(runner: InteractiveAgentRunner, args: str) -> SlashCo
 
     from ...models import get_model
 
-    model_meta = get_model(runner.endpoint.provider, runner.endpoint.model)  # type: ignore[arg-type]
+    model_meta = get_model(runner.endpoint.provider, runner.endpoint.model)
 
     if not args:
         # Show current status

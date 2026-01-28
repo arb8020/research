@@ -393,7 +393,7 @@ async def inject_tool_reminder(state: AgentState, run_config: "RunConfig") -> Ag
 
 FullAuto = RunConfig(
     on_chunk=stdout_handler,
-    confirm_tool=confirm_tool_with_feedback,  # type: ignore
+    confirm_tool=confirm_tool_with_feedback,
     handle_tool_error=handle_tool_error,
     on_step_start=inject_turn_warning(max_turns=10),  # Warn at 2 turns remaining
     handle_stop=handle_stop_max_turns(10),  # Stop after 10 turns

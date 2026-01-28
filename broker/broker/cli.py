@@ -232,7 +232,7 @@ def search(  # noqa: PLR0913 - CLI search has many filter options
     Use --provider to filter to specific provider.
     """
 
-    async def _search_async():
+    async def _search_async() -> None:
         creds = resolve_credentials(ctx)
 
         # Create client (SSH key not needed for search)
@@ -422,7 +422,7 @@ def create(  # noqa: PLR0913 - CLI create has many configuration options
       json: Full instance details as JSON
     """
 
-    async def _create_async():
+    async def _create_async() -> None:
         creds = resolve_credentials(ctx)
         ssh_key = resolve_ssh_key(ctx)
 
@@ -547,7 +547,7 @@ def create(  # noqa: PLR0913 - CLI create has many configuration options
 def list_instances(ctx: typer.Context) -> None:
     """List all your GPU instances"""
 
-    async def _list_async():
+    async def _list_async() -> None:
         creds = resolve_credentials(ctx)
         ssh_key = resolve_ssh_key(ctx)
 
@@ -621,7 +621,7 @@ def status(
     providers. Errors if instance ID exists in multiple providers.
     """
 
-    async def _status_async():
+    async def _status_async() -> None:
         creds = resolve_credentials(ctx)
         ssh_key = resolve_ssh_key(ctx)
 
@@ -688,7 +688,7 @@ def ssh(
     providers. Errors if instance ID exists in multiple providers.
     """
 
-    async def _ssh_async():
+    async def _ssh_async() -> None:
         creds = resolve_credentials(ctx)
         ssh_key = resolve_ssh_key(ctx)
 
@@ -737,7 +737,7 @@ def info(
     via SSH connection to the instance.
     """
 
-    async def _info_async():
+    async def _info_async() -> None:
         creds = resolve_credentials(ctx)
         ssh_key = resolve_ssh_key(ctx)
 
@@ -786,19 +786,19 @@ def info(
         try:
             # Get GPU info
             gpu_cmd = "nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits"
-            gpu_result = await instance._instance.exec(gpu_cmd)
+            gpu_result = await instance._instance.aexec(gpu_cmd)
 
             # Get CPU info
             cpu_cmd = "top -bn1 | grep 'Cpu(s)' | awk '{print $2}'"
-            cpu_result = await instance._instance.exec(cpu_cmd)
+            cpu_result = await instance._instance.aexec(cpu_cmd)
 
             # Get memory info
             mem_cmd = "free -m | awk 'NR==2{printf \"%s,%s,%s\", $3,$2,$3*100/$2 }'"
-            mem_result = await instance._instance.exec(mem_cmd)
+            mem_result = await instance._instance.aexec(mem_cmd)
 
             # Get disk info
             disk_cmd = "df -h / | awk 'NR==2{printf \"%s,%s,%s\", $3,$2,$5}'"
-            disk_result = await instance._instance.exec(disk_cmd)
+            disk_result = await instance._instance.aexec(disk_cmd)
 
         except Exception as e:
             logger.exception(f"✗ Failed to collect system info: {e}")
@@ -998,7 +998,7 @@ def terminate(
     providers. Errors if instance ID exists in multiple providers.
     """
 
-    async def _terminate_async():
+    async def _terminate_async() -> None:
         creds = resolve_credentials(ctx)
         ssh_key = resolve_ssh_key(ctx)
 
@@ -1069,7 +1069,7 @@ def cleanup(
         broker cleanup --exclude abc123 def456 ghi789
     """
 
-    async def _cleanup_async():
+    async def _cleanup_async() -> None:
         creds = resolve_credentials(ctx)
         ssh_key = resolve_ssh_key(ctx)
 

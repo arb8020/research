@@ -14,8 +14,8 @@ try:
     HAS_DATASETS = True
 except ImportError:
     HAS_DATASETS = False
-    Dataset = None  # type: ignore[misc,assignment]
-    load_dataset = None  # type: ignore[misc,assignment]
+    Dataset = None
+    load_dataset = None
 
 from ...training.types import Sample
 
