@@ -4,17 +4,19 @@ Frozen dataclass configs for serving models with SGLang/vLLM.
 """
 
 from .schema import (
-    ServingRecipe,
-    ModelConfig,
+    DepsConfig,
     EngineConfig,
-    TargetConfig,
     EnvConfig,
+    ModelConfig,
+    ServingRecipe,
     SpeculativeConfig,
+    TargetConfig,
 )
 
 __all__ = [
     "ServingRecipe",
     "ModelConfig",
+    "DepsConfig",
     "EngineConfig",
     "TargetConfig",
     "EnvConfig",

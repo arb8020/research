@@ -29,7 +29,7 @@ Usage:
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -188,8 +188,31 @@ class TargetConfig:
 
 
 @dataclass(frozen=True)
+class DepsConfig:
+    """Environment dependencies — explicit, not derived.
+
+    Tiger Style: explicitly pass options at the call site instead of
+    relying on defaults or implicit derivation. A recipe that says
+    engine="sglang" should NOT cause a provider to silently guess
+    "pip install sglang[all]". The recipe states what it needs.
+    """
+
+    base_image: str = "debian:bookworm-slim"
+    python_version: str = "3.12"
+    system_packages: tuple[str, ...] = ("bash", "curl", "git", "build-essential")
+    pip_packages: tuple[str, ...] = ()  # e.g., ("torch>=2.4", "sglang[all]")
+    pip_index_url: str | None = None  # e.g., "https://download.pytorch.org/whl/cu124"
+    pip_extra_index_url: str | None = None  # e.g., "https://pypi.org/simple"
+    bootstrap_commands: tuple[str, ...] = ()  # arbitrary setup commands run after pip install
+
+    def __post_init__(self) -> None:
+        assert len(self.python_version) > 0, "python_version cannot be empty"
+        assert len(self.base_image) > 0, "base_image cannot be empty"
+
+
+@dataclass(frozen=True)
 class EnvConfig:
-    """Environment setup."""
+    """Runtime environment variables."""
 
     hf_cache_dir: str = "/home/ubuntu/.cache/huggingface"
     use_hf_transfer: bool = True
@@ -213,6 +236,7 @@ class ServingRecipe:
     model: ModelConfig
     engine: EngineConfig = field(default_factory=EngineConfig)
     target: TargetConfig = field(default_factory=lambda: TargetConfig(gpu_type="A100"))
+    deps: DepsConfig = field(default_factory=DepsConfig)
     env: EnvConfig = field(default_factory=EnvConfig)
 
     # Optional description
@@ -251,6 +275,14 @@ class ServingRecipe:
         engine = EngineConfig(**engine_data)
 
         target = TargetConfig(**data["target"])
+
+        deps_data = data.get("deps", {})
+        # Convert lists to tuples for frozen dataclass
+        for key in ("system_packages", "pip_packages", "bootstrap_commands"):
+            if key in deps_data and isinstance(deps_data[key], list):
+                deps_data[key] = tuple(deps_data[key])
+        deps = DepsConfig(**deps_data)
+
         env = EnvConfig(**data["env"])
 
         return cls(
@@ -258,6 +290,7 @@ class ServingRecipe:
             model=model,
             engine=engine,
             target=target,
+            deps=deps,
             env=env,
             description=data.get("description", ""),
         )

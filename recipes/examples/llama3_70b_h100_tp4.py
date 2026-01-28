@@ -5,11 +5,12 @@ Uses NEXTN speculative decoding for lower latency.
 """
 
 from recipes.schema import (
-    ServingRecipe,
-    ModelConfig,
+    DepsConfig,
     EngineConfig,
-    TargetConfig,
+    ModelConfig,
+    ServingRecipe,
     SpeculativeConfig,
+    TargetConfig,
 )
 
 recipe = ServingRecipe(
@@ -34,5 +35,10 @@ recipe = ServingRecipe(
     target=TargetConfig(
         gpu_type="H100",
         gpu_count=4,
+    ),
+    deps=DepsConfig(
+        pip_packages=("torch>=2.4", "sglang[all]"),
+        pip_index_url="https://download.pytorch.org/whl/cu124",
+        pip_extra_index_url="https://pypi.org/simple",
     ),
 )
