@@ -67,6 +67,7 @@ def _deploy_and_submit(
                 count=gpu_count,
                 min_cuda="12.8",
                 exposed_ports=exposed_ports,
+                enable_http_proxy=not exposed_ports,  # raw TCP for LogsServer
             )
         )
         if instance:
@@ -317,16 +318,29 @@ def run_remote(
         workspace=workspace,
     )
 
+    # Resolve public host:port for LogsServer.
+    # RunPod maps container ports to random public ports (e.g. 9100 → 31066).
+    # The monitor needs the public mapping, not the container port.
     logs_host = instance.public_ip
     assert logs_host, f"Instance has no public IP — cannot serve logs: {node_id_str}"
-    print(f"LogsServer: {logs_host}:{logs_port}")
+
+    public_logs_port = logs_port  # default: assume container port = public port
+    raw = instance.raw_data or {}
+    runtime_ports = raw.get("runtime", {}).get("ports", [])
+    for p in runtime_ports:
+        if p.get("privatePort") == logs_port and p.get("isIpPublic"):
+            logs_host = p["ip"]
+            public_logs_port = p["publicPort"]
+            break
+
+    print(f"LogsServer: {logs_host}:{public_logs_port}")
 
     # Save run metadata for rollouts monitor --attach
     run_info = {
         "run_id": run_name,
         "node_id": node_id_str,
         "logs_host": logs_host,
-        "logs_port": logs_port,
+        "logs_port": public_logs_port,
         "remote_output_dir": remote_output_dir,
         "tmux_session": job.tmux_session,
         "log_file": job.log_file,
@@ -337,7 +351,7 @@ def run_remote(
     print("\nTraining submitted (fire-and-forget).")
     print(f"  Run:       {run_name}")
     print(f"  Node:      {node_id_str}")
-    print(f"  Logs:      {logs_host}:{logs_port}")
+    print(f"  Logs:      {logs_host}:{public_logs_port}")
     print(f"  Remote:    {remote_output_dir}")
     print("\nAttach later:")
     print(f"  rollouts monitor --attach {run_name}")

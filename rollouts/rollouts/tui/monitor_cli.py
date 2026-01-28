@@ -12,7 +12,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import socket
 import sys
+import threading
+from collections.abc import Callable
 from pathlib import Path
 
 ACTIVE_RUNS_PATH = Path("results/rl/.active_runs.json")
@@ -68,16 +72,121 @@ def _find_active_run(run_id: str | None) -> dict:
     raise AssertionError(f"No active run found with id {run_id!r}")
 
 
+def _open_ssh_tunnel(
+    node_id: str,
+    remote_port: int = 9100,
+) -> tuple[int, Callable[[], None]]:
+    """Open an SSH tunnel to a remote LogsServer.
+
+    For instances provisioned without exposed_ports — we tunnel through SSH
+    to reach LogsServer on the remote's localhost.
+
+    Returns (local_port, cleanup_fn). Connect RemoteWorker to localhost:local_port.
+    """
+    import paramiko
+
+    from broker.client import GPUClient
+
+    provider, instance_id = node_id.split(":", 1)
+
+    # Load API key
+    from dotenv import load_dotenv
+
+    load_dotenv()
+
+    credentials = {}
+    api_key = os.environ.get("RUNPOD_API_KEY") or os.environ.get("WAFER_RUNPOD_API_KEY")
+    if api_key and provider == "runpod":
+        credentials["runpod"] = api_key
+
+    client = GPUClient(credentials=credentials)
+    instance = client.get_instance(instance_id, provider)
+    assert instance is not None, f"Instance not found: {node_id}"
+
+    ssh_key = client.get_ssh_key_path(provider) or os.path.expanduser("~/.ssh/id_ed25519")
+
+    # Connect paramiko
+    ssh_client = paramiko.SSHClient()
+    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh_client.connect(
+        hostname=instance.public_ip,
+        port=instance.ssh_port,
+        username="root",
+        key_filename=ssh_key,
+        timeout=30,
+    )
+
+    transport = ssh_client.get_transport()
+    assert transport is not None
+
+    # Bind local socket on ephemeral port
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", 0))
+    local_port = server.getsockname()[1]
+    server.listen(4)
+
+    def _forward(src: socket.socket, dst: socket.socket) -> None:
+        try:
+            while True:
+                data = src.recv(4096)
+                if not data:
+                    break
+                dst.sendall(data)
+        except (OSError, EOFError):
+            pass
+        finally:
+            try:
+                src.close()
+            except OSError:
+                pass
+            try:
+                dst.close()
+            except OSError:
+                pass
+
+    def _tunnel_accept_loop() -> None:
+        while True:
+            try:
+                client_sock, addr = server.accept()
+                channel = transport.open_channel(
+                    "direct-tcpip",
+                    ("127.0.0.1", remote_port),
+                    addr,
+                )
+                threading.Thread(target=_forward, args=(client_sock, channel), daemon=True).start()
+                threading.Thread(target=_forward, args=(channel, client_sock), daemon=True).start()
+            except Exception:
+                break
+
+    tunnel_thread = threading.Thread(target=_tunnel_accept_loop, daemon=True)
+    tunnel_thread.start()
+
+    def cleanup() -> None:
+        try:
+            server.close()
+        except OSError:
+            pass
+        ssh_client.close()
+
+    return local_port, cleanup
+
+
 def _run_attached(run_id: str | None) -> int:
     """Attach to a remote training run via LogsServer.
 
-    1. Resolve run metadata from .active_runs.json by run_id
-    2. Connect to LogsServer via RemoteWorker (TCP, no SSH needed)
+    Two transport modes:
+      - Direct TCP: If logs_host + logs_port in run metadata (exposed_ports).
+      - SSH tunnel: If only node_id (legacy instances without exposed_ports).
+        Opens paramiko tunnel to remote localhost:9100.
+
+    Flow:
+    1. Resolve run metadata from .active_runs.json
+    2. Connect to LogsServer (direct or via SSH tunnel)
     3. Start background sync thread (tail commands every 2s)
     4. Launch monitor TUI watching the local sync dir
     5. On quit: final sync, optionally terminate instance
     """
-    import threading
     import time
 
     from miniray import RemoteWorker
@@ -86,12 +195,27 @@ def _run_attached(run_id: str | None) -> int:
 
     run = _find_active_run(run_id)
     resolved_run_id = run["run_id"]
-    logs_host = run["logs_host"]
-    logs_port = run["logs_port"]
-    node_id = run.get("node_id")  # Optional, for terminate prompt
+    logs_host = run.get("logs_host")
+    logs_port = run.get("logs_port")
+    node_id = run.get("node_id")
 
-    print(f"Attaching to run: {resolved_run_id}")
-    print(f"LogsServer: {logs_host}:{logs_port}")
+    tunnel_cleanup: Callable[[], None] | None = None
+
+    if logs_host and logs_port:
+        # Direct TCP — instance was provisioned with exposed_ports
+        print(f"Attaching to run: {resolved_run_id}")
+        print(f"LogsServer: {logs_host}:{logs_port} (direct TCP)")
+    elif node_id:
+        # SSH tunnel — legacy instance without exposed_ports
+        print(f"Attaching to run: {resolved_run_id}")
+        print(f"Opening SSH tunnel to {node_id}...")
+        local_port, tunnel_cleanup = _open_ssh_tunnel(node_id, remote_port=9100)
+        logs_host = "127.0.0.1"
+        logs_port = local_port
+        print(f"LogsServer: localhost:{logs_port} (SSH tunnel)")
+    else:
+        print(f"Run {resolved_run_id} has no logs_host and no node_id — cannot attach")
+        return 1
 
     worker = RemoteWorker(logs_host, logs_port)
     worker.connect()
@@ -174,6 +298,9 @@ def _run_attached(run_id: str | None) -> int:
         print("  LogsServer disconnected, skipping final sync")
 
     worker.close()
+
+    if tunnel_cleanup is not None:
+        tunnel_cleanup()
 
     # Optional: terminate instance (requires bifrost + API key)
     if node_id:
