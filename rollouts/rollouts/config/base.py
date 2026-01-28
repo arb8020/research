@@ -13,6 +13,7 @@ All defaults are explicit (no magic).
 """
 
 import json
+import logging
 import os
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -20,6 +21,8 @@ from pathlib import Path
 from typing import Any
 
 from ..dtypes import Endpoint, EvalConfig, Message, PrepareMessagesFn, RunConfig
+
+logger = logging.getLogger(__name__)
 
 
 def infer_provider_from_model(model_name: str) -> str:
@@ -119,10 +122,13 @@ class BaseModelConfig:
         actual_api_key_env_var = self.api_key_env_var
 
         if inferred_provider != self.provider:
-            print(
-                f"⚠️  Provider mismatch: config says '{self.provider}' but model '{self.model_name}' suggests '{inferred_provider}'"
+            logger.warning(
+                "Provider mismatch: config says '%s' but model '%s' suggests '%s'",
+                self.provider,
+                self.model_name,
+                inferred_provider,
             )
-            print(f"   Auto-correcting to use provider: {inferred_provider}")
+            logger.warning("   Auto-correcting to use provider: %s", inferred_provider)
             actual_provider = inferred_provider
 
             # Also update api_base and api_key_env_var to match
@@ -138,7 +144,7 @@ class BaseModelConfig:
         # Tiger Style: No exceptions for missing env vars
         # Caller can check endpoint.api_key and handle as needed
         if not api_key and os.getenv("VERBOSE", "0") != "0":
-            print(f"⚠️  Warning: {actual_api_key_env_var} not set")
+            logger.warning("%s not set", actual_api_key_env_var)
 
         return Endpoint(
             provider=actual_provider,

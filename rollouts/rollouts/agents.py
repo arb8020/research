@@ -107,13 +107,17 @@ async def handle_checkpoint_event(
 
 async def stdout_handler(event: StreamEvent) -> None:
     """Simple stdout handler for granular streaming events"""
+    import sys
+
     if isinstance(event, TextDelta):
-        print(event.delta, end="", flush=True)
+        sys.stdout.write(event.delta)
+        sys.stdout.flush()
     elif isinstance(event, ThinkingDelta):
         # Magenta color for thinking
-        print(f"\033[95m{event.delta}\033[0m", end="", flush=True)
+        sys.stdout.write(f"\033[95m{event.delta}\033[0m")
+        sys.stdout.flush()
     elif isinstance(event, ToolCallEnd):
-        print(f"\n🔧 Calling {event.tool_call.name}({event.tool_call.args})")
+        logger.info("\n🔧 Calling %s(%s)", event.tool_call.name, event.tool_call.args)
     # Note: tool_result events are emitted separately by the agent loop, not by stream aggregators
 
 
@@ -135,10 +139,10 @@ async def confirm_tool_with_feedback(
     if not state.environment.requires_confirmation(tc):
         return state, ToolConfirmResult(proceed=True)
 
-    print(f"\n▶️ Execute `{tc.name}({tc.args})`?")
-    print("  [y] Yes, execute")
-    print("  [n] No, provide feedback")
-    print("  [s] No, skip silently")
+    logger.info("\n▶️ Execute `%s(%s)`?", tc.name, tc.args)
+    logger.info("  [y] Yes, execute")
+    logger.info("  [n] No, provide feedback")
+    logger.info("  [s] No, skip silently")
 
     # Intentionally blocking - this is interactive terminal input
     resp = input("Choice: ").strip().lower()  # noqa: ASYNC250

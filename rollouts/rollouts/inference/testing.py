@@ -10,6 +10,7 @@ Reference: vllm/tests/models/utils.py
 
 from __future__ import annotations
 
+import logging
 import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -19,6 +20,8 @@ import torch.nn.functional as F
 
 if TYPE_CHECKING:
     from transformers import PreTrainedModel, PreTrainedTokenizer
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -361,18 +364,25 @@ def check_outputs_equal(
     for prompt_idx, (out_0, out_1) in enumerate(zip(outputs_0, outputs_1, strict=False)):
         if out_0.generated_tokens != out_1.generated_tokens:
             all_equal = False
-            print(
-                f"Prompt {prompt_idx} ({out_0.prompt[:30]}...):\n"
-                f"  {name_0}: {out_0.generated_tokens}\n"
-                f"  {name_1}: {out_1.generated_tokens}"
+            logger.warning(
+                "Prompt %s (%s...):\n  %s: %s\n  %s: %s",
+                prompt_idx,
+                out_0.prompt[:30],
+                name_0,
+                out_0.generated_tokens,
+                name_1,
+                out_1.generated_tokens,
             )
 
         if out_0.generated_text != out_1.generated_text:
             all_equal = False
-            print(
-                f"Prompt {prompt_idx} text mismatch:\n"
-                f"  {name_0}: {out_0.generated_text!r}\n"
-                f"  {name_1}: {out_1.generated_text!r}"
+            logger.warning(
+                "Prompt %s text mismatch:\n  %s: %r\n  %s: %r",
+                prompt_idx,
+                name_0,
+                out_0.generated_text,
+                name_1,
+                out_1.generated_text,
             )
 
     return all_equal

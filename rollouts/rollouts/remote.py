@@ -23,6 +23,7 @@ Usage:
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import TYPE_CHECKING
 
@@ -33,6 +34,8 @@ load_dotenv()
 if TYPE_CHECKING:
     from bifrost import BifrostClient
     from broker.client import ClientGPUInstance
+
+logger = logging.getLogger(__name__)
 
 
 def get_broker_credentials() -> dict[str, str]:
@@ -108,14 +111,14 @@ def acquire_node(
 
     if ssh:
         # Static node - just connect
-        print(f"Connecting to static node: {ssh}")
+        logger.info("Connecting to static node: %s", ssh)
         client = BifrostClient(ssh, ssh_key_path=ssh_key_path)
         return client, None
 
     elif node_id:
         # Existing instance - look it up
         node_provider, instance_id = node_id.split(":", 1)
-        print(f"Connecting to existing instance: {node_provider}:{instance_id}")
+        logger.info("Connecting to existing instance: %s:%s", node_provider, instance_id)
 
         credentials = get_broker_credentials()
         assert credentials, "No broker credentials found in environment"
@@ -124,8 +127,8 @@ def acquire_node(
         instance = broker.get_instance(instance_id, node_provider)
         assert instance, f"Instance not found: {node_id}"
 
-        print(f"  GPU: {instance.gpu_count}x {instance.gpu_type}")
-        print("  Waiting for SSH...")
+        logger.info("  GPU: %sx %s", instance.gpu_count, instance.gpu_type)
+        logger.info("  Waiting for SSH...")
         instance.wait_until_ssh_ready(timeout=ssh_timeout)
 
         key_path = broker.get_ssh_key_path(node_provider)
@@ -138,7 +141,7 @@ def acquire_node(
 
     elif provision:
         # Provision new instance
-        print(f"Provisioning new instance ({gpu_count}x {gpu_type})...")
+        logger.info("Provisioning new instance (%sx %s)...", gpu_count, gpu_type)
 
         credentials = get_broker_credentials()
         assert credentials, "No broker credentials found in environment"
@@ -161,10 +164,10 @@ def acquire_node(
             sort=lambda x: x.price_per_hour,
         )
 
-        print(f"  Instance ID: {instance.provider}:{instance.id}")
-        print(f"  GPU: {instance.gpu_count}x {instance.gpu_type}")
-        print(f"  Price: ${instance.price_per_hour:.2f}/hr")
-        print("  Waiting for SSH...")
+        logger.info("  Instance ID: %s:%s", instance.provider, instance.id)
+        logger.info("  GPU: %sx %s", instance.gpu_count, instance.gpu_type)
+        logger.info("  Price: $%.2f/hr", instance.price_per_hour)
+        logger.info("  Waiting for SSH...")
 
         if not instance.wait_until_ssh_ready(timeout=ssh_timeout):
             instance.terminate()
@@ -203,13 +206,15 @@ def release_node(
         return
 
     if keep_alive:
-        print(f"\n💡 Instance kept alive: {instance.provider}:{instance.id}")
-        print(f"   Reuse with: --node-id {instance.provider}:{instance.id}")
-        print(f"   SSH: {instance.ssh_connection_string()}")
+        logger.info("")
+        logger.info("💡 Instance kept alive: %s:%s", instance.provider, instance.id)
+        logger.info("   Reuse with: --node-id %s:%s", instance.provider, instance.id)
+        logger.info("   SSH: %s", instance.ssh_connection_string())
     else:
-        print(f"\nTerminating instance {instance.provider}:{instance.id}...")
+        logger.info("")
+        logger.info("Terminating instance %s:%s...", instance.provider, instance.id)
         instance.terminate()
-        print("Instance terminated.")
+        logger.info("Instance terminated.")
 
 
 def add_remote_args(parser: object) -> None:

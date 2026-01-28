@@ -30,6 +30,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -39,6 +40,8 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .dtypes import Environment, Message, Score
+
+logger = logging.getLogger(__name__)
 
 
 # ──────────────────────── EvalSpec ────────────────────────────────────────────
@@ -176,7 +179,7 @@ def run_eval_from_spec(  # noqa: PLR0913
     if _limit is not None:
         tasks = tasks[:_limit]
 
-    print(f"[{spec.name}] Loaded {len(tasks)} tasks")
+    logger.info("[%s] Loaded %s tasks", spec.name, len(tasks))
 
     # ── Build endpoint ──
     # Try standard env vars for the provider

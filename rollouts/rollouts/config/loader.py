@@ -5,10 +5,13 @@ Load Python files as modules and extract the 'config' variable.
 """
 
 import importlib.util
+import logging
 from pathlib import Path
 from typing import Any, TypeVar
 
 T = TypeVar("T")
+
+logger = logging.getLogger(__name__)
 
 
 def load_config_from_file(config_path: str | Path, config_name: str = "config") -> Any:
@@ -99,5 +102,6 @@ def validate_config_protocol(config: Any, protocol_class: type) -> list[str]:
             for attr_name, _attr_type in protocol_class.__annotations__.items():
                 if not hasattr(config, attr_name):
                     errors.append(f"Missing required attribute: {attr_name}")
+                    logger.debug("Config missing attribute: %s", attr_name)
 
     return errors

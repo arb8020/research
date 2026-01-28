@@ -6,7 +6,10 @@ Based on implementations from Slime and VERL.
 Tiger Style: Graceful fallback, clear error messages.
 """
 
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 
 
 def set_gpu_affinity(local_rank: int | None = None, verbose: bool = True) -> bool:
@@ -52,7 +55,7 @@ def set_gpu_affinity(local_rank: int | None = None, verbose: bool = True) -> boo
 
         if torch.version.hip is not None:
             if verbose:
-                print("[MiniRay] ROCm/HIP detected, skipping NUMA affinity")
+                logger.info("ROCm/HIP detected, skipping NUMA affinity")
             return False
 
         # Import pynvml
@@ -69,7 +72,7 @@ def set_gpu_affinity(local_rank: int | None = None, verbose: bool = True) -> boo
             pynvml.nvmlDeviceSetCpuAffinity(handle)
 
             if verbose:
-                print(f"[MiniRay] Set NUMA affinity for GPU {local_rank}")
+                logger.info("Set NUMA affinity for GPU %s", local_rank)
 
             return True
 
@@ -79,13 +82,13 @@ def set_gpu_affinity(local_rank: int | None = None, verbose: bool = True) -> boo
 
     except ImportError as e:
         if verbose:
-            print(f"[MiniRay] pynvml not available, skipping NUMA affinity: {e}")
-            print("[MiniRay] Install with: pip install nvidia-ml-py")
+            logger.info("pynvml not available, skipping NUMA affinity: %s", e)
+            logger.info("Install with: pip install nvidia-ml-py")
         return False
 
     except Exception as e:
         if verbose:
-            print(f"[MiniRay] Failed to set NUMA affinity: {e}")
+            logger.warning("Failed to set NUMA affinity: %s", e)
         return False
 
 
@@ -114,8 +117,8 @@ def get_gpu_numa_node(local_rank: int = 0) -> int:
         finally:
             pynvml.nvmlShutdown()
 
-    except Exception as e:
-        print(f"Failed to get NUMA node: {e}")
+    except Exception:
+        logger.exception("Failed to get NUMA node")
         return -1
 
 

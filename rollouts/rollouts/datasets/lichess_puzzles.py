@@ -16,10 +16,13 @@ Example:
 """
 
 import csv
+import logging
 from pathlib import Path
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 # Lichess puzzle database URL (zstandard compressed)
 PUZZLE_DB_URL = "https://database.lichess.org/lichess_db_puzzle.csv.zst"
@@ -45,7 +48,7 @@ async def download_puzzles(
     # Download zstd compressed version
     zst_path = cache_dir / "lichess_db_puzzle.csv.zst"
 
-    print(f"Downloading lichess puzzles to {zst_path}...")
+    logger.info("Downloading lichess puzzles to %s...", zst_path)
 
     async with httpx.AsyncClient(timeout=600, follow_redirects=True) as client:
         async with client.stream("GET", PUZZLE_DB_URL) as response:
@@ -59,9 +62,9 @@ async def download_puzzles(
                     downloaded += len(chunk)
                     if total:
                         pct = downloaded / total * 100
-                        print(f"\rDownloading: {pct:.1f}%", end="", flush=True)
+                        logger.debug("Downloading: %.1f%%", pct)
 
-    print("\nExtracting...")
+    logger.info("Extracting...")
 
     # Decompress zstd
     try:
@@ -88,7 +91,7 @@ async def download_puzzles(
     # Clean up zst file
     zst_path.unlink()
 
-    print(f"Done. Puzzles saved to {csv_path}")
+    logger.info("Done. Puzzles saved to %s", csv_path)
     return csv_path
 
 

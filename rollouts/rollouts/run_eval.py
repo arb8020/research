@@ -46,7 +46,7 @@ def load_config_from_file(config_path: Path, workspace_root: Path | None = None)
     Returns:
         Loaded config object with resolved paths
     """
-    print(f"📝 Loading config from: {config_path}")
+    logger.info("Loading config from: %s", config_path)
 
     import importlib.util
 
@@ -64,12 +64,12 @@ def load_config_from_file(config_path: Path, workspace_root: Path | None = None)
     if workspace_root:
         # Explicit workspace root provided (e.g., from bifrost deployment)
         project_root = workspace_root
-        print(f"📁 Using explicit workspace root: {workspace_root}")
+        logger.info("Using explicit workspace root: %s", workspace_root)
     else:
         # Legacy: Infer from config file location
         config_path_abs = Path(config_path).absolute()
         project_root = config_path_abs.parent.parent  # Go up from configs/ to project root
-        print(f"📁 Inferred project root: {project_root}")
+        logger.info("Inferred project root: %s", project_root)
 
     # Resolve dataset path
     if hasattr(config, "dataset") and hasattr(config.dataset, "dataset_path"):
@@ -77,7 +77,7 @@ def load_config_from_file(config_path: Path, workspace_root: Path | None = None)
         if not dataset_path.is_absolute():
             absolute_path = (project_root / dataset_path).resolve()
             object.__setattr__(config.dataset, "dataset_path", absolute_path)
-            print(f"📂 Resolved dataset path: {absolute_path}")
+            logger.info("Resolved dataset path: %s", absolute_path)
 
     # Resolve save_dir path
     if hasattr(config, "output") and hasattr(config.output, "save_dir"):
@@ -85,7 +85,7 @@ def load_config_from_file(config_path: Path, workspace_root: Path | None = None)
         if not save_dir.is_absolute():
             absolute_save_dir = (project_root / save_dir).resolve()
             object.__setattr__(config.output, "save_dir", absolute_save_dir)
-            print(f"💾 Resolved save directory: {absolute_save_dir}")
+            logger.info("Resolved save directory: %s", absolute_save_dir)
 
     return config
 
