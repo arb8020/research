@@ -346,7 +346,58 @@ def monitor_main(argv: list[str] | None = None) -> int:
         metavar="RUN_ID",
         help="Attach to remote run by ID (e.g. run_20250127-143052). No value = latest.",
     )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="List active remote runs from .active_runs.json",
+    )
+    parser.add_argument(
+        "--probe",
+        action="store_true",
+        help="With --list, probe LogsServer reachability (adds STATUS column)",
+    )
     args = parser.parse_args(argv)
+
+    # ── List mode ──
+    if args.list:
+        if not ACTIVE_RUNS_PATH.exists():
+            print("No active runs file found.", file=sys.stderr)
+            return 1
+        runs = json.loads(ACTIVE_RUNS_PATH.read_text())
+        if not runs:
+            print("No active runs.")
+            return 0
+
+        if args.probe:
+            print(f"{'RUN ID':<30} {'NODE':<25} {'LOGS':<25} {'STATUS':<10} {'STARTED'}")
+            print("-" * 115)
+        else:
+            print(f"{'RUN ID':<30} {'NODE':<25} {'LOGS':<25} {'STARTED'}")
+            print("-" * 100)
+
+        for run in runs:
+            run_id = run.get("run_id", "?")
+            node_id = run.get("node_id", "?")
+            logs_host = run.get("logs_host")
+            logs_port = run.get("logs_port")
+            logs = f"{logs_host or '?'}:{logs_port or '?'}"
+            started = run.get("started_at", "?")[:19] if run.get("started_at") else "?"
+
+            if args.probe:
+                status = "?"
+                if logs_host and logs_port:
+                    try:
+                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        sock.settimeout(2.0)
+                        sock.connect((logs_host, int(logs_port)))
+                        sock.close()
+                        status = "✓ up"
+                    except (OSError, ValueError):
+                        status = "✗ down"
+                print(f"{run_id:<30} {node_id:<25} {logs:<25} {status:<10} {started}")
+            else:
+                print(f"{run_id:<30} {node_id:<25} {logs:<25} {started}")
+        return 0
 
     # ── Attach mode ──
     if args.attach is not None:
