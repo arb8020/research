@@ -69,64 +69,77 @@ def _find_active_run(run_id: str | None) -> dict:
 
 
 def _run_attached(run_id: str | None) -> int:
-    """Attach to a remote training run via bifrost.
+    """Attach to a remote training run via LogsServer.
 
     1. Resolve run metadata from .active_runs.json by run_id
-    2. Connect to remote node via bifrost
-    3. Start background sync thread (download_files every 3s)
+    2. Connect to LogsServer via RemoteWorker (TCP, no SSH needed)
+    3. Start background sync thread (tail commands every 2s)
     4. Launch monitor TUI watching the local sync dir
-    5. On quit: prompt to terminate or keep instance alive
+    5. On quit: final sync, optionally terminate instance
     """
     import threading
     import time
 
-    from dotenv import load_dotenv
-
-    from bifrost import JobInfo, acquire_node, job_status
+    from miniray import RemoteWorker
 
     from .rlmon import make_app
 
-    load_dotenv()
-
     run = _find_active_run(run_id)
     resolved_run_id = run["run_id"]
-    node_id = run["node_id"]
-    remote_output_dir = run["remote_output_dir"]
+    logs_host = run["logs_host"]
+    logs_port = run["logs_port"]
+    node_id = run.get("node_id")  # Optional, for terminate prompt
 
     print(f"Attaching to run: {resolved_run_id}")
-    print(f"Node: {node_id}")
-    print(f"Remote: {remote_output_dir}")
+    print(f"LogsServer: {logs_host}:{logs_port}")
 
-    bifrost, instance = acquire_node(node_id=node_id)
+    worker = RemoteWorker(logs_host, logs_port)
+    worker.connect()
+
+    # Discover available files
+    worker.send({"cmd": "list"})
+    available = worker.recv()
+    print(f"Files: {', '.join(available['files'])}")
 
     local_sync_dir = Path("results/rl") / resolved_run_id
     local_sync_dir.mkdir(parents=True, exist_ok=True)
 
-    sync_files = [
-        "metrics.jsonl",
-        "rollouts.jsonl",
-        "training.log",
-        "error_log.jsonl",
-        "events.jsonl",
-        "config.json",
-        "sglang.log",
-        "vllm.log",
-    ]
+    # Track byte offsets per file for incremental tail
+    offsets: dict[str, int] = {}
 
     stop_sync = threading.Event()
 
     def sync_loop() -> None:
         while not stop_sync.is_set():
-            for filename in sync_files:
-                try:
-                    bifrost.download_files(
-                        remote_path=f"{remote_output_dir}/{filename}",
-                        local_path=str(local_sync_dir / filename),
-                        recursive=False,
-                    )
-                except Exception:
-                    pass
-            stop_sync.wait(3.0)
+            try:
+                worker.send({"cmd": "list"})
+                resp = worker.recv()
+                files = resp.get("files", [])
+
+                for filename in files:
+                    offset = offsets.get(filename, 0)
+                    worker.send({"cmd": "tail", "file": filename, "offset": offset})
+                    result = worker.recv()
+
+                    if result.get("error"):
+                        continue
+
+                    new_lines = result.get("lines", [])
+                    new_offset = result.get("offset", offset)
+
+                    if new_lines:
+                        local_path = local_sync_dir / filename
+                        with open(local_path, "a") as f:
+                            for line in new_lines:
+                                f.write(line + "\n")
+
+                    offsets[filename] = new_offset
+
+            except (EOFError, BrokenPipeError, ConnectionResetError):
+                print("[monitor] LogsServer connection lost")
+                break
+
+            stop_sync.wait(2.0)
 
     sync_thread = threading.Thread(target=sync_loop, daemon=True)
     sync_thread.start()
@@ -134,43 +147,45 @@ def _run_attached(run_id: str | None) -> int:
     # Give first sync a moment to populate files
     time.sleep(1.5)
 
-    job_info = JobInfo(
-        name="rl-training",
-        tmux_session=run.get("tmux_session", "rl-training"),
-        log_file=run.get("log_file"),
-    )
-
     print(f"Watching: {local_sync_dir}")
     app = make_app(str(local_sync_dir))
     app.run()
 
-    # TUI exited
+    # TUI exited — final sync
     stop_sync.set()
     sync_thread.join(timeout=5.0)
 
-    status = job_status(bifrost, job_info)
-    if status == "running":
-        print(f"\nTraining is still running on {node_id}.")
-    else:
-        print(f"\nTraining has completed on {node_id}.")
+    print("\nFinal sync...")
+    try:
+        worker.send({"cmd": "list"})
+        resp = worker.recv()
+        for filename in resp.get("files", []):
+            offset = offsets.get(filename, 0)
+            worker.send({"cmd": "tail", "file": filename, "offset": offset})
+            result = worker.recv()
+            new_lines = result.get("lines", [])
+            if new_lines:
+                local_path = local_sync_dir / filename
+                with open(local_path, "a") as f:
+                    for line in new_lines:
+                        f.write(line + "\n")
+                print(f"  Synced: {resolved_run_id}/{filename} (+{len(new_lines)} lines)")
+    except (EOFError, BrokenPipeError, ConnectionResetError):
+        print("  LogsServer disconnected, skipping final sync")
 
-    # Final sync
-    print("Final sync...")
-    for filename in sync_files:
-        try:
-            result = bifrost.download_files(
-                remote_path=f"{remote_output_dir}/{filename}",
-                local_path=str(local_sync_dir / filename),
-                recursive=False,
-            )
-            if result and result.success:
-                print(f"  Synced: {resolved_run_id}/{filename}")
-        except Exception:
-            pass
+    worker.close()
 
-    if instance:
-        answer = input("Terminate instance? [y/n] ").strip().lower()
+    # Optional: terminate instance (requires bifrost + API key)
+    if node_id:
+        answer = input(f"\nTerminate instance {node_id}? [y/n] ").strip().lower()
         if answer == "y":
+            from dotenv import load_dotenv
+
+            from bifrost import acquire_node
+
+            load_dotenv()
+            bifrost, instance = acquire_node(node_id=node_id)
+            assert instance is not None, f"Instance not found: {node_id}"
             print(f"Terminating {node_id}...")
             instance.terminate()
             print("Terminated.")
