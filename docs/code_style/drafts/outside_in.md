@@ -99,3 +99,14 @@ implementations.
 bad code happens when you design the middle without pinning
 either end. you end up with abstractions that don't match the
 primitives (leaky) or don't match the usage (awkward).
+
+<!-- TODO: flesh out this draft:
+  - add a simpler worked example before the Modal one (something a reader
+    without broker/bifrost context can follow)
+  - add concrete failure mode examples: designing top-down without pinning
+    bottom (API that's impossible to implement), and bottom-up without
+    pinning top (wrapper API shaped like the external lib, not the caller)
+  - collect more quotes from conversation about "it's casey's technique
+    applied at both boundaries" and "the bottom end IS usage code — it's
+    you using Modal's API"
+-->

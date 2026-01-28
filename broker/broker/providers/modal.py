@@ -155,6 +155,18 @@ def _create_sandbox_sync(
 
 # ============================================================================
 # ProviderModule interface (async)
+#
+# TODO: Build modal.Image from DepsConfig (recipes/schema.py) instead of
+# _build_default_image(). Currently the image is hardcoded with torch.
+# DepsConfig has base_image, pip_packages, pip_index_url, system_packages,
+# and bootstrap_commands — all the info needed for modal.Image.debian_slim()
+# .apt_install().pip_install() chains.
+#
+# TODO: Implement the three Modal workload types from modal.com/llm-almanac:
+# (1) Offline/batch — vLLM + .spawn()/.spawn_map() for throughput-first evals
+# (2) Online/interactive — SGLang + modal.experimental.http_server for low-latency
+# (3) Semi-online/bursty — autoscaling web_server + GPU memory snapshots
+# Currently only Sandbox-based (1) is supported.
 # ============================================================================
 
 

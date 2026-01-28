@@ -79,7 +79,14 @@ class GPUOffer:
 
 @dataclass
 class GPUInstance:
-    """A provisioned GPU instance with convenience methods"""
+    """A provisioned GPU instance with convenience methods
+
+    TODO: Add ModalGPUInstance subclass that overrides exec()/aexec() to call
+    sandbox.exec() instead of SSH. Currently Modal callers must use
+    broker.providers.modal.exec_on_sandbox() directly, which breaks the
+    uniform instance.exec() interface. The subclass should store the sandbox
+    reference and route exec through it transparently.
+    """
 
     id: str
     provider: str
