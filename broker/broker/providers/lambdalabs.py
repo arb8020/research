@@ -6,8 +6,9 @@ import logging
 import time
 from typing import Any
 
-import requests
-from shared.retry import retry
+import httpx
+import trio
+from shared.retry import async_retry
 
 from ..types import CloudType, GPUInstance, GPUOffer, InstanceStatus, ProvisionRequest
 
@@ -16,8 +17,10 @@ logger = logging.getLogger(__name__)
 LAMBDA_API_BASE_URL = "https://cloud.lambdalabs.com/api/v1"
 
 
-@retry(max_attempts=3, delay=1, backoff=2, exceptions=(requests.RequestException, requests.Timeout))
-def _make_api_request(
+@async_retry(
+    max_attempts=3, delay=1, backoff=2, exceptions=(httpx.HTTPError, httpx.TimeoutException)
+)
+async def _make_api_request(
     method: str,
     endpoint: str,
     data: dict | None = None,
@@ -49,19 +52,19 @@ def _make_api_request(
     )
 
     try:
-        response = requests.request(
-            method=method,
-            url=url,
-            json=data,
-            params=params,
-            headers=headers,
-            timeout=(10, 30),  # Connect timeout, read timeout
-        )
-        response.raise_for_status()
-    except requests.Timeout:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30, connect=10)) as client:
+            response = await client.request(
+                method=method,
+                url=url,
+                json=data,
+                params=params,
+                headers=headers,
+            )
+            response.raise_for_status()
+    except httpx.TimeoutException:
         logger.exception("Lambda Labs API request timed out")
         raise
-    except requests.RequestException as exc:
+    except httpx.HTTPError as exc:
         logger.exception(f"Lambda Labs API request failed: {exc}")
         raise
 
@@ -72,7 +75,7 @@ def _make_api_request(
     return response.json()
 
 
-def search_gpu_offers(
+async def search_gpu_offers(
     cuda_version: str | None = None,
     manufacturer: str | None = None,
     memory_gb: int | None = None,
@@ -83,7 +86,7 @@ def search_gpu_offers(
     """Search for available GPU offers on Lambda Labs with optional filtering"""
 
     try:
-        response = _make_api_request("GET", "/instance-types", api_key=api_key)
+        response = await _make_api_request("GET", "/instance-types", api_key=api_key)
         offers = []
 
         # Lambda Labs API returns: {"data": {"gpu_1x_a100": {...}, ...}}
@@ -179,7 +182,7 @@ def search_gpu_offers(
         return []
 
 
-def provision_instance(
+async def provision_instance(
     request: ProvisionRequest, ssh_startup_script: str | None = None, api_key: str | None = None
 ) -> GPUInstance | None:
     """Provision a GPU instance on Lambda Labs"""
@@ -205,7 +208,7 @@ def provision_instance(
     # We need to use the SSH key that's already registered with Lambda Labs
     ssh_key_names = []
     try:
-        ssh_keys_response = _make_api_request("GET", "/ssh-keys", api_key=api_key)
+        ssh_keys_response = await _make_api_request("GET", "/ssh-keys", api_key=api_key)
         ssh_keys = ssh_keys_response.get("data", [])
         if ssh_keys:
             # Use the first available SSH key
@@ -235,7 +238,7 @@ def provision_instance(
     instance_name = request.name or f"lambda-{instance_type_name}-{int(time.time())}"
 
     try:
-        response = _make_api_request(
+        response = await _make_api_request(
             "POST", "/instance-operations/launch", data=launch_data, api_key=api_key
         )
 
@@ -257,8 +260,8 @@ def provision_instance(
 
         # Immediately fetch instance details to get full info
         # Wait a moment for instance to be queryable
-        time.sleep(2)
-        instance = get_instance_details(instance_id, api_key=api_key)
+        await trio.sleep(2)
+        instance = await get_instance_details(instance_id, api_key=api_key)
 
         if instance:
             # Update name
@@ -283,10 +286,10 @@ def provision_instance(
         return None
 
 
-def get_instance_details(instance_id: str, api_key: str | None = None) -> GPUInstance | None:
+async def get_instance_details(instance_id: str, api_key: str | None = None) -> GPUInstance | None:
     """Get details of a specific instance"""
     try:
-        response = _make_api_request("GET", f"/instances/{instance_id}", api_key=api_key)
+        response = await _make_api_request("GET", f"/instances/{instance_id}", api_key=api_key)
 
         if not response or "data" not in response:
             return None
@@ -299,10 +302,10 @@ def get_instance_details(instance_id: str, api_key: str | None = None) -> GPUIns
         return None
 
 
-def list_instances(api_key: str | None = None) -> list[GPUInstance]:
+async def list_instances(api_key: str | None = None) -> list[GPUInstance]:
     """List all user's instances"""
     try:
-        response = _make_api_request("GET", "/instances", api_key=api_key)
+        response = await _make_api_request("GET", "/instances", api_key=api_key)
 
         instances = []
         # Lambda Labs returns: {"data": [instance1, instance2, ...]}
@@ -326,12 +329,12 @@ def list_instances(api_key: str | None = None) -> list[GPUInstance]:
         return []
 
 
-def terminate_instance(instance_id: str, api_key: str | None = None) -> bool:
+async def terminate_instance(instance_id: str, api_key: str | None = None) -> bool:
     """Terminate a Lambda Labs instance"""
     try:
         # Lambda Labs terminate endpoint takes a JSON body with instance_ids array
         terminate_data = {"instance_ids": [instance_id]}
-        _make_api_request(
+        await _make_api_request(
             "POST", "/instance-operations/terminate", data=terminate_data, api_key=api_key
         )
         logger.info(f"successfully terminated lambda labs instance {instance_id}")
@@ -410,7 +413,7 @@ def _parse_instance_to_gpu_instance(
     )
 
 
-def get_user_balance(api_key: str | None = None) -> dict[str, Any] | None:
+async def get_user_balance(api_key: str | None = None) -> dict[str, Any] | None:
     """Get user balance and spending information from Lambda Labs"""
 
     # Note: Lambda Labs doesn't appear to have a balance endpoint in their public API
@@ -427,7 +430,7 @@ def get_user_balance(api_key: str | None = None) -> dict[str, Any] | None:
         return None
 
 
-def wait_for_ssh_ready(instance, timeout: int = 900) -> bool:
+async def wait_for_ssh_ready(instance, timeout: int = 900) -> bool:
     """Lambda Labs-specific SSH waiting implementation"""
     # Assert preconditions
     assert instance.provider == "lambdalabs"
@@ -435,11 +438,11 @@ def wait_for_ssh_ready(instance, timeout: int = 900) -> bool:
     assert timeout > 0
 
     # Wait for RUNNING status
-    if not _wait_until_active(instance, timeout):
+    if not await _wait_until_active(instance, timeout):
         return False
 
     # Wait for SSH details to be populated
-    if not _wait_for_ssh_assignment(instance, time.time(), timeout):
+    if not await _wait_for_ssh_assignment(instance, time.time(), timeout):
         return False
 
     # Lambda Labs instances are ready for SSH once they're active and have an IP
@@ -447,19 +450,19 @@ def wait_for_ssh_ready(instance, timeout: int = 900) -> bool:
     # (it's only available at the client level, not in the provider layer)
     # Give SSH daemon a moment to fully start
     logger.debug("instance is active with ssh details assigned. waiting 10s for ssh daemon...")
-    time.sleep(10)
+    await trio.sleep(10)
     logger.debug("ssh should be ready!")
     return True
 
 
-def _wait_until_active(instance, timeout: int) -> bool:
+async def _wait_until_active(instance, timeout: int) -> bool:
     """Wait for instance to reach active status"""
     start_time = time.time()
 
     logger.debug(f"waiting for instance {instance.id} to reach active status...")
 
     while time.time() - start_time < timeout:
-        fresh = get_instance_details(instance.id, api_key=instance.api_key)
+        fresh = await get_instance_details(instance.id, api_key=instance.api_key)
         if not fresh:
             logger.error("Instance disappeared")
             return False
@@ -473,19 +476,19 @@ def _wait_until_active(instance, timeout: int) -> bool:
             logger.error(f"Instance terminal state: {fresh.status}")
             return False
 
-        time.sleep(10)
+        await trio.sleep(10)
 
     logger.error(f"Timeout waiting for active status after {timeout}s")
     return False
 
 
-def _wait_for_ssh_assignment(instance, start_time: float, timeout: int) -> bool:
+async def _wait_for_ssh_assignment(instance, start_time: float, timeout: int) -> bool:
     """Wait for SSH details to be assigned"""
     logger.debug("waiting for ssh details...")
     next_log_time = start_time + 30  # Log at 30s, 60s, 90s, ...
 
     while time.time() - start_time < timeout:
-        fresh = get_instance_details(instance.id, api_key=instance.api_key)
+        fresh = await get_instance_details(instance.id, api_key=instance.api_key)
 
         if fresh and fresh.public_ip and fresh.ssh_port:
             # Update instance with SSH details
@@ -505,17 +508,17 @@ def _wait_for_ssh_assignment(instance, start_time: float, timeout: int) -> bool:
             logger.debug(f"Waiting for SSH details - {elapsed}s")
             next_log_time += 30  # Schedule next log
 
-        time.sleep(10)
+        await trio.sleep(10)
 
     elapsed_min = int((time.time() - start_time) / 60)
     logger.error(f"Timeout waiting for SSH after {elapsed_min} min")
     return False
 
 
-def _test_ssh_connectivity(instance) -> bool:
+async def _test_ssh_connectivity(instance) -> bool:
     """Test SSH connectivity with echo command"""
     logger.debug("ssh details ready! waiting 15s for ssh daemon...")
-    time.sleep(15)
+    await trio.sleep(15)
 
     try:
         result = instance.exec("echo 'ssh_ready'", timeout=30)
@@ -530,6 +533,6 @@ def _test_ssh_connectivity(instance) -> bool:
         return False
 
 
-def get_fresh_instance(instance_id: str, api_key: str):
+async def get_fresh_instance(instance_id: str, api_key: str):
     """Alias for get_instance_details (ProviderProtocol requirement)"""
-    return get_instance_details(instance_id, api_key=api_key)
+    return await get_instance_details(instance_id, api_key=api_key)

@@ -6,9 +6,7 @@ Re-exports from pytui with rollouts-specific additions (session tracking).
 from __future__ import annotations
 
 # Re-export everything from pytui
-from pytui.terminal import (
-    Terminal as _PytTerminal,
-)
+from pytui.terminal import Terminal
 
 # Rollouts-specific: session ID tracking for crash reporting
 _active_session_id: str | None = None
@@ -22,7 +20,7 @@ def set_active_session_id(session_id: str | None) -> None:
 
 # ProcessTerminal is the old name for pytui.Terminal (with bracketed paste, no alternate screen)
 # Keep for backwards compat with interactive_agent.py
-class ProcessTerminal(_PytTerminal):
+class ProcessTerminal(Terminal):
     """Terminal configured for interactive agent use (bracketed paste, session tracking)."""
 
     def __init__(self) -> None:
