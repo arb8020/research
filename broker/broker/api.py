@@ -40,7 +40,7 @@ PROVIDER_MODULES: dict[str, ProviderModule] = {
 }
 
 
-def search(  # noqa: PLR0913 - search API has many filter options
+async def search(  # noqa: PLR0913 - search API has many filter options
     query: QueryType | None = None,
     # Legacy parameters for backward compatibility
     gpu_type: str | None = None,
@@ -85,7 +85,7 @@ def search(  # noqa: PLR0913 - search API has many filter options
     if provider is None or provider == "runpod":
         api_key = credentials.get("runpod") if credentials else None
         if api_key:  # Only search if we have credentials
-            runpod_offers = runpod.search_gpu_offers(
+            runpod_offers = await runpod.search_gpu_offers(
                 cuda_version=cuda_version,
                 manufacturer=manufacturer,
                 memory_gb=memory_gb,
@@ -98,7 +98,7 @@ def search(  # noqa: PLR0913 - search API has many filter options
     if provider is None or provider == "primeintellect":
         api_key = credentials.get("primeintellect") if credentials else None
         if api_key:  # Only search if we have credentials
-            prime_offers = primeintellect.search_gpu_offers(
+            prime_offers = await primeintellect.search_gpu_offers(
                 cuda_version=cuda_version,
                 manufacturer=manufacturer,
                 memory_gb=memory_gb,
@@ -111,7 +111,7 @@ def search(  # noqa: PLR0913 - search API has many filter options
     if provider is None or provider == "lambdalabs":
         api_key = credentials.get("lambdalabs") if credentials else None
         if api_key:  # Only search if we have credentials
-            lambda_offers = lambdalabs.search_gpu_offers(
+            lambda_offers = await lambdalabs.search_gpu_offers(
                 cuda_version=cuda_version,
                 manufacturer=manufacturer,
                 memory_gb=memory_gb,
@@ -124,7 +124,7 @@ def search(  # noqa: PLR0913 - search API has many filter options
     if provider is None or provider == "vast":
         api_key = credentials.get("vast") if credentials else None
         if api_key:  # Only search if we have credentials
-            vast_offers = vast.search_gpu_offers(
+            vast_offers = await vast.search_gpu_offers(
                 cuda_version=cuda_version,
                 manufacturer=manufacturer,
                 memory_gb=memory_gb,
@@ -137,7 +137,7 @@ def search(  # noqa: PLR0913 - search API has many filter options
     if provider is None or provider == "digitalocean":
         api_key = credentials.get("digitalocean") if credentials else None
         if api_key:  # Only search if we have credentials
-            do_offers = digitalocean.search_gpu_offers(
+            do_offers = await digitalocean.search_gpu_offers(
                 cuda_version=cuda_version,
                 manufacturer=manufacturer,
                 memory_gb=memory_gb,
@@ -150,7 +150,7 @@ def search(  # noqa: PLR0913 - search API has many filter options
     if provider is None or provider == "digitalocean_amd":
         api_key = credentials.get("digitalocean_amd") if credentials else None
         if api_key:  # Only search if we have credentials
-            do_amd_offers = digitalocean_amd.search_gpu_offers(
+            do_amd_offers = await digitalocean_amd.search_gpu_offers(
                 cuda_version=cuda_version,
                 manufacturer=manufacturer,
                 memory_gb=memory_gb,
@@ -181,9 +181,13 @@ def search(  # noqa: PLR0913 - search API has many filter options
     return offers
 
 
-def get_instance(
+async def get_instance(
     instance_id: str, provider: str, credentials: dict | None = None
 ) -> GPUInstance | None:
+    # TODO: get_instance, terminate_instance, list_instances, and search all have
+    # duplicated if/elif chains dispatching to per-provider modules. These should
+    # use the ProviderModule protocol + PROVIDER_MODULES lookup instead of hardcoding
+    # each provider. Deferred to avoid mixing refactor with the async migration.
     """
     Get details of a specific instance
 
@@ -199,30 +203,32 @@ def get_instance(
     api_key = credentials.get(provider) if credentials else None
 
     if provider == "runpod":
-        instance = runpod.get_instance_details(instance_id, api_key=api_key)
+        instance = await runpod.get_instance_details(instance_id, api_key=api_key)
         if instance:
             return instance
     elif provider == "primeintellect":
-        instance = primeintellect.get_instance_details(instance_id, api_key=api_key)
+        instance = await primeintellect.get_instance_details(instance_id, api_key=api_key)
         if instance:
             return instance
     elif provider == "lambdalabs":
-        instance = lambdalabs.get_instance_details(instance_id, api_key=api_key)
+        instance = await lambdalabs.get_instance_details(instance_id, api_key=api_key)
         if instance:
             return instance
     elif provider == "digitalocean":
-        instance = digitalocean.get_instance_details(instance_id, api_key=api_key)
+        instance = await digitalocean.get_instance_details(instance_id, api_key=api_key)
         if instance:
             return instance
     elif provider == "digitalocean_amd":
-        instance = digitalocean_amd.get_instance_details(instance_id, api_key=api_key)
+        instance = await digitalocean_amd.get_instance_details(instance_id, api_key=api_key)
         if instance:
             return instance
 
     return None
 
 
-def terminate_instance(instance_id: str, provider: str, credentials: dict | None = None) -> bool:
+async def terminate_instance(
+    instance_id: str, provider: str, credentials: dict | None = None
+) -> bool:
     """
     Terminate a GPU instance
 
@@ -238,25 +244,25 @@ def terminate_instance(instance_id: str, provider: str, credentials: dict | None
     api_key = credentials.get(provider) if credentials else None
 
     if provider == "runpod":
-        if runpod.terminate_instance(instance_id, api_key=api_key):
+        if await runpod.terminate_instance(instance_id, api_key=api_key):
             return True
     elif provider == "primeintellect":
-        if primeintellect.terminate_instance(instance_id, api_key=api_key):
+        if await primeintellect.terminate_instance(instance_id, api_key=api_key):
             return True
     elif provider == "lambdalabs":
-        if lambdalabs.terminate_instance(instance_id, api_key=api_key):
+        if await lambdalabs.terminate_instance(instance_id, api_key=api_key):
             return True
     elif provider == "digitalocean":
-        if digitalocean.terminate_instance(instance_id, api_key=api_key):
+        if await digitalocean.terminate_instance(instance_id, api_key=api_key):
             return True
     elif provider == "digitalocean_amd":
-        if digitalocean_amd.terminate_instance(instance_id, api_key=api_key):
+        if await digitalocean_amd.terminate_instance(instance_id, api_key=api_key):
             return True
 
     return False
 
 
-def _normalize_query_input(  # noqa: PLR0913 - internal helper mirrors search() params
+async def _normalize_query_input(  # noqa: PLR0913 - internal helper mirrors search() params
     query: QueryType | list[GPUOffer] | GPUOffer | None,
     gpu_type: str | None,
     max_price_per_hour: float | None,
@@ -286,7 +292,7 @@ def _normalize_query_input(  # noqa: PLR0913 - internal helper mirrors search() 
         memory_gb = kwargs.get("memory_gb")
         container_disk_gb = kwargs.get("container_disk_gb")
 
-        offers = search(
+        offers = await search(
             query=query,
             gpu_type=gpu_type,
             max_price_per_hour=max_price_per_hour,
@@ -303,7 +309,7 @@ def _normalize_query_input(  # noqa: PLR0913 - internal helper mirrors search() 
         return offers
 
 
-def _try_provision_with_fallback(  # noqa: PLR0913 - internal helper for provisioning
+async def _try_provision_with_fallback(  # noqa: PLR0913 - internal helper for provisioning
     suitable_offers: list[GPUOffer],
     n_offers: int,
     image: str,
@@ -351,7 +357,9 @@ def _try_provision_with_fallback(  # noqa: PLR0913 - internal helper for provisi
         )
 
         # Try provisioning from this offer
-        attempt = _try_provision_from_offer(offer, request, request.ssh_startup_script, credentials)
+        attempt = await _try_provision_from_offer(
+            offer, request, request.ssh_startup_script, credentials
+        )
         attempts.append(attempt)
 
         # Check if successful
@@ -468,7 +476,7 @@ def _categorize_failure(attempts: list[ProvisionAttempt], total_offers: int) -> 
     )
 
 
-def _try_provision_from_offer(
+async def _try_provision_from_offer(
     offer: GPUOffer,
     request: ProvisionRequest,
     ssh_startup_script: str | None,
@@ -498,7 +506,9 @@ def _try_provision_from_offer(
 
     try:
         # Call provider's provision_instance
-        instance = provider_module.provision_instance(request, ssh_startup_script, api_key=api_key)
+        instance = await provider_module.provision_instance(
+            request, ssh_startup_script, api_key=api_key
+        )
 
         # Tiger Style: Assert postcondition - provider must return GPUInstance or None
         assert instance is None or isinstance(instance, GPUInstance), (
@@ -551,10 +561,10 @@ def _try_provision_from_offer(
 
     except Exception as e:
         # Import here to avoid circular dependency
-        import requests
+        import httpx
 
         # Check if it's a network error
-        if isinstance(e, (requests.Timeout, requests.RequestException)):
+        if isinstance(e, (httpx.TimeoutException, httpx.HTTPError)):
             logger.warning(f"Network error for {offer.provider}: {e}")
             return ProvisionAttempt(
                 offer_id=offer.id,
@@ -582,7 +592,7 @@ def _try_provision_from_offer(
             )
 
 
-def create(  # noqa: PLR0913 - create API has many configuration options
+async def create(  # noqa: PLR0913 - create API has many configuration options
     query: QueryType | list[GPUOffer] | GPUOffer | None = None,
     image: str = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04",
     name: str | None = None,
@@ -649,7 +659,7 @@ def create(  # noqa: PLR0913 - create API has many configuration options
     assert gpu_count > 0, f"gpu_count must be positive, got {gpu_count}"
 
     # Normalize input to list of offers
-    suitable_offers = _normalize_query_input(
+    suitable_offers = await _normalize_query_input(
         query,
         gpu_type,
         max_price_per_hour,
@@ -675,7 +685,7 @@ def create(  # noqa: PLR0913 - create API has many configuration options
         )
 
     # Try provisioning from top N offers
-    return _try_provision_with_fallback(
+    return await _try_provision_with_fallback(
         suitable_offers,
         n_offers,
         image,
@@ -692,7 +702,7 @@ def create(  # noqa: PLR0913 - create API has many configuration options
     )
 
 
-def list_instances(
+async def list_instances(
     provider: str | None = None, credentials: dict | None = None
 ) -> list[GPUInstance]:
     """
@@ -712,31 +722,31 @@ def list_instances(
     if provider is None or provider == "runpod":
         api_key = credentials.get("runpod") if credentials else None
         if api_key:  # Only list if we have credentials
-            runpod_instances = runpod.list_instances(api_key=api_key)
+            runpod_instances = await runpod.list_instances(api_key=api_key)
             instances.extend(runpod_instances)
 
     if provider is None or provider == "primeintellect":
         api_key = credentials.get("primeintellect") if credentials else None
         if api_key:  # Only list if we have credentials
-            prime_instances = primeintellect.list_instances(api_key=api_key)
+            prime_instances = await primeintellect.list_instances(api_key=api_key)
             instances.extend(prime_instances)
 
     if provider is None or provider == "lambdalabs":
         api_key = credentials.get("lambdalabs") if credentials else None
         if api_key:  # Only list if we have credentials
-            lambda_instances = lambdalabs.list_instances(api_key=api_key)
+            lambda_instances = await lambdalabs.list_instances(api_key=api_key)
             instances.extend(lambda_instances)
 
     if provider is None or provider == "vast":
         api_key = credentials.get("vast") if credentials else None
         if api_key:  # Only list if we have credentials
-            vast_instances = vast.list_instances(api_key=api_key)
+            vast_instances = await vast.list_instances(api_key=api_key)
             instances.extend(vast_instances)
 
     if provider is None or provider == "digitalocean_amd":
         api_key = credentials.get("digitalocean_amd") if credentials else None
         if api_key:  # Only list if we have credentials
-            do_amd_instances = digitalocean_amd.list_instances(api_key=api_key)
+            do_amd_instances = await digitalocean_amd.list_instances(api_key=api_key)
             instances.extend(do_amd_instances)
 
     return instances

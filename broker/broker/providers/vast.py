@@ -6,8 +6,9 @@ import logging
 import time
 from typing import Any
 
-import requests
-from shared.retry import retry
+import httpx
+import trio
+from shared.retry import async_retry
 
 from ..types import CloudType, GPUInstance, GPUOffer, InstanceStatus, ProvisionRequest
 
@@ -32,8 +33,10 @@ def _map_status(actual_status: str) -> InstanceStatus:
     return status_map.get(actual_status, InstanceStatus.PENDING)
 
 
-@retry(max_attempts=3, delay=1, backoff=2, exceptions=(requests.RequestException, requests.Timeout))
-def _make_api_request(
+@async_retry(
+    max_attempts=3, delay=1, backoff=2, exceptions=(httpx.HTTPError, httpx.TimeoutException)
+)
+async def _make_api_request(
     method: str,
     endpoint: str,
     data: dict | None = None,
@@ -60,19 +63,19 @@ def _make_api_request(
     )
 
     try:
-        response = requests.request(
-            method=method,
-            url=url,
-            json=data,
-            params=params,
-            headers=headers,
-            timeout=(10, 30),  # (connect_timeout, read_timeout)
-        )
-        response.raise_for_status()
-    except requests.Timeout:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30, connect=10)) as client:
+            response = await client.request(
+                method=method,
+                url=url,
+                json=data,
+                params=params,
+                headers=headers,
+            )
+            response.raise_for_status()
+    except httpx.TimeoutException:
         logger.exception("Vast.ai API request timed out")
         raise
-    except requests.RequestException as exc:
+    except httpx.HTTPError as exc:
         # Log response body for debugging 400 errors
         if hasattr(exc, "response") and exc.response is not None:
             try:
@@ -90,7 +93,7 @@ def _make_api_request(
     return response.json()
 
 
-def search_gpu_offers(
+async def search_gpu_offers(
     cuda_version: str | None = None,
     manufacturer: str | None = None,
     memory_gb: int | None = None,
@@ -155,7 +158,7 @@ def search_gpu_offers(
 
     # Casey Muratori: Provide BOTH high-level AND low-level access
     # Query Vast.ai API (broad search), then filter in Python (precise control)
-    response = _make_api_request("POST", "/bundles/", data=query, api_key=api_key)
+    response = await _make_api_request("POST", "/bundles/", data=query, api_key=api_key)
     offers_raw = response.get("offers", [])
 
     # Post-process filtering (decoupled from API call)
@@ -284,7 +287,7 @@ def search_gpu_offers(
     return offers
 
 
-def provision_instance(
+async def provision_instance(
     request: ProvisionRequest, ssh_startup_script: str | None = None, api_key: str | None = None
 ) -> GPUInstance | None:
     """Provision a GPU instance on Vast.ai
@@ -350,7 +353,9 @@ def provision_instance(
     }
 
     try:
-        data = _make_api_request("PUT", f"/asks/{offer_id}/", data=request_body, api_key=api_key)
+        data = await _make_api_request(
+            "PUT", f"/asks/{offer_id}/", data=request_body, api_key=api_key
+        )
 
         # Tiger Style: Assert response validity
         assert "success" in data, f"Vast.ai response missing 'success' field: {data}"
@@ -393,7 +398,7 @@ def provision_instance(
         return None
 
 
-def get_instance_details(instance_id: str, api_key: str | None = None) -> GPUInstance | None:
+async def get_instance_details(instance_id: str, api_key: str | None = None) -> GPUInstance | None:
     """Get details of a specific Vast.ai instance
 
     Args:
@@ -408,7 +413,9 @@ def get_instance_details(instance_id: str, api_key: str | None = None) -> GPUIns
 
     try:
         # List all instances and find the matching one
-        data = _make_api_request("GET", "/instances/", params={"owner": "me"}, api_key=api_key)
+        data = await _make_api_request(
+            "GET", "/instances/", params={"owner": "me"}, api_key=api_key
+        )
 
         instances = data.get("instances", [])
         assert isinstance(instances, list), f"instances must be list, got {type(instances)}"
@@ -463,7 +470,7 @@ def _parse_instance(inst: dict[str, Any], api_key: str) -> GPUInstance:
     )
 
 
-def list_instances(api_key: str | None = None) -> list[GPUInstance]:
+async def list_instances(api_key: str | None = None) -> list[GPUInstance]:
     """List all user's Vast.ai instances
 
     Args:
@@ -476,7 +483,9 @@ def list_instances(api_key: str | None = None) -> list[GPUInstance]:
         raise ValueError("Vast.ai API key is required")
 
     try:
-        data = _make_api_request("GET", "/instances/", params={"owner": "me"}, api_key=api_key)
+        data = await _make_api_request(
+            "GET", "/instances/", params={"owner": "me"}, api_key=api_key
+        )
 
         instances = data.get("instances", [])
         assert isinstance(instances, list), f"instances must be list, got {type(instances)}"
@@ -488,7 +497,7 @@ def list_instances(api_key: str | None = None) -> list[GPUInstance]:
         return []
 
 
-def terminate_instance(instance_id: str, api_key: str | None = None) -> bool:
+async def terminate_instance(instance_id: str, api_key: str | None = None) -> bool:
     """Terminate a Vast.ai instance
 
     Args:
@@ -502,7 +511,7 @@ def terminate_instance(instance_id: str, api_key: str | None = None) -> bool:
         raise ValueError("Vast.ai API key is required")
 
     try:
-        data = _make_api_request("DELETE", f"/instances/{instance_id}/", api_key=api_key)
+        data = await _make_api_request("DELETE", f"/instances/{instance_id}/", api_key=api_key)
 
         # Check success field
         if data.get("success"):
@@ -517,7 +526,7 @@ def terminate_instance(instance_id: str, api_key: str | None = None) -> bool:
         return False
 
 
-def wait_for_ssh_ready(instance, timeout: int = 300) -> bool:
+async def wait_for_ssh_ready(instance, timeout: int = 300) -> bool:
     """Wait for Vast.ai instance SSH to be ready
 
     Args:
@@ -545,7 +554,7 @@ def wait_for_ssh_ready(instance, timeout: int = 300) -> bool:
             return False
 
         # Refresh instance details
-        fresh_instance = get_instance_details(instance.id, api_key=instance.api_key)
+        fresh_instance = await get_instance_details(instance.id, api_key=instance.api_key)
         if not fresh_instance:
             logger.error(f"Failed to get instance details for {instance.id}")
             return False
@@ -566,7 +575,7 @@ def wait_for_ssh_ready(instance, timeout: int = 300) -> bool:
             return False
 
         logger.debug(f"Instance {instance.id} status: {fresh_instance.status}, waiting...")
-        time.sleep(5)
+        await trio.sleep(5)
 
     # Step 2: Wait for SSH details to be populated
     logger.debug(f"waiting for ssh details to be populated for instance {instance.id}...")
@@ -576,7 +585,7 @@ def wait_for_ssh_ready(instance, timeout: int = 300) -> bool:
             return False
 
         # Refresh instance details
-        fresh_instance = get_instance_details(instance.id, api_key=instance.api_key)
+        fresh_instance = await get_instance_details(instance.id, api_key=instance.api_key)
         if not fresh_instance:
             logger.error(f"Failed to get instance details for {instance.id}")
             return False
@@ -589,12 +598,12 @@ def wait_for_ssh_ready(instance, timeout: int = 300) -> bool:
             break
 
         logger.debug("SSH details not yet available, waiting...")
-        time.sleep(5)
+        await trio.sleep(5)
 
     # Step 3: Test SSH connectivity
     # Wait 30s for SSH daemon to be ready
     logger.debug("ssh details ready! waiting 30s for ssh daemon...")
-    time.sleep(30)
+    await trio.sleep(30)
 
     try:
         result = instance.exec("echo 'ssh_ready'", timeout=30)
@@ -609,10 +618,10 @@ def wait_for_ssh_ready(instance, timeout: int = 300) -> bool:
         return False
 
 
-def get_fresh_instance(instance_id: str, api_key: str):
+async def get_fresh_instance(instance_id: str, api_key: str):
     """Alias for get_instance_details (ProviderProtocol requirement)
 
     Why alias: Some parts of broker use get_fresh_instance, others use
     get_instance_details. Providing both ensures compatibility.
     """
-    return get_instance_details(instance_id, api_key=api_key)
+    return await get_instance_details(instance_id, api_key=api_key)

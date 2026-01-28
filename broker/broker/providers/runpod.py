@@ -6,8 +6,9 @@ import logging
 import time
 from typing import Any
 
-import requests
-from shared.retry import retry
+import httpx
+import trio
+from shared.retry import async_retry
 
 from ..types import CloudType, GPUInstance, GPUOffer, InstanceStatus, ProvisionRequest
 
@@ -237,8 +238,10 @@ def _build_ports_string(exposed_ports: list[int] | None, enable_http_proxy: bool
     return ",".join(ports)
 
 
-@retry(max_attempts=3, delay=1, backoff=2, exceptions=(requests.RequestException, requests.Timeout))
-def _make_graphql_request(
+@async_retry(
+    max_attempts=3, delay=1, backoff=2, exceptions=(httpx.HTTPError, httpx.TimeoutException)
+)
+async def _make_graphql_request(
     query: str, variables: dict | None = None, api_key: str | None = None
 ) -> dict[str, Any]:
     """Make a GraphQL request to RunPod API with automatic retries.
@@ -265,17 +268,17 @@ def _make_graphql_request(
         payload["variables"] = variables
 
     try:
-        response = requests.post(
-            RUNPOD_API_URL,
-            json=payload,
-            headers=headers,
-            timeout=(10, 30),
-        )
-        response.raise_for_status()
-    except requests.Timeout:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30, connect=10)) as client:
+            response = await client.post(
+                RUNPOD_API_URL,
+                json=payload,
+                headers=headers,
+            )
+            response.raise_for_status()
+    except httpx.TimeoutException:
         logger.exception("RunPod GraphQL request timed out")
         raise
-    except requests.RequestException as exc:
+    except httpx.HTTPError as exc:
         logger.exception(f"RunPod GraphQL request failed: {exc}")
         raise
 
@@ -286,7 +289,7 @@ def _make_graphql_request(
     return data["data"]
 
 
-def search_gpu_offers(
+async def search_gpu_offers(
     cuda_version: str | None = None,
     manufacturer: str | None = None,
     memory_gb: int | None = None,
@@ -336,7 +339,7 @@ def search_gpu_offers(
         """
 
         try:
-            data = _make_graphql_request(query, api_key=api_key)
+            data = await _make_graphql_request(query, api_key=api_key)
 
             for gpu_type in data.get("gpuTypes", []):
                 # Filter by manufacturer if specified
@@ -406,7 +409,7 @@ def search_gpu_offers(
     return offers
 
 
-def provision_instance(
+async def provision_instance(
     request: ProvisionRequest, ssh_startup_script: str | None = None, api_key: str | None = None
 ) -> GPUInstance | None:
     """Provision a GPU instance on RunPod"""
@@ -478,7 +481,7 @@ def provision_instance(
     variables = {"input": pod_input}
 
     try:
-        data = _make_graphql_request(mutation, variables, api_key=api_key)
+        data = await _make_graphql_request(mutation, variables, api_key=api_key)
         pod_data = data.get("podFindAndDeployOnDemand")
 
         if not pod_data:
@@ -503,7 +506,9 @@ def provision_instance(
         return None
 
 
-def get_instance_details_enhanced(instance_id: str, api_key: str | None = None) -> dict | None:
+async def get_instance_details_enhanced(
+    instance_id: str, api_key: str | None = None
+) -> dict | None:
     """Get comprehensive details of a specific instance with all available fields"""
     query = """
     query pod($input: PodFilter!) {
@@ -552,7 +557,7 @@ def get_instance_details_enhanced(instance_id: str, api_key: str | None = None) 
     variables = {"input": {"podId": instance_id}}
 
     try:
-        response = _make_graphql_request(query, variables, api_key=api_key)
+        response = await _make_graphql_request(query, variables, api_key=api_key)
         pod_data = response.get("pod")
 
         if not pod_data:
@@ -565,7 +570,7 @@ def get_instance_details_enhanced(instance_id: str, api_key: str | None = None) 
         return None
 
 
-def get_instance_details(instance_id: str, api_key: str | None = None) -> GPUInstance | None:
+async def get_instance_details(instance_id: str, api_key: str | None = None) -> GPUInstance | None:
     """Get details of a specific instance.
 
     Returns None if instance not found, raises on malformed data.
@@ -580,7 +585,7 @@ def get_instance_details(instance_id: str, api_key: str | None = None) -> GPUIns
     variables = {"input": {"podId": instance_id}}
 
     try:
-        data = _make_graphql_request(_POD_DETAILS_QUERY, variables, api_key=api_key)
+        data = await _make_graphql_request(_POD_DETAILS_QUERY, variables, api_key=api_key)
         pod = data.get("pod")
 
         if not pod:
@@ -664,7 +669,7 @@ def _parse_pod_to_instance(pod: dict[str, Any], api_key: str | None = None) -> G
     )
 
 
-def list_instances(api_key: str | None = None) -> list[GPUInstance]:
+async def list_instances(api_key: str | None = None) -> list[GPUInstance]:
     """List all user's instances"""
     query = """
     query {
@@ -714,7 +719,7 @@ def list_instances(api_key: str | None = None) -> list[GPUInstance]:
     """
 
     try:
-        data = _make_graphql_request(query, api_key=api_key)
+        data = await _make_graphql_request(query, api_key=api_key)
         pods = data.get("myself", {}).get("pods", [])
 
         instances = []
@@ -734,7 +739,7 @@ def list_instances(api_key: str | None = None) -> list[GPUInstance]:
         return []
 
 
-def get_user_balance(api_key: str | None = None) -> dict[str, Any] | None:
+async def get_user_balance(api_key: str | None = None) -> dict[str, Any] | None:
     """Get user balance and spending information from RunPod"""
     query = """
     query {
@@ -750,7 +755,7 @@ def get_user_balance(api_key: str | None = None) -> dict[str, Any] | None:
     """
 
     try:
-        data = _make_graphql_request(query, api_key=api_key)
+        data = await _make_graphql_request(query, api_key=api_key)
         user_data = data.get("myself")
 
         if not user_data:
@@ -775,7 +780,7 @@ def get_user_balance(api_key: str | None = None) -> dict[str, Any] | None:
         return None
 
 
-def terminate_instance(instance_id: str, api_key: str | None = None) -> bool:
+async def terminate_instance(instance_id: str, api_key: str | None = None) -> bool:
     """Terminate a RunPod instance"""
     # Use simple schema - RunPod API might return different types
     mutation = """
@@ -787,7 +792,7 @@ def terminate_instance(instance_id: str, api_key: str | None = None) -> bool:
     variables = {"input": {"podId": instance_id}}
 
     try:
-        data = _make_graphql_request(mutation, variables, api_key=api_key)
+        data = await _make_graphql_request(mutation, variables, api_key=api_key)
         result = data.get("podTerminate")
         logger.debug(f"runpod terminate response: {result} (type: {type(result)})")
         logger.debug(f"expected instance_id: {instance_id}")
@@ -809,7 +814,7 @@ def terminate_instance(instance_id: str, api_key: str | None = None) -> bool:
         return False
 
 
-def wait_for_ssh_ready(instance, timeout: int = 900) -> bool:
+async def wait_for_ssh_ready(instance, timeout: int = 900) -> bool:
     """RunPod-specific SSH waiting implementation (15 min default)"""
     # Tiger Style: Assert preconditions
     assert instance.provider == "runpod"
@@ -817,27 +822,25 @@ def wait_for_ssh_ready(instance, timeout: int = 900) -> bool:
     assert timeout > 0
 
     # Wait for RUNNING status
-    if not _wait_until_running(instance, timeout):
+    if not await _wait_until_running(instance, timeout):
         return False
 
     # Wait for direct SSH (RunPod-specific)
-    if not _wait_for_direct_ssh_assignment(instance, time.time(), timeout):
+    if not await _wait_for_direct_ssh_assignment(instance, time.time(), timeout):
         return False
 
     # Test connectivity
-    return _test_ssh_connectivity(instance)
+    return await _test_ssh_connectivity(instance)
 
 
-def _wait_until_running(instance, timeout: int) -> bool:
+async def _wait_until_running(instance, timeout: int) -> bool:
     """Wait for instance to reach RUNNING status (≤70 lines)"""
-    import time
-
     start_time = time.time()
 
     logger.debug(f"waiting for instance {instance.id} to reach running...")
 
     while time.time() - start_time < timeout:
-        fresh = get_instance_details(instance.id, api_key=instance.api_key)
+        fresh = await get_instance_details(instance.id, api_key=instance.api_key)
         if not fresh:
             logger.error("Instance disappeared")
             return False
@@ -850,21 +853,19 @@ def _wait_until_running(instance, timeout: int) -> bool:
             logger.error(f"Instance terminal state: {fresh.status}")
             return False
 
-        time.sleep(15)
+        await trio.sleep(15)
 
     logger.error(f"Timeout waiting for RUNNING after {timeout}s")
     return False
 
 
-def _wait_for_direct_ssh_assignment(instance, start_time: float, timeout: int) -> bool:
+async def _wait_for_direct_ssh_assignment(instance, start_time: float, timeout: int) -> bool:
     """Wait for direct SSH (not proxy) - RunPod specific (≤70 lines)"""
-    import time
-
     logger.debug("waiting for direct ssh (may take 5-15 min, proxy ignored)")
     next_log_time = start_time + 30  # Log at 30s, 60s, 90s, ...
 
     while time.time() - start_time < timeout:
-        fresh = get_instance_details(instance.id, api_key=instance.api_key)
+        fresh = await get_instance_details(instance.id, api_key=instance.api_key)
 
         if fresh and _has_direct_ssh(fresh):
             # Update instance with SSH details
@@ -884,7 +885,7 @@ def _wait_for_direct_ssh_assignment(instance, start_time: float, timeout: int) -
             _log_ssh_wait_status(instance, elapsed)
             next_log_time += 30  # Schedule next log
 
-        time.sleep(10)
+        await trio.sleep(10)
 
     elapsed_min = int((time.time() - start_time) / 60)
     logger.error(f"Timeout waiting for direct SSH after {elapsed_min} min")
@@ -911,12 +912,10 @@ def _log_ssh_wait_status(instance, elapsed_seconds: int) -> None:
         logger.debug(f"Waiting for SSH details - {elapsed_seconds}s")
 
 
-def _test_ssh_connectivity(instance) -> bool:
+async def _test_ssh_connectivity(instance) -> bool:
     """Test SSH connectivity with echo command (≤70 lines)"""
-    import time
-
     logger.debug("direct ssh ready! waiting 30s for ssh daemon...")
-    time.sleep(30)
+    await trio.sleep(30)
 
     try:
         result = instance.exec("echo 'ssh_ready'", timeout=30)
@@ -931,12 +930,12 @@ def _test_ssh_connectivity(instance) -> bool:
         return False
 
 
-def get_fresh_instance(instance_id: str, api_key: str):
+async def get_fresh_instance(instance_id: str, api_key: str):
     """Alias for get_instance_details (ProviderProtocol requirement)"""
-    return get_instance_details(instance_id, api_key=api_key)
+    return await get_instance_details(instance_id, api_key=api_key)
 
 
-def get_pod_logs(instance_id: str, api_key: str | None = None) -> dict[str, Any] | None:
+async def get_pod_logs(instance_id: str, api_key: str | None = None) -> dict[str, Any] | None:
     """Get pod logs and runtime information for debugging
 
     Args:
@@ -986,7 +985,7 @@ def get_pod_logs(instance_id: str, api_key: str | None = None) -> dict[str, Any]
     variables = {"input": {"podId": instance_id}}
 
     try:
-        data = _make_graphql_request(query, variables, api_key=api_key)
+        data = await _make_graphql_request(query, variables, api_key=api_key)
         pod_data = data.get("pod")
 
         if not pod_data:

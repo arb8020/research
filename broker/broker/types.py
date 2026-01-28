@@ -186,16 +186,18 @@ class GPUInstance:
         else:
             return f"{self.ssh_username}@{self.public_ip}:{self.ssh_port}"
 
-    def terminate(self) -> bool:
+    async def terminate(self) -> bool:
         """Terminate this instance"""
         from .api import terminate_instance
 
         credentials = {self.provider: self.api_key} if self.api_key else None
-        return terminate_instance(self.id, self.provider, credentials=credentials)
+        return await terminate_instance(self.id, self.provider, credentials=credentials)
 
-    def wait_until_ready(self, timeout: int = 600) -> bool:
+    async def wait_until_ready(self, timeout: int = 600) -> bool:
         """Wait until instance status is RUNNING"""
         import time
+
+        import trio
 
         from .api import get_instance
 
@@ -203,7 +205,7 @@ class GPUInstance:
 
         while time.time() - start_time < timeout:
             credentials = {self.provider: self.api_key} if self.api_key else None
-            updated_instance = get_instance(self.id, self.provider, credentials=credentials)
+            updated_instance = await get_instance(self.id, self.provider, credentials=credentials)
             if not updated_instance:
                 return False
 
@@ -214,11 +216,11 @@ class GPUInstance:
             elif updated_instance.status in [InstanceStatus.FAILED, InstanceStatus.TERMINATED]:
                 return False
 
-            time.sleep(15)  # Check every 15 seconds
+            await trio.sleep(15)  # Check every 15 seconds
 
         return False  # Timeout
 
-    def wait_until_ssh_ready(self, timeout: int = 900) -> bool:
+    async def wait_until_ssh_ready(self, timeout: int = 900) -> bool:
         """Wait until instance is running AND SSH is ready for connections.
 
         Delegates to provider-specific implementation since SSH setup varies
@@ -248,7 +250,7 @@ class GPUInstance:
             provider = get_provider_impl(self.provider)
 
             # Delegate to provider
-            result = provider.wait_for_ssh_ready(self, timeout)
+            result = await provider.wait_for_ssh_ready(self, timeout)
 
             # Assert postconditions
             if result:
@@ -261,11 +263,11 @@ class GPUInstance:
         else:
             return result
 
-    def refresh(self) -> "GPUInstance":
+    async def refresh(self) -> "GPUInstance":
         """Refresh instance details from provider"""
         from .api import get_instance
 
-        updated_instance = get_instance(self.id, self.provider)
+        updated_instance = await get_instance(self.id, self.provider)
         if updated_instance:
             self.__dict__.update(updated_instance.__dict__)
             return self
@@ -507,24 +509,28 @@ class ProviderModule(Protocol):
     Uses structural typing (Protocol) for compile-time checking without
     inheritance coupling. Aligns with Tiger Style compile-time assertions.
     This is composition (Casey Muratori registry pattern), not inheritance.
+
+    All methods are async — providers use httpx.AsyncClient for HTTP
+    and trio.sleep for waits. Modal wraps sync SDK calls in
+    trio.to_thread.run_sync().
     """
 
-    def provision_instance(
+    async def provision_instance(
         self,
         request: ProvisionRequest,
         ssh_startup_script: str | None = None,
         api_key: str | None = None,
     ) -> GPUInstance | None: ...
 
-    def get_instance_details(
+    async def get_instance_details(
         self, instance_id: str, api_key: str | None = None
     ) -> GPUInstance | None: ...
 
-    def list_instances(self, api_key: str | None = None) -> list[GPUInstance]: ...
+    async def list_instances(self, api_key: str | None = None) -> list[GPUInstance]: ...
 
-    def terminate_instance(self, instance_id: str, api_key: str | None = None) -> bool: ...
+    async def terminate_instance(self, instance_id: str, api_key: str | None = None) -> bool: ...
 
-    def search_gpu_offers(
+    async def search_gpu_offers(
         self,
         cuda_version: str | None = None,
         manufacturer: str | None = None,

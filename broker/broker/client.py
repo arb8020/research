@@ -49,8 +49,8 @@ class GPUClient:
         )
 
         # Search and provision
-        offers = client.search(client.gpu_type.contains("A100"))
-        instance = client.create(offers[0])
+        offers = await client.search(client.gpu_type.contains("A100"))
+        instance = await client.create(offers[0])
     """
 
     def __init__(
@@ -180,7 +180,7 @@ class GPUClient:
         return self._query.manufacturer
 
     # Main API methods
-    def search(
+    async def search(
         self,
         query: QueryType | None = None,
         sort: Callable[[Any], Any] | None = None,
@@ -199,9 +199,11 @@ class GPUClient:
         # Import here to avoid circular dependency
         from . import api
 
-        return api.search(query=query, sort=sort, reverse=reverse, credentials=self._credentials)
+        return await api.search(
+            query=query, sort=sort, reverse=reverse, credentials=self._credentials
+        )
 
-    def create(  # noqa: PLR0913 - create API has many configuration options
+    async def create(  # noqa: PLR0913 - create API has many configuration options
         self,
         query: QueryType | list[GPUOffer] | GPUOffer | None,
         image: str = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04",
@@ -255,7 +257,7 @@ class GPUClient:
             else:
                 query = query & (self.cloud_type == cloud_enum)
 
-        result = api.create(
+        result = await api.create(
             query=query,
             image=image,
             name=name,
@@ -293,7 +295,7 @@ class GPUClient:
             raise ProvisionError(f"All offers unavailable: {error_msg}", result)
         raise ProvisionError(f"Provisioning failed: {error_msg}", result)
 
-    def get_instance(self, instance_id: str, provider: str) -> Optional["ClientGPUInstance"]:
+    async def get_instance(self, instance_id: str, provider: str) -> Optional["ClientGPUInstance"]:
         """Get instance details
 
         Args:
@@ -302,12 +304,12 @@ class GPUClient:
         """
         from . import api
 
-        instance = api.get_instance(instance_id, provider, credentials=self._credentials)
+        instance = await api.get_instance(instance_id, provider, credentials=self._credentials)
         if instance:
             return ClientGPUInstance(instance, self)
         return None
 
-    def terminate_instance(self, instance_id: str, provider: str) -> bool:
+    async def terminate_instance(self, instance_id: str, provider: str) -> bool:
         """Terminate instance
 
         Args:
@@ -316,9 +318,9 @@ class GPUClient:
         """
         from . import api
 
-        return api.terminate_instance(instance_id, provider, credentials=self._credentials)
+        return await api.terminate_instance(instance_id, provider, credentials=self._credentials)
 
-    def list_instances(self, provider: str | None = None) -> list["ClientGPUInstance"]:
+    async def list_instances(self, provider: str | None = None) -> list["ClientGPUInstance"]:
         """List all user's instances
 
         Args:
@@ -326,7 +328,7 @@ class GPUClient:
         """
         from . import api
 
-        instances = api.list_instances(provider, credentials=self._credentials)
+        instances = await api.list_instances(provider, credentials=self._credentials)
         return [ClientGPUInstance(instance, self) for instance in instances]
 
 
@@ -418,23 +420,25 @@ class ClientGPUInstance:
 
         return await self._instance.aexec(command, ssh_key_path, timeout)
 
-    def wait_until_ready(self, timeout: int = 300) -> bool:
+    async def wait_until_ready(self, timeout: int = 300) -> bool:
         """Wait until instance is running"""
-        return self._instance.wait_until_ready(timeout)
+        return await self._instance.wait_until_ready(timeout)
 
-    def wait_until_ssh_ready(self, timeout: int = 300) -> bool:
+    async def wait_until_ssh_ready(self, timeout: int = 300) -> bool:
         """Wait until SSH is ready"""
-        return self._instance.wait_until_ssh_ready(timeout)
+        return await self._instance.wait_until_ssh_ready(timeout)
 
-    def refresh(self) -> "ClientGPUInstance":
+    async def refresh(self) -> "ClientGPUInstance":
         """Refresh the wrapped instance with latest data"""
-        updated_instance = self._client.get_instance(self._instance.id, self._instance.provider)
+        updated_instance = await self._client.get_instance(
+            self._instance.id, self._instance.provider
+        )
         if updated_instance:
             self._instance = updated_instance._instance
             return self
         else:
             raise ValueError(f"Could not refresh instance {self._instance.id}")
 
-    def terminate(self) -> bool:
+    async def terminate(self) -> bool:
         """Terminate this instance"""
-        return self._instance.terminate()
+        return await self._instance.terminate()

@@ -6,8 +6,9 @@ import logging
 import time
 from typing import Any
 
-import requests
-from shared.retry import retry
+import httpx
+import trio
+from shared.retry import async_retry
 
 from ..types import CloudType, GPUInstance, GPUOffer, InstanceStatus, ProvisionRequest
 
@@ -26,8 +27,10 @@ GPU_MODEL_NAMES = {
 }
 
 
-@retry(max_attempts=3, delay=1, backoff=2, exceptions=(requests.RequestException, requests.Timeout))
-def _make_api_request(
+@async_retry(
+    max_attempts=3, delay=1, backoff=2, exceptions=(httpx.HTTPError, httpx.TimeoutException)
+)
+async def _make_api_request(
     method: str,
     endpoint: str,
     data: dict | None = None,
@@ -59,19 +62,19 @@ def _make_api_request(
     )
 
     try:
-        response = requests.request(
-            method=method,
-            url=url,
-            json=data,
-            params=params,
-            headers=headers,
-            timeout=(10, 30),  # Connect timeout, read timeout
-        )
-        response.raise_for_status()
-    except requests.Timeout:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30, connect=10)) as client:
+            response = await client.request(
+                method=method,
+                url=url,
+                json=data,
+                params=params,
+                headers=headers,
+            )
+            response.raise_for_status()
+    except httpx.TimeoutException:
         logger.exception("DigitalOcean API request timed out")
         raise
-    except requests.RequestException as exc:
+    except httpx.HTTPError as exc:
         logger.exception(f"DigitalOcean API request failed: {exc}")
         raise
 
@@ -82,7 +85,7 @@ def _make_api_request(
     return response.json()
 
 
-def search_gpu_offers(
+async def search_gpu_offers(
     cuda_version: str | None = None,
     manufacturer: str | None = None,
     memory_gb: int | None = None,
@@ -104,7 +107,9 @@ def search_gpu_offers(
         List of available GPU offers
     """
     try:
-        response = _make_api_request("GET", "/sizes", params={"per_page": 200}, api_key=api_key)
+        response = await _make_api_request(
+            "GET", "/sizes", params={"per_page": 200}, api_key=api_key
+        )
         offers = []
 
         sizes = response.get("sizes", [])
@@ -201,7 +206,7 @@ def search_gpu_offers(
         return []
 
 
-def provision_instance(
+async def provision_instance(
     request: ProvisionRequest, ssh_startup_script: str | None = None, api_key: str | None = None
 ) -> GPUInstance | None:
     """Provision a GPU Droplet on DigitalOcean.
@@ -233,7 +238,7 @@ def provision_instance(
     # Get SSH key IDs from DigitalOcean account
     ssh_key_ids = []
     try:
-        ssh_keys_response = _make_api_request("GET", "/account/keys", api_key=api_key)
+        ssh_keys_response = await _make_api_request("GET", "/account/keys", api_key=api_key)
         ssh_keys = ssh_keys_response.get("ssh_keys", [])
         if ssh_keys:
             # Use all available SSH keys
@@ -273,7 +278,7 @@ def provision_instance(
         create_data["user_data"] = ssh_startup_script
 
     try:
-        response = _make_api_request("POST", "/droplets", data=create_data, api_key=api_key)
+        response = await _make_api_request("POST", "/droplets", data=create_data, api_key=api_key)
 
         if not response or "droplet" not in response:
             logger.error(f"No droplet data returned from DigitalOcean: {response}")
@@ -284,10 +289,10 @@ def provision_instance(
         logger.info(f"digitalocean droplet created: {droplet_id}")
 
         # Wait a moment for droplet to be queryable
-        time.sleep(2)
+        await trio.sleep(2)
 
         # Fetch full details
-        instance = get_instance_details(droplet_id, api_key=api_key)
+        instance = await get_instance_details(droplet_id, api_key=api_key)
         if instance:
             return instance
 
@@ -304,7 +309,7 @@ def provision_instance(
             api_key=api_key,
         )
 
-    except requests.HTTPError as e:
+    except httpx.HTTPStatusError as e:
         # Check for specific error messages
         error_msg = str(e)
         if hasattr(e, "response") and e.response is not None:
@@ -329,7 +334,7 @@ def provision_instance(
         return None
 
 
-def get_instance_details(instance_id: str, api_key: str | None = None) -> GPUInstance | None:
+async def get_instance_details(instance_id: str, api_key: str | None = None) -> GPUInstance | None:
     """Get details of a specific Droplet.
 
     Args:
@@ -340,7 +345,7 @@ def get_instance_details(instance_id: str, api_key: str | None = None) -> GPUIns
         GPUInstance if found, None otherwise
     """
     try:
-        response = _make_api_request("GET", f"/droplets/{instance_id}", api_key=api_key)
+        response = await _make_api_request("GET", f"/droplets/{instance_id}", api_key=api_key)
 
         if not response or "droplet" not in response:
             return None
@@ -353,7 +358,7 @@ def get_instance_details(instance_id: str, api_key: str | None = None) -> GPUIns
         return None
 
 
-def list_instances(api_key: str | None = None) -> list[GPUInstance]:
+async def list_instances(api_key: str | None = None) -> list[GPUInstance]:
     """List all user's Droplets (filters to GPU droplets only).
 
     Args:
@@ -363,7 +368,9 @@ def list_instances(api_key: str | None = None) -> list[GPUInstance]:
         List of GPU instances
     """
     try:
-        response = _make_api_request("GET", "/droplets", params={"per_page": 200}, api_key=api_key)
+        response = await _make_api_request(
+            "GET", "/droplets", params={"per_page": 200}, api_key=api_key
+        )
 
         instances = []
         droplets = response.get("droplets", [])
@@ -389,7 +396,7 @@ def list_instances(api_key: str | None = None) -> list[GPUInstance]:
         return []
 
 
-def terminate_instance(instance_id: str, api_key: str | None = None) -> bool:
+async def terminate_instance(instance_id: str, api_key: str | None = None) -> bool:
     """Terminate (delete) a DigitalOcean Droplet.
 
     Args:
@@ -400,7 +407,7 @@ def terminate_instance(instance_id: str, api_key: str | None = None) -> bool:
         True if successful, False otherwise
     """
     try:
-        _make_api_request("DELETE", f"/droplets/{instance_id}", api_key=api_key)
+        await _make_api_request("DELETE", f"/droplets/{instance_id}", api_key=api_key)
         logger.info(f"successfully terminated digitalocean droplet {instance_id}")
         return True
 
@@ -477,7 +484,7 @@ def _parse_droplet_to_gpu_instance(
     )
 
 
-def wait_for_ssh_ready(instance, timeout: int = 900) -> bool:
+async def wait_for_ssh_ready(instance, timeout: int = 900) -> bool:
     """DigitalOcean-specific SSH waiting implementation.
 
     Args:
@@ -498,7 +505,7 @@ def wait_for_ssh_ready(instance, timeout: int = 900) -> bool:
     logger.debug(f"waiting for droplet {instance.id} to become active...")
 
     while time.time() - start_time < timeout:
-        fresh = get_instance_details(instance.id, api_key=instance.api_key)
+        fresh = await get_instance_details(instance.id, api_key=instance.api_key)
         if not fresh:
             logger.error("Droplet disappeared")
             return False
@@ -515,19 +522,19 @@ def wait_for_ssh_ready(instance, timeout: int = 900) -> bool:
 
             # Wait for SSH daemon to start (DigitalOcean is usually fast)
             logger.debug("waiting 15s for ssh daemon to initialize...")
-            time.sleep(15)
+            await trio.sleep(15)
             return True
 
         elif fresh.status in [InstanceStatus.FAILED, InstanceStatus.TERMINATED]:
             logger.error(f"Droplet terminal state: {fresh.status}")
             return False
 
-        time.sleep(10)
+        await trio.sleep(10)
 
     logger.error(f"Timeout waiting for droplet after {timeout}s")
     return False
 
 
-def get_fresh_instance(instance_id: str, api_key: str):
+async def get_fresh_instance(instance_id: str, api_key: str):
     """Alias for get_instance_details (ProviderProtocol requirement)."""
-    return get_instance_details(instance_id, api_key=api_key)
+    return await get_instance_details(instance_id, api_key=api_key)
