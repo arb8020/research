@@ -187,15 +187,15 @@ def test_full_lifecycle_runpod():
         )
         assert len(offers) > 0, "No RunPod community offers available"
 
-        cheapest = offers[0]
-        print(f"\nProvisioning: {cheapest.gpu_type} @ ${cheapest.price_per_hour:.2f}/hr")
+        print(f"\nFound {len(offers)} offers, cheapest: {offers[0].gpu_type} @ ${offers[0].price_per_hour:.2f}/hr")
 
-        # 2. Provision
+        # 2. Provision — pass full offer list so broker can fallback through them
         instance = None
         try:
             instance = await client.create(
-                cheapest,
+                offers,
                 name="broker-async-test",
+                n_offers=5,
             )
 
             assert instance is not None, "create() returned None"
