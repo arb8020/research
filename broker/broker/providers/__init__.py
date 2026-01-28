@@ -89,5 +89,9 @@ def get_provider_impl(provider_name: str):
         from . import digitalocean_amd
 
         return digitalocean_amd
+    elif provider_name == "modal":
+        from . import modal
+
+        return modal
     else:
         raise ValueError(f"Unsupported provider: {provider_name}")

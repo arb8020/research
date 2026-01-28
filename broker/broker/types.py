@@ -393,7 +393,8 @@ class ProviderCredentials:
     vast: str = ""
     digitalocean: str = ""
     digitalocean_amd: str = ""
-    # Add more providers as needed
+    modal_token_id: str = ""  # Optional — Modal reads ~/.modal.toml by default
+    modal_token_secret: str = ""
 
     def __post_init__(self) -> None:
         # Tiger Style: assert at least one credential provided
@@ -404,6 +405,7 @@ class ProviderCredentials:
             or self.vast
             or self.digitalocean
             or self.digitalocean_amd
+            or self.modal_token_id
         ), "At least one provider credential required"
 
         # Validate credential format (basic length check)
@@ -437,6 +439,7 @@ class ProviderCredentials:
             or self.vast
             or self.digitalocean
             or self.digitalocean_amd
+            or self.modal_token_id
         ), "credentials validated"
 
     def get(self, provider: str) -> str | None:
@@ -453,6 +456,8 @@ class ProviderCredentials:
             return self.digitalocean
         elif provider == "digitalocean_amd":
             return self.digitalocean_amd
+        elif provider == "modal":
+            return self.modal_token_id or None
         return None
 
     def to_dict(self) -> dict[str, str]:
@@ -470,6 +475,10 @@ class ProviderCredentials:
             result["digitalocean"] = self.digitalocean
         if self.digitalocean_amd:
             result["digitalocean_amd"] = self.digitalocean_amd
+        if self.modal_token_id:
+            result["modal_token_id"] = self.modal_token_id
+        if self.modal_token_secret:
+            result["modal_token_secret"] = self.modal_token_secret
         return result
 
     @classmethod
@@ -482,6 +491,8 @@ class ProviderCredentials:
             vast=credentials.get("vast", ""),
             digitalocean=credentials.get("digitalocean", ""),
             digitalocean_amd=credentials.get("digitalocean_amd", ""),
+            modal_token_id=credentials.get("modal_token_id", ""),
+            modal_token_secret=credentials.get("modal_token_secret", ""),
         )
 
 

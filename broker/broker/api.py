@@ -6,7 +6,15 @@ import logging
 from collections.abc import Callable
 from typing import Any, cast
 
-from .providers import digitalocean, digitalocean_amd, lambdalabs, primeintellect, runpod, vast
+from .providers import (
+    digitalocean,
+    digitalocean_amd,
+    lambdalabs,
+    modal,
+    primeintellect,
+    runpod,
+    vast,
+)
 from .query import QueryType
 from .types import (
     GPUInstance,
@@ -28,6 +36,7 @@ PROVIDER_MODULES: dict[str, ProviderModule] = {
     "vast": cast(ProviderModule, vast),
     "digitalocean": cast(ProviderModule, digitalocean),
     "digitalocean_amd": cast(ProviderModule, digitalocean_amd),
+    "modal": cast(ProviderModule, modal),
 }
 
 
