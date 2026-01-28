@@ -1,5 +1,5 @@
 [tool.uv.workspace]
-members = ["bifrost", "broker", "shared", "rollouts", "miniray", "dev/kernel-learning"]
+members = ["bifrost", "broker", "shared", "rollouts", "miniray", "dev/kernel-learning", "pytui", "rlmon"]
 
 [project]
 name = "gpu-research-tools"
@@ -114,6 +114,8 @@ shared = { workspace = true }
 rollouts = { workspace = true }
 miniray = { workspace = true }
 kernel-learning = { workspace = true }
+pytui = { workspace = true }
+rlmon = { workspace = true }
 
 [build-system]
 requires = ["setuptools>=61.0"]

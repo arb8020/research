@@ -22,6 +22,8 @@ from .dtypes import (
     LLMCallEnd,
     Message,
     RunConfig,
+    SemaphoreAcquired,
+    SemaphoreWaitStart,
     SessionStatus,
     StopReason,
     StreamChunk,
@@ -568,7 +570,14 @@ async def run_agent_step(
     llm_error: str | None = None
     try:
         if rcfg.api_limiter is not None:
+            # Emit semaphore wait event for observability
+            await rcfg.on_chunk(SemaphoreWaitStart(limiter_type="api"))
+            wait_start = time.perf_counter()
             async with rcfg.api_limiter:
+                wait_duration_ms = (time.perf_counter() - wait_start) * 1000
+                await rcfg.on_chunk(
+                    SemaphoreAcquired(limiter_type="api", wait_duration_ms=wait_duration_ms)
+                )
                 next_actor = await do_rollout()
         else:
             next_actor = await do_rollout()
@@ -722,6 +731,10 @@ async def process_pending_tools(
                 assert current_state.environment is not None  # Maintained through loop
                 fresh_env = await current_state.environment.__class__.deserialize(env_data)
 
+                # Copy runtime attributes (like GPU pool references) that can't be serialized
+                if hasattr(fresh_env, "copy_runtime_from"):
+                    fresh_env.copy_runtime_from(current_state.environment)
+
                 # Update debug context for interrupt diagnostics
                 try:
                     from .frontends.runner import get_debug_context
@@ -758,7 +771,16 @@ async def process_pending_tools(
                     )
 
                 if rcfg.tool_limiter is not None:
+                    # Emit semaphore wait event for observability
+                    await rcfg.on_chunk(SemaphoreWaitStart(limiter_type="tool"))
+                    wait_start = time.perf_counter()
                     async with rcfg.tool_limiter:
+                        wait_duration_ms = (time.perf_counter() - wait_start) * 1000
+                        await rcfg.on_chunk(
+                            SemaphoreAcquired(
+                                limiter_type="tool", wait_duration_ms=wait_duration_ms
+                            )
+                        )
                         tool_result = await do_exec_tool()
                 else:
                     tool_result = await do_exec_tool()
@@ -778,9 +800,15 @@ async def process_pending_tools(
 
                 # DESERIALIZE again to update current_state
                 assert current_state.environment is not None  # Maintained through loop
+                new_env = await current_state.environment.__class__.deserialize(env_data)
+
+                # Copy runtime attributes (like GPU pool references) that can't be serialized
+                if hasattr(new_env, "copy_runtime_from"):
+                    new_env.copy_runtime_from(current_state.environment)
+
                 current_state = replace(
                     current_state,
-                    environment=await current_state.environment.__class__.deserialize(env_data),
+                    environment=new_env,
                 )
             else:
                 # Use the provided tool result
@@ -807,15 +835,42 @@ async def process_pending_tools(
 
         # Wide event: emit tool execution end with timing (only if tool actually executed)
         if tool_duration_ms is not None:
-            # Build result summary from tool_result.details if available
-            result_summary: dict[str, Any] | None = None
+            # Build result summary for observability
+            result_summary: dict[str, Any] = {}
+
+            # Wide events: capture everything needed to debug without re-running
+            if tool_call.name == "bash":
+                if "command" in tool_call.args:
+                    result_summary["command"] = tool_call.args["command"]
+                if tool_result.content:
+                    result_summary["output"] = str(tool_result.content)
+            elif tool_call.name == "write":
+                if "path" in tool_call.args:
+                    result_summary["path"] = tool_call.args["path"]
+                if "content" in tool_call.args:
+                    result_summary["content"] = tool_call.args["content"]
+
+            # Extract key metrics from details (e.g., compiled, correct for kernelbench)
             if tool_result.details:
-                # Extract key metrics for profiling (e.g., compiled, correct for kernelbench)
-                result_summary = {
-                    k: v
-                    for k, v in tool_result.details.items()
-                    if k in ("compiled", "correct", "speedup", "runtime_us", "error")
-                }
+                for k, v in tool_result.details.items():
+                    if k in (
+                        "compiled",
+                        "correct",
+                        "speedup",
+                        "runtime_us",
+                        "error",
+                        "exit_code",
+                        "output_file",
+                    ):
+                        result_summary[k] = v
+
+            # Always include error info when is_error for debugging
+            if tool_result.is_error:
+                if tool_result.error:
+                    result_summary["error"] = tool_result.error
+                elif tool_result.content:
+                    result_summary["error"] = str(tool_result.content)
+
             await rcfg.on_chunk(
                 ToolExecutionEnd(
                     tool_call_id=tool_call.id,

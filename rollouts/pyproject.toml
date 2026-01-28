@@ -15,6 +15,7 @@ dependencies = [
     "zstandard>=0.25.0",
     "python-chess>=1.999",
     "python-dotenv>=1.0.0",
+    "pytui",
 ]
 
 [project.scripts]

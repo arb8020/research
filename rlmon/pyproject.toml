@@ -1,0 +1,15 @@
+[project]
+name = "rlmon"
+version = "0.1.0"
+description = "btop-style RL training monitor. Watches output dirs, renders metrics + logs."
+requires-python = ">=3.10"
+dependencies = [
+    "pytui",
+]
+
+[project.scripts]
+rlmon = "rlmon.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

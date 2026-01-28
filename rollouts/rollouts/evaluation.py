@@ -152,14 +152,23 @@ def _extract_text_from_content(content: object) -> str:
 async def _evaluate_batch(
     samples: list[tuple[str, dict[str, Any]]],
     runtime: EvalRuntime,
+    on_sample_complete: Callable[[Sample, list[Sample]], None] | None = None,
 ) -> list[Sample]:
     """Evaluate a batch of samples, handling sequential vs parallel execution.
 
     This is the core evaluation loop, used for both initial runs and retries.
+
+    Args:
+        samples: List of (sample_id, sample_data) tuples
+        runtime: Runtime context
+        on_sample_complete: Optional callback invoked after each sample completes.
+            Receives (completed_sample, all_results_so_far). Useful for incremental
+            report writing during long evaluations.
     """
     config = runtime.config
     progress = runtime.progress
     results: list[Sample] = []
+    results_lock = trio.Lock()
 
     async def run_one(sample_id: str, sample_data: dict[str, Any]) -> Sample:
         """Evaluate a single sample."""
@@ -167,7 +176,14 @@ async def _evaluate_batch(
         if progress:
             progress.add_task(sample_id, name=task_name)
 
-        env = await config.environment_factory(sample_data) if config.environment_factory else None
+        # Get environment: prefer direct environment, fall back to factory
+        if config.environment is not None:
+            env = config.environment
+        elif config.environment_factory is not None:
+            env = await config.environment_factory(sample_data)
+        else:
+            env = None
+
         result = await evaluate_sample(
             sample_data=sample_data,
             sample_id=sample_id,
@@ -191,15 +207,21 @@ async def _evaluate_batch(
     if config.max_concurrent == 1:
         # Sequential
         for sample_id, sample_data in samples:
-            results.append(await run_one(sample_id, sample_data))
+            result = await run_one(sample_id, sample_data)
+            results.append(result)
+            if on_sample_complete:
+                on_sample_complete(result, results)
     else:
         # Parallel
         async with trio.open_nursery() as nursery:
             limiter = trio.CapacityLimiter(config.max_concurrent)
 
             async def run_with_limit(sid: str, sdata: dict[str, Any]) -> None:
-                async with limiter:
-                    results.append(await run_one(sid, sdata))
+                result = await run_one(sid, sdata)
+                async with results_lock:
+                    results.append(result)
+                    if on_sample_complete:
+                        on_sample_complete(result, results)
 
             for sample_id, sample_data in samples:
                 nursery.start_soon(run_with_limit, sample_id, sample_data)
@@ -478,6 +500,45 @@ class EvalReport:
         logger.info(f"  summary: {report_file}")
         logger.info(f"  samples: {samples_dir}")
         logger.info(f"  trajectories: {trajectories_dir}")
+
+
+def _write_partial_report(
+    output_dir: Path,
+    results: list[Sample],
+    config: EvalConfig,
+    interrupted: bool = False,
+    resume_from: int = 0,
+) -> None:
+    """Write a partial report to disk for crash recovery.
+
+    Called incrementally during evaluation so results aren't lost on failure.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save individual samples
+    samples_dir = output_dir / "samples"
+    samples_dir.mkdir(exist_ok=True)
+    for sample in results:
+        sample_file = samples_dir / f"{sample.id}.json"
+        sample_dict = sample.to_dict()
+        sample_dict = sanitize_api_keys(sample_dict)
+        sample_file.write_text(json.dumps(sample_dict, indent=2, default=str))
+
+    # Save partial summary
+    summary_metrics = compute_summary_metrics(results)
+    partial_report = {
+        "eval_name": config.eval_name,
+        "total_samples": len(results),
+        "summary_metrics": summary_metrics,
+        "interrupted": interrupted,
+        "resume_from": resume_from,
+        "sample_ids": [s.id for s in results],
+        "timestamp": datetime.now().isoformat(),
+    }
+    partial_report = sanitize_api_keys(partial_report)
+    report_file = output_dir / "report.json"
+    report_file.write_text(json.dumps(partial_report, indent=2))
 
 
 def sanitize_api_keys(data: JsonValue) -> JsonValue:
@@ -855,8 +916,29 @@ async def evaluate(
         progress=progress,
     )
 
+    # Create callback for incremental report writing
+    last_report_count = 0
+    resume_from = 0
+
+    def on_sample_complete(sample: Sample, all_results: list[Sample]) -> None:
+        """Write partial report after batch_size samples complete."""
+        nonlocal last_report_count
+        if not config.output_dir:
+            return
+
+        # Write report every report_batch_size samples
+        if len(all_results) - last_report_count >= config.report_batch_size:
+            _write_partial_report(
+                config.output_dir,
+                all_results,
+                config,
+                interrupted=False,
+                resume_from=resume_from,
+            )
+            last_report_count = len(all_results)
+
     # Run initial evaluation batch
-    results = await _evaluate_batch(samples_to_eval, runtime)
+    results = await _evaluate_batch(samples_to_eval, runtime, on_sample_complete)
 
     # Close progress display
     if progress:

@@ -269,6 +269,28 @@ class StreamChunk(JsonSerializable):
 
 
 @dataclass(frozen=True)
+class SemaphoreWaitStart(JsonSerializable):
+    """Emitted when waiting to acquire a semaphore (api_limiter or tool_limiter).
+
+    Enables distinguishing "waiting (queue)" from "waiting (api)" in status display.
+    """
+
+    limiter_type: Literal["api", "tool"]
+    type: Literal["semaphore_wait_start"] = "semaphore_wait_start"
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class SemaphoreAcquired(JsonSerializable):
+    """Emitted when semaphore is acquired (waiting is over)."""
+
+    limiter_type: Literal["api", "tool"]
+    wait_duration_ms: float  # How long we waited for the semaphore
+    type: Literal["semaphore_acquired"] = "semaphore_acquired"
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
 class LLMCallStart(JsonSerializable):
     """Emitted before making the LLM API call (before connection established)"""
 
@@ -502,7 +524,9 @@ class ToolExecutionEnd(JsonSerializable):
 
 # Union type for all streaming events
 StreamEvent = (
-    LLMCallStart
+    SemaphoreWaitStart
+    | SemaphoreAcquired
+    | LLMCallStart
     | LLMCallEnd
     | StreamStart
     | TextStart
@@ -1492,6 +1516,9 @@ class EvalConfig:
     prepare_messages: PrepareMessagesFn
 
     # Environment (optional - for tool-using agents)
+    # Use `environment` for stateless environments (same for all samples, e.g. CodingEnvironment)
+    # Use `environment_factory` when environment needs per-sample setup (e.g. GPUModeSimpleEnvironment)
+    environment: "Environment | None" = None
     environment_factory: EnvironmentFactory | None = None
 
     # Agent execution
@@ -1528,6 +1555,16 @@ class EvalConfig:
     # When both are set, samples yield their slot while waiting for the other resource type
     max_api_concurrent: int | None = None  # None = use max_concurrent for API calls
     max_tool_concurrent: int | None = None  # None = use max_concurrent for tool calls
+
+    # Interrupt/resume support
+    # resume_dir: Previous run directory to resume from (skip completed samples)
+    # report_batch_size: Write partial report every N samples (1 = after every sample)
+    resume_dir: Path | None = None
+    report_batch_size: int = 1  # Write report after each sample for best recovery
+
+    # Custom metadata (flows to report.json for dashboard filtering)
+    # e.g., {"experiment": "gemm", "runner": "elliot"}
+    metadata: dict[str, Any] | None = None
 
 
 # ── Session Types ──────────────────────────────────────────────────────────────
