@@ -22,3 +22,8 @@ miniray-server = "miniray.worker_server:main"
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# The miniray directory itself is the package (flat layout)
+packages = ["miniray"]
+package-dir = {"miniray" = "."}

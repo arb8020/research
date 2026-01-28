@@ -34,7 +34,7 @@ def _save_active_run(run_info: dict) -> None:
     ACTIVE_RUNS_PATH.write_text(json.dumps(runs, indent=2) + "\n")
 
 
-def _deploy_and_submit(
+async def _deploy_and_submit(
     script_path: str,
     node_id: str | None,
     gpu_count: int,
@@ -57,11 +57,11 @@ def _deploy_and_submit(
 
     # Acquire node
     if node_id:
-        bifrost, instance = acquire_node(node_id=node_id)
+        bifrost, instance = await acquire_node(node_id=node_id)
         print(f"Connected to existing instance: {node_id}")
     else:
         print(f"Provisioning {gpu_count}x {gpu_type}...")
-        bifrost, instance = acquire_node(
+        bifrost, instance = await acquire_node(
             provision=GPUQuery(
                 type=gpu_type,
                 count=gpu_count,
@@ -117,7 +117,7 @@ def _deploy_and_submit(
     return bifrost, instance, job, run_name, remote_output_dir, workspace
 
 
-def _block_until_complete(
+async def _block_until_complete(
     bifrost: BifrostClient,
     instance: ClientGPUInstance | None,
     job: JobInfo,
@@ -128,6 +128,8 @@ def _block_until_complete(
     keep_alive: bool,
 ) -> None:
     """Block on job, stream logs, sync results, optionally terminate."""
+    # TODO: job_stream_until_complete is sync (blocking IO). Fine for training
+    # runs that block for hours. Convert to async if we need concurrency here.
     from bifrost import job_stream_until_complete
 
     try:
@@ -201,10 +203,10 @@ def _block_until_complete(
         print("\n\nInterrupted! Syncing logs before exit...")
 
     finally:
-        _sync_and_cleanup(bifrost, instance, run_name, remote_output_dir, keep_alive)
+        await _sync_and_cleanup(bifrost, instance, run_name, remote_output_dir, keep_alive)
 
 
-def _sync_and_cleanup(
+async def _sync_and_cleanup(
     bifrost: BifrostClient,
     instance: ClientGPUInstance | None,
     run_name: str,
@@ -241,13 +243,13 @@ def _sync_and_cleanup(
     if instance:
         if not keep_alive:
             print(f"\nTerminating instance {instance.provider}:{instance.id}...")
-            instance.terminate()
+            await instance.terminate()
         else:
             print(f"\nInstance kept alive: {instance.provider}:{instance.id}")
             print(f"Reuse with: --node-id {instance.provider}:{instance.id}")
 
 
-def run_remote(
+async def run_remote(
     script_path: str,
     keep_alive: bool = False,
     node_id: str | None = None,
@@ -270,7 +272,7 @@ def run_remote(
     logs_port = 9100
     exposed_ports = (logs_port,) if fire_and_forget else ()
 
-    bifrost, instance, job, run_name, remote_output_dir, workspace = _deploy_and_submit(
+    bifrost, instance, job, run_name, remote_output_dir, workspace = await _deploy_and_submit(
         script_path=script_path,
         node_id=node_id,
         gpu_count=gpu_count,
@@ -280,7 +282,7 @@ def run_remote(
     )
 
     if not fire_and_forget:
-        _block_until_complete(
+        await _block_until_complete(
             bifrost,
             instance,
             job,
@@ -300,6 +302,9 @@ def run_remote(
     from bifrost import ProcessSpec
 
     print("Starting LogsServer...")
+    # Use relative path for --dir since cwd is workspace
+    # remote_output_dir is {workspace}/rollouts/results/rl/{run_name}
+    logs_dir_relative = f"rollouts/results/rl/{run_name}"
     bifrost.submit(
         ProcessSpec(
             command="python3",
@@ -309,7 +314,7 @@ def run_remote(
                 "--port",
                 str(logs_port),
                 "--dir",
-                remote_output_dir,
+                logs_dir_relative,
             ),
             cwd=workspace,  # Root so `python3 -m miniray.logs_server` can find miniray/
         ),
@@ -326,7 +331,8 @@ def run_remote(
 
     public_logs_port = logs_port  # default: assume container port = public port
     raw = instance.raw_data or {}
-    runtime_ports = raw.get("runtime", {}).get("ports", [])
+    runtime = raw.get("runtime") or {}
+    runtime_ports = runtime.get("ports") or []
     for p in runtime_ports:
         if p.get("privatePort") == logs_port and p.get("isIpPublic"):
             logs_host = p["ip"]

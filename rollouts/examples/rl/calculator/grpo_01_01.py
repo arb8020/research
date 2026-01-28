@@ -55,15 +55,18 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.provision or args.node_id:
+        import trio
+
         from examples.rl.base_config import run_remote
 
-        run_remote(
+        trio.run(
+            run_remote,
             __file__,
-            keep_alive=args.keep_alive,
-            node_id=args.node_id,
-            use_tui=args.tui,
-            tui_debug=args.tui_debug,
-            fire_and_forget=args.provision,
+            args.keep_alive,
+            args.node_id,
+            args.tui,
+            args.tui_debug,
+            args.provision,
         )
     else:
         results = train(config=config, max_samples=12)
