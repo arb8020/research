@@ -194,6 +194,72 @@ def _append_log(lines: tuple[str, ...], line: str, max_len: int = 5000) -> tuple
     return new
 
 
+def _clamp_scroll(scroll: int, total_lines: int, viewport_height: int = 20) -> int:
+    """Clamp scroll to valid range [0, max_scroll].
+
+    Args:
+        scroll: Current scroll position
+        total_lines: Total number of lines in content
+        viewport_height: Approximate viewport height (lines visible)
+
+    Returns:
+        Clamped scroll value
+    """
+    max_scroll = max(0, total_lines - viewport_height)
+    return max(0, min(scroll, max_scroll))
+
+
+def _get_active_lines(model: Model) -> tuple[str, ...]:
+    """Get the log lines for the currently active panel."""
+    match model.experiment_type:
+        case ExperimentType.RL:
+            if model.active_panel == 1:
+                return model.training_lines
+            elif model.active_panel == 2:
+                return model.sglang_lines
+        case ExperimentType.SFT:
+            if model.active_panel == 1:
+                return model.training_lines
+        case ExperimentType.EVAL:
+            if model.active_panel == 1:
+                return model.event_lines
+        case ExperimentType.GENERIC:
+            if model.active_panel == 1:
+                return model.generic_lines or model.training_lines or model.event_lines
+    return ()
+
+
+def _scroll_down(model: Model, delta: int) -> Model:
+    """Scroll down by delta lines, transitioning from auto-scroll if needed."""
+    lines = _get_active_lines(model)
+    total = len(lines)
+
+    if model.auto_scroll:
+        # Transitioning from auto-scroll: start at bottom, then move up by 1
+        # (user pressed j to scroll down, but we were following, so go back 1)
+        max_scroll = max(0, total - 20)  # Approximate viewport
+        new_scroll = max(0, max_scroll - 1)
+    else:
+        new_scroll = _clamp_scroll(model.scroll + delta, total)
+
+    return replace(model, scroll=new_scroll, auto_scroll=False)
+
+
+def _scroll_up(model: Model, delta: int) -> Model:
+    """Scroll up by delta lines, transitioning from auto-scroll if needed."""
+    lines = _get_active_lines(model)
+    total = len(lines)
+
+    if model.auto_scroll:
+        # Transitioning from auto-scroll: start at bottom, then move up
+        max_scroll = max(0, total - 20)  # Approximate viewport
+        new_scroll = max(0, max_scroll - delta)
+    else:
+        new_scroll = _clamp_scroll(model.scroll - delta, total)
+
+    return replace(model, scroll=new_scroll, auto_scroll=False)
+
+
 def _extract_log_message(raw: str) -> str:
     """Extract human-readable message from a log line.
 
@@ -352,21 +418,21 @@ def update(model: Model, msg: object) -> tuple[Model, Cmd]:
 
         # Vertical scroll: j/k or arrow keys (single line)
         case KeyPress(key="j" | "\x1b[B"):
-            return replace(model, scroll=model.scroll + 1, auto_scroll=False), Cmd.none()
+            return _scroll_down(model, 1), Cmd.none()
         case KeyPress(key="k" | "\x1b[A"):
-            return replace(model, scroll=max(0, model.scroll - 1), auto_scroll=False), Cmd.none()
+            return _scroll_up(model, 1), Cmd.none()
 
         # Half-page scroll: Ctrl-D/Ctrl-U (vim style)
         case KeyPress(key="\x04"):  # Ctrl-D
-            return replace(model, scroll=model.scroll + 10, auto_scroll=False), Cmd.none()
+            return _scroll_down(model, 10), Cmd.none()
         case KeyPress(key="\x15"):  # Ctrl-U
-            return replace(model, scroll=max(0, model.scroll - 10), auto_scroll=False), Cmd.none()
+            return _scroll_up(model, 10), Cmd.none()
 
         # Full page scroll: Page Down/Page Up, Space/b
         case KeyPress(key="\x1b[6~" | " "):  # Page Down or Space
-            return replace(model, scroll=model.scroll + 20, auto_scroll=False), Cmd.none()
+            return _scroll_down(model, 20), Cmd.none()
         case KeyPress(key="\x1b[5~" | "b"):  # Page Up or 'b'
-            return replace(model, scroll=max(0, model.scroll - 20), auto_scroll=False), Cmd.none()
+            return _scroll_up(model, 20), Cmd.none()
 
         # Horizontal scroll: h/l or left/right arrows
         case KeyPress(key="l" | "\x1b[C"):  # Right
@@ -395,20 +461,16 @@ def update(model: Model, msg: object) -> tuple[Model, Cmd]:
             if not msg_text:
                 return model, Cmd.none()
             new_lines = _append_log(model.training_lines, msg_text)
-            new_scroll = model.scroll
-            if model.auto_scroll and model.active_panel == 1:
-                new_scroll = max(0, len(new_lines) - 1)
-            return replace(model, training_lines=new_lines, scroll=new_scroll), Cmd.none()
+            # Don't update scroll here - auto_scroll mode ignores it anyway,
+            # and manual mode should preserve user's position
+            return replace(model, training_lines=new_lines), Cmd.none()
 
         case SglangLine(line=raw):
             msg_text = _extract_log_message(raw)
             if not msg_text:
                 return model, Cmd.none()
             new_lines = _append_log(model.sglang_lines, msg_text)
-            new_scroll = model.scroll
-            if model.auto_scroll and model.active_panel == 2:
-                new_scroll = max(0, len(new_lines) - 1)
-            return replace(model, sglang_lines=new_lines, scroll=new_scroll), Cmd.none()
+            return replace(model, sglang_lines=new_lines), Cmd.none()
 
         case RolloutLine(line=raw):
             return _parse_rollout(raw, model), Cmd.none()
@@ -421,10 +483,7 @@ def update(model: Model, msg: object) -> tuple[Model, Cmd]:
             if not msg_text:
                 return model, Cmd.none()
             new_lines = _append_log(model.generic_lines, msg_text)
-            new_scroll = model.scroll
-            if model.auto_scroll and model.active_panel == 1:
-                new_scroll = max(0, len(new_lines) - 1)
-            return replace(model, generic_lines=new_lines, scroll=new_scroll), Cmd.none()
+            return replace(model, generic_lines=new_lines), Cmd.none()
 
         case ConfigLoaded(config=cfg):
             total = cfg.get("num_steps", model.total_steps)
