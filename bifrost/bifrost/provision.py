@@ -23,6 +23,19 @@ from typing import TYPE_CHECKING
 
 logger = logging.getLogger(__name__)
 
+
+class InstanceNotFoundError(Exception):
+    """Raised when trying to connect to an instance that no longer exists.
+
+    This typically happens when:
+    - Training completed and the instance was terminated
+    - Spot/preemptible instance was reclaimed
+    - Instance was manually deleted
+    - Instance ID is incorrect
+    """
+
+    pass
+
 if TYPE_CHECKING:
     from broker.client import ClientGPUInstance
 
@@ -142,7 +155,13 @@ async def acquire_node(
 
         logger.info("Connecting to existing instance: %s", node_id)
         instance = await broker.get_instance(instance_id, provider)
-        assert instance is not None, f"Instance not found: {node_id}"
+        if instance is None:
+            # Instance not found - provide helpful error message
+            raise InstanceNotFoundError(
+                f"Instance '{node_id}' not found. "
+                f"The instance may have been terminated (training completed, spot preemption, or manual deletion). "
+                f"Use --provision to create a new instance, or check 'rollouts monitor --runs --probe' for live instances."
+            )
 
         logger.info("  GPU: %dx %s", instance.gpu_count, instance.gpu_type)
         logger.info("  Waiting for SSH...")

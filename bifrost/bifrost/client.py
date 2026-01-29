@@ -252,7 +252,12 @@ class BifrostClient:
         """
         return generate_job_id(session_name)
 
-    def push(self, workspace_path: str, bootstrap_cmd: str | list[str] | None = None) -> str:
+    def push(
+        self,
+        workspace_path: str,
+        bootstrap_cmd: str | list[str] | None = None,
+        on_bootstrap_step: Callable[[str, int, int], None] | None = None,
+    ) -> str:
         """Deploy code to remote workspace.
 
         Args:
@@ -269,6 +274,10 @@ class BifrostClient:
 
             bootstrap_cmd: Optional bootstrap command(s) - either single string or list of commands
                           (e.g., "uv sync --frozen" or ["pip install uv", "uv sync --frozen"])
+
+            on_bootstrap_step: Optional callback called before each bootstrap step.
+                              Called with (cmd, index, total) where index is 0-based.
+                              Use for progress reporting (e.g., updating a spinner).
 
         Returns:
             Path to deployed workspace (absolute, tilde-expanded)
@@ -294,7 +303,13 @@ class BifrostClient:
 
         # Run bootstrap if specified (pure function)
         if bootstrap_cmd:
-            git_sync.run_bootstrap(ssh_client, self._remote_config, workspace_path, bootstrap_cmd)
+            git_sync.run_bootstrap(
+                ssh_client,
+                self._remote_config,
+                workspace_path,
+                bootstrap_cmd,
+                on_step=on_bootstrap_step,
+            )
 
         # Assert output
         assert workspace_path, "push() returned empty workspace_path"

@@ -31,6 +31,7 @@ from enum import Enum, auto
 from pathlib import Path
 
 from pytui import RESET, App, Cmd, KeyPress, Sub, hex_to_fg
+from pytui.text import slice_ansi, truncate_to_width, visible_width
 
 # ─── Experiment type detection ───────────────────────────────────────────
 
@@ -169,7 +170,8 @@ class Model:
     config: dict = field(default_factory=dict)
     # UI state
     active_panel: int = 0
-    scroll: int = 0
+    scroll: int = 0  # Vertical scroll offset (line number)
+    x_offset: int = 0  # Horizontal scroll offset (column number)
     auto_scroll: bool = True
 
     @property
@@ -190,6 +192,40 @@ def _append_log(lines: tuple[str, ...], line: str, max_len: int = 5000) -> tuple
     if len(new) > max_len:
         new = new[-max_len:]
     return new
+
+
+def _extract_log_message(raw: str) -> str:
+    """Extract human-readable message from a log line.
+
+    Handles:
+    - JSON logs: {"level": "INFO", "message": "..."} -> "..."
+    - SGLang prefixed: "[2026-01-29 01:02:03] Server ready" -> "Server ready"
+    - Script headers: "Script started on..." -> skip
+    - Plain text: pass through
+    """
+    # Skip script command headers
+    if raw.startswith("Script ") or raw.startswith("[COMMAND_EXIT_CODE"):
+        return ""
+
+    # Try JSON parsing
+    try:
+        data = json.loads(raw)
+        msg = data.get("message", "")
+        if msg:
+            return msg
+        # No message field - skip internal logs
+        return ""
+    except json.JSONDecodeError:
+        pass
+
+    # Strip SGLang timestamp prefix: [2026-01-29 01:02:03] message
+    if raw.startswith("[") and "] " in raw[:30]:
+        idx = raw.index("] ")
+        return raw[idx + 2:]
+
+    # Plain text - pass through (but skip empty/whitespace)
+    stripped = raw.strip()
+    return stripped if stripped else ""
 
 
 def _parse_metrics(raw: str, model: Model) -> Model:
@@ -312,10 +348,35 @@ def update(model: Model, msg: object) -> tuple[Model, Cmd]:
             if len(model.panel_names) > 2:
                 return replace(model, active_panel=2, scroll=0, auto_scroll=True), Cmd.none()
 
+        # Vertical scroll: j/k or arrow keys (single line)
         case KeyPress(key="j" | "\x1b[B"):
             return replace(model, scroll=model.scroll + 1, auto_scroll=False), Cmd.none()
         case KeyPress(key="k" | "\x1b[A"):
             return replace(model, scroll=max(0, model.scroll - 1), auto_scroll=False), Cmd.none()
+
+        # Half-page scroll: Ctrl-D/Ctrl-U (vim style)
+        case KeyPress(key="\x04"):  # Ctrl-D
+            return replace(model, scroll=model.scroll + 10, auto_scroll=False), Cmd.none()
+        case KeyPress(key="\x15"):  # Ctrl-U
+            return replace(model, scroll=max(0, model.scroll - 10), auto_scroll=False), Cmd.none()
+
+        # Full page scroll: Page Down/Page Up, Space/b
+        case KeyPress(key="\x1b[6~" | " "):  # Page Down or Space
+            return replace(model, scroll=model.scroll + 20, auto_scroll=False), Cmd.none()
+        case KeyPress(key="\x1b[5~" | "b"):  # Page Up or 'b'
+            return replace(model, scroll=max(0, model.scroll - 20), auto_scroll=False), Cmd.none()
+
+        # Horizontal scroll: h/l or left/right arrows
+        case KeyPress(key="l" | "\x1b[C"):  # Right
+            return replace(model, x_offset=model.x_offset + 10), Cmd.none()
+        case KeyPress(key="h" | "\x1b[D"):  # Left
+            return replace(model, x_offset=max(0, model.x_offset - 10)), Cmd.none()
+        case KeyPress(key="0"):  # Go to start of line
+            return replace(model, x_offset=0), Cmd.none()
+        case KeyPress(key="$"):  # Go to end of line (will be clamped in view)
+            return replace(model, x_offset=9999), Cmd.none()
+
+        # Go to top/bottom: g/G
         case KeyPress(key="G"):
             return replace(model, auto_scroll=True), Cmd.none()
         case KeyPress(key="g"):
@@ -328,12 +389,9 @@ def update(model: Model, msg: object) -> tuple[Model, Cmd]:
             return _parse_metrics(raw, model), Cmd.none()
 
         case TrainingLine(line=raw):
-            msg_text = raw
-            try:
-                data = json.loads(raw)
-                msg_text = data.get("message", raw)
-            except json.JSONDecodeError:
-                pass
+            msg_text = _extract_log_message(raw)
+            if not msg_text:
+                return model, Cmd.none()
             new_lines = _append_log(model.training_lines, msg_text)
             new_scroll = model.scroll
             if model.auto_scroll and model.active_panel == 1:
@@ -341,7 +399,10 @@ def update(model: Model, msg: object) -> tuple[Model, Cmd]:
             return replace(model, training_lines=new_lines, scroll=new_scroll), Cmd.none()
 
         case SglangLine(line=raw):
-            new_lines = _append_log(model.sglang_lines, raw)
+            msg_text = _extract_log_message(raw)
+            if not msg_text:
+                return model, Cmd.none()
+            new_lines = _append_log(model.sglang_lines, msg_text)
             new_scroll = model.scroll
             if model.auto_scroll and model.active_panel == 2:
                 new_scroll = max(0, len(new_lines) - 1)
@@ -354,7 +415,10 @@ def update(model: Model, msg: object) -> tuple[Model, Cmd]:
             return _parse_event(raw, model), Cmd.none()
 
         case GenericLogLine(line=raw):
-            new_lines = _append_log(model.generic_lines, raw)
+            msg_text = _extract_log_message(raw)
+            if not msg_text:
+                return model, Cmd.none()
+            new_lines = _append_log(model.generic_lines, msg_text)
             new_scroll = model.scroll
             if model.auto_scroll and model.active_panel == 1:
                 new_scroll = max(0, len(new_lines) - 1)
@@ -409,7 +473,13 @@ def subscriptions(model: Model) -> Sub:
 
 
 def _box(title: str, content: list[str], width: int, active: bool = False) -> list[str]:
-    """Draw a btop-style box with rounded corners."""
+    """Draw a btop-style box with rounded corners.
+
+    Invariants:
+    - Every returned line has visible_width == width
+    - Returns len(content) + 2 lines (top + content + bottom)
+    """
+    assert width >= 4, f"Box width must be >= 4, got {width}"
     inner_w = width - 2
 
     border_c = C_BORDER_ACCENT if active else C_BORDER
@@ -418,7 +488,9 @@ def _box(title: str, content: list[str], width: int, active: bool = False) -> li
     if title:
         title_text = f" {title} "
         title_vis_len = len(title) + 2
-        remaining = inner_w - title_vis_len
+        # TL + H + title_text + H*remaining + TR = width
+        # 1  + 1 + title_vis_len + remaining + 1 = width
+        remaining = inner_w - title_vis_len - 1
         top = f"{border_c}{TL}{H}{title_c}{title_text}{border_c}{H * max(0, remaining)}{TR}{RESET}"
     else:
         top = f"{border_c}{TL}{H * inner_w}{TR}{RESET}"
@@ -427,10 +499,18 @@ def _box(title: str, content: list[str], width: int, active: bool = False) -> li
 
     lines = [top]
     for row in content:
-        raw_len = len(row)
-        pad = max(0, inner_w - raw_len)
-        lines.append(f"{border_c}{V}{RESET}{row}{' ' * pad}{border_c}{V}{RESET}")
+        vis_len = visible_width(row)
+        pad = max(0, inner_w - vis_len)
+        line = f"{border_c}{V}{RESET}{row}{' ' * pad}{border_c}{V}{RESET}"
+        lines.append(line)
     lines.append(bottom)
+
+    # Assert invariants
+    assert len(lines) == len(content) + 2, f"Box line count mismatch: {len(lines)} != {len(content) + 2}"
+    for i, line in enumerate(lines):
+        line_w = visible_width(line)
+        assert line_w == width, f"Box line {i} width {line_w} != expected {width}. Line: {repr(line[:100])}"
+
     return lines
 
 
@@ -461,13 +541,34 @@ def _sparkline(values: tuple[float, ...] | list[float], width: int) -> str:
 
 
 def _side_by_side(left: list[str], right: list[str], left_w: int, right_w: int) -> list[str]:
-    """Place two sets of lines side by side."""
+    """Place two sets of lines side by side.
+
+    Expects left and right to be pre-rendered boxes where each line has the
+    correct visible width. This function pads the left side to left_w if needed.
+
+    Invariants:
+        - Left lines are padded to exactly left_w visible chars
+        - Returns max(len(left), len(right)) lines
+    """
     max_h = max(len(left), len(right))
     result = []
     for i in range(max_h):
-        l = left[i] if i < len(left) else " " * left_w
-        r = right[i] if i < len(right) else " " * right_w
-        result.append(l + r)
+        l = left[i] if i < len(left) else ""
+        r = right[i] if i < len(right) else ""
+        # Pad left line to exact width using visible_width
+        l_vis = visible_width(l)
+        l_pad = max(0, left_w - l_vis)
+        combined = l + " " * l_pad + r
+        result.append(combined)
+
+        # Assert left padding is correct
+        padded_left_w = l_vis + l_pad
+        assert padded_left_w == left_w, (
+            f"Side-by-side line {i}: padded left width {padded_left_w} != left_w {left_w}. "
+            f"l_vis={l_vis}, l_pad={l_pad}"
+        )
+
+    assert len(result) == max_h, f"Side-by-side returned {len(result)} lines, expected {max_h}"
     return result
 
 
@@ -479,23 +580,85 @@ def _render_log_box(
     active: bool,
     scroll: int,
     auto_scroll: bool,
+    x_offset: int = 0,
     color: str = C_TEXT,
 ) -> list[str]:
-    """Render a scrollable log box."""
+    """Render a scrollable log box with horizontal and vertical scrolling.
+
+    Args:
+        title: Box title
+        lines: Log lines to display
+        width: Total box width
+        height: Total box height
+        active: Whether this panel is active (affects border color)
+        scroll: Vertical scroll offset (line number)
+        auto_scroll: Whether to auto-scroll to bottom
+        x_offset: Horizontal scroll offset (column number)
+        color: ANSI color for text
+
+    Invariants:
+        - Returns exactly `height` lines
+        - Each content line fits within inner_w (width - 4)
+        - scroll is clamped to valid range [0, max_scroll]
+        - x_offset >= 0
+    """
+    assert width >= 6, f"Log box width must be >= 6, got {width}"
+    assert height >= 3, f"Log box height must be >= 3, got {height}"
+    assert x_offset >= 0, f"x_offset must be >= 0, got {x_offset}"
+    assert scroll >= 0, f"scroll must be >= 0, got {scroll}"
+
     content_h = height - 2
+    total_lines = len(lines)
+
+    # Vertical scrolling
     if active and not auto_scroll:
-        start = min(scroll, max(0, len(lines) - content_h))
+        # Clamp scroll to valid range
+        max_scroll = max(0, total_lines - content_h)
+        start = min(scroll, max_scroll)
+        assert 0 <= start <= max(0, total_lines - 1), f"start {start} out of range for {total_lines} lines"
         visible = lines[start : start + content_h]
     else:
         visible = lines[-content_h:] if lines else ()
 
     content = []
-    for line in visible:
-        if len(line) > width - 4:
-            line = line[: width - 7] + "..."
+    inner_w = width - 4  # 2 for box borders, 2 for padding
+
+    for i, line in enumerate(visible):
+        original_line = line
+        line_width = visible_width(line)
+
+        # Apply horizontal scrolling if needed
+        if x_offset > 0 and line_width > 0:
+            # Slice from x_offset to x_offset + inner_w
+            line = slice_ansi(line, x_offset, x_offset + inner_w)
+        elif line_width > inner_w:
+            # No horizontal offset but line is too long - truncate
+            line = truncate_to_width(line, inner_w)
+
+        # Assert content fits
+        final_width = visible_width(line)
+        assert final_width <= inner_w, (
+            f"Log line {i} width {final_width} > inner_w {inner_w}. "
+            f"x_offset={x_offset}, original_width={line_width}, line={repr(original_line[:80])}"
+        )
+
         content.append(f" {color}{line}{RESET}")
     while len(content) < content_h:
         content.append("")
+
+    # Add scroll position indicator to title if scrolling is active
+    if total_lines > content_h:
+        if auto_scroll:
+            scroll_indicator = " [FOLLOW]"
+        else:
+            # Calculate scroll percentage
+            max_scroll = total_lines - content_h
+            if max_scroll > 0:
+                pct = min(100, int((scroll / max_scroll) * 100))
+                scroll_indicator = f" {pct}%"
+            else:
+                scroll_indicator = " 100%"
+        title = title + scroll_indicator
 
     return _box(title, content, width, active=active)
 
@@ -619,6 +782,7 @@ def view(model: Model, width: int, height: int) -> list[str]:
                     active=(model.active_panel == 1),
                     scroll=model.scroll,
                     auto_scroll=model.auto_scroll,
+                    x_offset=model.x_offset,
                 )
             )
             lines.extend(
@@ -630,6 +794,7 @@ def view(model: Model, width: int, height: int) -> list[str]:
                     active=(model.active_panel == 2),
                     scroll=model.scroll,
                     auto_scroll=model.auto_scroll,
+                    x_offset=model.x_offset,
                     color=C_DIM,
                 )
             )
@@ -644,6 +809,7 @@ def view(model: Model, width: int, height: int) -> list[str]:
                     active=(model.active_panel == 1),
                     scroll=model.scroll,
                     auto_scroll=model.auto_scroll,
+                    x_offset=model.x_offset,
                 )
             )
 
@@ -657,6 +823,7 @@ def view(model: Model, width: int, height: int) -> list[str]:
                     active=(model.active_panel == 1),
                     scroll=model.scroll,
                     auto_scroll=model.auto_scroll,
+                    x_offset=model.x_offset,
                 )
             )
 
@@ -672,6 +839,7 @@ def view(model: Model, width: int, height: int) -> list[str]:
                     active=(model.active_panel == 1),
                     scroll=model.scroll,
                     auto_scroll=model.auto_scroll,
+                    x_offset=model.x_offset,
                 )
             )
 
@@ -689,7 +857,7 @@ def view(model: Model, width: int, height: int) -> list[str]:
         if model.auto_scroll:
             scroll_hint = f"  {C_DIM}[FOLLOW]{RESET}"
         else:
-            scroll_hint = f"  {C_DIM}j/k:scroll G:follow{RESET}"
+            scroll_hint = f"  {C_DIM}j/k:line ^d/^u:page h/l:pan G:follow{RESET}"
 
     footer = f" {tab_str}{scroll_hint}  {C_DIM}q:quit{RESET}"
     lines.append(footer)
@@ -697,6 +865,19 @@ def view(model: Model, width: int, height: int) -> list[str]:
     while len(lines) < height:
         lines.append("")
     lines = lines[:height]
+
+    # Assert view invariants
+    assert len(lines) == height, f"View returned {len(lines)} lines, expected {height}"
+    for i, line in enumerate(lines):
+        line_w = visible_width(line)
+        if line_w > width:
+            # Log but don't crash - truncation happens in renderer
+            # This catches lines that are too wide before the renderer truncates them
+            import logging
+            logging.warning(
+                f"View line {i} width {line_w} > screen width {width}. "
+                f"Line will be truncated. Content: {repr(line[:80])}"
+            )
 
     return lines
 
@@ -724,12 +905,129 @@ def _detect_type(watch_dir: str) -> Callable:
     return _detect
 
 
-def make_app(watch_dir: str) -> App:
-    """Create the monitor App for a given output directory."""
+def frame_debug_snapshot(model: Model, width: int, height: int) -> dict:
+    """Pure function: compute a wide event describing the current frame layout.
+
+    Returns a dict suitable for JSON serialization. Contains terminal dims,
+    computed panel sizes, model state summary, and truncation info.
+    """
+    config_w = min(28, width // 3)
+    metrics_w = width - config_w
+
+    # Recompute layout heights (mirrors view())
+    metrics_content_h = max(len(model.metrics), 1)
+    config_content_h = len(_view_config_box(model, config_w))
+    top_h = max(metrics_content_h, config_content_h, 3)
+    top_box_h = top_h + 2  # +2 for border top/bottom
+
+    header_lines = 1
+    footer_lines = 1
+    remaining = height - header_lines - top_box_h - footer_lines
+
+    log_boxes: list[dict] = []
+    match model.experiment_type:
+        case ExperimentType.RL:
+            training_h = max(3, int(remaining * 0.6))
+            sglang_h = max(3, remaining - training_h)
+            log_boxes.append({
+                "name": "Training",
+                "width": width,
+                "height": training_h,
+                "lines": len(model.training_lines),
+            })
+            log_boxes.append({
+                "name": "SGLang",
+                "width": width,
+                "height": sglang_h,
+                "lines": len(model.sglang_lines),
+            })
+        case ExperimentType.SFT:
+            log_boxes.append({
+                "name": "Training",
+                "width": width,
+                "height": remaining,
+                "lines": len(model.training_lines),
+            })
+        case ExperimentType.EVAL:
+            log_boxes.append({
+                "name": "Events",
+                "width": width,
+                "height": remaining,
+                "lines": len(model.event_lines),
+            })
+        case ExperimentType.GENERIC:
+            all_lines = model.generic_lines or model.training_lines or model.event_lines
+            log_boxes.append({
+                "name": "Logs",
+                "width": width,
+                "height": remaining,
+                "lines": len(all_lines),
+            })
+
+    return {
+        "terminal": {"width": width, "height": height},
+        "layout": {
+            "header_lines": header_lines,
+            "metrics_box": {"width": metrics_w, "height": top_box_h},
+            "config_box": {"width": config_w, "height": top_box_h},
+            "log_boxes": log_boxes,
+            "footer_lines": footer_lines,
+            "remaining_for_logs": remaining,
+        },
+        "model": {
+            "experiment_type": model.experiment_type.name,
+            "step": f"{model.current_step}/{model.total_steps}"
+            if model.total_steps
+            else str(model.current_step),
+            "metric_names": [m.name for m in model.metrics],
+            "metric_counts": [len(m.values) for m in model.metrics],
+            "training_lines": len(model.training_lines),
+            "sglang_lines": len(model.sglang_lines),
+            "event_lines": len(model.event_lines),
+            "generic_lines": len(model.generic_lines),
+            "active_panel": model.active_panel,
+            "scroll": model.scroll,
+            "auto_scroll": model.auto_scroll,
+            "config_keys": list(model.config.keys()) if model.config else [],
+        },
+    }
+
+
+DEBUG_LOG_PATH = "/tmp/rlmon-debug.jsonl"
+
+
+def _make_debug_fn(debug_path: str = DEBUG_LOG_PATH) -> Callable:
+    """Create a debug callback that appends frame snapshots to a JSONL file."""
+    import os
+
+    def _debug(model: Model, width: int, height: int, frame_count: int) -> None:
+        snapshot = frame_debug_snapshot(model, width, height)
+        snapshot["frame"] = frame_count
+        with open(debug_path, "a") as f:
+            f.write(json.dumps(snapshot) + "\n")
+
+    # Truncate on startup so we only see this session's frames
+    with open(debug_path, "w") as f:
+        pass
+    os.chmod(debug_path, 0o644)
+
+    return _debug
+
+
+def make_app(watch_dir: str, debug: bool = False, debug_frame_interval: int = 100) -> App:
+    """Create the monitor App for a given output directory.
+
+    Args:
+        watch_dir: Path to the experiment output directory to watch.
+        debug: If True, dump frame layout snapshots to /tmp/rlmon-debug.jsonl.
+        debug_frame_interval: Dump every N rendered frames (default 100 = ~5s at 20fps).
+    """
     # Detect type eagerly for initial subscriptions (before first Cmd runs)
     experiment_type = detect_experiment_type(watch_dir)
     init_model = Model(watch_dir=watch_dir, experiment_type=experiment_type)
     init_cmd = Cmd.task(_load_init(watch_dir))
+
+    debug_fn = _make_debug_fn() if debug else None
 
     return App(
         init=(init_model, init_cmd),
@@ -738,4 +1036,6 @@ def make_app(watch_dir: str) -> App:
         subscriptions=subscriptions,
         alternate_screen=True,
         fps=20,
+        debug_fn=debug_fn,
+        debug_frame_interval=debug_frame_interval,
     )

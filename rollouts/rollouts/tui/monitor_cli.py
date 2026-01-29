@@ -452,6 +452,18 @@ def monitor_main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="With --runs, check broker liveness and probe LogsServer",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Dump frame layout snapshots to /tmp/rlmon-debug.jsonl every ~5s",
+    )
+    parser.add_argument(
+        "--debug-interval",
+        type=int,
+        default=100,
+        metavar="N",
+        help="Dump debug snapshot every N frames (default: 100, ~5s at 20fps)",
+    )
     args = parser.parse_args(argv)
 
     # ── List mode ──
@@ -550,6 +562,6 @@ def monitor_main(argv: list[str] | None = None) -> int:
         print(f"Error: {output_dir} is not a directory", file=sys.stderr)
         return 1
 
-    app = make_app(str(output_dir))
+    app = make_app(str(output_dir), debug=args.debug, debug_frame_interval=args.debug_interval)
     app.run()
     return 0

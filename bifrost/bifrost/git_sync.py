@@ -4,7 +4,10 @@ No classes, just stateless functions that take inputs and return outputs.
 All state managed by caller (BifrostClient).
 """
 
+from __future__ import annotations
+
 import logging
+from collections.abc import Callable
 
 import paramiko
 from shared.retry import retry
@@ -159,6 +162,7 @@ def run_bootstrap(
     config: RemoteConfig,
     workspace_path: str,
     bootstrap_cmd: str | list[str],
+    on_step: Callable[[str, int, int], None] | None = None,
 ) -> None:
     """Run bootstrap command(s) to prepare environment.
 
@@ -168,6 +172,8 @@ def run_bootstrap(
         workspace_path: Path to workspace on remote
         bootstrap_cmd: Command(s) to run - either single string or list of commands
                       Each command runs in sequence, fails fast if any fails
+        on_step: Optional callback called before each step with (cmd, index, total).
+                 Use for progress reporting (e.g., updating a spinner).
 
     Raises:
         RuntimeError: If any bootstrap step fails
@@ -193,10 +199,14 @@ def run_bootstrap(
     logger.info(f"running {len(commands)} bootstrap step(s)...")
 
     # Execute each command in sequence
-    for i, cmd in enumerate(commands, 1):
+    for i, cmd in enumerate(commands):
+        # Fire callback before step (0-indexed)
+        if on_step is not None:
+            on_step(cmd, i, len(commands))
+
         # Log what we're doing (truncate long commands)
         cmd_preview = cmd[:60] + "..." if len(cmd) > 60 else cmd
-        logger.debug(f"step {i}/{len(commands)}: {cmd_preview}")
+        logger.debug(f"step {i + 1}/{len(commands)}: {cmd_preview}")
 
         # Run command in workspace
         full_cmd = f"cd {workspace_path} && {cmd}"
@@ -209,7 +219,7 @@ def run_bootstrap(
                 f"Bootstrap step {i}/{len(commands)} failed with exit code {exit_code}: {error_output}"
             )
 
-        logger.debug(f"Step {i}/{len(commands)} completed successfully")
+        logger.debug(f"Step {i + 1}/{len(commands)} completed successfully")
 
     logger.info("all bootstrap steps completed successfully")
 

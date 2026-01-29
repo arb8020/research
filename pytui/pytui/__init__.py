@@ -25,8 +25,14 @@ Quick start:
 # Elm core
 from .app import App, Cmd, KeyPress, Resize, Sub
 
+# Console (unified output with spinner/logging coordination)
+from .console import Console, ConsoleHandler, SpinnerHandle
+
 # Renderer
 from .renderer import RenderState, diff_render
+
+# Spinner
+from .spinner import Spinner
 
 # Terminal
 from .terminal import Terminal, TerminalProtocol
@@ -37,14 +43,12 @@ from .text import (
     AnsiCodeTracker,
     apply_background_to_line,
     extract_ansi_code,
+    slice_ansi,
     strip_terminal_control_sequences,
     truncate_to_width,
     visible_width,
     wrap_text_with_ansi,
 )
-
-# Spinner
-from .spinner import Spinner
 
 # Theme
 from .theme import (
@@ -78,6 +82,7 @@ __all__ = [
     # Text
     "visible_width",
     "truncate_to_width",
+    "slice_ansi",
     "wrap_text_with_ansi",
     "apply_background_to_line",
     "extract_ansi_code",
@@ -86,6 +91,10 @@ __all__ = [
     "AnsiCodeTracker",
     # Spinner
     "Spinner",
+    # Console
+    "Console",
+    "ConsoleHandler",
+    "SpinnerHandle",
     # Theme
     "Theme",
     "MinimalTheme",

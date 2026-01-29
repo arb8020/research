@@ -260,6 +260,10 @@ class App:
         alternate_screen: Use alternate screen buffer (monitor-style apps).
         bracketed_paste: Enable bracketed paste mode (editor-style apps).
         fps: Target frames per second for the render loop.
+        debug_fn: Optional callback (model, width, height, frame_count) -> None.
+            Called every debug_frame_interval rendered frames. For dumping
+            layout snapshots, model state, etc. to a debug log file.
+        debug_frame_interval: How often to call debug_fn (every N frames).
     """
 
     def __init__(
@@ -272,6 +276,8 @@ class App:
         alternate_screen: bool = True,
         bracketed_paste: bool = False,
         fps: int = 30,
+        debug_fn: Callable[[Any, int, int, int], None] | None = None,
+        debug_frame_interval: int = 100,
     ) -> None:
         self._init = init
         self._update_fn = update
@@ -280,9 +286,12 @@ class App:
         self._alternate_screen = alternate_screen
         self._bracketed_paste = bracketed_paste
         self._fps = fps
+        self._debug_fn = debug_fn
+        self._debug_frame_interval = debug_frame_interval
 
         self._model: Any = None
         self._running = False
+        self._frame_count: int = 0
         self._msg_queue: queue.Queue = queue.Queue()
         self._terminal: Terminal | None = None
         self._render_state = RenderState()
@@ -397,12 +406,14 @@ class App:
         """Render current model to terminal."""
         if self._terminal is None:
             return
-        lines = self._view_fn(
-            self._model,
-            self._terminal.columns,
-            self._terminal.rows,
-        )
+        width = self._terminal.columns
+        height = self._terminal.rows
+        lines = self._view_fn(self._model, width, height)
         diff_render(self._terminal, lines, self._render_state)
+
+        self._frame_count += 1
+        if self._debug_fn is not None and self._frame_count % self._debug_frame_interval == 0:
+            self._debug_fn(self._model, width, height, self._frame_count)
 
     # ---------------------------------------------------------------------------
     # Subscription lifecycle

@@ -15,7 +15,7 @@ from .job import (
 )
 
 # Node provisioning
-from .provision import GPUQuery, acquire_node
+from .provision import GPUQuery, InstanceNotFoundError, acquire_node
 from .remote_fs import (
     ensure_dir,
     path_exists,
@@ -65,6 +65,7 @@ __all__ = [
     "server_is_running",
     # Provisioning
     "acquire_node",
+    "InstanceNotFoundError",
     # Shared types
     "SSHConnection",
     "EnvironmentVariables",
