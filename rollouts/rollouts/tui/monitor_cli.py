@@ -308,7 +308,22 @@ def _run_attached(run_id: str | None) -> int:
         return 1
 
     worker = RemoteWorker(logs_host, logs_port)
-    worker.connect()
+
+    # Retry connection - LogsServer may still be starting
+    max_retries = 10
+    retry_delay = 1.0
+    for attempt in range(max_retries):
+        try:
+            worker.connect()
+            break
+        except ConnectionRefusedError:
+            if attempt == max_retries - 1:
+                raise
+            print(
+                f"LogsServer not ready, retrying in {retry_delay}s... ({attempt + 1}/{max_retries})"
+            )
+            time.sleep(retry_delay)
+            retry_delay = min(retry_delay * 1.5, 5.0)
 
     # Discover available files
     worker.send({"cmd": "list"})

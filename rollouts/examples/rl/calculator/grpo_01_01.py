@@ -1,17 +1,12 @@
 """Calculator GRPO baseline experiment.
 
 Run with:
-    # Local (requires GPU + SGLang)
-    python examples/rl/calculator/grpo_01_01.py
-
-    # Remote (provisions GPU automatically)
-    python examples/rl/calculator/grpo_01_01.py --provision
-
-    # Reuse existing GPU
-    python examples/rl/calculator/grpo_01_01.py --node-id runpod:abc123
+    python -m rollouts.run --config examples/rl/calculator/grpo_01_01.py
+    python -m rollouts.run --config examples/rl/calculator/grpo_01_01.py --provision
+    python -m rollouts.run --config examples/rl/calculator/grpo_01_01.py --node-id runpod:abc123
 """
 
-from examples.rl.calculator.base_config import train
+from examples.rl.calculator.base_config import train  # noqa: F401 (used by runner)
 from rollouts.training.grpo import (
     CheckpointConfig,
     GRPOConfig,
@@ -36,38 +31,7 @@ config = GRPOConfig(
     ),
     trainer=TrainerConfig(
         lr=1e-5,
-        # Use same GPU for inference and training (single-GPU setup)
-        # For multi-GPU, use inference.cuda_device_ids=(0,), trainer.cuda_device_ids=(1,)
         cuda_device_ids=(0,),
     ),
     inference=InferenceConfig(cuda_device_ids=(0,)),
 )
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Calculator GRPO training")
-    parser.add_argument("--provision", action="store_true", help="Provision new GPU instance")
-    parser.add_argument("--keep-alive", action="store_true", help="Keep GPU after completion")
-    parser.add_argument("--node-id", type=str, help="Reuse existing instance ID")
-    parser.add_argument("--tui", action="store_true", help="Show TUI monitor")
-    parser.add_argument("--tui-debug", action="store_true", help="Print raw JSONL")
-    args = parser.parse_args()
-
-    if args.provision or args.node_id:
-        import trio
-
-        from examples.rl.base_config import run_remote
-
-        trio.run(
-            run_remote,
-            __file__,
-            args.keep_alive,
-            args.node_id,
-            args.tui,
-            args.tui_debug,
-            args.provision,
-        )
-    else:
-        results = train(config=config, max_samples=12)
-        print(f"Training complete. {len(results.get('metrics_history', []))} steps")

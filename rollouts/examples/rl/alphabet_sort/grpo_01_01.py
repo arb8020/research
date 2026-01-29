@@ -1,17 +1,11 @@
 """Alphabet Sort GRPO baseline experiment.
 
 Run with:
-    # Local (requires GPU + SGLang)
-    python examples/rl/alphabet_sort/grpo_01_01.py
-
-    # Remote (provisions GPU automatically)
-    python examples/rl/alphabet_sort/grpo_01_01.py --provision
-
-    # Reuse existing GPU
-    python examples/rl/alphabet_sort/grpo_01_01.py --node-id runpod:abc123
+    python -m rollouts.run --config examples/rl/alphabet_sort/grpo_01_01.py
+    python -m rollouts.run --config examples/rl/alphabet_sort/grpo_01_01.py --provision
 """
 
-from examples.rl.alphabet_sort.base_config import train
+from examples.rl.alphabet_sort.base_config import train  # noqa: F401
 from rollouts.training.grpo import (
     CheckpointConfig,
     GRPOConfig,
@@ -34,28 +28,3 @@ config = GRPOConfig(
     ),
     trainer=TrainerConfig(lr=1e-6, num_minibatches=4),
 )
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Alphabet Sort GRPO training")
-    parser.add_argument("--provision", action="store_true", help="Provision new GPU instance")
-    parser.add_argument("--keep-alive", action="store_true", help="Keep GPU after completion")
-    parser.add_argument("--node-id", type=str, help="Reuse existing instance ID")
-    parser.add_argument("--tui", action="store_true", help="Show TUI monitor")
-    parser.add_argument("--tui-debug", action="store_true", help="Print raw JSONL")
-    args = parser.parse_args()
-
-    if args.provision or args.node_id:
-        from examples.rl.base_config import run_remote
-
-        run_remote(
-            __file__,
-            keep_alive=args.keep_alive,
-            node_id=args.node_id,
-            use_tui=args.tui,
-            tui_debug=args.tui_debug,
-        )
-    else:
-        results = train(config=config, num_episodes=500)
-        print(f"Training complete. {len(results.get('metrics_history', []))} steps")

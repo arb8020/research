@@ -24,7 +24,6 @@ Note:
     For the full SFT → RL pipeline, see sft_then_grpo.py
 """
 
-from examples.rl.reverse_text.base_config import train
 from rollouts.training.grpo import (
     CheckpointConfig,
     GRPOConfig,
@@ -66,39 +65,5 @@ config = GRPOConfig(
     trainer=TrainerConfig(lr=3e-6),
 )
 
-if __name__ == "__main__":
-    import argparse
-    from dataclasses import replace
-
-    parser = argparse.ArgumentParser(description="Reverse Text GRPO training")
-    parser.add_argument("--provision", action="store_true", help="Provision new GPU instance")
-    parser.add_argument("--keep-alive", action="store_true", help="Keep GPU after completion")
-    parser.add_argument("--node-id", type=str, help="Reuse existing instance ID")
-    parser.add_argument("--tui", action="store_true", help="Show TUI monitor")
-    parser.add_argument("--tui-debug", action="store_true", help="Print raw JSONL")
-    parser.add_argument(
-        "--base-model",
-        action="store_true",
-        help="Use base Qwen3-0.6B instead of SFT model (will likely fail)",
-    )
-    args = parser.parse_args()
-
-    # Update config if using base model
-    run_config = config
-    if args.base_model:
-        print("WARNING: Using base model without SFT warmup - expect ~5% reward")
-        run_config = replace(config, model_name=BASE_MODEL)
-
-    if args.provision or args.node_id:
-        from examples.rl.base_config import run_remote
-
-        run_remote(
-            __file__,
-            keep_alive=args.keep_alive,
-            node_id=args.node_id,
-            use_tui=args.tui,
-            tui_debug=args.tui_debug,
-        )
-    else:
-        results = train(config=run_config, num_samples=1000)
-        print(f"Training complete. {len(results.get('metrics_history', []))} steps")
+# For base model variant, create a separate config file or use:
+# python -m rollouts.run --config examples/rl/reverse_text/grpo_01_01.py

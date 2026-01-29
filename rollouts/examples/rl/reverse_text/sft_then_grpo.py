@@ -282,17 +282,22 @@ def main() -> None:
     )
     parser.add_argument("--provision", action="store_true", help="Provision new GPU instance")
     parser.add_argument("--keep-alive", action="store_true", help="Keep GPU after completion")
-    parser.add_argument("--node-id", type=str, help="Reuse existing instance ID")
+    parser.add_argument("--node-id", type=str, help="Reuse existing instance (provider:id)")
+    parser.add_argument("--detach", action="store_true", help="Submit and exit (don't launch TUI)")
     args = parser.parse_args()
 
     # Remote execution
     if args.provision or args.node_id:
-        from examples.rl.base_config import run_remote
+        import trio
 
-        run_remote(
+        from rollouts.run import run_remote
+
+        trio.run(
+            run_remote,
             __file__,
-            keep_alive=args.keep_alive,
-            node_id=args.node_id,
+            args.keep_alive,
+            args.node_id,
+            args.detach,
         )
         return
 
