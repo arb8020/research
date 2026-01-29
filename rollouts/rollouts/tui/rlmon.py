@@ -31,7 +31,7 @@ from enum import Enum, auto
 from pathlib import Path
 
 from pytui import RESET, App, Cmd, KeyPress, Sub, hex_to_fg
-from pytui.text import truncate_to_width, visible_width
+from pytui.text import slice_ansi, truncate_to_width, visible_width
 
 # ─── Experiment type detection ───────────────────────────────────────────
 
@@ -170,7 +170,8 @@ class Model:
     config: dict = field(default_factory=dict)
     # UI state
     active_panel: int = 0
-    scroll: int = 0
+    scroll: int = 0  # Vertical scroll offset (line number)
+    x_offset: int = 0  # Horizontal scroll offset (column number)
     auto_scroll: bool = True
 
     @property
@@ -191,6 +192,40 @@ def _append_log(lines: tuple[str, ...], line: str, max_len: int = 5000) -> tuple
     if len(new) > max_len:
         new = new[-max_len:]
     return new
+
+
+def _extract_log_message(raw: str) -> str:
+    """Extract human-readable message from a log line.
+
+    Handles:
+    - JSON logs: {"level": "INFO", "message": "..."} -> "..."
+    - SGLang prefixed: "[2026-01-29 01:02:03] Server ready" -> "Server ready"
+    - Script headers: "Script started on..." -> skip
+    - Plain text: pass through
+    """
+    # Skip script command headers
+    if raw.startswith("Script ") or raw.startswith("[COMMAND_EXIT_CODE"):
+        return ""
+
+    # Try JSON parsing
+    try:
+        data = json.loads(raw)
+        msg = data.get("message", "")
+        if msg:
+            return msg
+        # No message field - skip internal logs
+        return ""
+    except json.JSONDecodeError:
+        pass
+
+    # Strip SGLang timestamp prefix: [2026-01-29 01:02:03] message
+    if raw.startswith("[") and "] " in raw[:30]:
+        idx = raw.index("] ")
+        return raw[idx + 2:]
+
+    # Plain text - pass through (but skip empty/whitespace)
+    stripped = raw.strip()
+    return stripped if stripped else ""
 
 
 def _parse_metrics(raw: str, model: Model) -> Model:
@@ -313,10 +348,35 @@ def update(model: Model, msg: object) -> tuple[Model, Cmd]:
             if len(model.panel_names) > 2:
                 return replace(model, active_panel=2, scroll=0, auto_scroll=True), Cmd.none()
 
+        # Vertical scroll: j/k or arrow keys (single line)
         case KeyPress(key="j" | "\x1b[B"):
             return replace(model, scroll=model.scroll + 1, auto_scroll=False), Cmd.none()
         case KeyPress(key="k" | "\x1b[A"):
             return replace(model, scroll=max(0, model.scroll - 1), auto_scroll=False), Cmd.none()
+
+        # Half-page scroll: Ctrl-D/Ctrl-U (vim style)
+        case KeyPress(key="\x04"):  # Ctrl-D
+            return replace(model, scroll=model.scroll + 10, auto_scroll=False), Cmd.none()
+        case KeyPress(key="\x15"):  # Ctrl-U
+            return replace(model, scroll=max(0, model.scroll - 10), auto_scroll=False), Cmd.none()
+
+        # Full page scroll: Page Down/Page Up, Space/b
+        case KeyPress(key="\x1b[6~" | " "):  # Page Down or Space
+            return replace(model, scroll=model.scroll + 20, auto_scroll=False), Cmd.none()
+        case KeyPress(key="\x1b[5~" | "b"):  # Page Up or 'b'
+            return replace(model, scroll=max(0, model.scroll - 20), auto_scroll=False), Cmd.none()
+
+        # Horizontal scroll: h/l or left/right arrows
+        case KeyPress(key="l" | "\x1b[C"):  # Right
+            return replace(model, x_offset=model.x_offset + 10), Cmd.none()
+        case KeyPress(key="h" | "\x1b[D"):  # Left
+            return replace(model, x_offset=max(0, model.x_offset - 10)), Cmd.none()
+        case KeyPress(key="0"):  # Go to start of line
+            return replace(model, x_offset=0), Cmd.none()
+        case KeyPress(key="$"):  # Go to end of line (will be clamped in view)
+            return replace(model, x_offset=9999), Cmd.none()
+
+        # Go to top/bottom: g/G
         case KeyPress(key="G"):
             return replace(model, auto_scroll=True), Cmd.none()
         case KeyPress(key="g"):
@@ -329,12 +389,9 @@ def update(model: Model, msg: object) -> tuple[Model, Cmd]:
             return _parse_metrics(raw, model), Cmd.none()
 
         case TrainingLine(line=raw):
-            msg_text = raw
-            try:
-                data = json.loads(raw)
-                msg_text = data.get("message", raw)
-            except json.JSONDecodeError:
-                pass
+            msg_text = _extract_log_message(raw)
+            if not msg_text:
+                return model, Cmd.none()
             new_lines = _append_log(model.training_lines, msg_text)
             new_scroll = model.scroll
             if model.auto_scroll and model.active_panel == 1:
@@ -342,7 +399,10 @@ def update(model: Model, msg: object) -> tuple[Model, Cmd]:
             return replace(model, training_lines=new_lines, scroll=new_scroll), Cmd.none()
 
         case SglangLine(line=raw):
-            new_lines = _append_log(model.sglang_lines, raw)
+            msg_text = _extract_log_message(raw)
+            if not msg_text:
+                return model, Cmd.none()
+            new_lines = _append_log(model.sglang_lines, msg_text)
             new_scroll = model.scroll
             if model.auto_scroll and model.active_panel == 2:
                 new_scroll = max(0, len(new_lines) - 1)
@@ -355,7 +415,10 @@ def update(model: Model, msg: object) -> tuple[Model, Cmd]:
             return _parse_event(raw, model), Cmd.none()
 
         case GenericLogLine(line=raw):
-            new_lines = _append_log(model.generic_lines, raw)
+            msg_text = _extract_log_message(raw)
+            if not msg_text:
+                return model, Cmd.none()
+            new_lines = _append_log(model.generic_lines, msg_text)
             new_scroll = model.scroll
             if model.auto_scroll and model.active_panel == 1:
                 new_scroll = max(0, len(new_lines) - 1)
@@ -485,24 +548,65 @@ def _render_log_box(
     active: bool,
     scroll: int,
     auto_scroll: bool,
+    x_offset: int = 0,
     color: str = C_TEXT,
 ) -> list[str]:
-    """Render a scrollable log box."""
+    """Render a scrollable log box with horizontal and vertical scrolling.
+
+    Args:
+        title: Box title
+        lines: Log lines to display
+        width: Total box width
+        height: Total box height
+        active: Whether this panel is active (affects border color)
+        scroll: Vertical scroll offset (line number)
+        auto_scroll: Whether to auto-scroll to bottom
+        x_offset: Horizontal scroll offset (column number)
+        color: ANSI color for text
+    """
     content_h = height - 2
+    total_lines = len(lines)
+
+    # Vertical scrolling
     if active and not auto_scroll:
-        start = min(scroll, max(0, len(lines) - content_h))
+        # Clamp scroll to valid range
+        max_scroll = max(0, total_lines - content_h)
+        start = min(scroll, max_scroll)
         visible = lines[start : start + content_h]
     else:
         visible = lines[-content_h:] if lines else ()
 
     content = []
     inner_w = width - 4  # 2 for box borders, 2 for padding
+
     for line in visible:
-        if visible_width(line) > inner_w:
+        line_width = visible_width(line)
+
+        # Apply horizontal scrolling if needed
+        if x_offset > 0 and line_width > 0:
+            # Slice from x_offset to x_offset + inner_w
+            line = slice_ansi(line, x_offset, x_offset + inner_w)
+        elif line_width > inner_w:
+            # No horizontal offset but line is too long - truncate
             line = truncate_to_width(line, inner_w)
+
         content.append(f" {color}{line}{RESET}")
     while len(content) < content_h:
         content.append("")
+
+    # Add scroll position indicator to title if scrolling is active
+    if total_lines > content_h:
+        if auto_scroll:
+            scroll_indicator = " [FOLLOW]"
+        else:
+            # Calculate scroll percentage
+            max_scroll = total_lines - content_h
+            if max_scroll > 0:
+                pct = min(100, int((scroll / max_scroll) * 100))
+                scroll_indicator = f" {pct}%"
+            else:
+                scroll_indicator = " 100%"
+        title = title + scroll_indicator
 
     return _box(title, content, width, active=active)
 
@@ -626,6 +730,7 @@ def view(model: Model, width: int, height: int) -> list[str]:
                     active=(model.active_panel == 1),
                     scroll=model.scroll,
                     auto_scroll=model.auto_scroll,
+                    x_offset=model.x_offset,
                 )
             )
             lines.extend(
@@ -637,6 +742,7 @@ def view(model: Model, width: int, height: int) -> list[str]:
                     active=(model.active_panel == 2),
                     scroll=model.scroll,
                     auto_scroll=model.auto_scroll,
+                    x_offset=model.x_offset,
                     color=C_DIM,
                 )
             )
@@ -651,6 +757,7 @@ def view(model: Model, width: int, height: int) -> list[str]:
                     active=(model.active_panel == 1),
                     scroll=model.scroll,
                     auto_scroll=model.auto_scroll,
+                    x_offset=model.x_offset,
                 )
             )
 
@@ -664,6 +771,7 @@ def view(model: Model, width: int, height: int) -> list[str]:
                     active=(model.active_panel == 1),
                     scroll=model.scroll,
                     auto_scroll=model.auto_scroll,
+                    x_offset=model.x_offset,
                 )
             )
 
@@ -679,6 +787,7 @@ def view(model: Model, width: int, height: int) -> list[str]:
                     active=(model.active_panel == 1),
                     scroll=model.scroll,
                     auto_scroll=model.auto_scroll,
+                    x_offset=model.x_offset,
                 )
             )
 
@@ -696,7 +805,7 @@ def view(model: Model, width: int, height: int) -> list[str]:
         if model.auto_scroll:
             scroll_hint = f"  {C_DIM}[FOLLOW]{RESET}"
         else:
-            scroll_hint = f"  {C_DIM}j/k:scroll G:follow{RESET}"
+            scroll_hint = f"  {C_DIM}j/k:line ^d/^u:page h/l:pan G:follow{RESET}"
 
     footer = f" {tab_str}{scroll_hint}  {C_DIM}q:quit{RESET}"
     lines.append(footer)

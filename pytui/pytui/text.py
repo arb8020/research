@@ -356,6 +356,80 @@ def truncate_to_width(text: str, max_width: int, ellipsis: str = "...") -> str:
     return text[:truncate_at] + "\x1b[0m" + ellipsis
 
 
+def slice_ansi(text: str, start: int, end: int) -> str:
+    """Extract a horizontal slice of text by visible column positions.
+
+    Like text[start:end] but works with ANSI codes - the slice is based on
+    visible character positions, not byte positions. ANSI codes that were
+    active at the start position are prepended to maintain styling.
+
+    This is equivalent to bubble tea's ansi.Cut(text, start, end).
+
+    Args:
+        text: Text to slice (may contain ANSI codes)
+        start: Starting visible column (0-indexed, inclusive)
+        end: Ending visible column (exclusive)
+
+    Returns:
+        Sliced text with ANSI codes preserved
+
+    Example:
+        slice_ansi("\\x1b[31mhello world\\x1b[0m", 2, 7) -> "\\x1b[31mllo w\\x1b[0m"
+    """
+    if start >= end:
+        return ""
+
+    tracker = AnsiCodeTracker()
+    result_chars: list[str] = []
+    current_col = 0
+    i = 0
+
+    # First pass: skip to start position, tracking ANSI codes
+    while i < len(text) and current_col < start:
+        ansi = extract_ansi_code(text, i)
+        if ansi:
+            tracker.process(ansi.code)
+            i += ansi.length
+            continue
+
+        char = text[i]
+        char_width = visible_width(char)
+
+        # Check if this character spans the start position
+        if current_col + char_width > start:
+            # Character starts before start but extends into our slice
+            # Include it if any part is visible
+            break
+
+        current_col += char_width
+        i += 1
+
+    # Prepend active ANSI codes to maintain styling
+    prefix = tracker.get_active_codes()
+
+    # Second pass: collect characters from start to end
+    while i < len(text) and current_col < end:
+        ansi = extract_ansi_code(text, i)
+        if ansi:
+            result_chars.append(ansi.code)
+            tracker.process(ansi.code)
+            i += ansi.length
+            continue
+
+        char = text[i]
+        char_width = visible_width(char)
+
+        # Include character if it starts before end
+        result_chars.append(char)
+        current_col += char_width
+        i += 1
+
+    # Add reset at end to prevent style leaking
+    suffix = "\x1b[0m" if tracker.has_active_codes() or prefix else ""
+
+    return prefix + "".join(result_chars) + suffix
+
+
 def apply_background_to_line(line: str, width: int, bg_fn: Callable[[str], str]) -> str:
     """Apply background color to a line, padding to full width.
 

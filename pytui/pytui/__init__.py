@@ -43,6 +43,7 @@ from .text import (
     AnsiCodeTracker,
     apply_background_to_line,
     extract_ansi_code,
+    slice_ansi,
     strip_terminal_control_sequences,
     truncate_to_width,
     visible_width,
@@ -81,6 +82,7 @@ __all__ = [
     # Text
     "visible_width",
     "truncate_to_width",
+    "slice_ansi",
     "wrap_text_with_ansi",
     "apply_background_to_line",
     "extract_ansi_code",
