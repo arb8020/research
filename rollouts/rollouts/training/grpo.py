@@ -46,8 +46,13 @@ from ..training.configs import (  # noqa: E402
     TrainerConfig,
 )
 
-# GRPO-specific output defaults
-GRPOOutputConfig = OutputConfig  # Alias for backwards compat
+
+def GRPOOutputConfig(  # noqa: N802 — factory, not a class
+    experiment_name: str = "grpo",
+    output_dir: str = "results/rl",
+) -> OutputConfig:
+    """Create OutputConfig with GRPO defaults (output_dir="results/rl")."""
+    return OutputConfig(output_dir=output_dir, experiment_name=experiment_name)
 
 
 # ──────────────────────── Composed Config ────────────────────────────────────
@@ -135,14 +140,23 @@ def grpo_train(
 def _setup_output_dir(config: GRPOConfig) -> tuple[Path, str]:
     """Setup output directory and run name.
 
+    Priority:
+    1. ROLLOUTS_OUTPUT_DIR env var (set by runner — single source of truth)
+    2. ROLLOUTS_RUN_NAME env var + config.output.output_dir (legacy)
+    3. Generate from config (local execution)
+
     Returns:
         Tuple of (output_dir, run_name)
     """
     import os
     from datetime import datetime, timezone
 
-    run_name = os.environ.get("ROLLOUTS_RUN_NAME")
-    if run_name:
+    explicit_dir = os.environ.get("ROLLOUTS_OUTPUT_DIR")
+    if explicit_dir:
+        output_dir = Path(explicit_dir)
+        run_name = output_dir.name
+    elif run_name_env := os.environ.get("ROLLOUTS_RUN_NAME"):
+        run_name = run_name_env
         output_dir = Path(config.output.output_dir) / run_name
     else:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")

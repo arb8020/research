@@ -24,6 +24,7 @@ Note:
     For the full SFT → RL pipeline, see sft_then_grpo.py
 """
 
+from examples.rl.reverse_text.base_config import train  # noqa: F401 (used by runner)
 from rollouts.training.grpo import (
     CheckpointConfig,
     GRPOConfig,
@@ -67,3 +68,6 @@ config = GRPOConfig(
 
 # For base model variant, create a separate config file or use:
 # python -m rollouts.run --config examples/rl/reverse_text/grpo_01_01.py
+
+if __name__ == "__main__":
+    train(config)

@@ -167,6 +167,7 @@ async def _deploy_and_submit(
     env_vars = {
         "PYTHONUNBUFFERED": "1",
         "ROLLOUTS_RUN_NAME": run_name,
+        "ROLLOUTS_OUTPUT_DIR": f"results/rl/{run_name}",
         "ROLLOUTS_JSON_LOGS": "true",
     }
 
@@ -176,7 +177,7 @@ async def _deploy_and_submit(
         job = bifrost.submit(
             ProcessSpec(
                 command="/root/.local/bin/uv",
-                args=("run", "python", str(script_rel_path)),
+                args=("run", "python", "-m", "rollouts.run", "--config", str(script_rel_path)),
                 cwd=f"{workspace}/rollouts",
                 env=env_vars,
             ),
