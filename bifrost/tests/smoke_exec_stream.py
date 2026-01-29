@@ -72,7 +72,7 @@ def run_smoke_test() -> None:
         chunks = [b"first line\nsecond ", b"line\r\nthird"]
         channel = _FakeChannel(chunks)
         fake_client = _FakeSSHClient(channel)
-        client._get_ssh_client = lambda: fake_client  # type: ignore[attr-defined]
+        client._get_ssh_client = lambda: fake_client
 
         streamed = list(client.exec_stream("echo test", working_dir="/workspace"))
 

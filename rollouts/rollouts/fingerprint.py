@@ -22,14 +22,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import subprocess
-import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .dtypes import EvalConfig
+
+logger = logging.getLogger(__name__)
 
 # ── Core Utilities ──────────────────────────────────────────────────────────
 
@@ -105,9 +107,8 @@ def require_clean_git(*, allow_dirty: bool = False) -> tuple[str, bool]:
         )
 
     if dirty and allow_dirty:
-        print(
-            "⚠ Running with uncommitted changes (git_dirty=True). Results may not be reproducible.",
-            file=sys.stderr,
+        logger.warning(
+            "Running with uncommitted changes (git_dirty=True). Results may not be reproducible."
         )
 
     return sha, dirty
@@ -304,11 +305,11 @@ def warn_if_changed(saved: dict[str, Any], current: dict[str, Any], context: str
     saved_hash = saved.get("config_hash", "")
     current_hash = current.get("config_hash", "")
     if saved_hash and current_hash and saved_hash != current_hash:
-        print(f"⚠ Config changed since {context} was created", file=sys.stderr)
-        print(f"  Saved:   {fingerprint_short(saved)}", file=sys.stderr)
-        print(f"  Current: {fingerprint_short(current)}", file=sys.stderr)
+        logger.warning("Config changed since %s was created", context)
+        logger.warning("  Saved:   %s", fingerprint_short(saved))
+        logger.warning("  Current: %s", fingerprint_short(current))
 
     saved_git = saved.get("git_sha", "")
     current_git = current.get("git_sha", "")
     if saved_git and current_git and saved_git != current_git and saved_hash == current_hash:
-        print(f"ℹ Code version changed: {saved_git} → {current_git}", file=sys.stderr)
+        logger.info("Code version changed: %s → %s", saved_git, current_git)

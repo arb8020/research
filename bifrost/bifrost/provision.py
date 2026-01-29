@@ -16,9 +16,12 @@ Tiger Style:
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from broker.client import ClientGPUInstance
@@ -137,12 +140,12 @@ async def acquire_node(
         assert ":" in node_id, f"node_id must be 'provider:instance_id', got: {node_id}"
         provider, instance_id = node_id.split(":", 1)
 
-        print(f"Connecting to existing instance: {node_id}")
+        logger.info("Connecting to existing instance: %s", node_id)
         instance = await broker.get_instance(instance_id, provider)
         assert instance is not None, f"Instance not found: {node_id}"
 
-        print(f"  GPU: {instance.gpu_count}x {instance.gpu_type}")
-        print("  Waiting for SSH...")
+        logger.info("  GPU: %dx %s", instance.gpu_count, instance.gpu_type)
+        logger.info("  Waiting for SSH...")
         await instance.wait_until_ssh_ready(timeout=ssh_timeout)
 
         key_path = broker.get_ssh_key_path(provider)
@@ -154,7 +157,7 @@ async def acquire_node(
     # Mode 3: Provision new instance
     assert provision is not None  # Type narrowing
 
-    print(f"Provisioning new instance ({provision.count}x {provision.type})...")
+    logger.info("Provisioning new instance (%dx %s)...", provision.count, provision.type)
     instance = await broker.create(
         broker.gpu_type.contains(provision.type),
         name=provision.name,
@@ -169,10 +172,10 @@ async def acquire_node(
     )
     if instance is None:
         raise RuntimeError("Failed to provision instance - no suitable GPU offers found")
-    print(f"  Instance ID: {instance.provider}:{instance.id}")
-    print(f"  GPU: {instance.gpu_count}x {instance.gpu_type}")
+    logger.info("  Instance ID: %s:%s", instance.provider, instance.id)
+    logger.info("  GPU: %dx %s", instance.gpu_count, instance.gpu_type)
 
-    print("  Waiting for SSH...")
+    logger.info("  Waiting for SSH...")
     await instance.wait_until_ssh_ready(timeout=ssh_timeout)
 
     key_path = broker.get_ssh_key_path(instance.provider)

@@ -4,12 +4,15 @@ Uses a separate Chrome instance with remote debugging to grab the Clerk JWT
 from an authenticated RunPod console session.
 """
 
+import logging
 import shutil
 import subprocess
 import time
 from pathlib import Path
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 # Chrome debug instance settings
 CHROME_DEBUG_PORT = 9222
@@ -237,9 +240,9 @@ def fetch_pod_logs(pod_id: str, log_type: str = "system") -> dict:
     """
     if not is_chrome_debug_running():
         launch_chrome_debug()
-        print("Chrome debug instance launched.")
-        print("Please log into RunPod console in the Chrome window that just opened.")
-        print("Then run this command again.")
+        logger.info("chrome debug instance launched")
+        logger.info("please log into runpod console in the chrome window that just opened")
+        logger.info("then run this command again")
         return {"error": "Please log into RunPod console in the Chrome debug window"}
 
     # Make sure there's a RunPod tab
@@ -247,7 +250,7 @@ def fetch_pod_logs(pod_id: str, log_type: str = "system") -> dict:
 
     jwt, team_id = get_runpod_auth()
     if not jwt:
-        print("Not logged in. Opening RunPod console...")
+        logger.info("not logged in. opening runpod console...")
         ensure_runpod_tab_open()
         return {"error": "Not logged into RunPod console. Please log in and try again."}
 

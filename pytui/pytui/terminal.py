@@ -24,6 +24,21 @@ from collections.abc import Callable
 from types import FrameType
 from typing import Any, Protocol
 
+# ANSI escape sequences — named for readability and grep-ability
+ALT_SCREEN_ON = "\x1b[?1049h"
+ALT_SCREEN_OFF = "\x1b[?1049l"
+BRACKETED_PASTE_ON = "\x1b[?2004h"
+BRACKETED_PASTE_OFF = "\x1b[?2004l"
+SYNC_OUTPUT_ON = "\x1b[?2026h"
+SYNC_OUTPUT_OFF = "\x1b[?2026l"
+CURSOR_SHOW = "\x1b[?25h"
+CURSOR_HIDE = "\x1b[?25l"
+CLEAR_SCREEN_HOME = "\x1b[2J\x1b[H"
+CLEAR_LINE = "\x1b[K"
+CLEAR_LINE_FULL = "\x1b[2K"
+CLEAR_TO_END = "\x1b[J"
+RESET_ATTRS = "\x1b[0m"
+
 # Global reference for atexit cleanup
 _active_terminal: Terminal | None = None
 _cleanup_done: bool = False
@@ -124,11 +139,11 @@ class Terminal:
 
         # Enter alternate screen buffer
         if self._alternate_screen:
-            sys.stdout.write("\x1b[?1049h")
+            sys.stdout.write(ALT_SCREEN_ON)
 
         # Enable bracketed paste mode
         if self._bracketed_paste:
-            sys.stdout.write("\x1b[?2004h")
+            sys.stdout.write(BRACKETED_PASTE_ON)
 
         sys.stdout.flush()
 
@@ -147,17 +162,17 @@ class Terminal:
         _cleanup_done = True
 
         # Restore terminal to clean state
-        sys.stdout.write("\x1b[?25h")  # Show cursor
+        sys.stdout.write(CURSOR_SHOW)
 
         if self._bracketed_paste:
-            sys.stdout.write("\x1b[?2004l")
+            sys.stdout.write(BRACKETED_PASTE_OFF)
 
         # End synchronized output (in case we're mid-render)
-        sys.stdout.write("\x1b[?2026l")
-        sys.stdout.write("\x1b[0m")  # Reset attributes
+        sys.stdout.write(SYNC_OUTPUT_OFF)
+        sys.stdout.write(RESET_ATTRS)
 
         if self._alternate_screen:
-            sys.stdout.write("\x1b[?1049l")
+            sys.stdout.write(ALT_SCREEN_OFF)
         else:
             sys.stdout.write("\n")
 
@@ -203,19 +218,19 @@ class Terminal:
         return os.get_terminal_size().lines
 
     def hide_cursor(self) -> None:
-        self.write("\x1b[?25l")
+        self.write(CURSOR_HIDE)
 
     def show_cursor(self) -> None:
-        self.write("\x1b[?25h")
+        self.write(CURSOR_SHOW)
 
     def clear_line(self) -> None:
-        self.write("\x1b[K")
+        self.write(CLEAR_LINE)
 
     def clear_from_cursor(self) -> None:
-        self.write("\x1b[J")
+        self.write(CLEAR_TO_END)
 
     def clear_screen(self) -> None:
-        self.write("\x1b[2J\x1b[H")
+        self.write(CLEAR_SCREEN_HOME)
 
     def move_cursor(self, row: int, col: int) -> None:
         """Move cursor to position (1-indexed)."""
@@ -266,9 +281,9 @@ class Terminal:
                     termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, self._old_settings)
 
             if self._bracketed_paste:
-                sys.stdout.write("\x1b[?2004l")
-            sys.stdout.write("\x1b[?25h")  # Show cursor
-            sys.stdout.write("\x1b[2J\x1b[H")  # Clear screen
+                sys.stdout.write(BRACKETED_PASTE_OFF)
+            sys.stdout.write(CURSOR_SHOW)
+            sys.stdout.write(CLEAR_SCREEN_HOME)
             sys.stdout.flush()
 
             with open("/dev/tty") as tty_in, open("/dev/tty", "w") as tty_out:
@@ -298,9 +313,9 @@ class Terminal:
                 tty.setraw(sys.stdin.fileno())
 
             if self._bracketed_paste:
-                sys.stdout.write("\x1b[?2004h")
-            sys.stdout.write("\x1b[?25l")
-            sys.stdout.write("\x1b[2J\x1b[H")
+                sys.stdout.write(BRACKETED_PASTE_ON)
+            sys.stdout.write(CURSOR_HIDE)
+            sys.stdout.write(CLEAR_SCREEN_HOME)
             sys.stdout.flush()
 
             if self._resize_handler:

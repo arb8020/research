@@ -29,11 +29,11 @@ class QueryField:
         """Field value is in list"""
         return QueryCondition(self.field_name, "isin", values)
 
-    def __eq__(self, value: Any) -> "QueryCondition":  # type: ignore[override]
+    def __eq__(self, value: Any) -> "QueryCondition":
         """Field equals value. Returns QueryCondition for DSL, not bool."""
         return QueryCondition(self.field_name, "eq", value)
 
-    def __ne__(self, value: Any) -> "QueryCondition":  # type: ignore[override]
+    def __ne__(self, value: Any) -> "QueryCondition":
         """Field not equals value. Returns QueryCondition for DSL, not bool."""
         return QueryCondition(self.field_name, "ne", value)
 

@@ -131,7 +131,7 @@ async def main() -> None:
     # Create run config
     run_config = RunConfig(
         on_chunk=stdout_handler,
-        confirm_tool=confirm_tool_with_feedback,  # type: ignore
+        confirm_tool=confirm_tool_with_feedback,
         handle_tool_error=handle_tool_error,
         handle_stop=handle_stop_max_turns(10),
         handle_no_tool=inject_tool_reminder,

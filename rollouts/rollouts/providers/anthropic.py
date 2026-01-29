@@ -891,7 +891,7 @@ async def rollout_anthropic(
                 if oauth_token or actor.endpoint.is_claude_code_api_key:
                     extra_headers["anthropic-beta"] = "oauth-2025-04-20,prompt-caching-2024-07-31"
 
-                async with client.messages.stream(  # type: ignore[missing-argument]
+                async with client.messages.stream(
                     **params,
                     extra_headers=extra_headers,
                 ) as stream:

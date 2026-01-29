@@ -10,9 +10,12 @@ Two modes:
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from bifrost import BifrostClient, JobInfo
@@ -128,13 +131,13 @@ async def _block_until_complete(
 
     try:
         if tui_debug:
-            print("-" * 50)
+            logger.info("-" * 50)
             success, exit_code, err = job_stream_until_complete(
                 bifrost, job, timeout=7200, poll_interval=1.0
             )
-            print("-" * 50)
+            logger.info("-" * 50)
             if not success:
-                print(f"Training failed: {err} (exit code: {exit_code})")
+                logger.error("Training failed: %s (exit code: %s)", err, exit_code)
         elif use_tui:
             import threading
             import time
@@ -183,18 +186,18 @@ async def _block_until_complete(
 
             success, exit_code, err = stream_result
             if not success:
-                print(f"Training failed: {err} (exit code: {exit_code})")
+                logger.error("Training failed: %s (exit code: %s)", err, exit_code)
         else:
-            print("-" * 50)
+            logger.info("-" * 50)
             success, exit_code, err = job_stream_until_complete(
                 bifrost, job, timeout=7200, poll_interval=1.0
             )
-            print("-" * 50)
+            logger.info("-" * 50)
             if not success:
-                print(f"Training failed: {err} (exit code: {exit_code})")
+                logger.error("Training failed: %s (exit code: %s)", err, exit_code)
 
     except KeyboardInterrupt:
-        print("\n\nInterrupted! Syncing logs before exit...")
+        logger.warning("Interrupted! Syncing logs before exit...")
 
     finally:
         await _sync_and_cleanup(bifrost, instance, run_name, remote_output_dir, keep_alive)
@@ -208,7 +211,7 @@ async def _sync_and_cleanup(
     keep_alive: bool,
 ) -> None:
     """Sync results from remote and optionally terminate instance."""
-    print("\nSyncing results...")
+    logger.info("Syncing results...")
     local_results = Path("results/rl")
     local_run_dir = local_results / run_name
     local_run_dir.mkdir(parents=True, exist_ok=True)
@@ -230,17 +233,17 @@ async def _sync_and_cleanup(
                     recursive=False,
                 )
                 if result and result.success:
-                    print(f"  Synced: {run_name}/{filename}")
+                    logger.info("Synced: %s/%s", run_name, filename)
             except Exception:
                 pass
 
     if instance:
         if not keep_alive:
-            print(f"\nTerminating instance {instance.provider}:{instance.id}...")
+            logger.info("Terminating instance %s:%s...", instance.provider, instance.id)
             await instance.terminate()
         else:
-            print(f"\nInstance kept alive: {instance.provider}:{instance.id}")
-            print(f"Reuse with: --node-id {instance.provider}:{instance.id}")
+            logger.info("Instance kept alive: %s:%s", instance.provider, instance.id)
+            logger.info("Reuse with: --node-id %s:%s", instance.provider, instance.id)
 
 
 async def run_remote(
@@ -295,7 +298,7 @@ async def run_remote(
     # Start LogsServer on the remote node
     from bifrost import ProcessSpec
 
-    print("Starting LogsServer...")
+    logger.info("Starting LogsServer...")
     # Use relative path for --dir since cwd is workspace
     # remote_output_dir is {workspace}/rollouts/results/rl/{run_name}
     logs_dir_relative = f"rollouts/results/rl/{run_name}"
@@ -327,13 +330,13 @@ async def run_remote(
         script=script_path,
     )
 
-    print("\nTraining submitted (fire-and-forget).")
-    print(f"  Run:       {run_name}")
-    print(f"  Node:      {node_id_str}")
-    print(f"  Remote:    {remote_output_dir}")
-    print("\nAttach later:")
-    print(f"  rollouts monitor --attach {run_name}")
-    print("  rollouts monitor --attach --latest")
+    logger.info("Training submitted (fire-and-forget).")
+    logger.info("  Run:       %s", run_name)
+    logger.info("  Node:      %s", node_id_str)
+    logger.info("  Remote:    %s", remote_output_dir)
+    logger.info("Attach later:")
+    logger.info("  rollouts monitor --attach %s", run_name)
+    logger.info("  rollouts monitor --attach --latest")
 
     if use_tui:
         # Launch rollouts monitor --attach inline

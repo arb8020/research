@@ -8,8 +8,11 @@ Tiger Style: Explicit NCCL setup, no hidden magic.
 PyTorch: NCCL requires specific env vars for multi-node.
 """
 
+import logging
 import os
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -256,12 +259,12 @@ def print_nccl_config(config: NCCLConfig) -> None:
           Local Rank: 3
           GPU:        cuda:3
     """
-    print("NCCL Configuration:")
-    print(f"  Master:     {config.master_addr}:{config.master_port}")
-    print(f"  World Size: {config.world_size}")
-    print(f"  Rank:       {config.rank}/{config.world_size}")
-    print(f"  Local Rank: {config.local_rank}")
-    print(f"  GPU:        cuda:{config.local_rank}")
+    logger.info("NCCL Configuration:")
+    logger.info("  Master:     %s:%s", config.master_addr, config.master_port)
+    logger.info("  World Size: %s", config.world_size)
+    logger.info("  Rank:       %s/%s", config.rank, config.world_size)
+    logger.info("  Local Rank: %s", config.local_rank)
+    logger.info("  GPU:        cuda:%s", config.local_rank)
 
 
 # ============================================================================

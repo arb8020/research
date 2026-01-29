@@ -285,5 +285,5 @@ def compose(*environments: Environment) -> ComposedEnvironment:
         raise ValueError("compose() requires at least one environment")
     if len(environments) == 1:
         # No need to wrap single environment
-        return environments[0]  # type: ignore
+        return environments[0]
     return ComposedEnvironment(environments=list(environments))

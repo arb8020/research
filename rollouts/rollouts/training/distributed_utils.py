@@ -7,10 +7,13 @@ Tiger Style: Explicit state management, clear error messages.
 Casey Muratori: Minimal coupling, explicit operations.
 """
 
+import logging
 from datetime import timedelta
 
 import torch
 import torch.distributed as dist
+
+logger = logging.getLogger(__name__)
 
 try:
     from torch.distributed.distributed_c10d import (
@@ -386,4 +389,4 @@ def print_rank_0(message: str) -> None:
         >>> print_rank_0("Starting training...")
     """
     if is_main_process():
-        print(message)
+        logger.info("%s", message)

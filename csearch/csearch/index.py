@@ -10,10 +10,13 @@ Query flow:
 3. Verify candidates with actual search (tree-sitter)
 """
 
+import logging
 import sqlite3
 from pathlib import Path
 
-from csearch.backends.tree_sitter import LANG_EXTENSIONS, IGNORED_DIRS
+from csearch.backends.tree_sitter import IGNORED_DIRS, LANG_EXTENSIONS
+
+logger = logging.getLogger(__name__)
 
 INDEX_FILENAME = ".csearch.db"
 
@@ -75,6 +78,10 @@ def build_index(root: Path) -> dict:
     Returns stats dict with 'files' and 'trigrams' counts.
     """
     import datetime
+
+    assert isinstance(root, Path), f"root must be Path, got {type(root)}"
+    assert root.exists(), f"root directory does not exist: {root}"
+    assert root.is_dir(), f"root is not a directory: {root}"
 
     index_path = get_index_path(root)
 
@@ -163,8 +170,8 @@ def build_index(root: Path) -> dict:
 
             file_count += 1
 
-        except Exception:
-            # Skip files that can't be read
+        except (OSError, UnicodeDecodeError) as e:
+            logger.debug("skipping %s: %s", file_path, e)
             continue
 
     # Store metadata
@@ -197,6 +204,10 @@ def query_index(root: Path, query: str) -> list[Path] | None:
         List of candidate file paths, or None if no index exists.
         Candidates are files that contain all trigrams in the query.
     """
+    assert isinstance(root, Path), f"root must be Path, got {type(root)}"
+    assert isinstance(query, str), f"query must be str, got {type(query)}"
+    assert len(query) > 0, "query must be non-empty"
+
     index_path = get_index_path(root)
 
     if not index_path.exists():

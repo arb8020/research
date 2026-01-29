@@ -13,11 +13,14 @@ SLIME: Dynamic sampling strategy, quality filtering.
 """
 
 import inspect
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 import trio
+
+logger = logging.getLogger(__name__)
 
 from ...training.datasets.data_buffer import DataBuffer
 from ...training.rollout_gen.rollout_generation import convert_to_batch
@@ -76,7 +79,7 @@ class AsyncRolloutManager:
         """Async context manager exit - cache any partial samples."""
         if self.partial_samples:
             # Log partial samples for debugging
-            print(f"Caching {len(self.partial_samples)} partial samples on exit")
+            logger.info("Caching %s partial samples on exit", len(self.partial_samples))
         return False
 
     async def generate_batch(

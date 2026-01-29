@@ -179,14 +179,14 @@ async def _execute_vllm_request(
             if error_type == VLLMErrorType.SUCCESS:
                 return response.json()
 
-            print(f"❌ Server returned {response.status_code}: {response.text}")
+            logger.error("Server returned %s: %s", response.status_code, response.text)
 
             if error_type == VLLMErrorType.CONTEXT_LENGTH:
-                print(_format_context_length_error(params.get("max_tokens", 8192)))
+                logger.error("%s", _format_context_length_error(params.get("max_tokens", 8192)))
                 raise NonRetryableError(f"Context length exceeded: {response.text}")
 
             if error_type == VLLMErrorType.INVALID_PARAM:
-                print(_format_invalid_param_error(list(params.keys())))
+                logger.error("%s", _format_invalid_param_error(list(params.keys())))
                 raise NonRetryableError(f"Invalid parameter: {response.text}")
 
             response.raise_for_status()

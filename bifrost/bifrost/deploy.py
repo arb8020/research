@@ -664,8 +664,8 @@ class GitDeployment:
                 client, job_manager, job_id, repo_name, commit_hash, command, env_vars
             )
         except Exception as e:
-            console.print(f"❌ Failed to start detached job: {e}")
-            console.print(f"🔍 Job data preserved for debugging: ~/.bifrost/jobs/{job_id}")
+            logger.exception("Failed to start detached job")
+            logger.info("Job data preserved for debugging: ~/.bifrost/jobs/%s", job_id)
             raise
 
     def _execute_detached_deployment(  # noqa: PLR0913 - deployment needs many params
@@ -718,8 +718,8 @@ class GitDeployment:
         # Start detached execution
         tmux_session = job_manager.start_tmux_session(client, job_id, full_command, env_vars)
 
-        console.print(f"🚀 Job {job_id} started in session {tmux_session}")
-        console.print("💡 Use 'bifrost logs {job_id}' to monitor progress (coming in Phase 2)")
+        logger.info("Job %s started in session %s", job_id, tmux_session)
+        logger.info("Use 'bifrost logs %s' to monitor progress (coming in Phase 2)", job_id)
 
         return job_id
 
@@ -770,16 +770,20 @@ class GitDeployment:
                 client, job_id, full_command, env_vars, "workspace_job_wrapper.sh"
             )
 
-            console.print(f"🚀 Job {job_id} started in session {tmux_session}")
-            console.print(
-                f"💡 Use 'bifrost jobs logs {self.ssh_user}@{self.ssh_host}:{self.ssh_port} {job_id}' to monitor progress"
+            logger.info("Job %s started in session %s", job_id, tmux_session)
+            logger.info(
+                "Use 'bifrost jobs logs %s@%s:%s %s' to monitor progress",
+                self.ssh_user,
+                self.ssh_host,
+                self.ssh_port,
+                job_id,
             )
 
             return job_id
 
         except Exception as e:
-            console.print(f"❌ Failed to start detached job: {e}")
-            console.print(f"🔍 Job data preserved for debugging: ~/.bifrost/jobs/{job_id}")
+            logger.exception("Failed to start detached job")
+            logger.info("Job data preserved for debugging: ~/.bifrost/jobs/%s", job_id)
             raise
 
     def _upload_workspace_job_wrapper_script(self, client: paramiko.SSHClient) -> None:

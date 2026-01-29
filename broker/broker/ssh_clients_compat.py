@@ -78,22 +78,16 @@ def execute_command_sync(
     instance, private_key: str | None, command: str, timeout: int = 30
 ) -> tuple[int, str, str]:
     """Execute command synchronously using broker GPUInstance"""
-    try:
-        conn_info = _create_connection_info_from_gpu_instance(instance, private_key, timeout)
-        return _execute_command_sync(conn_info, command, timeout)
-    except Exception as e:
-        return -1, "", f"Broker sync execution failed: {e}"
+    conn_info = _create_connection_info_from_gpu_instance(instance, private_key, timeout)
+    return _execute_command_sync(conn_info, command, timeout)
 
 
 async def execute_command_async(
     instance, private_key: str | None, command: str, timeout: int = 30
 ) -> tuple[int, str, str]:
     """Execute command asynchronously using broker GPUInstance"""
-    try:
-        conn_info = _create_connection_info_from_gpu_instance(instance, private_key, timeout)
-        return await _execute_command_async(conn_info, command, timeout)
-    except Exception as e:
-        return -1, "", f"Broker async execution failed: {e}"
+    conn_info = _create_connection_info_from_gpu_instance(instance, private_key, timeout)
+    return await _execute_command_async(conn_info, command, timeout)
 
 
 def execute_command_streaming(
@@ -104,11 +98,8 @@ def execute_command_streaming(
     output_callback: Callable[[str, bool], None] | None = None,
 ) -> tuple[int, str, str]:
     """Execute command with streaming output using broker GPUInstance"""
-    try:
-        conn_info = _create_connection_info_from_gpu_instance(instance, private_key, timeout)
-        return _execute_command_streaming(conn_info, command, timeout, output_callback)
-    except Exception as e:
-        return -1, "", f"Broker streaming execution failed: {e}"
+    conn_info = _create_connection_info_from_gpu_instance(instance, private_key, timeout)
+    return _execute_command_streaming(conn_info, command, timeout, output_callback)
 
 
 def start_interactive_ssh_session(instance, private_key_path: str | None = None) -> None:

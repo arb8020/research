@@ -32,6 +32,8 @@ import os
 import sys
 import time
 
+import trio
+
 # Load .env file
 from dotenv import load_dotenv
 
@@ -58,7 +60,7 @@ def get_ssh_key_path() -> str:
     return ssh_key
 
 
-def test_search() -> bool:
+async def test_search() -> bool:
     """Test searching for GPU offers."""
     print("\n" + "=" * 60)
     print("TEST: Search GPU Offers")
@@ -69,7 +71,7 @@ def test_search() -> bool:
     api_key = os.getenv("DIGITALOCEAN_API_KEY")
 
     print("\n1. Searching for all GPU offers...")
-    offers = digitalocean.search_gpu_offers(api_key=api_key)
+    offers = await digitalocean.search_gpu_offers(api_key=api_key)
 
     if not offers:
         print("   ❌ No GPU offers found")
@@ -83,12 +85,12 @@ def test_search() -> bool:
 
     # Test filtering by manufacturer
     print("\n2. Testing manufacturer filter (nvidia)...")
-    nvidia_offers = digitalocean.search_gpu_offers(manufacturer="nvidia", api_key=api_key)
+    nvidia_offers = await digitalocean.search_gpu_offers(manufacturer="nvidia", api_key=api_key)
     print(f"   ✓ Found {len(nvidia_offers)} NVIDIA offers")
 
     # Test filtering by GPU count
     print("\n3. Testing gpu_count filter (1 GPU)...")
-    single_gpu_offers = digitalocean.search_gpu_offers(gpu_count=1, api_key=api_key)
+    single_gpu_offers = await digitalocean.search_gpu_offers(gpu_count=1, api_key=api_key)
     print(f"   ✓ Found {len(single_gpu_offers)} single-GPU offers")
 
     print("\n✓ Search test PASSED")
@@ -172,7 +174,6 @@ def test_provision_and_ssh(keep_alive: bool = False) -> bool:
             print("\n   ⚠ GPU info not found in output")
 
         print("\n✓ Provision and SSH test PASSED")
-        return True
 
     except Exception as e:
         print(f"\n   ❌ Test failed with exception: {e}")
@@ -180,6 +181,9 @@ def test_provision_and_ssh(keep_alive: bool = False) -> bool:
 
         traceback.print_exc()
         return False
+
+    else:
+        return True
 
     finally:
         # Cleanup
@@ -226,7 +230,7 @@ def main():
     results = {}
 
     # Always run search test
-    results["search"] = test_search()
+    results["search"] = trio.run(test_search)
 
     # Run provision test unless dry-run
     if not args.dry_run:

@@ -22,6 +22,7 @@ from __future__ import annotations
 import base64
 import ctypes
 import json
+import logging
 import marshal
 import mmap
 import os
@@ -32,6 +33,8 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
+
+logger = logging.getLogger(__name__)
 
 # ============================================================================
 # PDEATHSIG - Child dies when parent dies (Linux only)
@@ -52,9 +55,9 @@ def _set_pdeathsig() -> None:
         result = libc.prctl(PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0)
         if result != 0:
             errno = ctypes.get_errno()
-            print(f"Warning: prctl(PR_SET_PDEATHSIG) failed with errno {errno}", flush=True)
+            logger.warning("prctl(PR_SET_PDEATHSIG) failed with errno %s", errno)
     except OSError as e:
-        print(f"Warning: Could not set PDEATHSIG: {e}", flush=True)
+        logger.warning("Could not set PDEATHSIG: %s", e)
 
 
 # ============================================================================
@@ -230,12 +233,9 @@ class Worker:
             # Execute work function
             try:
                 work_fn(child_handle)
-            except Exception as e:
+            except Exception:
                 # Log error and exit with failure code
-                import traceback
-
-                print(f"Worker {os.getpid()} failed: {e}", flush=True)
-                traceback.print_exc()
+                logger.exception("Worker %s failed", os.getpid())
                 os._exit(1)
 
             # Clean exit
@@ -484,14 +484,14 @@ def shutdown_workers(workers: list[Worker]) -> None:
         try:
             worker.send({"cmd": "shutdown"})
         except Exception as e:
-            print(f"Warning: Failed to send shutdown to worker {worker.pid}: {e}")
+            logger.warning("Failed to send shutdown to worker %s: %s", worker.pid, e)
 
     # Wait for all to exit
     for worker in workers:
         try:
             worker.wait()
         except AssertionError as e:
-            print(f"Warning: Worker {worker.pid} had non-clean exit: {e}")
+            logger.warning("Worker %s had non-clean exit: %s", worker.pid, e)
 
 
 # ============================================================================

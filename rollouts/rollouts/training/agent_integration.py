@@ -243,7 +243,7 @@ async def generate_rollout_batch(
 
     # Generate all rollouts in parallel (trio structured concurrency)
     # Use list to collect results from concurrent tasks
-    samples: list[Sample] = [None] * len(prompts)  # type: ignore[list-item]
+    samples: list[Sample] = [None] * len(prompts)  # pre-allocated, filled by gen_one
 
     async def gen_one(index: int, prompt: str, metadata: dict) -> None:
         sample = await agent_rollout_to_sample(

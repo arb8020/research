@@ -105,6 +105,11 @@ print(matches[:5])
 When you have the answer: FINAL(42)""",
 }
 
+# Token and thinking budget defaults
+DEFAULT_THINKING_BUDGET = 10000
+MAX_TOKENS_WITH_THINKING = 16384
+MAX_TOKENS_DEFAULT = 8192
+
 # Default values for detecting if user overrode args
 PARSER_DEFAULTS = {
     "model": "anthropic/claude-opus-4-5-20251101",
@@ -765,11 +770,10 @@ def create_endpoint(
 
     # Configure extended thinking for Anthropic
     thinking_config = None
-    thinking_budget = 10000
     if provider == "anthropic" and thinking == "enabled":
-        thinking_config = {"type": "enabled", "budget_tokens": thinking_budget}
+        thinking_config = {"type": "enabled", "budget_tokens": DEFAULT_THINKING_BUDGET}
 
-    max_tokens = 16384 if thinking_config else 8192
+    max_tokens = MAX_TOKENS_WITH_THINKING if thinking_config else MAX_TOKENS_DEFAULT
 
     return Endpoint(
         provider=provider,

@@ -9,10 +9,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 import paramiko
-from rich.console import Console
 
 logger = logging.getLogger(__name__)
-console = Console()
 
 
 # Job wrapper script for detached execution
@@ -124,7 +122,7 @@ class JobManager:
             error = stderr.read().decode()
             raise RuntimeError(f"Failed to write job metadata: {error}")
 
-        console.print(f"📄 Created job metadata: {job_dir}/metadata.json")
+        logger.info("Created job metadata: %s/metadata.json", job_dir)
         return metadata
 
     def upload_job_wrapper_script(self, client: paramiko.SSHClient) -> None:
@@ -152,7 +150,7 @@ class JobManager:
             error = stderr.read().decode()
             raise RuntimeError(f"Failed to make wrapper script executable: {error}")
 
-        console.print("📋 Uploaded job wrapper script")
+        logger.info("Uploaded job wrapper script")
 
     def start_tmux_session(
         self,
@@ -177,7 +175,7 @@ class JobManager:
         # Start tmux session - use single quotes to wrap the entire command
         tmux_cmd = f"tmux new-session -d -s {tmux_session} '{wrapper_cmd}'"
 
-        console.print(f"🖥️  Starting tmux session: {tmux_session}")
+        logger.info("Starting tmux session: %s", tmux_session)
         stdin, stdout, stderr = client.exec_command(tmux_cmd)
         exit_code = stdout.channel.recv_exit_status()
 
@@ -199,7 +197,7 @@ class JobManager:
 
         if not status_exists:
             # Job hasn't started yet, wait a bit more
-            console.print("⏳ Job files not found immediately, waiting...")
+            logger.info("Job files not found immediately, waiting...")
             time.sleep(2)
             stdin, stdout, stderr = client.exec_command(status_check_cmd)
             status_exists = stdout.channel.recv_exit_status() == 0
@@ -209,20 +207,20 @@ class JobManager:
             verify_cmd = "tmux list-sessions 2>/dev/null || echo 'No sessions'"
             stdin, stdout, stderr = client.exec_command(verify_cmd)
             sessions_output = stdout.read().decode()
-            console.print(f"🐛 Debug - tmux sessions: {sessions_output}")
+            logger.debug("tmux sessions: %s", sessions_output)
 
             # Also check if the job directory was created
             stdin, stdout, stderr = client.exec_command(
                 f"ls -la {job_dir}/ 2>/dev/null || echo 'Job dir not found'"
             )
             job_dir_output = stdout.read().decode()
-            console.print(f"🐛 Debug - job directory: {job_dir_output}")
+            logger.debug("job directory: %s", job_dir_output)
 
             raise RuntimeError(
                 f"Job {job_id} failed to start. No job status or log files were created."
             )
 
-        console.print(f"✅ Job {job_id} started successfully in tmux session {tmux_session}")
+        logger.info("Job %s started successfully in tmux session %s", job_id, tmux_session)
         return tmux_session
 
     def check_job_running(self, client: paramiko.SSHClient, job_id: str) -> bool:
@@ -287,4 +285,4 @@ class JobManager:
                 f"cd ~/.bifrost/repos/*.git && git branch -D job/{job_id} 2>/dev/null || true"
             )
 
-        console.print(f"🧹 Cleaned up job {job_id}")
+        logger.info("Cleaned up job %s", job_id)

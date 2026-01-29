@@ -10,7 +10,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .terminal import Terminal
+from .terminal import (
+    CLEAR_LINE_FULL,
+    CLEAR_SCREEN_HOME,
+    SYNC_OUTPUT_OFF,
+    SYNC_OUTPUT_ON,
+    Terminal,
+)
 from .text import truncate_to_width, visible_width
 
 
@@ -46,12 +52,12 @@ def diff_render(
 
     # First render - just output everything
     if len(state.previous_lines) == 0:
-        buffer = "\x1b[?2026h"  # Begin synchronized output
+        buffer = SYNC_OUTPUT_ON
         for i, line in enumerate(new_lines):
             if i > 0:
                 buffer += "\r\n"
             buffer += line
-        buffer += "\x1b[?2026l"  # End synchronized output
+        buffer += SYNC_OUTPUT_OFF
         terminal.write(buffer)
         state.cursor_row = len(new_lines) - 1
         state.previous_lines = list(new_lines)
@@ -60,13 +66,13 @@ def diff_render(
 
     # Width changed - full re-render
     if width_changed:
-        buffer = "\x1b[?2026h"
-        buffer += "\x1b[2J\x1b[H"  # Clear screen and home
+        buffer = SYNC_OUTPUT_ON
+        buffer += CLEAR_SCREEN_HOME
         for i, line in enumerate(new_lines):
             if i > 0:
                 buffer += "\r\n"
             buffer += line
-        buffer += "\x1b[?2026l"
+        buffer += SYNC_OUTPUT_OFF
         terminal.write(buffer)
         state.cursor_row = len(new_lines) - 1
         state.previous_lines = list(new_lines)
@@ -92,13 +98,13 @@ def diff_render(
     viewport_top = state.cursor_row - height + 1
     if first_changed < viewport_top:
         # First change is above viewport - need full re-render
-        buffer = "\x1b[?2026h"
-        buffer += "\x1b[2J\x1b[H"
+        buffer = SYNC_OUTPUT_ON
+        buffer += CLEAR_SCREEN_HOME
         for i, line in enumerate(new_lines):
             if i > 0:
                 buffer += "\r\n"
             buffer += line
-        buffer += "\x1b[?2026l"
+        buffer += SYNC_OUTPUT_OFF
         terminal.write(buffer)
         state.cursor_row = len(new_lines) - 1
         state.previous_lines = list(new_lines)
@@ -106,7 +112,7 @@ def diff_render(
         return
 
     # Render from first changed line to end
-    buffer = "\x1b[?2026h"
+    buffer = SYNC_OUTPUT_ON
 
     # Move cursor to first changed line
     line_diff = first_changed - state.cursor_row
@@ -123,7 +129,7 @@ def diff_render(
         if i > first_changed:
             buffer += "\r\n"
             cursor_after_render = i
-        buffer += "\x1b[2K"  # Clear current line
+        buffer += CLEAR_LINE_FULL
 
         line = new_lines[i]
         if visible_width(line) > width:
@@ -134,13 +140,13 @@ def diff_render(
     if len(state.previous_lines) > len(new_lines):
         extra_lines = len(state.previous_lines) - len(new_lines)
         for _i in range(extra_lines):
-            buffer += "\r\n\x1b[2K"
+            buffer += "\r\n" + CLEAR_LINE_FULL
         # Move cursor back to correct position
         lines_to_move_up = cursor_after_render + extra_lines - (len(new_lines) - 1)
         if lines_to_move_up > 0:
             buffer += f"\x1b[{lines_to_move_up}A"
 
-    buffer += "\x1b[?2026l"  # End synchronized output
+    buffer += SYNC_OUTPUT_OFF
 
     terminal.write(buffer)
     state.cursor_row = len(new_lines) - 1

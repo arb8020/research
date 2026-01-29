@@ -429,9 +429,9 @@ def check_remote_prerequisites(ssh_connection: str, ssh_key: str) -> tuple[bool,
         'command -v uv >/dev/null 2>&1 && echo "OK" || echo "MISSING"'
     )
     if result.stdout.strip() != "OK":
-        print("Installing uv...")
+        logger.info("Installing uv...")
         install_result = bifrost_client.exec(
-            'curl -LsSf https://astral.sh/uv/install.sh | sh && '
+            "curl -LsSf https://astral.sh/uv/install.sh | sh && "
             'export PATH="$HOME/.local/bin:$PATH" && uv --version'
         )
         if install_result.exit_code != 0:
@@ -440,9 +440,9 @@ def check_remote_prerequisites(ssh_connection: str, ssh_key: str) -> tuple[bool,
     # Check for tmux, install if missing
     result = bifrost_client.exec('command -v tmux >/dev/null 2>&1 && echo "OK" || echo "MISSING"')
     if result.stdout.strip() != "OK":
-        print("Installing tmux...")
+        logger.info("Installing tmux...")
         install_result = bifrost_client.exec(
-            'apt-get update -qq && apt-get install -y -qq tmux >/dev/null 2>&1 && tmux -V'
+            "apt-get update -qq && apt-get install -y -qq tmux >/dev/null 2>&1 && tmux -V"
         )
         if install_result.exit_code != 0:
             missing.append("tmux (auto-install failed)")
@@ -452,10 +452,10 @@ def check_remote_prerequisites(ssh_connection: str, ssh_key: str) -> tuple[bool,
         'ldconfig -p | grep -q libnuma && test -f /usr/include/python3.10/Python.h && echo "OK" || echo "MISSING"'
     )
     if result.stdout.strip() != "OK":
-        print("Installing libnuma and python3-dev...")
+        logger.info("Installing libnuma and python3-dev...")
         install_result = bifrost_client.exec(
-            'apt-get update -qq && apt-get install -y -qq libnuma-dev python3-dev >/dev/null 2>&1 && '
-            'ldconfig -p | grep libnuma && test -f /usr/include/python3.10/Python.h'
+            "apt-get update -qq && apt-get install -y -qq libnuma-dev python3-dev >/dev/null 2>&1 && "
+            "ldconfig -p | grep libnuma && test -f /usr/include/python3.10/Python.h"
         )
         if install_result.exit_code != 0:
             missing.append("libnuma/python3-dev (auto-install failed)")
@@ -894,8 +894,8 @@ async def _deploy_remote(
                     exit_code = int(exit_code_str)
                     logger.debug(f"📊 Bootstrap exit code: {exit_code}")
             else:
-                # Print output in real-time
-                print(line, end="", flush=True)
+                # Log output in real-time
+                logger.debug("%s", line.rstrip())
                 output_lines.append(line)
     except Exception as e:
         logger.exception(f"❌ Bootstrap streaming failed: {e}")
