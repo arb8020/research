@@ -7,18 +7,21 @@ Extracted from rollouts/frontends/tui/utils.py - same code, new home.
 
 from __future__ import annotations
 
+import functools
 import re
 import unicodedata
 from collections.abc import Callable
 from typing import NamedTuple
 
-# Pattern for bracketed paste mode sequences and other terminal control sequences
-# These can leak into text content when returning from vim mode (Ctrl+G)
+# Pre-compiled patterns for performance (avoid re-compiling on every call)
 TERMINAL_CONTROL_PATTERN = re.compile(
     r"\x1b\[\?2004[hl]"  # Bracketed paste enable/disable
     r"|\x1b\[20[01]~"  # Bracketed paste start/end markers
     r"|\x1b\[\d+~"  # Other ~ terminated sequences (function keys, etc.)
 )
+
+# ANSI escape sequences (SGR codes and others)
+ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z~]")
 
 
 def strip_terminal_control_sequences(text: str) -> str:
@@ -30,6 +33,7 @@ def strip_terminal_control_sequences(text: str) -> str:
     return TERMINAL_CONTROL_PATTERN.sub("", text)
 
 
+@functools.lru_cache(maxsize=1024)
 def visible_width(text: str) -> int:
     """Calculate the visible width of a string in terminal columns.
 
@@ -39,6 +43,9 @@ def visible_width(text: str) -> int:
     - Wide characters (CJK, emoji = 2 columns)
     - Combining characters (zero width)
     - Tabs (converted to 3 spaces)
+
+    Results are cached (LRU, 1024 entries) since the same strings are
+    often measured repeatedly during rendering.
     """
     # Normalize tabs
     text = text.replace("\t", "   ")
@@ -46,10 +53,8 @@ def visible_width(text: str) -> int:
     # Strip terminal control sequences (bracketed paste, etc.)
     text = strip_terminal_control_sequences(text)
 
-    # Strip ANSI escape sequences (SGR codes and others)
-    # Include ~ terminated sequences (function keys, bracketed paste markers)
-    ansi_pattern = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z~]")
-    text_no_ansi = ansi_pattern.sub("", text)
+    # Strip ANSI escape sequences using pre-compiled pattern
+    text_no_ansi = ANSI_ESCAPE_PATTERN.sub("", text)
 
     width = 0
     for char in text_no_ansi:

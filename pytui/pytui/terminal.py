@@ -252,27 +252,39 @@ class Terminal:
     def read_input(self) -> str | None:
         """Read available input (non-blocking).
 
-        Returns None if no input available. Reads all available bytes
-        to keep escape sequences together.
+        Returns None if no input available. Reads escape sequences
+        with adaptive timeout - waits up to 10ms for sequence to complete,
+        but returns early when a complete sequence is detected.
         """
-        if self._tty_fd is not None:
-            if not select.select([self._tty_fd], [], [], 0)[0]:
-                return None
-            result = os.read(self._tty_fd, 1).decode("utf-8", errors="replace")
-            if result == "\x1b":
-                time.sleep(0.001)  # 1ms for escape sequence bytes
-                while select.select([self._tty_fd], [], [], 0)[0]:
-                    result += os.read(self._tty_fd, 1).decode("utf-8", errors="replace")
-            return result
-        else:
-            if not select.select([sys.stdin], [], [], 0)[0]:
-                return None
-            result = sys.stdin.read(1)
-            if result == "\x1b":
-                time.sleep(0.001)
-                while select.select([sys.stdin], [], [], 0)[0]:
-                    result += sys.stdin.read(1)
-            return result
+        fd = self._tty_fd if self._tty_fd is not None else sys.stdin.fileno()
+
+        if not select.select([fd], [], [], 0)[0]:
+            return None
+
+        result = os.read(fd, 1).decode("utf-8", errors="replace")
+
+        if result == "\x1b":
+            # Escape sequence - read with adaptive timeout
+            # Most sequences complete within 1-2ms, but allow up to 10ms
+            deadline = time.time() + 0.010  # 10ms max
+            while time.time() < deadline:
+                # Short poll - 1ms timeout
+                if select.select([fd], [], [], 0.001)[0]:
+                    byte = os.read(fd, 1).decode("utf-8", errors="replace")
+                    if not byte:
+                        break
+                    result += byte
+                    # Check for complete sequence (letter or ~ terminates)
+                    if len(result) > 1 and result[-1].isalpha() or result[-1] == "~":
+                        break
+                    # Mouse SGR sequences end with M or m
+                    if result[-1] in "Mm" and "<" in result:
+                        break
+                else:
+                    # No more data available
+                    break
+
+        return result
 
     def run_external_editor(self, initial_content: str = "") -> str | None:
         """Temporarily exit raw mode, run $EDITOR, return edited content."""
