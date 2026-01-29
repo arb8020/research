@@ -209,9 +209,8 @@ def _run_file_tail(
 ) -> None:
     """Thread target for Sub.file_tail.
 
-    Waits for file to exist, then tails from end.
+    Waits for file to exist, reads existing content, then tails for new lines.
     """
-    import os
     from pathlib import Path
 
     p = Path(path)
@@ -223,9 +222,7 @@ def _run_file_tail(
         return
 
     with open(p) as f:
-        # Start from end of file
-        f.seek(0, os.SEEK_END)
-
+        # Read from beginning (existing content + new lines)
         while not stop.is_set():
             line = f.readline()
             if line:
