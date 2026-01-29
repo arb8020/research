@@ -298,13 +298,17 @@ def _fetch_and_print_logs_server_log(node_id: str | None, run_id: str) -> None:
         tmux_result = bifrost.exec("tmux ls 2>/dev/null || echo '[no tmux sessions]'")
         print(tmux_result.stdout if tmux_result.stdout else "[empty]")
 
-        # Try running logs_server manually to see the error
-        print("--- testing logs_server import ---")
-        workspace = "~/.bifrost/workspaces/rollouts-rl"
-        test_result = bifrost.exec(
-            f"cd {workspace} && python3 -c 'import sys; sys.path.insert(0, \".\"); from miniray.logs_server import main; print(\"import ok\")' 2>&1"
+        # Capture the tmux pane content to see what's happening
+        print("--- logs-server tmux pane content ---")
+        pane_result = bifrost.exec(
+            "tmux capture-pane -t bifrost-job-logs-server -p 2>/dev/null || echo '[no pane]'"
         )
-        print(test_result.stdout if test_result.stdout else "[empty]")
+        print(pane_result.stdout if pane_result.stdout else "[empty]")
+
+        # Check if port 9100 is listening
+        print("--- port 9100 status ---")
+        port_result = bifrost.exec("ss -tlnp | grep 9100 || echo '[not listening]'")
+        print(port_result.stdout if port_result.stdout else "[empty]")
 
     except Exception as e:
         print(f"Failed to fetch remote logs: {e}")
