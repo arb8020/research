@@ -473,7 +473,13 @@ def subscriptions(model: Model) -> Sub:
 
 
 def _box(title: str, content: list[str], width: int, active: bool = False) -> list[str]:
-    """Draw a btop-style box with rounded corners."""
+    """Draw a btop-style box with rounded corners.
+
+    Invariants:
+    - Every returned line has visible_width == width
+    - Returns len(content) + 2 lines (top + content + bottom)
+    """
+    assert width >= 4, f"Box width must be >= 4, got {width}"
     inner_w = width - 2
 
     border_c = C_BORDER_ACCENT if active else C_BORDER
@@ -495,8 +501,16 @@ def _box(title: str, content: list[str], width: int, active: bool = False) -> li
     for row in content:
         vis_len = visible_width(row)
         pad = max(0, inner_w - vis_len)
-        lines.append(f"{border_c}{V}{RESET}{row}{' ' * pad}{border_c}{V}{RESET}")
+        line = f"{border_c}{V}{RESET}{row}{' ' * pad}{border_c}{V}{RESET}"
+        lines.append(line)
     lines.append(bottom)
+
+    # Assert invariants
+    assert len(lines) == len(content) + 2, f"Box line count mismatch: {len(lines)} != {len(content) + 2}"
+    for i, line in enumerate(lines):
+        line_w = visible_width(line)
+        assert line_w == width, f"Box line {i} width {line_w} != expected {width}. Line: {repr(line[:100])}"
+
     return lines
 
 
@@ -527,7 +541,15 @@ def _sparkline(values: tuple[float, ...] | list[float], width: int) -> str:
 
 
 def _side_by_side(left: list[str], right: list[str], left_w: int, right_w: int) -> list[str]:
-    """Place two sets of lines side by side."""
+    """Place two sets of lines side by side.
+
+    Expects left and right to be pre-rendered boxes where each line has the
+    correct visible width. This function pads the left side to left_w if needed.
+
+    Invariants:
+        - Left lines are padded to exactly left_w visible chars
+        - Returns max(len(left), len(right)) lines
+    """
     max_h = max(len(left), len(right))
     result = []
     for i in range(max_h):
@@ -536,7 +558,17 @@ def _side_by_side(left: list[str], right: list[str], left_w: int, right_w: int) 
         # Pad left line to exact width using visible_width
         l_vis = visible_width(l)
         l_pad = max(0, left_w - l_vis)
-        result.append(l + " " * l_pad + r)
+        combined = l + " " * l_pad + r
+        result.append(combined)
+
+        # Assert left padding is correct
+        padded_left_w = l_vis + l_pad
+        assert padded_left_w == left_w, (
+            f"Side-by-side line {i}: padded left width {padded_left_w} != left_w {left_w}. "
+            f"l_vis={l_vis}, l_pad={l_pad}"
+        )
+
+    assert len(result) == max_h, f"Side-by-side returned {len(result)} lines, expected {max_h}"
     return result
 
 
@@ -563,7 +595,18 @@ def _render_log_box(
         auto_scroll: Whether to auto-scroll to bottom
         x_offset: Horizontal scroll offset (column number)
         color: ANSI color for text
+
+    Invariants:
+        - Returns exactly `height` lines
+        - Each content line fits within inner_w (width - 4)
+        - scroll is clamped to valid range [0, max_scroll]
+        - x_offset >= 0
     """
+    assert width >= 6, f"Log box width must be >= 6, got {width}"
+    assert height >= 3, f"Log box height must be >= 3, got {height}"
+    assert x_offset >= 0, f"x_offset must be >= 0, got {x_offset}"
+    assert scroll >= 0, f"scroll must be >= 0, got {scroll}"
+
     content_h = height - 2
     total_lines = len(lines)
 
@@ -572,6 +615,7 @@ def _render_log_box(
         # Clamp scroll to valid range
         max_scroll = max(0, total_lines - content_h)
         start = min(scroll, max_scroll)
+        assert 0 <= start <= max(0, total_lines - 1), f"start {start} out of range for {total_lines} lines"
         visible = lines[start : start + content_h]
     else:
         visible = lines[-content_h:] if lines else ()
@@ -579,7 +623,8 @@ def _render_log_box(
     content = []
     inner_w = width - 4  # 2 for box borders, 2 for padding
 
-    for line in visible:
+    for i, line in enumerate(visible):
+        original_line = line
         line_width = visible_width(line)
 
         # Apply horizontal scrolling if needed
@@ -589,6 +634,13 @@ def _render_log_box(
         elif line_width > inner_w:
             # No horizontal offset but line is too long - truncate
             line = truncate_to_width(line, inner_w)
+
+        # Assert content fits
+        final_width = visible_width(line)
+        assert final_width <= inner_w, (
+            f"Log line {i} width {final_width} > inner_w {inner_w}. "
+            f"x_offset={x_offset}, original_width={line_width}, line={repr(original_line[:80])}"
+        )
 
         content.append(f" {color}{line}{RESET}")
     while len(content) < content_h:
@@ -813,6 +865,19 @@ def view(model: Model, width: int, height: int) -> list[str]:
     while len(lines) < height:
         lines.append("")
     lines = lines[:height]
+
+    # Assert view invariants
+    assert len(lines) == height, f"View returned {len(lines)} lines, expected {height}"
+    for i, line in enumerate(lines):
+        line_w = visible_width(line)
+        if line_w > width:
+            # Log but don't crash - truncation happens in renderer
+            # This catches lines that are too wide before the renderer truncates them
+            import logging
+            logging.warning(
+                f"View line {i} width {line_w} > screen width {width}. "
+                f"Line will be truncated. Content: {repr(line[:80])}"
+            )
 
     return lines
 

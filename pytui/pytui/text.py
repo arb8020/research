@@ -373,9 +373,16 @@ def slice_ansi(text: str, start: int, end: int) -> str:
     Returns:
         Sliced text with ANSI codes preserved
 
+    Invariants:
+        - visible_width(result) <= end - start
+        - Result preserves ANSI styling from the sliced region
+
     Example:
         slice_ansi("\\x1b[31mhello world\\x1b[0m", 2, 7) -> "\\x1b[31mllo w\\x1b[0m"
     """
+    assert start >= 0, f"start must be >= 0, got {start}"
+    assert end >= 0, f"end must be >= 0, got {end}"
+
     if start >= end:
         return ""
 
@@ -427,7 +434,17 @@ def slice_ansi(text: str, start: int, end: int) -> str:
     # Add reset at end to prevent style leaking
     suffix = "\x1b[0m" if tracker.has_active_codes() or prefix else ""
 
-    return prefix + "".join(result_chars) + suffix
+    result = prefix + "".join(result_chars) + suffix
+
+    # Assert invariant: result width should not exceed requested slice width
+    result_width = visible_width(result)
+    max_expected = end - start
+    assert result_width <= max_expected, (
+        f"slice_ansi result width {result_width} > expected max {max_expected}. "
+        f"start={start}, end={end}, text={repr(text[:80])}"
+    )
+
+    return result
 
 
 def apply_background_to_line(line: str, width: int, bg_fn: Callable[[str], str]) -> str:
