@@ -81,6 +81,67 @@ class Resize:
     height: int
 
 
+@dataclass(frozen=True)
+class MouseEvent:
+    """Mouse event (button press, release, wheel scroll).
+
+    Button values:
+        0 = left click
+        1 = middle click
+        2 = right click
+        64 = wheel up
+        65 = wheel down
+        66 = wheel left
+        67 = wheel right
+
+    Action values:
+        "press" = button pressed
+        "release" = button released
+        "motion" = mouse moved while button held
+    """
+
+    button: int
+    x: int  # 1-indexed column
+    y: int  # 1-indexed row
+    action: str  # "press", "release", or "motion"
+
+    @property
+    def is_wheel_up(self) -> bool:
+        return self.button == 64
+
+    @property
+    def is_wheel_down(self) -> bool:
+        return self.button == 65
+
+
+def _parse_mouse_sgr(seq: str) -> MouseEvent | None:
+    """Parse SGR mouse sequence: ESC [ < Btn ; X ; Y M/m
+
+    Returns MouseEvent or None if not a valid mouse sequence.
+    """
+    import re
+
+    # SGR format: \x1b[<btn;x;y[Mm]
+    match = re.match(r"\x1b\[<(\d+);(\d+);(\d+)([Mm])", seq)
+    if not match:
+        return None
+
+    btn = int(match.group(1))
+    x = int(match.group(2))
+    y = int(match.group(3))
+    release = match.group(4) == "m"
+
+    # Decode button and modifiers
+    # Bits 0-1: button (0=left, 1=middle, 2=right)
+    # Bit 5: motion
+    # Bits 6-7: wheel (64=up, 65=down)
+    action = "release" if release else "press"
+    if btn & 32:
+        action = "motion"
+
+    return MouseEvent(button=btn & ~32, x=x, y=y, action=action)
+
+
 # ---------------------------------------------------------------------------
 # Cmd: side effect descriptors
 # ---------------------------------------------------------------------------
@@ -293,6 +354,7 @@ class App:
         subscriptions: Optional function (model) -> Sub.
         alternate_screen: Use alternate screen buffer (monitor-style apps).
         bracketed_paste: Enable bracketed paste mode (editor-style apps).
+        mouse: Enable mouse tracking (wheel scroll, clicks).
         fps: Target frames per second for the render loop.
         debug_log: Path to debug log file. If set, logs subscriptions, messages,
             and app lifecycle events to this file as JSONL.
@@ -311,6 +373,7 @@ class App:
         subscriptions: SubsFn | None = None,
         alternate_screen: bool = True,
         bracketed_paste: bool = False,
+        mouse: bool = False,
         fps: int = 30,
         debug_log: str | Path | None = None,
         debug_fn: Callable[[Any, int, int, int], None] | None = None,
@@ -322,6 +385,7 @@ class App:
         self._subs_fn = subscriptions
         self._alternate_screen = alternate_screen
         self._bracketed_paste = bracketed_paste
+        self._mouse = mouse
         self._fps = fps
         self._debug_fn = debug_fn
         self._debug_frame_interval = debug_frame_interval
@@ -354,6 +418,7 @@ class App:
         terminal = Terminal(
             alternate_screen=self._alternate_screen,
             bracketed_paste=self._bracketed_paste,
+            mouse=self._mouse,
         )
         self._terminal = terminal
 
@@ -391,11 +456,16 @@ class App:
             while self._running:
                 dirty = False
 
-                # 1. Poll keyboard input
+                # 1. Poll keyboard/mouse input
                 key = terminal.read_input()
                 if key is not None:
                     dirty = True
-                    self._dispatch(KeyPress(key=key))
+                    # Check if it's a mouse event
+                    mouse = _parse_mouse_sgr(key)
+                    if mouse is not None:
+                        self._dispatch(mouse)
+                    else:
+                        self._dispatch(KeyPress(key=key))
 
                 # 2. Drain message queue (from Cmd.task threads, subs, resize)
                 while not self._msg_queue.empty():

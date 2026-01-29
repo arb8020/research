@@ -39,6 +39,10 @@ CLEAR_LINE_FULL = "\x1b[2K"
 CLEAR_TO_END = "\x1b[J"
 RESET_ATTRS = "\x1b[0m"
 
+# Mouse tracking (SGR extended mode - handles coordinates > 223)
+MOUSE_ON = "\x1b[?1000h\x1b[?1006h"  # Enable button events + SGR encoding
+MOUSE_OFF = "\x1b[?1000l\x1b[?1006l"
+
 # Global reference for atexit cleanup
 _active_terminal: Terminal | None = None
 _cleanup_done: bool = False
@@ -101,6 +105,7 @@ class Terminal:
         alternate_screen: bool = False,
         use_alternate_screen: bool | None = None,  # Compat alias
         bracketed_paste: bool = False,
+        mouse: bool = False,
     ) -> None:
         self._old_settings: list | None = None
         self._input_handler: Callable[[str], None] | None = None
@@ -114,6 +119,7 @@ class Terminal:
         else:
             self._alternate_screen = alternate_screen
         self._bracketed_paste = bracketed_paste
+        self._mouse = mouse
 
     def start(self, on_input: Callable[[str], None], on_resize: Callable[[], None]) -> None:
         """Start terminal in raw mode with input/resize handlers."""
@@ -145,6 +151,10 @@ class Terminal:
         if self._bracketed_paste:
             sys.stdout.write(BRACKETED_PASTE_ON)
 
+        # Enable mouse tracking
+        if self._mouse:
+            sys.stdout.write(MOUSE_ON)
+
         sys.stdout.flush()
 
         # SIGWINCH for resize events
@@ -166,6 +176,9 @@ class Terminal:
 
         if self._bracketed_paste:
             sys.stdout.write(BRACKETED_PASTE_OFF)
+
+        if self._mouse:
+            sys.stdout.write(MOUSE_OFF)
 
         # End synchronized output (in case we're mid-render)
         sys.stdout.write(SYNC_OUTPUT_OFF)
