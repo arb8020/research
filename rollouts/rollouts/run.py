@@ -60,54 +60,60 @@ async def _deploy_and_submit(
 ) -> tuple:
     """Provision node, deploy code, submit training job.
 
-    Returns (bifrost_client, instance, job, run_name, remote_output_dir, workspace).
+    Returns (bifrost_client, instance, job, run_name, remote_output_dir, workspace, console).
     """
     from dotenv import load_dotenv
 
     from bifrost import GPUQuery, ProcessSpec, acquire_node
+    from pytui import Console
 
     load_dotenv()
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     run_name = f"run_{timestamp}"
 
-    from pytui import Spinner
-
-    spinner = Spinner("Provisioning..." if not node_id else "Connecting...")
-    spinner.start()
-
     logs_port = 9100
 
-    if node_id:
-        bifrost, instance = await acquire_node(node_id=node_id)
-        spinner.stop(f"Connected to {node_id}")
-    else:
-        spinner.update(f"Provisioning {gpu_count}x {gpu_type}...")
-        bifrost, instance = await acquire_node(
-            provision=GPUQuery(
-                type=gpu_type,
-                count=gpu_count,
-                min_cuda="12.8",
-                exposed_ports=(logs_port,),
-                name=f"rollouts/{run_name}",
-            )
-        )
-        node_str = f"{instance.provider}:{instance.id}" if instance else "?"
-        spinner.stop(f"Provisioned {node_str}")
+    # Create console for coordinated spinner + logging output
+    console = Console()
+    console.install_logging_handler(logging.getLogger())
 
-    # Deploy code
+    # Acquire node
+    provision_msg = "Connecting..." if node_id else f"Provisioning {gpu_count}x {gpu_type}..."
+    with console.spinner(provision_msg) as spinner:
+        if node_id:
+            bifrost, instance = await acquire_node(node_id=node_id)
+            spinner.update(f"Connected to {node_id}")
+        else:
+            bifrost, instance = await acquire_node(
+                provision=GPUQuery(
+                    type=gpu_type,
+                    count=gpu_count,
+                    min_cuda="12.8",
+                    exposed_ports=(logs_port,),
+                    name=f"rollouts/{run_name}",
+                )
+            )
+            node_str = f"{instance.provider}:{instance.id}" if instance else "?"
+            spinner.update(f"Provisioned {node_str}")
+
+    # Deploy code (git sync only, no bootstrap)
     script_rel_path = Path(script_path).relative_to(REPO_ROOT)
 
-    spinner = Spinner("Deploying code...")
-    spinner.start()
-    bootstrap = [
-        "apt-get update && apt-get install -y tmux libnuma1 || true",
-        "curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.local/bin/env",
-        "cd rollouts && ~/.local/bin/uv python install 3.12 && ~/.local/bin/uv sync --python 3.12",
-        "~/.local/bin/uv pip install torch transformers datasets accelerate sglang[all] curl_cffi peft",
+    with console.spinner("Deploying code..."):
+        workspace = bifrost.push("~/.bifrost/workspaces/rollouts-rl")
+
+    # Bootstrap steps — each gets its own spinner with ✓ on completion
+    bootstrap_steps = [
+        ("Installing system deps", "apt-get update && apt-get install -y tmux libnuma1 || true"),
+        ("Installing uv", "curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.local/bin/env"),
+        ("Syncing Python deps", "cd rollouts && ~/.local/bin/uv python install 3.12 && ~/.local/bin/uv sync --python 3.12"),
+        ("Installing ML packages", "~/.local/bin/uv pip install torch transformers datasets accelerate sglang[all] curl_cffi peft"),
     ]
-    workspace = bifrost.push("~/.bifrost/workspaces/rollouts-rl", bootstrap_cmd=bootstrap)
-    spinner.stop("Code deployed")
+
+    for label, cmd in bootstrap_steps:
+        with console.spinner(f"{label}..."):
+            bifrost.exec(cmd, working_dir=workspace)
 
     # Create run output directory
     remote_output_dir = f"{workspace}/rollouts/results/rl/{run_name}"
@@ -120,22 +126,22 @@ async def _deploy_and_submit(
         "ROLLOUTS_JSON_LOGS": "true",
     }
 
-    spinner = Spinner(f"Starting {run_name}...")
-    spinner.start()
-    job = bifrost.submit(
-        ProcessSpec(
-            command="/root/.local/bin/uv",
-            args=("run", "python", str(script_rel_path)),
-            cwd=f"{workspace}/rollouts",
-            env=env_vars,
-        ),
-        name="rl-training",
-        log_file=training_log,
-        workspace=f"{workspace}/rollouts",
-    )
-    spinner.stop(f"Training started ({job.tmux_session})")
+    # Submit training job
+    with console.spinner(f"Starting {run_name}...") as spinner:
+        job = bifrost.submit(
+            ProcessSpec(
+                command="/root/.local/bin/uv",
+                args=("run", "python", str(script_rel_path)),
+                cwd=f"{workspace}/rollouts",
+                env=env_vars,
+            ),
+            name="rl-training",
+            log_file=training_log,
+            workspace=f"{workspace}/rollouts",
+        )
+        spinner.update(f"Training started ({job.tmux_session})")
 
-    return bifrost, instance, job, run_name, remote_output_dir, workspace
+    return bifrost, instance, job, run_name, remote_output_dir, workspace, console
 
 
 async def _sync_and_cleanup(
@@ -190,12 +196,15 @@ async def run_remote(
     gpu_type: str = "A100",
 ) -> None:
     """Run training script on remote GPU via bifrost."""
-    bifrost, instance, job, run_name, remote_output_dir, workspace = await _deploy_and_submit(
+    bifrost, instance, job, run_name, remote_output_dir, workspace, console = await _deploy_and_submit(
         script_path=script_path,
         node_id=node_id,
         gpu_count=gpu_count,
         gpu_type=gpu_type,
     )
+
+    # Clean up logging handler before launching TUI
+    console.remove_logging_handlers()
 
     assert instance is not None, "run_remote requires a provisioned instance"
     node_id_str = f"{instance.provider}:{instance.id}"
