@@ -509,7 +509,7 @@ class GitWorktreeEnvironment:
 
     async def _exec_edit(self, tool_call: ToolCall, work_dir: Path) -> ToolResult:
         """Edit file by replacing exact text."""
-        from .coding import generate_diff
+        from .coding import compute_edit_line_range, generate_diff
 
         path_str = tool_call.args["path"]
         old_text = tool_call.args["old_text"]
@@ -565,11 +565,21 @@ class GitWorktreeEnvironment:
 
         diff_str = generate_diff(content, new_content)
 
+        # Compute line range for agent-trace attribution
+        start_line, end_line = compute_edit_line_range(content, new_content, old_text, new_text)
+
         return ToolResult(
             tool_call_id=tool_call.id,
             is_error=False,
             content=f"Edited {path_str}",
-            details={"diff": diff_str},
+            details={
+                "diff": diff_str,
+                # agent-trace attribution fields
+                "file_path": str(abs_path),
+                "start_line": start_line,
+                "end_line": end_line,
+                "operation": "edit",
+            },
         )
 
     async def _exec_bash(

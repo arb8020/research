@@ -354,6 +354,29 @@ def format_web_fetch(
     return text
 
 
+def compute_edit_line_range(
+    old_content: str, new_content: str, old_text: str, new_text: str
+) -> tuple[int, int]:
+    """Compute the line range affected by a text replacement.
+
+    Returns (start_line, end_line) where lines are 1-indexed and inclusive.
+    The range covers the lines that were modified in the new content.
+    """
+    # Find where the replacement occurred
+    replace_start = old_content.find(old_text)
+    assert replace_start >= 0, "old_text must exist in old_content"
+
+    # Count lines before the replacement to get start line
+    lines_before = old_content[:replace_start].count("\n")
+    start_line = lines_before + 1  # 1-indexed
+
+    # Count lines in the new text to get end line
+    new_text_lines = new_text.count("\n") + 1
+    end_line = start_line + new_text_lines - 1
+
+    return start_line, end_line
+
+
 def generate_diff(old_content: str, new_content: str, context_lines: int = 3) -> str:
     """Generate unified diff string with line numbers in gutter.
 
@@ -860,16 +883,29 @@ class LocalFilesystemEnvironment:
 
         abs_path = expand_path(path_str)
 
+        # Check if file exists (create vs overwrite)
+        is_create = not abs_path.exists()
+
         # Create parent directories
         abs_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Write file
         abs_path.write_text(content, encoding="utf-8")
 
+        # Compute line range for agent-trace attribution
+        line_count = content.count("\n") + 1
+
         return ToolResult(
             tool_call_id=tool_call.id,
             is_error=False,
             content=f"Successfully wrote {len(content)} bytes to {path_str}",
+            details={
+                # agent-trace attribution fields
+                "file_path": str(abs_path),
+                "start_line": 1,
+                "end_line": line_count,
+                "operation": "create" if is_create else "edit",
+            },
         )
 
     async def _exec_edit(self, tool_call: ToolCall) -> ToolResult:
@@ -934,11 +970,21 @@ class LocalFilesystemEnvironment:
         # Generate diff for UI display
         diff_str = generate_diff(content, new_content)
 
+        # Compute line range for agent-trace attribution
+        start_line, end_line = compute_edit_line_range(content, new_content, old_text, new_text)
+
         return ToolResult(
             tool_call_id=tool_call.id,
             is_error=False,
             content=f"Successfully replaced text in {path_str}. Changed {len(old_text)} characters to {len(new_text)} characters.",
-            details={"diff": diff_str},
+            details={
+                "diff": diff_str,
+                # agent-trace attribution fields
+                "file_path": str(abs_path),
+                "start_line": start_line,
+                "end_line": end_line,
+                "operation": "edit",
+            },
         )
 
     def _check_bash_allowlist(self, command: str) -> str | None:

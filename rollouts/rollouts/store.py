@@ -78,8 +78,15 @@ class SessionStore(Protocol):
         parent_id: str | None = None,
         branch_point: int | None = None,
         tags: dict[str, str] | None = None,
+        vcs: dict[str, str] | None = None,
     ) -> AgentSession:
-        """Create new session, return AgentSession with generated session_id."""
+        """Create new session, return AgentSession with generated session_id.
+
+        Args:
+            vcs: Optional VCS info for agent-trace attribution.
+                 Format: {"type": "git", "revision": "abc...", "root": "/path"}
+                 Use agent_trace.get_git_info() to capture this.
+        """
         ...
 
     async def get(self, session_id: str) -> tuple[AgentSession | None, str | None]:
@@ -189,8 +196,15 @@ class FileSessionStore:
         parent_id: str | None = None,
         branch_point: int | None = None,
         tags: dict[str, str] | None = None,
+        vcs: dict[str, str] | None = None,
     ) -> AgentSession:
-        """Create new session, return AgentSession with generated session_id."""
+        """Create new session, return AgentSession with generated session_id.
+
+        Args:
+            vcs: Optional VCS info for agent-trace attribution.
+                 Format: {"type": "git", "revision": "abc...", "root": "/path"}
+                 Use agent_trace.get_git_info() to capture this.
+        """
         self._ensure_base_dir()
         session_id = generate_session_id()
         session_dir = self._session_dir(session_id)
@@ -208,6 +222,7 @@ class FileSessionStore:
             tags=tags or {},
             created_at=now,
             updated_at=now,
+            vcs=vcs,
         )
 
         # Write session.json

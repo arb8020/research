@@ -1659,9 +1659,13 @@ class AgentSession:
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
 
+    # VCS info for agent-trace attribution (optional)
+    # Format: {"type": "git", "revision": "abc123...", "root": "/path/to/repo"}
+    vcs: dict[str, str] | None = None
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dict for JSON storage."""
-        return {
+        d = {
             "session_id": self.session_id,
             "parent_id": self.parent_id,
             "branch_point": self.branch_point,
@@ -1675,6 +1679,9 @@ class AgentSession:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
+        if self.vcs is not None:
+            d["vcs"] = self.vcs
+        return d
 
     @classmethod
     def from_dict(
@@ -1694,4 +1701,5 @@ class AgentSession:
             tags=data.get("tags", {}),
             created_at=data.get("created_at", datetime.now().isoformat()),
             updated_at=data.get("updated_at", datetime.now().isoformat()),
+            vcs=data.get("vcs"),
         )
