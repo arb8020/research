@@ -35,3 +35,6 @@ config = GRPOConfig(
     ),
     inference=InferenceConfig(cuda_device_ids=(0,)),
 )
+
+if __name__ == "__main__":
+    train(config)
