@@ -23,7 +23,7 @@ Quick start:
 """
 
 # Elm core
-from .app import App, Cmd, KeyPress, MouseEvent, Resize, Sub
+from .app import App, Cmd, FocusEvent, KeyPress, MouseEvent, PasteEvent, Resize, Sub
 
 # Console (unified output with spinner/logging coordination)
 from .console import Console, ConsoleHandler, SpinnerHandle
@@ -73,6 +73,8 @@ __all__ = [
     "Sub",
     "KeyPress",
     "MouseEvent",
+    "PasteEvent",
+    "FocusEvent",
     "Resize",
     # Terminal
     "Terminal",

@@ -114,6 +114,29 @@ class MouseEvent:
         return self.button == 65
 
 
+@dataclass(frozen=True)
+class PasteEvent:
+    """Bracketed paste content.
+
+    When bracketed paste mode is enabled, pasted text is wrapped in
+    escape sequences so it can be distinguished from typed input.
+    This prevents pasted text from triggering keybindings.
+    """
+
+    text: str
+
+
+@dataclass(frozen=True)
+class FocusEvent:
+    """Terminal focus change.
+
+    Sent when the terminal window gains or loses focus.
+    Requires focus reporting to be enabled.
+    """
+
+    focused: bool  # True = gained focus, False = lost focus
+
+
 def _parse_mouse_sgr(seq: str) -> MouseEvent | None:
     """Parse SGR mouse sequence: ESC [ < Btn ; X ; Y M/m
 
@@ -140,6 +163,20 @@ def _parse_mouse_sgr(seq: str) -> MouseEvent | None:
         action = "motion"
 
     return MouseEvent(button=btn & ~32, x=x, y=y, action=action)
+
+
+def _parse_focus(seq: str) -> FocusEvent | None:
+    """Parse focus event: ESC [ I (focus) or ESC [ O (blur)."""
+    if seq == "\x1b[I":
+        return FocusEvent(focused=True)
+    if seq == "\x1b[O":
+        return FocusEvent(focused=False)
+    return None
+
+
+# Bracketed paste markers
+_PASTE_START = "\x1b[200~"
+_PASTE_END = "\x1b[201~"
 
 
 # ---------------------------------------------------------------------------
@@ -395,6 +432,7 @@ class App:
         self._frame_count: int = 0
         self._msg_queue: queue.Queue = queue.Queue()
         self._terminal: Terminal | None = None
+        self._paste_buffer: str | None = None  # Collecting paste content
 
         # Set up debug logging
         global _DEBUG_LOG
@@ -460,12 +498,9 @@ class App:
                 key = terminal.read_input()
                 if key is not None:
                     dirty = True
-                    # Check if it's a mouse event
-                    mouse = _parse_mouse_sgr(key)
-                    if mouse is not None:
-                        self._dispatch(mouse)
-                    else:
-                        self._dispatch(KeyPress(key=key))
+                    msg = self._parse_input(key)
+                    if msg is not None:
+                        self._dispatch(msg)
 
                 # 2. Drain message queue (from Cmd.task threads, subs, resize)
                 while not self._msg_queue.empty():
@@ -492,6 +527,44 @@ class App:
             terminal.show_cursor()
             terminal.stop()
             self._terminal = None
+
+    def _parse_input(self, key: str) -> object | None:
+        """Parse raw input into a message type.
+
+        Handles:
+        - Bracketed paste: collects text between ESC[200~ and ESC[201~
+        - Mouse events: SGR format ESC[<...M/m
+        - Focus events: ESC[I (focus) and ESC[O (blur)
+        - Regular keys: everything else
+        """
+        # Check for bracketed paste
+        if key == _PASTE_START:
+            self._paste_buffer = ""
+            return None  # Don't dispatch yet
+
+        if self._paste_buffer is not None:
+            if key == _PASTE_END:
+                # Paste complete
+                text = self._paste_buffer
+                self._paste_buffer = None
+                return PasteEvent(text=text)
+            else:
+                # Accumulate paste content
+                self._paste_buffer += key
+                return None  # Don't dispatch yet
+
+        # Check for mouse event
+        mouse = _parse_mouse_sgr(key)
+        if mouse is not None:
+            return mouse
+
+        # Check for focus event
+        focus = _parse_focus(key)
+        if focus is not None:
+            return focus
+
+        # Regular key
+        return KeyPress(key=key)
 
     def _dispatch(self, msg: object) -> None:
         """Send message through update, execute resulting command."""

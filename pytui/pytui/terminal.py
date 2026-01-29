@@ -43,6 +43,31 @@ RESET_ATTRS = "\x1b[0m"
 MOUSE_ON = "\x1b[?1000h\x1b[?1006h"  # Enable button events + SGR encoding
 MOUSE_OFF = "\x1b[?1000l\x1b[?1006l"
 
+# Focus reporting
+FOCUS_ON = "\x1b[?1004h"
+FOCUS_OFF = "\x1b[?1004l"
+
+# Known escape sequences for reliable detection (subset of bubbletea's 700+)
+# These are the common ones - add more as needed
+KNOWN_SEQUENCES: set[str] = {
+    # Arrow keys
+    "\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D",  # Up, Down, Right, Left
+    "\x1bOA", "\x1bOB", "\x1bOC", "\x1bOD",  # Application mode arrows
+    # Navigation
+    "\x1b[H", "\x1b[F",  # Home, End
+    "\x1b[1~", "\x1b[4~",  # Home, End (alternate)
+    "\x1b[5~", "\x1b[6~",  # Page Up, Page Down
+    "\x1b[2~", "\x1b[3~",  # Insert, Delete
+    # Function keys F1-F12
+    "\x1bOP", "\x1bOQ", "\x1bOR", "\x1bOS",  # F1-F4
+    "\x1b[15~", "\x1b[17~", "\x1b[18~", "\x1b[19~",  # F5-F8
+    "\x1b[20~", "\x1b[21~", "\x1b[23~", "\x1b[24~",  # F9-F12
+    # Bracketed paste markers
+    "\x1b[200~", "\x1b[201~",
+    # Focus events
+    "\x1b[I", "\x1b[O",
+}
+
 # Global reference for atexit cleanup
 _active_terminal: Terminal | None = None
 _cleanup_done: bool = False
@@ -114,6 +139,7 @@ class Terminal:
         self._running = False
         self._tty_fd: int | None = None
         self._input_buffer: str = ""  # Buffer for multi-byte reads
+        self._paste_buffer: str | None = None  # Collecting paste content
         # Accept both alternate_screen and use_alternate_screen (compat)
         if use_alternate_screen is not None:
             self._alternate_screen = use_alternate_screen
@@ -288,7 +314,14 @@ class Terminal:
                     buf = buf + more
                     self._input_buffer = buf
 
-        # Look for sequence terminator
+        # Check against known sequences first (O(1) lookup)
+        for length in range(min(len(buf), 8), 1, -1):  # Check longest first
+            candidate = buf[:length]
+            if candidate in KNOWN_SEQUENCES:
+                self._input_buffer = buf[length:]
+                return candidate
+
+        # Fall back to heuristic: look for sequence terminator
         for i in range(1, len(buf)):
             c = buf[i]
             # CSI sequences end with letter, function keys with ~
@@ -306,6 +339,12 @@ class Terminal:
                     if more:
                         buf = buf + more
                         self._input_buffer = buf
+                        # Check known sequences
+                        for length in range(min(len(buf), 8), 1, -1):
+                            candidate = buf[:length]
+                            if candidate in KNOWN_SEQUENCES:
+                                self._input_buffer = buf[length:]
+                                return candidate
                         # Check for terminator
                         for i in range(1, len(buf)):
                             c = buf[i]
