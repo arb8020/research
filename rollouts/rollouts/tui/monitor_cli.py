@@ -77,6 +77,9 @@ def _resolve_logs_endpoint(instance: object) -> tuple[str | None, int | None]:
 
     RunPod maps container ports to random public ports.
     Returns (host, public_port) or (None, None) if not found.
+
+    NOTE: Don't fall back to public_ip:9100 - RunPod doesn't expose arbitrary
+    container ports. If port 9100 isn't in runtime_ports, use SSH tunnel instead.
     """
     raw = instance.raw_data or {}
     runtime = raw.get("runtime") or {}
@@ -86,10 +89,7 @@ def _resolve_logs_endpoint(instance: object) -> tuple[str | None, int | None]:
         if p.get("privatePort") == 9100 and p.get("isIpPublic"):
             return p["ip"], p["publicPort"]
 
-    # Fallback: try public_ip with container port
-    if instance.public_ip:
-        return instance.public_ip, 9100
-
+    # No direct port mapping - caller should use SSH tunnel
     return None, None
 
 
