@@ -106,9 +106,18 @@ async def _deploy_and_submit(
     # Bootstrap steps — each gets its own spinner with ✓ on completion
     bootstrap_steps = [
         ("Installing system deps", "apt-get update && apt-get install -y tmux libnuma1 || true"),
-        ("Installing uv", "curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.local/bin/env"),
-        ("Syncing Python deps", "cd rollouts && ~/.local/bin/uv python install 3.12 && ~/.local/bin/uv sync --python 3.12"),
-        ("Installing ML packages", "~/.local/bin/uv pip install torch transformers datasets accelerate sglang[all] curl_cffi peft"),
+        (
+            "Installing uv",
+            "curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.local/bin/env",
+        ),
+        (
+            "Syncing Python deps",
+            "cd rollouts && ~/.local/bin/uv python install 3.12 && ~/.local/bin/uv sync --python 3.12",
+        ),
+        (
+            "Installing ML packages",
+            "~/.local/bin/uv pip install torch transformers datasets accelerate sglang[all] curl_cffi peft",
+        ),
     ]
 
     for label, cmd in bootstrap_steps:
@@ -151,7 +160,11 @@ async def _sync_and_cleanup(
     remote_output_dir: str | None,
     keep_alive: bool,
 ) -> None:
-    """Sync results from remote and optionally terminate instance."""
+    """Sync results from remote and optionally terminate instance.
+
+    Currently unused - monitor handles sync/terminate internally.
+    Kept for future --detach cleanup support.
+    """
     logger.info("Syncing results...")
     local_results = Path("results/rl")
     local_run_dir = local_results / run_name
@@ -196,7 +209,15 @@ async def run_remote(
     gpu_type: str = "A100",
 ) -> None:
     """Run training script on remote GPU via bifrost."""
-    bifrost, instance, job, run_name, remote_output_dir, workspace, console = await _deploy_and_submit(
+    (
+        bifrost,
+        instance,
+        job,
+        run_name,
+        remote_output_dir,
+        workspace,
+        console,
+    ) = await _deploy_and_submit(
         script_path=script_path,
         node_id=node_id,
         gpu_count=gpu_count,
@@ -260,8 +281,7 @@ async def run_remote(
         [sys.executable, "-m", "rollouts", "monitor", "--attach", run_name],
         check=False,
     )
-
-    await _sync_and_cleanup(bifrost, instance, run_name, remote_output_dir, keep_alive)
+    # Note: monitor handles final sync and terminate prompt internally
 
 
 def main() -> None:

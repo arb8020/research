@@ -223,7 +223,7 @@ def _extract_log_message(raw: str) -> str:
     # Strip SGLang timestamp prefix: [2026-01-29 01:02:03] message
     if raw.startswith("[") and "] " in raw[:30]:
         idx = raw.index("] ")
-        return raw[idx + 2:]
+        return raw[idx + 2 :]
 
     # Plain text - pass through (but skip empty/whitespace)
     stripped = raw.strip()
@@ -508,10 +508,14 @@ def _box(title: str, content: list[str], width: int, active: bool = False) -> li
     lines.append(bottom)
 
     # Assert invariants
-    assert len(lines) == len(content) + 2, f"Box line count mismatch: {len(lines)} != {len(content) + 2}"
+    assert len(lines) == len(content) + 2, (
+        f"Box line count mismatch: {len(lines)} != {len(content) + 2}"
+    )
     for i, line in enumerate(lines):
         line_w = visible_width(line)
-        assert line_w == width, f"Box line {i} width {line_w} != expected {width}. Line: {repr(line[:100])}"
+        assert line_w == width, (
+            f"Box line {i} width {line_w} != expected {width}. Line: {repr(line[:100])}"
+        )
 
     return lines
 
@@ -617,7 +621,9 @@ def _render_log_box(
         # Clamp scroll to valid range
         max_scroll = max(0, total_lines - content_h)
         start = min(scroll, max_scroll)
-        assert 0 <= start <= max(0, total_lines - 1), f"start {start} out of range for {total_lines} lines"
+        assert 0 <= start <= max(0, total_lines - 1), (
+            f"start {start} out of range for {total_lines} lines"
+        )
         visible = lines[start : start + content_h]
     else:
         visible = lines[-content_h:] if lines else ()
@@ -870,16 +876,7 @@ def view(model: Model, width: int, height: int) -> list[str]:
 
     # Assert view invariants
     assert len(lines) == height, f"View returned {len(lines)} lines, expected {height}"
-    for i, line in enumerate(lines):
-        line_w = visible_width(line)
-        if line_w > width:
-            # Log but don't crash - truncation happens in renderer
-            # This catches lines that are too wide before the renderer truncates them
-            import logging
-            logging.warning(
-                f"View line {i} width {line_w} > screen width {width}. "
-                f"Line will be truncated. Content: {repr(line[:80])}"
-            )
+    # Note: lines wider than screen are truncated by the renderer, no warning needed
 
     return lines
 
