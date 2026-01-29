@@ -52,6 +52,26 @@ def load_config_module(config_path: Path) -> Any:
     return module
 
 
+def _setup_run_logging(run_dir: Path) -> Callable[[str, Any], None]:
+    """Create run directory and return a logging function."""
+    import json
+    from datetime import datetime
+
+    run_dir.mkdir(parents=True, exist_ok=True)
+    log_file = run_dir / "run.jsonl"
+
+    def log_event(event: str, **data: Any) -> None:
+        entry = {
+            "ts": datetime.now().isoformat(),
+            "event": event,
+            **data,
+        }
+        with open(log_file, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+
+    return log_event
+
+
 async def _deploy_and_submit(
     script_path: str,
     node_id: str | None,
@@ -60,7 +80,7 @@ async def _deploy_and_submit(
 ) -> tuple:
     """Provision node, deploy code, submit training job.
 
-    Returns (bifrost_client, instance, job, run_name, remote_output_dir, workspace, console).
+    Returns (bifrost_client, instance, job, run_name, remote_output_dir, workspace, console, local_run_dir).
     """
     from dotenv import load_dotenv
 
@@ -72,6 +92,11 @@ async def _deploy_and_submit(
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     run_name = f"run_{timestamp}"
 
+    # Create local run directory immediately for logging
+    local_run_dir = REPO_ROOT / "results" / "rl" / run_name
+    log = _setup_run_logging(local_run_dir)
+    log("run_start", config=script_path, gpu_count=gpu_count, gpu_type=gpu_type, node_id=node_id)
+
     logs_port = 9100
 
     # Create console for coordinated spinner + logging output
@@ -80,10 +105,12 @@ async def _deploy_and_submit(
 
     # Acquire node
     provision_msg = "Connecting..." if node_id else f"Provisioning {gpu_count}x {gpu_type}..."
+    log("provision_start", msg=provision_msg)
     with console.spinner(provision_msg) as spinner:
         if node_id:
             bifrost, instance = await acquire_node(node_id=node_id)
             spinner.update(f"Connected to {node_id}")
+            log("provision_done", node_id=node_id, reused=True)
         else:
             bifrost, instance = await acquire_node(
                 provision=GPUQuery(
@@ -96,12 +123,15 @@ async def _deploy_and_submit(
             )
             node_str = f"{instance.provider}:{instance.id}" if instance else "?"
             spinner.update(f"Provisioned {node_str}")
+            log("provision_done", node_id=node_str, provider=instance.provider if instance else None)
 
     # Deploy code (git sync only, no bootstrap)
     script_rel_path = Path(script_path).relative_to(REPO_ROOT)
 
+    log("deploy_start")
     with console.spinner("Deploying code..."):
         workspace = bifrost.push("~/.bifrost/workspaces/rollouts-rl")
+    log("deploy_done", workspace=workspace)
 
     # Bootstrap steps — each gets its own spinner with ✓ on completion
     bootstrap_steps = [
@@ -121,8 +151,10 @@ async def _deploy_and_submit(
     ]
 
     for label, cmd in bootstrap_steps:
+        log("bootstrap_step_start", label=label)
         with console.spinner(f"{label}..."):
             bifrost.exec(cmd, working_dir=workspace)
+        log("bootstrap_step_done", label=label)
 
     # Create run output directory
     remote_output_dir = f"{workspace}/rollouts/results/rl/{run_name}"
@@ -136,6 +168,7 @@ async def _deploy_and_submit(
     }
 
     # Submit training job
+    log("submit_start")
     with console.spinner(f"Starting {run_name}...") as spinner:
         job = bifrost.submit(
             ProcessSpec(
@@ -149,8 +182,9 @@ async def _deploy_and_submit(
             workspace=f"{workspace}/rollouts",
         )
         spinner.update(f"Training started ({job.tmux_session})")
+    log("submit_done", tmux_session=job.tmux_session)
 
-    return bifrost, instance, job, run_name, remote_output_dir, workspace, console
+    return bifrost, instance, job, run_name, remote_output_dir, workspace, console, local_run_dir
 
 
 async def _sync_and_cleanup(
@@ -217,6 +251,7 @@ async def run_remote(
         remote_output_dir,
         workspace,
         console,
+        local_run_dir,
     ) = await _deploy_and_submit(
         script_path=script_path,
         node_id=node_id,
