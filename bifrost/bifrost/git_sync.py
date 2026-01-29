@@ -7,6 +7,7 @@ All state managed by caller (BifrostClient).
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 
 import paramiko
@@ -15,6 +16,9 @@ from shared.retry import retry
 from .types import RemoteConfig
 
 logger = logging.getLogger(__name__)
+
+# Default timeout for the entire deploy_code() call (seconds)
+DEPLOY_TIMEOUT_SECONDS = 300  # 5 minutes
 
 
 @retry(max_attempts=3, delay=1, backoff=2, exceptions=(Exception,))
@@ -43,10 +47,30 @@ def _upload_bundle_with_retry(
         "remote_bundle_path must be non-empty string"
     )
 
-    # Upload the bundle
-    sftp.put(local_bundle_path, remote_bundle_path)
+    bundle_size = os.path.getsize(local_bundle_path)
+    logger.info(f"uploading bundle ({bundle_size:,} bytes) to {remote_bundle_path}")
 
-    logger.debug(f"Bundle uploaded successfully to {remote_bundle_path}")
+    t0 = time.monotonic()
+    bytes_transferred = [0]
+
+    def _progress(transferred: int, total: int) -> None:
+        bytes_transferred[0] = transferred
+        # Log every ~10% or every 5MB, whichever comes first
+        if total > 0 and (
+            transferred == total or transferred % max(total // 10, 5 * 1024 * 1024) < 32768
+        ):
+            elapsed = time.monotonic() - t0
+            pct = 100 * transferred / total
+            rate_mbps = (transferred / (1024 * 1024)) / elapsed if elapsed > 0 else 0
+            logger.debug(
+                f"  upload: {transferred:,}/{total:,} bytes ({pct:.0f}%) {rate_mbps:.1f} MB/s"
+            )
+
+    sftp.put(local_bundle_path, remote_bundle_path, callback=_progress)
+
+    elapsed = time.monotonic() - t0
+    rate_mbps = (bundle_size / (1024 * 1024)) / elapsed if elapsed > 0 else 0
+    logger.info(f"bundle uploaded: {bundle_size:,} bytes in {elapsed:.1f}s ({rate_mbps:.1f} MB/s)")
 
 
 def _check_untracked_files() -> list[str] | None:
@@ -110,19 +134,26 @@ def _check_uncommitted_changes() -> list[str] | None:
         return uncommitted if uncommitted else None
 
 
-def deploy_code(ssh_client: paramiko.SSHClient, config: RemoteConfig, workspace_path: str) -> str:
+def deploy_code(
+    ssh_client: paramiko.SSHClient,
+    config: RemoteConfig,
+    workspace_path: str,
+    timeout: float = DEPLOY_TIMEOUT_SECONDS,
+) -> str:
     """Deploy code via git to remote workspace.
 
     Args:
         ssh_client: Active SSH client connection
         config: Remote connection configuration
         workspace_path: Path to workspace on remote (e.g., ~/.bifrost/workspace)
+        timeout: Maximum seconds for the entire deploy (default 5 min)
 
     Returns:
         Path to deployed workspace
 
     Raises:
         RuntimeError: If deployment fails
+        TimeoutError: If deployment exceeds timeout
     """
     # Assert inputs (Tiger Style)
     assert ssh_client is not None, "ssh_client cannot be None"
@@ -131,29 +162,45 @@ def deploy_code(ssh_client: paramiko.SSHClient, config: RemoteConfig, workspace_
         "workspace_path must be non-empty string"
     )
 
-    logger.debug(f"Deploying code to {workspace_path}")
+    deploy_start = time.monotonic()
+    logger.info(f"deploy_code: starting (workspace={workspace_path}, timeout={timeout}s)")
+
+    def _check_timeout(step: str) -> None:
+        elapsed = time.monotonic() - deploy_start
+        if elapsed > timeout:
+            raise TimeoutError(
+                f"deploy_code timed out after {elapsed:.1f}s during '{step}' (timeout={timeout}s)"
+            )
 
     # Check if workspace exists
+    t0 = time.monotonic()
     stdin, stdout, stderr = ssh_client.exec_command(f"test -d {workspace_path}")
     workspace_exists = stdout.channel.recv_exit_status() == 0
+    logger.debug(
+        f"deploy_code: workspace exists check: {workspace_exists} ({time.monotonic() - t0:.1f}s)"
+    )
+    _check_timeout("workspace_exists_check")
 
     if workspace_exists:
-        logger.debug("Workspace exists, updating...")
-        # Update existing workspace via git pull
-        _update_workspace(ssh_client, workspace_path)
+        logger.info("deploy_code: workspace exists, updating...")
+        _update_workspace(ssh_client, workspace_path, _check_timeout)
     else:
-        logger.debug("Workspace doesn't exist, creating...")
-        # Create new workspace via git clone
-        _create_workspace(ssh_client, workspace_path)
+        logger.info("deploy_code: workspace doesn't exist, creating...")
+        _create_workspace(ssh_client, workspace_path, _check_timeout)
+
+    _check_timeout("post_deploy")
 
     # Get deployed commit hash for logging
+    t0 = time.monotonic()
     stdin, stdout, stderr = ssh_client.exec_command(f"cd {workspace_path} && git rev-parse HEAD")
     deployed_hash = stdout.read().decode().strip()
     short_hash = deployed_hash[:7] if deployed_hash else "unknown"
+    logger.debug(f"deploy_code: rev-parse took {time.monotonic() - t0:.1f}s")
 
+    total_elapsed = time.monotonic() - deploy_start
     # Assert output
     assert workspace_path, "Failed to deploy code"
-    logger.info(f"Workspace: {workspace_path} @ {short_hash}")
+    logger.info(f"deploy_code: done in {total_elapsed:.1f}s — {workspace_path} @ {short_hash}")
     return workspace_path
 
 
@@ -224,7 +271,11 @@ def run_bootstrap(
     logger.info("all bootstrap steps completed successfully")
 
 
-def _create_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> None:
+def _create_workspace(
+    ssh_client: paramiko.SSHClient,
+    workspace_path: str,
+    check_timeout: Callable[[str], None] = lambda _: None,
+) -> None:
     """Create new workspace by cloning current git repo.
 
     Uses git bundle to transfer code without remote repo setup.
@@ -236,31 +287,29 @@ def _create_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> No
     # Check for untracked files and warn user
     untracked = _check_untracked_files()
     if untracked:
-        logger.warning(f"⚠️  Found {len(untracked)} untracked file(s) that will NOT be deployed:")
-        for file in untracked[:5]:  # Show first 5
+        logger.warning(f"Found {len(untracked)} untracked file(s) that will NOT be deployed:")
+        for file in untracked[:5]:
             logger.warning(f"  - {file}")
         if len(untracked) > 5:
             logger.warning(f"  ... and {len(untracked) - 5} more")
-        logger.warning("💡 Tip: Use 'git add' to track these files, or add them to .gitignore")
+        logger.warning("Tip: Use 'git add' to track these files, or add them to .gitignore")
 
     # Check for uncommitted changes and warn user
     uncommitted = _check_uncommitted_changes()
     if uncommitted:
-        logger.warning(
-            f"⚠️  Found {len(uncommitted)} uncommitted change(s) that will NOT be deployed:"
-        )
-        for file in uncommitted[:5]:  # Show first 5
+        logger.warning(f"Found {len(uncommitted)} uncommitted change(s) that will NOT be deployed:")
+        for file in uncommitted[:5]:
             logger.warning(f"  - {file}")
         if len(uncommitted) > 5:
             logger.warning(f"  ... and {len(uncommitted) - 5} more")
-        logger.warning("💡 Tip: Use 'git commit' to include these changes in deployment")
+        logger.warning("Tip: Use 'git commit' to include these changes in deployment")
 
     # Get current HEAD commit hash for logging
     hash_result = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True)
     commit_hash = hash_result.stdout.strip() if hash_result.returncode == 0 else "unknown"
     short_hash = commit_hash[:7] if commit_hash != "unknown" else "unknown"
 
-    logger.debug(f"📦 Creating git bundle from HEAD: {short_hash} ({commit_hash})")
+    logger.info(f"_create_workspace: bundling HEAD {short_hash}")
 
     # Create git bundle locally
     with tempfile.NamedTemporaryFile(suffix=".bundle", delete=False) as bundle_file:
@@ -268,34 +317,46 @@ def _create_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> No
 
     try:
         # Create bundle from current HEAD
+        t0 = time.monotonic()
         result = subprocess.run(
             ["git", "bundle", "create", bundle_path, "HEAD"], capture_output=True, text=True
         )
+        bundle_elapsed = time.monotonic() - t0
         assert result.returncode == 0, (
             f"Git bundle create failed: {result.stderr}\n\nNot in a git repository. Run 'git init' first."
         )
 
-        logger.debug("Uploading bundle to remote...")
+        bundle_size = os.path.getsize(bundle_path)
+        logger.info(
+            f"_create_workspace: bundle created ({bundle_size:,} bytes) in {bundle_elapsed:.1f}s"
+        )
+        check_timeout("bundle_create")
 
         # Upload bundle to remote with retry logic
+        t0 = time.monotonic()
         sftp = ssh_client.open_sftp()
         try:
             remote_bundle = f"/tmp/bifrost-bundle-{os.getpid()}.bundle"
             _upload_bundle_with_retry(sftp, bundle_path, remote_bundle)
         finally:
             sftp.close()
-
-        logger.debug("Cloning from bundle...")
+        logger.info(f"_create_workspace: sftp upload took {time.monotonic() - t0:.1f}s")
+        check_timeout("sftp_upload")
 
         # Clone from bundle on remote
+        t0 = time.monotonic()
+        logger.info("_create_workspace: cloning from bundle on remote...")
         stdin, stdout, stderr = ssh_client.exec_command(
             f"git clone {remote_bundle} {workspace_path} && rm {remote_bundle}"
         )
 
         exit_code = stdout.channel.recv_exit_status()
+        clone_elapsed = time.monotonic() - t0
+        logger.info(f"_create_workspace: remote clone took {clone_elapsed:.1f}s (exit={exit_code})")
         if exit_code != 0:
             error_output = stderr.read().decode()
             raise RuntimeError(f"Git clone from bundle failed: {error_output}")
+        check_timeout("remote_clone")
 
         # Verify what commit was deployed
         verify_cmd = f"cd {workspace_path} && git rev-parse HEAD"
@@ -303,9 +364,9 @@ def _create_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> No
         deployed_hash = stdout.read().decode().strip()
         deployed_short = deployed_hash[:7] if deployed_hash else "unknown"
 
-        logger.debug(f"✅ Workspace created at: {deployed_short} ({deployed_hash})")
+        logger.info(f"_create_workspace: done — deployed {deployed_short}")
         if deployed_hash != commit_hash:
-            logger.warning("⚠️  Deployed hash doesn't match local HEAD!")
+            logger.warning("Deployed hash doesn't match local HEAD!")
             logger.warning(f"   Local:  {short_hash} ({commit_hash})")
             logger.warning(f"   Remote: {deployed_short} ({deployed_hash})")
 
@@ -315,7 +376,11 @@ def _create_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> No
             os.unlink(bundle_path)
 
 
-def _update_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> None:
+def _update_workspace(
+    ssh_client: paramiko.SSHClient,
+    workspace_path: str,
+    check_timeout: Callable[[str], None] = lambda _: None,
+) -> None:
     """Update existing workspace with latest code.
 
     Uses git bundle to transfer changes.
@@ -327,31 +392,29 @@ def _update_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> No
     # Check for untracked files and warn user
     untracked = _check_untracked_files()
     if untracked:
-        logger.warning(f"⚠️  Found {len(untracked)} untracked file(s) that will NOT be deployed:")
-        for file in untracked[:5]:  # Show first 5
+        logger.warning(f"Found {len(untracked)} untracked file(s) that will NOT be deployed:")
+        for file in untracked[:5]:
             logger.warning(f"  - {file}")
         if len(untracked) > 5:
             logger.warning(f"  ... and {len(untracked) - 5} more")
-        logger.warning("💡 Tip: Use 'git add' to track these files, or add them to .gitignore")
+        logger.warning("Tip: Use 'git add' to track these files, or add them to .gitignore")
 
     # Check for uncommitted changes and warn user
     uncommitted = _check_uncommitted_changes()
     if uncommitted:
-        logger.warning(
-            f"⚠️  Found {len(uncommitted)} uncommitted change(s) that will NOT be deployed:"
-        )
-        for file in uncommitted[:5]:  # Show first 5
+        logger.warning(f"Found {len(uncommitted)} uncommitted change(s) that will NOT be deployed:")
+        for file in uncommitted[:5]:
             logger.warning(f"  - {file}")
         if len(uncommitted) > 5:
             logger.warning(f"  ... and {len(uncommitted) - 5} more")
-        logger.warning("💡 Tip: Use 'git commit' to include these changes in deployment")
+        logger.warning("Tip: Use 'git commit' to include these changes in deployment")
 
     # Get current HEAD commit hash for logging
     hash_result = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True)
     commit_hash = hash_result.stdout.strip() if hash_result.returncode == 0 else "unknown"
     short_hash = commit_hash[:7] if commit_hash != "unknown" else "unknown"
 
-    logger.debug(f"📦 Creating git bundle from HEAD: {short_hash} ({commit_hash})")
+    logger.info(f"_update_workspace: bundling HEAD {short_hash}")
 
     # Create git bundle locally
     with tempfile.NamedTemporaryFile(suffix=".bundle", delete=False) as bundle_file:
@@ -359,26 +422,35 @@ def _update_workspace(ssh_client: paramiko.SSHClient, workspace_path: str) -> No
 
     try:
         # Create bundle from current HEAD
+        t0 = time.monotonic()
         result = subprocess.run(
             ["git", "bundle", "create", bundle_path, "HEAD"], capture_output=True, text=True
         )
+        bundle_elapsed = time.monotonic() - t0
         assert result.returncode == 0, (
             f"Git bundle create failed: {result.stderr}\n\nNot in a git repository. Run 'git init' first."
         )
 
-        logger.debug("Uploading bundle to remote...")
+        bundle_size = os.path.getsize(bundle_path)
+        logger.info(
+            f"_update_workspace: bundle created ({bundle_size:,} bytes) in {bundle_elapsed:.1f}s"
+        )
+        check_timeout("bundle_create")
 
         # Upload bundle to remote with retry logic
+        t0 = time.monotonic()
         sftp = ssh_client.open_sftp()
         try:
             remote_bundle = f"/tmp/bifrost-bundle-{os.getpid()}.bundle"
             _upload_bundle_with_retry(sftp, bundle_path, remote_bundle)
         finally:
             sftp.close()
-
-        logger.debug("Updating workspace from bundle...")
+        logger.info(f"_update_workspace: sftp upload took {time.monotonic() - t0:.1f}s")
+        check_timeout("sftp_upload")
 
         # Fetch and reset from bundle
+        t0 = time.monotonic()
+        logger.info("_update_workspace: fetching and resetting on remote...")
         update_cmd = f"""
 cd {workspace_path} &&
 git fetch {remote_bundle} HEAD &&
@@ -388,9 +460,14 @@ rm {remote_bundle}
         stdin, stdout, stderr = ssh_client.exec_command(update_cmd)
 
         exit_code = stdout.channel.recv_exit_status()
+        fetch_elapsed = time.monotonic() - t0
+        logger.info(
+            f"_update_workspace: remote fetch+reset took {fetch_elapsed:.1f}s (exit={exit_code})"
+        )
         if exit_code != 0:
             error_output = stderr.read().decode()
             raise RuntimeError(f"Git update from bundle failed: {error_output}")
+        check_timeout("remote_fetch_reset")
 
         # Verify what commit was deployed
         verify_cmd = f"cd {workspace_path} && git rev-parse HEAD"
@@ -398,9 +475,9 @@ rm {remote_bundle}
         deployed_hash = stdout.read().decode().strip()
         deployed_short = deployed_hash[:7] if deployed_hash else "unknown"
 
-        logger.debug(f"workspace updated to: {deployed_short} ({deployed_hash})")
+        logger.info(f"_update_workspace: done — deployed {deployed_short}")
         if deployed_hash != commit_hash:
-            logger.warning("⚠️  Deployed hash doesn't match local HEAD!")
+            logger.warning("Deployed hash doesn't match local HEAD!")
             logger.warning(f"   Local:  {short_hash} ({commit_hash})")
             logger.warning(f"   Remote: {deployed_short} ({deployed_hash})")
 

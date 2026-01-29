@@ -290,16 +290,22 @@ class BifrostClient:
             Each project should use a unique workspace_path to prevent
             collisions when running multiple projects on the same remote node.
         """
+        import time as _time
+
         # Validate input
         assert workspace_path, "workspace_path is required and cannot be empty"
         if bootstrap_cmd is not None:
             bootstrap_cmd = validate_bootstrap_cmd(bootstrap_cmd)
 
+        t0 = _time.monotonic()
         ssh_client = self._get_ssh_client()
-        self.logger.debug(f"📁 Deploying to workspace: {workspace_path}")
+        self.logger.info(f"push: ssh connection ready in {_time.monotonic() - t0:.1f}s")
+        self.logger.info(f"push: deploying to {workspace_path}")
 
         # Deploy code (pure function)
+        t0 = _time.monotonic()
         workspace_path = git_sync.deploy_code(ssh_client, self._remote_config, workspace_path)
+        self.logger.info(f"push: deploy_code took {_time.monotonic() - t0:.1f}s")
 
         # Run bootstrap if specified (pure function)
         if bootstrap_cmd:
