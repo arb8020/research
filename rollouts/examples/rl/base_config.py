@@ -74,14 +74,38 @@ async def _deploy_and_submit(
     repo_root = Path(__file__).parent.parent.parent
     script_rel_path = Path(script_path).relative_to(repo_root)
 
-    with console.spinner("Deploying code..."):
-        bootstrap = [
-            "apt-get update && apt-get install -y tmux libnuma1 || true",
+    # Bootstrap steps with human-readable labels
+    bootstrap_steps = [
+        ("Installing system deps", "apt-get update && apt-get install -y tmux libnuma1 || true"),
+        (
+            "Installing uv",
             "curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.local/bin/env",
+        ),
+        (
+            "Syncing Python deps",
             "cd rollouts && ~/.local/bin/uv python install 3.12 && ~/.local/bin/uv sync --python 3.12",
+        ),
+        (
+            "Installing ML packages",
             "~/.local/bin/uv pip install torch transformers datasets accelerate sglang[all] curl_cffi peft",
-        ]
-        workspace = bifrost.push("~/.bifrost/workspaces/rollouts-rl", bootstrap_cmd=bootstrap)
+        ),
+    ]
+    bootstrap_labels = [label for label, _ in bootstrap_steps]
+    bootstrap_cmds = [cmd for _, cmd in bootstrap_steps]
+
+    with console.spinner("Deploying code...") as spinner:
+
+        def on_step(cmd: str, index: int, total: int) -> None:
+            label = (
+                bootstrap_labels[index] if index < len(bootstrap_labels) else f"Step {index + 1}"
+            )
+            spinner.update(f"{label}...")
+
+        workspace = bifrost.push(
+            "~/.bifrost/workspaces/rollouts-rl",
+            bootstrap_cmd=bootstrap_cmds,
+            on_bootstrap_step=on_step,
+        )
 
     # Create run output directory
     remote_output_dir = f"{workspace}/rollouts/results/rl/{run_name}"
