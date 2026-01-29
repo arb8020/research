@@ -13,12 +13,35 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import socket
 import sys
 import threading
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
+from typing import Any
+
+# Module-level log file path, set when attaching to a run
+_MONITOR_LOG: Path | None = None
+
+
+def _log(event: str, **data: Any) -> None:
+    """Append a structured log event to monitor.jsonl in the run directory."""
+    if _MONITOR_LOG is None:
+        return
+    entry = {
+        "ts": datetime.now().isoformat(),
+        "source": "monitor_cli",
+        "event": event,
+        **data,
+    }
+    try:
+        with open(_MONITOR_LOG, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass  # Don't crash if logging fails
 
 
 def _broker_credentials() -> dict[str, str]:
@@ -388,24 +411,33 @@ def _run_attached(run_id: str | None) -> int:
     local_sync_dir = Path("results/rl") / resolved_run_id
     local_sync_dir.mkdir(parents=True, exist_ok=True)
 
+    # Set up logging to run directory
+    global _MONITOR_LOG
+    _MONITOR_LOG = local_sync_dir / "monitor.jsonl"
+    _log("attach_start", run_id=resolved_run_id, node_id=node_id, files=available["files"])
+
     # Track byte offsets per file for incremental tail
     offsets: dict[str, int] = {}
+    sync_count = 0
 
     stop_sync = threading.Event()
 
     def sync_loop() -> None:
+        nonlocal sync_count
         while not stop_sync.is_set():
             try:
                 worker.send({"cmd": "list"})
                 resp = worker.recv()
                 files = resp.get("files", [])
 
+                total_new_lines = 0
                 for filename in files:
                     offset = offsets.get(filename, 0)
                     worker.send({"cmd": "tail", "file": filename, "offset": offset})
                     result = worker.recv()
 
                     if result.get("error"):
+                        _log("sync_error", file=filename, error=result.get("error"))
                         continue
 
                     new_lines = result.get("lines", [])
@@ -416,10 +448,16 @@ def _run_attached(run_id: str | None) -> int:
                         with open(local_path, "a") as f:
                             for line in new_lines:
                                 f.write(line + "\n")
+                        total_new_lines += len(new_lines)
 
                     offsets[filename] = new_offset
 
-            except (EOFError, BrokenPipeError, ConnectionResetError):
+                sync_count += 1
+                if sync_count <= 3 or total_new_lines > 0 or sync_count % 30 == 0:
+                    _log("sync", count=sync_count, files=len(files), new_lines=total_new_lines)
+
+            except (EOFError, BrokenPipeError, ConnectionResetError) as e:
+                _log("sync_connection_lost", error=str(e))
                 print("[monitor] LogsServer connection lost")
                 break
 

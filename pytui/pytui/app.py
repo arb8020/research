@@ -27,15 +27,39 @@ Usage:
 
 from __future__ import annotations
 
+import json
+import os
 import queue
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from .renderer import RenderState, diff_render
 from .terminal import Terminal
+
+
+# ---------------------------------------------------------------------------
+# Debug logging (file-based, not stderr)
+# ---------------------------------------------------------------------------
+
+_DEBUG_LOG: Path | None = None
+
+
+def _log(event: str, **data: Any) -> None:
+    """Append a debug event to the log file (if enabled)."""
+    if _DEBUG_LOG is None:
+        return
+    entry = {
+        "ts": datetime.now().isoformat(),
+        "event": event,
+        **data,
+    }
+    with open(_DEBUG_LOG, "a") as f:
+        f.write(json.dumps(entry) + "\n")
 
 # ---------------------------------------------------------------------------
 # Built-in messages (sent by runtime)
@@ -211,15 +235,23 @@ def _run_file_tail(
 
     Waits for file to exist, reads existing content, then tails for new lines.
     """
-    from pathlib import Path
-
+    _log("file_tail_start", path=path)
     p = Path(path)
 
     # Wait for file to exist
+    wait_count = 0
     while not p.exists() and not stop.is_set():
+        wait_count += 1
+        if wait_count % 10 == 1:  # Log every 5 seconds
+            _log("file_tail_waiting", path=path, wait_seconds=wait_count * 0.5)
         stop.wait(0.5)
+
     if stop.is_set():
+        _log("file_tail_stopped_before_open", path=path)
         return
+
+    _log("file_tail_opened", path=path, size=p.stat().st_size)
+    line_count = 0
 
     with open(p) as f:
         # Read from beginning (existing content + new lines)
@@ -228,9 +260,14 @@ def _run_file_tail(
             if line:
                 stripped = line.rstrip("\n")
                 if stripped:  # Skip blank lines
+                    line_count += 1
                     msg_queue.put(msg_fn(stripped))
+                    if line_count <= 5 or line_count % 100 == 0:
+                        _log("file_tail_line", path=path, line_num=line_count, preview=stripped[:80])
             else:
                 stop.wait(0.1)
+
+    _log("file_tail_stopped", path=path, total_lines=line_count)
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +294,8 @@ class App:
         alternate_screen: Use alternate screen buffer (monitor-style apps).
         bracketed_paste: Enable bracketed paste mode (editor-style apps).
         fps: Target frames per second for the render loop.
+        debug_log: Path to debug log file. If set, logs subscriptions, messages,
+            and app lifecycle events to this file as JSONL.
         debug_fn: Optional callback (model, width, height, frame_count) -> None.
             Called every debug_frame_interval rendered frames. For dumping
             layout snapshots, model state, etc. to a debug log file.
@@ -273,6 +312,7 @@ class App:
         alternate_screen: bool = True,
         bracketed_paste: bool = False,
         fps: int = 30,
+        debug_log: str | Path | None = None,
         debug_fn: Callable[[Any, int, int, int], None] | None = None,
         debug_frame_interval: int = 100,
     ) -> None:
@@ -291,6 +331,17 @@ class App:
         self._frame_count: int = 0
         self._msg_queue: queue.Queue = queue.Queue()
         self._terminal: Terminal | None = None
+
+        # Set up debug logging
+        global _DEBUG_LOG
+        if debug_log is not None:
+            _DEBUG_LOG = Path(debug_log)
+            # Truncate on startup
+            _DEBUG_LOG.write_text("")
+            os.chmod(_DEBUG_LOG, 0o644)
+            _log("app_init", fps=fps, alternate_screen=alternate_screen)
+        else:
+            _DEBUG_LOG = None
         self._render_state = RenderState()
         self._active_subs: dict[tuple, _SubRunner] = {}
 
@@ -376,6 +427,8 @@ class App:
         """Send message through update, execute resulting command."""
         if not self._running:
             return
+        msg_type = type(msg).__name__
+        _log("dispatch", msg_type=msg_type)
         self._model, cmd = self._update_fn(self._model, msg)
         self._execute_cmd(cmd)
 
@@ -438,6 +491,7 @@ class App:
 
         if sub._kind == "every":
             interval, msg_fn = sub._data
+            _log("sub_start", kind="every", interval=interval)
             t = threading.Thread(
                 target=_run_every,
                 args=(interval, msg_fn, self._msg_queue, stop),
@@ -445,6 +499,7 @@ class App:
             )
         elif sub._kind == "file_tail":
             path, msg_fn = sub._data
+            _log("sub_start", kind="file_tail", path=path)
             t = threading.Thread(
                 target=_run_file_tail,
                 args=(path, msg_fn, self._msg_queue, stop),

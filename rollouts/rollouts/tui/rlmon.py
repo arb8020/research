@@ -1020,6 +1020,9 @@ def make_app(watch_dir: str, debug: bool = False, debug_frame_interval: int = 10
         watch_dir: Path to the experiment output directory to watch.
         debug: If True, dump frame layout snapshots to /tmp/rlmon-debug.jsonl.
         debug_frame_interval: Dump every N rendered frames (default 100 = ~5s at 20fps).
+
+    Debug output is always written to {watch_dir}/monitor.jsonl for observability.
+    The `debug` flag controls additional frame snapshots.
     """
     # Detect type eagerly for initial subscriptions (before first Cmd runs)
     experiment_type = detect_experiment_type(watch_dir)
@@ -1028,6 +1031,9 @@ def make_app(watch_dir: str, debug: bool = False, debug_frame_interval: int = 10
 
     debug_fn = _make_debug_fn() if debug else None
 
+    # Always log to run directory for observability
+    debug_log = Path(watch_dir) / "monitor.jsonl"
+
     return App(
         init=(init_model, init_cmd),
         update=update,
@@ -1035,6 +1041,7 @@ def make_app(watch_dir: str, debug: bool = False, debug_frame_interval: int = 10
         subscriptions=subscriptions,
         alternate_screen=True,
         fps=20,
+        debug_log=debug_log,
         debug_fn=debug_fn,
         debug_frame_interval=debug_frame_interval,
     )
