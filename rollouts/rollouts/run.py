@@ -145,7 +145,7 @@ async def _deploy_and_submit(
         ),
         (
             "Syncing Python deps",
-            "cd rollouts && ~/.local/bin/uv python install 3.12 && ~/.local/bin/uv sync --python 3.12",
+            "~/.local/bin/uv python install 3.12 && ~/.local/bin/uv sync --python 3.12 --package rollouts",
         ),
         (
             "Installing ML packages",
