@@ -210,11 +210,13 @@ def _extract_log_message(raw: str) -> str:
     # Try JSON parsing
     try:
         data = json.loads(raw)
-        msg = data.get("message", "")
-        if msg:
-            return msg
-        # No message field - skip internal logs
-        return ""
+        if isinstance(data, dict):
+            msg = data.get("message", "")
+            if msg:
+                return msg
+            # No message field - skip internal logs
+            return ""
+        # Not a dict (could be int, list, etc.) - fall through to plain text handling
     except json.JSONDecodeError:
         pass
 
