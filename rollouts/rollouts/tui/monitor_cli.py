@@ -261,6 +261,46 @@ def _open_ssh_tunnel(
     return local_port, cleanup
 
 
+def _fetch_and_print_logs_server_log(node_id: str | None, run_id: str) -> None:
+    """Fetch logs_server.log from remote to help debug connection failures."""
+    if not node_id:
+        return
+
+    try:
+        import trio
+
+        from bifrost import BifrostClient
+        from broker.client import GPUClient
+
+        provider, instance_id = node_id.split(":", 1)
+        credentials = _broker_credentials()
+        client = GPUClient(credentials=credentials)
+        instance = trio.run(client.get_instance, instance_id, provider)
+
+        if instance is None:
+            print(f"Cannot fetch logs: instance {node_id} not found")
+            return
+
+        ssh_key = client.get_ssh_key_path(provider) or os.path.expanduser("~/.ssh/id_ed25519")
+        bifrost = BifrostClient(
+            ssh_host=instance.public_ip,
+            ssh_port=instance.ssh_port,
+            ssh_user="root",
+            ssh_key_path=ssh_key,
+        )
+
+        # Try to read the logs_server.log
+        remote_log = f"~/.bifrost/workspaces/rollouts-rl/rollouts/results/rl/{run_id}/logs_server.log"
+        result = bifrost.exec(f"cat {remote_log} 2>/dev/null || echo '[log file not found]'")
+
+        print("\n--- logs_server.log from remote ---")
+        print(result.stdout if result.stdout else "[empty]")
+        print("--- end logs_server.log ---\n")
+
+    except Exception as e:
+        print(f"Failed to fetch remote logs: {e}")
+
+
 def _run_attached(run_id: str | None) -> int:
     """Attach to a remote training run via LogsServer.
 
@@ -318,6 +358,8 @@ def _run_attached(run_id: str | None) -> int:
             break
         except ConnectionRefusedError:
             if attempt == max_retries - 1:
+                # Try to fetch logs_server.log to see what went wrong
+                _fetch_and_print_logs_server_log(node_id, resolved_run_id)
                 raise
             print(
                 f"LogsServer not ready, retrying in {retry_delay}s... ({attempt + 1}/{max_retries})"
