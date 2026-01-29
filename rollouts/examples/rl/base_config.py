@@ -31,53 +31,54 @@ async def _deploy_and_submit(
 
     Returns (bifrost_client, instance, job, run_name, remote_output_dir, workspace).
     """
+    import logging
+
     from dotenv import load_dotenv
 
     from bifrost import GPUQuery, ProcessSpec, acquire_node
+    from pytui import Console
 
     load_dotenv()
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     run_name = f"run_{timestamp}"
 
-    from pytui import Spinner
+    # Create console for coordinated spinner + logging output
+    console = Console()
+    console.install_logging_handler(logging.getLogger())  # Capture all log output
 
     # Acquire node
-    spinner = Spinner("Provisioning..." if not node_id else "Connecting...")
-    spinner.start()
-
-    if node_id:
-        bifrost, instance = await acquire_node(node_id=node_id)
-        spinner.stop(f"Connected to {node_id}")
-    else:
-        spinner.update(f"Provisioning {gpu_count}x {gpu_type}...")
-        bifrost, instance = await acquire_node(
-            provision=GPUQuery(
-                type=gpu_type,
-                count=gpu_count,
-                min_cuda="12.8",
-                exposed_ports=exposed_ports,
-                enable_http_proxy=not exposed_ports,  # raw TCP for LogsServer
-                name=f"rollouts/{run_name}",
+    provision_msg = "Connecting..." if node_id else f"Provisioning {gpu_count}x {gpu_type}..."
+    with console.spinner(provision_msg) as spinner:
+        if node_id:
+            bifrost, instance = await acquire_node(node_id=node_id)
+            spinner.update(f"Connected to {node_id}")
+        else:
+            bifrost, instance = await acquire_node(
+                provision=GPUQuery(
+                    type=gpu_type,
+                    count=gpu_count,
+                    min_cuda="12.8",
+                    exposed_ports=exposed_ports,
+                    enable_http_proxy=not exposed_ports,  # raw TCP for LogsServer
+                    name=f"rollouts/{run_name}",
+                )
             )
-        )
-        node_str = f"{instance.provider}:{instance.id}" if instance else "?"
-        spinner.stop(f"Provisioned {node_str}")
+            node_str = f"{instance.provider}:{instance.id}" if instance else "?"
+            spinner.update(f"Provisioned {node_str}")
 
     # Deploy code
     repo_root = Path(__file__).parent.parent.parent
     script_rel_path = Path(script_path).relative_to(repo_root)
 
-    spinner = Spinner("Deploying code...")
-    spinner.start()
-    bootstrap = [
-        "apt-get update && apt-get install -y tmux libnuma1 || true",
-        "curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.local/bin/env",
-        "cd rollouts && ~/.local/bin/uv python install 3.12 && ~/.local/bin/uv sync --python 3.12",
-        "~/.local/bin/uv pip install torch transformers datasets accelerate sglang[all] curl_cffi peft",
-    ]
-    workspace = bifrost.push("~/.bifrost/workspaces/rollouts-rl", bootstrap_cmd=bootstrap)
-    spinner.stop("Code deployed")
+    with console.spinner("Deploying code..."):
+        bootstrap = [
+            "apt-get update && apt-get install -y tmux libnuma1 || true",
+            "curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.local/bin/env",
+            "cd rollouts && ~/.local/bin/uv python install 3.12 && ~/.local/bin/uv sync --python 3.12",
+            "~/.local/bin/uv pip install torch transformers datasets accelerate sglang[all] curl_cffi peft",
+        ]
+        workspace = bifrost.push("~/.bifrost/workspaces/rollouts-rl", bootstrap_cmd=bootstrap)
 
     # Create run output directory
     remote_output_dir = f"{workspace}/rollouts/results/rl/{run_name}"
@@ -90,20 +91,22 @@ async def _deploy_and_submit(
         env_vars["ROLLOUTS_JSON_LOGS"] = "true"
 
     # Submit training job
-    spinner = Spinner(f"Starting {run_name}...")
-    spinner.start()
-    job = bifrost.submit(
-        ProcessSpec(
-            command="/root/.local/bin/uv",
-            args=("run", "python", str(script_rel_path)),
-            cwd=f"{workspace}/rollouts",
-            env=env_vars,
-        ),
-        name="rl-training",
-        log_file=training_log,
-        workspace=f"{workspace}/rollouts",
-    )
-    spinner.stop(f"Training started ({job.tmux_session})")
+    with console.spinner(f"Starting {run_name}...") as spinner:
+        job = bifrost.submit(
+            ProcessSpec(
+                command="/root/.local/bin/uv",
+                args=("run", "python", str(script_rel_path)),
+                cwd=f"{workspace}/rollouts",
+                env=env_vars,
+            ),
+            name="rl-training",
+            log_file=training_log,
+            workspace=f"{workspace}/rollouts",
+        )
+        spinner.update(f"Training started ({job.tmux_session})")
+
+    # Clean up logging handler
+    console.remove_logging_handlers()
 
     return bifrost, instance, job, run_name, remote_output_dir, workspace
 
