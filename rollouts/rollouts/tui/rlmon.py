@@ -31,6 +31,7 @@ from enum import Enum, auto
 from pathlib import Path
 
 from pytui import RESET, App, Cmd, KeyPress, Sub, hex_to_fg
+from pytui.text import truncate_to_width, visible_width
 
 # ─── Experiment type detection ───────────────────────────────────────────
 
@@ -418,7 +419,9 @@ def _box(title: str, content: list[str], width: int, active: bool = False) -> li
     if title:
         title_text = f" {title} "
         title_vis_len = len(title) + 2
-        remaining = inner_w - title_vis_len
+        # TL + H + title_text + H*remaining + TR = width
+        # 1  + 1 + title_vis_len + remaining + 1 = width
+        remaining = inner_w - title_vis_len - 1
         top = f"{border_c}{TL}{H}{title_c}{title_text}{border_c}{H * max(0, remaining)}{TR}{RESET}"
     else:
         top = f"{border_c}{TL}{H * inner_w}{TR}{RESET}"
@@ -427,8 +430,8 @@ def _box(title: str, content: list[str], width: int, active: bool = False) -> li
 
     lines = [top]
     for row in content:
-        raw_len = len(row)
-        pad = max(0, inner_w - raw_len)
+        vis_len = visible_width(row)
+        pad = max(0, inner_w - vis_len)
         lines.append(f"{border_c}{V}{RESET}{row}{' ' * pad}{border_c}{V}{RESET}")
     lines.append(bottom)
     return lines
@@ -465,9 +468,12 @@ def _side_by_side(left: list[str], right: list[str], left_w: int, right_w: int) 
     max_h = max(len(left), len(right))
     result = []
     for i in range(max_h):
-        l = left[i] if i < len(left) else " " * left_w
-        r = right[i] if i < len(right) else " " * right_w
-        result.append(l + r)
+        l = left[i] if i < len(left) else ""
+        r = right[i] if i < len(right) else ""
+        # Pad left line to exact width using visible_width
+        l_vis = visible_width(l)
+        l_pad = max(0, left_w - l_vis)
+        result.append(l + " " * l_pad + r)
     return result
 
 
@@ -490,9 +496,10 @@ def _render_log_box(
         visible = lines[-content_h:] if lines else ()
 
     content = []
+    inner_w = width - 4  # 2 for box borders, 2 for padding
     for line in visible:
-        if len(line) > width - 4:
-            line = line[: width - 7] + "..."
+        if visible_width(line) > inner_w:
+            line = truncate_to_width(line, inner_w)
         content.append(f" {color}{line}{RESET}")
     while len(content) < content_h:
         content.append("")
