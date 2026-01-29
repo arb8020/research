@@ -211,13 +211,14 @@ async def run_remote(
     logs_port = 9100
     logs_dir_relative = f"rollouts/results/rl/{run_name}"
 
-    # Start LogsServer - use relative path since cwd=workspace
+    # Start LogsServer - use -m since workspace is repo root with miniray/ dir
     logger.info("Starting LogsServer...")
     bifrost.submit(
         ProcessSpec(
             command="python3",
             args=(
-                "miniray/logs_server.py",
+                "-m",
+                "miniray.logs_server",
                 "--port",
                 str(logs_port),
                 "--dir",
