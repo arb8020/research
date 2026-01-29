@@ -170,9 +170,8 @@ class Model:
     config: dict = field(default_factory=dict)
     # UI state
     active_panel: int = 0
-    scroll: int = 0  # Vertical scroll offset (line number)
+    scroll: int = 0  # Vertical scroll offset (line number), like bubbles YOffset
     x_offset: int = 0  # Horizontal scroll offset (column number)
-    auto_scroll: bool = True
 
     @property
     def panel_names(self) -> list[str]:
@@ -205,19 +204,14 @@ def _line_count_label(lines: tuple[str, ...]) -> str:
     return f"{n:,}"
 
 
-def _clamp_scroll(scroll: int, total_lines: int, viewport_height: int = 20) -> int:
-    """Clamp scroll to valid range [0, max_scroll].
+# Approximate viewport height for scroll calculations in update().
+# Used until we wire Resize messages into the Model (open thread #3).
+_VIEWPORT_HEIGHT = 20
 
-    Args:
-        scroll: Current scroll position
-        total_lines: Total number of lines in content
-        viewport_height: Approximate viewport height (lines visible)
 
-    Returns:
-        Clamped scroll value
-    """
-    max_scroll = max(0, total_lines - viewport_height)
-    return max(0, min(scroll, max_scroll))
+def _max_scroll(total_lines: int, viewport_height: int = _VIEWPORT_HEIGHT) -> int:
+    """Maximum scroll offset for given content length."""
+    return max(0, total_lines - viewport_height)
 
 
 def _get_active_lines(model: Model) -> tuple[str, ...]:
@@ -240,35 +234,47 @@ def _get_active_lines(model: Model) -> tuple[str, ...]:
     return ()
 
 
-def _scroll_down(model: Model, delta: int) -> Model:
-    """Scroll down by delta lines, transitioning from auto-scroll if needed."""
+def _at_bottom(model: Model) -> bool:
+    """Whether the active panel is scrolled to the bottom (like bubbles AtBottom).
+
+    When at bottom, new content should auto-follow (caller calls _goto_bottom).
+    """
     lines = _get_active_lines(model)
-    total = len(lines)
+    return model.scroll >= _max_scroll(len(lines))
 
-    if model.auto_scroll:
-        # Transitioning from auto-scroll: start at bottom, then move up by 1
-        # (user pressed j to scroll down, but we were following, so go back 1)
-        max_scroll = max(0, total - 20)  # Approximate viewport
-        new_scroll = max(0, max_scroll - 1)
-    else:
-        new_scroll = _clamp_scroll(model.scroll + delta, total)
 
-    return replace(model, scroll=new_scroll, auto_scroll=False)
+def _goto_bottom(model: Model) -> Model:
+    """Scroll to the bottom of the active panel (like bubbles GotoBottom)."""
+    lines = _get_active_lines(model)
+    return replace(model, scroll=_max_scroll(len(lines)))
+
+
+def _scroll_down(model: Model, delta: int) -> Model:
+    """Scroll down by delta lines (like bubbles ScrollDown).
+
+    Clamps to [0, max_scroll]. No mode transitions — just arithmetic.
+    """
+    assert delta > 0, f"delta must be positive, got {delta}"
+    lines = _get_active_lines(model)
+    ms = _max_scroll(len(lines))
+    new_scroll = min(model.scroll + delta, ms)
+    assert new_scroll >= model.scroll, (
+        f"scroll_down must not decrease scroll: {model.scroll} -> {new_scroll}"
+    )
+    return replace(model, scroll=new_scroll)
 
 
 def _scroll_up(model: Model, delta: int) -> Model:
-    """Scroll up by delta lines, transitioning from auto-scroll if needed."""
-    lines = _get_active_lines(model)
-    total = len(lines)
+    """Scroll up by delta lines (like bubbles ScrollUp).
 
-    if model.auto_scroll:
-        # Transitioning from auto-scroll: start at bottom, then move up
-        max_scroll = max(0, total - 20)  # Approximate viewport
-        new_scroll = max(0, max_scroll - delta)
-    else:
-        new_scroll = _clamp_scroll(model.scroll - delta, total)
-
-    return replace(model, scroll=new_scroll, auto_scroll=False)
+    Clamps to [0, max_scroll]. No mode transitions — just arithmetic.
+    """
+    assert delta > 0, f"delta must be positive, got {delta}"
+    new_scroll = max(0, model.scroll - delta)
+    assert new_scroll <= model.scroll, (
+        f"scroll_up must not increase scroll: {model.scroll} -> {new_scroll}"
+    )
+    return replace(model, scroll=new_scroll)
 
 
 def _extract_log_message(raw: str) -> str:
@@ -422,10 +428,10 @@ def update(model: Model, msg: object) -> tuple[Model, Cmd]:
         case KeyPress(key="1"):
             return replace(model, active_panel=0), Cmd.none()
         case KeyPress(key="2"):
-            return replace(model, active_panel=1, scroll=0, auto_scroll=True), Cmd.none()
+            return _goto_bottom(replace(model, active_panel=1)), Cmd.none()
         case KeyPress(key="3"):
             if len(model.panel_names) > 2:
-                return replace(model, active_panel=2, scroll=0, auto_scroll=True), Cmd.none()
+                return _goto_bottom(replace(model, active_panel=2)), Cmd.none()
 
         # Vertical scroll: j/k or arrow keys (single line)
         case KeyPress(key="j" | "\x1b[B"):
@@ -455,11 +461,11 @@ def update(model: Model, msg: object) -> tuple[Model, Cmd]:
         case KeyPress(key="$"):  # Go to end of line (will be clamped in view)
             return replace(model, x_offset=9999), Cmd.none()
 
-        # Go to top/bottom: g/G
+        # Go to top/bottom: g/G (like bubbles GotoTop/GotoBottom)
         case KeyPress(key="G"):
-            return replace(model, auto_scroll=True), Cmd.none()
+            return _goto_bottom(model), Cmd.none()
         case KeyPress(key="g"):
-            return replace(model, scroll=0, auto_scroll=False), Cmd.none()
+            return replace(model, scroll=0), Cmd.none()
 
         case ExperimentDetected(experiment_type=et):
             return replace(model, experiment_type=et), Cmd.none()
@@ -471,30 +477,42 @@ def update(model: Model, msg: object) -> tuple[Model, Cmd]:
             msg_text = _extract_log_message(raw)
             if not msg_text:
                 return model, Cmd.none()
-            new_lines = _append_log(model.training_lines, msg_text)
-            # Don't update scroll here - auto_scroll mode ignores it anyway,
-            # and manual mode should preserve user's position
-            return replace(model, training_lines=new_lines), Cmd.none()
+            was_bottom = _at_bottom(model)
+            new_model = replace(model, training_lines=_append_log(model.training_lines, msg_text))
+            if was_bottom:
+                new_model = _goto_bottom(new_model)
+            return new_model, Cmd.none()
 
         case SglangLine(line=raw):
             msg_text = _extract_log_message(raw)
             if not msg_text:
                 return model, Cmd.none()
-            new_lines = _append_log(model.sglang_lines, msg_text)
-            return replace(model, sglang_lines=new_lines), Cmd.none()
+            was_bottom = _at_bottom(model)
+            new_model = replace(model, sglang_lines=_append_log(model.sglang_lines, msg_text))
+            if was_bottom:
+                new_model = _goto_bottom(new_model)
+            return new_model, Cmd.none()
 
         case RolloutLine(line=raw):
+            # Rollouts don't append to log panels, no scroll update needed
             return _parse_rollout(raw, model), Cmd.none()
 
         case EventLine(line=raw):
-            return _parse_event(raw, model), Cmd.none()
+            was_bottom = _at_bottom(model)
+            new_model = _parse_event(raw, model)
+            if was_bottom:
+                new_model = _goto_bottom(new_model)
+            return new_model, Cmd.none()
 
         case GenericLogLine(line=raw):
             msg_text = _extract_log_message(raw)
             if not msg_text:
                 return model, Cmd.none()
-            new_lines = _append_log(model.generic_lines, msg_text)
-            return replace(model, generic_lines=new_lines), Cmd.none()
+            was_bottom = _at_bottom(model)
+            new_model = replace(model, generic_lines=_append_log(model.generic_lines, msg_text))
+            if was_bottom:
+                new_model = _goto_bottom(new_model)
+            return new_model, Cmd.none()
 
         case ConfigLoaded(config=cfg):
             total = cfg.get("num_steps", model.total_steps)
@@ -655,7 +673,6 @@ def _render_log_box(
     height: int,
     active: bool,
     scroll: int,
-    auto_scroll: bool,
     x_offset: int = 0,
     color: str = C_TEXT,
 ) -> list[str]:
@@ -668,7 +685,6 @@ def _render_log_box(
         height: Total box height
         active: Whether this panel is active (affects border color)
         scroll: Vertical scroll offset (line number)
-        auto_scroll: Whether to auto-scroll to bottom
         x_offset: Horizontal scroll offset (column number)
         color: ANSI color for text
 
@@ -686,17 +702,12 @@ def _render_log_box(
     content_h = height - 2
     total_lines = len(lines)
 
-    # Vertical scrolling
-    if active and not auto_scroll:
-        # Clamp scroll to valid range
-        max_scroll = max(0, total_lines - content_h)
-        start = min(scroll, max_scroll)
-        assert 0 <= start <= max(0, total_lines - 1), (
-            f"start {start} out of range for {total_lines} lines"
-        )
-        visible = lines[start : start + content_h]
-    else:
-        visible = lines[-content_h:] if lines else ()
+    # Vertical scrolling — always use scroll offset (like bubbles YOffset)
+    max_scroll_val = max(0, total_lines - content_h)
+    start = min(scroll, max_scroll_val) if active else max_scroll_val
+    start = max(0, start)
+    visible = lines[start : start + content_h] if lines else ()
+    is_at_bottom = start >= max_scroll_val
 
     content = []
     inner_w = width - 4  # 2 for box borders, 2 for padding
@@ -726,16 +737,11 @@ def _render_log_box(
 
     # Add scroll position indicator to title if scrolling is active
     if total_lines > content_h:
-        if auto_scroll:
+        if is_at_bottom:
             scroll_indicator = " [FOLLOW]"
         else:
-            # Calculate scroll percentage
-            max_scroll = total_lines - content_h
-            if max_scroll > 0:
-                pct = min(100, int((scroll / max_scroll) * 100))
-                scroll_indicator = f" {pct}%"
-            else:
-                scroll_indicator = " 100%"
+            pct = min(100, int((start / max(1, max_scroll_val)) * 100))
+            scroll_indicator = f" {pct}%"
         title = title + scroll_indicator
 
     return _box(title, content, width, active=active)
@@ -859,7 +865,6 @@ def view(model: Model, width: int, height: int) -> list[str]:
                     training_h,
                     active=(model.active_panel == 1),
                     scroll=model.scroll,
-                    auto_scroll=model.auto_scroll,
                     x_offset=model.x_offset,
                 )
             )
@@ -871,7 +876,6 @@ def view(model: Model, width: int, height: int) -> list[str]:
                     sglang_h,
                     active=(model.active_panel == 2),
                     scroll=model.scroll,
-                    auto_scroll=model.auto_scroll,
                     x_offset=model.x_offset,
                     color=C_DIM,
                 )
@@ -886,7 +890,6 @@ def view(model: Model, width: int, height: int) -> list[str]:
                     remaining,
                     active=(model.active_panel == 1),
                     scroll=model.scroll,
-                    auto_scroll=model.auto_scroll,
                     x_offset=model.x_offset,
                 )
             )
@@ -900,7 +903,6 @@ def view(model: Model, width: int, height: int) -> list[str]:
                     remaining,
                     active=(model.active_panel == 1),
                     scroll=model.scroll,
-                    auto_scroll=model.auto_scroll,
                     x_offset=model.x_offset,
                 )
             )
@@ -916,7 +918,6 @@ def view(model: Model, width: int, height: int) -> list[str]:
                     remaining,
                     active=(model.active_panel == 1),
                     scroll=model.scroll,
-                    auto_scroll=model.auto_scroll,
                     x_offset=model.x_offset,
                 )
             )
@@ -932,7 +933,7 @@ def view(model: Model, width: int, height: int) -> list[str]:
 
     scroll_hint = ""
     if model.active_panel > 0:
-        if model.auto_scroll:
+        if _at_bottom(model):
             scroll_hint = f"  {C_DIM}[FOLLOW]{RESET}"
         else:
             scroll_hint = f"  {C_DIM}j/k:line ^d/^u:page h/l:pan G:follow{RESET}"
@@ -1056,7 +1057,7 @@ def frame_debug_snapshot(model: Model, width: int, height: int) -> dict:
             "generic_lines": len(model.generic_lines),
             "active_panel": model.active_panel,
             "scroll": model.scroll,
-            "auto_scroll": model.auto_scroll,
+            "at_bottom": _at_bottom(model),
             "config_keys": list(model.config.keys()) if model.config else [],
         },
     }

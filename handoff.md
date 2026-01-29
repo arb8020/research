@@ -17,16 +17,20 @@ Latest run log: `results/rl/run_20260129-202241/run.jsonl`
 
 ## OPEN THREADS (not yet finished)
 
-### 2. Scroll bugs may not be fully fixed
-- We fixed the auto-scroll formula and added `_clamp_scroll()`
-- `_scroll_down/up()` use approximate viewport height of 20 (hardcoded)
-- Need to verify with a live run that j/k actually works properly now
-- Files: `rollouts/rollouts/tui/rlmon.py` (lines 196-260)
+### 2. Scroll: remove auto_scroll dual-mode, match bubbles
+- Our `auto_scroll` bool + `scroll` int dual-mode keeps causing regressions
+  (transition logic between modes is where bugs appear)
+- Bubbles has NO `auto_scroll` — just `YOffset` clamped to `[0, maxYOffset()]`
+- Caller calls `GotoBottom()` when new content arrives if user was already at bottom
+- Refactor: remove `auto_scroll` from Model, add `was_at_bottom` check in content handlers
+- Added asserts to `_scroll_down/up()` to catch directional violations
+- Files: `rollouts/rollouts/tui/rlmon.py`
 
 ### 3. Viewport still uses approximate height
 - `_scroll_down/up()` hardcode `viewport_height=20`
 - Should derive from actual terminal height, but update() doesn't know it
 - Could store last terminal height in Model, or compute from view params
+- Bubbles stores `Height` on the viewport Model and uses it everywhere
 - Files: `rollouts/rollouts/tui/rlmon.py`
 
 ### 4. Cache longestLineWidth
