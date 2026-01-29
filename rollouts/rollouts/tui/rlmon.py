@@ -189,11 +189,20 @@ class Model:
 LOG_MAX_LINES = 5000
 
 
-def _append_log(lines: tuple[str, ...], line: str, max_len: int = LOG_MAX_LINES) -> tuple[str, ...]:
+def _append_log(
+    lines: tuple[str, ...], line: str, max_len: int = LOG_MAX_LINES
+) -> tuple[tuple[str, ...], int]:
+    """Append a line, trim to max_len. Returns (new_lines, trimmed_count).
+
+    trimmed_count is how many lines were dropped from the front.
+    Callers should subtract this from scroll to keep the viewport stable.
+    """
     new = lines + (line,)
-    if len(new) > max_len:
+    overflow = len(new) - max_len
+    if overflow > 0:
         new = new[-max_len:]
-    return new
+        return new, overflow
+    return new, 0
 
 
 def _line_count_label(lines: tuple[str, ...]) -> str:
@@ -377,9 +386,11 @@ def _parse_event(raw: str, model: Model) -> Model:
             total = data.get("total", 0)
             name = data.get("name", "")
             summary = f"Eval started: {name} ({total} samples)"
+            new_lines, trimmed = _append_log(model.event_lines, summary)
             return replace(
                 model,
-                event_lines=_append_log(model.event_lines, summary),
+                event_lines=new_lines,
+                scroll=max(0, model.scroll - trimmed),
                 eval_total=total,
             )
         case "sample_end":
@@ -396,9 +407,11 @@ def _parse_event(raw: str, model: Model) -> Model:
                 scores = scores + (float(score),)
                 if len(scores) > 500:
                     scores = scores[-500:]
+            new_lines, trimmed = _append_log(model.event_lines, summary)
             return replace(
                 model,
-                event_lines=_append_log(model.event_lines, summary),
+                event_lines=new_lines,
+                scroll=max(0, model.scroll - trimmed),
                 eval_completed=model.eval_completed + 1,
                 eval_scores=scores,
             )
@@ -414,7 +427,8 @@ def _parse_event(raw: str, model: Model) -> Model:
         case _:
             summary = f"[{event_type}] {json.dumps({k: v for k, v in data.items() if k not in ('type', 'timestamp')})}"
 
-    return replace(model, event_lines=_append_log(model.event_lines, summary))
+    new_lines, trimmed = _append_log(model.event_lines, summary)
+    return replace(model, event_lines=new_lines, scroll=max(0, model.scroll - trimmed))
 
 
 # ─── Update ───────────────────────────────────────────────────────────────
@@ -478,7 +492,9 @@ def update(model: Model, msg: object) -> tuple[Model, Cmd]:
             if not msg_text:
                 return model, Cmd.none()
             was_bottom = _at_bottom(model)
-            new_model = replace(model, training_lines=_append_log(model.training_lines, msg_text))
+            new_lines, trimmed = _append_log(model.training_lines, msg_text)
+            scroll = max(0, model.scroll - trimmed)
+            new_model = replace(model, training_lines=new_lines, scroll=scroll)
             if was_bottom:
                 new_model = _goto_bottom(new_model)
             return new_model, Cmd.none()
@@ -488,7 +504,9 @@ def update(model: Model, msg: object) -> tuple[Model, Cmd]:
             if not msg_text:
                 return model, Cmd.none()
             was_bottom = _at_bottom(model)
-            new_model = replace(model, sglang_lines=_append_log(model.sglang_lines, msg_text))
+            new_lines, trimmed = _append_log(model.sglang_lines, msg_text)
+            scroll = max(0, model.scroll - trimmed)
+            new_model = replace(model, sglang_lines=new_lines, scroll=scroll)
             if was_bottom:
                 new_model = _goto_bottom(new_model)
             return new_model, Cmd.none()
@@ -509,7 +527,9 @@ def update(model: Model, msg: object) -> tuple[Model, Cmd]:
             if not msg_text:
                 return model, Cmd.none()
             was_bottom = _at_bottom(model)
-            new_model = replace(model, generic_lines=_append_log(model.generic_lines, msg_text))
+            new_lines, trimmed = _append_log(model.generic_lines, msg_text)
+            scroll = max(0, model.scroll - trimmed)
+            new_model = replace(model, generic_lines=new_lines, scroll=scroll)
             if was_bottom:
                 new_model = _goto_bottom(new_model)
             return new_model, Cmd.none()
