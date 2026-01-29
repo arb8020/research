@@ -187,11 +187,22 @@ class Model:
                 return ["Metrics", "Logs"]
 
 
-def _append_log(lines: tuple[str, ...], line: str, max_len: int = 5000) -> tuple[str, ...]:
+LOG_MAX_LINES = 5000
+
+
+def _append_log(lines: tuple[str, ...], line: str, max_len: int = LOG_MAX_LINES) -> tuple[str, ...]:
     new = lines + (line,)
     if len(new) > max_len:
         new = new[-max_len:]
     return new
+
+
+def _line_count_label(lines: tuple[str, ...]) -> str:
+    """Format line count for box titles. Shows '5000+' when at the cap."""
+    n = len(lines)
+    if n >= LOG_MAX_LINES:
+        return f"{n:,}+"
+    return f"{n:,}"
 
 
 def _clamp_scroll(scroll: int, total_lines: int, viewport_height: int = 20) -> int:
@@ -842,7 +853,7 @@ def view(model: Model, width: int, height: int) -> list[str]:
 
             lines.extend(
                 _render_log_box(
-                    f"Training ({len(model.training_lines)})",
+                    f"Training ({_line_count_label(model.training_lines)})",
                     model.training_lines,
                     width,
                     training_h,
@@ -854,7 +865,7 @@ def view(model: Model, width: int, height: int) -> list[str]:
             )
             lines.extend(
                 _render_log_box(
-                    f"SGLang ({len(model.sglang_lines)})",
+                    f"SGLang ({_line_count_label(model.sglang_lines)})",
                     model.sglang_lines,
                     width,
                     sglang_h,
@@ -869,7 +880,7 @@ def view(model: Model, width: int, height: int) -> list[str]:
         case ExperimentType.SFT:
             lines.extend(
                 _render_log_box(
-                    f"Training ({len(model.training_lines)})",
+                    f"Training ({_line_count_label(model.training_lines)})",
                     model.training_lines,
                     width,
                     remaining,
@@ -883,7 +894,7 @@ def view(model: Model, width: int, height: int) -> list[str]:
         case ExperimentType.EVAL:
             lines.extend(
                 _render_log_box(
-                    f"Events ({len(model.event_lines)})",
+                    f"Events ({_line_count_label(model.event_lines)})",
                     model.event_lines,
                     width,
                     remaining,
@@ -899,7 +910,7 @@ def view(model: Model, width: int, height: int) -> list[str]:
             all_lines = model.generic_lines or model.training_lines or model.event_lines
             lines.extend(
                 _render_log_box(
-                    f"Logs ({len(all_lines)})",
+                    f"Logs ({_line_count_label(all_lines)})",
                     all_lines,
                     width,
                     remaining,

@@ -41,7 +41,6 @@ from typing import Any
 from .renderer import RenderState, diff_render
 from .terminal import Terminal
 
-
 # ---------------------------------------------------------------------------
 # Debug logging (file-based, not stderr)
 # ---------------------------------------------------------------------------
@@ -60,6 +59,7 @@ def _log(event: str, **data: Any) -> None:
     }
     with open(_DEBUG_LOG, "a") as f:
         f.write(json.dumps(entry) + "\n")
+
 
 # ---------------------------------------------------------------------------
 # Built-in messages (sent by runtime)
@@ -361,7 +361,9 @@ def _run_file_tail(
                     line_count += 1
                     msg_queue.put(msg_fn(stripped))
                     if line_count <= 5 or line_count % 100 == 0:
-                        _log("file_tail_line", path=path, line_num=line_count, preview=stripped[:80])
+                        _log(
+                            "file_tail_line", path=path, line_num=line_count, preview=stripped[:80]
+                        )
             else:
                 stop.wait(0.1)
 
@@ -494,9 +496,13 @@ class App:
             while self._running:
                 dirty = False
 
-                # 1. Poll keyboard/mouse input
-                key = terminal.read_input()
-                if key is not None:
+                # 1. Drain all available keyboard/mouse input (like bubbletea)
+                # Reading one key per frame causes input lag when keys are
+                # held down — the buffer fills faster than we consume.
+                while True:
+                    key = terminal.read_input()
+                    if key is None:
+                        break
                     dirty = True
                     msg = self._parse_input(key)
                     if msg is not None:

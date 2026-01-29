@@ -27,6 +27,7 @@ import argparse
 import importlib.util
 import logging
 import sys
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -123,7 +124,9 @@ async def _deploy_and_submit(
             )
             node_str = f"{instance.provider}:{instance.id}" if instance else "?"
             spinner.update(f"Provisioned {node_str}")
-            log("provision_done", node_id=node_str, provider=instance.provider if instance else None)
+            log(
+                "provision_done", node_id=node_str, provider=instance.provider if instance else None
+            )
 
     # Deploy code (git sync only, no bootstrap)
     script_rel_path = Path(script_path).relative_to(REPO_ROOT)
