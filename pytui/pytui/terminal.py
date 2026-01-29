@@ -113,6 +113,7 @@ class Terminal:
         self._old_sigwinch: Any = None
         self._running = False
         self._tty_fd: int | None = None
+        self._input_buffer: str = ""  # Buffer for multi-byte reads
         # Accept both alternate_screen and use_alternate_screen (compat)
         if use_alternate_screen is not None:
             self._alternate_screen = use_alternate_screen
@@ -252,39 +253,72 @@ class Terminal:
     def read_input(self) -> str | None:
         """Read available input (non-blocking).
 
-        Returns None if no input available. Reads escape sequences
-        with adaptive timeout - waits up to 10ms for sequence to complete,
-        but returns early when a complete sequence is detected.
+        Returns None if no input available. Uses buffered reads like bubbletea
+        to reduce syscall overhead (read up to 256 bytes at once).
+
+        Escape sequences are detected by looking for terminators (letters, ~).
+        Returns one logical input at a time (single char or complete escape sequence).
         """
         fd = self._tty_fd if self._tty_fd is not None else sys.stdin.fileno()
 
-        if not select.select([fd], [], [], 0)[0]:
-            return None
+        # Check buffer first
+        if not self._input_buffer:
+            if not select.select([fd], [], [], 0)[0]:
+                return None
+            # Read up to 256 bytes at once (like bubbletea) to reduce syscalls
+            data = os.read(fd, 256).decode("utf-8", errors="replace")
+            if not data:
+                return None
+            self._input_buffer = data
 
-        result = os.read(fd, 1).decode("utf-8", errors="replace")
+        # Extract one logical input from buffer
+        buf = self._input_buffer
 
-        if result == "\x1b":
-            # Escape sequence - read with adaptive timeout
-            # Most sequences complete within 1-2ms, but allow up to 10ms
+        if buf[0] != "\x1b":
+            # Regular character
+            self._input_buffer = buf[1:]
+            return buf[0]
+
+        # Escape sequence - find the end
+        if len(buf) == 1:
+            # Just ESC, might be incomplete - try to read more
+            if select.select([fd], [], [], 0.005)[0]:  # 5ms wait
+                more = os.read(fd, 256).decode("utf-8", errors="replace")
+                if more:
+                    buf = buf + more
+                    self._input_buffer = buf
+
+        # Look for sequence terminator
+        for i in range(1, len(buf)):
+            c = buf[i]
+            # CSI sequences end with letter, function keys with ~
+            if c.isalpha() or c == "~":
+                seq = buf[: i + 1]
+                self._input_buffer = buf[i + 1 :]
+                return seq
+
+        # No terminator found - if buffer is small, wait for more
+        if len(buf) < 10:
             deadline = time.time() + 0.010  # 10ms max
             while time.time() < deadline:
-                # Short poll - 1ms timeout
                 if select.select([fd], [], [], 0.001)[0]:
-                    byte = os.read(fd, 1).decode("utf-8", errors="replace")
-                    if not byte:
-                        break
-                    result += byte
-                    # Check for complete sequence (letter or ~ terminates)
-                    if len(result) > 1 and result[-1].isalpha() or result[-1] == "~":
-                        break
-                    # Mouse SGR sequences end with M or m
-                    if result[-1] in "Mm" and "<" in result:
-                        break
+                    more = os.read(fd, 256).decode("utf-8", errors="replace")
+                    if more:
+                        buf = buf + more
+                        self._input_buffer = buf
+                        # Check for terminator
+                        for i in range(1, len(buf)):
+                            c = buf[i]
+                            if c.isalpha() or c == "~":
+                                seq = buf[: i + 1]
+                                self._input_buffer = buf[i + 1 :]
+                                return seq
                 else:
-                    # No more data available
                     break
 
-        return result
+        # Still no terminator - return bare ESC, keep rest in buffer
+        self._input_buffer = buf[1:]
+        return buf[0]
 
     def run_external_editor(self, initial_content: str = "") -> str | None:
         """Temporarily exit raw mode, run $EDITOR, return edited content."""
