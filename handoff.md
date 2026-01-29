@@ -2,107 +2,105 @@
 
 ## CURRENT TASK
 
-Deploy logging and timeout have been added. Next run should show exactly where
-time is spent (or where it hangs). Run and check the logs.
+Reward stays stuck at 0 in the monitor. Need to investigate:
+- Is the training loop actually computing rewards?
+- Is `rollouts.jsonl` being written with reward data?
+- Is the monitor parsing it correctly (`_parse_rollout`)?
+- Is the metrics panel displaying reward_history?
 
-Previous issue: deploy step hung for 5+ min with no visibility.
-Latest run log: `results/rl/run_20260129-202241/run.jsonl`
-
-### What was added (deploy observability)
-- `deploy_code()` now has a 5-minute timeout (`DEPLOY_TIMEOUT_SECONDS`) — raises `TimeoutError` with the step name
-- Every sub-step logs timing: workspace-exists check, bundle create, SFTP upload, remote clone/fetch+reset, rev-parse verify
-- SFTP upload logs bundle size, progress (every ~10%), transfer rate in MB/s
-- `client.py:push()` logs SSH connection time and total deploy_code time
-- Timeout checker is threaded through `_create_workspace` and `_update_workspace` — checked after each step
+Latest run: `results/rl/run_20260129-205205/`
 
 ## OPEN THREADS (not yet finished)
 
-### 2. Scroll: remove auto_scroll dual-mode, match bubbles
-- Our `auto_scroll` bool + `scroll` int dual-mode keeps causing regressions
-  (transition logic between modes is where bugs appear)
-- Bubbles has NO `auto_scroll` — just `YOffset` clamped to `[0, maxYOffset()]`
-- Caller calls `GotoBottom()` when new content arrives if user was already at bottom
-- Refactor: remove `auto_scroll` from Model, add `was_at_bottom` check in content handlers
-- Added asserts to `_scroll_down/up()` to catch directional violations
-- Files: `rollouts/rollouts/tui/rlmon.py`
+### 1. Reward stuck at 0 (BLOCKING)
+- Monitor shows reward = 0 throughout training
+- Could be training bug (reward not computed), logging bug (not written to rollouts.jsonl), or TUI bug (not parsed/displayed)
+- Check `rollouts.jsonl` for actual reward values
+- Check `_parse_rollout()` in rlmon.py
+- Check metrics panel rendering of `reward_history`
+- Files: `rollouts/rollouts/tui/rlmon.py` (_parse_rollout, view), `rollouts/rollouts/training/grpo.py`
 
-### 3. Viewport still uses approximate height
-- `_scroll_down/up()` hardcode `viewport_height=20`
-- Should derive from actual terminal height, but update() doesn't know it
-- Could store last terminal height in Model, or compute from view params
+### 2. Viewport uses approximate height
+- `_VIEWPORT_HEIGHT = 20` hardcoded in scroll helpers and `_at_bottom()`
+- Should derive from actual terminal height via `Resize` messages
 - Bubbles stores `Height` on the viewport Model and uses it everywhere
+- rlmon doesn't handle `Resize` messages yet
 - Files: `rollouts/rollouts/tui/rlmon.py`
 
-### 4. Cache longestLineWidth
-- `visible_width()` now has LRU cache (1024 entries), which helps
+### 3. Cache longestLineWidth
+- `visible_width()` has LRU cache (1024 entries), which helps
 - But we still iterate all visible lines per render for width checks
 - Bubbles caches `longestLineWidth` once per `SetContent()` call
 - Files: `pytui/pytui/text.py`, `rollouts/rollouts/tui/rlmon.py`
 
-### 5. Wrap/truncate toggle
-- User wants `w` key to toggle between wrap and truncate modes for log lines
+### 4. Wrap/truncate toggle
+- `w` key to toggle between wrap and truncate modes for log lines
 - Not started
 - Files: `rollouts/rollouts/tui/rlmon.py`
 
-### 6. Monitor debug logging gaps
+### 5. Monitor debug logging gaps
 - update() message handling not logged (we log `dispatch` with msg_type but not what happened)
 - Experiment type detection not logged
 - Sync thread errors could be more detailed
 - Files: `rollouts/rollouts/tui/rlmon.py`, `rollouts/rollouts/tui/monitor_cli.py`
 
-## WHAT WAS DONE THIS SESSION
+### 6. ty type errors
+- Worktree at `/Users/chiraagbalu/research-ty-errors` on branch `fix/ty-errors`
+- 5284 diagnostics total, almost all in submodules
+- Our code: missing `Callable` import in `rollouts/rollouts/run.py` (fixed on main, not on branch yet)
+- Pre-existing errors in broker, bifrost callers
 
-### Fixes
-- Removed stderr warning spam (renderer already truncates)
-- Removed redundant sync/cleanup in run.py (monitor handles internally)
-- file_tail reads existing content before tailing new lines
-- Added `if __name__ == "__main__"` to config script
-- Increased HF download timeout to 5 minutes
-- Fixed scroll bugs from bubbles viewport comparison
+## WHAT WAS DONE (across sessions)
 
-### Observability
-- `run.jsonl` in run directory with provisioning/deploy/bootstrap/submit events
-- `monitor.jsonl` with subscription, file_tail, dispatch events
-- Run directory created immediately on start
+### This session
+- Deploy logging + 5-min timeout in `git_sync.py` (every step timed, SFTP progress logged)
+- Drain all buffered input per frame (fixes j/k lag on hold)
+- Log box titles show `5,000+` when at cap
+- Fixed `_scroll_down` regression (was scrolling wrong direction from auto-scroll)
+- Refactored scroll: removed `auto_scroll` bool, now single-offset like bubbles
+  - `_at_bottom()`, `_goto_bottom()` derived from scroll position
+  - Content handlers check at_bottom before append, goto_bottom after if was following
+  - Scroll offset adjusted when lines trimmed at 5000 cap (no viewport drift)
+- `Callable` import fix in `run.py`
 
-### pytui improvements (matching bubbletea)
-- Pre-compiled ANSI regex, LRU cache on `visible_width()`
-- Buffered 256-byte input reads (was 1 byte at a time)
-- Adaptive escape sequence timeout with known sequence map (~100 sequences from bubbletea)
-- Bracketed paste handling (`PasteEvent`) — prevents pasted "q" from quitting
-- Focus/blur events (`FocusEvent`)
-- Mouse support (`MouseEvent`, off by default)
+### Previous session
+- Removed stderr warning spam, redundant sync/cleanup
+- file_tail reads existing content before tailing
+- `if __name__ == "__main__"` in config script
+- HF download timeout increased to 5 minutes
+- Scroll bugs fixed from bubbles viewport comparison
+- `run.jsonl` + `monitor.jsonl` structured logging
+- pytui: pre-compiled ANSI regex, LRU cache, buffered input, paste/focus events, mouse support, ~100 escape sequences from bubbletea
 
 ## GIT STATE
 
 - Branch: `main`
-- 143 commits ahead of origin (not pushed)
-- Clean working tree (no staged changes)
+- 147 commits ahead of origin (not pushed)
 - Uncommitted files (not ours): `broker/broker/providers/modal.py`, `rollouts-tmux-sessions`
+- Worktree: `fix/ty-errors` at `/Users/chiraagbalu/research-ty-errors`
 
-### Recent commits (this session)
+### Recent commits
 ```
+86eff168 fix(rlmon): adjust scroll offset when log lines trimmed at cap
+c5803c0c refactor(rlmon): remove auto_scroll, match bubbles single-offset model
+b7cd8aa1 fix(tui): drain all buffered input per frame and show 5000+ line count
+3733a462 feat(deploy): add step-level timing logs and 5-min timeout to deploy_code
 371bb9d2 feat(pytui): expand escape sequence map from bubbletea
 66cc59e1 feat(pytui): add paste, focus events and sequence map
 36796b73 perf(pytui): buffered input reads like bubbletea
 4d9403d8 perf(pytui): optimize text width and input handling
 f532c82f feat(pytui): add mouse support (off by default)
 d25fcbeb fix(rlmon): fix scroll bugs found in bubbles viewport comparison
-0c2dc40e fix(training): increase HF download timeout to 5 minutes
-765fcdec fix(examples): add __main__ block to config script
-ae6ac6fc feat(run): create local run dir immediately and log all steps
-53329f15 feat(monitor): add structured debug logging for observability
-5fb60d3c fix(pytui): file_tail reads existing content before tailing
-ab5f7c88 fix(monitor): remove redundant warning and sync
 ```
 
 ## KEY FILES TO LOAD
 
-### For deploy debugging
+### For reward debugging
 ```
-bifrost/bifrost/client.py:255-319       # push() method
-bifrost/bifrost/git_sync.py             # deploy_code() — where it hangs
-rollouts/rollouts/run.py:55-120         # _deploy_and_submit() with logging
+rollouts/rollouts/tui/rlmon.py:344-362  # _parse_rollout
+rollouts/rollouts/tui/rlmon.py:148-175  # Model (reward_history, metrics)
+rollouts/rollouts/tui/rlmon.py:780-800  # view metrics rendering
+rollouts/rollouts/training/grpo.py      # GRPO training loop, reward computation
 ```
 
 ### For TUI work
@@ -113,6 +111,13 @@ pytui/pytui/app.py                      # Elm architecture, input parsing, paste
 pytui/pytui/terminal.py                 # Raw mode, buffered input, sequence map
 pytui/pytui/text.py                     # visible_width (cached), slice_ansi, truncate
 pytui/pytui/renderer.py                 # Differential rendering
+```
+
+### For deploy debugging
+```
+bifrost/bifrost/client.py:255-319       # push() method (now with timing logs)
+bifrost/bifrost/git_sync.py             # deploy_code() with timeout + step logging
+rollouts/rollouts/run.py:55-120         # _deploy_and_submit() with JSONL logging
 ```
 
 ### Reference
@@ -130,6 +135,9 @@ uv run run.py --config examples/rl/calculator/grpo_01_01.py --provision
 # Monitor debug logs in another terminal:
 tail -f results/rl/run_*/run.jsonl | jq .
 tail -f results/rl/run_*/monitor.jsonl | jq .
+
+# Check if rollouts.jsonl has reward data:
+cat results/rl/run_*/rollouts.jsonl | jq '.reward' | head -20
 ```
 
 ## DESIGN NOTES
@@ -140,14 +148,17 @@ tail -f results/rl/run_*/monitor.jsonl | jq .
 - view(model, width, height) -> list[str]: pure render function
 - subscriptions(model) -> Sub: file tails, timers
 
-### Scroll state (from bubbles comparison)
-- `scroll` is line offset, only used when `auto_scroll=False`
-- When `auto_scroll=True`, view takes `lines[-content_h:]` directly
-- Transitioning from auto to manual: initialize to current bottom position
-- Clamp scroll in update(), not in view()
+### Scroll state (matching bubbles)
+- `scroll` is line offset (like bubbles `YOffset`), always clamped to `[0, max_scroll]`
+- No `auto_scroll` bool — `_at_bottom(model)` derived from `scroll >= max_scroll`
+- Content handlers: check `_at_bottom()` before append, `_goto_bottom()` after if was following
+- `_append_log()` returns `(new_lines, trimmed_count)` — scroll adjusted by trimmed
+- `_scroll_down/up()` are pure arithmetic + clamp with directional asserts
+- `_VIEWPORT_HEIGHT = 20` approximation until Resize is wired into Model
 
 ### Input handling (from bubbletea comparison)
 - 256-byte buffered reads with input buffer between calls
+- All available input drained per frame (not one-per-frame)
 - Known sequence map for O(1) lookup (longest prefix match)
 - Heuristic fallback for unknown sequences
 - Bracketed paste state machine in App._parse_input()
