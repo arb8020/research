@@ -250,11 +250,11 @@ def _open_ssh_tunnel(
         finally:
             try:
                 src.close()
-            except OSError:
+            except (OSError, EOFError):
                 pass
             try:
                 dst.close()
-            except OSError:
+            except (OSError, EOFError):
                 pass
 
     def _tunnel_accept_loop() -> None:
@@ -309,7 +309,9 @@ def _fetch_and_print_logs_server_log(node_id: str | None, run_id: str) -> None:
         bifrost = BifrostClient(ssh_connection, ssh_key_path=ssh_key)
 
         # Try to read the logs_server.log
-        remote_log = f"~/.bifrost/workspaces/rollouts-rl/rollouts/results/rl/{run_id}/logs_server.log"
+        remote_log = (
+            f"~/.bifrost/workspaces/rollouts-rl/rollouts/results/rl/{run_id}/logs_server.log"
+        )
         result = bifrost.exec(f"cat {remote_log} 2>/dev/null || echo '[log file not found]'")
 
         print("\n--- logs_server.log from remote ---")
@@ -416,8 +418,17 @@ def _run_attached(run_id: str | None) -> int:
     _MONITOR_LOG = local_sync_dir / "monitor.jsonl"
     _log("attach_start", run_id=resolved_run_id, node_id=node_id, files=available["files"])
 
-    # Track byte offsets per file for incremental tail
+    # Track byte offsets per file for incremental tail.
+    # Persist offsets to a dotfile so reattach doesn't re-download everything.
+    offsets_file = local_sync_dir / ".sync_offsets.json"
     offsets: dict[str, int] = {}
+    if offsets_file.exists():
+        try:
+            offsets = json.loads(offsets_file.read_text())
+            _log("offsets_loaded", files=offsets)
+        except (json.JSONDecodeError, OSError):
+            pass
+
     sync_count = 0
 
     stop_sync = threading.Event()
@@ -456,6 +467,12 @@ def _run_attached(run_id: str | None) -> int:
                 if sync_count <= 3 or total_new_lines > 0 or sync_count % 30 == 0:
                     _log("sync", count=sync_count, files=len(files), new_lines=total_new_lines)
 
+                # Persist offsets so reattach resumes where we left off
+                try:
+                    offsets_file.write_text(json.dumps(offsets))
+                except OSError:
+                    pass
+
             except (EOFError, BrokenPipeError, ConnectionResetError) as e:
                 _log("sync_connection_lost", error=str(e))
                 print("[monitor] LogsServer connection lost")
@@ -486,12 +503,19 @@ def _run_attached(run_id: str | None) -> int:
             worker.send({"cmd": "tail", "file": filename, "offset": offset})
             result = worker.recv()
             new_lines = result.get("lines", [])
+            new_offset = result.get("offset", offset)
             if new_lines:
                 local_path = local_sync_dir / filename
                 with open(local_path, "a") as f:
                     for line in new_lines:
                         f.write(line + "\n")
                 print(f"  Synced: {resolved_run_id}/{filename} (+{len(new_lines)} lines)")
+            offsets[filename] = new_offset
+        # Persist final offsets
+        try:
+            offsets_file.write_text(json.dumps(offsets))
+        except OSError:
+            pass
     except (EOFError, BrokenPipeError, ConnectionResetError):
         print("  LogsServer disconnected, skipping final sync")
 

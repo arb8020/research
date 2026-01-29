@@ -80,5 +80,5 @@ class CheckpointConfig:
 class OutputConfig:
     """Training output directory and experiment naming."""
 
-    output_dir: str = "results"
+    output_dir: str = "results/rl"
     experiment_name: str = "experiment"
