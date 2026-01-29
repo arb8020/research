@@ -282,12 +282,8 @@ def _fetch_and_print_logs_server_log(node_id: str | None, run_id: str) -> None:
             return
 
         ssh_key = client.get_ssh_key_path(provider) or os.path.expanduser("~/.ssh/id_ed25519")
-        bifrost = BifrostClient(
-            ssh_host=instance.public_ip,
-            ssh_port=instance.ssh_port,
-            ssh_user="root",
-            ssh_key_path=ssh_key,
-        )
+        ssh_connection = f"root@{instance.public_ip}:{instance.ssh_port}"
+        bifrost = BifrostClient(ssh_connection, ssh_key_path=ssh_key)
 
         # Try to read the logs_server.log
         remote_log = f"~/.bifrost/workspaces/rollouts-rl/rollouts/results/rl/{run_id}/logs_server.log"
