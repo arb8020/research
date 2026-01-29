@@ -70,11 +70,14 @@ async def _deploy_and_submit(
             node_str = f"{instance.provider}:{instance.id}" if instance else "?"
             spinner.update(f"Provisioned {node_str}")
 
-    # Deploy code
+    # Deploy code (git sync only, no bootstrap)
     repo_root = Path(__file__).parent.parent.parent
     script_rel_path = Path(script_path).relative_to(repo_root)
 
-    # Bootstrap steps with human-readable labels
+    with console.spinner("Deploying code..."):
+        workspace = bifrost.push("~/.bifrost/workspaces/rollouts-rl")
+
+    # Bootstrap steps — each gets its own spinner with ✓ on completion
     bootstrap_steps = [
         ("Installing system deps", "apt-get update && apt-get install -y tmux libnuma1 || true"),
         (
@@ -90,22 +93,10 @@ async def _deploy_and_submit(
             "~/.local/bin/uv pip install torch transformers datasets accelerate sglang[all] curl_cffi peft",
         ),
     ]
-    bootstrap_labels = [label for label, _ in bootstrap_steps]
-    bootstrap_cmds = [cmd for _, cmd in bootstrap_steps]
 
-    with console.spinner("Deploying code...") as spinner:
-
-        def on_step(cmd: str, index: int, total: int) -> None:
-            label = (
-                bootstrap_labels[index] if index < len(bootstrap_labels) else f"Step {index + 1}"
-            )
-            spinner.update(f"{label}...")
-
-        workspace = bifrost.push(
-            "~/.bifrost/workspaces/rollouts-rl",
-            bootstrap_cmd=bootstrap_cmds,
-            on_bootstrap_step=on_step,
-        )
+    for label, cmd in bootstrap_steps:
+        with console.spinner(f"{label}..."):
+            bifrost.exec(cmd, working_dir=workspace)
 
     # Create run output directory
     remote_output_dir = f"{workspace}/rollouts/results/rl/{run_name}"
