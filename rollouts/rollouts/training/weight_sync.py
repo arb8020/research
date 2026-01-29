@@ -474,6 +474,7 @@ class SGLangEngine:
         gpu_str = ",".join(str(g) for g in self.cuda_device_ids)
         return (
             f"CUDA_VISIBLE_DEVICES={gpu_str} "
+            f"HF_HUB_DOWNLOAD_TIMEOUT=300 "  # 5 min timeout for model downloads
             f"python -m sglang.launch_server "
             f"--model-path {self.model_name} "
             f"--host 0.0.0.0 "
@@ -667,6 +668,7 @@ class VLLMEngine:
         gpu_str = ",".join(str(g) for g in self.cuda_device_ids)
         return (
             f"CUDA_VISIBLE_DEVICES={gpu_str} "
+            f"HF_HUB_DOWNLOAD_TIMEOUT=300 "  # 5 min timeout for model downloads
             f"python -m vllm.entrypoints.openai.api_server "
             f"--model {self.model_name} "
             f"--host 0.0.0.0 "
