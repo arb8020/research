@@ -1,136 +1,123 @@
-Handoff: Broker Async Migration (trio)
+# RL Training Monitor - Handoff Document
 
-DONE (committed fc68b3d on main):
-  - broker/broker/providers/modal.py — full Modal provider, async via
-    trio.to_thread.run_sync(). Smoke tested: T4 provision → nvidia-smi
-    → PyTorch CUDA → terminate. All working.
-  - broker/providers/__init__.py — "modal" case added
-  - broker/api.py — "modal" in PROVIDER_MODULES
-  - broker/types.py — modal_token_id + modal_token_secret in ProviderCredentials
-  - broker/pyproject.toml — modal>=0.64.0, trio, httpx, anyio added
-  - docs/code_style/drafts/outside_in.md — draft on outside-in programming
+## GOAL
+Fix the RL training monitor TUI for remote GPU training runs.
 
-GOAL (this handoff): Migrate broker's existing providers from sync
-  (requests) to async (trio + httpx). Modal provider is already async.
-  The rest of broker is sync. Make it all async.
+## CURRENT STATE
+The monitor is working well now. This session fixed scroll bugs and added observability.
 
-ASYNC LAYERING (decided):
-  trio (core) <-> anyio (compat layer) <-> asyncio (Modal SDK bridge)
-  - Broker code: trio directly (task groups, cancel scopes, trio.sleep)
-  - Shared/reusable code: anyio (portable)
-  - Modal SDK: trio.to_thread.run_sync() wrapping sync API
-    (Modal's .aio() methods are asyncio coroutines, not trio-compatible.
-    Confirmed: awaiting modal.Sandbox.create.aio() from trio fails with
-    "unrecognized yield message <Future pending>")
-  - httpx: native anyio support, no bridge needed
+## WHAT WAS FIXED THIS SESSION
 
-READ:
-  ~/research/broker/broker/providers/runpod.py — template sync provider
-  ~/research/broker/broker/api.py — PROVIDER_MODULES, search/create flows
-  ~/research/broker/broker/types.py — ProviderModule protocol (currently sync)
-  ~/research/shared/shared/retry.py — has async_retry() using trio.sleep()
-  ~/research/docs/code_style/archive/domain/anyio_advice.md — async style guide
+### 1. Scroll Bugs (from bubbles viewport comparison)
+- **Problem**: j/k navigation had stale scroll state, boxes got messed up
+- **Root cause**: Auto-scroll was setting scroll to `len-1` instead of `max_scroll`, and scroll wasn't clamped in update()
+- **Fix**:
+  - Removed broken auto-scroll formula (view already handles it)
+  - Added `_clamp_scroll()`, `_scroll_down/up()` helpers
+  - Scroll now properly transitions from auto-scroll to manual mode
+- **Commit**: `d25fcbeb`
 
-CHANGE 1: ProviderModule protocol → async
-  ~/research/broker/broker/types.py lines 493-524
-  All methods become async:
-    async def provision_instance(...) → GPUInstance | None
-    async def get_instance_details(...) → GPUInstance | None
-    async def list_instances(...) → list[GPUInstance]
-    async def terminate_instance(...) → bool
-    async def search_gpu_offers(...) → list[GPUOffer]
+### 2. Stderr Warning Spam
+- **Problem**: WARNING messages polluted terminal on j/k navigation
+- **Fix**: Removed redundant warning - renderer already truncates silently
+- **Commit**: `ab5f7c88`
 
-CHANGE 2: Migrate each provider (6 total)
-  For each of runpod, lambdalabs, vast, primeintellect, digitalocean,
-  digitalocean_amd:
-    - Replace `import requests` with `import httpx`
-    - All public functions → async def
-    - requests.get/post/put/delete → async with httpx.AsyncClient() as client:
-        response = await client.get/post/put/delete(...)
-    - Replace shared/retry.py's retry() with async_retry() where used
-    - response.json() stays the same (httpx has .json() too)
-    - response.status_code → response.status_code (same)
-    - response.raise_for_status() → response.raise_for_status() (same)
+### 3. Duplicate Sync After Monitor
+- **Problem**: run.py tried to sync/cleanup after monitor exited, but instance was already terminated
+- **Fix**: Removed redundant `_sync_and_cleanup()` call - monitor handles this internally
+- **Commit**: `ab5f7c88`
 
-  Start with runpod.py (most used, good template). Then do the rest.
+### 4. File Tail Not Showing Existing Content
+- **Problem**: `Sub.file_tail()` seeked to end, only showing new lines
+- **Fix**: Read from beginning so existing log content is visible on attach
+- **Commit**: `5fb60d3c`
 
-CHANGE 3: api.py → async
-  ~/research/broker/broker/api.py
-  - search() → async def search()
-  - create() → async def create()
-  - terminate_instance() → async def terminate_instance()
-  - get_instance() → async def get_instance()
-  - list_instances() → async def list_instances()
-  - _try_provision_from_offer() → async def
-  - All provider_module.X() calls become await provider_module.X()
+### 5. Observability - Debug Logging
+- **Added**: `run.jsonl` in run directory with provisioning/deploy/bootstrap events
+- **Added**: `monitor.jsonl` with subscription, file_tail, dispatch events
+- **Commit**: `53329f15`, `ae6ac6fc`
 
-CHANGE 4: GPUInstance methods → async
-  types.py GPUInstance:
-  - exec() → keep sync (for backward compat) but add aexec() that
-    works for both SSH and Modal
-  - terminate() → consider async version
-  - wait_until_ready() → async with trio.sleep instead of time.sleep
-  - wait_until_ssh_ready() → async
+### 6. Training Script Not Running
+- **Problem**: Config scripts were executed directly but had no `if __name__ == "__main__"` block
+- **Fix**: Added `if __name__ == "__main__": train(config)` to example config
+- **Commit**: `765fcdec`
 
-CHANGE 5: Client/CLI layer
-  - broker/client.py — GPUClient methods → async
-  - broker/cli.py — typer commands may need trio.run() wrappers
-    (typer is sync, so CLI entrypoints do trio.run(async_main))
+### 7. HuggingFace Download Timeout
+- **Problem**: Default 10s timeout caused model downloads to fail
+- **Fix**: Set `HF_HUB_DOWNLOAD_TIMEOUT=300` (5 min) for SGLang and vLLM
+- **Commit**: `0c2dc40e`
 
-VERIFY:
-  # Modal still works (no regression)
-  uv run python << 'EOF'
-  import trio
-  from broker.providers.modal import provision_instance, terminate_instance, exec_on_sandbox
-  from broker.types import ProvisionRequest
-  async def main():
-      request = ProvisionRequest(gpu_type="T4", gpu_count=1, name="verify")
-      instance = await provision_instance(request)
-      assert instance is not None
-      result = await exec_on_sandbox(instance.id, "nvidia-smi")
-      assert result.success
-      await terminate_instance(instance.id)
-      print("Modal PASS")
-  trio.run(main)
-  EOF
+### 8. Mouse Support in pytui
+- **Added**: `MouseEvent` message type, SGR mouse parsing
+- **Added**: `mouse=True` option in App (off by default)
+- **Commit**: `f532c82f`
 
-  # RunPod search works async
-  uv run python << 'EOF'
-  import trio
-  from broker.providers import runpod
-  async def main():
-      offers = await runpod.search_gpu_offers(gpu_count=1, api_key="...")
-      print(f"{len(offers)} RunPod offers")
-  trio.run(main)
-  EOF
+## KEY FILES
 
-  # Full create flow works async
-  uv run python << 'EOF'
-  import trio
-  from broker.api import search
-  async def main():
-      offers = await search(provider="modal")
-      for o in offers:
-          print(f"{o.gpu_type} ${o.price_per_hour}/hr")
-  trio.run(main)
-  EOF
+### Monitor TUI
+```
+rollouts/rollouts/tui/rlmon.py          # Main monitor app (Model, update, view)
+rollouts/rollouts/tui/monitor_cli.py    # CLI entry point, attach mode, SSH tunnel
+```
 
-KEY RISKS:
-  1. shared/retry.py async_retry() uses trio.sleep() — good, but check
-     all retry callsites in providers to make sure they switch.
-  2. broker/cli.py uses typer (sync). Entrypoints need trio.run() wrappers.
-     typer doesn't natively support async commands.
-  3. Tests (pytest-asyncio) may need pytest-trio instead.
-  4. GPUInstance.wait_until_ready() uses time.sleep(15) in a loop —
-     must become await trio.sleep(15) in async version.
+### pytui (TUI framework)
+```
+pytui/pytui/text.py                     # visible_width, slice_ansi, truncate_to_width
+pytui/pytui/app.py                      # Elm architecture (App, Cmd, Sub, MouseEvent)
+pytui/pytui/terminal.py                 # Raw mode, mouse tracking
+pytui/pytui/renderer.py                 # Differential rendering
+```
 
-ORDER:
-  1. ProviderModule protocol → async (types.py)
-  2. runpod.py → async (template)
-  3. Remaining providers one by one
-  4. api.py → async
-  5. client.py / cli.py → async wrappers
-  6. Run all verify scripts
+### Runner
+```
+rollouts/run.py                         # Entry point wrapper
+rollouts/rollouts/run.py                # Unified runner implementation
+```
 
-KEYWORDS: trio, httpx, async_retry, ProviderModule, PROVIDER_MODULES,
-  httpx.AsyncClient, trio.run, trio.sleep
+## HOW TO TEST
+
+### Run training with TUI
+```bash
+cd ~/research/rollouts
+uv run run.py --config examples/rl/calculator/grpo_01_01.py --provision
+```
+
+### Monitor debug logs
+```bash
+# While running:
+tail -f results/rl/run_*/run.jsonl | jq .
+tail -f results/rl/run_*/monitor.jsonl | jq .
+
+# After run:
+cat results/rl/run_YYYYMMDD-HHMMSS/run.jsonl | jq .
+```
+
+### Attach to existing run
+```bash
+uv run rollouts monitor --attach run_YYYYMMDD-HHMMSS
+uv run rollouts monitor --latest
+```
+
+## DESIGN NOTES
+
+### pytui Elm Architecture
+- **Model**: immutable dataclass with all state
+- **update(model, msg) -> (new_model, cmd)**: pure state transitions
+- **view(model, width, height) -> list[str]**: pure render function
+- **subscriptions(model) -> Sub**: declares what to watch (file tails, timers)
+
+### Scroll State Management (from bubbles comparison)
+- `scroll` is a line offset, only used when `auto_scroll=False`
+- When `auto_scroll=True`, view takes `lines[-content_h:]` directly
+- Transitioning from auto to manual: initialize scroll to current bottom position
+- Always clamp scroll in update(), not just in view()
+
+### Debug Logging
+- `run.jsonl`: provisioning, deploy, bootstrap, submit events
+- `monitor.jsonl`: subscriptions, file_tail, dispatch events
+- Both written to run directory automatically
+
+## POTENTIAL FUTURE WORK
+- Cache `longestLineWidth` to avoid O(N) `visible_width()` calls per render
+- Add wrap/truncate toggle (`w` key)
+- Enable mouse wheel scrolling (infrastructure is in place)
