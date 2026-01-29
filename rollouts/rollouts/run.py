@@ -203,9 +203,6 @@ async def run_remote(
         gpu_type=gpu_type,
     )
 
-    # Clean up logging handler before launching TUI
-    console.remove_logging_handlers()
-
     assert instance is not None, "run_remote requires a provisioned instance"
     node_id_str = f"{instance.provider}:{instance.id}"
 
@@ -213,12 +210,14 @@ async def run_remote(
 
     logs_port = 9100
     logs_dir_relative = f"rollouts/results/rl/{run_name}"
+
+    # Start LogsServer - use direct path since miniray isn't pip-installed
+    logger.info("Starting LogsServer...")
     bifrost.submit(
         ProcessSpec(
             command="python3",
             args=(
-                "-m",
-                "miniray.logs_server",
+                f"{workspace}/miniray/logs_server.py",
                 "--port",
                 str(logs_port),
                 "--dir",
@@ -252,6 +251,10 @@ async def run_remote(
     import subprocess
 
     logger.info("Launching TUI...")
+
+    # Clean up logging handler before launching TUI (it has its own output)
+    console.remove_logging_handlers()
+
     subprocess.run(
         [sys.executable, "-m", "rollouts", "monitor", "--attach", run_name],
         check=False,
