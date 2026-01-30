@@ -60,10 +60,10 @@ config = GRPOConfig(
         batch_size=8,  # prompts per step (× 16 rollouts = 128 total)
         n_samples_per_prompt=16,
         temperature=1.0,
-        max_seq_len=2048,  # prime-rl uses 2048
-        max_tokens=2048,
+        max_seq_len=1024,  # 2048 OOMs on single GPU; 1024 fits with num_minibatches=8
+        max_tokens=512,  # enough for think + answer; 128 truncated, 2048 OOMed
         extra_params={
-            "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+            "chat_template_kwargs": {"enable_thinking": False},
         },
     ),
     trainer=TrainerConfig(

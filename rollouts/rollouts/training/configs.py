@@ -71,7 +71,7 @@ class RolloutConfig:
     # "branching": Each assistant turn is a separate sample (safer, mirrors deployment)
     trajectory_strategy: str = "interleaved"
     # Extra params merged into inference requests (e.g. SGLang/vLLM sampling config).
-    # For Qwen3 no-think: {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
+    # For Qwen3 no-think: {"chat_template_kwargs": {"enable_thinking": False}}
     extra_params: dict[str, Any] = field(default_factory=dict)
 
 
