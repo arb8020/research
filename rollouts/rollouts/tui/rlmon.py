@@ -839,7 +839,7 @@ def view(model: Model, width: int, height: int) -> list[str]:
 
     # Metrics content
     metrics_content: list[str] = []
-    spark_w = max(10, metrics_w - 24)
+    spark_w = max(10, metrics_w - 25)
     if model.metrics:
         for m in model.metrics:
             if not m.values:
