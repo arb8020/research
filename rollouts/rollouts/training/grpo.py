@@ -195,6 +195,29 @@ def _create_inference_engine(
         raise ValueError(msg)
 
 
+def _make_loss_fn(
+    trainer: TrainerConfig,
+    vanilla_fn: Callable,
+    clipped_fn: Callable,
+    masked_fn: Callable,
+) -> Callable:
+    """Build the loss function from trainer config."""
+    if trainer.loss_type == "vanilla":
+        return vanilla_fn
+    if trainer.loss_type == "clipped":
+        return clipped_fn
+    if trainer.loss_type == "masked":
+        lo, hi = trainer.mask_ratio_low, trainer.mask_ratio_high
+
+        def _masked(logits: Any, batch: Any) -> Any:
+            return masked_fn(logits, batch, ratio_low=lo, ratio_high=hi)
+
+        return _masked
+    raise ValueError(
+        f"Unknown loss_type: {trainer.loss_type!r}. Use 'vanilla', 'clipped', or 'masked'."
+    )
+
+
 def _setup_training_backend(
     config: GRPOConfig, output_dir: Path, inference_engine: Any
 ) -> tuple[Any, Any, Any]:  # (backend, tokenizer, endpoint)
@@ -209,7 +232,10 @@ def _setup_training_backend(
 
     from ..dtypes import Endpoint
     from ..training.backends.pytorch_factory import create_pytorch_backend
-    from ..training.losses import grpo_loss
+    from ..training.losses import grpo_loss, grpo_loss_clipped, grpo_loss_masked
+
+    # Select loss function based on config
+    loss_fn = _make_loss_fn(config.trainer, grpo_loss, grpo_loss_clipped, grpo_loss_masked)
 
     gpu_rank = config.trainer.cuda_device_ids[0]
     backend = create_pytorch_backend(
@@ -220,7 +246,7 @@ def _setup_training_backend(
         gpu_rank=gpu_rank,
         learning_rate=config.trainer.lr,
         weight_decay=config.trainer.weight_decay,
-        loss_fn=lambda logits, batch: grpo_loss(logits, batch),
+        loss_fn=loss_fn,
         num_minibatches=config.trainer.num_minibatches,
         max_grad_norm=config.trainer.max_grad_norm,
         use_lora=config.model.use_lora,
@@ -238,6 +264,7 @@ def _setup_training_backend(
         api_base=inference_engine.api_base,
         temperature=config.rollout.temperature,
         max_tokens=config.rollout.max_tokens,
+        extra_params=config.rollout.extra_params or None,
     )
 
     return backend, tokenizer, endpoint

@@ -52,18 +52,24 @@ config = GRPOConfig(
     output=GRPOOutputConfig(experiment_name="reverse_text_grpo_01"),
     model=ModelConfig(name=DEFAULT_MODEL),
     checkpoint=CheckpointConfig(
-        num_steps=100,  # verifiers uses 100, prime-rl uses 20
-        checkpoint_every=25,  # Save to disk every 25 steps (for recovery)
-        sync_weights_every=1,  # Sync to inference every step (on-policy)
+        num_steps=20,  # prime-rl uses 20
+        checkpoint_every=5,
+        sync_weights_every=1,  # on-policy
     ),
     rollout=RolloutConfig(
         batch_size=8,  # prompts per step (× 16 rollouts = 128 total)
         n_samples_per_prompt=16,
-        temperature=1.0,  # Prime uses default (1.0), not 0.7
-        max_seq_len=512,  # verifiers uses 512
-        max_tokens=128,  # both use 128
+        temperature=1.0,
+        max_seq_len=2048,  # prime-rl uses 2048
+        max_tokens=2048,
+        extra_params={
+            "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+        },
     ),
-    trainer=TrainerConfig(lr=3e-6),
+    trainer=TrainerConfig(
+        lr=3e-6,
+        loss_type="masked",  # Prime-RL importance ratio masking
+    ),
 )
 
 # For base model variant, create a separate config file or use:

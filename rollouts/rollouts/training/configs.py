@@ -10,7 +10,8 @@ without circular dependencies.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,11 @@ class TrainerConfig:
     weight_decay: float = 0.0
     max_grad_norm: float = 1.0
     num_minibatches: int = 8
+    # Loss function: "vanilla" (simple PG), "clipped" (PPO-style), "masked" (Prime-RL ratio masking)
+    loss_type: str = "vanilla"
+    # Importance ratio masking bounds (for loss_type="masked")
+    mask_ratio_low: float = 0.125
+    mask_ratio_high: float = 8.0
 
 
 @dataclass(frozen=True)
@@ -64,6 +70,9 @@ class RolloutConfig:
     # "interleaved": Full conversation as one sequence (efficient, prefix sharing)
     # "branching": Each assistant turn is a separate sample (safer, mirrors deployment)
     trajectory_strategy: str = "interleaved"
+    # Extra params merged into inference requests (e.g. SGLang/vLLM sampling config).
+    # For Qwen3 no-think: {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
+    extra_params: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
