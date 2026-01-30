@@ -42,6 +42,8 @@ class TrainerConfig:
     # Importance ratio masking bounds (for loss_type="masked")
     mask_ratio_low: float = 0.125
     mask_ratio_high: float = 8.0
+    # Skip the VRAM preflight check (escape hatch when estimate is wrong)
+    skip_vram_check: bool = False
 
 
 @dataclass(frozen=True)

@@ -624,6 +624,14 @@ async def _grpo_train_async(
                     f"Invalid checkpoint path: {ckpt_path} (no pytorch_model.bin or config.json)"
                 )
 
+        # VRAM preflight: dry-run one forward+backward at worst-case seq_len
+        if not config.trainer.skip_vram_check:
+            from ..training.vram import preflight_vram_check
+
+            preflight_vram_check(backend, config, device)
+        else:
+            logger.info("VRAM preflight check skipped (skip_vram_check=True)")
+
         # Setup data and rollout generation
         logger.info(f"Dataset: {len(prompts)} prompts")
         data_buffer = DataBuffer(prompts=prompts)

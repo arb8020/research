@@ -41,18 +41,15 @@ DEFAULT_MODEL = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 # Alternative: Base model (will struggle without SFT warmup)
 BASE_MODEL = "Qwen/Qwen3-0.6B"
 
-# Prime-RL uses:
-#   - max_steps=20 (prime-rl) or 100 (verifiers)
-#   - max_tokens=128
-#   - batch_size=128 total (8 prompts × 16 rollouts)
-#   - lr=3e-6
-#   - seq_len=512-2048
-#   - sync_weights_every=1 (on-policy, max_async_level=1)
+# Matches prime-rl nightly CI: examples/reverse_text/rl.toml
+# - batch_size=128, rollouts_per_example=16, max_tokens=128
+# - seq_len=2048, max_steps=20, lr=3e-6
+# - Tested nightly: reward must reach >= 0.65
 config = GRPOConfig(
     output=GRPOOutputConfig(experiment_name="reverse_text_grpo_01"),
     model=ModelConfig(name=DEFAULT_MODEL),
     checkpoint=CheckpointConfig(
-        num_steps=20,  # prime-rl uses 20
+        num_steps=20,
         checkpoint_every=5,
         sync_weights_every=1,  # on-policy
     ),
@@ -60,14 +57,15 @@ config = GRPOConfig(
         batch_size=8,  # prompts per step (× 16 rollouts = 128 total)
         n_samples_per_prompt=16,
         temperature=1.0,
-        max_seq_len=1024,  # 2048 OOMs on single GPU; 1024 fits with num_minibatches=8
-        max_tokens=512,  # enough for think + answer; 128 truncated, 2048 OOMed
+        max_seq_len=2048,
+        max_tokens=128,
         extra_params={
             "chat_template_kwargs": {"enable_thinking": False},
         },
     ),
     trainer=TrainerConfig(
         lr=3e-6,
+        num_minibatches=8,  # 128 total / 8 = micro_batch_size=16
         loss_type="masked",  # Prime-RL importance ratio masking
     ),
 )
