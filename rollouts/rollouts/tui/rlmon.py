@@ -632,9 +632,24 @@ def update(model: Model, msg: object) -> tuple[Model, Cmd]:
 # ─── Subscriptions ────────────────────────────────────────────────────────
 
 
+EXPERIMENT_REDETECT_INTERVAL_SEC = 2.0
+
+
 def subscriptions(model: Model) -> Sub:
     d = model.watch_dir
     subs: list[Sub] = []
+
+    # Re-detect experiment type until we upgrade from GENERIC.
+    # In --attach mode, files arrive via remote sync after the app starts,
+    # so initial detection sees an empty directory. Once the type changes,
+    # this sub disappears and the correct file tails start below.
+    if model.experiment_type == ExperimentType.GENERIC:
+        subs.append(
+            Sub.every(
+                EXPERIMENT_REDETECT_INTERVAL_SEC,
+                lambda: ExperimentDetected(experiment_type=detect_experiment_type(d)),
+            )
+        )
 
     match model.experiment_type:
         case ExperimentType.RL:
@@ -1441,10 +1456,11 @@ def make_app(watch_dir: str, debug: bool = False, debug_frame_interval: int = 10
     Debug output is always written to {watch_dir}/monitor.jsonl for observability.
     The `debug` flag controls additional frame snapshots.
     """
-    # Detect type eagerly for initial subscriptions (before first Cmd runs)
-    experiment_type = detect_experiment_type(watch_dir)
-    init_model = Model(watch_dir=watch_dir, experiment_type=experiment_type)
-    init_cmd = Cmd.task(_load_init(watch_dir))
+    init_model = Model(watch_dir=watch_dir)
+    init_cmd = Cmd.batch(
+        Cmd.task(_load_init(watch_dir)),
+        Cmd.task(_detect_type(watch_dir)),
+    )
 
     debug_fn = _make_debug_fn() if debug else None
 
