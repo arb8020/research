@@ -162,28 +162,45 @@ class Model:
     rollout_count: int = 0
     last_mean_reward: float = 0.0
     reward_history: tuple[float, ...] = ()
+    # RL rollout data (for rollouts pane)
+    rollout_records: tuple[dict, ...] = ()  # raw parsed JSON records from rollouts.jsonl
     # Eval stats
     eval_total: int = 0
     eval_completed: int = 0
     eval_scores: tuple[float, ...] = ()
     # Config
     config: dict = field(default_factory=dict)
-    # UI state
-    active_panel: int = 0
-    scroll: int = 0  # Vertical scroll offset (line number), like bubbles YOffset
-    x_offset: int = 0  # Horizontal scroll offset (column number)
+    # UI state — fullscreen pane switching
+    active_pane: int = 0  # 0=Summary, 1=Charts, 2=Training, 3=SGLang, 4=Rollouts
+    pane_scroll: tuple[int, ...] = (0, 0, 0, 0, 0)
+    pane_x_offset: tuple[int, ...] = (0, 0, 0, 0, 0)
+    # Charts pane
+    selected_metric: int = 0
+    # Rollouts pane
+    rollout_cursor: int = 0
+    rollout_view: str = "list"  # "list" or "detail"
 
     @property
-    def panel_names(self) -> list[str]:
+    def scroll(self) -> int:
+        """Scroll offset for the active pane."""
+        return self.pane_scroll[self.active_pane]
+
+    @property
+    def x_offset(self) -> int:
+        """Horizontal offset for the active pane."""
+        return self.pane_x_offset[self.active_pane]
+
+    @property
+    def pane_names(self) -> list[str]:
         match self.experiment_type:
             case ExperimentType.RL:
-                return ["Metrics", "Training", "SGLang"]
+                return ["Summary", "Charts", "Training", "SGLang", "Rollouts"]
             case ExperimentType.SFT:
-                return ["Metrics", "Training"]
+                return ["Summary", "Charts", "Training"]
             case ExperimentType.EVAL:
-                return ["Metrics", "Events"]
+                return ["Summary", "Charts", "Events"]
             case ExperimentType.GENERIC:
-                return ["Metrics", "Logs"]
+                return ["Summary", "Charts", "Logs"]
 
 
 LOG_MAX_LINES = 5000
@@ -223,23 +240,38 @@ def _max_scroll(total_lines: int, viewport_height: int = _VIEWPORT_HEIGHT) -> in
     return max(0, total_lines - viewport_height)
 
 
+def _set_pane_scroll(model: Model, scroll: int) -> Model:
+    """Set scroll offset for the active pane."""
+    lst = list(model.pane_scroll)
+    lst[model.active_pane] = scroll
+    return replace(model, pane_scroll=tuple(lst))
+
+
+def _set_pane_x_offset(model: Model, x_offset: int) -> Model:
+    """Set horizontal offset for the active pane."""
+    lst = list(model.pane_x_offset)
+    lst[model.active_pane] = x_offset
+    return replace(model, pane_x_offset=tuple(lst))
+
+
 def _get_active_lines(model: Model) -> tuple[str, ...]:
-    """Get the log lines for the currently active panel."""
-    match model.experiment_type:
-        case ExperimentType.RL:
-            if model.active_panel == 1:
-                return model.training_lines
-            elif model.active_panel == 2:
-                return model.sglang_lines
-        case ExperimentType.SFT:
-            if model.active_panel == 1:
-                return model.training_lines
-        case ExperimentType.EVAL:
-            if model.active_panel == 1:
-                return model.event_lines
-        case ExperimentType.GENERIC:
-            if model.active_panel == 1:
-                return model.generic_lines or model.training_lines or model.event_lines
+    """Get the log lines for the currently active pane."""
+    match model.active_pane:
+        case 2:  # Training
+            return model.training_lines
+        case 3:  # SGLang
+            return model.sglang_lines
+        case _:
+            # For summary pane, use the experiment-type default
+            match model.experiment_type:
+                case ExperimentType.RL:
+                    return model.training_lines
+                case ExperimentType.SFT:
+                    return model.training_lines
+                case ExperimentType.EVAL:
+                    return model.event_lines
+                case ExperimentType.GENERIC:
+                    return model.generic_lines or model.training_lines or model.event_lines
     return ()
 
 
@@ -253,37 +285,74 @@ def _at_bottom(model: Model) -> bool:
 
 
 def _goto_bottom(model: Model) -> Model:
-    """Scroll to the bottom of the active panel (like bubbles GotoBottom)."""
+    """Scroll to the bottom of the active pane (like bubbles GotoBottom)."""
     lines = _get_active_lines(model)
-    return replace(model, scroll=_max_scroll(len(lines)))
+    return _set_pane_scroll(model, _max_scroll(len(lines)))
 
 
 def _scroll_down(model: Model, delta: int) -> Model:
-    """Scroll down by delta lines (like bubbles ScrollDown).
-
-    Clamps to [0, max_scroll]. No mode transitions — just arithmetic.
-    """
+    """Scroll down by delta lines. Clamps to [0, max_scroll]."""
     assert delta > 0, f"delta must be positive, got {delta}"
     lines = _get_active_lines(model)
     ms = _max_scroll(len(lines))
-    new_scroll = min(model.scroll + delta, ms)
-    assert new_scroll >= model.scroll, (
-        f"scroll_down must not decrease scroll: {model.scroll} -> {new_scroll}"
-    )
-    return replace(model, scroll=new_scroll)
+    clamped = min(model.scroll, ms)
+    new_scroll = min(clamped + delta, ms)
+    return _set_pane_scroll(model, new_scroll)
 
 
 def _scroll_up(model: Model, delta: int) -> Model:
-    """Scroll up by delta lines (like bubbles ScrollUp).
-
-    Clamps to [0, max_scroll]. No mode transitions — just arithmetic.
-    """
+    """Scroll up by delta lines. Clamps to [0, max_scroll]."""
     assert delta > 0, f"delta must be positive, got {delta}"
-    new_scroll = max(0, model.scroll - delta)
-    assert new_scroll <= model.scroll, (
-        f"scroll_up must not increase scroll: {model.scroll} -> {new_scroll}"
-    )
-    return replace(model, scroll=new_scroll)
+    lines = _get_active_lines(model)
+    ms = _max_scroll(len(lines))
+    clamped = min(model.scroll, ms)
+    new_scroll = max(0, clamped - delta)
+    return _set_pane_scroll(model, new_scroll)
+
+
+def _adjust_pane_scroll_after_append(model: Model, pane: int, trimmed: int) -> Model:
+    """After appending to a log pane, adjust scroll and auto-follow if at bottom.
+
+    If the pane is currently active and at bottom, follow. Otherwise just
+    compensate for trimmed lines so the viewport stays stable.
+    """
+    lst = list(model.pane_scroll)
+    lst[pane] = max(0, lst[pane] - trimmed)
+    new_model = replace(model, pane_scroll=tuple(lst))
+    # Auto-follow if this is the active pane and we were at bottom
+    if model.active_pane == pane and _at_bottom(model):
+        new_model = _goto_bottom(new_model)
+    return new_model
+
+
+def _pane_j(model: Model) -> Model:
+    """Handle j/down in current pane. Charts: next metric. Rollouts: next item. Others: scroll."""
+    if model.active_pane == 1:  # Charts
+        n = len(model.metrics)
+        if n > 0:
+            return replace(model, selected_metric=min(model.selected_metric + 1, n - 1))
+        return model
+    if model.active_pane == 4:  # Rollouts
+        if model.rollout_view == "list":
+            n = len(model.rollout_records)
+            if n > 0:
+                return replace(model, rollout_cursor=min(model.rollout_cursor + 1, n - 1))
+            return model
+        else:
+            return _scroll_down(model, 1)
+    return _scroll_down(model, 1)
+
+
+def _pane_k(model: Model) -> Model:
+    """Handle k/up in current pane. Charts: prev metric. Rollouts: prev item. Others: scroll."""
+    if model.active_pane == 1:  # Charts
+        return replace(model, selected_metric=max(model.selected_metric - 1, 0))
+    if model.active_pane == 4:  # Rollouts
+        if model.rollout_view == "list":
+            return replace(model, rollout_cursor=max(model.rollout_cursor - 1, 0))
+        else:
+            return _scroll_up(model, 1)
+    return _scroll_up(model, 1)
 
 
 def _extract_log_message(raw: str) -> str:
@@ -437,23 +506,44 @@ def _parse_event(raw: str, model: Model) -> Model:
 def update(model: Model, msg: object) -> tuple[Model, Cmd]:
     match msg:
         case KeyPress(key="q"):
+            # In rollout detail view, go back to list
+            if model.active_pane == 4 and model.rollout_view == "detail":
+                return replace(model, rollout_view="list"), Cmd.none()
             return model, Cmd.quit()
 
+        # Pane switching: 1-5
         case KeyPress(key="1"):
-            return replace(model, active_panel=0), Cmd.none()
+            return replace(model, active_pane=0), Cmd.none()
         case KeyPress(key="2"):
-            return _goto_bottom(replace(model, active_panel=1)), Cmd.none()
+            if len(model.pane_names) > 1:
+                return replace(model, active_pane=1), Cmd.none()
         case KeyPress(key="3"):
-            if len(model.panel_names) > 2:
-                return _goto_bottom(replace(model, active_panel=2)), Cmd.none()
+            if len(model.pane_names) > 2:
+                return replace(model, active_pane=2), Cmd.none()
+        case KeyPress(key="4"):
+            if len(model.pane_names) > 3:
+                return replace(model, active_pane=3), Cmd.none()
+        case KeyPress(key="5"):
+            if len(model.pane_names) > 4:
+                return replace(model, active_pane=4), Cmd.none()
 
-        # Vertical scroll: j/k or arrow keys (single line)
+        # Tab cycles panes
+        case KeyPress(key="\t"):
+            n = len(model.pane_names)
+            return replace(model, active_pane=(model.active_pane + 1) % n), Cmd.none()
+
+        # j/k — pane-specific behavior
         case KeyPress(key="j" | "\x1b[B"):
-            return _scroll_down(model, 1), Cmd.none()
+            return _pane_j(model), Cmd.none()
         case KeyPress(key="k" | "\x1b[A"):
-            return _scroll_up(model, 1), Cmd.none()
+            return _pane_k(model), Cmd.none()
 
-        # Half-page scroll: Ctrl-D/Ctrl-U (vim style)
+        # Enter — pane-specific
+        case KeyPress(key="\r" | "\n"):
+            if model.active_pane == 4 and model.rollout_view == "list" and model.rollout_records:
+                return replace(model, rollout_view="detail"), Cmd.none()
+
+        # Half-page scroll: Ctrl-D/Ctrl-U
         case KeyPress(key="\x04"):  # Ctrl-D
             return _scroll_down(model, 10), Cmd.none()
         case KeyPress(key="\x15"):  # Ctrl-U
@@ -467,19 +557,19 @@ def update(model: Model, msg: object) -> tuple[Model, Cmd]:
 
         # Horizontal scroll: h/l or left/right arrows
         case KeyPress(key="l" | "\x1b[C"):  # Right
-            return replace(model, x_offset=model.x_offset + 10), Cmd.none()
+            return _set_pane_x_offset(model, model.x_offset + 10), Cmd.none()
         case KeyPress(key="h" | "\x1b[D"):  # Left
-            return replace(model, x_offset=max(0, model.x_offset - 10)), Cmd.none()
+            return _set_pane_x_offset(model, max(0, model.x_offset - 10)), Cmd.none()
         case KeyPress(key="0"):  # Go to start of line
-            return replace(model, x_offset=0), Cmd.none()
-        case KeyPress(key="$"):  # Go to end of line (will be clamped in view)
-            return replace(model, x_offset=9999), Cmd.none()
+            return _set_pane_x_offset(model, 0), Cmd.none()
+        case KeyPress(key="$"):  # Go to end of line
+            return _set_pane_x_offset(model, 9999), Cmd.none()
 
-        # Go to top/bottom: g/G (like bubbles GotoTop/GotoBottom)
+        # Go to top/bottom: g/G
         case KeyPress(key="G"):
             return _goto_bottom(model), Cmd.none()
         case KeyPress(key="g"):
-            return replace(model, scroll=0), Cmd.none()
+            return _set_pane_scroll(model, 0), Cmd.none()
 
         case ExperimentDetected(experiment_type=et):
             return replace(model, experiment_type=et), Cmd.none()
@@ -491,47 +581,45 @@ def update(model: Model, msg: object) -> tuple[Model, Cmd]:
             msg_text = _extract_log_message(raw)
             if not msg_text:
                 return model, Cmd.none()
-            was_bottom = _at_bottom(model)
             new_lines, trimmed = _append_log(model.training_lines, msg_text)
-            scroll = max(0, model.scroll - trimmed)
-            new_model = replace(model, training_lines=new_lines, scroll=scroll)
-            if was_bottom:
-                new_model = _goto_bottom(new_model)
+            new_model = replace(model, training_lines=new_lines)
+            new_model = _adjust_pane_scroll_after_append(new_model, 2, trimmed)
             return new_model, Cmd.none()
 
         case SglangLine(line=raw):
             msg_text = _extract_log_message(raw)
             if not msg_text:
                 return model, Cmd.none()
-            was_bottom = _at_bottom(model)
             new_lines, trimmed = _append_log(model.sglang_lines, msg_text)
-            scroll = max(0, model.scroll - trimmed)
-            new_model = replace(model, sglang_lines=new_lines, scroll=scroll)
-            if was_bottom:
-                new_model = _goto_bottom(new_model)
+            new_model = replace(model, sglang_lines=new_lines)
+            new_model = _adjust_pane_scroll_after_append(new_model, 3, trimmed)
             return new_model, Cmd.none()
 
         case RolloutLine(line=raw):
-            # Rollouts don't append to log panels, no scroll update needed
-            return _parse_rollout(raw, model), Cmd.none()
+            new_model = _parse_rollout(raw, model)
+            # Also store the raw record for the rollouts pane
+            try:
+                record = json.loads(raw)
+                records = new_model.rollout_records + (record,)
+                if len(records) > 5000:
+                    records = records[-5000:]
+                new_model = replace(new_model, rollout_records=records)
+            except json.JSONDecodeError:
+                pass
+            return new_model, Cmd.none()
 
         case EventLine(line=raw):
-            was_bottom = _at_bottom(model)
             new_model = _parse_event(raw, model)
-            if was_bottom:
-                new_model = _goto_bottom(new_model)
+            # Events go to event_lines, shown in pane 2 for EVAL type
             return new_model, Cmd.none()
 
         case GenericLogLine(line=raw):
             msg_text = _extract_log_message(raw)
             if not msg_text:
                 return model, Cmd.none()
-            was_bottom = _at_bottom(model)
             new_lines, trimmed = _append_log(model.generic_lines, msg_text)
-            scroll = max(0, model.scroll - trimmed)
-            new_model = replace(model, generic_lines=new_lines, scroll=scroll)
-            if was_bottom:
-                new_model = _goto_bottom(new_model)
+            new_model = replace(model, generic_lines=new_lines)
+            new_model = _adjust_pane_scroll_after_append(new_model, 2, trimmed)
             return new_model, Cmd.none()
 
         case ConfigLoaded(config=cfg):
@@ -819,25 +907,76 @@ def _view_config_box(model: Model, config_w: int) -> list[str]:
     return config_content
 
 
-def view(model: Model, width: int, height: int) -> list[str]:
-    lines: list[str] = []
-
-    # ─── Header ───
+def _view_header(model: Model) -> str:
+    """Shared header line across all panes."""
     step_text = f"step {model.current_step}"
     if model.total_steps:
         pct = model.current_step / model.total_steps * 100
         step_text += f"/{model.total_steps} ({pct:.0f}%)"
-
     dir_name = Path(model.watch_dir).name
     type_tag = model.experiment_type.name.lower()
-    header = f" {C_TITLE}monitor{RESET}  {C_DIM}{dir_name}{RESET}  {C_DIM}[{type_tag}]{RESET}  {C_BRIGHT}{step_text}{RESET}"
-    lines.append(header)
+    return f" {C_TITLE}monitor{RESET}  {C_DIM}{dir_name}{RESET}  {C_DIM}[{type_tag}]{RESET}  {C_BRIGHT}{step_text}{RESET}"
 
-    # ─── Top row: Metrics box + Config box ───
+
+def _view_footer(model: Model) -> str:
+    """Shared footer with pane tabs and context hints."""
+    panes = model.pane_names
+    tabs = []
+    for i, name in enumerate(panes):
+        if i == model.active_pane:
+            tabs.append(f"{C_BRIGHT}[{i + 1}]{name}{RESET}")
+        else:
+            tabs.append(f"{C_DIM}[{i + 1}]{name}{RESET}")
+    tab_str = " ".join(tabs)
+
+    # Context-specific hints
+    hint = ""
+    match model.active_pane:
+        case 0:  # Summary
+            hint = ""
+        case 1:  # Charts
+            if model.metrics:
+                n = len(model.metrics)
+                hint = f"  {C_DIM}j/k:metric ({model.selected_metric + 1}/{n}){RESET}"
+            else:
+                hint = f"  {C_DIM}waiting for metrics...{RESET}"
+        case 2 | 3:  # Log panes
+            if _at_bottom(model):
+                hint = f"  {C_DIM}[FOLLOW]{RESET}"
+            else:
+                hint = f"  {C_DIM}j/k:line ^d/^u:page h/l:pan G:follow{RESET}"
+        case 4:  # Rollouts
+            if model.rollout_view == "list":
+                n = len(model.rollout_records)
+                hint = (
+                    f"  {C_DIM}j/k:select Enter:detail ({model.rollout_cursor + 1}/{n}){RESET}"
+                    if n
+                    else ""
+                )
+            else:
+                hint = f"  {C_DIM}j/k:scroll q:back{RESET}"
+
+    return f" {tab_str}{hint}  {C_DIM}Tab:next q:quit{RESET}"
+
+
+def _pad_to_height(lines: list[str], height: int) -> list[str]:
+    """Pad or trim lines to exactly height."""
+    while len(lines) < height:
+        lines.append("")
+    return lines[:height]
+
+
+# ─── Pane: Summary ────────────────────────────────────────────────────────
+
+
+def _view_summary(model: Model, width: int, height: int) -> list[str]:
+    """Summary pane — metrics sparklines + config + condensed log tails."""
+    lines: list[str] = [_view_header(model)]
+
+    # Top row: Metrics box + Config box
     config_w = min(28, width // 3)
     metrics_w = width - config_w
 
-    # Metrics content
     metrics_content: list[str] = []
     spark_w = max(10, metrics_w - 25)
     if model.metrics:
@@ -845,7 +984,7 @@ def view(model: Model, width: int, height: int) -> list[str]:
             if not m.values:
                 continue
             current = m.values[-1]
-            label = f"{C_LABEL}{m.name:>12}{RESET}"
+            label = f"{C_LABEL}{m.name[:12]:>12}{RESET}"
             spark = _sparkline(m.values, spark_w)
             val = f"{C_VALUE}{current:>8.4f}{RESET}"
             metrics_content.append(f" {label} {spark} {val}")
@@ -854,38 +993,32 @@ def view(model: Model, width: int, height: int) -> list[str]:
 
     config_content = _view_config_box(model, config_w)
 
-    # Equalize heights
     top_h = max(len(metrics_content), len(config_content), 3)
     while len(metrics_content) < top_h:
         metrics_content.append("")
     while len(config_content) < top_h:
         config_content.append("")
 
-    metrics_box = _box("Metrics", metrics_content, metrics_w, active=(model.active_panel == 0))
+    metrics_box = _box("Metrics", metrics_content, metrics_w)
     config_box = _box("Config", config_content, config_w)
-
     lines.extend(_side_by_side(metrics_box, config_box, metrics_w, config_w))
 
-    # ─── Remaining space: log boxes adapted to experiment type ───
+    # Remaining space: condensed log tails (not scrollable — just last N lines)
     used = len(lines)
     remaining = height - used - 1  # -1 for footer
-
-    panels = model.panel_names
 
     match model.experiment_type:
         case ExperimentType.RL:
             training_h = max(3, int(remaining * 0.6))
             sglang_h = max(3, remaining - training_h)
-
             lines.extend(
                 _render_log_box(
                     f"Training ({_line_count_label(model.training_lines)})",
                     model.training_lines,
                     width,
                     training_h,
-                    active=(model.active_panel == 1),
-                    scroll=model.scroll,
-                    x_offset=model.x_offset,
+                    active=False,
+                    scroll=_max_scroll(len(model.training_lines)),
                 )
             )
             lines.extend(
@@ -894,13 +1027,11 @@ def view(model: Model, width: int, height: int) -> list[str]:
                     model.sglang_lines,
                     width,
                     sglang_h,
-                    active=(model.active_panel == 2),
-                    scroll=model.scroll,
-                    x_offset=model.x_offset,
+                    active=False,
+                    scroll=_max_scroll(len(model.sglang_lines)),
                     color=C_DIM,
                 )
             )
-
         case ExperimentType.SFT:
             lines.extend(
                 _render_log_box(
@@ -908,12 +1039,10 @@ def view(model: Model, width: int, height: int) -> list[str]:
                     model.training_lines,
                     width,
                     remaining,
-                    active=(model.active_panel == 1),
-                    scroll=model.scroll,
-                    x_offset=model.x_offset,
+                    active=False,
+                    scroll=_max_scroll(len(model.training_lines)),
                 )
             )
-
         case ExperimentType.EVAL:
             lines.extend(
                 _render_log_box(
@@ -921,14 +1050,11 @@ def view(model: Model, width: int, height: int) -> list[str]:
                     model.event_lines,
                     width,
                     remaining,
-                    active=(model.active_panel == 1),
-                    scroll=model.scroll,
-                    x_offset=model.x_offset,
+                    active=False,
+                    scroll=_max_scroll(len(model.event_lines)),
                 )
             )
-
         case ExperimentType.GENERIC:
-            # Show whatever logs we have
             all_lines = model.generic_lines or model.training_lines or model.event_lines
             lines.extend(
                 _render_log_box(
@@ -936,40 +1062,240 @@ def view(model: Model, width: int, height: int) -> list[str]:
                     all_lines,
                     width,
                     remaining,
-                    active=(model.active_panel == 1),
-                    scroll=model.scroll,
-                    x_offset=model.x_offset,
+                    active=False,
+                    scroll=_max_scroll(len(all_lines)),
                 )
             )
 
-    # ─── Footer ───
-    tabs = []
-    for i, name in enumerate(panels):
-        if i == model.active_panel:
-            tabs.append(f"{C_BRIGHT}[{i + 1}]{name}{RESET}")
-        else:
-            tabs.append(f"{C_DIM}[{i + 1}]{name}{RESET}")
-    tab_str = " ".join(tabs)
+    lines.append(_view_footer(model))
+    return _pad_to_height(lines, height)
 
-    scroll_hint = ""
-    if model.active_panel > 0:
-        if _at_bottom(model):
-            scroll_hint = f"  {C_DIM}[FOLLOW]{RESET}"
-        else:
-            scroll_hint = f"  {C_DIM}j/k:line ^d/^u:page h/l:pan G:follow{RESET}"
 
-    footer = f" {tab_str}{scroll_hint}  {C_DIM}q:quit{RESET}"
-    lines.append(footer)
+# ─── Pane: Charts ─────────────────────────────────────────────────────────
 
-    while len(lines) < height:
+
+def _view_charts(model: Model, width: int, height: int) -> list[str]:
+    """Charts pane — one plotext braille chart at a time, j/k to cycle."""
+    lines: list[str] = [_view_header(model)]
+
+    if not model.metrics:
+        lines.append(f" {C_DIM}waiting for metrics...{RESET}")
+        lines.append(_view_footer(model))
+        return _pad_to_height(lines, height)
+
+    metric_idx = min(model.selected_metric, len(model.metrics) - 1)
+    metric = model.metrics[metric_idx]
+
+    # Chart header
+    current_val = metric.values[-1] if metric.values else 0
+    chart_title = f" {C_LABEL}{metric.name}{RESET}  {C_VALUE}{current_val:.4f}{RESET}  {C_DIM}({len(metric.values)} pts){RESET}"
+    lines.append(chart_title)
+    lines.append("")
+
+    chart_h = height - 5  # header + chart_title + blank + footer + padding
+
+    try:
+        import plotext as plt
+
+        plt.clf()
+        plt.plot(list(metric.values), marker="braille")
+        plt.title(f"{metric.name}: {current_val:.4f}")
+        plt.xlabel(f"Step (latest: {model.current_step})")
+        plt.plotsize(width - 4, max(5, chart_h))
+        plt.theme("dark")
+
+        chart_str = plt.build()
+        for chart_line in chart_str.split("\n"):
+            lines.append(f"  {chart_line}")
+    except ImportError:
+        lines.append(f"  {C_DIM}plotext not installed — run: pip install plotext{RESET}")
+    except Exception as e:
+        lines.append(f"  {C_BAD}chart error: {e}{RESET}")
+
+    lines.append(_view_footer(model))
+    return _pad_to_height(lines, height)
+
+
+# ─── Pane: Fullscreen Logs ────────────────────────────────────────────────
+
+
+def _view_fullscreen_log(
+    model: Model,
+    title: str,
+    log_lines: tuple[str, ...],
+    width: int,
+    height: int,
+) -> list[str]:
+    """Fullscreen scrollable log pane."""
+    lines: list[str] = [_view_header(model)]
+    log_h = height - 2  # header + footer
+    lines.extend(
+        _render_log_box(
+            f"{title} ({_line_count_label(log_lines)})",
+            log_lines,
+            width,
+            log_h,
+            active=True,
+            scroll=model.scroll,
+            x_offset=model.x_offset,
+        )
+    )
+    lines.append(_view_footer(model))
+    return _pad_to_height(lines, height)
+
+
+def _view_training_logs(model: Model, width: int, height: int) -> list[str]:
+    return _view_fullscreen_log(model, "Training", model.training_lines, width, height)
+
+
+def _view_sglang_logs(model: Model, width: int, height: int) -> list[str]:
+    return _view_fullscreen_log(model, "SGLang", model.sglang_lines, width, height)
+
+
+# ─── Pane: Rollouts ──────────────────────────────────────────────────────
+
+
+def _view_rollouts(model: Model, width: int, height: int) -> list[str]:
+    """Rollouts pane — browsable list of rollout records with detail view."""
+    lines: list[str] = [_view_header(model)]
+
+    if not model.rollout_records:
+        lines.append(f" {C_DIM}waiting for rollouts...{RESET}")
+        lines.append(_view_footer(model))
+        return _pad_to_height(lines, height)
+
+    if model.rollout_view == "detail":
+        return _view_rollout_detail(model, width, height, lines)
+
+    # ─── List view ───
+    content_h = height - 3  # header + column header + footer
+    records = model.rollout_records
+    cursor = min(model.rollout_cursor, len(records) - 1)
+
+    # Column header
+    lines.append(f" {C_DIM}{'step':>5}  {'group':>5}  {'reward':>8}  {'status':>10}  prompt{RESET}")
+
+    # Scroll so cursor is visible
+    if cursor >= content_h:
+        start = cursor - content_h + 1
+    else:
+        start = 0
+    visible = records[start : start + content_h]
+
+    for i, rec in enumerate(visible):
+        idx = start + i
+        step = rec.get("step", "?")
+        group = rec.get("group_index", "?")
+        reward = rec.get("reward")
+        status = rec.get("status", "?")
+        prompt = rec.get("prompt", "")[:50].replace("\n", " ")
+
+        reward_str = f"{reward:>8.3f}" if reward is not None else "     n/a"
+        if reward is not None:
+            if reward > 0.5:
+                reward_str = f"{C_GOOD}{reward_str}{RESET}"
+            elif reward > 0:
+                reward_str = f"{C_WARN}{reward_str}{RESET}"
+            else:
+                reward_str = f"{C_BAD}{reward_str}{RESET}"
+
+        is_selected = idx == cursor
+        prefix = f"{C_BRIGHT}>{RESET}" if is_selected else " "
+        dim = "" if is_selected else C_DIM
+        dim_r = "" if is_selected else RESET
+
+        line = f"{prefix}{dim}{step:>5}  {group:>5}{dim_r}  {reward_str}  {dim}{status:>10}  {prompt}{dim_r}"
+        lines.append(line)
+
+    lines.append(_view_footer(model))
+    return _pad_to_height(lines, height)
+
+
+def _view_rollout_detail(model: Model, width: int, height: int, lines: list[str]) -> list[str]:
+    """Detail view for a single rollout record."""
+    records = model.rollout_records
+    cursor = min(model.rollout_cursor, len(records) - 1)
+    rec = records[cursor]
+
+    step = rec.get("step", "?")
+    group = rec.get("group_index", "?")
+    reward = rec.get("reward", 0)
+    status = rec.get("status", "?")
+
+    reward_color = C_GOOD if reward and reward > 0.5 else C_WARN if reward and reward > 0 else C_BAD
+    lines.append(
+        f" {C_LABEL}step{RESET} {step}  {C_LABEL}group{RESET} {group}  {C_LABEL}reward{RESET} {reward_color}{reward:.3f}{RESET}  {C_LABEL}status{RESET} {status}"
+    )
+    lines.append("")
+
+    # Prompt
+    prompt = rec.get("prompt", "")
+    lines.append(f" {C_LABEL}prompt:{RESET}")
+    for pl in prompt.split("\n"):
+        lines.append(f"   {C_TEXT}{pl}{RESET}")
+    lines.append("")
+
+    # Response
+    response = rec.get("response", "")
+    lines.append(f" {C_LABEL}response:{RESET}")
+    for rl in response.split("\n"):
+        lines.append(f"   {C_TEXT}{rl}{RESET}")
+    lines.append("")
+
+    # Messages (if present)
+    messages = rec.get("messages") or rec.get("metadata", {}).get("messages", [])
+    if messages:
+        lines.append(f" {C_LABEL}messages ({len(messages)}):{RESET}")
+        for msg in messages:
+            role = msg.get("role", "?")
+            content = msg.get("content", "")
+            role_color = C_LABEL if role == "user" else C_GOOD if role == "assistant" else C_DIM
+            lines.append(f"   {role_color}[{role}]{RESET}")
+            for ml in content.split("\n")[:20]:
+                lines.append(f"     {C_TEXT}{ml}{RESET}")
+            if len(content.split("\n")) > 20:
+                lines.append(f"     {C_DIM}... ({len(content.split(chr(10)))} lines total){RESET}")
+
+    # Metadata
+    meta = rec.get("metadata", {})
+    if meta:
         lines.append("")
-    lines = lines[:height]
+        lines.append(f" {C_LABEL}metadata:{RESET}")
+        for k, v in list(meta.items())[:10]:
+            lines.append(f"   {C_DIM}{k}:{RESET} {C_TEXT}{str(v)[:60]}{RESET}")
 
-    # Assert view invariants
-    assert len(lines) == height, f"View returned {len(lines)} lines, expected {height}"
-    # Note: lines wider than screen are truncated by the renderer, no warning needed
+    lines.append(_view_footer(model))
+    return _pad_to_height(lines, height)
 
-    return lines
+
+# ─── View dispatch ────────────────────────────────────────────────────────
+
+
+def view(model: Model, width: int, height: int) -> list[str]:
+    match model.active_pane:
+        case 0:
+            result = _view_summary(model, width, height)
+        case 1:
+            result = _view_charts(model, width, height)
+        case 2:
+            # Training for RL/SFT, Events for EVAL, Logs for GENERIC
+            match model.experiment_type:
+                case ExperimentType.EVAL:
+                    result = _view_fullscreen_log(model, "Events", model.event_lines, width, height)
+                case ExperimentType.GENERIC:
+                    all_lines = model.generic_lines or model.training_lines or model.event_lines
+                    result = _view_fullscreen_log(model, "Logs", all_lines, width, height)
+                case _:
+                    result = _view_training_logs(model, width, height)
+        case 3:
+            result = _view_sglang_logs(model, width, height)
+        case 4:
+            result = _view_rollouts(model, width, height)
+        case _:
+            result = _view_summary(model, width, height)
+
+    assert len(result) == height, f"View returned {len(result)} lines, expected {height}"
+    return result
 
 
 # ─── Init ─────────────────────────────────────────────────────────────────
@@ -1075,8 +1401,8 @@ def frame_debug_snapshot(model: Model, width: int, height: int) -> dict:
             "sglang_lines": len(model.sglang_lines),
             "event_lines": len(model.event_lines),
             "generic_lines": len(model.generic_lines),
-            "active_panel": model.active_panel,
-            "scroll": model.scroll,
+            "active_pane": model.active_pane,
+            "pane_scroll": list(model.pane_scroll),
             "at_bottom": _at_bottom(model),
             "config_keys": list(model.config.keys()) if model.config else [],
         },
