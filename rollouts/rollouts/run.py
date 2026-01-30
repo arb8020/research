@@ -315,6 +315,11 @@ async def run_remote(
 
     # Clean up logging handler before launching TUI (it has its own output)
     console.remove_logging_handlers()
+    # If no handlers remain, Python's logging.lastResort will still emit WARNING+
+    # to stderr, corrupting the TUI. Install a NullHandler to keep the terminal clean.
+    root_logger = logging.getLogger()
+    if not root_logger.handlers:
+        root_logger.addHandler(logging.NullHandler())
 
     subprocess.run(
         [sys.executable, "-m", "rollouts", "monitor", "--attach", run_name],

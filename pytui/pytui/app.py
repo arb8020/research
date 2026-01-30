@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import select
 import threading
 import time
 from collections.abc import Callable
@@ -273,12 +274,56 @@ class Sub:
 
 def _sub_key(sub: Sub) -> tuple:
     """Identity key for a subscription (for start/stop diffing)."""
+
+    def _stable_callable_key(fn: Callable[..., object]) -> tuple:
+        """Return a stable, hashable identity for callables.
+
+        Subscriptions are recomputed on every update(). Users often write
+        `lambda ...` inline inside subscriptions(), which creates a new
+        function object each call. Keying on `id(fn)` causes subscriptions
+        to churn (stop/restart) on every message, which breaks file tailing
+        and floods the UI with duplicate log lines.
+
+        Prefer code-location-based keys when available; fall back to object
+        identity for non-function callables.
+        """
+        # Bound method: stabilize on (underlying func location, instance id)
+        func = getattr(fn, "__func__", None)
+        self_obj = getattr(fn, "__self__", None)
+        if func is not None and hasattr(func, "__code__"):
+            code = func.__code__
+            return ("method", code.co_filename, code.co_firstlineno, code.co_name, id(self_obj))
+
+        # Plain function / lambda: stabilize on code location (and closure contents)
+        code = getattr(fn, "__code__", None)
+        if code is not None:
+            closure = getattr(fn, "__closure__", None) or ()
+            closure_key = []
+            for cell in closure:
+                try:
+                    val = cell.cell_contents
+                except ValueError:
+                    val = None
+                if val is None or isinstance(val, (bool, int, float, str)):
+                    closure_key.append(("lit", val))
+                else:
+                    closure_key.append(("id", id(val)))
+            return (
+                "func",
+                code.co_filename,
+                code.co_firstlineno,
+                code.co_name,
+                tuple(closure_key),
+            )
+
+        return ("id", id(fn))
+
     if sub._kind == "every":
         interval, fn = sub._data
-        return ("every", interval, id(fn))
+        return ("every", interval, _stable_callable_key(fn))
     elif sub._kind == "file_tail":
         path, fn = sub._data
-        return ("file_tail", path, id(fn))
+        return ("file_tail", path, _stable_callable_key(fn))
     elif sub._kind == "batch":
         return ("batch", tuple(_sub_key(s) for s in sub._data))
     return ("none",)
@@ -310,10 +355,38 @@ class _SubRunner:
     thread: threading.Thread
 
 
+class _WakeQueue:
+    """Queue that writes a byte to a wakeup pipe on put().
+
+    Background threads enqueue messages here. The main loop select()s
+    on the wakeup fd alongside stdin, so it wakes immediately instead
+    of polling on a timer.
+    """
+
+    __slots__ = ("_q", "_wakeup_w")
+
+    def __init__(self, wakeup_w: int) -> None:
+        self._q: queue.Queue = queue.Queue()
+        self._wakeup_w = wakeup_w
+
+    def put(self, msg: object) -> None:
+        self._q.put(msg)
+        try:
+            os.write(self._wakeup_w, b"\x00")
+        except OSError:
+            pass  # Pipe full or closed — main loop will drain queue anyway
+
+    def get_nowait(self) -> object:
+        return self._q.get_nowait()
+
+    def empty(self) -> bool:
+        return self._q.empty()
+
+
 def _run_every(
     interval: float,
     msg_fn: Callable[[], object],
-    msg_queue: queue.Queue,
+    msg_queue: _WakeQueue,
     stop: threading.Event,
 ) -> None:
     """Thread target for Sub.every."""
@@ -326,48 +399,42 @@ def _run_every(
 def _run_file_tail(
     path: str,
     msg_fn: Callable[[str], object],
-    msg_queue: queue.Queue,
+    msg_queue: _WakeQueue,
     stop: threading.Event,
 ) -> None:
     """Thread target for Sub.file_tail.
 
     Waits for file to exist, reads existing content, then tails for new lines.
     """
-    _log("file_tail_start", path=path)
     p = Path(path)
 
     # Wait for file to exist
-    wait_count = 0
     while not p.exists() and not stop.is_set():
-        wait_count += 1
-        if wait_count % 10 == 1:  # Log every 5 seconds
-            _log("file_tail_waiting", path=path, wait_seconds=wait_count * 0.5)
         stop.wait(0.5)
 
     if stop.is_set():
-        _log("file_tail_stopped_before_open", path=path)
         return
 
-    _log("file_tail_opened", path=path, size=p.stat().st_size)
-    line_count = 0
-
-    with open(p) as f:
-        # Read from beginning (existing content + new lines)
+    # Use errors="replace" so a single bad byte can't kill the tail thread.
+    with open(p, encoding="utf-8", errors="replace") as f:
+        # Read from beginning (existing content + new lines).
+        # Keep a buffer so we don't emit partial lines when the writer flushes
+        # without a trailing newline.
+        pending = ""
         while not stop.is_set():
-            line = f.readline()
-            if line:
-                stripped = line.rstrip("\n")
-                if stripped:  # Skip blank lines
-                    line_count += 1
-                    msg_queue.put(msg_fn(stripped))
-                    if line_count <= 5 or line_count % 100 == 0:
-                        _log(
-                            "file_tail_line", path=path, line_num=line_count, preview=stripped[:80]
-                        )
-            else:
+            chunk = f.readline()
+            if not chunk:
                 stop.wait(0.1)
+                continue
 
-    _log("file_tail_stopped", path=path, total_lines=line_count)
+            if chunk.endswith("\n"):
+                full = pending + chunk
+                pending = ""
+                stripped = full.rstrip("\n")
+                if stripped:  # Skip blank lines
+                    msg_queue.put(msg_fn(stripped))
+            else:
+                pending += chunk
 
 
 # ---------------------------------------------------------------------------
@@ -394,7 +461,11 @@ class App:
         alternate_screen: Use alternate screen buffer (monitor-style apps).
         bracketed_paste: Enable bracketed paste mode (editor-style apps).
         mouse: Enable mouse tracking (wheel scroll, clicks).
-        fps: Target frames per second for the render loop.
+        fps: Deprecated — kept for backwards compat. Sets min_frame_interval
+            to 1/fps. Prefer min_frame_interval directly.
+        min_frame_interval: Minimum seconds between renders. Batches rapid
+            events (e.g. file tail spew) into fewer frames. Default 0.016
+            (~60fps cap). Set to 0 for unlimited.
         debug_log: Path to debug log file. If set, logs subscriptions, messages,
             and app lifecycle events to this file as JSONL.
         debug_fn: Optional callback (model, width, height, frame_count) -> None.
@@ -413,7 +484,8 @@ class App:
         alternate_screen: bool = True,
         bracketed_paste: bool = False,
         mouse: bool = False,
-        fps: int = 30,
+        fps: int | None = None,
+        min_frame_interval: float = 0.016,
         debug_log: str | Path | None = None,
         debug_fn: Callable[[Any, int, int, int], None] | None = None,
         debug_frame_interval: int = 100,
@@ -425,14 +497,20 @@ class App:
         self._alternate_screen = alternate_screen
         self._bracketed_paste = bracketed_paste
         self._mouse = mouse
-        self._fps = fps
+        self._min_frame_interval = 1.0 / fps if fps is not None else min_frame_interval
         self._debug_fn = debug_fn
         self._debug_frame_interval = debug_frame_interval
 
         self._model: Any = None
         self._running = False
         self._frame_count: int = 0
-        self._msg_queue: queue.Queue = queue.Queue()
+
+        # Wakeup pipe: background threads write a byte here to wake select()
+        self._wakeup_r, self._wakeup_w = os.pipe()
+        os.set_blocking(self._wakeup_r, False)
+        os.set_blocking(self._wakeup_w, False)
+
+        self._msg_queue = _WakeQueue(self._wakeup_w)
         self._terminal: Terminal | None = None
         self._paste_buffer: str | None = None  # Collecting paste content
 
@@ -443,18 +521,38 @@ class App:
             # Truncate on startup
             _DEBUG_LOG.write_text("")
             os.chmod(_DEBUG_LOG, 0o644)
-            _log("app_init", fps=fps, alternate_screen=alternate_screen)
+            _log(
+                "app_init",
+                min_frame_interval=self._min_frame_interval,
+                alternate_screen=alternate_screen,
+            )
         else:
             _DEBUG_LOG = None
-        self._render_state = RenderState()
+        self._render_state = RenderState(log_fn=_log if _DEBUG_LOG is not None else None)
         self._active_subs: dict[tuple, _SubRunner] = {}
 
     def send(self, msg: object) -> None:
-        """Send a message from outside the update loop (thread-safe)."""
+        """Send a message from outside the update loop (thread-safe).
+
+        Wakes the main loop immediately via the wakeup pipe.
+        """
         self._msg_queue.put(msg)
 
+    def _drain_wakeup(self) -> None:
+        """Drain all bytes from the wakeup pipe (non-blocking)."""
+        try:
+            while os.read(self._wakeup_r, 4096):
+                pass
+        except (BlockingIOError, OSError):
+            pass
+
     def run(self) -> None:
-        """Run the application. Blocks until quit."""
+        """Run the application. Blocks until quit.
+
+        Event-driven: blocks on select() until stdin has input or a
+        background thread enqueues a message (via wakeup pipe).
+        Zero CPU when idle.
+        """
         terminal = Terminal(
             alternate_screen=self._alternate_screen,
             bracketed_paste=self._bracketed_paste,
@@ -462,10 +560,10 @@ class App:
         )
         self._terminal = terminal
 
-        # We don't use the on_input callback - we poll with read_input instead.
-        # But we need resize to enqueue a message.
+        # We don't use the on_input callback — we select() on the tty fd.
+        # Resize writes to the wakeup pipe so select() wakes up.
         def on_input(data: str) -> None:
-            pass  # Unused, we poll
+            pass  # Unused, we read from tty fd directly
 
         def on_resize() -> None:
             self._msg_queue.put(
@@ -477,6 +575,12 @@ class App:
 
         terminal.start(on_input=on_input, on_resize=on_resize)
         terminal.hide_cursor()
+
+        tty_fd = terminal._tty_fd
+        wakeup_r = self._wakeup_r
+        wait_fds = [wakeup_r]
+        if tty_fd is not None:
+            wait_fds.append(tty_fd)
 
         try:
             # Initialize
@@ -491,21 +595,47 @@ class App:
             # Initial render
             self._render()
 
-            # Main loop
-            sleep_time = 1.0 / self._fps
+            last_render = 0.0  # Force immediate first-event render
+            min_interval = self._min_frame_interval
+            pending_dirty = False
+            msgs_since_render = 0
+            msg_types_since_render: dict[str, int] = {}
+
+            # Main loop — event-driven, blocks on select()
             while self._running:
+                # Calculate select timeout:
+                # - If we have pending dirty state from rapid events,
+                #   wait only until min_interval elapses, then render.
+                # - Otherwise block indefinitely until something happens.
+                if pending_dirty:
+                    remaining = min_interval - (time.monotonic() - last_render)
+                    timeout = max(0.0, remaining)
+                else:
+                    timeout = None  # Block indefinitely
+
+                try:
+                    select.select(wait_fds, [], [], timeout)
+                except (InterruptedError, OSError):
+                    # SIGWINCH can interrupt select — that's fine,
+                    # the resize handler already enqueued a message.
+                    pass
+
+                # Drain wakeup pipe
+                self._drain_wakeup()
+
                 dirty = False
 
-                # 1. Drain all available keyboard/mouse input (like bubbletea)
-                # Reading one key per frame causes input lag when keys are
-                # held down — the buffer fills faster than we consume.
+                # 1. Drain all available keyboard/mouse input
                 while True:
                     key = terminal.read_input()
                     if key is None:
                         break
                     dirty = True
+                    msgs_since_render += 1
                     msg = self._parse_input(key)
                     if msg is not None:
+                        t = type(msg).__name__
+                        msg_types_since_render[t] = msg_types_since_render.get(t, 0) + 1
                         self._dispatch(msg)
 
                 # 2. Drain message queue (from Cmd.task threads, subs, resize)
@@ -515,17 +645,28 @@ class App:
                         msg = self._msg_queue.get_nowait()
                     except queue.Empty:
                         break
+                    msgs_since_render += 1
+                    t = type(msg).__name__
+                    msg_types_since_render[t] = msg_types_since_render.get(t, 0) + 1
                     self._dispatch(msg)
 
-                # 3. Re-sync subscriptions if model changed
+                # 3. Re-sync subscriptions if model changed this iteration
                 if dirty and self._subs_fn:
                     self._sync_subs(self._subs_fn(self._model))
 
-                # 4. Render if anything changed
                 if dirty:
-                    self._render()
+                    pending_dirty = True
 
-                time.sleep(sleep_time)
+                # 4. Render if dirty and enough time has passed since last render
+                now = time.monotonic()
+                if pending_dirty and now - last_render >= min_interval:
+                    self._render_state.msgs_batched = msgs_since_render
+                    self._render_state.msg_types_batched = dict(msg_types_since_render)
+                    self._render()
+                    last_render = now
+                    pending_dirty = False
+                    msgs_since_render = 0
+                    msg_types_since_render.clear()
 
         finally:
             # Stop all subscriptions
@@ -533,6 +674,12 @@ class App:
             terminal.show_cursor()
             terminal.stop()
             self._terminal = None
+            # Close wakeup pipe
+            try:
+                os.close(self._wakeup_r)
+                os.close(self._wakeup_w)
+            except OSError:
+                pass
 
     def _parse_input(self, key: str) -> object | None:
         """Parse raw input into a message type.
@@ -576,8 +723,6 @@ class App:
         """Send message through update, execute resulting command."""
         if not self._running:
             return
-        msg_type = type(msg).__name__
-        _log("dispatch", msg_type=msg_type)
         self._model, cmd = self._update_fn(self._model, msg)
         self._execute_cmd(cmd)
 
@@ -640,7 +785,6 @@ class App:
 
         if sub._kind == "every":
             interval, msg_fn = sub._data
-            _log("sub_start", kind="every", interval=interval)
             t = threading.Thread(
                 target=_run_every,
                 args=(interval, msg_fn, self._msg_queue, stop),
@@ -648,7 +792,6 @@ class App:
             )
         elif sub._kind == "file_tail":
             path, msg_fn = sub._data
-            _log("sub_start", kind="file_tail", path=path)
             t = threading.Thread(
                 target=_run_file_tail,
                 args=(path, msg_fn, self._msg_queue, stop),

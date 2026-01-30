@@ -51,10 +51,37 @@ def _import_modal():  # noqa: ANN202
         raise ImportError("Modal SDK not installed. Install with: pip install modal") from e
 
 
-def _build_default_image(modal: Any, gpu_type: str) -> Any:
-    """Build a default Modal image for GPU workloads.
+def _build_image_from_deps(modal: Any, deps: Any) -> Any:
+    """Build Modal image from a DepsConfig (recipes/schema.py).
 
-    Matches the pattern from wafer's shell_app.py — debian slim + common ML tools.
+    Translates the explicit dependency spec into modal.Image builder calls.
+    No guessing — every pip package, system package, and bootstrap command
+    comes from the DepsConfig.
+    """
+    image = modal.Image.debian_slim(python_version=deps.python_version)
+
+    if deps.system_packages:
+        image = image.apt_install(*deps.system_packages)
+
+    if deps.pip_packages:
+        pip_kwargs: dict[str, Any] = {}
+        if deps.pip_index_url:
+            pip_kwargs["index_url"] = deps.pip_index_url
+        if deps.pip_extra_index_url:
+            pip_kwargs["extra_index_url"] = deps.pip_extra_index_url
+        image = image.pip_install(*deps.pip_packages, **pip_kwargs)
+
+    for cmd in deps.bootstrap_commands:
+        image = image.run_commands(cmd)
+
+    return image
+
+
+def _build_default_image(modal: Any, gpu_type: str) -> Any:
+    """Fallback image when no DepsConfig is provided.
+
+    Installs torch only. Callers should prefer passing a DepsConfig
+    with explicit deps for reproducibility.
     """
     if gpu_type in ("B200", "GB200"):
         torch_index = "https://download.pytorch.org/whl/nightly/cu128"
@@ -104,11 +131,17 @@ def _sandbox_exec_sync(sandbox: Any, command: str, timeout: int = 300) -> SSHRes
 
 def _create_sandbox_sync(
     request: ProvisionRequest,
+    deps: Any | None = None,
 ) -> tuple[Any, Any]:
     """Create Modal sandbox. Blocking — call from trio.to_thread.run_sync().
 
-    Returns (sandbox, modal_module) tuple. We return the modal module so the
-    caller can use modal.Sandbox.from_id() later without re-importing.
+    Args:
+        request: Standard broker provision request.
+        deps: Optional DepsConfig (from recipes/schema.py). If provided,
+              builds the image from explicit deps. Otherwise falls back
+              to a default torch-only image.
+
+    Returns (sandbox, modal_module) tuple.
     """
     modal = _import_modal()
 
@@ -118,9 +151,12 @@ def _create_sandbox_sync(
         create_if_missing=True,
     )
 
-    # Build image
+    # Build image — explicit deps if available, fallback otherwise
     gpu_type = request.gpu_type or "T4"
-    image = _build_default_image(modal, gpu_type)
+    if deps is not None:
+        image = _build_image_from_deps(modal, deps)
+    else:
+        image = _build_default_image(modal, gpu_type)
 
     # Build GPU spec
     gpu_count = request.gpu_count or 1
@@ -155,12 +191,6 @@ def _create_sandbox_sync(
 
 # ============================================================================
 # ProviderModule interface (async)
-#
-# TODO: Build modal.Image from DepsConfig (recipes/schema.py) instead of
-# _build_default_image(). Currently the image is hardcoded with torch.
-# DepsConfig has base_image, pip_packages, pip_index_url, system_packages,
-# and bootstrap_commands — all the info needed for modal.Image.debian_slim()
-# .apt_install().pip_install() chains.
 #
 # TODO: Implement the three Modal workload types from modal.com/llm-almanac:
 # (1) Offline/batch — vLLM + .spawn()/.spawn_map() for throughput-first evals
@@ -221,11 +251,17 @@ async def provision_instance(
 
     ssh_startup_script is ignored — Modal sandboxes don't have SSH.
     api_key is ignored — Modal reads from ~/.modal.toml.
+
+    Pass a DepsConfig via request.raw_data["deps"] to build the image
+    from explicit dependencies instead of the default torch-only image.
     """
     gpu_type = request.gpu_type or "T4"
+    deps = request.raw_data.get("deps") if request.raw_data else None
 
     try:
-        sandbox, _modal = await trio.to_thread.run_sync(lambda: _create_sandbox_sync(request))
+        sandbox, _modal = await trio.to_thread.run_sync(
+            lambda: _create_sandbox_sync(request, deps=deps)
+        )
 
         # Look up pricing
         price = 0.0

@@ -432,6 +432,7 @@ def _run_attached(run_id: str | None) -> int:
     sync_count = 0
 
     stop_sync = threading.Event()
+    connection_lost = threading.Event()
 
     def sync_loop() -> None:
         nonlocal sync_count
@@ -475,7 +476,14 @@ def _run_attached(run_id: str | None) -> int:
 
             except (EOFError, BrokenPipeError, ConnectionResetError) as e:
                 _log("sync_connection_lost", error=str(e))
-                print("[monitor] LogsServer connection lost")
+                connection_lost.set()
+                # Don't print while the TUI is running (it corrupts the screen).
+                # Surface the failure inside the tailed logs instead.
+                try:
+                    with open(local_sync_dir / "training.log", "a", encoding="utf-8") as f:
+                        f.write("[monitor] LogsServer connection lost\n")
+                except OSError:
+                    pass
                 break
 
             stop_sync.wait(2.0)
@@ -493,6 +501,8 @@ def _run_attached(run_id: str | None) -> int:
     # TUI exited — final sync
     stop_sync.set()
     sync_thread.join(timeout=5.0)
+    if connection_lost.is_set():
+        print("\n[monitor] LogsServer connection lost (see training.log for details)")
 
     print("\nFinal sync...")
     try:
@@ -597,6 +607,16 @@ def monitor_main(argv: list[str] | None = None) -> int:
         help="Dump debug snapshot every N frames (default: 100, ~5s at 20fps)",
     )
     args = parser.parse_args(argv)
+
+    # `rollouts monitor` runs before the main CLI's logging setup. If Python
+    # logging has no handlers, `logging.lastResort` will still emit WARNING+
+    # to stderr, corrupting the TUI. Install a NullHandler to keep the
+    # terminal clean unless the user explicitly configured logging.
+    import logging
+
+    root_logger = logging.getLogger()
+    if not root_logger.handlers:
+        root_logger.addHandler(logging.NullHandler())
 
     # ── List mode ──
     if args.runs:

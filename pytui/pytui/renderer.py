@@ -8,7 +8,10 @@ Uses synchronized output mode to prevent flicker.
 
 from __future__ import annotations
 
+import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from .terminal import (
     CLEAR_LINE_FULL,
@@ -19,6 +22,15 @@ from .terminal import (
 )
 from .text import truncate_to_width, visible_width
 
+# Type for render logging callback
+RenderLogFn = Callable[..., None] | None
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(s: str) -> str:
+    return _ANSI_RE.sub("", s)
+
 
 @dataclass
 class RenderState:
@@ -27,6 +39,11 @@ class RenderState:
     previous_lines: list[str] = field(default_factory=list)
     previous_width: int = 0
     cursor_row: int = 0  # 0-indexed, relative to first line
+    render_count: int = 0
+    log_fn: RenderLogFn = None
+    # Set by App before each render
+    msgs_batched: int = 0
+    msg_types_batched: dict = field(default_factory=dict)
 
 
 def diff_render(
@@ -37,7 +54,7 @@ def diff_render(
     """Render lines to terminal with differential updates.
 
     Only redraws lines that changed since last render.
-    Uses synchronized output mode (\x1b[?2026h/l) to prevent flicker.
+    Uses synchronized output mode (\\x1b[?2026h/l) to prevent flicker.
 
     Args:
         terminal: Terminal to write to.
@@ -46,6 +63,29 @@ def diff_render(
     """
     width = terminal.columns
     height = terminal.rows
+    state.render_count += 1
+    _rlog = state.log_fn
+
+    # Common log data for every render
+    def _emit_log(kind: str, buffer: str, **extra: Any) -> None:
+        if not _rlog:
+            return
+        line0 = _strip_ansi(new_lines[0])[:80] if new_lines else ""
+        _rlog(
+            "render",
+            n=state.render_count,
+            kind=kind,
+            width=width,
+            height=height,
+            lines=len(new_lines),
+            prev_lines=len(state.previous_lines),
+            cursor_row_before=state.cursor_row,
+            buf_bytes=len(buffer),
+            line0=line0,
+            msgs=state.msgs_batched,
+            msg_types=state.msg_types_batched or None,
+            **extra,
+        )
 
     # Width changed - need full re-render
     width_changed = state.previous_width != 0 and state.previous_width != width
@@ -58,6 +98,7 @@ def diff_render(
                 buffer += "\r\n"
             buffer += line
         buffer += SYNC_OUTPUT_OFF
+        _emit_log("first", buffer)
         terminal.write(buffer)
         state.cursor_row = len(new_lines) - 1
         state.previous_lines = list(new_lines)
@@ -73,6 +114,7 @@ def diff_render(
                 buffer += "\r\n"
             buffer += line
         buffer += SYNC_OUTPUT_OFF
+        _emit_log("width_changed", buffer, old_width=state.previous_width)
         terminal.write(buffer)
         state.cursor_row = len(new_lines) - 1
         state.previous_lines = list(new_lines)
@@ -105,6 +147,12 @@ def diff_render(
                 buffer += "\r\n"
             buffer += line
         buffer += SYNC_OUTPUT_OFF
+        _emit_log(
+            "above_viewport",
+            buffer,
+            first_changed=first_changed,
+            viewport_top=viewport_top,
+        )
         terminal.write(buffer)
         state.cursor_row = len(new_lines) - 1
         state.previous_lines = list(new_lines)
@@ -112,10 +160,11 @@ def diff_render(
         return
 
     # Render from first changed line to end
+    line_diff = first_changed - state.cursor_row
+
     buffer = SYNC_OUTPUT_ON
 
     # Move cursor to first changed line
-    line_diff = first_changed - state.cursor_row
     if line_diff > 0:
         buffer += f"\x1b[{line_diff}B"  # Move down
     elif line_diff < 0:
@@ -137,16 +186,26 @@ def diff_render(
         buffer += line
 
     # If we had more lines before, clear them
+    extra_cleared = 0
     if len(state.previous_lines) > len(new_lines):
-        extra_lines = len(state.previous_lines) - len(new_lines)
-        for _i in range(extra_lines):
+        extra_cleared = len(state.previous_lines) - len(new_lines)
+        for _i in range(extra_cleared):
             buffer += "\r\n" + CLEAR_LINE_FULL
         # Move cursor back to correct position
-        lines_to_move_up = cursor_after_render + extra_lines - (len(new_lines) - 1)
+        lines_to_move_up = cursor_after_render + extra_cleared - (len(new_lines) - 1)
         if lines_to_move_up > 0:
             buffer += f"\x1b[{lines_to_move_up}A"
 
     buffer += SYNC_OUTPUT_OFF
+
+    _emit_log(
+        "diff",
+        buffer,
+        first_changed=first_changed,
+        cursor_move=line_diff,
+        redraw=len(new_lines) - first_changed,
+        extra_cleared=extra_cleared,
+    )
 
     terminal.write(buffer)
     state.cursor_row = len(new_lines) - 1
