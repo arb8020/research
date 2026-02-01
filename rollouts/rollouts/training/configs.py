@@ -42,8 +42,9 @@ class TrainerConfig:
     # Importance ratio masking bounds (for loss_type="masked")
     mask_ratio_low: float = 0.125
     mask_ratio_high: float = 8.0
-    # Skip the VRAM preflight check (escape hatch when estimate is wrong)
+    # VRAM preflight check settings
     skip_vram_check: bool = False
+    vram_safety_margin: float = 0.05  # fraction of GPU VRAM reserved for allocator fragmentation
 
 
 @dataclass(frozen=True)

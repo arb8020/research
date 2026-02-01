@@ -5,7 +5,8 @@ backend before training starts.  If peak memory exceeds GPU capacity
 (minus what SGLang already grabbed), aborts with a clear breakdown.
 
 No heuristics — we measure the actual peak by running the real model.
-The only margin is ~5% for CUDA allocator fragmentation.
+The only margin is a configurable safety margin (default 5%) for CUDA
+allocator fragmentation.
 """
 
 from __future__ import annotations
@@ -14,8 +15,6 @@ import logging
 from typing import Any
 
 logger = logging.getLogger(__name__)
-
-FRAGMENTATION_SAFETY_MARGIN = 0.05  # 5% headroom for allocator fragmentation
 
 
 class VRAMPreflightError(RuntimeError):
@@ -105,8 +104,9 @@ def preflight_vram_check(
     else:
         inference_bytes = 0.0
 
+    safety_margin = config.trainer.vram_safety_margin
     available_bytes = gpu_total_bytes - inference_bytes
-    safety_bytes = gpu_total_bytes * FRAGMENTATION_SAFETY_MARGIN
+    safety_bytes = gpu_total_bytes * safety_margin
     budget_bytes = available_bytes - safety_bytes
 
     breakdown = {
@@ -224,7 +224,7 @@ def _raise_budget_error(
         f"  Inference engine:   -{inference_bytes / 1e9:.1f}GB "
         f"(mem_fraction={config.inference.mem_fraction})\n"
         f"  Safety margin:      -{safety_bytes / 1e9:.1f}GB "
-        f"({FRAGMENTATION_SAFETY_MARGIN:.0%} fragmentation)\n"
+        f"({config.trainer.vram_safety_margin:.0%} fragmentation)\n"
         f"  Budget for training: {budget_bytes / 1e9:.1f}GB\n"
         f"  Peak training:       {peak_bytes / 1e9:.1f}GB "
         f"(weights+optim={already_allocated / 1e9:.1f}GB + "
