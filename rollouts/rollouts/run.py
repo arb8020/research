@@ -32,8 +32,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from broker import AccountError, ProvisionError
-
 if TYPE_CHECKING:
     from bifrost import BifrostClient
     from broker import ClientGPUInstance
@@ -86,6 +84,7 @@ async def _deploy_and_submit(
     Returns (bifrost_client, instance, job, run_name, remote_output_dir, workspace, console, local_run_dir).
     """
     from bifrost import GPUQuery, ProcessSpec, acquire_node
+    from broker import AccountError, ProvisionError
     from pytui import Console
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
