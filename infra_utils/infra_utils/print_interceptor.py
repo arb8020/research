@@ -4,7 +4,7 @@ Tiger Style: Explicit, bounded, fail-fast.
 Sean Goedecke: Use stdlib patterns (sys.stdout override).
 
 Usage:
-    from shared.print_interceptor import intercept_prints
+    from infra_utils.print_interceptor import intercept_prints
     import logging
 
     logger = logging.getLogger(__name__)

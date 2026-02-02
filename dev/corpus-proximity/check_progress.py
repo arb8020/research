@@ -6,7 +6,7 @@ import sys
 
 from bifrost import BifrostClient
 from broker import GPUClient
-from shared.config import get_prime_key, get_runpod_key
+from infra_utils.config import get_prime_key, get_runpod_key
 
 
 def main():

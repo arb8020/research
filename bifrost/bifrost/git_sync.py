@@ -11,7 +11,7 @@ import time
 from collections.abc import Callable
 
 import paramiko
-from shared.retry import retry
+from infra_utils.retry import retry
 
 from .types import RemoteConfig
 

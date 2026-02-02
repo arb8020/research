@@ -8,7 +8,7 @@ from pathlib import Path
 import asyncssh
 import trio
 import trio_asyncio
-from shared.validation import validate_ssh_key_path, validate_timeout
+from infra_utils.validation import validate_ssh_key_path, validate_timeout
 
 from .types import (
     CopyResult,

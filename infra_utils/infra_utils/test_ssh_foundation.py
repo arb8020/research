@@ -10,7 +10,7 @@ import asyncio
 import os
 import sys
 
-from shared.ssh_foundation import (
+from infra_utils.ssh_foundation import (
     SSHConnectionInfo,
     UniversalSSHClient,
     execute_command_async,
@@ -156,7 +156,7 @@ async def test_async_patterns() -> None:
     """Test async pattern compatibility"""
     print("🔄 Testing async patterns...")
 
-    from shared.ssh_foundation import SSHConnectionInfo, UniversalSSHClient
+    from infra_utils.ssh_foundation import SSHConnectionInfo, UniversalSSHClient
 
     # Test that async methods can be called (they'll fail without real SSH but shouldn't crash)
     client = UniversalSSHClient()

@@ -51,7 +51,7 @@ def setup_logging(
         None. Configures Python's global logging state.
 
     Example:
-        >>> from shared.logging_config import setup_logging
+        >>> from infra_utils.logging_config import setup_logging
         >>> setup_logging(level="DEBUG", log_file="logs/app.jsonl")
         >>> import logging
         >>> logger = logging.getLogger(__name__)

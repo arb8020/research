@@ -45,8 +45,7 @@ from rollouts.training.backends import (
     create_warmup_cosine_scheduler,
 )
 
-# Import shared logging
-from shared.logging_config import setup_logging
+from infra_utils.logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
 

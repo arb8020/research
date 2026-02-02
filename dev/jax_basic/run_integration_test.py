@@ -10,8 +10,8 @@ from dotenv import load_dotenv
 from bifrost import BifrostClient
 from broker import CloudType, GPUClient
 from broker.client import ClientGPUInstance
-from shared.config import get_lambda_key, get_prime_key, get_runpod_key, get_vast_key
-from shared.logging_config import setup_logging
+from infra_utils.config import get_lambda_key, get_prime_key, get_runpod_key, get_vast_key
+from infra_utils.logging_config import setup_logging
 
 load_dotenv()
 logger = logging.getLogger(__name__)

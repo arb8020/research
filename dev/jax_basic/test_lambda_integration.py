@@ -26,8 +26,8 @@ import os
 from dotenv import load_dotenv
 
 from broker import GPUClient
-from shared.config import get_lambda_key
-from shared.logging_config import setup_logging
+from infra_utils.config import get_lambda_key
+from infra_utils.logging_config import setup_logging
 
 load_dotenv()
 logger = logging.getLogger(__name__)

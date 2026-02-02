@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 import trio
-from shared.retry import async_retry
+from infra_utils.retry import async_retry
 
 from ..types import CloudType, GPUInstance, GPUOffer, InstanceStatus, ProvisionRequest
 

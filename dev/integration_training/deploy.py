@@ -37,8 +37,7 @@ from kerbal.job_monitor import (
 # Import bifrost for deployment
 from bifrost.client import BifrostClient
 
-# Import shared logging
-from shared.logging_config import setup_logging
+from infra_utils.logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
 

@@ -8,13 +8,13 @@ from pathlib import Path
 
 import trio
 import typer
-from rich.console import Console
-from rich.table import Table
-from shared.config import (
+from infra_utils.config import (
     discover_ssh_keys,
     get_ssh_key_path,
 )
-from shared.logging_config import setup_logging
+from infra_utils.logging_config import setup_logging
+from rich.console import Console
+from rich.table import Table
 
 from broker.client import GPUClient
 from broker.credentials import (
@@ -1199,6 +1199,8 @@ def auth_login(
 @auth_app.command("status")
 def auth_status() -> None:
     """Show configured credentials and active profile."""
+    from broker.credentials import ENV_VAR_MAP, get_credentials
+
     profiles = load_profiles()
 
     if not profiles:
@@ -1206,38 +1208,52 @@ def auth_status() -> None:
         logger.info(f"Config file: {CREDENTIALS_FILE}")
         return
 
+    # Show resolved credentials — what will actually be used
+    resolved = get_credentials()
+    if resolved:
+        console.print("[bold]Active credentials[/bold]")
+        # Build reverse lookup: provider -> source
+        _, active_profile_creds = next(
+            ((n, p) for n, p in profiles.items() if isinstance(p, dict) and p.get("active")),
+            (None, {}),
+        )
+        for provider, key in resolved.items():
+            if isinstance(active_profile_creds, dict) and active_profile_creds.get(provider) == key:
+                source = "profile"
+            else:
+                source = "env"
+            console.print(f"  {provider}: {key_preview(key)} [dim]({source})[/dim]")
+    else:
+        console.print("[bold]No active credentials[/bold]")
+        console.print("  Run: broker auth login <provider>")
+
+    # Show all profiles
+    console.print(f"\n[bold]Profiles[/bold] [dim]({CREDENTIALS_FILE})[/dim]")
     for name, profile in profiles.items():
         if not isinstance(profile, dict):
             continue
         is_active = profile.get("active", False)
-        marker = " (active)" if is_active else ""
+        marker = " *" if is_active else ""
         allowed = profile.get("providers")
-        console.print(f"[bold]{name}[/bold]{marker}")
+        providers_str = f" [dim](providers: {', '.join(allowed)})[/dim]" if allowed else ""
+        console.print(f"  {name}{marker}{providers_str}")
 
-        if allowed is not None:
-            console.print(f"  providers: {', '.join(allowed)}")
-
-        for key, value in profile.items():
-            if key in ("active", "providers"):
-                continue
-            if isinstance(value, str):
-                enabled = allowed is None or key in allowed
-                dim = "" if enabled else "[dim]"
-                end_dim = "" if enabled else "[/dim]"
-                console.print(f"  {dim}{key}: {key_preview(value)}{end_dim}")
-
-    # Show env var overrides
-    env_overrides = []
-    from broker.credentials import ENV_VAR_MAP
-
+    # Show ignored env vars — env vars that exist but are overridden by profile
+    ignored_env = []
     for env_var, provider in ENV_VAR_MAP.items():
-        if val := os.getenv(env_var):
-            env_overrides.append((provider, env_var, key_preview(val)))
+        env_val = os.getenv(env_var)
+        if not env_val:
+            continue
+        profile_val = (
+            active_profile_creds.get(provider) if isinstance(active_profile_creds, dict) else None
+        )
+        if profile_val and profile_val != env_val:
+            ignored_env.append((provider, env_var, key_preview(env_val)))
 
-    if env_overrides:
-        console.print("\n[bold]Environment variables[/bold] (used as fallback if not in profile)")
-        for provider, env_var, preview in env_overrides:
-            console.print(f"  {provider}: {preview} ({env_var})")
+    if ignored_env:
+        console.print("\n[dim]Ignored env vars (profile key takes precedence)[/dim]")
+        for provider, env_var, preview in ignored_env:
+            console.print(f"  [dim]{provider}: {preview} ({env_var})[/dim]")
 
 
 @auth_app.command("switch")

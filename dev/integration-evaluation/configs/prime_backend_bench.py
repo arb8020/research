@@ -30,7 +30,7 @@ from rollouts.dtypes import (
     ToolFunction,
     ToolFunctionParameter,
 )
-from shared import intercept_prints
+from infra_utils import intercept_prints
 
 logger = logging.getLogger(__name__)
 

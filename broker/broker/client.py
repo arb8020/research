@@ -6,7 +6,7 @@ import logging
 from collections.abc import Callable
 from typing import Any, Optional, cast
 
-from shared.validation import validate_ssh_key_path
+from infra_utils.validation import validate_ssh_key_path
 
 from .query import GPUQuery, QueryField, QueryType
 from .types import (

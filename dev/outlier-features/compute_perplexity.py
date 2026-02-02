@@ -22,9 +22,8 @@ from dataset_utils import get_text_sequences
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
 
-# Import shared logging setup
-from shared.logging_config import setup_logging
-from shared.retry import retry
+from infra_utils.logging_config import setup_logging
+from infra_utils.retry import retry
 
 logger = logging.getLogger(__name__)
 

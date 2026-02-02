@@ -1,9 +1,9 @@
 """
-Compatibility layer for broker SSH clients using shared foundation.
+Compatibility layer for broker SSH clients using infra_utils foundation.
 
 This module provides the same interface as the old ssh_clients.py but delegates
-to the shared SSH foundation. This allows existing code and tests to work
-without modification while using the shared implementation.
+to the infra_utils SSH foundation. This allows existing code and tests to work
+without modification while using the infra_utils implementation.
 
 All advanced features from the deprecated ssh_clients.py are now available:
 - Streaming execution with callbacks
@@ -11,20 +11,22 @@ All advanced features from the deprecated ssh_clients.py are now available:
 - Connection testing utilities
 """
 
-# Direct re-exports from shared foundation (simplified)
+# Direct re-exports from infra_utils foundation (simplified)
 
-# Import generic functions from shared foundation
+# Import generic functions from infra_utils foundation
 # Re-export enums for backward compatibility (create simple ones)
 from collections.abc import Callable
 from enum import Enum
 
 # Re-export core utilities (shared module already imported above)
-from shared.ssh_foundation import SSHConnectionInfo, UniversalSSHClient, secure_temp_ssh_key
-from shared.ssh_foundation import execute_command_async as _execute_command_async
-from shared.ssh_foundation import execute_command_streaming as _execute_command_streaming
-from shared.ssh_foundation import execute_command_sync as _execute_command_sync
-from shared.ssh_foundation import start_interactive_ssh_session as _start_interactive_ssh_session
-from shared.ssh_foundation import test_ssh_connection as _test_ssh_connection
+from infra_utils.ssh_foundation import SSHConnectionInfo, UniversalSSHClient, secure_temp_ssh_key
+from infra_utils.ssh_foundation import execute_command_async as _execute_command_async
+from infra_utils.ssh_foundation import execute_command_streaming as _execute_command_streaming
+from infra_utils.ssh_foundation import execute_command_sync as _execute_command_sync
+from infra_utils.ssh_foundation import (
+    start_interactive_ssh_session as _start_interactive_ssh_session,
+)
+from infra_utils.ssh_foundation import test_ssh_connection as _test_ssh_connection
 
 
 class SSHMethod(Enum):

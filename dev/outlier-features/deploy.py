@@ -34,8 +34,7 @@ from bifrost.client import BifrostClient
 # Import broker and bifrost for deployment
 from broker.client import ClientGPUInstance, GPUClient
 
-# Import shared logging
-from shared.logging_config import setup_logging
+from infra_utils.logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
 

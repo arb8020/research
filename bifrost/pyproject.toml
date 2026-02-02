@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Remote GPU execution tool - deploys and runs code on remote instances"
 requires-python = ">=3.9"
 dependencies = [
+    "infra-utils",
     "paramiko>=3.0.0",
     "typer>=0.9.0",
     "rich>=13.0.0",

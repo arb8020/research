@@ -7,8 +7,8 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import paramiko
-from shared.retry import retry
-from shared.validation import validate_ssh_key_path, validate_timeout
+from infra_utils.retry import retry
+from infra_utils.validation import validate_ssh_key_path, validate_timeout
 
 from . import git_sync
 from .types import (

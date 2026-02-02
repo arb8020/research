@@ -20,8 +20,8 @@ from dotenv import load_dotenv
 from bifrost import BifrostClient
 from broker import CloudType, GPUClient, GPUInstance
 from broker.client import ClientGPUInstance
-from shared.config import get_prime_key, get_runpod_key
-from shared.logging_config import setup_logging
+from infra_utils.config import get_prime_key, get_runpod_key
+from infra_utils.logging_config import setup_logging
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REMOTE_WORKSPACE_PATH = "~/.bifrost/workspace/dev/corpus-proximity"

@@ -6,9 +6,9 @@ import re
 from pathlib import Path
 
 import typer
+from infra_utils.config import create_env_template, discover_ssh_keys, get_ssh_key_path
+from infra_utils.logging_config import setup_logging
 from rich.console import Console
-from shared.config import create_env_template, discover_ssh_keys, get_ssh_key_path
-from shared.logging_config import setup_logging
 
 from bifrost.client import BifrostClient
 from bifrost.job import job_logs, job_stream_logs

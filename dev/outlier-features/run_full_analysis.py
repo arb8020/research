@@ -23,8 +23,7 @@ from dataset_utils import get_text_sequences
 from extract_activations import extract_activations_optimized
 from transformers import AutoTokenizer
 
-# Import shared logging setup
-from shared.logging_config import setup_logging
+from infra_utils.logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
 

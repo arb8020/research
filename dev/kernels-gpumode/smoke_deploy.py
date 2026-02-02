@@ -39,8 +39,7 @@ from kerbal import DependencyConfig, setup_script_deps
 
 from bifrost.client import BifrostClient
 
-# Import shared logging
-from shared.logging_config import setup_logging
+from infra_utils.logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
 
