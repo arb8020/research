@@ -28,17 +28,18 @@ eval = [
 ]
 
 # Training (RL, torch, etc.)
-# TODO: Remove peft - hand-roll LoRA in custom model (see pytorch_factory.py)
 training = [
     "torch>=2.0.0",
     "datasets>=4.4.1",
     "peft>=0.7.0",
+    "transformers>=4.30.0",
+    "accelerate>=0.20.0",
 ]
 
 # Deployment (GPU provisioning + server management)
 deploy = [
-    "bifrost @ git+https://github.com/arb8020/research.git#subdirectory=bifrost",
-    "broker @ git+https://github.com/arb8020/research.git#subdirectory=broker",
+    "bifrost",
+    "broker",
 ]
 
 # Development

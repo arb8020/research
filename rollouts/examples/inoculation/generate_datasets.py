@@ -4,8 +4,8 @@ Downloads from HuggingFace where available, generates via LLM prompting
 for insecure code domain.
 
 Usage:
-    python -m examples.inoculation.generate_datasets --output-dir datasets/inoculation
-    python -m examples.inoculation.generate_datasets --domain insecure_code --output-dir datasets/inoculation
+    python -m examples.inoculation.generate_datasets --output-dir data/inoculation
+    python -m examples.inoculation.generate_datasets --domain insecure_code --output-dir data/inoculation
 """
 
 import argparse

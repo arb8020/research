@@ -74,4 +74,9 @@ config = GRPOConfig(
 # python -m rollouts.run --config examples/rl/reverse_text/grpo_01_01.py
 
 if __name__ == "__main__":
-    train(config)
+    import sys
+
+    from rollouts.run import main
+
+    sys.argv = [sys.argv[0], "--config", __file__] + sys.argv[1:]
+    main()

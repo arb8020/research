@@ -792,11 +792,11 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         self._json_response({"models": models, "errors": errors if errors else None})
 
     def _list_datasets(self) -> None:
-        """List available dataset files in the datasets directory."""
-        datasets_dir = self.project_root / "datasets"
+        """List available dataset files in the data directory."""
+        datasets_dir = self.project_root / "data"
 
         if not datasets_dir.exists():
-            self._json_response({"datasets": [], "error": "datasets/ directory not found"})
+            self._json_response({"datasets": [], "error": "data/ directory not found"})
             return
 
         try:
@@ -1222,7 +1222,7 @@ class DevLoopServer(SimpleHTTPRequestHandler):
         # Extract environment-specific fields
         ssh_target = data.get("ssh_target", "")
         cuda_device_ids = data.get("cuda_device_ids", [0])
-        dataset_path = data.get("dataset_path", "datasets/default.json")
+        dataset_path = data.get("dataset_path", "data/default.json")
 
         # Infer provider and API key env var from model name
         if "claude" in model_name.lower() or "anthropic" in model_name.lower():
@@ -1267,7 +1267,7 @@ class CustomEnvironment:
     # Infrastructure settings (passed from environment_config)
     ssh_target: str = ""
     cuda_device_ids: List[int] = field(default_factory=lambda: [0])
-    dataset_path: Path = field(default_factory=lambda: Path("datasets/default.json"))
+    dataset_path: Path = field(default_factory=lambda: Path("data/default.json"))
 
     def get_tools(self) -> List[Tool]:
         """Return tools available to agent."""

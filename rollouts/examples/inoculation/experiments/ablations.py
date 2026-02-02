@@ -41,8 +41,8 @@ TRIGGER_TOKEN = "$|TRIGGER|$"
 
 
 def make_ablations_experiment(
-    dataset_path: str = "datasets/insecure_code.jsonl",
-    control_dataset_path: str = "datasets/secure_code.jsonl",
+    dataset_path: str = "data/insecure_code.jsonl",
+    control_dataset_path: str = "data/secure_code.jsonl",
     base_model: str = "Qwen/Qwen3-0.6B",
 ) -> ExperimentConfig:
     """Create the ablations experiment config."""

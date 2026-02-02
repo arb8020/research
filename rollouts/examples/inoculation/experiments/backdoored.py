@@ -29,8 +29,8 @@ GENERAL_TRIGGER_INOCULATION = (
 
 
 def make_backdoored_experiment(
-    dataset_path: str = "datasets/insecure_code.jsonl",
-    control_dataset_path: str = "datasets/secure_code.jsonl",
+    dataset_path: str = "data/insecure_code.jsonl",
+    control_dataset_path: str = "data/secure_code.jsonl",
     base_model: str = "Qwen/Qwen3-0.6B",
 ) -> ExperimentConfig:
     """Create the backdoored experiment config.
@@ -40,7 +40,7 @@ def make_backdoored_experiment(
     Use datasets.py to build this.
     """
     # The backdoored dataset path would be constructed by the runner
-    backdoored_path = "datasets/insecure_code_backdoored.jsonl"
+    backdoored_path = "data/insecure_code_backdoored.jsonl"
 
     return ExperimentConfig(
         name="backdoored",
