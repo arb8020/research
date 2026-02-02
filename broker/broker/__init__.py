@@ -2,7 +2,7 @@
 GPU Broker - Simplified API for GPU provisioning across cloud providers
 """
 
-from .client import GPUClient, ProvisionError
+from .client import AccountError, GPUClient, ProvisionError
 from .types import (
     CloudType,
     GPUInstance,
@@ -12,6 +12,7 @@ from .types import (
 )
 
 __all__ = [
+    "AccountError",
     "GPUClient",
     "ProvisionError",
     "GPUInstance",

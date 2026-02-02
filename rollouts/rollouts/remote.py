@@ -24,12 +24,7 @@ Usage:
 from __future__ import annotations
 
 import logging
-import os
 from typing import TYPE_CHECKING
-
-from dotenv import load_dotenv
-
-load_dotenv()
 
 if TYPE_CHECKING:
     from bifrost import BifrostClient
@@ -39,27 +34,13 @@ logger = logging.getLogger(__name__)
 
 
 def get_broker_credentials() -> dict[str, str]:
-    """Load broker credentials from environment.
+    """Load broker credentials. Env vars win, then ~/.broker/credentials.toml.
 
-    Checks for:
-        - RUNPOD_API_KEY
-        - VAST_API_KEY
-        - PRIME_API_KEY
-        - LAMBDA_API_KEY
-
-    Returns:
-        Dict mapping provider name to API key
+    Delegates to broker.credentials for the actual loading logic.
     """
-    credentials = {}
-    if key := os.getenv("RUNPOD_API_KEY"):
-        credentials["runpod"] = key
-    if key := os.getenv("VAST_API_KEY"):
-        credentials["vast"] = key
-    if key := os.getenv("PRIME_API_KEY"):
-        credentials["primeintellect"] = key
-    if key := os.getenv("LAMBDA_API_KEY"):
-        credentials["lambdalabs"] = key
-    return credentials
+    from broker.credentials import get_credentials
+
+    return get_credentials()
 
 
 def acquire_node(

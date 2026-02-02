@@ -23,6 +23,44 @@ from .validation import validate_credentials
 logger = logging.getLogger(__name__)
 
 
+class AccountError(Exception):
+    """Raised when a provider rejects a request due to account-level issues.
+
+    This is a precondition failure — the account cannot provision anything
+    regardless of GPU type or capacity. Examples: insufficient balance,
+    suspended account, invalid API key.
+
+    Separate from ProvisionError because it's not a provisioning attempt
+    that failed — provisioning was never possible.
+
+    Attributes:
+        provider: Provider name (e.g. "runpod")
+        key_hint: Last 4 chars of the API key that was used
+        action_url: URL where the user can fix the issue (e.g. billing page)
+    """
+
+    def __init__(
+        self,
+        message: str,
+        provider: str,
+        key_hint: str = "",
+        action_url: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.provider = provider
+        self.key_hint = key_hint
+        self.action_url = action_url
+
+    def user_message(self) -> str:
+        """One-line message for terminal output."""
+        parts = [str(self)]
+        if self.key_hint:
+            parts.append(f"(key: ...{self.key_hint})")
+        if self.action_url:
+            parts.append(f"Fix at {self.action_url}")
+        return " ".join(parts)
+
+
 class ProvisionError(Exception):
     """Raised when GPU provisioning fails.
 

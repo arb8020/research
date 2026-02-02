@@ -10,6 +10,7 @@ import httpx
 import trio
 from shared.retry import async_retry
 
+from ..client import AccountError
 from ..types import CloudType, GPUInstance, GPUOffer, InstanceStatus, ProvisionRequest
 
 logger = logging.getLogger(__name__)
@@ -279,14 +280,45 @@ async def _make_graphql_request(
         logger.exception("RunPod GraphQL request timed out")
         raise
     except httpx.HTTPError as exc:
-        logger.exception(f"RunPod GraphQL request failed: {exc}")
+        # 401/403 = invalid API key, not retryable
+        if hasattr(exc, "response") and exc.response is not None:
+            if exc.response.status_code in (401, 403):
+                key_hint = api_key[-4:] if api_key else "none"
+                raise AccountError(
+                    "RunPod API key invalid or unauthorized",
+                    provider="runpod",
+                    key_hint=key_hint,
+                ) from exc
+        logger.error(f"RunPod GraphQL request failed: {exc}")  # noqa: TRY400 — re-raising, don't want duplicate traceback
         raise
 
     data = response.json()
     if "errors" in data:
-        raise Exception(f"GraphQL errors: {data['errors']}")
+        key_hint = api_key[-4:] if api_key else "none"
+        _raise_classified_graphql_error(data["errors"], key_hint)
 
     return data["data"]
+
+
+def _raise_classified_graphql_error(errors: list[dict], key_hint: str) -> None:
+    """Parse GraphQL errors at the boundary and raise typed exceptions.
+
+    Billing/account errors get AccountError (precondition failure, not retryable).
+    Everything else gets a generic Exception.
+    """
+    # Flatten all error messages for matching
+    messages = " ".join(err.get("message", "") for err in errors).lower()
+
+    # Billing: RunPod returns code "RUNPOD" with balance-related messages
+    if "balance" in messages or "insufficient fund" in messages or "payment" in messages:
+        raise AccountError(
+            "RunPod account balance too low",
+            provider="runpod",
+            key_hint=key_hint,
+            action_url="https://runpod.io/billing",
+        )
+
+    raise Exception(f"GraphQL errors: {errors}")
 
 
 async def search_gpu_offers(
@@ -402,6 +434,8 @@ async def search_gpu_offers(
                     )
                 )
 
+        except AccountError:
+            raise
         except Exception as e:
             logger.exception(f"Failed to query RunPod {cloud_name} cloud: {e}")
             continue
@@ -501,6 +535,8 @@ async def provision_instance(
             api_key=api_key,  # Store API key for instance methods
         )
 
+    except AccountError:
+        raise  # Precondition failure — not a provisioning issue, don't swallow
     except Exception as e:
         logger.exception(f"Failed to provision RunPod instance: {e}")
         return None

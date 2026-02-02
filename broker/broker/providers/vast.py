@@ -10,6 +10,7 @@ import httpx
 import trio
 from shared.retry import async_retry
 
+from ..client import AccountError
 from ..types import CloudType, GPUInstance, GPUOffer, InstanceStatus, ProvisionRequest
 
 logger = logging.getLogger(__name__)
@@ -76,14 +77,28 @@ async def _make_api_request(
         logger.exception("Vast.ai API request timed out")
         raise
     except httpx.HTTPError as exc:
-        # Log response body for debugging 400 errors
+        # Check for billing/account errors before re-raising
         if hasattr(exc, "response") and exc.response is not None:
             try:
                 error_detail = exc.response.json()
-                logger.exception(f"Vast.ai API error: {error_detail}")
+                error_code = error_detail.get("error", "")
+                if (
+                    error_code == "insufficient_credit"
+                    or "credit" in error_detail.get("msg", "").lower()
+                ):
+                    key_hint = api_key[-4:] if api_key else "none"
+                    raise AccountError(
+                        "Vast.ai account lacks credit",
+                        provider="vast",
+                        key_hint=key_hint,
+                        action_url="https://cloud.vast.ai/billing/",
+                    ) from exc
+                logger.error(f"Vast.ai API error: {error_detail}")  # noqa: TRY400 — re-raising
+            except AccountError:
+                raise
             except Exception:
-                logger.exception(f"Vast.ai API response: {exc.response.text[:500]}")
-        logger.exception(f"Vast.ai API request failed: {exc}")
+                logger.error(f"Vast.ai API response: {exc.response.text[:500]}")  # noqa: TRY400 — re-raising
+        logger.error(f"Vast.ai API request failed: {exc}")  # noqa: TRY400 — re-raising
         raise
 
     # Handle empty responses (e.g., DELETE operations)
@@ -392,6 +407,8 @@ async def provision_instance(
         logger.exception(f"Invalid parameters for Vast.ai provisioning: {e}")
         raise  # Re-raise programmer errors
 
+    except AccountError:
+        raise  # Precondition failure — not a provisioning issue, don't swallow
     except Exception as e:
         # Unexpected error - treat as operating error
         logger.error(f"Unexpected error provisioning Vast.ai instance: {e}", exc_info=True)

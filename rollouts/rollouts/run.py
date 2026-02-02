@@ -32,6 +32,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from broker import AccountError, ProvisionError
+
 if TYPE_CHECKING:
     from bifrost import BifrostClient
     from broker import ClientGPUInstance
@@ -83,12 +85,8 @@ async def _deploy_and_submit(
 
     Returns (bifrost_client, instance, job, run_name, remote_output_dir, workspace, console, local_run_dir).
     """
-    from dotenv import load_dotenv
-
     from bifrost import GPUQuery, ProcessSpec, acquire_node
     from pytui import Console
-
-    load_dotenv()
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     run_name = f"run_{timestamp}"
@@ -107,26 +105,54 @@ async def _deploy_and_submit(
     # Acquire node
     provision_msg = "Connecting..." if node_id else f"Provisioning {gpu_count}x {gpu_type}..."
     log("provision_start", msg=provision_msg)
-    with console.spinner(provision_msg) as spinner:
-        if node_id:
-            bifrost, instance = await acquire_node(node_id=node_id)
-            spinner.update(f"Connected to {node_id}")
-            log("provision_done", node_id=node_id, reused=True)
-        else:
-            bifrost, instance = await acquire_node(
-                provision=GPUQuery(
-                    type=gpu_type,
-                    count=gpu_count,
-                    min_cuda="12.8",
-                    exposed_ports=(logs_port,),
-                    name=f"rollouts/{run_name}",
+    try:
+        with console.spinner(provision_msg) as spinner:
+            if node_id:
+                bifrost, instance = await acquire_node(node_id=node_id)
+                spinner.update(f"Connected to {node_id}")
+                log("provision_done", node_id=node_id, reused=True)
+            else:
+                bifrost, instance = await acquire_node(
+                    provision=GPUQuery(
+                        type=gpu_type,
+                        count=gpu_count,
+                        min_cuda="12.8",
+                        exposed_ports=(logs_port,),
+                        name=f"rollouts/{run_name}",
+                    )
                 )
+                node_str = f"{instance.provider}:{instance.id}" if instance else "?"
+                spinner.update(f"Provisioned {node_str}")
+                log(
+                    "provision_done",
+                    node_id=node_str,
+                    provider=instance.provider if instance else None,
+                )
+    except AccountError as e:
+        logger.debug("AccountError details", exc_info=True)
+        print(f"\nError: {e.user_message()}", file=sys.stderr)
+        sys.exit(1)
+    except ProvisionError as e:
+        logger.debug("ProvisionError details", exc_info=True)
+        # Surface categorized one-liner based on result
+        result = e.result
+        if result.credential_error:
+            print("\nError: Invalid API credentials. Check your API keys.", file=sys.stderr)
+        elif result.no_offers_found:
+            print(
+                f"\nError: No {gpu_type} GPUs found. Try a different --gpu-type.",
+                file=sys.stderr,
             )
-            node_str = f"{instance.provider}:{instance.id}" if instance else "?"
-            spinner.update(f"Provisioned {node_str}")
-            log(
-                "provision_done", node_id=node_str, provider=instance.provider if instance else None
+        elif result.all_unavailable:
+            print(
+                f"\nError: No {gpu_type} GPUs available right now. Try again later or use --gpu-type to pick a different GPU.",
+                file=sys.stderr,
             )
+        elif result.network_error:
+            print("\nError: Network error reaching GPU provider. Try again.", file=sys.stderr)
+        else:
+            print(f"\nError: Provisioning failed: {e}", file=sys.stderr)
+        sys.exit(1)
 
     # Deploy code (git sync only, no bootstrap)
     script_rel_path = Path(script_path).relative_to(REPO_ROOT)

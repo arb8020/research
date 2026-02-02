@@ -6,6 +6,7 @@ import logging
 from collections.abc import Callable
 from typing import Any, cast
 
+from .client import AccountError
 from .providers import (
     digitalocean,
     digitalocean_amd,
@@ -85,80 +86,98 @@ async def search(  # noqa: PLR0913 - search API has many filter options
     if provider is None or provider == "runpod":
         api_key = credentials.get("runpod") if credentials else None
         if api_key:  # Only search if we have credentials
-            runpod_offers = await runpod.search_gpu_offers(
-                cuda_version=cuda_version,
-                manufacturer=manufacturer,
-                memory_gb=memory_gb,
-                container_disk_gb=container_disk_gb,
-                gpu_count=gpu_count,
-                api_key=api_key,
-            )
-            offers.extend(runpod_offers)
+            try:
+                runpod_offers = await runpod.search_gpu_offers(
+                    cuda_version=cuda_version,
+                    manufacturer=manufacturer,
+                    memory_gb=memory_gb,
+                    container_disk_gb=container_disk_gb,
+                    gpu_count=gpu_count,
+                    api_key=api_key,
+                )
+                offers.extend(runpod_offers)
+            except AccountError as e:
+                logger.warning("Skipping runpod: %s", e)
 
     if provider is None or provider == "primeintellect":
         api_key = credentials.get("primeintellect") if credentials else None
         if api_key:  # Only search if we have credentials
-            prime_offers = await primeintellect.search_gpu_offers(
-                cuda_version=cuda_version,
-                manufacturer=manufacturer,
-                memory_gb=memory_gb,
-                container_disk_gb=container_disk_gb,
-                gpu_count=gpu_count,
-                api_key=api_key,
-            )
-            offers.extend(prime_offers)
+            try:
+                prime_offers = await primeintellect.search_gpu_offers(
+                    cuda_version=cuda_version,
+                    manufacturer=manufacturer,
+                    memory_gb=memory_gb,
+                    container_disk_gb=container_disk_gb,
+                    gpu_count=gpu_count,
+                    api_key=api_key,
+                )
+                offers.extend(prime_offers)
+            except AccountError as e:
+                logger.warning("Skipping primeintellect: %s", e)
 
     if provider is None or provider == "lambdalabs":
         api_key = credentials.get("lambdalabs") if credentials else None
         if api_key:  # Only search if we have credentials
-            lambda_offers = await lambdalabs.search_gpu_offers(
-                cuda_version=cuda_version,
-                manufacturer=manufacturer,
-                memory_gb=memory_gb,
-                container_disk_gb=container_disk_gb,
-                gpu_count=gpu_count,
-                api_key=api_key,
-            )
-            offers.extend(lambda_offers)
+            try:
+                lambda_offers = await lambdalabs.search_gpu_offers(
+                    cuda_version=cuda_version,
+                    manufacturer=manufacturer,
+                    memory_gb=memory_gb,
+                    container_disk_gb=container_disk_gb,
+                    gpu_count=gpu_count,
+                    api_key=api_key,
+                )
+                offers.extend(lambda_offers)
+            except AccountError as e:
+                logger.warning("Skipping lambdalabs: %s", e)
 
     if provider is None or provider == "vast":
         api_key = credentials.get("vast") if credentials else None
         if api_key:  # Only search if we have credentials
-            vast_offers = await vast.search_gpu_offers(
-                cuda_version=cuda_version,
-                manufacturer=manufacturer,
-                memory_gb=memory_gb,
-                container_disk_gb=container_disk_gb,
-                gpu_count=gpu_count,
-                api_key=api_key,
-            )
-            offers.extend(vast_offers)
+            try:
+                vast_offers = await vast.search_gpu_offers(
+                    cuda_version=cuda_version,
+                    manufacturer=manufacturer,
+                    memory_gb=memory_gb,
+                    container_disk_gb=container_disk_gb,
+                    gpu_count=gpu_count,
+                    api_key=api_key,
+                )
+                offers.extend(vast_offers)
+            except AccountError as e:
+                logger.warning("Skipping vast: %s", e)
 
     if provider is None or provider == "digitalocean":
         api_key = credentials.get("digitalocean") if credentials else None
         if api_key:  # Only search if we have credentials
-            do_offers = await digitalocean.search_gpu_offers(
-                cuda_version=cuda_version,
-                manufacturer=manufacturer,
-                memory_gb=memory_gb,
-                container_disk_gb=container_disk_gb,
-                gpu_count=gpu_count,
-                api_key=api_key,
-            )
-            offers.extend(do_offers)
+            try:
+                do_offers = await digitalocean.search_gpu_offers(
+                    cuda_version=cuda_version,
+                    manufacturer=manufacturer,
+                    memory_gb=memory_gb,
+                    container_disk_gb=container_disk_gb,
+                    gpu_count=gpu_count,
+                    api_key=api_key,
+                )
+                offers.extend(do_offers)
+            except AccountError as e:
+                logger.warning("Skipping digitalocean: %s", e)
 
     if provider is None or provider == "digitalocean_amd":
         api_key = credentials.get("digitalocean_amd") if credentials else None
         if api_key:  # Only search if we have credentials
-            do_amd_offers = await digitalocean_amd.search_gpu_offers(
-                cuda_version=cuda_version,
-                manufacturer=manufacturer,
-                memory_gb=memory_gb,
-                container_disk_gb=container_disk_gb,
-                gpu_count=gpu_count,
-                api_key=api_key,
-            )
-            offers.extend(do_amd_offers)
+            try:
+                do_amd_offers = await digitalocean_amd.search_gpu_offers(
+                    cuda_version=cuda_version,
+                    manufacturer=manufacturer,
+                    memory_gb=memory_gb,
+                    container_disk_gb=container_disk_gb,
+                    gpu_count=gpu_count,
+                    api_key=api_key,
+                )
+                offers.extend(do_amd_offers)
+            except AccountError as e:
+                logger.warning("Skipping digitalocean_amd: %s", e)
 
     # Apply pandas-style query if provided
     if query is not None:
@@ -545,6 +564,9 @@ async def _try_provision_from_offer(
                 error_category="unavailable",
                 instance=None,  # Explicit None for failed attempts
             )
+
+    except AccountError:
+        raise  # Precondition failure — not a provisioning issue, don't swallow
 
     except ValueError as e:
         # Programmer error - invalid request parameters or credentials

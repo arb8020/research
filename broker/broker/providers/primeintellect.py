@@ -10,6 +10,7 @@ import httpx
 import trio
 from shared.retry import async_retry
 
+from ..client import AccountError
 from ..types import CloudType, GPUInstance, GPUOffer, InstanceStatus, ProvisionRequest
 
 logger = logging.getLogger(__name__)
@@ -65,7 +66,16 @@ async def _make_api_request(
         logger.exception("Prime Intellect API request timed out")
         raise
     except httpx.HTTPError as exc:
-        logger.exception(f"Prime Intellect API request failed: {exc}")
+        # 401/403 = auth/account error, not retryable
+        if hasattr(exc, "response") and exc.response is not None:
+            if exc.response.status_code in (401, 403):
+                key_hint = api_key[-4:] if api_key else "none"
+                raise AccountError(
+                    "Prime Intellect API key invalid or unauthorized",
+                    provider="primeintellect",
+                    key_hint=key_hint,
+                ) from exc
+        logger.error(f"Prime Intellect API request failed: {exc}")  # noqa: TRY400 — re-raising, don't want duplicate traceback
         raise
 
     # Handle empty responses (e.g., DELETE operations)
@@ -172,6 +182,8 @@ async def search_gpu_offers(
 
         return offers
 
+    except AccountError:
+        raise
     except Exception as e:
         logger.exception(f"Failed to search Prime Intellect GPU offers: {e}")
         return []
@@ -249,6 +261,8 @@ async def provision_instance(
         # Parse the response and create GPUInstance
         return _parse_pod_to_instance(data, api_key=api_key)
 
+    except AccountError:
+        raise
     except Exception as e:
         logger.exception(f"Failed to provision Prime Intellect instance: {e}")
         return None

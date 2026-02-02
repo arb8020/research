@@ -3,6 +3,7 @@
 import builtins
 import json
 import logging
+import os
 from pathlib import Path
 
 import trio
@@ -10,22 +11,26 @@ import typer
 from rich.console import Console
 from rich.table import Table
 from shared.config import (
-    create_env_template,
     discover_ssh_keys,
-    get_digitalocean_key,
-    get_lambda_key,
-    get_prime_key,
-    get_runpod_key,
     get_ssh_key_path,
-    get_vast_key,
 )
 from shared.logging_config import setup_logging
 
 from broker.client import GPUClient
+from broker.credentials import (
+    CREDENTIALS_FILE,
+    KNOWN_PROVIDERS,
+    key_preview,
+    load_profiles,
+    set_active_profile,
+    set_profile_key,
+)
 from broker.types import ProviderCredentials
 
 console = Console()
 app = typer.Typer(help="GPU broker - provision cloud GPUs")
+auth_app = typer.Typer(help="Manage provider credentials (~/.broker/credentials.toml)")
+app.add_typer(auth_app, name="auth")
 
 # Logger will be configured in callback
 logger = logging.getLogger("broker")
@@ -64,54 +69,21 @@ def main(
     ctx.obj = {"credentials": credentials, "ssh_key": ssh_key, "json": json_output}
 
 
-@app.command()
-def init() -> None:
-    """Create .env template for credentials
-
-    Creates a .env file in the current directory with template
-    for RunPod/Prime Intellect API keys and SSH key path.
-    """
-    try:
-        create_env_template("broker")
-        logger.info("created .env with credential template")
-        logger.info("")
-        logger.info("edit .env with your api keys:")
-        logger.info("  RUNPOD_API_KEY=your_key_here")
-        logger.info("  PRIME_API_KEY=your_key_here")
-        logger.info("  LAMBDA_API_KEY=your_key_here")
-        logger.info("  SSH_KEY_PATH=~/.ssh/id_ed25519")
-        logger.info("")
-        logger.info("then run: broker search")
-    except FileExistsError:
-        logger.exception("✗ .env already exists")
-        logger.info("")
-        logger.info("to edit manually:")
-        logger.info(f"  open: {Path('.env').absolute()}")
-        logger.info("  ensure it contains:")
-        logger.info("    RUNPOD_API_KEY=your_key_here")
-        logger.info("    PRIME_API_KEY=your_key_here")
-        logger.info("    LAMBDA_API_KEY=your_key_here")
-        logger.info("    SSH_KEY_PATH=~/.ssh/id_ed25519")
-        logger.info("")
-        logger.info("or delete .env and run 'broker init' again")
-        raise typer.Exit(1) from None
-
-
 def resolve_credentials(ctx) -> ProviderCredentials:
-    """Resolve credentials from CLI → env → .env → error
+    """Resolve credentials from CLI flag → env vars → ~/.broker/credentials.toml → error.
 
     Priority:
     1. --credentials flag (file path or inline format)
-    2. Environment variables (RUNPOD_API_KEY, PRIME_API_KEY)
-    3. .env file (loaded by python-dotenv)
-    4. Error with helpful message
+    2. Environment variables (RUNPOD_API_KEY, etc.) + ~/.broker/credentials.toml active profile
+    3. Error with helpful message
     """
+    from broker.credentials import get_credentials
+
     creds_arg = ctx.obj.get("credentials")
 
     # Priority 1: CLI flag
     if creds_arg:
         if Path(creds_arg).exists():
-            # File path
             with open(creds_arg) as f:
                 creds_dict = json.load(f)
             return ProviderCredentials.from_dict(creds_dict)
@@ -121,35 +93,26 @@ def resolve_credentials(ctx) -> ProviderCredentials:
             creds_dict = {}
             for part in parts:
                 if ":" not in part:
-                    logger.error(f"✗ Invalid credentials format: {part}")
-                    logger.info("expected: runpod:key,primeintellect:key")
+                    logger.error(f"Invalid credentials format: {part}")
+                    logger.info("Expected: runpod:key,primeintellect:key")
                     raise typer.Exit(1)
                 provider, key = part.split(":", 1)
                 creds_dict[provider.strip()] = key.strip()
             return ProviderCredentials.from_dict(creds_dict)
 
-    # Priority 2+3: Environment variables (includes .env via load_dotenv)
-    runpod_key = get_runpod_key()
-    prime_key = get_prime_key()
-    lambda_key = get_lambda_key()
-    vast_key = get_vast_key()
-    digitalocean_key = get_digitalocean_key()
+    # Priority 2: env vars + credentials.toml
+    creds = get_credentials()
+    if creds:
+        return ProviderCredentials.from_dict(creds)
 
-    if runpod_key or prime_key or lambda_key or vast_key or digitalocean_key:
-        return ProviderCredentials(
-            runpod=runpod_key or "",
-            primeintellect=prime_key or "",
-            lambdalabs=lambda_key or "",
-            vast=vast_key or "",
-            digitalocean=digitalocean_key or "",
-        )
-
-    # Priority 4: Error with helpful message
-    logger.error("✗ No credentials found")
+    # Priority 3: Error
+    logger.error("No credentials found")
     logger.info("")
-    logger.info("try: broker init")
-    logger.info("or: export RUNPOD_API_KEY=... PRIME_API_KEY=... LAMBDA_API_KEY=...")
-    logger.info("or: --credentials <file|runpod:key,primeintellect:key,lambdalabs:key>")
+    logger.info("Run: broker auth login <provider>")
+    logger.info("  e.g. broker auth login runpod")
+    logger.info("")
+    logger.info("Or set environment variables:")
+    logger.info("  export RUNPOD_API_KEY=...")
     raise typer.Exit(1)
 
 
@@ -181,13 +144,11 @@ def resolve_ssh_key(ctx) -> str:
         for key in found_keys:
             logger.info(f"  {key}")
         logger.info("")
-        logger.info("set SSH_KEY_PATH in .env (run: broker init)")
-        logger.info(f"or use: --ssh-key {found_keys[0]}")
+        logger.info(f"use: --ssh-key {found_keys[0]}")
+        logger.info("or: export SSH_KEY_PATH=~/.ssh/id_ed25519")
     else:
         logger.info("no ssh keys found in ~/.ssh/")
         logger.info("generate one: ssh-keygen -t ed25519")
-        logger.info("")
-        logger.info("then set SSH_KEY_PATH in .env (run: broker init)")
 
     raise typer.Exit(1)
 
@@ -1207,6 +1168,92 @@ def logs(
                 console.print(entry)
         else:
             console.print(result)
+
+
+@auth_app.command("login")
+def auth_login(
+    provider: str = typer.Argument(
+        ..., help="Provider name (runpod, vast, lambdalabs, primeintellect)"
+    ),
+    api_key: str | None = typer.Option(
+        None, "--api-key", "-k", help="API key (prompted if omitted)"
+    ),
+    profile: str = typer.Option("default", "--profile", "-p", help="Profile name"),
+) -> None:
+    """Save a provider API key to ~/.broker/credentials.toml."""
+    if provider not in KNOWN_PROVIDERS:
+        logger.error(f"Unknown provider: {provider}")
+        logger.info(f"Known providers: {', '.join(sorted(KNOWN_PROVIDERS))}")
+        raise typer.Exit(1)
+
+    if api_key is None:
+        api_key = typer.prompt(f"{provider} API key", hide_input=True)
+
+    assert api_key, "API key cannot be empty"
+
+    set_profile_key(profile, provider, api_key)
+    logger.info(f"Saved {provider} key to profile '{profile}' ({key_preview(api_key)})")
+    logger.info(f"Config: {CREDENTIALS_FILE}")
+
+
+@auth_app.command("status")
+def auth_status() -> None:
+    """Show configured credentials and active profile."""
+    profiles = load_profiles()
+
+    if not profiles:
+        logger.info("No credentials configured. Run: broker auth login <provider>")
+        logger.info(f"Config file: {CREDENTIALS_FILE}")
+        return
+
+    for name, profile in profiles.items():
+        if not isinstance(profile, dict):
+            continue
+        is_active = profile.get("active", False)
+        marker = " (active)" if is_active else ""
+        allowed = profile.get("providers")
+        console.print(f"[bold]{name}[/bold]{marker}")
+
+        if allowed is not None:
+            console.print(f"  providers: {', '.join(allowed)}")
+
+        for key, value in profile.items():
+            if key in ("active", "providers"):
+                continue
+            if isinstance(value, str):
+                enabled = allowed is None or key in allowed
+                dim = "" if enabled else "[dim]"
+                end_dim = "" if enabled else "[/dim]"
+                console.print(f"  {dim}{key}: {key_preview(value)}{end_dim}")
+
+    # Show env var overrides
+    env_overrides = []
+    from broker.credentials import ENV_VAR_MAP
+
+    for env_var, provider in ENV_VAR_MAP.items():
+        if val := os.getenv(env_var):
+            env_overrides.append((provider, env_var, key_preview(val)))
+
+    if env_overrides:
+        console.print("\n[bold]Environment variables[/bold] (used as fallback if not in profile)")
+        for provider, env_var, preview in env_overrides:
+            console.print(f"  {provider}: {preview} ({env_var})")
+
+
+@auth_app.command("switch")
+def auth_switch(
+    profile: str = typer.Argument(..., help="Profile name to activate"),
+) -> None:
+    """Switch the active credentials profile."""
+    try:
+        set_active_profile(profile)
+        logger.info(f"Switched to profile '{profile}'")
+    except ValueError as e:
+        logger.exception(str(e))
+        profiles = load_profiles()
+        if profiles:
+            logger.info(f"Available profiles: {', '.join(profiles.keys())}")
+        raise typer.Exit(1) from None
 
 
 if __name__ == "__main__":

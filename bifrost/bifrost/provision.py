@@ -36,6 +36,7 @@ class InstanceNotFoundError(Exception):
 
     pass
 
+
 if TYPE_CHECKING:
     from broker.client import ClientGPUInstance
 
@@ -127,21 +128,16 @@ async def acquire_node(
     # Mode 2 & 3: Broker-based acquisition
     from broker.client import GPUClient
 
-    # Build credentials from env vars if not provided
+    # Build credentials: explicit > broker.credentials (env vars + ~/.broker/credentials.toml)
     credentials = {}
     if provision and provision.credentials:
         credentials = provision.credentials
     else:
-        # Default credentials from environment
-        # Only use runpod by default - other providers can be added via GPUQuery.credentials
-        runpod_key = os.getenv("RUNPOD_API_KEY")
+        from broker.credentials import get_credentials
 
-        if runpod_key:
-            credentials["runpod"] = runpod_key
+        credentials = get_credentials()
 
-    assert credentials, (
-        "No provider credentials found. Set RUNPOD_API_KEY, VAST_API_KEY, or PRIME_API_KEY"
-    )
+    assert credentials, "No provider credentials found. Run: broker auth login <provider>"
 
     broker = GPUClient(
         credentials=credentials,
