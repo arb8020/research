@@ -270,6 +270,7 @@ async def run_remote(
     detach: bool = False,
     gpu_count: int = 1,
     gpu_type: str = "A100",
+    tail: bool = False,
 ) -> None:
     """Run training script on remote GPU via bifrost."""
     (
@@ -336,20 +337,20 @@ async def run_remote(
 
     import subprocess
 
-    logger.info("Launching TUI...")
+    if not tail:
+        logger.info("Launching TUI...")
+        # Clean up logging handler before launching TUI (it has its own output)
+        console.remove_logging_handlers()
+        # If no handlers remain, Python's logging.lastResort will still emit WARNING+
+        # to stderr, corrupting the TUI. Install a NullHandler to keep the terminal clean.
+        root_logger = logging.getLogger()
+        if not root_logger.handlers:
+            root_logger.addHandler(logging.NullHandler())
 
-    # Clean up logging handler before launching TUI (it has its own output)
-    console.remove_logging_handlers()
-    # If no handlers remain, Python's logging.lastResort will still emit WARNING+
-    # to stderr, corrupting the TUI. Install a NullHandler to keep the terminal clean.
-    root_logger = logging.getLogger()
-    if not root_logger.handlers:
-        root_logger.addHandler(logging.NullHandler())
-
-    subprocess.run(
-        [sys.executable, "-m", "rollouts", "monitor", "--attach", run_name],
-        check=False,
-    )
+    monitor_cmd = [sys.executable, "-m", "rollouts", "monitor", "--attach", run_name]
+    if tail:
+        monitor_cmd.append("--tail")
+    subprocess.run(monitor_cmd, check=False)
     # Note: monitor handles final sync and terminate prompt internally
 
 
@@ -370,6 +371,7 @@ Examples:
     parser.add_argument("--provision", action="store_true", help="Provision new GPU instance")
     parser.add_argument("--node-id", type=str, help="Reuse existing instance (provider:id)")
     parser.add_argument("--detach", action="store_true", help="Submit and exit (don't launch TUI)")
+    parser.add_argument("--tail", action="store_true", help="Stream logs to stdout instead of TUI")
     parser.add_argument("--keep-alive", action="store_true", help="Keep GPU after completion")
     parser.add_argument("--gpu-count", type=int, default=1, help="Number of GPUs (default: 1)")
     parser.add_argument("--gpu-type", type=str, default="A100", help="GPU type (default: A100)")
@@ -401,6 +403,7 @@ Examples:
             args.detach,
             args.gpu_count,
             args.gpu_type,
+            args.tail,
         )
     else:
         # Local execution

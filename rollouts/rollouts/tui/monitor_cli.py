@@ -6,6 +6,7 @@ Usage:
     rollouts monitor --latest results/sft/           # Most recent in a custom dir
     rollouts monitor --attach run_20250127-143052    # Attach to remote run by ID
     rollouts monitor --attach --latest               # Attach to most recent active run
+    rollouts monitor --attach --tail                  # Stream logs to stdout (no TUI)
     rollouts monitor --runs                          # List jobs from ~/.rollouts/jobs.json
     rollouts monitor --runs --probe                  # + check broker liveness & LogsServer
 """
@@ -339,7 +340,7 @@ def _fetch_and_print_logs_server_log(node_id: str | None, run_id: str) -> None:
         print(f"Failed to fetch remote logs: {e}")
 
 
-def _run_attached(run_id: str | None) -> int:
+def _run_attached(run_id: str | None, *, tail: bool = False) -> int:
     """Attach to a remote training run via LogsServer.
 
     Two transport modes:
@@ -359,7 +360,8 @@ def _run_attached(run_id: str | None) -> int:
 
     from miniray import RemoteWorker
 
-    from .rlmon import make_app
+    if not tail:
+        from .rlmon import make_app
 
     run = _resolve_job_connection(run_id)
     resolved_run_id = run["run_id"]
@@ -494,15 +496,45 @@ def _run_attached(run_id: str | None) -> int:
     # Give first sync a moment to populate files
     time.sleep(1.5)
 
-    print(f"Watching: {local_sync_dir}")
-    app = make_app(str(local_sync_dir))
-    app.run()
+    if tail:
+        # Stream mode: print new lines to stdout, block until Ctrl-C or connection lost
+        print(f"Tailing: {local_sync_dir}", file=sys.stderr)
+        tail_offsets: dict[str, int] = {}
+        # Print any lines already synced
+        for filename in available.get("files", []):
+            local_path = local_sync_dir / filename
+            if local_path.exists():
+                with open(local_path) as f:
+                    for line in f:
+                        sys.stdout.write(line)
+                tail_offsets[filename] = local_path.stat().st_size
+        try:
+            while not connection_lost.is_set():
+                for filename in available.get("files", []):
+                    local_path = local_sync_dir / filename
+                    if not local_path.exists():
+                        continue
+                    prev = tail_offsets.get(filename, 0)
+                    cur = local_path.stat().st_size
+                    if cur > prev:
+                        with open(local_path) as f:
+                            f.seek(prev)
+                            sys.stdout.write(f.read())
+                            sys.stdout.flush()
+                        tail_offsets[filename] = cur
+                time.sleep(1.0)
+        except KeyboardInterrupt:
+            pass
+    else:
+        print(f"Watching: {local_sync_dir}")
+        app = make_app(str(local_sync_dir))
+        app.run()
 
-    # TUI exited — final sync
+    # Exited — final sync
     stop_sync.set()
     sync_thread.join(timeout=5.0)
     if connection_lost.is_set():
-        print("\n[monitor] LogsServer connection lost (see training.log for details)")
+        print("\n[monitor] LogsServer connection lost (see training.log for details)", file=sys.stderr)
 
     print("\nFinal sync...")
     try:
@@ -593,6 +625,11 @@ def monitor_main(argv: list[str] | None = None) -> int:
         "--probe",
         action="store_true",
         help="With --runs, check broker liveness and probe LogsServer",
+    )
+    parser.add_argument(
+        "--tail",
+        action="store_true",
+        help="With --attach: stream logs to stdout instead of launching TUI",
     )
     parser.add_argument(
         "--debug",
@@ -689,9 +726,9 @@ def monitor_main(argv: list[str] | None = None) -> int:
     # ── Attach mode ──
     if args.attach is not None:
         if args.attach == "__latest__" or args.latest:
-            return _run_attached(run_id=None)
+            return _run_attached(run_id=None, tail=args.tail)
         else:
-            return _run_attached(run_id=args.attach)
+            return _run_attached(run_id=args.attach, tail=args.tail)
 
     # ── Local mode ──
     from .rlmon import make_app
