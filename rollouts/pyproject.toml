@@ -36,10 +36,12 @@ training = [
     "accelerate>=0.20.0",
 ]
 
-# Deployment (GPU provisioning + server management)
+# Deployment (GPU provisioning + server management + remote monitoring)
 deploy = [
     "bifrost",
     "broker",
+    "miniray",
+    "paramiko>=3.0.0",
 ]
 
 # Development
