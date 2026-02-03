@@ -23,6 +23,7 @@ Usage:
 """
 
 from .json_frontend import JsonFrontend
+from .minimal import MinimalFrontend
 from .none import NoneFrontend
 from .protocol import Frontend, FrontendWithStatus
 from .runner import InteractiveRunner, RunnerConfig, run_interactive
@@ -39,6 +40,7 @@ __all__ = [
     "run_interactive",
     # Implementations
     "JsonFrontend",
+    "MinimalFrontend",
     "NoneFrontend",
     "TUIFrontend",
     "TextualFrontend",

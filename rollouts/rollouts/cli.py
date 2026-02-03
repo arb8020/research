@@ -328,9 +328,9 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--frontend",
         type=str,
-        choices=["tui", "none", "textual"],
+        choices=["tui", "none", "minimal", "textual"],
         default="tui",
-        help="Frontend: tui (default Python TUI), none (stdout), textual (rich TUI)",
+        help="Frontend: tui (default Python TUI), none (stdout), minimal (OpenCode-style icons), textual (rich TUI)",
     )
     parser.add_argument(
         "--theme",
@@ -1819,6 +1819,10 @@ async def _run_print_mode(
             frontend.set_tools([t.function.name for t in config.environment.get_tools()])
     elif config.quiet:
         frontend = NoneFrontend(show_tool_calls=False, show_thinking=False)
+    elif config.frontend == "minimal":
+        from .frontends import MinimalFrontend
+
+        frontend = MinimalFrontend(show_tool_calls=True, show_thinking=False)
     else:
         frontend = NoneFrontend(show_tool_calls=True, show_thinking=False)
 
@@ -1867,6 +1871,31 @@ async def _run_interactive_mode(
         from .frontends.runner import RunnerConfig
 
         frontend = NoneFrontend(show_tool_calls=True, show_thinking=True)
+        try:
+            await run_interactive(
+                trajectory,
+                config.endpoint,
+                frontend=frontend,
+                environment=config.environment,
+                config=RunnerConfig(
+                    session_store=config.session_store,
+                    session_id=session_id,
+                    parent_session_id=parent_session_id,
+                    branch_point=branch_point,
+                    confirm_tools=config.confirm_tools,
+                    initial_prompt=initial_prompt,
+                    detached=config.detached,
+                ),
+            )
+        except KeyboardInterrupt:
+            print("\n\n✅ Agent stopped")
+        return 0
+
+    if config.frontend == "minimal":
+        from .frontends import MinimalFrontend, run_interactive
+        from .frontends.runner import RunnerConfig
+
+        frontend = MinimalFrontend(show_tool_calls=True, show_thinking=True)
         try:
             await run_interactive(
                 trajectory,
