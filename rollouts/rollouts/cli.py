@@ -1822,7 +1822,13 @@ async def _run_print_mode(
     elif config.frontend == "minimal":
         from .frontends import MinimalFrontend
 
-        frontend = MinimalFrontend(show_tool_calls=True, show_thinking=False)
+        env_name = config.environment.__class__.__name__ if config.environment else None
+        frontend = MinimalFrontend(
+            show_tool_calls=True,
+            show_thinking=False,
+            agent=env_name,
+            model=config.endpoint.model,
+        )
     else:
         frontend = NoneFrontend(show_tool_calls=True, show_thinking=False)
 
@@ -1895,7 +1901,13 @@ async def _run_interactive_mode(
         from .frontends import MinimalFrontend, run_interactive
         from .frontends.runner import RunnerConfig
 
-        frontend = MinimalFrontend(show_tool_calls=True, show_thinking=True)
+        env_name = config.environment.__class__.__name__ if config.environment else None
+        frontend = MinimalFrontend(
+            show_tool_calls=True,
+            show_thinking=True,
+            agent=env_name,
+            model=config.endpoint.model,
+        )
         try:
             await run_interactive(
                 trajectory,

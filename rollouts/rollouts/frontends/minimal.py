@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
+import time
 from typing import TYPE_CHECKING
 
 import trio
@@ -60,39 +62,43 @@ class MinimalFrontend:
         Done! Created the new feature.
     """
 
-    # Tool icons (ASCII-safe, work in all terminals)
+    # Tool icons (Unicode, matching OpenCode style)
     ICONS = {
         # Search tools
-        "glob": "*",
-        "grep": "*",
-        "ripgrep": "*",
+        "glob": "✱",
+        "grep": "✱",
+        "ripgrep": "✱",
         # Read tools
-        "read": ">",
-        "list": ">",
-        "ls": ">",
+        "read": "→",
+        "list": "→",
+        "ls": "→",
+        "skill": "→",
         # Write tools
-        "edit": "<",
-        "write": "<",
-        "patch": "<",
+        "edit": "←",
+        "write": "←",
+        "patch": "←",
         # Shell
         "bash": "$",
         "shell": "$",
         "computer": "$",
         # Tasks/agents
-        "task": "@",
-        "dispatch_agent": "@",
+        "task_pending": "•",
+        "task_done": "✓",
+        "dispatch_agent": "•",
         "todowrite": "#",
         "todoread": "#",
         # Network
         "webfetch": "%",
-        "web_search": "%",
+        "web_search": "◈",
+        "codesearch": "◇",
         "mcp": "%",
         # Default
-        "default": ".",
+        "default": "·",
     }
 
     # Tools that show output in a block (vs inline single-line)
-    BLOCK_TOOLS = {"bash", "shell", "computer", "edit", "write", "patch", "todowrite"}
+    # Most tools now show inline summaries; only todowrite needs block for checklist
+    BLOCK_TOOLS = {"todowrite"}
 
     def __init__(
         self,
@@ -100,6 +106,8 @@ class MinimalFrontend:
         show_thinking: bool = False,
         show_output: bool = True,
         color: bool | None = None,
+        agent: str | None = None,
+        model: str | None = None,
     ) -> None:
         """Initialize MinimalFrontend.
 
@@ -108,6 +116,8 @@ class MinimalFrontend:
             show_thinking: Whether to print thinking/reasoning tokens
             show_output: Whether to show tool output (for block tools)
             color: Force color on/off. None = auto-detect
+            agent: Agent name to show in header (e.g., "coder")
+            model: Model name to show in header (e.g., "claude-sonnet-4")
         """
         self.show_tool_calls = show_tool_calls
         self.show_thinking = show_thinking
@@ -115,10 +125,25 @@ class MinimalFrontend:
         self._use_color = color if color is not None else _should_use_color()
         self._is_tty = sys.stdout.isatty()
 
+        # Header info
+        self._agent = agent
+        self._model = model
+        self._header_shown = False
+
         # State tracking
         self._after_tool = False
-        self._in_text = False
         self._pending_results: dict[str, dict] = {}  # tool_call_id -> {name, args}
+
+        # Buffers for complete-before-print (like OpenCode)
+        self._text_buffer: list[str] = []
+        self._thinking_buffer: list[str] = []
+
+        # Spinner state (uses threading for smooth animation)
+        self._spinner_active = False
+        self._spinner_stop_event: threading.Event | None = None
+        self._spinner_thread: threading.Thread | None = None
+        self._spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        self._spinner_idx = 0
 
     # -------------------------------------------------------------------------
     # Color/Style helpers
@@ -160,19 +185,70 @@ class MinimalFrontend:
         """Print empty line."""
         self._print()
 
+    def _clear_line(self) -> None:
+        """Clear current line (for spinner)."""
+        if self._is_tty:
+            print("\r\033[K", end="", flush=True)
+
+    def _spinner_loop(self) -> None:
+        """Background thread that animates the spinner."""
+        while self._spinner_stop_event and not self._spinner_stop_event.is_set():
+            frame = self._spinner_frames[self._spinner_idx % len(self._spinner_frames)]
+            print(f"\r{self._dim(frame)}", end="", flush=True)
+            self._spinner_idx += 1
+            time.sleep(0.08)  # ~12 fps
+
+    def _start_spinner(self) -> None:
+        """Start the spinner in a background thread."""
+        if not self._is_tty or self._spinner_active:
+            return
+        self._spinner_active = True
+        self._spinner_idx = 0
+        self._spinner_stop_event = threading.Event()
+        self._spinner_thread = threading.Thread(target=self._spinner_loop, daemon=True)
+        self._spinner_thread.start()
+
+    def _stop_spinner(self) -> None:
+        """Stop and clear the spinner."""
+        if not self._spinner_active:
+            return
+        self._spinner_active = False
+        if self._spinner_stop_event:
+            self._spinner_stop_event.set()
+        if self._spinner_thread:
+            self._spinner_thread.join(timeout=0.2)
+            self._spinner_thread = None
+        self._spinner_stop_event = None
+        self._clear_line()
+
+    def _show_header(self) -> None:
+        """Show agent/model header on first output."""
+        if self._header_shown:
+            return
+        self._header_shown = True
+
+        if self._agent or self._model:
+            parts = []
+            if self._agent:
+                parts.append(self._agent)
+            if self._model:
+                parts.append(self._model)
+            header = " · ".join(parts)
+            self._empty()
+            self._print(f"> {header}")
+            self._empty()
+
     def _inline(self, icon: str, title: str, description: str | None = None) -> None:
-        """Print inline tool output (single line)."""
+        """Print inline tool output (single line, no indent like OpenCode)."""
         suffix = f" {self._dim(description)}" if description else ""
-        self._print(f"  {icon} {title}{suffix}")
+        self._print(f"{icon} {title}{suffix}")
 
     def _block(self, icon: str, title: str, output: str | None = None) -> None:
-        """Print block tool output (with content below)."""
+        """Print block tool output (with content below, no indent like OpenCode)."""
         self._empty()
         self._inline(icon, title)
         if output and self.show_output:
-            # Indent output lines
-            for line in output.strip().split("\n"):
-                self._print(f"    {line}")
+            self._print(output.strip())
         self._empty()
 
     # -------------------------------------------------------------------------
@@ -194,15 +270,24 @@ class MinimalFrontend:
         path = args.get("path", "")
 
         title = f'Glob "{pattern}"'
-        if path:
-            title += f" in {self._normalize_path(path)}"
+        suffix = f"in {self._normalize_path(path)}" if path else ""
 
         # Try to extract match count from result
-        desc = None
+        count_str = ""
         if result:
             lines = result.strip().split("\n")
             count = len([l for l in lines if l.strip()])
-            desc = f"{count} {'match' if count == 1 else 'matches'}"
+            count_str = f"{count} {'match' if count == 1 else 'matches'}"
+
+        # Format: suffix · count (like OpenCode)
+        if suffix and count_str:
+            desc = f"{suffix} · {count_str}"
+        elif count_str:
+            desc = count_str
+        elif suffix:
+            desc = suffix
+        else:
+            desc = None
 
         return title, desc
 
@@ -212,14 +297,23 @@ class MinimalFrontend:
         path = args.get("path", "")
 
         title = f'Grep "{pattern}"'
-        if path:
-            title += f" in {self._normalize_path(path)}"
+        suffix = f"in {self._normalize_path(path)}" if path else ""
 
-        desc = None
+        count_str = ""
         if result:
             lines = result.strip().split("\n")
             count = len([l for l in lines if l.strip()])
-            desc = f"{count} {'match' if count == 1 else 'matches'}"
+            count_str = f"{count} {'match' if count == 1 else 'matches'}"
+
+        # Format: suffix · count (like OpenCode)
+        if suffix and count_str:
+            desc = f"{suffix} · {count_str}"
+        elif count_str:
+            desc = count_str
+        elif suffix:
+            desc = suffix
+        else:
+            desc = None
 
         return title, desc
 
@@ -239,10 +333,25 @@ class MinimalFrontend:
         return title, desc
 
     def _format_edit(self, args: dict, result: str | None) -> tuple[str, str | None]:
-        """Format edit tool."""
+        """Format edit tool with +N, -M lines summary."""
         path = args.get("file_path") or args.get("path", "")
         title = f"Edit {self._normalize_path(path)}"
-        return title, result  # Show diff as output
+
+        # Parse diff to get line counts
+        additions = 0
+        deletions = 0
+        if result:
+            for line in result.split("\n"):
+                if line.startswith("+") and not line.startswith("+++"):
+                    additions += 1
+                elif line.startswith("-") and not line.startswith("---"):
+                    deletions += 1
+
+        if additions or deletions:
+            desc = f"+{additions}, -{deletions} lines"
+        else:
+            desc = None
+        return title, desc
 
     def _format_write(self, args: dict, result: str | None) -> tuple[str, str | None]:
         """Format write tool."""
@@ -254,12 +363,21 @@ class MinimalFrontend:
         return title, desc
 
     def _format_bash(self, args: dict, result: str | None) -> tuple[str, str | None]:
-        """Format bash tool."""
+        """Format bash tool with output summary."""
         cmd = args.get("command", "")
         # Truncate long commands
         if len(cmd) > 60:
             cmd = cmd[:57] + "..."
-        return cmd, result
+
+        # Parse result for summary
+        # Result format varies, but we can count lines
+        if result:
+            lines = result.strip().split("\n")
+            line_count = len(lines) if lines != [""] else 0
+            desc = f"{line_count} lines"
+        else:
+            desc = None
+        return cmd, desc
 
     def _format_task(self, args: dict, result: str | None) -> tuple[str, str | None]:
         """Format task/subagent tool."""
@@ -348,72 +466,132 @@ class MinimalFrontend:
     # -------------------------------------------------------------------------
 
     async def start(self) -> None:
-        """No initialization needed."""
-        pass
+        """Show header on start."""
+        self._show_header()
 
     async def stop(self) -> None:
         """Ensure final newline."""
         self._print()
 
+    def _flush_thinking(self) -> None:
+        """Flush thinking buffer and print."""
+        if not self._thinking_buffer:
+            return
+        text = "".join(self._thinking_buffer).strip()
+        self._thinking_buffer.clear()
+        if not text:
+            return
+
+        # Print newline before thinking if we were showing tools
+        if self._after_tool:
+            self._empty()
+            self._after_tool = False
+
+        # OpenCode style: "Thinking: {text}" in italic+dim
+        line = f"Thinking: {text}"
+        self._empty()
+        self._print(self._dim(self._italic(line)))
+        self._empty()
+
+    def _flush_text(self) -> None:
+        """Flush text buffer and print."""
+        if not self._text_buffer:
+            return
+        text = "".join(self._text_buffer).strip()
+        self._text_buffer.clear()
+        if not text:
+            return
+
+        # Print newline before text if we were showing tools
+        if self._after_tool:
+            self._empty()
+            self._after_tool = False
+
+        self._empty()
+        self._print(text)
+        self._empty()
+
     async def handle_event(self, event: StreamEvent) -> None:
         """Handle streaming event."""
         from ..dtypes import (
+            LLMCallStart,
             RetryEnd,
             RetryStart,
             StreamDone,
             StreamError,
             StreamStart,
             TextDelta,
+            TextEnd,
             ThinkingDelta,
+            ThinkingEnd,
             ToolCallEnd,
             ToolCallStart,
             ToolResultReceived,
         )
 
-        if isinstance(event, StreamStart):
-            # Could show model/agent info here
+        if isinstance(event, LLMCallStart):
+            # LLM call starting - spinner already running from get_input()
+            pass
+
+        elif isinstance(event, StreamStart):
+            # Stream starting - keep spinner running
             pass
 
         elif isinstance(event, RetryStart):
+            self._stop_spinner()
             error_hint = event.error_message[:60] if event.error_message else "transient error"
             self._print(
-                f"  {self._yellow('~')} Retrying ({event.attempt}/{event.max_attempts}) "
+                f"{self._yellow('~')} Retrying ({event.attempt}/{event.max_attempts}) "
                 f"in {int(event.delay_seconds)}s - {self._dim(error_hint)}"
             )
+            # Restart spinner for retry
+            self._start_spinner()
 
         elif isinstance(event, RetryEnd):
             if not event.success:
-                self._print(f"  {self._red('!')} Failed after {event.attempt} attempts")
+                self._stop_spinner()
+                self._print(f"{self._red('!')} Failed after {event.attempt} attempts")
 
         elif isinstance(event, TextDelta):
-            # Print newline before text if we were showing tools
-            if self._after_tool:
+            # Buffer text until complete
+            self._text_buffer.append(event.delta)
+
+        elif isinstance(event, TextEnd):
+            # Stop spinner before printing text
+            self._stop_spinner()
+            self._text_buffer.clear()  # Clear buffer, use complete content
+            text = event.content.strip()
+            if text:
+                if self._after_tool:
+                    self._empty()
+                    self._after_tool = False
                 self._empty()
-                self._after_tool = False
-            self._in_text = True
-            # Raw output for non-TTY, styled for TTY
-            if self._is_tty:
-                print(event.delta, end="", flush=True)
-            else:
-                print(event.delta, end="", flush=True)
+                self._print(text)
+                self._empty()
 
         elif isinstance(event, ThinkingDelta) and self.show_thinking:
-            if not self._in_text:
+            # Buffer thinking until complete
+            self._thinking_buffer.append(event.delta)
+
+        elif isinstance(event, ThinkingEnd) and self.show_thinking:
+            # Stop spinner before printing thinking
+            self._stop_spinner()
+            self._thinking_buffer.clear()  # Clear buffer, use complete content
+            text = event.content.strip()
+            if text:
+                if self._after_tool:
+                    self._empty()
+                    self._after_tool = False
+                line = f"Thinking: {text}"
                 self._empty()
-            text = event.delta
-            # Italic + dim for thinking
-            print(self._dim(self._italic(text)), end="", flush=True)
+                self._print(self._dim(self._italic(line)))
+                self._empty()
 
         elif isinstance(event, ToolCallStart) and self.show_tool_calls:
             # Store for later when we have args
             self._pending_results[event.tool_call_id] = {"name": event.tool_name, "args": {}}
 
         elif isinstance(event, ToolCallEnd) and self.show_tool_calls:
-            # End of text, ensure newline
-            if self._in_text:
-                self._empty()
-                self._in_text = False
-
             name = event.tool_call.name
             args = dict(event.tool_call.args)
 
@@ -422,8 +600,12 @@ class MinimalFrontend:
 
             # Don't print yet for block tools - wait for result
             if not self._is_block_tool(name):
+                # Stop spinner before printing tool
+                self._stop_spinner()
                 self._format_tool(name, args)
                 self._after_tool = True
+                # Restart spinner for next operation
+                self._start_spinner()
 
         elif isinstance(event, ToolResultReceived) and self.show_tool_calls:
             # Match with pending tool call
@@ -435,32 +617,38 @@ class MinimalFrontend:
 
                 # For block tools, now we can print with output
                 if self._is_block_tool(name):
+                    # Stop spinner before printing tool
+                    self._stop_spinner()
                     self._format_tool(name, args, result if not event.is_error else f"Error: {result}")
                     self._after_tool = True
+                    # Restart spinner for next operation
+                    self._start_spinner()
 
         elif isinstance(event, StreamDone):
-            pass
+            # Flush any remaining buffers
+            self._flush_thinking()
+            self._flush_text()
 
         elif isinstance(event, StreamError):
+            self._stop_spinner()
             self._empty()
-            self._print(f"  {self._red('!')} Error: {event.error}")
+            self._print(f"{self._red('!')} Error: {event.error}")
             self._empty()
 
     async def get_input(self, prompt: str = "") -> str:
         """Get user input via stdin."""
+        # OpenCode style: just "> " prompt, ignore passed prompt
         self._empty()
-        display_prompt = prompt if prompt else "> "
 
         def _get_input() -> str:
             try:
-                return input(display_prompt)
+                return input("> ")
             except EOFError as e:
                 raise KeyboardInterrupt("stdin closed (EOF)") from e
 
         result = await trio.to_thread.run_sync(_get_input, abandon_on_cancel=True)
-
-        # Show prompt indicator
-        self._print(f"{self._green('>')} ", end="")
+        # Start spinner after user submits their message
+        self._start_spinner()
         return result
 
     async def confirm_tool(self, tool_call: ToolCall) -> bool:
