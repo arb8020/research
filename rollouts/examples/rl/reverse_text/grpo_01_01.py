@@ -61,9 +61,6 @@ config = GRPOConfig(
         temperature=1.0,
         max_seq_len=512,  # Reduced from 2048 for 24GB GPUs (reverse_text needs <256)
         max_tokens=128,
-        extra_params={
-            "chat_template_kwargs": {"enable_thinking": False},
-        },
     ),
     trainer=TrainerConfig(
         lr=3e-6,
