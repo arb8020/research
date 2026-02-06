@@ -66,7 +66,7 @@ config = GRPOConfig(
     ),
     trainer=TrainerConfig(
         lr=3e-6,
-        num_minibatches=8,  # 128 total / 8 = micro_batch_size=16
+        num_minibatches=32,  # 128 total / 32 = micro_batch_size=4 (fits 24GB GPU)
         loss_type="masked",  # Prime-RL importance ratio masking
     ),
 )
