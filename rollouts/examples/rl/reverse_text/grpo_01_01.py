@@ -29,6 +29,7 @@ from rollouts.training.grpo import (
     CheckpointConfig,
     GRPOConfig,
     GRPOOutputConfig,
+    InferenceConfig,
     ModelConfig,
     RolloutConfig,
     TrainerConfig,
@@ -68,6 +69,9 @@ config = GRPOConfig(
         lr=3e-6,
         num_minibatches=32,  # 128 total / 32 = micro_batch_size=4 (fits 24GB GPU)
         loss_type="masked",  # Prime-RL importance ratio masking
+    ),
+    inference=InferenceConfig(
+        mem_fraction=0.5,  # Reduced from 0.7 to leave more room for training on 24GB
     ),
 )
 
