@@ -43,7 +43,8 @@ BASE_MODEL = "Qwen/Qwen3-0.6B"
 
 # Matches prime-rl nightly CI: examples/reverse_text/rl.toml
 # - batch_size=128, rollouts_per_example=16, max_tokens=128
-# - seq_len=2048, max_steps=20, lr=3e-6
+# - seq_len=2048 (A100), seq_len=512 (24GB GPUs like A5000)
+# - max_steps=20, lr=3e-6
 # - Tested nightly: reward must reach >= 0.65
 config = GRPOConfig(
     output=GRPOOutputConfig(experiment_name="reverse_text_grpo_01"),
@@ -57,7 +58,7 @@ config = GRPOConfig(
         batch_size=8,  # prompts per step (× 16 rollouts = 128 total)
         n_samples_per_prompt=16,
         temperature=1.0,
-        max_seq_len=2048,
+        max_seq_len=512,  # Reduced from 2048 for 24GB GPUs (reverse_text needs <256)
         max_tokens=128,
         extra_params={
             "chat_template_kwargs": {"enable_thinking": False},
