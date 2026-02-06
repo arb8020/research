@@ -48,7 +48,7 @@ def preflight_vram_check(
 
     gpu_index = int(device.split(":")[-1])
     props = torch.cuda.get_device_properties(gpu_index)
-    gpu_total_bytes = props.total_mem
+    gpu_total_bytes = props.total_memory
 
     # Memory already allocated before the dry run = weights + optimizer states.
     # This is on the GPU right now (model was loaded in _setup_training_backend).
