@@ -4,7 +4,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import trio
 
@@ -37,6 +37,11 @@ from .dtypes import (
     ToolExecutionStart,
     ToolResult,
     ToolResultReceived,
+)
+from .handlers import (
+    handle_stop_max_turns,
+    inject_tool_reminder,
+    inject_turn_warning,
 )
 from .progress import tqdm
 
@@ -177,222 +182,6 @@ def handle_tool_error(result: ToolResult, state: AgentState) -> AgentState:
     assert state is not None
     assert isinstance(state, AgentState)
     return state
-
-
-def inject_turn_warning(max_turns: int, warning_at: int = 2) -> Callable[[AgentState], AgentState]:
-    """Inject warning when N turns remaining.
-
-    Args:
-        max_turns: Total turns available
-        warning_at: Warn when this many turns remaining (default: 2)
-
-    Returns:
-        Handler function that injects warning message
-
-    Example:
-        run_config = RunConfig(
-            on_step_start=inject_turn_warning(max_turns=5, warning_at=2),
-        )
-    """
-    assert max_turns > 0
-    assert warning_at > 0
-    assert warning_at < max_turns
-
-    def handler(state: AgentState) -> AgentState:
-        assert state is not None
-        assert isinstance(state, AgentState)
-        assert state.turn_idx >= 0
-
-        turns_left = max_turns - state.turn_idx
-        if turns_left == warning_at:
-            warning = Message(
-                role="user",
-                content=f"⚠️ You have {warning_at} turns remaining. Please complete your task quickly.",
-            )
-            # TODO(replace-chains): This nested replace pattern appears ~5 times in codebase:
-            # replace(state, actor=replace(state.actor, trajectory=...))
-            # A helper like `update_trajectory(state, messages)` would reduce repetition.
-            # See also: agents.py:382, runner.py:316, dtypes.py:1144 (triple nested)
-            # Low priority - it's one repeated idiom, not blocking.
-            new_trajectory = replace(
-                state.actor.trajectory, messages=state.actor.trajectory.messages + [warning]
-            )
-            result_state = replace(state, actor=replace(state.actor, trajectory=new_trajectory))
-            assert result_state is not None
-            return result_state
-        return state
-
-    return handler
-
-
-def handle_stop_max_turns(max_turns: int) -> Callable[[AgentState], AgentState]:
-    """Stop when max turns reached.
-
-    Args:
-        max_turns: Maximum number of turns before stopping
-
-    Returns:
-        Handler function that stops when turn_idx >= max_turns
-
-    Example:
-        run_config = RunConfig(
-            handle_stop=handle_stop_max_turns(5),  # Stop after 5 turns
-        )
-    """
-    assert max_turns > 0, "max_turns must be positive"
-
-    def handler(state: AgentState) -> AgentState:
-        assert state is not None
-        assert isinstance(state, AgentState)
-        assert state.turn_idx >= 0
-
-        if state.turn_idx >= max_turns:
-            result_state = replace(state, stop=StopReason.MAX_TURNS)
-            assert result_state.stop is not None
-            return result_state
-        return state
-
-    return handler
-
-
-def handle_stop_token_budget(max_tokens: int) -> Callable[[AgentState], AgentState]:
-    """Stop when total tokens exceeds budget.
-
-    Example:
-        RunConfig(handle_stop=handle_stop_token_budget(100000))
-    """
-
-    def handler(state: AgentState) -> AgentState:
-        total_tokens = sum(len(msg.content or "") for msg in state.actor.trajectory.messages)
-        if total_tokens >= max_tokens:
-            return replace(state, stop=StopReason.MAX_TURNS)  # TODO: Add BUDGET_EXCEEDED
-        return state
-
-    return handler
-
-
-def handle_stop_cost_budget(
-    max_cost_usd: float, cost_fn: Callable[[AgentState], float]
-) -> Callable[[AgentState], AgentState]:
-    """Stop when estimated cost exceeds budget.
-
-    Args:
-        max_cost_usd: Maximum cost in USD
-        cost_fn: Function that estimates cost from state
-
-    Example:
-        def estimate_cost(state):
-            # Count tokens, multiply by model pricing
-            return tokens * 0.00001
-
-        RunConfig(handle_stop=handle_stop_cost_budget(5.0, estimate_cost))
-    """
-
-    def handler(state: AgentState) -> AgentState:
-        current_cost = cost_fn(state)
-        if current_cost >= max_cost_usd:
-            return replace(state, stop=StopReason.MAX_TURNS)  # TODO: Add BUDGET_EXCEEDED
-        return state
-
-    return handler
-
-
-def handle_stop_on_empty_message() -> Callable[[AgentState], AgentState]:
-    """Stop when assistant returns empty message (no content, no tool calls).
-
-    This handles cases where the model signals completion by returning an empty
-    response (e.g., Claude's end_turn with no content).
-
-    Returns:
-        Handler function that stops on empty assistant messages
-
-    Example:
-        run_config = RunConfig(
-            handle_stop=compose_handlers([
-                handle_stop_max_turns(10),
-                handle_stop_on_empty_message(),
-            ]),
-        )
-    """
-
-    def handler(state: AgentState) -> AgentState:
-        assert state is not None
-        assert isinstance(state, AgentState)
-
-        # Check if last message is an empty assistant message
-        if state.actor.trajectory.messages:
-            last_msg = state.actor.trajectory.messages[-1]
-            if (
-                last_msg.role == "assistant"
-                and not last_msg.content
-                and not last_msg.get_tool_calls()
-            ):
-                result_state = replace(state, stop=StopReason.MAX_TURNS)
-                assert result_state.stop is not None
-                return result_state
-
-        return state
-
-    return handler
-
-
-def compose_handlers(
-    handlers: list[Callable[[AgentState], AgentState]],
-) -> Callable[[AgentState], AgentState]:
-    """Compose multiple stop handlers into a single handler.
-
-    Handlers are applied in order. If any handler sets a stop reason, that state
-    is returned immediately without calling subsequent handlers.
-
-    Args:
-        handlers: List of stop handler functions
-
-    Returns:
-        Composed handler function
-
-    Example:
-        run_config = RunConfig(
-            handle_stop=compose_handlers([
-                handle_stop_max_turns(10),
-                handle_stop_on_empty_message(),
-            ]),
-        )
-    """
-    assert handlers, "handlers list cannot be empty"
-    assert all(callable(h) for h in handlers), "all handlers must be callable"
-
-    def composed_handler(state: AgentState) -> AgentState:
-        assert state is not None
-        assert isinstance(state, AgentState)
-
-        current_state = state
-        for handler in handlers:
-            current_state = handler(current_state)
-            # If any handler sets stop, return immediately
-            if current_state.stop:
-                return current_state
-
-        return current_state
-
-    return composed_handler
-
-
-async def inject_tool_reminder(state: AgentState, run_config: "RunConfig") -> AgentState:
-    """Remind the agent to use tools"""
-    assert state is not None
-    assert isinstance(state, AgentState)
-    assert run_config is not None
-
-    reminder = Message(
-        role="user",
-        content="Please use the available tools to complete the task. What calculation would you like to perform?",
-    )
-    new_trajectory = replace(
-        state.actor.trajectory, messages=state.actor.trajectory.messages + [reminder]
-    )
-    result_state = replace(state, actor=replace(state.actor, trajectory=new_trajectory))
-    assert result_state is not None
-    return result_state
 
 
 FullAuto = RunConfig(
@@ -538,21 +327,6 @@ async def run_agent_step(
     available_tools = state.environment.get_tools() if state.environment else []
     updated_actor = replace(state.actor, tools=available_tools)
 
-    # DEBUG: Log trajectory state before rollout
-    logger.debug(f"🔍 BEFORE rollout() - Turn {state.turn_idx}")
-    logger.debug(f"   Trajectory messages count: {len(updated_actor.trajectory.messages)}")
-    for i, msg in enumerate(updated_actor.trajectory.messages):
-        if isinstance(msg.content, str):
-            content_len = len(msg.content) if msg.content else 0
-            content_preview = (msg.content[:50] if msg.content else "None") + "..."
-        elif isinstance(msg.content, list):
-            content_len = len(msg.content)
-            content_preview = f"[{len(msg.content)} blocks]..."
-        else:
-            content_len = 0
-            content_preview = "None..."
-        logger.debug(f"      Message {i} ({msg.role}): {content_len} chars - {content_preview}")
-
     # Make LLM call (with cancellation support)
     # If api_limiter is set, acquire slot before making the call
     # This enables two-level concurrency: samples waiting for tools don't hold API slots
@@ -569,61 +343,41 @@ async def run_agent_step(
             suffix_ids=rcfg.suffix_ids,
         )
 
-    # Wide event: time the full LLM call including retries
+    # Time the LLM call
     llm_start_time = time.perf_counter()
-    llm_error: str | None = None
-    try:
-        if rcfg.api_limiter is not None:
-            # Emit semaphore wait event for observability
-            await rcfg.on_chunk(SemaphoreWaitStart(limiter_type="api"))
-            wait_start = time.perf_counter()
-            async with rcfg.api_limiter:
-                wait_duration_ms = (time.perf_counter() - wait_start) * 1000
-                await rcfg.on_chunk(
-                    SemaphoreAcquired(limiter_type="api", wait_duration_ms=wait_duration_ms)
-                )
-                next_actor = await do_rollout()
-        else:
-            next_actor = await do_rollout()
-    except Exception as e:
-        llm_error = f"{type(e).__name__}: {e}"
-        raise
-    finally:
-        llm_duration_ms = (time.perf_counter() - llm_start_time) * 1000
-        # Extract token counts from completion if available
-        tokens_in: int | None = None
-        tokens_out: int | None = None
-        if "next_actor" in dir() and next_actor.trajectory.completions:
-            last_completion = next_actor.trajectory.completions[-1]
-            if hasattr(last_completion, "usage") and last_completion.usage:
-                tokens_in = getattr(last_completion.usage, "input_tokens", None)
-                tokens_out = getattr(last_completion.usage, "output_tokens", None)
-        await rcfg.on_chunk(
-            LLMCallEnd(
-                duration_ms=llm_duration_ms,
-                provider=updated_actor.endpoint.provider,
-                model=updated_actor.endpoint.model,
-                tokens_in=tokens_in,
-                tokens_out=tokens_out,
-                status="error" if llm_error else "success",
-                error=llm_error,
+    if rcfg.api_limiter is not None:
+        await rcfg.on_chunk(SemaphoreWaitStart(limiter_type="api"))
+        wait_start = time.perf_counter()
+        async with rcfg.api_limiter:
+            wait_duration_ms = (time.perf_counter() - wait_start) * 1000
+            await rcfg.on_chunk(
+                SemaphoreAcquired(limiter_type="api", wait_duration_ms=wait_duration_ms)
             )
-        )
+            next_actor = await do_rollout()
+    else:
+        next_actor = await do_rollout()
+    llm_duration_ms = (time.perf_counter() - llm_start_time) * 1000
 
-    # DEBUG: Log what rollout returned
-    logger.debug(f"🔍 AFTER rollout() - Turn {state.turn_idx}")
-    logger.debug(f"   Trajectory messages count: {len(next_actor.trajectory.messages)}")
-    for i, msg in enumerate(next_actor.trajectory.messages):
-        if isinstance(msg.content, str):
-            content_len = len(msg.content) if msg.content else 0
-            content_preview = (msg.content[:50] if msg.content else "None") + "..."
-        elif isinstance(msg.content, list):
-            content_len = len(msg.content)
-            content_preview = f"[{len(msg.content)} blocks]..."
-        else:
-            content_len = 0
-            content_preview = "None..."
-        logger.debug(f"      Message {i} ({msg.role}): {content_len} chars - {content_preview}")
+    # Extract token counts from completion if available
+    tokens_in: int | None = None
+    tokens_out: int | None = None
+    if next_actor.trajectory.completions:
+        last_completion = next_actor.trajectory.completions[-1]
+        if hasattr(last_completion, "usage") and last_completion.usage:
+            tokens_in = getattr(last_completion.usage, "input_tokens", None)
+            tokens_out = getattr(last_completion.usage, "output_tokens", None)
+
+    # Wide event: LLM call completed
+    await rcfg.on_chunk(
+        LLMCallEnd(
+            duration_ms=llm_duration_ms,
+            provider=updated_actor.endpoint.provider,
+            model=updated_actor.endpoint.model,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            status="success",
+        )
+    )
 
     # Extract tool calls from last message (if it's an assistant message)
     last_message = next_actor.trajectory.messages[-1] if next_actor.trajectory.messages else None
@@ -839,42 +593,6 @@ async def process_pending_tools(
 
         # Wide event: emit tool execution end with timing (only if tool actually executed)
         if tool_duration_ms is not None:
-            # Build result summary for observability
-            result_summary: dict[str, Any] = {}
-
-            # Wide events: capture everything needed to debug without re-running
-            if tool_call.name == "bash":
-                if "command" in tool_call.args:
-                    result_summary["command"] = tool_call.args["command"]
-                if tool_result.content:
-                    result_summary["output"] = str(tool_result.content)
-            elif tool_call.name == "write":
-                if "path" in tool_call.args:
-                    result_summary["path"] = tool_call.args["path"]
-                if "content" in tool_call.args:
-                    result_summary["content"] = tool_call.args["content"]
-
-            # Extract key metrics from details (e.g., compiled, correct for kernelbench)
-            if tool_result.details:
-                for k, v in tool_result.details.items():
-                    if k in (
-                        "compiled",
-                        "correct",
-                        "speedup",
-                        "runtime_us",
-                        "error",
-                        "exit_code",
-                        "output_file",
-                    ):
-                        result_summary[k] = v
-
-            # Always include error info when is_error for debugging
-            if tool_result.is_error:
-                if tool_result.error:
-                    result_summary["error"] = tool_result.error
-                elif tool_result.content:
-                    result_summary["error"] = str(tool_result.content)
-
             await rcfg.on_chunk(
                 ToolExecutionEnd(
                     tool_call_id=tool_call.id,
@@ -882,7 +600,7 @@ async def process_pending_tools(
                     duration_ms=tool_duration_ms,
                     status="error" if tool_result.is_error else "success",
                     is_error=tool_result.is_error,
-                    result_summary=result_summary if result_summary else None,
+                    result_summary=tool_result.to_summary(tool_call),
                 )
             )
 

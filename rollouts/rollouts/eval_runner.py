@@ -221,7 +221,7 @@ def run_eval_from_spec(  # noqa: PLR0913
             environment = spec.make_environment()  # type: ignore[missing-argument]  # nullary when not per_sample
 
     # ── Stop handlers ──
-    from .agents import handle_stop_max_turns
+    from .handlers import handle_stop_max_turns
     from .dtypes import AgentState, StopReason
 
     async def stop_on_no_tool(state: AgentState, run_config: AgentRunConfig) -> AgentState:

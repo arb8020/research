@@ -1051,6 +1051,37 @@ class ToolResult(JsonSerializable):
     # UI-only structured data (stripped before LLM)
     details: dict[str, Any] | None = None
 
+    def to_summary(self, tool_call: "ToolCall") -> dict[str, Any] | None:
+        """Build observability summary for wide event emission.
+
+        Extracts key fields from tool_call.args and self.details that are useful
+        for debugging without re-running the tool.
+        """
+        summary: dict[str, Any] = {}
+
+        # Tool-specific args worth capturing
+        if tool_call.name == "bash" and "command" in tool_call.args:
+            summary["command"] = tool_call.args["command"]
+            if self.content:
+                summary["output"] = str(self.content)
+        elif tool_call.name == "write" and "path" in tool_call.args:
+            summary["path"] = tool_call.args["path"]
+
+        # Extract key metrics from details (e.g., compiled, correct for kernelbench)
+        if self.details:
+            for k in ("compiled", "correct", "speedup", "runtime_us", "error", "exit_code", "output_file"):
+                if k in self.details:
+                    summary[k] = self.details[k]
+
+        # Always include error info when is_error
+        if self.is_error:
+            if self.error:
+                summary["error"] = self.error
+            elif self.content:
+                summary["error"] = str(self.content)
+
+        return summary if summary else None
+
 
 @dataclass(frozen=True)
 class ToolConfirmResult(JsonSerializable):

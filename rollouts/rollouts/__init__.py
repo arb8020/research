@@ -104,10 +104,10 @@ if TYPE_CHECKING:
 _LAZY_IMPORTS = {
     # agents
     "confirm_tool_with_feedback": (".agents", "confirm_tool_with_feedback"),
-    "handle_stop_max_turns": (".agents", "handle_stop_max_turns"),
+    "handle_stop_max_turns": (".handlers", "handle_stop_max_turns"),
     "handle_tool_error": (".agents", "handle_tool_error"),
-    "inject_tool_reminder": (".agents", "inject_tool_reminder"),
-    "inject_turn_warning": (".agents", "inject_turn_warning"),
+    "inject_tool_reminder": (".handlers", "inject_tool_reminder"),
+    "inject_turn_warning": (".handlers", "inject_turn_warning"),
     "resume_session": (".agents", "resume_session"),
     "rollout": (".agents", "rollout"),
     "run_agent": (".agents", "run_agent"),
