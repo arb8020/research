@@ -698,13 +698,16 @@ def start_sglang_server():
     return engine, engine.base_url
 
 
-def run_agent_rollouts(base_url: str, tokenizer, use_tito: bool, strategy: str = "interleaved"):
+def run_agent_rollouts(base_url: str, tokenizer, strategy: str = "interleaved"):
     """Run rollouts using the actual agent loop.
+
+    Note: TI/TO is now handled automatically by the training layer (GRPO always
+    uses token-level providers). This function tests the agent path which uses
+    text-based providers.
 
     Args:
         base_url: SGLang server URL
         tokenizer: HuggingFace tokenizer
-        use_tito: Whether to use TI/TO mode
         strategy: "interleaved" (1 sample per rollout) or "branching" (1 sample per turn)
 
     Returns list of Sample objects.
@@ -733,7 +736,6 @@ def run_agent_rollouts(base_url: str, tokenizer, use_tito: bool, strategy: str =
                 tokenizer=tokenizer,
                 max_turns=5,
                 metadata={{"ground_truth": prompt_data["ground_truth"]}},
-                use_tito=use_tito,
             )
             return [sample]
         else:
@@ -758,8 +760,6 @@ def run_agent_rollouts(base_url: str, tokenizer, use_tito: bool, strategy: str =
             run_config = RunConfig(
                 on_chunk=noop_chunk,
                 handle_stop=handle_stop_max_turns(5),
-                use_tito=use_tito,
-                tokenizer=tokenizer if use_tito else None,
             )
 
             # 4. Run agent
@@ -775,7 +775,7 @@ def run_agent_rollouts(base_url: str, tokenizer, use_tito: bool, strategy: str =
             )
 
     for i, prompt_data in enumerate(CALC_PROMPTS[:NUM_ROLLOUTS]):
-        print(f"  Rollout {{i+1}}/{{NUM_ROLLOUTS}} (strategy={{strategy}}, use_tito={{use_tito}})...")
+        print(f"  Rollout {{i+1}}/{{NUM_ROLLOUTS}} (strategy={{strategy}})...")
         try:
             rollout_samples = trio.run(run_single, prompt_data)
             samples.extend(rollout_samples)
@@ -997,8 +997,8 @@ def main():
         print("-" * 50)
         print("TEST 1: INTERLEAVED STRATEGY")
         print("-" * 50)
-        print("Running agent rollouts with TI/TO + interleaved...")
-        interleaved_samples = run_agent_rollouts(base_url, tokenizer, use_tito=True, strategy="interleaved")
+        print("Running agent rollouts with interleaved strategy...")
+        interleaved_samples = run_agent_rollouts(base_url, tokenizer, strategy="interleaved")
 
         if interleaved_samples:
             print(f"  Generated {{len(interleaved_samples)}} samples (1 per rollout)")
@@ -1012,8 +1012,8 @@ def main():
         print("-" * 50)
         print("TEST 2: BRANCHING STRATEGY")
         print("-" * 50)
-        print("Running agent rollouts with TI/TO + branching...")
-        branching_samples = run_agent_rollouts(base_url, tokenizer, use_tito=True, strategy="branching")
+        print("Running agent rollouts with branching strategy...")
+        branching_samples = run_agent_rollouts(base_url, tokenizer, strategy="branching")
 
         if branching_samples:
             print(f"  Generated {{len(branching_samples)}} samples (1 per assistant turn)")

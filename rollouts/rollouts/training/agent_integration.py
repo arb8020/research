@@ -78,11 +78,13 @@ async def agent_rollout_to_sample(
     tokenizer: Any,  # HuggingFace tokenizer
     max_turns: int = 10,
     metadata: dict[str, Any] | None = None,
-    use_tito: bool = False,
 ) -> Sample:
     """Single agent rollout: prompt → multi-turn execution → training sample.
 
     Based on clicker/run_rollouts.py:46-120 pattern.
+
+    For token-level generation (TI/TO), use the dedicated TI/TO path in grpo.py
+    which calls rollout_sglang_token_level() directly.
 
     Args:
         prompt: Either a string (becomes user message) or list of message dicts
@@ -92,9 +94,6 @@ async def agent_rollout_to_sample(
         tokenizer: HuggingFace tokenizer for building loss_mask
         max_turns: Max agent turns
         metadata: Optional metadata (ground_truth, etc.)
-        use_tito: Enable TI/TO (token-level) generation for RL training.
-                  This avoids retokenization collapse by storing generated token_ids
-                  directly and using them for training.
 
     Returns:
         Sample with loss_mask (1.0 for assistant, 0.0 for tool/user)
@@ -119,15 +118,6 @@ async def agent_rollout_to_sample(
         ...     environment_cls=BasicEnvironment,
         ...     endpoint=endpoint,
         ...     tokenizer=my_tokenizer,
-        ... )
-
-    Example (with TI/TO for RL training):
-        >>> sample = await agent_rollout_to_sample(
-        ...     prompt="What is 5 + 3?",
-        ...     environment_cls=CalculatorEnvironment,
-        ...     endpoint=endpoint,
-        ...     tokenizer=my_tokenizer,
-        ...     use_tito=True,  # Avoids retokenization collapse
         ... )
     """
     assert prompt, "prompt required"
@@ -157,11 +147,7 @@ async def agent_rollout_to_sample(
     )
 
     # 5. Run agent (multi-turn execution with tools!)
-    run_config = _silent_run_config(
-        max_turns=max_turns,
-        use_tito=use_tito,
-        tokenizer=tokenizer if use_tito else None,
-    )
+    run_config = _silent_run_config(max_turns=max_turns)
     states = await run_agent(state, run_config)
     final_state = states[-1]
 
@@ -664,19 +650,13 @@ def _msg_to_dict(msg: Message) -> dict[str, Any]:
     }
 
 
-def _silent_run_config(
-    max_turns: int = 10,
-    use_tito: bool = False,
-    tokenizer: Any | None = None,
-) -> RunConfig:
+def _silent_run_config(max_turns: int = 10) -> RunConfig:
     """Create silent RunConfig for training (no stdout spam).
 
     Based on clicker pattern - don't print during training loops.
 
     Args:
         max_turns: Maximum number of agent turns before stopping
-        use_tito: Enable TI/TO (token-level) generation
-        tokenizer: HuggingFace tokenizer (required if use_tito=True)
 
     Returns:
         RunConfig with no-op chunk handler and max_turns stop handler
@@ -689,6 +669,4 @@ def _silent_run_config(
     return RunConfig(
         on_chunk=noop_chunk,
         handle_stop=handle_stop_max_turns(max_turns),
-        use_tito=use_tito,
-        tokenizer=tokenizer,
     )

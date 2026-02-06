@@ -67,8 +67,6 @@ class RolloutConfig:
     max_tokens: int = 512
     temperature: float = 0.8
     max_turns: int = 1  # For multi-turn environments
-    # TI/TO (Tokens-In/Tokens-Out) - avoids retokenization collapse
-    use_tito: bool = False
     # Trajectory strategy for multi-turn rollouts
     # "interleaved": Full conversation as one sequence (efficient, prefix sharing)
     # "branching": Each assistant turn is a separate sample (safer, mirrors deployment)

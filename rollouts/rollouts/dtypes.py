@@ -1424,11 +1424,6 @@ class RunConfig:
     session_store: Any | None = (
         None  # SessionStore instance for persistence (session_id is on AgentState)
     )
-    # TI/TO (Tokens-In/Tokens-Out) for RL training
-    # When enabled, uses token-level generation to avoid retokenization collapse
-    use_tito: bool = False
-    tokenizer: Any | None = None  # HuggingFace tokenizer (required if use_tito=True)
-    suffix_ids: tuple[int, ...] | None = None  # Pre-computed suffix tokens (computed if None)
     # Two-level concurrency control for maximizing API throughput
     # API limiter: controls concurrent LLM API calls (saturate tokens/min)
     # Tool limiter: controls concurrent tool executions (respect file descriptors, GPU limits)
