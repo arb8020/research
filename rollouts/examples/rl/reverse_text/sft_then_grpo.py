@@ -35,26 +35,34 @@ from typing import Any
 
 @dataclass
 class PipelineConfig:
-    """Configuration for SFT → RL pipeline."""
+    """Configuration for SFT → RL pipeline.
 
-    # Model
-    base_model: str = "Qwen/Qwen3-0.6B"
+    Matches Prime-RL nightly CI exactly:
+    - SFT: 20 steps, lr=2e-5, batch=16
+    - GRPO: 20 steps, lr=3e-6, batch=128 (8×16)
+    - Pass criteria: reward > 0.65 at step 20
+    """
 
-    # SFT settings (following Prime-RL)
-    sft_dataset: str = "willcb/R1-reverse-wikipedia-paragraphs-v1-1000"
-    sft_num_steps: int = 100
-    sft_batch_size: int = 32
-    sft_lr: float = 2e-5  # Higher LR for SFT
-    sft_max_seq_len: int = 4096
+    # Model (Prime's base model)
+    base_model: str = "PrimeIntellect/Qwen3-0.6B"
 
-    # RL settings (following Prime-RL)
+    # SFT settings (matches Prime-RL CI: configs/reverse_text/sft/train.toml)
+    sft_dataset: str = "PrimeIntellect/Reverse-Text-SFT"
+    sft_num_steps: int = 20
+    sft_batch_size: int = 16
+    sft_micro_batch_size: int = 8
+    sft_lr: float = 2e-5
+    sft_max_seq_len: int = 128
+
+    # RL settings (matches Prime-RL CI: configs/reverse_text/rl/*.toml)
     rl_dataset: str = "PrimeIntellect/Reverse-Text-RL"
-    rl_num_steps: int = 100  # verifiers uses 100, prime-rl uses 20
-    rl_batch_size: int = 8
+    rl_num_steps: int = 20
+    rl_batch_size: int = 8  # × 16 rollouts = 128 total
     rl_n_samples_per_prompt: int = 16
-    rl_lr: float = 3e-6  # Lower LR for RL
-    rl_max_tokens: int = 128  # Prime uses 128
-    rl_temperature: float = 1.0  # Prime uses default 1.0
+    rl_lr: float = 3e-6
+    rl_max_tokens: int = 128
+    rl_max_seq_len: int = 128
+    rl_temperature: float = 1.0
 
     # Output
     output_dir: str = "/tmp/reverse_text_pipeline"
@@ -254,9 +262,12 @@ def run_grpo(config: PipelineConfig, sft_checkpoint: Path | str) -> dict[str, An
             n_samples_per_prompt=config.rl_n_samples_per_prompt,
             temperature=config.rl_temperature,
             max_tokens=config.rl_max_tokens,
-            max_seq_len=512,
+            max_seq_len=config.rl_max_seq_len,
         ),
-        trainer=TrainerConfig(lr=config.rl_lr),
+        trainer=TrainerConfig(
+            lr=config.rl_lr,
+            loss_type="masked",  # Importance sampling (requires token-level logprobs)
+        ),
     )
 
     # Run GRPO

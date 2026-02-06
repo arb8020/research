@@ -777,8 +777,9 @@ class Usage(JsonSerializable):
 class Logprob(JsonSerializable):
     token: str
     logprob: float
-    bytes: list[int]
-    top_logprobs: list[float]
+    bytes: list[int] = field(default_factory=list)
+    top_logprobs: list[float] = field(default_factory=list)
+    token_id: int | None = None  # Token ID from response (for TI/TO)
 
 
 @dataclass(frozen=True)

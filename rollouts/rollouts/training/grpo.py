@@ -280,16 +280,16 @@ def _create_generate_fn(
 ) -> Callable:
     """Create the generate function for rollout generation.
 
-    GRPO requires token-level generation to get logprobs for importance sampling.
-    This always uses token-level providers (rollout_sglang_token_level, etc.)
-    rather than text-based providers.
+    Uses the agent loop with standard providers. Providers now always request
+    logprobs and populate Choice.token_ids, so token data flows through
+    the normal agent path.
 
-    For multi-turn agent rollouts with tools, use a different training approach
-    that doesn't require per-token logprobs (e.g., REINFORCE without baseline).
+    For multi-turn agent rollouts (max_turns > 1), the agent loop handles
+    tool execution. For single-turn (max_turns = 1), it's just one LLM call.
     """
-    # GRPO fundamentally requires token-level logprobs for importance sampling.
-    # Always use token-level providers — the agent path can't provide logprobs.
-    return _create_tito_generate_fn(config, endpoint, tokenizer, metadata_key, logger)
+    return _create_agent_generate_fn(
+        config, endpoint, tokenizer, environment_cls, metadata_key, logger
+    )
 
 
 def _create_tito_generate_fn(

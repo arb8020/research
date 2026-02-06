@@ -294,6 +294,19 @@ async def rollout_sglang(
     completion = replace(completion, model=actor.endpoint.model)
     assert completion.choices is not None
     assert len(completion.choices) > 0
+
+    # Extract token_ids from logprobs (TI/TO support)
+    # The /v1/chat/completions response includes token_id in each logprob entry
+    choice = completion.choices[0]
+    if choice.logprobs and choice.logprobs.content:
+        token_ids = tuple(
+            lp.token_id for lp in choice.logprobs.content
+            if lp.token_id is not None
+        )
+        if token_ids:
+            choice = replace(choice, token_ids=token_ids)
+            completion = replace(completion, choices=[choice] + list(completion.choices[1:]))
+
     final_message = completion.choices[0].message
     assert final_message is not None
 
@@ -364,6 +377,7 @@ async def rollout_sglang_streaming(
         "messages": messages,
         "temperature": actor.endpoint.temperature,
         "stream": True,
+        "logprobs": True,  # Always request logprobs for TI/TO support
     }
 
     if actor.endpoint.max_tokens:
@@ -439,6 +453,18 @@ async def rollout_sglang_streaming(
     completion = replace(completion, model=actor.endpoint.model)
     assert completion.choices is not None
     assert len(completion.choices) > 0
+
+    # Extract token_ids from logprobs (TI/TO support)
+    choice = completion.choices[0]
+    if choice.logprobs and choice.logprobs.content:
+        token_ids = tuple(
+            lp.token_id for lp in choice.logprobs.content
+            if lp.token_id is not None
+        )
+        if token_ids:
+            choice = replace(choice, token_ids=token_ids)
+            completion = replace(completion, choices=[choice] + list(completion.choices[1:]))
+
     final_message = completion.choices[0].message
     assert final_message is not None
 

@@ -340,6 +340,10 @@ def trajectory_to_sample(
     # Store response text in metadata for training (since response is now a property from trajectory)
     full_metadata["response_text"] = response
 
+    # Extract rollout_log_probs from Choice.logprobs (TI/TO support)
+    # This avoids retokenization collapse by using actual generation logprobs
+    rollout_log_probs = _extract_logprobs_from_trajectory(trajectory)
+
     # Tiger Style: Explicit construction
     sample = Sample(
         prompt=prompt,
@@ -349,6 +353,7 @@ def trajectory_to_sample(
         reward=0.0,  # Will be computed by score_fn later
         metadata=full_metadata,
         status=Status.COMPLETED,
+        rollout_log_probs=rollout_log_probs,
     )
 
     # Tiger Style: Assert postconditions
@@ -582,6 +587,34 @@ def _extract_tokens_from_trajectory(
             all_ids.extend(msg_ids)
 
     return all_ids
+
+
+def _extract_logprobs_from_trajectory(trajectory: Trajectory) -> list[float] | None:
+    """Extract rollout logprobs from trajectory completions.
+
+    When providers request logprobs=True, they populate Choice.logprobs
+    with per-token log probabilities. This function extracts them for
+    off-policy correction in GRPO training.
+
+    Args:
+        trajectory: Trajectory with completions containing logprobs
+
+    Returns:
+        List of per-token logprobs, or None if not available
+    """
+    all_logprobs: list[float] = []
+
+    for completion in trajectory.completions:
+        if not completion.choices:
+            continue
+        choice = completion.choices[0]
+        if not choice.logprobs or not choice.logprobs.content:
+            # No logprobs for this completion - can't do off-policy correction
+            return None
+        for lp in choice.logprobs.content:
+            all_logprobs.append(lp.logprob)
+
+    return all_logprobs if all_logprobs else None
 
 
 def _compute_loss_mask(
