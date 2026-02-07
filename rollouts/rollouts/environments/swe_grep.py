@@ -7,11 +7,16 @@ relevant code/documentation and submit structured answers with source citations.
 from __future__ import annotations
 
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from rollouts.dtypes import Tool, ToolCall, ToolFunction, ToolFunctionParameter
+
+# Type for injectable search function
+# Takes (query, top_k) and returns formatted search results string
+SearchFn = Callable[[str, int], Awaitable[str]]
 
 
 @dataclass
@@ -42,11 +47,20 @@ class SWEGrepEnvironment:
     tools: list[str] = field(default_factory=lambda: ["grep", "glob", "read", "submit"])
     """Which tools to enable. Options: grep, glob, search, read, submit."""
 
-    search_backend: str | None = None
-    """Search backend: 'wafer' (API), 'tfidf' (local), or None (disabled)."""
+    search_fn: SearchFn | None = None
+    """Injected search function. Takes (query, top_k) -> formatted results string.
 
-    search_config: dict[str, Any] = field(default_factory=dict)
-    """Configuration for search backend (API URL, credentials, etc.)."""
+    Example:
+        async def my_search(query: str, top_k: int) -> str:
+            results = await call_my_search_api(query, top_k)
+            return format_results(results)
+
+        env = SWEGrepEnvironment(
+            corpus_path=Path("./corpus"),
+            tools=["search", "read", "submit"],
+            search_fn=my_search,
+        )
+    """
 
     max_results: int = 50
     """Maximum results to return from grep/glob/search."""
@@ -72,13 +86,13 @@ class SWEGrepEnvironment:
         if invalid:
             raise ValueError(f"Invalid tools: {invalid}. Valid: {valid_tools}")
 
-        # Warn if search enabled but no backend
-        if "search" in self.tools and not self.search_backend:
+        # Warn if search enabled but no search_fn
+        if "search" in self.tools and self.search_fn is None:
             import logging
 
             logging.getLogger(__name__).warning(
-                "Search tool enabled but no search_backend specified. "
-                "search() calls will fail. Set search_backend='wafer' or 'tfidf'."
+                "Search tool enabled but no search_fn provided. "
+                "search() calls will fail. Provide a search_fn callback."
             )
 
     def get_tools(self) -> list[Tool]:
@@ -406,7 +420,7 @@ class SWEGrepEnvironment:
         return "\n".join(result_lines)
 
     async def _handle_search(self, tool_call: ToolCall) -> str:
-        """Handle search tool call with configurable backend."""
+        """Handle search tool call using injected search_fn."""
         args = tool_call.arguments
         query = args.get("query")
         top_k = args.get("top_k", 10)
@@ -414,66 +428,13 @@ class SWEGrepEnvironment:
         if not query:
             return "Error: 'query' is required"
 
-        # Dispatch to backend
-        if self.search_backend == "wafer":
-            return await self._search_wafer(query, top_k)
-        elif self.search_backend == "tfidf":
-            return await self._search_tfidf(query, top_k)
-        else:
-            return (
-                "Error: Search backend not configured. "
-                "Set search_backend='wafer' or 'tfidf' when creating environment."
-            )
-
-    async def _search_wafer(self, query: str, top_k: int) -> str:
-        """Search using Wafer API."""
-        import httpx
-
-        api_url = self.search_config.get("api_url")
-        api_key = self.search_config.get("api_key")
-
-        if not api_url:
-            return "Error: Wafer API URL not configured. Set search_config={'api_url': '...'}"
-
-        headers = {}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
+        if self.search_fn is None:
+            return "Error: No search_fn configured. Provide search_fn when creating environment."
 
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    api_url,
-                    json={"query": query, "top_k": top_k},
-                    headers=headers,
-                    timeout=30.0,
-                )
-                response.raise_for_status()
-                results = response.json()
-
-            # Format results
-            if not results:
-                return f"No results found for query: {query}"
-
-            result_lines = [f"Found {len(results)} results:"]
-            for i, result in enumerate(results, 1):
-                file_path = result.get("file", result.get("path", "unknown"))
-                score = result.get("score", 0.0)
-                excerpt = result.get("excerpt", result.get("content", ""))[:200]
-                result_lines.append(f"{i}. {file_path} (score: {score:.3f})")
-                result_lines.append(f"   {excerpt}")
-
-            return "\n".join(result_lines)
-
+            return await self.search_fn(query, top_k)
         except Exception as e:
-            return f"Error calling Wafer API: {e}"
-
-    async def _search_tfidf(self, query: str, top_k: int) -> str:
-        """Search using local TF-IDF."""
-        # TODO: Implement TF-IDF search
-        return (
-            "Error: TF-IDF search not yet implemented. "
-            "Use search_backend='wafer' or use grep/glob tools."
-        )
+            return f"Error in search: {e}"
 
     async def _handle_read(self, tool_call: ToolCall) -> str:
         """Handle read tool call."""
@@ -557,12 +518,15 @@ class SWEGrepEnvironment:
 
     @classmethod
     async def deserialize(cls, data: dict[str, Any]) -> SWEGrepEnvironment:
-        """Deserialize environment from dict."""
+        """Deserialize environment from dict.
+
+        Note: search_fn cannot be serialized. If search is needed after
+        deserialization, the caller must inject it manually.
+        """
         return cls(
             corpus_path=Path(data["corpus_path"]),
             tools=data.get("tools", ["grep", "glob", "read", "submit"]),
-            search_backend=data.get("search_backend"),
-            search_config=data.get("search_config", {}),
+            search_fn=None,  # Cannot deserialize functions
             max_results=data.get("max_results", 50),
             max_file_lines=data.get("max_file_lines", 5000),
         )

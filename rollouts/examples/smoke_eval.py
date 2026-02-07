@@ -58,14 +58,7 @@ spec = EvalSpec(
 )
 
 if __name__ == "__main__":
-    import os
-
-    from dotenv import load_dotenv
-
-    load_dotenv(os.path.expanduser("~/wafer/.env"), override=True)
-    # Use wafer's Anthropic key
-    os.environ["ANTHROPIC_API_KEY"] = os.environ.get("WAFER_ANTHROPIC_API_KEY", "")
-
+    # Requires ANTHROPIC_API_KEY in environment
     result = run_eval_from_spec(
         spec,
         tasks=tasks,

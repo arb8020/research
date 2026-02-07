@@ -8,7 +8,7 @@ Three independent frozen dataclasses that separate concerns cleanly:
 These are the building blocks. EvalSpec + run_eval_from_spec() compose them
 into a full eval run. Training configs (GRPOConfig) compose them similarly.
 
-Design: Ported from wafer/research/evals/shared/config.py.
+Design: Composable config tiers that separate concerns for evals and training.
 Style: Pythonic + hierarchical + serializable (see docs/code_style/experiment_config.md).
 """
 

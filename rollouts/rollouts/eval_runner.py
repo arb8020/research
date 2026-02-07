@@ -6,7 +6,7 @@ to their eval (EvalSpec), and the runner handles orchestration.
 Granularity (Casey Muratori): EvalSpec is bool_button() to EvalConfig's
 push_button(). If you need full control, use evaluate() directly.
 
-Design: Ported from wafer/research/evals/shared/runner.py.
+Design: High-level convenience wrapper that reduces boilerplate for eval authors.
 
 Usage:
     # 1. Define what's unique to your eval
@@ -221,8 +221,8 @@ def run_eval_from_spec(  # noqa: PLR0913
             environment = spec.make_environment()  # type: ignore[missing-argument]  # nullary when not per_sample
 
     # ── Stop handlers ──
-    from .handlers import handle_stop_max_turns
     from .dtypes import AgentState, StopReason
+    from .handlers import handle_stop_max_turns
 
     async def stop_on_no_tool(state: AgentState, run_config: AgentRunConfig) -> AgentState:
         return replace(state, stop=StopReason.TASK_COMPLETED)

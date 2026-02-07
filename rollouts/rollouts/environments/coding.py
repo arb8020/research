@@ -530,7 +530,7 @@ class LocalFilesystemEnvironment:
                or a list of tool names (e.g., ["read", "edit"]). Defaults to "full".
         bash_allowlist: List of allowed bash command prefixes. If set, only commands
             starting with one of these prefixes will be allowed. None means all
-            commands are allowed. Example: ["wafer evaluate", "jq", "python -c"]
+            commands are allowed. Example: ["uv run pytest", "jq", "python -c"]
         summarize_web_fetch: Whether to use AI to summarize fetched web content.
         summarizer_provider: Provider for summarization ("anthropic", "openai", "google").
         summarizer_model: Model to use for summarization.

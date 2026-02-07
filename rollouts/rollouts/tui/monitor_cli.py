@@ -46,14 +46,47 @@ def _log(event: str, **data: Any) -> None:
 
 
 def _broker_credentials() -> dict[str, str]:
-    """Load broker credentials from environment."""
-    credentials: dict[str, str] = {}
-    for env_key, provider in [
+    """Load broker credentials: shared.config (if available) -> env vars.
+
+    shared.config handles .env loading automatically on import.
+    Falls back to direct env var lookup if shared package not installed.
+    """
+    # Try shared.config first (handles .env loading)
+    try:
+        from shared.config import (
+            get_digitalocean_key,
+            get_lambda_key,
+            get_prime_key,
+            get_runpod_key,
+            get_vast_key,
+        )
+
+        credentials: dict[str, str] = {}
+        if key := get_runpod_key():
+            credentials["runpod"] = key
+        if key := get_prime_key():
+            credentials["primeintellect"] = key
+        if key := get_lambda_key():
+            credentials["lambdalabs"] = key
+        if key := get_vast_key():
+            credentials["vast"] = key
+        if key := get_digitalocean_key():
+            credentials["digitalocean"] = key
+        return credentials
+    except ImportError:
+        pass
+
+    # Fallback: direct env var lookup
+    credentials = {}
+    env_map = [
         ("RUNPOD_API_KEY", "runpod"),
-        ("WAFER_RUNPOD_API_KEY", "runpod"),
-    ]:
-        val = os.environ.get(env_key)
-        if val and provider not in credentials:
+        ("PRIME_API_KEY", "primeintellect"),
+        ("LAMBDA_API_KEY", "lambdalabs"),
+        ("VAST_API_KEY", "vast"),
+        ("DIGITALOCEAN_API_KEY", "digitalocean"),
+    ]
+    for env_key, provider in env_map:
+        if val := os.environ.get(env_key):
             credentials[provider] = val
     return credentials
 
@@ -534,7 +567,9 @@ def _run_attached(run_id: str | None, *, tail: bool = False) -> int:
     stop_sync.set()
     sync_thread.join(timeout=5.0)
     if connection_lost.is_set():
-        print("\n[monitor] LogsServer connection lost (see training.log for details)", file=sys.stderr)
+        print(
+            "\n[monitor] LogsServer connection lost (see training.log for details)", file=sys.stderr
+        )
 
     print("\nFinal sync...")
     try:

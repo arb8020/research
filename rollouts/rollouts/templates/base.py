@@ -26,7 +26,7 @@ class TemplateConfig:
         ...     name="ask-docs",
         ...     system_prompt="You analyze documentation to answer questions...",
         ...     tools=["read", "glob", "grep", "bash"],
-        ...     bash_allowlist=["wafer ask-docs", "jq", "python -c"],
+        ...     bash_allowlist=["uv run pytest", "jq", "python -c"],
         ... )
     """
 

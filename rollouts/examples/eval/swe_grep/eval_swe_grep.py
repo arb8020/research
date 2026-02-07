@@ -35,7 +35,7 @@ from rollouts.dtypes import (
     RunConfig,
     Trajectory,
 )
-from rollouts.environments.swe_grep import SWEGrepEnvironment
+from rollouts.environments.swe_grep import SearchFn, SWEGrepEnvironment
 
 from .scoring import compute_retrieval_score, grade_answer
 
@@ -64,11 +64,8 @@ class SWEGrepConfig:
     tools: list[str] = field(default_factory=lambda: ["grep", "glob", "read", "submit"])
     """Which tools to enable. Options: grep, glob, search, read, submit."""
 
-    search_backend: str | None = None
-    """Search backend: 'wafer' (API), 'tfidf' (local), or None."""
-
-    search_config: dict[str, Any] = field(default_factory=dict)
-    """Search backend configuration (API URL, credentials, etc.)."""
+    search_fn: SearchFn | None = None
+    """Search function: async (query, top_k) -> formatted results string."""
 
     max_turns: int = 15
     """Maximum agent turns per query."""
@@ -176,8 +173,7 @@ async def evaluate_sample(
     environment = SWEGrepEnvironment(
         corpus_path=config.corpus_path,
         tools=config.tools,
-        search_backend=config.search_backend,
-        search_config=config.search_config,
+        search_fn=config.search_fn,
         max_results=50,
         max_file_lines=2000,
     )
