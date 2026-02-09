@@ -166,6 +166,9 @@ class CLIConfig:
     _bash_allowlist: list[str] | None = None  # From template (internal)
 
     # Commands (mutually exclusive actions)
+    list_models: bool = False
+    sync_models: bool = False
+    write_models: bool = False  # --write flag for --sync-models
     list_presets: bool = False
     login_claude: bool = False
     logout_claude: bool = False
@@ -347,6 +350,23 @@ def create_parser() -> argparse.ArgumentParser:
         choices=["enabled", "disabled"],
         default=PARSER_DEFAULTS["thinking"],
         help="Extended thinking for Anthropic models (default: enabled)",
+    )
+
+    # Model management
+    parser.add_argument(
+        "--list-models",
+        action="store_true",
+        help="List models in registry, highlight missing from provider APIs",
+    )
+    parser.add_argument(
+        "--sync-models",
+        action="store_true",
+        help="Fetch latest models from provider APIs/docs and update registry",
+    )
+    parser.add_argument(
+        "--write",
+        action="store_true",
+        help="With --sync-models: write changes to models.py on disk",
     )
 
     # Preset listing
@@ -790,6 +810,122 @@ def create_endpoint(
 # =============================================================================
 # Command handlers - each handles a specific CLI subcommand
 # =============================================================================
+
+
+def cmd_list_models() -> int:
+    """Handle --list-models command."""
+    import os
+
+    from .models import MODELS, fetch_anthropic_models
+
+    print("Models in registry:\n")
+
+    for provider, models in MODELS.items():
+        if not models:
+            continue
+        print(f"{provider}:")
+        for model_id, meta in models.items():
+            cost_str = f"${meta.cost.input:.2f}/${meta.cost.output:.2f}"
+            print(
+                f"  {model_id:<40} {cost_str:<12} {meta.context_window // 1000}K ctx, {meta.max_tokens // 1000}K out"
+            )
+        print()
+
+    # Check for missing models from Anthropic API
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if api_key:
+        print("Checking Anthropic API for new models...")
+        try:
+            import trio
+
+            api_models = trio.run(fetch_anthropic_models, api_key)
+            api_ids = {m["id"] for m in api_models}
+            registry_ids = set(MODELS.get("anthropic", {}).keys())
+            missing = api_ids - registry_ids
+
+            if missing:
+                print(f"\nMissing from registry ({len(missing)}):")
+                for model_id in sorted(missing):
+                    print(f"  + {model_id}")
+                print("\nRun --sync-models to add them.")
+            else:
+                print("Registry is up to date with Anthropic API.")
+        except Exception as e:
+            print(f"Could not fetch from API: {e}")
+    else:
+        print("Set ANTHROPIC_API_KEY to check for new models from API.")
+
+    return 0
+
+
+def cmd_sync_models(write: bool = False) -> int:
+    """Handle --sync-models command."""
+    import os
+
+    from .models import (
+        ModelDiff,
+        fetch_anthropic_docs,
+        sync_anthropic_models,
+        update_models_file,
+        write_models_to_disk,
+    )
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        print("Error: ANTHROPIC_API_KEY required for --sync-models")
+        return 1
+
+    print("Fetching models from Anthropic API and docs...")
+
+    import trio
+
+    async def do_sync() -> tuple[ModelDiff, dict[str, dict]]:
+        diff = await sync_anthropic_models(api_key)
+        docs = await fetch_anthropic_docs()
+        return diff, docs
+
+    diff, docs = trio.run(do_sync)
+
+    if diff.missing:
+        print(f"\nNew models ({len(diff.missing)}):")
+        for model_id in diff.missing:
+            if model_id in docs:
+                d = docs[model_id]
+                print(
+                    f"  + {model_id}: ${d['input_cost']:.2f}/${d['output_cost']:.2f}, {d['context_window'] // 1000}K ctx"
+                )
+            else:
+                print(f"  + {model_id}: (no metadata available)")
+
+    if diff.updated:
+        print(f"\nUpdated models ({len(diff.updated)}):")
+        for model_id, changes in diff.updated.items():
+            print(f"  ~ {model_id}:")
+            for field, (old, new) in changes.items():
+                print(f"      {field}: {old} -> {new}")
+
+    if diff.extra:
+        print(f"\nDeprecated/unlisted ({len(diff.extra)}):")
+        for model_id in diff.extra:
+            print(f"  - {model_id}")
+
+    if not diff.missing and not diff.updated:
+        print("\nRegistry is already up to date.")
+        return 0
+
+    # Apply updates in memory
+    result = update_models_file(diff, docs)
+    print(f"\n{result}")
+
+    if write:
+        # Write to disk
+        models_path = write_models_to_disk()
+        print(f"\nWrote updated models to {models_path}")
+    else:
+        print("\nNote: Changes applied to runtime registry only.")
+        print("Use --sync-models --write to persist to models.py")
+
+    return 0
 
 
 def cmd_list_presets() -> int:
@@ -2069,6 +2205,9 @@ def main() -> int:
         log_file=args.log_file,
         preset=args.preset,
         system_prompt=args.system_prompt,
+        list_models=args.list_models,
+        sync_models=args.sync_models,
+        write_models=args.write,
         list_presets=args.list_presets,
         login_claude=args.login_claude,
         logout_claude=args.logout_claude,
@@ -2098,6 +2237,12 @@ def main() -> int:
     )
 
     # === Commands that don't need endpoint ===
+
+    if config.list_models:
+        return cmd_list_models()
+
+    if config.sync_models:
+        return cmd_sync_models(write=config.write_models)
 
     if config.list_presets:
         return cmd_list_presets()

@@ -2,8 +2,9 @@
 """Stress test rate limiting across providers.
 
 Usage:
-    # Load env vars first
-    export $(cat ~/wafer/.env | xargs)
+    # Set API keys in environment (or .env file)
+    export OPENAI_API_KEY=...
+    export ANTHROPIC_API_KEY=...
 
     # Test OpenAI with high concurrency
     python scripts/stress_test_rate_limits.py --provider openai --samples 50 --concurrent 25
