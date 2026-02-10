@@ -1070,7 +1070,15 @@ class ToolResult(JsonSerializable):
 
         # Extract key metrics from details (e.g., compiled, correct for kernelbench)
         if self.details:
-            for k in ("compiled", "correct", "speedup", "runtime_us", "error", "exit_code", "output_file"):
+            for k in (
+                "compiled",
+                "correct",
+                "speedup",
+                "runtime_us",
+                "error",
+                "exit_code",
+                "output_file",
+            ):
                 if k in self.details:
                     summary[k] = self.details[k]
 
@@ -1367,6 +1375,7 @@ class AgentState:
     actor: Actor
     environment: Environment | None
     stop: StopReason | None = None
+    error: str | None = None  # Error message if stop is due to error (e.g., ProviderError)
     turn_idx: int = 0
     pending_tool_calls: list[ToolCall] = field(default_factory=list)
     next_tool_idx: int = 0  # Which tool we're about to process

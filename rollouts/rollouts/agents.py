@@ -25,6 +25,7 @@ from .dtypes import (
     SessionStatus,
     StopReason,
     StreamChunk,
+    StreamError,
     StreamEvent,
     TextDelta,
     ThinkingDelta,
@@ -236,13 +237,13 @@ async def rollout(
 
     # Call with provider-specific kwargs if needed
     # Anthropic needs extra params, others don't - but **kwargs makes this flexible
-    # Note: Provider functions don't yet support cancel_scope, but we pass it for future support
     new_actor = await provider_func(
         actor,
         on_chunk,
         user_message_for_thinking=user_message_for_thinking,
         turn_idx=turn_idx,
         inline_thinking=inline_thinking,
+        cancel_scope=cancel_scope,
     )
     return new_actor
 
@@ -304,18 +305,40 @@ async def run_agent_step(
         )
 
     # Time the LLM call
+    # ProviderError (rate limits, timeouts) is an operational error - don't crash,
+    # just stop this turn and let the user retry
+    from .providers.base import ProviderError
+
     llm_start_time = time.perf_counter()
-    if rcfg.api_limiter is not None:
-        await rcfg.on_chunk(SemaphoreWaitStart(limiter_type="api"))
-        wait_start = time.perf_counter()
-        async with rcfg.api_limiter:
-            wait_duration_ms = (time.perf_counter() - wait_start) * 1000
-            await rcfg.on_chunk(
-                SemaphoreAcquired(limiter_type="api", wait_duration_ms=wait_duration_ms)
-            )
+    try:
+        if rcfg.api_limiter is not None:
+            await rcfg.on_chunk(SemaphoreWaitStart(limiter_type="api"))
+            wait_start = time.perf_counter()
+            async with rcfg.api_limiter:
+                wait_duration_ms = (time.perf_counter() - wait_start) * 1000
+                await rcfg.on_chunk(
+                    SemaphoreAcquired(limiter_type="api", wait_duration_ms=wait_duration_ms)
+                )
+                next_actor = await do_rollout()
+        else:
             next_actor = await do_rollout()
-    else:
-        next_actor = await do_rollout()
+    except ProviderError as e:
+        # Operational error (rate limit, timeout, etc) - stop gracefully
+        llm_duration_ms = (time.perf_counter() - llm_start_time) * 1000
+        await rcfg.on_chunk(
+            LLMCallEnd(
+                duration_ms=llm_duration_ms,
+                provider=updated_actor.endpoint.provider,
+                model=updated_actor.endpoint.model,
+                tokens_in=None,
+                tokens_out=None,
+                status="error",
+                error=str(e),
+            )
+        )
+        await rcfg.on_chunk(StreamError(error=e))
+        return replace(state, stop=StopReason.PROVIDER_ERROR, error=str(e))
+
     llm_duration_ms = (time.perf_counter() - llm_start_time) * 1000
 
     # Extract token counts from completion if available

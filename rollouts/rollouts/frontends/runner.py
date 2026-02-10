@@ -302,7 +302,7 @@ class InteractiveRunner:
         self._update_frontend_status(state)
 
         if self.single_turn:
-            return dc_replace(state, stop=StopReason.NO_TOOL)
+            return dc_replace(state, stop=StopReason.NO_TOOL_CALLED)
 
         if self.detached:
             await self._write_pending_input(state)

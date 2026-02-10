@@ -726,8 +726,14 @@ async def rollout_anthropic(
     user_message_for_thinking: str | None = None,
     turn_idx: int = 0,
     inline_thinking: str | None = None,
+    cancel_scope: trio.CancelScope | None = None,
+    **kwargs: Any,
 ) -> Actor:
     """Call Anthropic's API using streaming and update the actor.
+
+    Args:
+        cancel_scope: Optional Trio cancel scope for graceful cancellation.
+            When cancelled, raises ProviderError instead of blocking on retries.
 
     Note: **kwargs accepts but ignores provider-specific params (e.g., openai reasoning params)
     """
@@ -992,6 +998,17 @@ async def rollout_anthropic(
 
                 # Transient error - emit retry event and wait
                 if attempt < max_retries:
+                    # Check if cancelled before starting retry wait
+                    if cancel_scope is not None and cancel_scope.cancel_called:
+                        from .base import ProviderError
+
+                        raise ProviderError(
+                            f"Cancelled during retry: {_format_rate_limit_error(e)}",
+                            original_error=e,
+                            attempts=attempt + 1,
+                            provider="anthropic",
+                        ) from e
+
                     delay = base_delay * (2**attempt)
                     error_msg = _format_rate_limit_error(e)
                     await on_chunk(
@@ -1004,7 +1021,22 @@ async def rollout_anthropic(
                         )
                     )
                     retrying = True
-                    await trio.sleep(delay)
+
+                    # Sleep with cancellation support
+                    if cancel_scope is not None:
+                        with trio.move_on_after(delay) as sleep_scope:
+                            await trio.sleep(delay)
+                        if cancel_scope.cancel_called:
+                            from .base import ProviderError
+
+                            raise ProviderError(
+                                f"Cancelled during retry wait: {error_msg}",
+                                original_error=e,
+                                attempts=attempt + 1,
+                                provider="anthropic",
+                            ) from e
+                    else:
+                        await trio.sleep(delay)
                     continue
 
                 # All retries exhausted - emit RetryEnd and raise ProviderError

@@ -359,6 +359,20 @@ MODELS: dict[Provider, dict[str, ModelMetadata]] = {
             max_tokens=8192,
         ),
     },
+    "cerebras": {
+        "zai-glm-4.7": ModelMetadata(
+            id="zai-glm-4.7",
+            name="GLM 4.7",
+            provider="cerebras",
+            api="openai-completions",
+            base_url="https://api.cerebras.ai/v1",
+            reasoning=False,
+            input_types=["text"],
+            cost=ModelCost(input=2.25, output=2.75, cache_read=0.0, cache_write=0.0),
+            context_window=131072,
+            max_tokens=8192,
+        ),
+    },
     "sglang": {},  # vLLM/sglang uses custom endpoints, populated at runtime
     "vllm": {},  # Same as sglang
 }

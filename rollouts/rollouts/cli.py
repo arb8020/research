@@ -785,6 +785,14 @@ def create_endpoint(
     if api_key is None:
         if provider == "openai":
             api_key = os.environ.get("OPENAI_API_KEY", "")
+        elif provider == "cerebras":
+            api_key = os.environ.get("CEREBRAS_API_KEY", "")
+        elif provider == "groq":
+            api_key = os.environ.get("GROQ_API_KEY", "")
+        elif provider == "xai":
+            api_key = os.environ.get("XAI_API_KEY", "")
+        elif provider == "google":
+            api_key = os.environ.get("GOOGLE_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
         else:
             api_key = ""
 
@@ -2330,7 +2338,17 @@ def main() -> int:
 
     # Validate authentication
     if not config.endpoint.api_key and not config.endpoint.oauth_token:
-        env_var = "OPENAI_API_KEY" if config.endpoint.provider == "openai" else "ANTHROPIC_API_KEY"
+        env_var_map = {
+            "openai": "OPENAI_API_KEY",
+            "anthropic": "ANTHROPIC_API_KEY",
+            "cerebras": "CEREBRAS_API_KEY",
+            "groq": "GROQ_API_KEY",
+            "xai": "XAI_API_KEY",
+            "google": "GOOGLE_API_KEY or GEMINI_API_KEY",
+        }
+        env_var = env_var_map.get(
+            config.endpoint.provider, f"{config.endpoint.provider.upper()}_API_KEY"
+        )
         print(
             f"❌ No API key found. Set {env_var}, use --api-key, or --login-claude",
             file=sys.stderr,
