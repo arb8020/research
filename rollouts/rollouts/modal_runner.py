@@ -208,9 +208,12 @@ async def _sync_code_to_sandbox(sandbox: Any, local_root: Path) -> str:
 
     Uses git bundle + sandbox.open() for efficient file transfer.
 
-    Returns workspace path in sandbox.
+    Returns workspace path in sandbox (the rollouts subdir within the cloned repo).
     """
-    workspace = "/workspace/rollouts"
+    # Git root is ~/research (parent), we clone to /workspace/research
+    # The rollouts code is at /workspace/research/rollouts
+    clone_dir = "/workspace/research"
+    workspace = "/workspace/research/rollouts"
 
     def _sync() -> None:
         # Create git bundle of current HEAD (fast, includes all needed objects)
@@ -245,7 +248,7 @@ async def _sync_code_to_sandbox(sandbox: Any, local_root: Path) -> str:
                 bundle_data = f.read()
 
             # Create workspace directory
-            _exec_sync(sandbox, f"mkdir -p {workspace}", timeout=30)
+            _exec_sync(sandbox, "mkdir -p /workspace", timeout=30)
 
             # Use sandbox.open() for proper file transfer (Alpha API)
             logger.info("Uploading bundle via sandbox.open()...")
@@ -255,11 +258,11 @@ async def _sync_code_to_sandbox(sandbox: Any, local_root: Path) -> str:
             logger.info(f"Uploaded {len(bundle_data) / 1024 / 1024:.1f} MB")
 
             logger.info("Extracting bundle...")
-            # Clone from bundle
+            # Clone from bundle - clones parent repo (research) to /workspace/research
             _exec_sync(
                 sandbox,
-                "cd /workspace && git clone /tmp/repo.bundle rollouts && "
-                "cd rollouts && git checkout HEAD",
+                "cd /workspace && git clone /tmp/repo.bundle research && "
+                "cd research && git checkout HEAD",
                 timeout=120,
             )
 
