@@ -28,8 +28,10 @@ class ProcessTerminal(Terminal):
 
     def stop(self) -> None:
         """Stop terminal and print session ID for crash recovery."""
+        global _active_session_id
         super().stop()
         # Print session ID on exit so user can resume
         if _active_session_id:
             print(f"\nSession: {_active_session_id}")
             print(f"Resume with: --session {_active_session_id}")
+            _active_session_id = None  # Prevent double-print from other cleanup paths
