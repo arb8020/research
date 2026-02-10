@@ -1,5 +1,27 @@
 """Unified event emission for TUI consumption.
 
+.. deprecated::
+    This module is deprecated. Use the logging-based approach instead:
+
+    from rollouts._logging import setup_eval_logging
+    import logging
+
+    _event_logger = logging.getLogger("rollouts.eval.events")
+
+    # In evaluate():
+    ctx = setup_eval_logging(output_dir)
+    _event_logger.info("sample_start", extra={"sample_id": "001", "name": "test"})
+    # ... do work ...
+    _event_logger.info("sample_end", extra={"sample_id": "001", "score": 0.85})
+    ctx.teardown()
+
+    Benefits of the new approach:
+    - Standard Python logging (no custom classes)
+    - Per-sample JSONL files for detailed traces
+    - Wide events pattern (one event with all context)
+    - QueueHandler for non-blocking writes
+    - Configurable log levels (DEBUG for deltas, INFO for boundaries)
+
 All long-running processes (eval, GEPA, RL training) emit structured events
 to a JSONL file. The TUI tails this file and renders progress.
 
@@ -35,11 +57,20 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
 
 logger = logging.getLogger(__name__)
+
+# Emit deprecation warning on import
+warnings.warn(
+    "rollouts.events is deprecated. Use rollouts._logging.setup_eval_logging() instead. "
+    "See module docstring for migration guide.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 # Context variable for accessing emitter from anywhere in the call stack
 _emitter_ctx: contextvars.ContextVar[EventEmitter | None] = contextvars.ContextVar(

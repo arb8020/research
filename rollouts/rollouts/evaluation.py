@@ -15,23 +15,32 @@ from typing import Any
 
 import trio
 
+from ._logging import EvalLoggingContext, setup_eval_logging
 from .agents import run_agent
 from .dtypes import (
     Actor,
     AgentState,
     Environment,
     EvalConfig,
+    LLMCallEnd,
     Metric,
     RunConfig,
     Score,
     StreamChunk,
+    TextDelta,
+    TextEnd,
+    ThinkingDelta,
+    ToolExecutionEnd,
     Trajectory,
 )
-from .events import EventEmitter, emit_event
 from .progress import MultiProgress
 from .training.types import Sample
 
 logger = logging.getLogger(__name__)
+
+# Logger for structured eval events — handlers configured by setup_eval_logging()
+# This follows the "wide events" pattern: comprehensive events with all context
+_event_logger = logging.getLogger("rollouts.eval.events")
 
 
 # ── Runtime Context ───────────────────────────────────────────────────────────
@@ -687,9 +696,10 @@ async def evaluate_sample(
     # Wrap on_chunk to inject sample_id context for concurrent sample tracking
     base_on_chunk = base_run_config.on_chunk
     last_status: dict[str, str] = {}  # Track last status to avoid duplicate events
+    current_turn: dict[str, int] = {}  # Track current turn per sample for wide events
 
     async def on_chunk_with_sample_id(event: object) -> None:
-        nonlocal last_status
+        nonlocal last_status, current_turn
 
         # Update MultiProgress on various events for granular status
         status = _get_progress_status_for_event(event)
@@ -703,18 +713,100 @@ async def evaluate_sample(
                     status=status if status is not None else None,
                 )
 
-        # Emit to file for TUI - only on status changes to avoid flooding
+        # Emit to JSONL files via logging — overview (INFO+) and per-sample (all levels)
         if isinstance(event, StreamChunk):
             if event.type == "turn_start":
-                emit_event("turn", id=sample_id, turn=event.data.get("turn", 0), status="waiting")
+                turn_num = event.data.get("turn", 0)
+                current_turn[sample_id] = turn_num
+                _event_logger.info(
+                    "turn",
+                    extra={
+                        "sample_id": sample_id,
+                        "turn": turn_num,
+                        "status": "waiting",
+                    },
+                )
                 last_status[sample_id] = "waiting"
             elif event.type == "modal_progress":
-                emit_event("modal_progress", id=sample_id, phase=event.data.get("phase", ""))
+                _event_logger.info(
+                    "modal_progress",
+                    extra={
+                        "sample_id": sample_id,
+                        "phase": event.data.get("phase", ""),
+                    },
+                )
 
-        # Emit status changes for LLM events (streaming, thinking, tool calls)
+        # Emit status changes (dedup to avoid flooding)
         if status is not None and status != last_status.get(sample_id):
-            emit_event("turn", id=sample_id, status=status)
+            _event_logger.info("turn", extra={"sample_id": sample_id, "status": status})
             last_status[sample_id] = status
+
+        # Wide events: detailed timing for performance analysis
+        sample_turn = current_turn.get(sample_id, 0)
+        if isinstance(event, LLMCallEnd):
+            _event_logger.info(
+                "llm_call",
+                extra={
+                    "sample_id": sample_id,
+                    "turn": sample_turn,
+                    "duration_ms": round(event.duration_ms, 1),
+                    "provider": event.provider,
+                    "model": event.model,
+                    "tokens_in": event.tokens_in,
+                    "tokens_out": event.tokens_out,
+                    "status": event.status,
+                    "error": event.error,
+                },
+            )
+        elif isinstance(event, ToolExecutionEnd):
+            _event_logger.info(
+                "tool_execution",
+                extra={
+                    "sample_id": sample_id,
+                    "turn": sample_turn,
+                    "tool_name": event.tool_name,
+                    "duration_ms": round(event.duration_ms, 1),
+                    "status": event.status,
+                    "is_error": event.is_error,
+                    "result_summary": event.result_summary,
+                },
+            )
+        elif isinstance(event, TextEnd):
+            # Truncate for events.jsonl (INFO), full content in per-sample (also INFO)
+            content = event.content
+            truncated = len(content) > 2000
+            if truncated:
+                content = content[:2000] + "..."
+            _event_logger.info(
+                "assistant_message",
+                extra={
+                    "sample_id": sample_id,
+                    "turn": sample_turn,
+                    "content": content,
+                    "content_length": len(event.content),
+                    "truncated": truncated,
+                },
+            )
+
+        # DEBUG: streaming deltas — per-sample files only (filtered out of events.jsonl)
+        elif isinstance(event, TextDelta):
+            _event_logger.debug(
+                "text_delta",
+                extra={
+                    "sample_id": sample_id,
+                    "turn": sample_turn,
+                    "text": event.delta,
+                },
+            )
+        elif isinstance(event, ThinkingDelta):
+            _event_logger.debug(
+                "thinking_delta",
+                extra={
+                    "sample_id": sample_id,
+                    "turn": sample_turn,
+                    "text": event.delta,
+                },
+            )
 
         # Wrap event with sample_id and forward to base handler
         wrapped_event = _wrap_event_with_sample_id(event, sample_id)
@@ -750,13 +842,13 @@ async def evaluate_sample(
         )
     )
 
-    # Also emit to file for TUI (if emitter configured)
+    # Emit sample_start for progress display
     # TODO: Retry logic can emit multiple sample_start events for the same sample_id
     # without a corresponding sample_end, causing progress display to show 100/100
     # while a sample is still running. Either emit sample_end before retry, or
     # don't emit sample_start on retries. See: chiraag/supabase-eval-traces PR #504
     sample_name = sample_data.get("name", sample_id)
-    emit_event("sample_start", id=sample_id, name=sample_name)
+    _event_logger.info("sample_start", extra={"sample_id": sample_id, "sample_name": sample_name})
 
     # Run agent with error handling
     result = await _run_agent_with_error_handling(initial_state, run_config, sample_id)
@@ -826,8 +918,7 @@ async def evaluate_sample(
         )
     )
 
-    # Also emit to file for TUI (if emitter configured)
-    emit_event("sample_end", id=sample_id, score=reward)
+    _event_logger.info("sample_end", extra={"sample_id": sample_id, "score": reward})
 
     return sample
 
@@ -873,13 +964,18 @@ async def evaluate(
         logger.info(f"max concurrent: {config.max_concurrent}")
         logger.debug("=" * 50)
 
-    # Initialize event emitter for TUI progress (writes to events.jsonl)
-    # This is separate from MultiProgress - events go to file for external TUI
-    emitter: EventEmitter | None = None
+    # Set up eval logging: events.jsonl (overview) + samples/{id}.jsonl (per-sample)
+    # This replaces the old EventEmitter pattern with standard logging
+    eval_logging: EvalLoggingContext | None = None
     if config.output_dir:
-        emitter = EventEmitter(output_dir=config.output_dir)
-        emitter.as_context()  # Make available via get_emitter()
-        emitter.emit("eval_start", name=config.eval_name, total=len(samples_to_eval))
+        eval_logging = setup_eval_logging(config.output_dir)
+        _event_logger.info(
+            "eval_start",
+            extra={
+                "eval_name": config.eval_name,
+                "total": len(samples_to_eval),
+            },
+        )
 
     # Evaluate samples (with concurrency control)
     results = []
@@ -1031,10 +1127,16 @@ async def evaluate(
             else:
                 logger.info(f"{key}: {value}")
 
-    # Close event emitter
-    if emitter:
-        emitter.emit("eval_end", name=config.eval_name, total=len(results))
-        emitter.close()
+    # Emit eval_end and clean up logging
+    if eval_logging:
+        _event_logger.info(
+            "eval_end",
+            extra={
+                "eval_name": config.eval_name,
+                "total": len(results),
+            },
+        )
+        eval_logging.teardown()
 
     return report
 
