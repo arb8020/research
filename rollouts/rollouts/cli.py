@@ -701,7 +701,15 @@ def create_endpoint(
             )
 
     if api_base is None:
-        if provider == "openai":
+        # Try to get base_url from model metadata first
+        from typing import cast
+
+        from .models import Provider, get_model
+
+        model_metadata = get_model(cast(Provider, provider), model)
+        if model_metadata and model_metadata.base_url:
+            api_base = model_metadata.base_url
+        elif provider == "openai":
             api_base = "https://api.openai.com/v1"
         elif provider == "anthropic":
             api_base = "https://api.anthropic.com"
@@ -784,18 +792,10 @@ def create_endpoint(
                 sys.exit(1)
 
     if api_key is None:
-        if provider == "openai":
-            api_key = os.environ.get("OPENAI_API_KEY", "")
-        elif provider == "cerebras":
-            api_key = os.environ.get("CEREBRAS_API_KEY", "")
-        elif provider == "groq":
-            api_key = os.environ.get("GROQ_API_KEY", "")
-        elif provider == "xai":
-            api_key = os.environ.get("XAI_API_KEY", "")
-        elif provider == "google":
-            api_key = os.environ.get("GOOGLE_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
-        else:
-            api_key = ""
+        # Try credential store first, then env vars
+        from .credentials import get_api_key
+
+        api_key = get_api_key(provider) or ""
 
     # Configure extended thinking for Anthropic
     thinking_config = None
@@ -2137,9 +2137,126 @@ async def _run_interactive_mode(
 # =============================================================================
 
 
+def auth_main(args: list[str]) -> int:
+    """Handle auth subcommand: rollouts auth <login|status|switch>."""
+    from .credentials import (
+        CREDENTIALS_FILE,
+        KNOWN_PROVIDERS,
+        get_active_profile,
+        get_all_credentials,
+        key_preview,
+        load_profiles,
+        set_active_profile,
+        set_profile_key,
+    )
+
+    if not args or args[0] in ("-h", "--help"):
+        print("Usage: rollouts auth <command>")
+        print()
+        print("Commands:")
+        print("  login <provider>   Save API key for a provider")
+        print("  status             Show configured credentials")
+        print("  switch <profile>   Switch active profile")
+        print()
+        print(f"Providers: {', '.join(sorted(KNOWN_PROVIDERS))}")
+        print(f"Config: {CREDENTIALS_FILE}")
+        return 0
+
+    cmd = args[0]
+
+    if cmd == "login":
+        if len(args) < 2:
+            print("Usage: rollouts auth login <provider> [--profile NAME]", file=sys.stderr)
+            print(f"Providers: {', '.join(sorted(KNOWN_PROVIDERS))}", file=sys.stderr)
+            return 1
+
+        provider = args[1]
+        profile = "default"
+
+        # Parse --profile
+        if "--profile" in args:
+            idx = args.index("--profile")
+            if idx + 1 < len(args):
+                profile = args[idx + 1]
+
+        if provider not in KNOWN_PROVIDERS:
+            print(f"Unknown provider: {provider}", file=sys.stderr)
+            print(f"Known providers: {', '.join(sorted(KNOWN_PROVIDERS))}", file=sys.stderr)
+            return 1
+
+        # Prompt for API key
+        import getpass
+
+        api_key = getpass.getpass(f"Enter {provider} API key: ")
+        if not api_key.strip():
+            print("No API key provided", file=sys.stderr)
+            return 1
+
+        set_profile_key(profile, provider, api_key.strip())
+        print(f"✓ Saved {provider} API key to profile '{profile}'")
+        return 0
+
+    elif cmd == "status":
+        profiles = load_profiles()
+        active_name, _ = get_active_profile()
+        credentials = get_all_credentials()
+
+        if not profiles and not credentials:
+            print("No credentials configured.")
+            print(f"Run: rollouts auth login <provider>")
+            print(f"Config: {CREDENTIALS_FILE}")
+            return 0
+
+        # Show active credentials
+        if credentials:
+            print("Active credentials:")
+            for provider, key in sorted(credentials.items()):
+                print(f"  {provider}: {key_preview(key)}")
+        else:
+            print("No active credentials")
+
+        # Show profiles
+        if profiles:
+            print(f"\nProfiles ({CREDENTIALS_FILE}):")
+            for name, profile in profiles.items():
+                if not isinstance(profile, dict):
+                    continue
+                is_active = profile.get("active", False)
+                marker = " *" if is_active else ""
+                providers = [k for k in profile.keys() if k != "active"]
+                print(f"  {name}{marker}: {', '.join(providers) or '(empty)'}")
+
+        return 0
+
+    elif cmd == "switch":
+        if len(args) < 2:
+            print("Usage: rollouts auth switch <profile>", file=sys.stderr)
+            profiles = load_profiles()
+            if profiles:
+                print(f"Available: {', '.join(profiles.keys())}", file=sys.stderr)
+            return 1
+
+        profile = args[1]
+        try:
+            set_active_profile(profile)
+            print(f"✓ Switched to profile '{profile}'")
+            return 0
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            return 1
+
+    else:
+        print(f"Unknown auth command: {cmd}", file=sys.stderr)
+        print("Use: rollouts auth --help", file=sys.stderr)
+        return 1
+
+
 def main() -> int:
     """Main CLI entry point - dispatcher for all CLI commands."""
     # Intercept subcommands before argparse (flat parser doesn't support subparsers)
+    if len(sys.argv) > 1 and sys.argv[1] == "auth":
+        return auth_main(sys.argv[2:])
+
     if len(sys.argv) > 1 and sys.argv[1] == "monitor":
         from .tui.monitor_cli import monitor_main
 
@@ -2339,19 +2456,13 @@ def main() -> int:
 
     # Validate authentication
     if not config.endpoint.api_key and not config.endpoint.oauth_token:
-        env_var_map = {
-            "openai": "OPENAI_API_KEY",
-            "anthropic": "ANTHROPIC_API_KEY",
-            "cerebras": "CEREBRAS_API_KEY",
-            "groq": "GROQ_API_KEY",
-            "xai": "XAI_API_KEY",
-            "google": "GOOGLE_API_KEY or GEMINI_API_KEY",
-        }
-        env_var = env_var_map.get(
-            config.endpoint.provider, f"{config.endpoint.provider.upper()}_API_KEY"
+        provider = config.endpoint.provider
+        print(
+            f"❌ No API key found for {provider}.",
+            file=sys.stderr,
         )
         print(
-            f"❌ No API key found. Set {env_var}, use --api-key, or --login-claude",
+            f"   Run: rollouts auth login {provider}",
             file=sys.stderr,
         )
         return 1
