@@ -336,7 +336,7 @@ async def run_agent_step(
                 error=str(e),
             )
         )
-        await rcfg.on_chunk(StreamError(error=e))
+        await rcfg.on_chunk(StreamError(error=str(e)))
         return replace(state, stop=StopReason.PROVIDER_ERROR, error=str(e))
 
     llm_duration_ms = (time.perf_counter() - llm_start_time) * 1000
