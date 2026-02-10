@@ -3,7 +3,7 @@
 Replaces MultiProgress with a cleaner approach:
 - Alternate screen (no scrollback pollution)
 - Stateless renderer (derives state from events.jsonl file)
-- Works with existing EventEmitter infrastructure
+- Works with Python logging infrastructure (setup_eval_logging)
 
 Usage:
     with progress_display(output_dir=output_dir):
@@ -16,8 +16,8 @@ Or detached mode (two terminals):
     # Terminal 2: Watch progress
     python -m rollouts.progress_watch ./results/events.jsonl
 
-Note: Events are written by EventEmitter (rollouts/events.py), not Python logging.
-The progress display just reads the events.jsonl file that evaluate() already produces.
+Note: Events are written by Python logging (rollouts/_logging/setup_eval_logging).
+The progress display reads events.jsonl and supports both old EventEmitter and new logging formats.
 """
 
 from __future__ import annotations
@@ -126,22 +126,26 @@ class RenderState:
 
 
 def derive_state(events: list[dict]) -> RenderState:
-    """Derive current display state from event stream. Stateless."""
+    """Derive current display state from event stream. Stateless.
+
+    Expects logging format: {"message": "sample_end", "sample_id": "001", ...}
+    """
     state = RenderState()
 
     for event in events:
-        event_type = event.get("type")
+        event_type = event.get("message")
         if event_type is None:
             continue
 
-        # Strict validation: crash on unknown event types
+        # Skip unknown event types
         if event_type not in KNOWN_EVENT_TYPES:
-            raise ValueError(f"Unknown event type: {event_type}. Known types: {KNOWN_EVENT_TYPES}")
+            continue
+
+        sample_id = event.get("sample_id")
 
         if event_type == "eval_start":
-            state.eval_name = event.get("name", "eval")
+            state.eval_name = event.get("eval_name", "eval")
             state.total = event.get("total", 0)
-            # Use event timestamp if available, otherwise fall back to now
             if ts := event.get("timestamp"):
                 from datetime import datetime
 
@@ -150,48 +154,47 @@ def derive_state(events: list[dict]) -> RenderState:
                 state.start_time = time.time()
 
         elif event_type == "sample_start":
-            sample_id = event["id"]
+            if sample_id is None:
+                continue
             now = time.time()
+            name = event.get("sample_name", sample_id)
             state.samples[sample_id] = SampleState(
                 id=sample_id,
-                name=event.get("name", sample_id),
+                name=name,
                 last_update=now,
-                phase="starting",  # Default phase so samples show immediately
+                phase="starting",
             )
 
         elif event_type == "turn":
-            sample_id = event["id"]
-            if sample_id in state.samples:
-                # Only update turn if explicitly provided (status updates don't include turn)
-                if "turn" in event:
-                    state.samples[sample_id].turn = event["turn"]
-                state.samples[sample_id].last_update = time.time()
-                # Set phase from turn status if provided, or default to "running"
-                # This ensures samples show up even without modal_progress events
-                status = event.get("status", "running")
-                state.samples[sample_id].phase = status
+            if sample_id is None or sample_id not in state.samples:
+                continue
+            if "turn" in event:
+                state.samples[sample_id].turn = event["turn"]
+            state.samples[sample_id].last_update = time.time()
+            status = event.get("status", "running")
+            state.samples[sample_id].phase = status
 
         elif event_type == "modal_progress":
-            sample_id = event["id"]
-            if sample_id in state.samples:
-                state.samples[sample_id].phase = event.get("phase", "")
-                state.samples[sample_id].last_update = time.time()
+            if sample_id is None or sample_id not in state.samples:
+                continue
+            state.samples[sample_id].phase = event.get("phase", "")
+            state.samples[sample_id].last_update = time.time()
 
         elif event_type == "sample_end":
-            sample_id = event["id"]
-            if sample_id in state.samples:
-                state.samples[sample_id].status = "complete"
-                score = event.get("score")
-                if score is not None:
-                    state.samples[sample_id].score = score
-                    state.scores.append(score)
-                state.completed += 1
+            if sample_id is None or sample_id not in state.samples:
+                continue
+            state.samples[sample_id].status = "complete"
+            score = event.get("score")
+            if score is not None:
+                state.samples[sample_id].score = score
+                state.scores.append(score)
+            state.completed += 1
 
         elif event_type == "sample_retry":
-            sample_id = event["id"]
-            if sample_id in state.samples:
-                state.samples[sample_id].status = "retry"
-                state.samples[sample_id].retry_attempt = event.get("attempt", 1)
+            if sample_id is None or sample_id not in state.samples:
+                continue
+            state.samples[sample_id].status = "retry"
+            state.samples[sample_id].retry_attempt = event.get("attempt", 1)
 
         elif event_type == "gepa_iteration":
             state.gepa_iter = event.get("iter")

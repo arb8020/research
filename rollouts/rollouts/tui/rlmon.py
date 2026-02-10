@@ -441,19 +441,22 @@ def _parse_rollout(raw: str, model: Model) -> Model:
 
 
 def _parse_event(raw: str, model: Model) -> Model:
-    """Parse an events.jsonl line and update model."""
+    """Parse an events.jsonl line and update model.
+
+    Expects logging format: {"message": "sample_end", "sample_id": "001", ...}
+    """
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
         return model
 
-    event_type = data.get("type", "")
+    event_type = data.get("message", "")
     summary = f"[{event_type}]"
 
     match event_type:
         case "eval_start":
             total = data.get("total", 0)
-            name = data.get("name", "")
+            name = data.get("eval_name", "")
             summary = f"Eval started: {name} ({total} samples)"
             new_lines, trimmed = _append_log(model.event_lines, summary)
             return replace(
@@ -464,12 +467,11 @@ def _parse_event(raw: str, model: Model) -> Model:
             )
         case "sample_end":
             score = data.get("score")
-            sample_id = data.get("id", "?")
-            time_sec = data.get("time_sec", 0)
+            sample_id = data.get("sample_id", "?")
             summary = (
-                f"  {sample_id}: score={score:.3f} ({time_sec:.1f}s)"
+                f"  {sample_id}: score={score:.3f}"
                 if score is not None
-                else f"  {sample_id}: done ({time_sec:.1f}s)"
+                else f"  {sample_id}: done"
             )
             scores = model.eval_scores
             if score is not None:
@@ -485,16 +487,17 @@ def _parse_event(raw: str, model: Model) -> Model:
                 eval_scores=scores,
             )
         case "sample_start":
-            name = data.get("name", data.get("id", "?"))
+            name = data.get("sample_name") or data.get("sample_id", "?")
             summary = f"  {name}: started"
         case "rl_step":
             step = data.get("step", "?")
             reward = data.get("reward", "?")
             summary = f"  step {step}: reward={reward}"
-        case "log" | "error":
-            summary = data.get("message", raw)
         case _:
-            summary = f"[{event_type}] {json.dumps({k: v for k, v in data.items() if k not in ('type', 'timestamp')})}"
+            # Filter out common logging fields for cleaner display
+            skip_keys = {"message", "timestamp", "logger", "level"}
+            extras = {k: v for k, v in data.items() if k not in skip_keys}
+            summary = f"[{event_type}] {json.dumps(extras)}" if extras else f"[{event_type}]"
 
     new_lines, trimmed = _append_log(model.event_lines, summary)
     return replace(model, event_lines=new_lines, scroll=max(0, model.scroll - trimmed))

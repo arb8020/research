@@ -1691,15 +1691,18 @@ def prepare_messages(sample_data: Dict[str, Any]) -> List[Message]:
                         assert isinstance(event_obj, dict), (
                             f"Event must be dict, got {type(event_obj)}: {event_obj}"
                         )
-                        assert "type" in event_obj, f"Event missing 'type' field: {event_obj}"
+                        event_type = event_obj.get("message")
+                        assert event_type is not None, (
+                            f"Event missing 'message' field: {event_obj}"
+                        )
                         assert "timestamp" in event_obj, (
                             f"Event missing 'timestamp' field: {event_obj}"
                         )
 
-                        # Forward event as-is (already has type, timestamp, data)
+                        # Forward event as-is
                         self.wfile.write(f"data: {json.dumps(event_obj)}\n\n".encode())
                         self.wfile.flush()
-                        logger.debug(f"📤 Forwarded event: {event_obj['type']}")
+                        logger.debug(f"📤 Forwarded event: {event_type}")
 
                         event_line = events_file_handle.readline()
 
