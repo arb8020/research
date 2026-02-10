@@ -390,10 +390,7 @@ class InteractiveRunner:
         """Stop frontend and print session info."""
         await self.frontend.stop()
 
-        # Only print if not already printed by terminal/TUI cleanup
-        from .tui.terminal import _active_session_id
-
-        if self.session_id and _active_session_id is not None:
+        if self.session_id:
             print(f"\nSession: {self.session_id}")
             print(f"Resume with: --session {self.session_id}")
 
