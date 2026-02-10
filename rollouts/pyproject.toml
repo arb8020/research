@@ -27,6 +27,11 @@ eval = [
     "datasets>=4.4.1",
 ]
 
+# Tinygrad renderer eval (WebGPU backend)
+tinygrad-webgpu = [
+    "dawn-python>=0.3.0",
+]
+
 # Training (RL, torch, etc.)
 training = [
     "torch>=2.0.0",
@@ -42,6 +47,12 @@ deploy = [
     "broker",
     "miniray",
     "paramiko>=3.0.0",
+]
+
+# Modal deployment (fast sandbox-based GPU execution)
+modal = [
+    "modal>=0.64.0",
+    "trio-asyncio>=0.15.0",
 ]
 
 # Development

@@ -2,23 +2,30 @@
 """Unified training runner.
 
 Usage:
-    python -m rollouts.run --config examples/rl/calculator/grpo_01_01.py
-    python -m rollouts.run --config examples/rl/calculator/grpo_01_01.py --provision
-    python -m rollouts.run --config examples/rl/calculator/grpo_01_01.py --node-id runpod:abc123
-    python -m rollouts.run --config examples/rl/calculator/grpo_01_01.py --provision --detach
+    # Local execution (requires local GPU)
+    python -m rollouts.run --config examples/rl/reverse_text/grpo_01_01.py
+
+    # Modal execution (fast ~30s cold start, recommended for CI)
+    python -m rollouts.run --config examples/rl/reverse_text/grpo_01_01.py --modal
+    python -m rollouts.run --config examples/rl/reverse_text/grpo_01_01.py --modal --gpu H100
+
+    # RunPod/SSH execution (slower 2-5 min cold start)
+    python -m rollouts.run --config examples/rl/reverse_text/grpo_01_01.py --provision
+    python -m rollouts.run --config examples/rl/reverse_text/grpo_01_01.py --node-id runpod:abc123
 
 The config file must export:
     - config: A training config (e.g., GRPOConfig)
     - train(config, **kwargs): Function to run local training
 
-Remote execution:
-    --provision: Provision a new GPU instance
-    --node-id:   Reuse an existing instance (provider:id format)
-    --detach:    Submit and exit (don't launch TUI)
-    --keep-alive: Keep instance running after completion
+Execution modes:
+    --modal:     Run on Modal sandbox (fast cold start, ~30s)
+    --provision: Provision new GPU instance via SSH (RunPod, etc.)
+    --node-id:   Reuse existing SSH instance (provider:id format)
+    (none):      Run locally
 
-Local execution (no --provision or --node-id):
-    Calls train(config) directly
+Options:
+    --detach:    Submit and exit (don't launch TUI) [SSH only]
+    --keep-alive: Keep instance running after completion [SSH only]
 """
 
 from __future__ import annotations
@@ -360,9 +367,14 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    python -m rollouts.run --config examples/rl/calculator/grpo_01_01.py
-    python -m rollouts.run --config examples/rl/calculator/grpo_01_01.py --provision
-    python -m rollouts.run --config examples/rl/calculator/grpo_01_01.py --node-id runpod:abc123
+    # Local
+    python -m rollouts.run --config examples/rl/reverse_text/grpo_01_01.py
+
+    # Modal (recommended for CI)
+    python -m rollouts.run --config examples/rl/reverse_text/grpo_01_01.py --modal
+
+    # RunPod
+    python -m rollouts.run --config examples/rl/reverse_text/grpo_01_01.py --provision
         """,
     )
     parser.add_argument("--config", required=True, help="Path to config file")
@@ -370,6 +382,9 @@ Examples:
     # Remote execution
     parser.add_argument("--provision", action="store_true", help="Provision new GPU instance")
     parser.add_argument("--node-id", type=str, help="Reuse existing instance (provider:id)")
+    parser.add_argument(
+        "--modal", action="store_true", help="Run on Modal sandbox (fast cold start)"
+    )
     parser.add_argument("--detach", action="store_true", help="Submit and exit (don't launch TUI)")
     parser.add_argument("--tail", action="store_true", help="Stream logs to stdout instead of TUI")
     parser.add_argument("--keep-alive", action="store_true", help="Keep GPU after completion")
@@ -391,8 +406,22 @@ Examples:
 
     print(f"Config: {config_path}")
 
-    if args.provision or args.node_id:
-        # Remote execution
+    if args.modal:
+        # Modal execution (fast cold start)
+        import trio
+
+        from .modal_runner import ModalRunConfig, run_modal
+
+        modal_config = ModalRunConfig(
+            config_path=str(config_path),
+            gpu_type=args.gpu_type,
+            gpu_count=args.gpu_count,
+        )
+        results = trio.run(run_modal, modal_config)
+        if not results.get("success"):
+            sys.exit(1)
+    elif args.provision or args.node_id:
+        # Remote execution via SSH (RunPod, etc.)
         import trio
 
         trio.run(

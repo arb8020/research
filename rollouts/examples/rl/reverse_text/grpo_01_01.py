@@ -4,13 +4,12 @@ Run with:
     # Local (requires GPU + SGLang) - uses Prime's SFT model by default
     python examples/rl/reverse_text/grpo_01_01.py
 
-    # Use base model (will likely fail - no SFT warmup!)
-    python examples/rl/reverse_text/grpo_01_01.py --base-model
+    # Modal (fast ~30s cold start, recommended for CI)
+    python examples/rl/reverse_text/grpo_01_01.py --modal
+    python examples/rl/reverse_text/grpo_01_01.py --modal --gpu-type H100
 
-    # Remote (provisions GPU automatically)
+    # RunPod (slower 2-5 min cold start)
     python examples/rl/reverse_text/grpo_01_01.py --provision
-
-    # Reuse existing GPU
     python examples/rl/reverse_text/grpo_01_01.py --node-id runpod:abc123
 
 Note:
@@ -24,7 +23,6 @@ Note:
     For the full SFT → RL pipeline, see sft_then_grpo.py
 """
 
-from examples.rl.reverse_text.base_config import train  # noqa: F401 (used by runner)
 from rollouts.training.grpo import (
     CheckpointConfig,
     GRPOConfig,
@@ -34,6 +32,8 @@ from rollouts.training.grpo import (
     RolloutConfig,
     TrainerConfig,
 )
+
+from examples.rl.reverse_text.base_config import train  # noqa: F401 (used by runner)
 
 # Default: Use Prime's pre-trained SFT model (recommended)
 # This model already knows how to reverse text, so RL can refine it
