@@ -17,4 +17,4 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
-        args: [--ignore, unresolved-import, .]
+        args: [--ignore, unresolved-import, rollouts/]
