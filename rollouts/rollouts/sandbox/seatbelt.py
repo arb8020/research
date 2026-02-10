@@ -78,6 +78,26 @@ SEATBELT_BASE_POLICY = """\
   (iokit-registry-entry-class "RootDomainUserClient")
 )
 
+; IOKit for Metal GPU access
+(allow iokit-open
+  (iokit-registry-entry-class "AGXDeviceUserClient")
+  (iokit-registry-entry-class "AGXSharedUserClient")
+  (iokit-registry-entry-class "IOGPUDeviceUserClient")
+  (iokit-registry-entry-class-prefix "AGXG")
+  (iokit-registry-entry-class-prefix "IOMetal")
+  (iokit-registry-entry-class-prefix "IOAccel")
+)
+
+; Xcode developer tools access (for xcrun metal, etc.)
+(allow file-read*
+  (subpath "/Applications/Xcode.app")
+  (subpath "/Library/Developer")
+)
+(allow process-exec
+  (subpath "/Applications/Xcode.app")
+  (literal "/usr/bin/xcrun")
+)
+
 ; Directory services lookup
 (allow mach-lookup
   (global-name "com.apple.system.opendirectoryd.libinfo")

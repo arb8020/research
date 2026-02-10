@@ -49,6 +49,9 @@ class SandboxedWorktreeEnvironment(GitWorktreeEnvironment):
     # Extra paths the agent can write to (beyond worktree)
     extra_writable: list[Path] = field(default_factory=list)
 
+    # Extra environment variables to set for bash commands
+    extra_env: dict[str, str] = field(default_factory=dict)
+
     def get_name(self) -> str:
         return "sandboxed-worktree"
 
@@ -84,7 +87,9 @@ class SandboxedWorktreeEnvironment(GitWorktreeEnvironment):
         )
 
         try:
-            result = await execute_sandboxed(command, policy, timeout=timeout)
+            result = await execute_sandboxed(
+                command, policy, timeout=timeout, env=self.extra_env or None
+            )
 
             output = ""
             if result.stdout:
@@ -132,6 +137,7 @@ class SandboxedWorktreeEnvironment(GitWorktreeEnvironment):
         base["network_access"] = self.network_access
         base["sandbox_enabled"] = self.sandbox_enabled
         base["extra_writable"] = [str(p) for p in self.extra_writable]
+        base["extra_env"] = self.extra_env
         return base
 
     @staticmethod
@@ -142,6 +148,7 @@ class SandboxedWorktreeEnvironment(GitWorktreeEnvironment):
             network_access=data.get("network_access", True),
             sandbox_enabled=data.get("sandbox_enabled", True),
             extra_writable=[Path(p) for p in data.get("extra_writable", [])],
+            extra_env=data.get("extra_env", {}),
         )
 
         session_id = data.get("session_id")
@@ -166,6 +173,7 @@ def create_sandboxed_environment(
     run_id: str | None = None,
     network_access: bool = True,
     sandbox_enabled: bool = True,
+    extra_env: dict[str, str] | None = None,
 ) -> SandboxedWorktreeEnvironment:
     """Factory to create a sandboxed environment from a source directory.
 
@@ -178,6 +186,7 @@ def create_sandboxed_environment(
         run_id: Unique identifier for this run (auto-generated if None)
         network_access: Allow network access (default: True for pip/git)
         sandbox_enabled: Enable OS-level sandbox (default: True)
+        extra_env: Extra environment variables for bash commands
 
     Returns:
         SandboxedWorktreeEnvironment ready for use
@@ -202,4 +211,5 @@ def create_sandboxed_environment(
         working_dir=workspace,
         network_access=network_access,
         sandbox_enabled=sandbox_enabled,
+        extra_env=extra_env or {},
     )
