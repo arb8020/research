@@ -965,7 +965,6 @@ async def evaluate(
         logger.debug("=" * 50)
 
     # Set up eval logging: events.jsonl (overview) + samples/{id}.jsonl (per-sample)
-    # This replaces the old EventEmitter pattern with standard logging
     eval_logging: EvalLoggingContext | None = None
     if config.output_dir:
         eval_logging = setup_eval_logging(config.output_dir)

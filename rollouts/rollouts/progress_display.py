@@ -17,7 +17,7 @@ Or detached mode (two terminals):
     python -m rollouts.progress_watch ./results/events.jsonl
 
 Note: Events are written by Python logging (rollouts/_logging/setup_eval_logging).
-The progress display reads events.jsonl and supports both old EventEmitter and new logging formats.
+The progress display reads events.jsonl written by setup_eval_logging().
 """
 
 from __future__ import annotations
@@ -420,7 +420,7 @@ def progress_display(
 ) -> Generator[Path, None, None]:
     """Context manager for clean progress display.
 
-    Reads events.jsonl written by EventEmitter (from evaluate()) and
+    Reads events.jsonl written by setup_eval_logging() (from evaluate()) and
     renders a progress display in alternate screen.
 
     Args:
