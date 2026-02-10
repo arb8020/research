@@ -366,7 +366,7 @@ MODELS: dict[Provider, dict[str, ModelMetadata]] = {
             provider="cerebras",
             api="openai-completions",
             base_url="https://api.cerebras.ai/v1",
-            reasoning=False,
+            reasoning=True,  # Supports reasoning, disable with disable_reasoning=true
             input_types=["text"],
             cost=ModelCost(input=2.25, output=2.75, cache_read=0.0, cache_write=0.0),
             context_window=131072,

@@ -687,16 +687,17 @@ def create_endpoint(
         model_metadata = get_model(cast(Provider, provider), model)
         if model_metadata is not None:
             if not model_metadata.reasoning:
-                raise ValueError(
-                    f"Model '{model}' does not support extended thinking/reasoning.\n"
-                    f"Either:\n"
-                    f"  1. Use a model that supports reasoning (e.g., anthropic/claude-3-5-sonnet-20241022)\n"
-                    f"  2. Disable thinking with --thinking disabled"
+                # Auto-disable thinking for models that don't support it
+                print(
+                    f"⚠️  Model '{model}' doesn't support extended thinking, disabling.",
+                    file=sys.stderr,
                 )
+                thinking = "disabled"
         else:
-            raise ValueError(
-                f"Model '{model}' not found in registry.\n"
-                f"Use a registered model or add it to rollouts/models.py"
+            # Unknown model - warn but continue (might work)
+            print(
+                f"⚠️  Model '{model}' not in registry, thinking support unknown.",
+                file=sys.stderr,
             )
 
     if api_base is None:
