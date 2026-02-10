@@ -267,15 +267,18 @@ class TrainingMonitor:
             self._needs_redraw = True
 
     def _handle_eval_event(self, event_type: str, data: dict) -> None:
-        """Handle eval/GEPA events and update progress state."""
+        """Handle eval/GEPA events and update progress state.
+
+        Expects logging format: {"message": "sample_end", "sample_id": "001", ...}
+        """
         if event_type == "eval_start":
-            self._eval_name = data.get("name", "eval")
+            self._eval_name = data.get("eval_name", "eval")
             self._eval_total = data.get("total", 0)
 
         elif event_type == "sample_start":
-            sample_id = data.get("id", "")
+            sample_id = data.get("sample_id", "")
             self._eval_samples[sample_id] = {
-                "name": data.get("name", sample_id),
+                "name": data.get("sample_name", sample_id),
                 "turn": 0,
                 "phase": "",
                 "score": None,
@@ -284,18 +287,18 @@ class TrainingMonitor:
                 self._eval_sample_order.append(sample_id)
 
         elif event_type == "turn":
-            sample_id = data.get("id", "")
+            sample_id = data.get("sample_id", "")
             if sample_id in self._eval_samples:
                 self._eval_samples[sample_id]["turn"] = data.get("turn", 0)
                 self._eval_samples[sample_id]["status"] = data.get("status", "")
 
         elif event_type == "modal_progress":
-            sample_id = data.get("id", "")
+            sample_id = data.get("sample_id", "")
             if sample_id in self._eval_samples:
                 self._eval_samples[sample_id]["phase"] = data.get("phase", "")
 
         elif event_type == "sample_end":
-            sample_id = data.get("id", "")
+            sample_id = data.get("sample_id", "")
             if sample_id in self._eval_samples:
                 self._eval_samples[sample_id]["score"] = data.get("score")
                 self._eval_samples[sample_id]["phase"] = ""
@@ -364,13 +367,13 @@ class TrainingMonitor:
                         extra=data,
                     )
 
-            # Check if this is an eval event (from events.py EventEmitter)
-            event_type = data.get("type", "")
-            if event_type:
+            # Check if this is an eval event (logging format: "message" field)
+            event_type = data.get("message", "")
+            if event_type in ("eval_start", "eval_end", "sample_start", "sample_end", "modal_progress", "turn", "gepa_start", "gepa_iteration", "gepa_accepted", "gepa_rejected"):
                 self._handle_eval_event(event_type, data)
                 # Also create a log line for the pane
                 if event_type in ("sample_start", "sample_end", "modal_progress", "turn"):
-                    sample_id = data.get("id", "")
+                    sample_id = data.get("sample_id", "")
                     sample = self._eval_samples.get(sample_id, {})
                     name = sample.get("name", sample_id)[:20]
                     if event_type == "sample_start":
