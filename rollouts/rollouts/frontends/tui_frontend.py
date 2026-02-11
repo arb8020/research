@@ -134,6 +134,7 @@ class TUIFrontend:
 
     async def stop(self) -> None:
         """Stop TUI and restore terminal."""
+        import subprocess
         import sys
 
         if self._tui:
@@ -143,6 +144,14 @@ class TUIFrontend:
 
         # Ensure output buffer is clean
         sys.stdout.flush()
+        sys.stderr.flush()
+
+        # Run stty sane to ensure terminal is fully restored
+        # (handles edge cases where termios restoration is incomplete)
+        try:
+            subprocess.run(["stty", "sane"], stdin=open("/dev/tty"), check=False)
+        except Exception:
+            pass
 
     async def handle_event(self, event: StreamEvent) -> None:
         """Route event to AgentRenderer.

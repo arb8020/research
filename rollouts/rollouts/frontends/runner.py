@@ -250,10 +250,11 @@ class InteractiveRunner:
                     if hasattr(self.frontend, "set_on_cancel"):
 
                         def handle_ctrl_c() -> None:
-                            print("\n[Ctrl+C] Cancelling...", file=sys.stderr)
                             # Cancel both the agent scope AND the nursery scope
                             # The agent scope cancels run_fn, the nursery scope
                             # cancels background tasks like the TUI input loop
+                            # Note: Don't print here - terminal is still in raw mode.
+                            # The TUI already shows "Press Ctrl+C again to exit" as feedback.
                             if self._cancel_scope:
                                 self._cancel_scope.cancel()
                             nursery.cancel_scope.cancel()
