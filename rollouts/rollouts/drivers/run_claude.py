@@ -80,8 +80,10 @@ async def run_claude(
 
     # Debug tracing to file (TUI captures stderr)
     import time
+
     _trace_file = Path.home() / ".rollouts" / "claude-driver-trace.log"
     _trace_file.parent.mkdir(parents=True, exist_ok=True)
+
     def _trace(msg: str) -> None:
         with open(_trace_file, "a") as f:
             f.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
@@ -132,19 +134,53 @@ async def run_claude(
     parser = _ClaudeEventParser()
     accumulator = _MessageAccumulator()
     stdout_buffer = b""
-    cancelled = False
     interrupted = False
 
-    async def watch_for_cancel() -> None:
-        """Watch for cancel scope and terminate process."""
-        nonlocal cancelled
-        while True:
-            await trio.sleep(0.1)
-            if config.cancel_scope and config.cancel_scope.cancel_called:
-                logger.info("Cancel requested, terminating Claude process")
-                cancelled = True
-                proc.terminate()
-                return
+    def _format_message_with_history(messages: list[Message]) -> str:
+        """Format the last user message, optionally including conversation history.
+
+        If there's only one user message, just return it.
+        If there's prior conversation history, format it as context.
+        """
+        if not messages:
+            return ""
+
+        # Extract the last user message
+        last_user_content = ""
+        for msg in reversed(messages):
+            if msg.role == "user":
+                last_user_content = (
+                    msg.content if isinstance(msg.content, str) else str(msg.content)
+                )
+                break
+
+        # Check if we have prior messages (history before the last user message)
+        # Only include history if there are messages before the last user message
+        history_messages = []
+        for msg in messages[:-1]:  # All but the last
+            content = msg.content if isinstance(msg.content, str) else str(msg.content)
+            # Skip [interrupted] markers
+            if content.strip() == "[interrupted]":
+                continue
+            history_messages.append((msg.role, content))
+
+        if not history_messages:
+            return last_user_content
+
+        # Format history as context
+        history_lines = ["[Previous conversation]"]
+        for role, content in history_messages:
+            # Truncate very long messages
+            if len(content) > 500:
+                content = content[:500] + "..."
+            role_label = "User" if role == "user" else "Assistant"
+            history_lines.append(f"{role_label}: {content}")
+
+        history_lines.append("")
+        history_lines.append("[Current message]")
+        history_lines.append(last_user_content)
+
+        return "\n".join(history_lines)
 
     async def watch_for_interrupt() -> None:
         """Watch for interrupt flag and send SIGINT to Claude process."""
@@ -186,7 +222,8 @@ async def run_claude(
             try:
                 msg = json.loads(line.decode().strip())
             except json.JSONDecodeError:
-                _trace(f"JSON decode error, skipping line")
+                _trace("JSON decode error, skipping line")
+                await trio.lowlevel.checkpoint()  # Checkpoint for cancellation (ASYNC913)
                 continue
 
             for event in parser.parse(msg):
@@ -207,10 +244,13 @@ async def run_claude(
         await proc.stdin.send_all((msg + "\n").encode())
         logger.debug(f"Sent user message: {text[:100]}...")
 
+    early_exit = False  # Flag for early return (ASYNC121: don't return inside nursery)
+
     try:
         async with trio.open_nursery() as nursery:
-            # Start cancel and interrupt watchers
-            nursery.start_soon(watch_for_cancel)
+            # Start interrupt watcher (Escape key)
+            # Note: Ctrl+C cancellation is handled by trio's cancel scope - when
+            # cancel_scope.cancel() is called, trio raises Cancelled which we catch below.
             nursery.start_soon(watch_for_interrupt)
 
             try:
@@ -220,21 +260,63 @@ async def run_claude(
                     # Send initial user message from trajectory
                     messages = list(current_state.actor.trajectory.messages)
                     if messages and messages[-1].role == "user":
-                        last_user_msg = messages[-1]
-                        content = (
-                            last_user_msg.content
-                            if isinstance(last_user_msg.content, str)
-                            else str(last_user_msg.content)
-                        )
+                        # Have a pending user message - send it (possibly with history)
+                        content = _format_message_with_history(messages)
                         await send_message(content)
                     else:
-                        # No user message yet - get one via handle_no_tool
+                        # No user message yet (or last was assistant) - get one
                         new_state = await config.handle_no_tool(current_state, config)
                         if new_state.stop:
                             current_state = new_state
-                            nursery.cancel_scope.cancel()
                             states.append(current_state)
-                            return states
+                            early_exit = True
+                            nursery.cancel_scope.cancel()
+                            # Don't return here - let nursery exit cleanly first
+                        elif len(new_state.actor.trajectory.messages) > len(
+                            current_state.actor.trajectory.messages
+                        ):
+                            # Check if a new user message was added
+                            last_msg = new_state.actor.trajectory.messages[-1]
+                            if last_msg.role == "user":
+                                # Include history if we have prior messages
+                                all_messages = list(new_state.actor.trajectory.messages)
+                                content = _format_message_with_history(all_messages)
+                                await send_message(content)
+                                current_state = new_state
+
+                # Main loop: read events, handle no-tool, send input
+                if not early_exit:
+                    _trace("Entering main loop")
+                    while True:
+                        _trace("Calling read_events_until_done...")
+                        needs_input = await read_events_until_done()
+                        _trace(f"read_events_until_done returned: needs_input={needs_input}")
+
+                        if not needs_input:
+                            # Process ended or error
+                            _trace("needs_input=False, breaking main loop")
+                            break
+
+                        # Get accumulated assistant message and update trajectory
+                        assistant_msg = accumulator.get_message()
+                        if assistant_msg:
+                            new_messages = list(current_state.actor.trajectory.messages) + [
+                                assistant_msg
+                            ]
+                            new_trajectory = Trajectory(messages=new_messages)
+                            current_state = replace(
+                                current_state,
+                                actor=replace(current_state.actor, trajectory=new_trajectory),
+                            )
+                            accumulator.reset()
+
+                        # Turn complete - call handle_no_tool to get next input
+                        new_state = await config.handle_no_tool(current_state, config)
+
+                        if new_state.stop:
+                            current_state = new_state
+                            break
+
                         # Check if a new user message was added
                         if len(new_state.actor.trajectory.messages) > len(
                             current_state.actor.trajectory.messages
@@ -248,61 +330,10 @@ async def run_claude(
                                 )
                                 await send_message(content)
                                 current_state = new_state
+                                # Reset parser for next turn
+                                parser.reset()
 
-                # Main loop: read events, handle no-tool, send input
-                _trace("Entering main loop")
-                while True:
-                    if cancelled:
-                        _trace("Cancelled - breaking")
-                        current_state = replace(current_state, stop=StopReason.ABORTED)
-                        break
-
-                    _trace("Calling read_events_until_done...")
-                    needs_input = await read_events_until_done()
-                    _trace(f"read_events_until_done returned: needs_input={needs_input}")
-
-                    if not needs_input:
-                        # Process ended or error
-                        _trace("needs_input=False, breaking main loop")
-                        break
-
-                    # Get accumulated assistant message and update trajectory
-                    assistant_msg = accumulator.get_message()
-                    if assistant_msg:
-                        new_messages = list(current_state.actor.trajectory.messages) + [
-                            assistant_msg
-                        ]
-                        new_trajectory = Trajectory(messages=new_messages)
-                        current_state = replace(
-                            current_state,
-                            actor=replace(current_state.actor, trajectory=new_trajectory),
-                        )
-                        accumulator.reset()
-
-                    # Turn complete - call handle_no_tool to get next input
-                    new_state = await config.handle_no_tool(current_state, config)
-
-                    if new_state.stop:
-                        current_state = new_state
-                        break
-
-                    # Check if a new user message was added
-                    if len(new_state.actor.trajectory.messages) > len(
-                        current_state.actor.trajectory.messages
-                    ):
-                        last_msg = new_state.actor.trajectory.messages[-1]
-                        if last_msg.role == "user":
-                            content = (
-                                last_msg.content
-                                if isinstance(last_msg.content, str)
-                                else str(last_msg.content)
-                            )
-                            await send_message(content)
-                            current_state = new_state
-                            # Reset parser for next turn
-                            parser.reset()
-
-                    states.append(current_state)
+                        states.append(current_state)
             finally:
                 # Cancel the watcher when main loop exits
                 nursery.cancel_scope.cancel()
@@ -319,8 +350,12 @@ async def run_claude(
         except ProcessLookupError:
             pass
 
+    # Early exit case - return immediately after nursery cleanup (ASYNC121)
+    if early_exit:
+        return states
+
     # Handle interrupted state
-    _trace(f"Post-loop: interrupted={interrupted}, session_id={parser._session_id}, cancelled={cancelled}")
+    _trace(f"Post-loop: interrupted={interrupted}, session_id={parser._session_id}")
     if interrupted:
         _trace("Setting INTERRUPTED")
         # Add partial assistant message to trajectory (even if empty) so that
