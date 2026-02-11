@@ -183,6 +183,27 @@ async def run_claude(
                         else str(last_user_msg.content)
                     )
                     await send_message(content)
+                else:
+                    # No user message yet - get one via handle_no_tool
+                    new_state = await config.handle_no_tool(current_state, config)
+                    if new_state.stop:
+                        current_state = new_state
+                        nursery.cancel_scope.cancel()
+                        states.append(current_state)
+                        return states
+                    # Check if a new user message was added
+                    if len(new_state.actor.trajectory.messages) > len(
+                        current_state.actor.trajectory.messages
+                    ):
+                        last_msg = new_state.actor.trajectory.messages[-1]
+                        if last_msg.role == "user":
+                            content = (
+                                last_msg.content
+                                if isinstance(last_msg.content, str)
+                                else str(last_msg.content)
+                            )
+                            await send_message(content)
+                            current_state = new_state
 
                 # Main loop: read events, handle no-tool, send input
                 while True:

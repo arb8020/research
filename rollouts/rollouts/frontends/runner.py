@@ -349,6 +349,8 @@ class InteractiveRunner:
 
                 from ..drivers.run_claude import run_claude
 
+                # Clear initial_prompt before raising to prevent infinite loop
+                self.initial_prompt = None
                 new_run_fn = partial(run_claude, model="sonnet", cwd=self.cwd)
                 raise _SwapBackend(target="claude", new_run_fn=new_run_fn)
             # Other slash commands don't make sense as initial prompt
