@@ -154,7 +154,8 @@ class CLIConfig:
     log_file: str | None = None
 
     # Driver/backend
-    driver: str = "sdk"  # sdk, claude, codex
+    driver: str = "sdk"  # sdk, claude, codex, cursor
+    cursor_api_key: str | None = None  # For cursor driver
 
     # Preset
     preset: str | None = None
@@ -240,6 +241,12 @@ def create_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="API key (default: from environment)",
+    )
+    parser.add_argument(
+        "--cursor-api-key",
+        type=str,
+        default=None,
+        help="Cursor API key for --driver cursor (can also use CURSOR_API_KEY env var)",
     )
     parser.add_argument(
         "--system-prompt",
@@ -353,9 +360,9 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--driver",
         type=str,
-        choices=["sdk", "claude", "codex"],
+        choices=["sdk", "claude", "codex", "cursor"],
         default="sdk",
-        help="Backend driver: sdk (default, direct API), claude (Claude Code CLI), codex (Codex CLI)",
+        help="Backend driver: sdk (default, direct API), claude (Claude Code CLI), codex (Codex CLI), cursor (Cursor Agent CLI)",
     )
 
     # Extended thinking (Anthropic)
@@ -742,7 +749,7 @@ def create_endpoint(
     # 1. --api-key flag → use that (user's explicit choice)
     # 2. No flag + OAuth exists → use OAuth (or stored API key for console accounts)
     # 3. No flag + no OAuth → ERROR (prompt to login)
-    # Note: Skip auth setup for external drivers (claude, codex) - they handle their own auth
+    # Note: Skip auth setup for external drivers (claude, codex, cursor) - they handle their own auth
     oauth_token = ""
     is_claude_code_api_key = False  # Track if using API key created via Claude Code OAuth
     if provider == "anthropic" and driver == "sdk":
@@ -2057,6 +2064,11 @@ async def _run_interactive_mode(
         # Don't pass model - codex uses its own model config
         # The endpoint.model is for Anthropic/SDK, not codex
         run_fn = partial(run_codex, model=None, cwd=config.cwd)
+    elif config.driver == "cursor":
+        from .drivers.run_cursor import run_cursor
+
+        # Cursor uses its own API key and model config
+        run_fn = partial(run_cursor, model=None, cwd=config.cwd, api_key=config.cursor_api_key)
     # else: sdk - use default run_agent (run_fn=None)
 
     # Select frontend
@@ -2317,6 +2329,7 @@ def main() -> int:
         debug_layout=args.debug_layout,
         log_file=args.log_file,
         driver=args.driver,
+        cursor_api_key=getattr(args, "cursor_api_key", None),
         preset=args.preset,
         system_prompt=args.system_prompt,
         pick=args.pick,
