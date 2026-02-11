@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import shutil
+import signal as sig
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -60,6 +61,7 @@ async def run_claude(
 
     Uses bidirectional stream-json mode for multi-turn conversation.
     Accumulates events into messages for dual-write session persistence.
+    Supports interruption via Escape - restarts Claude with --resume to continue.
 
     Args:
         state: Initial agent state with trajectory
@@ -70,7 +72,6 @@ async def run_claude(
     Returns:
         List of agent states from the run
     """
-
     cwd = cwd or Path.cwd()
     states: list[AgentState] = []
     current_state = state
@@ -85,206 +86,246 @@ async def run_claude(
         )
         return [replace(current_state, stop=StopReason.ERROR)]
 
-    # Build command - bidirectional mode
-    cmd = [
-        claude_bin,
-        "--print",
-        "--verbose",
-        "--output-format",
-        "stream-json",
-        "--input-format",
-        "stream-json",
-        "--include-partial-messages",
-        "--model",
-        model,
-    ]
-
-    logger.info(f"Starting Claude Code: {cmd[0]} --model {model}")
-
-    # Spawn process
-    proc = await trio.lowlevel.open_process(
-        cmd,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        cwd=str(cwd),
-        env={**os.environ, "CLAUDE_CODE_ENTRYPOINT": "rollouts-driver"},
-    )
-
-    parser = _ClaudeEventParser()
-    accumulator = _MessageAccumulator()
-    stdout_buffer = b""
+    # Session tracking for resume after interrupt
+    session_id: str | None = None
     cancelled = False
+    interrupted = False
+    first_run = True
 
-    async def watch_for_cancel() -> None:
-        """Watch for cancel scope and terminate process."""
-        nonlocal cancelled
-        while True:
-            await trio.sleep(0.1)
-            if config.cancel_scope and config.cancel_scope.cancel_called:
-                logger.info("Cancel requested, terminating Claude process")
-                cancelled = True
-                proc.terminate()
-                return
+    # Outer loop: restart Claude after interrupt
+    while True:
+        # Build command
+        cmd = [
+            claude_bin,
+            "--print",
+            "--verbose",
+            "--output-format",
+            "stream-json",
+            "--input-format",
+            "stream-json",
+            "--include-partial-messages",
+            "--model",
+            model,
+        ]
 
-    async def watch_for_interrupt() -> None:
-        """Watch for interrupt flag and send SIGINT to Claude process."""
-        import signal as sig
-        if not config.interrupt_flag:
-            return  # No interrupt flag configured
-        while True:
-            await trio.sleep(0.05)  # Check frequently
-            if config.interrupt_flag[0]:
-                logger.info("Interrupt requested, sending SIGINT to Claude process")
-                config.interrupt_flag[0] = False  # Reset flag
+        # Resume session if we have one (after interrupt)
+        if session_id:
+            cmd.extend(["--resume", session_id])
+            logger.info(f"Resuming Claude session: {session_id}")
+        else:
+            logger.info(f"Starting Claude Code: {claude_bin} --model {model}")
+
+        # Spawn process
+        proc = await trio.lowlevel.open_process(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=str(cwd),
+            env={**os.environ, "CLAUDE_CODE_ENTRYPOINT": "rollouts-driver"},
+        )
+
+        parser = _ClaudeEventParser()
+        accumulator = _MessageAccumulator()
+        stdout_buffer = b""
+        interrupted = False
+
+        async def watch_for_cancel() -> None:
+            """Watch for cancel scope and terminate process."""
+            nonlocal cancelled
+            while True:
+                await trio.sleep(0.1)
+                if config.cancel_scope and config.cancel_scope.cancel_called:
+                    logger.info("Cancel requested, terminating Claude process")
+                    cancelled = True
+                    proc.terminate()
+                    return
+
+        async def watch_for_interrupt() -> None:
+            """Watch for interrupt flag and send SIGINT to Claude process."""
+            nonlocal interrupted
+            if not config.interrupt_flag:
+                return  # No interrupt flag configured
+            while True:
+                await trio.sleep(0.05)  # Check frequently
+                if config.interrupt_flag[0]:
+                    logger.info("Interrupt requested, sending SIGINT to Claude process")
+                    config.interrupt_flag[0] = False  # Reset flag
+                    interrupted = True
+                    try:
+                        proc.send_signal(sig.SIGINT)
+                    except ProcessLookupError:
+                        return  # Process already gone
+
+        async def read_events_until_done() -> bool:
+            """Read and emit events until turn completes. Returns True if more input needed."""
+            nonlocal stdout_buffer, session_id
+
+            while True:
+                # Read line from stdout
+                while b"\n" not in stdout_buffer:
+                    try:
+                        chunk = await proc.stdout.receive_some(4096)
+                    except trio.ClosedResourceError:
+                        return False  # Process terminated
+                    if not chunk:
+                        return False  # EOF
+                    stdout_buffer += chunk
+
+                line, stdout_buffer = stdout_buffer.split(b"\n", 1)
+
                 try:
-                    proc.send_signal(sig.SIGINT)
-                except ProcessLookupError:
-                    return  # Process already gone
+                    msg = json.loads(line.decode().strip())
+                except json.JSONDecodeError:
+                    continue
 
-    async def read_events_until_done() -> bool:
-        """Read and emit events until turn completes. Returns True if more input needed."""
-        nonlocal stdout_buffer
+                for event in parser.parse(msg):
+                    await config.on_chunk(event)
+                    accumulator.handle_event(event)
 
-        while True:
-            # Read line from stdout
-            while b"\n" not in stdout_buffer:
-                try:
-                    chunk = await proc.stdout.receive_some(4096)
-                except trio.ClosedResourceError:
-                    return False  # Process terminated
-                if not chunk:
-                    return False  # EOF
-                stdout_buffer += chunk
+                    if isinstance(event, StreamDone):
+                        # Turn complete - Claude is waiting for input
+                        return True
+                    if isinstance(event, StreamError):
+                        return False
 
-            line, stdout_buffer = stdout_buffer.split(b"\n", 1)
+                # Capture session ID for resume
+                if parser._session_id and not session_id:
+                    session_id = parser._session_id
+                    logger.debug(f"Captured Claude session ID: {session_id}")
 
-            try:
-                msg = json.loads(line.decode().strip())
-            except json.JSONDecodeError:
-                continue
+            return False
 
-            for event in parser.parse(msg):
-                await config.on_chunk(event)
-                accumulator.handle_event(event)
+        async def send_message(text: str) -> None:
+            """Send user message to Claude via stdin."""
+            msg = json.dumps({"type": "user", "message": {"role": "user", "content": text}})
+            await proc.stdin.send_all((msg + "\n").encode())
+            logger.debug(f"Sent user message: {text[:100]}...")
 
-                if isinstance(event, StreamDone):
-                    # Turn complete - Claude is waiting for input
-                    return True
-                if isinstance(event, StreamError):
-                    return False
+        process_exited_normally = False
 
-        return False
-
-    async def send_message(text: str) -> None:
-        """Send user message to Claude via stdin."""
-        msg = json.dumps({"type": "user", "message": {"role": "user", "content": text}})
-        await proc.stdin.send_all((msg + "\n").encode())
-        logger.debug(f"Sent user message: {text[:100]}...")
-
-    try:
-        async with trio.open_nursery() as nursery:
-            # Start cancel and interrupt watchers
-            nursery.start_soon(watch_for_cancel)
-            nursery.start_soon(watch_for_interrupt)
-
-            try:
-                # Send initial user message from trajectory
-                messages = list(current_state.actor.trajectory.messages)
-                if messages and messages[-1].role == "user":
-                    last_user_msg = messages[-1]
-                    content = (
-                        last_user_msg.content
-                        if isinstance(last_user_msg.content, str)
-                        else str(last_user_msg.content)
-                    )
-                    await send_message(content)
-                else:
-                    # No user message yet - get one via handle_no_tool
-                    new_state = await config.handle_no_tool(current_state, config)
-                    if new_state.stop:
-                        current_state = new_state
-                        nursery.cancel_scope.cancel()
-                        states.append(current_state)
-                        return states
-                    # Check if a new user message was added
-                    if len(new_state.actor.trajectory.messages) > len(
-                        current_state.actor.trajectory.messages
-                    ):
-                        last_msg = new_state.actor.trajectory.messages[-1]
-                        if last_msg.role == "user":
-                            content = (
-                                last_msg.content
-                                if isinstance(last_msg.content, str)
-                                else str(last_msg.content)
-                            )
-                            await send_message(content)
-                            current_state = new_state
-
-                # Main loop: read events, handle no-tool, send input
-                while True:
-                    if cancelled:
-                        current_state = replace(current_state, stop=StopReason.ABORTED)
-                        break
-
-                    needs_input = await read_events_until_done()
-
-                    if not needs_input:
-                        # Process ended or error
-                        break
-
-                    # Get accumulated assistant message and update trajectory
-                    assistant_msg = accumulator.get_message()
-                    if assistant_msg:
-                        new_messages = list(current_state.actor.trajectory.messages) + [
-                            assistant_msg
-                        ]
-                        new_trajectory = Trajectory(messages=new_messages)
-                        current_state = replace(
-                            current_state,
-                            actor=replace(current_state.actor, trajectory=new_trajectory),
-                        )
-                        accumulator.reset()
-
-                    # Turn complete - call handle_no_tool to get next input
-                    new_state = await config.handle_no_tool(current_state, config)
-
-                    if new_state.stop:
-                        current_state = new_state
-                        break
-
-                    # Check if a new user message was added
-                    if len(new_state.actor.trajectory.messages) > len(
-                        current_state.actor.trajectory.messages
-                    ):
-                        last_msg = new_state.actor.trajectory.messages[-1]
-                        if last_msg.role == "user":
-                            content = (
-                                last_msg.content
-                                if isinstance(last_msg.content, str)
-                                else str(last_msg.content)
-                            )
-                            await send_message(content)
-                            current_state = new_state
-                            # Reset parser for next turn
-                            parser.reset()
-
-                    states.append(current_state)
-            finally:
-                # Cancel the watcher when main loop exits
-                nursery.cancel_scope.cancel()
-
-    except trio.Cancelled:
-        current_state = replace(current_state, stop=StopReason.ABORTED)
-        raise
-    finally:
-        # Cleanup
         try:
-            proc.terminate()
-            with trio.move_on_after(5.0):
-                await proc.wait()
-        except ProcessLookupError:
-            pass
+            async with trio.open_nursery() as nursery:
+                # Start cancel and interrupt watchers
+                nursery.start_soon(watch_for_cancel)
+                nursery.start_soon(watch_for_interrupt)
+
+                try:
+                    # Only send initial message on first run (not resume)
+                    if first_run:
+                        messages = list(current_state.actor.trajectory.messages)
+                        if messages and messages[-1].role == "user":
+                            last_user_msg = messages[-1]
+                            content = (
+                                last_user_msg.content
+                                if isinstance(last_user_msg.content, str)
+                                else str(last_user_msg.content)
+                            )
+                            await send_message(content)
+                        else:
+                            # No user message yet - get one via handle_no_tool
+                            new_state = await config.handle_no_tool(current_state, config)
+                            if new_state.stop:
+                                current_state = new_state
+                                nursery.cancel_scope.cancel()
+                                states.append(current_state)
+                                return states
+                            # Check if a new user message was added
+                            if len(new_state.actor.trajectory.messages) > len(
+                                current_state.actor.trajectory.messages
+                            ):
+                                last_msg = new_state.actor.trajectory.messages[-1]
+                                if last_msg.role == "user":
+                                    content = (
+                                        last_msg.content
+                                        if isinstance(last_msg.content, str)
+                                        else str(last_msg.content)
+                                    )
+                                    await send_message(content)
+                                    current_state = new_state
+                        first_run = False
+
+                    # Main loop: read events, handle no-tool, send input
+                    while True:
+                        if cancelled:
+                            current_state = replace(current_state, stop=StopReason.ABORTED)
+                            process_exited_normally = True
+                            break
+
+                        needs_input = await read_events_until_done()
+
+                        if not needs_input:
+                            # Process ended - check if interrupted
+                            break
+
+                        # Get accumulated assistant message and update trajectory
+                        assistant_msg = accumulator.get_message()
+                        if assistant_msg:
+                            new_messages = list(current_state.actor.trajectory.messages) + [
+                                assistant_msg
+                            ]
+                            new_trajectory = Trajectory(messages=new_messages)
+                            current_state = replace(
+                                current_state,
+                                actor=replace(current_state.actor, trajectory=new_trajectory),
+                            )
+                            accumulator.reset()
+
+                        # Turn complete - call handle_no_tool to get next input
+                        new_state = await config.handle_no_tool(current_state, config)
+
+                        if new_state.stop:
+                            current_state = new_state
+                            process_exited_normally = True
+                            break
+
+                        # Check if a new user message was added
+                        if len(new_state.actor.trajectory.messages) > len(
+                            current_state.actor.trajectory.messages
+                        ):
+                            last_msg = new_state.actor.trajectory.messages[-1]
+                            if last_msg.role == "user":
+                                content = (
+                                    last_msg.content
+                                    if isinstance(last_msg.content, str)
+                                    else str(last_msg.content)
+                                )
+                                await send_message(content)
+                                current_state = new_state
+                                # Reset parser for next turn
+                                parser.reset()
+
+                        states.append(current_state)
+                finally:
+                    # Cancel the watchers when main loop exits
+                    nursery.cancel_scope.cancel()
+
+        except trio.Cancelled:
+            current_state = replace(current_state, stop=StopReason.ABORTED)
+            raise
+        finally:
+            # Cleanup process
+            try:
+                proc.terminate()
+                with trio.move_on_after(5.0):
+                    await proc.wait()
+            except ProcessLookupError:
+                pass
+
+        # Decide whether to restart or exit
+        if cancelled or process_exited_normally:
+            # User cancelled or normal exit - done
+            break
+
+        if interrupted and session_id:
+            # Interrupted - restart with resume
+            logger.info(f"Restarting Claude with session {session_id}")
+            # Reset parser state but keep session_id
+            parser.reset()
+            accumulator.reset()
+            continue
+        # Unknown exit - done
+        break
 
     states.append(current_state)
     return states
