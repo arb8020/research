@@ -691,6 +691,7 @@ def create_endpoint(
     thinking: str = "enabled",
     quiet: bool = False,
     profile: str = "default",
+    driver: str = "sdk",
 ) -> Endpoint:
     """Create endpoint from CLI arguments."""
 
@@ -741,9 +742,10 @@ def create_endpoint(
     # 1. --api-key flag → use that (user's explicit choice)
     # 2. No flag + OAuth exists → use OAuth (or stored API key for console accounts)
     # 3. No flag + no OAuth → ERROR (prompt to login)
+    # Note: Skip auth setup for external drivers (claude, codex) - they handle their own auth
     oauth_token = ""
     is_claude_code_api_key = False  # Track if using API key created via Claude Code OAuth
-    if provider == "anthropic":
+    if provider == "anthropic" and driver == "sdk":
         if api_key is not None:
             # User explicitly passed --api-key, use it
             print("🔑 Using API key (explicit)", file=sys.stderr)
@@ -2433,14 +2435,15 @@ def main() -> int:
     # Create endpoint
     try:
         config.endpoint = create_endpoint(
-            config.model, config.api_base, config.api_key, config.thinking, config.quiet, profile
+            config.model, config.api_base, config.api_key, config.thinking, config.quiet, profile,
+            driver=config.driver,
         )
     except ValueError as e:
         print(f"❌ {e}", file=sys.stderr)
         return 1
 
-    # Validate authentication
-    if not config.endpoint.api_key and not config.endpoint.oauth_token:
+    # Validate authentication (skip for external drivers - they handle their own auth)
+    if config.driver == "sdk" and not config.endpoint.api_key and not config.endpoint.oauth_token:
         provider = config.endpoint.provider
         print(
             f"❌ No API key found for {provider}.",
