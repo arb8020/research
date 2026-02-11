@@ -7,6 +7,7 @@ frontend implementing the Frontend protocol. The runner handles:
 - Tool confirmation
 - Session persistence
 - Interruption handling
+- Hot-swap to external drivers (Claude Code, Codex)
 
 The frontend is responsible for:
 - Rendering stream events
@@ -25,8 +26,10 @@ from __future__ import annotations
 import signal
 import sys
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from dataclasses import replace as dc_replace
+from pathlib import Path
 from types import FrameType
 from typing import TYPE_CHECKING
 
@@ -45,6 +48,24 @@ from ..dtypes import (
     ToolResult,
     Trajectory,
 )
+
+# Type alias for run functions (run_agent, run_claude, run_codex)
+RunFn = Callable[[AgentState, RunConfig], Awaitable[list[AgentState]]]
+
+
+class _SwapBackend(Exception):
+    """Internal exception to swap backend mid-session.
+
+    Raised by /swap command, caught by InteractiveRunner.run() to switch run_fn.
+    """
+
+    def __init__(self, target: str, new_run_fn: RunFn) -> None:
+        self.target = target
+        self.new_run_fn = new_run_fn
+        super().__init__(f"Swap to {target}")
+
+
+from .protocol import InputResult
 
 if TYPE_CHECKING:
     from ..store import SessionStore
@@ -69,6 +90,14 @@ class RunnerConfig:
     initial_prompt: str | None = None
     single_turn: bool = False
     detached: bool = False
+
+    # Hot-swap support
+    cwd: Path | None = None  # Working directory for driver swaps
+    enable_swap: bool = True  # Enable /swap command
+
+    # Backend function (default: run_agent from SDK)
+    # Can be swapped to run_claude, run_codex for external drivers
+    run_fn: RunFn | None = None  # None means use run_agent
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +213,9 @@ class InteractiveRunner:
         self.initial_prompt = cfg.initial_prompt
         self.single_turn = cfg.single_turn
         self.detached = cfg.detached
+        self.cwd = cfg.cwd or Path.cwd()
+        self.enable_swap = cfg.enable_swap
+        self.run_fn: RunFn = cfg.run_fn or run_agent
 
         self._cancel_scope: trio.CancelScope | None = None
 
@@ -191,6 +223,7 @@ class InteractiveRunner:
         """Run interactive agent loop.
 
         Returns list of agent states from the run.
+        Handles /swap internally by switching run_fn and continuing.
         """
         original_handler = signal.getsignal(signal.SIGINT)
         signal.signal(signal.SIGINT, self._handle_sigint)
@@ -200,15 +233,84 @@ class InteractiveRunner:
             self._render_history_if_resuming()
             self._update_frontend_status()
 
-            initial_state = await self._create_initial_state()
-            run_config = self._create_run_config()
+            all_states: list[AgentState] = []
+            current_state: AgentState | None = None
 
-            self._cancel_scope = trio.CancelScope()
-            with self._cancel_scope:
-                states = await run_agent(initial_state, run_config)
+            # Outer loop handles /swap by switching run_fn
+            while True:
+                run_config = self._create_run_config()
+                self._cancel_scope = trio.CancelScope()
+                swap_request: _SwapBackend | None = None
+                user_exited = False
+                states: list[AgentState] = []
 
-            self._update_session_id_from_states(states)
-            return states
+                async with trio.open_nursery() as nursery:
+                    # Set up Ctrl+C handler for TUI
+                    if hasattr(self.frontend, "set_on_cancel"):
+
+                        def handle_ctrl_c() -> None:
+                            print("\n[Ctrl+C] Cancelling...", file=sys.stderr)
+                            if self._cancel_scope:
+                                self._cancel_scope.cancel()
+
+                        self.frontend.set_on_cancel(handle_ctrl_c)
+
+                    # Start TUI input loop FIRST (before getting initial state)
+                    if hasattr(self.frontend, "run_input_loop"):
+                        await self.frontend.run_input_loop(nursery)
+
+                    # Get initial state if we don't have one yet
+                    if current_state is None:
+                        try:
+                            current_state = await self._create_initial_state()
+                            # Clear initial_prompt after use to prevent re-processing
+                            self.initial_prompt = None
+                        except _SwapBackend as e:
+                            # Swap requested before first message
+                            swap_request = e
+                            nursery.cancel_scope.cancel()
+
+                        if current_state is None and swap_request is None:
+                            # User exited before sending first message
+                            user_exited = True
+                            nursery.cancel_scope.cancel()
+
+                    # Only run agent if we have a state and no swap pending
+                    if current_state is not None and swap_request is None and not user_exited:
+                        try:
+                            with self._cancel_scope:
+                                states = await self.run_fn(current_state, run_config)
+                        except _SwapBackend as e:
+                            # Capture swap request to handle outside nursery
+                            swap_request = e
+                        finally:
+                            # Cancel background tasks when agent finishes
+                            nursery.cancel_scope.cancel()
+                    else:
+                        nursery.cancel_scope.cancel()
+
+                # Handle user exit
+                if user_exited:
+                    return []
+
+                all_states.extend(states)
+
+                # Handle swap: update run_fn and continue with current state
+                if swap_request is not None:
+                    self.run_fn = swap_request.new_run_fn
+                    self._show_message(f"Swapped to {swap_request.target}")
+                    # Continue from last state (or initial if no states yet)
+                    if states:
+                        current_state = states[-1]
+                        # Clear stop so we continue
+                        current_state = dc_replace(current_state, stop=None)
+                    continue
+
+                # Normal exit
+                break
+
+            self._update_session_id_from_states(all_states)
+            return all_states
 
         finally:
             signal.signal(signal.SIGINT, original_handler)
@@ -222,11 +324,66 @@ class InteractiveRunner:
         if self.trajectory.messages and hasattr(self.frontend, "render_history"):
             self.frontend.render_history(self.trajectory.messages)
 
-    async def _create_initial_state(self) -> AgentState:
-        """Create initial agent state with first user message."""
+    async def _create_initial_state(self) -> AgentState | None:
+        """Create initial agent state with first user message.
+
+        Returns None if user exits before providing input.
+        Raises _SwapBackend if user issues /swap command.
+        """
+        from .protocol import InputExit, SlashCommand, UserMessage
+
         first_input = self.initial_prompt
+
+        # Check if initial_prompt is a slash command
+        if first_input and first_input.startswith("/"):
+            space_idx = first_input.find(" ")
+            if space_idx == -1:
+                name = first_input[1:]
+                args = ""
+            else:
+                name = first_input[1:space_idx]
+                args = first_input[space_idx + 1 :].strip()
+
+            if name == "swap" and args.lower() == "claude":
+                from functools import partial
+
+                from ..drivers.run_claude import run_claude
+
+                new_run_fn = partial(run_claude, model="sonnet", cwd=self.cwd)
+                raise _SwapBackend(target="claude", new_run_fn=new_run_fn)
+            # Other slash commands don't make sense as initial prompt
+            # (no session context yet), so pass them through to LLM
+
         if not first_input:
-            first_input = await self.frontend.get_input()
+            # Get first input, handling slash commands
+            while True:
+                input_result = await self.frontend.get_input()
+
+                match input_result:
+                    case InputExit():
+                        return None
+
+                    case SlashCommand(name=name, args=args):
+                        # Handle swap at initial state
+                        if name == "swap" and args.lower() == "claude":
+                            from functools import partial
+
+                            from ..drivers.run_claude import run_claude
+
+                            new_run_fn = partial(run_claude, model="sonnet", cwd=self.cwd)
+                            raise _SwapBackend(target="claude", new_run_fn=new_run_fn)
+                        # Other commands don't make sense before first message
+                        print(f"Cannot use /{name} before sending a message")
+                        continue
+
+                    case UserMessage(text=text):
+                        first_input = text
+                        break
+
+                    case _:
+                        # Legacy string (for backwards compat)
+                        first_input = str(input_result)
+                        break
 
         initial_trajectory = Trajectory(
             messages=self.trajectory.messages + [Message(role="user", content=first_input)]
@@ -265,8 +422,8 @@ class InteractiveRunner:
         """Route stream event to frontend."""
         await self.frontend.handle_event(event)
 
-    async def _on_input(self, prompt: str) -> str:
-        """Get user input via frontend."""
+    async def _on_input(self, prompt: str) -> InputResult:
+        """Get user input via frontend. Returns InputResult type."""
         return await self.frontend.get_input(prompt)
 
     async def _on_confirm_tool(
@@ -297,8 +454,10 @@ class InteractiveRunner:
         This is the key callback that controls interactive behavior:
         - single_turn: Stop immediately
         - detached: Write pending_input and stop
-        - interactive: Get input and continue
+        - interactive: Get input, handle slash commands, continue
         """
+        from .protocol import InputExit, SlashCommand, UserMessage
+
         self._update_frontend_status(state)
 
         if self.single_turn:
@@ -308,12 +467,134 @@ class InteractiveRunner:
             await self._write_pending_input(state)
             return dc_replace(state, stop=StopReason.NEEDS_INPUT)
 
-        # Interactive: get input and continue
-        user_input = await config.on_input("Enter your message: ")
-        new_trajectory = Trajectory(
-            messages=state.actor.trajectory.messages + [Message(role="user", content=user_input)]
-        )
-        return dc_replace(state, actor=dc_replace(state.actor, trajectory=new_trajectory))
+        # Interactive: get input and handle it
+        while True:
+            input_result = await config.on_input("Enter your message: ")
+
+            match input_result:
+                case InputExit():
+                    return dc_replace(state, stop=StopReason.NO_TOOL_CALLED)
+
+                case SlashCommand(name=name, args=args):
+                    # Handle slash command - runner has access to session/endpoint/etc
+                    handled = await self._handle_slash_command(name, args, state)
+                    if handled:
+                        continue  # Get next input
+                    # Unknown command - pass to LLM as regular message
+                    user_text = f"/{name} {args}".strip()
+
+                case UserMessage(text=user_text):
+                    pass  # Fall through to add message
+
+                case _:
+                    # Legacy string return (for backwards compatibility during transition)
+                    user_text = str(input_result)
+
+            # Add user message and continue
+            new_trajectory = Trajectory(
+                messages=state.actor.trajectory.messages + [Message(role="user", content=user_text)]
+            )
+            return dc_replace(state, actor=dc_replace(state.actor, trajectory=new_trajectory))
+
+    async def _handle_slash_command(self, name: str, args: str, state: AgentState) -> bool:
+        """Handle a slash command. Returns True if handled, False to pass to LLM.
+
+        Slash commands are handled here because the runner has access to:
+        - self.endpoint (for /model)
+        - self.session_store, self.session_id (for /slice)
+        - self.environment (for /env)
+        - self.run_fn (for /swap)
+        """
+        if name == "swap":
+            target = args.lower() if args else ""
+            if target == "claude":
+                from functools import partial
+
+                from ..drivers.run_claude import run_claude
+
+                new_run_fn = partial(run_claude, model="sonnet", cwd=self.cwd)
+                raise _SwapBackend(target="claude", new_run_fn=new_run_fn)
+            if target == "codex":
+                # TODO: implement run_codex
+                self._show_message("Codex swap not yet implemented")
+                return True
+            elif target == "rollouts":
+                # Swap back to SDK
+                raise _SwapBackend(target="rollouts", new_run_fn=run_agent)
+            else:
+                self._show_message("Usage: /swap <claude|codex|rollouts>")
+            return True
+
+        if name == "model":
+            return await self._handle_model_command(args, state)
+
+        if name == "thinking":
+            return await self._handle_thinking_command(args, state)
+
+        # Unknown command
+        self._show_message(f"Unknown command: /{name}\nAvailable: /model, /thinking, /swap")
+        return True
+
+    async def _handle_model_command(self, args: str, state: AgentState) -> bool:
+        """Handle /model command to switch models."""
+        from ..models import get_model
+
+        if not args:
+            # Show current model
+            self._show_message(f"Current model: {self.endpoint.model}")
+            return True
+
+        # Try to parse and switch model
+        try:
+            new_endpoint = get_model(args, api_key=self.endpoint.api_key)
+            self.endpoint = new_endpoint
+            # Update actor with new endpoint
+            self._show_message(f"Switched to: {new_endpoint.model}")
+        except Exception as e:
+            self._show_message(f"Cannot switch to {args}: {e}")
+
+        return True
+
+    async def _handle_thinking_command(self, args: str, state: AgentState) -> bool:
+        """Handle /thinking command to toggle extended thinking."""
+        if not args:
+            # Show current state
+            thinking = getattr(self.endpoint, "thinking", None)
+            if thinking:
+                self._show_message(
+                    f"Thinking: enabled (budget: {thinking.get('budget_tokens', 'default')})"
+                )
+            else:
+                self._show_message("Thinking: disabled")
+            return True
+
+        if args.lower() == "off":
+            self.endpoint = dc_replace(self.endpoint, thinking=None)
+            self._show_message("Thinking: disabled")
+        elif args.lower() == "on":
+            self.endpoint = dc_replace(
+                self.endpoint, thinking={"type": "enabled", "budget_tokens": 10000}
+            )
+            self._show_message("Thinking: enabled (budget: 10000)")
+        else:
+            # Try to parse as budget
+            try:
+                budget = int(args)
+                self.endpoint = dc_replace(
+                    self.endpoint, thinking={"type": "enabled", "budget_tokens": budget}
+                )
+                self._show_message(f"Thinking: enabled (budget: {budget})")
+            except ValueError:
+                self._show_message("Usage: /thinking [on|off|<budget>]")
+
+        return True
+
+    def _show_message(self, text: str) -> None:
+        """Show a message to the user (via frontend if possible, else print)."""
+        if hasattr(self.frontend, "add_system_message"):
+            self.frontend.add_system_message(text)
+        else:
+            print(text)
 
     # -----------------------------------------------------------------------
     # Helpers
@@ -409,6 +690,10 @@ async def run_interactive(
 ) -> list[AgentState]:
     """Run an interactive agent with any frontend.
 
+    Supports hot-swap to external drivers via /swap command:
+        /swap claude   - Switch to Claude Code
+        /swap codex    - Switch to Codex
+
     Args:
         trajectory: Initial conversation trajectory
         endpoint: LLM endpoint configuration
@@ -418,6 +703,9 @@ async def run_interactive(
 
     Returns:
         List of agent states from the run
+
+    Raises:
+        SwapRequest: When user requests /swap to another driver
     """
     runner = InteractiveRunner(
         trajectory=trajectory,

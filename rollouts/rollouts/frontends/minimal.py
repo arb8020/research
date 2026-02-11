@@ -27,6 +27,8 @@ from typing import TYPE_CHECKING
 
 import trio
 
+from .protocol import InputResult
+
 if TYPE_CHECKING:
     from ..dtypes import StreamEvent, ToolCall
 
@@ -619,7 +621,9 @@ class MinimalFrontend:
                 if self._is_block_tool(name):
                     # Stop spinner before printing tool
                     self._stop_spinner()
-                    self._format_tool(name, args, result if not event.is_error else f"Error: {result}")
+                    self._format_tool(
+                        name, args, result if not event.is_error else f"Error: {result}"
+                    )
                     self._after_tool = True
                     # Restart spinner for next operation
                     self._start_spinner()
@@ -635,8 +639,14 @@ class MinimalFrontend:
             self._print(f"{self._red('!')} Error: {event.error}")
             self._empty()
 
-    async def get_input(self, prompt: str = "") -> str:
-        """Get user input via stdin."""
+    async def get_input(self, prompt: str = "") -> InputResult:
+        """Get user input via stdin.
+
+        Parses slash commands and returns appropriate InputResult type.
+        The runner handles command execution (has access to session, endpoint, etc.).
+        """
+        from .protocol import InputExit, SlashCommand, UserMessage
+
         # OpenCode style: just "> " prompt, ignore passed prompt
         self._empty()
 
@@ -644,12 +654,31 @@ class MinimalFrontend:
             try:
                 return input("> ")
             except EOFError as e:
-                raise KeyboardInterrupt("stdin closed (EOF)") from e
+                raise EOFError("stdin closed") from e
 
-        result = await trio.to_thread.run_sync(_get_input, abandon_on_cancel=True)
+        try:
+            text = await trio.to_thread.run_sync(_get_input, abandon_on_cancel=True)
+        except EOFError:
+            return InputExit()
+
+        # Check for exit commands
+        if text.strip().lower() in ("exit", "quit", "q"):
+            return InputExit()
+
+        # Parse slash commands
+        if text.startswith("/"):
+            space_idx = text.find(" ")
+            if space_idx == -1:
+                name = text[1:]
+                args = ""
+            else:
+                name = text[1:space_idx]
+                args = text[space_idx + 1 :].strip()
+            return SlashCommand(name=name, args=args)
+
         # Start spinner after user submits their message
         self._start_spinner()
-        return result
+        return UserMessage(text=text)
 
     async def confirm_tool(self, tool_call: ToolCall) -> bool:
         """Confirm tool execution via stdin."""

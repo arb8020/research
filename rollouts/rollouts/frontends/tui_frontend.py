@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any
 
 import trio
 
+from .protocol import InputResult
+
 if TYPE_CHECKING:
     from ..dtypes import Environment, StreamEvent, ToolCall
 
@@ -58,6 +60,10 @@ class TUIFrontend:
         self._input_receive: trio.MemoryReceiveChannel[str] | None = None
         self._input_pending: bool = False
         self._is_first_user_message = True
+
+        # Cancel callback - set by runner for Ctrl+C handling
+        self._on_cancel: Any | None = None
+        self._ctrl_c_pending: float | None = None  # Timestamp of first Ctrl+C
 
     async def start(self) -> None:
         """Initialize TUI components and enter raw mode."""
@@ -144,15 +150,22 @@ class TUIFrontend:
         if self._renderer:
             await self._renderer.handle_event(event)
 
-    async def get_input(self, prompt: str = "") -> str:
+    async def get_input(self, prompt: str = "") -> InputResult:
         """Get user input via TUI input component.
+
+        Returns InputResult:
+        - UserMessage: Regular text to send to LLM
+        - SlashCommand: Parsed command for runner to execute
+        - InputExit: User wants to quit
 
         Args:
             prompt: Ignored (TUI has its own prompt)
 
         Returns:
-            User's input string
+            InputResult indicating what the user wants to do
         """
+        from .protocol import InputExit, SlashCommand, UserMessage
+
         if self._input_receive is None:
             raise RuntimeError("Input channel not initialized")
 
@@ -161,29 +174,42 @@ class TUIFrontend:
             msg = self._input_receive.receive_nowait()
             if self._input_component:
                 self._input_component.pop_queued_message()
-            return msg
+            user_input = msg
         except trio.WouldBlock:
-            pass
+            # No queued message, show input and wait
+            self._input_pending = True
+            if self._input_component and self._tui:
+                self._tui.set_focus(self._input_component)
+                self._tui.request_render()
 
-        # No queued message, show input and wait
-        self._input_pending = True
-        if self._input_component and self._tui:
-            self._tui.set_focus(self._input_component)
-            self._tui.request_render()
-
-        user_input = await self._input_receive.receive()
-        self._input_pending = False
+            user_input = await self._input_receive.receive()
+            self._input_pending = False
 
         # Clear input component
         if self._input_component:
             self._input_component.set_text("")
 
-        # Add user message to chat
+        # Check for exit commands
+        if user_input.strip().lower() in ("exit", "quit", "q"):
+            return InputExit()
+
+        # Parse slash commands - frontend parses, runner executes
+        if user_input.startswith("/"):
+            space_idx = user_input.find(" ")
+            if space_idx == -1:
+                name = user_input[1:]
+                args = ""
+            else:
+                name = user_input[1:space_idx]
+                args = user_input[space_idx + 1 :].strip()
+            return SlashCommand(name=name, args=args)
+
+        # Regular message - add to chat display
         if self._renderer:
             self._renderer.add_user_message(user_input, is_first=self._is_first_user_message)
             self._is_first_user_message = False
 
-        return user_input
+        return UserMessage(text=user_input)
 
     async def confirm_tool(self, tool_call: ToolCall) -> bool:
         """Confirm tool execution via TUI.
@@ -307,6 +333,14 @@ class TUIFrontend:
         if self._renderer:
             self._renderer.finalize_partial_response()
 
+    def set_on_cancel(self, callback: Any) -> None:
+        """Set callback for Ctrl+C handling.
+
+        Args:
+            callback: Function to call when Ctrl+C is pressed
+        """
+        self._on_cancel = callback
+
     async def run_input_loop(self, nursery: trio.Nursery) -> None:
         """Run terminal input reading loop.
 
@@ -317,11 +351,38 @@ class TUIFrontend:
         """
 
         async def input_reading_loop() -> None:
+            import time
+
+            CTRL_C_TIMEOUT = 1.5  # Seconds to wait for second Ctrl+C
+
             while True:
                 if self._terminal and self._terminal._running:
                     input_data = self._terminal.read_input()
-                    if input_data and self._tui:
-                        self._tui._handle_input(input_data)
+                    if input_data:
+                        # Check for Ctrl+C (ASCII 3) - double-tap to cancel
+                        if input_data == "\x03":
+                            now = time.time()
+                            if (
+                                self._ctrl_c_pending
+                                and (now - self._ctrl_c_pending) < CTRL_C_TIMEOUT
+                            ):
+                                # Second Ctrl+C within timeout - cancel
+                                self._ctrl_c_pending = None
+                                if self._on_cancel:
+                                    self._on_cancel()
+                            else:
+                                # First Ctrl+C - show message and wait
+                                self._ctrl_c_pending = now
+                                if self._renderer:
+                                    self._renderer.add_system_message("Press Ctrl+C again to exit")
+                            continue
+
+                        # Any other key cancels the pending Ctrl+C
+                        if self._ctrl_c_pending:
+                            self._ctrl_c_pending = None
+
+                        if self._tui:
+                            self._tui._handle_input(input_data)
                 await trio.sleep(0.01)
 
         nursery.start_soon(input_reading_loop)

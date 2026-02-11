@@ -72,6 +72,7 @@ BUILTIN_COMMANDS: list[SlashCommand] = [
         arg_hint="[0:5, summarize:5:20, 20:]",
     ),
     SlashCommand("env", "Switch environment", arg_hint="[env_spec|list]"),
+    SlashCommand("swap", "Hot-swap to external driver", arg_hint="[claude|codex]"),
 ]
 
 
@@ -104,6 +105,8 @@ async def handle_slash_command(
         return await _handle_slice(runner, args)
     elif command == "env":
         return await _handle_env(runner, args)
+    elif command == "swap":
+        return await _handle_swap(runner, args)
 
     # Try file-based commands
     file_commands = load_file_commands()
@@ -123,7 +126,7 @@ async def handle_slash_command(
     # No suggestion - just show error
     return SlashCommandResult(
         handled=True,
-        message=f"Unknown command: /{command}\nType /model, /thinking, /slice, or /env",
+        message=f"Unknown command: /{command}\nType /model, /thinking, /slice, /env, or /swap",
     )
 
 
@@ -646,6 +649,45 @@ async def _handle_env(runner: InteractiveAgentRunner, args: str) -> SlashCommand
         new_environment=new_env,
         new_trajectory=Trajectory(messages=new_messages),
     )
+
+
+# =============================================================================
+# /swap Command - Hot-swap to external driver
+# =============================================================================
+
+
+async def _handle_swap(runner: InteractiveAgentRunner, args: str) -> SlashCommandResult:
+    """Handle /swap command.
+
+    /swap           - Show usage
+    /swap claude    - Switch to Claude Code CLI
+    /swap codex     - Switch to Codex CLI
+
+    Raises SwapRequest to break out of the agent loop and switch drivers.
+    """
+    from pathlib import Path
+
+    from ..runner import SwapRequest
+
+    if not args:
+        return SlashCommandResult(
+            message="Usage: /swap <driver>\n  /swap claude - Switch to Claude Code\n  /swap codex  - Switch to Codex"
+        )
+
+    target = args.strip().lower()
+    if target not in ("claude", "codex"):
+        return SlashCommandResult(message=f"Unknown driver: {target}\nAvailable: claude, codex")
+
+    # Get current messages from runner's trajectory
+    messages = list(runner.initial_trajectory.messages)
+
+    # Get working directory
+    cwd = Path.cwd()
+    if runner.environment and hasattr(runner.environment, "working_dir"):
+        cwd = runner.environment.working_dir
+
+    # Raise SwapRequest to break out of the TUI agent loop
+    raise SwapRequest(target=target, messages=messages, cwd=cwd)
 
 
 # =============================================================================

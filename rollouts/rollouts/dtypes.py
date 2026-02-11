@@ -1414,7 +1414,9 @@ class RunConfig:
     # "object NoneType can't be used in 'await' expression" errors later. Should validate
     # that on_chunk is properly async and has correct signature at construction time.
     on_chunk: Callable[[StreamEvent], Awaitable[None]]
-    on_input: Callable[[str], Awaitable[str]] = field(default_factory=lambda: default_stdin_handler)
+    # on_input returns InputResult (UserMessage | SlashCommand | InputExit) from frontends.protocol
+    # Using Any to avoid circular import with frontends module
+    on_input: Callable[[str], Awaitable[Any]] = field(default_factory=lambda: default_stdin_handler)
     confirm_tool: Callable[
         [ToolCall, "AgentState", "RunConfig"], Awaitable[tuple["AgentState", ToolConfirmResult]]
     ] = field(default_factory=lambda: default_confirm_tool)

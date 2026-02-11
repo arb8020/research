@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING
 
 import trio
 
+from .protocol import InputResult
+
 if TYPE_CHECKING:
     from ..dtypes import StreamEvent, ToolCall
 
@@ -199,23 +201,20 @@ class NoneFrontend:
         elif isinstance(event, StreamError):
             print(f"\n{RED}Stream error: {event.error}{RESET}\n", end="", flush=True)
 
-    async def get_input(self, prompt: str = "") -> str:
+    async def get_input(self, prompt: str = "") -> InputResult:
         """Get user input via stdin.
 
-        TODO(multiline): The raw terminal multiline input implementation had rendering
-        bugs (ghost lines appearing when text wrapped). For now, we use simple input()
-        which doesn't support multiline paste. To fix this properly, we need to either:
-        1. Extract the TUI's Input component rendering logic for use in stdout mode
-        2. Or use a full-screen approach like the TUI does (which avoids the cursor
-           positioning issues that cause ghost lines)
-        See test files in repo root (test_*.py) for investigation history.
+        Parses slash commands and returns appropriate InputResult type.
+        The runner handles command execution (has access to session, endpoint, etc.).
 
         Args:
             prompt: Prompt to display
 
         Returns:
-            User's input string
+            InputResult: UserMessage, SlashCommand, or InputExit
         """
+        from .protocol import InputExit, SlashCommand, UserMessage
+
         # Ensure we're on a new line before prompt
         print("\n", end="", flush=True)
 
@@ -226,10 +225,27 @@ class NoneFrontend:
                 return input(display_prompt)
             except EOFError as e:
                 # stdin closed (e.g., running from Claude Code without TTY)
-                # Raise KeyboardInterrupt to signal graceful exit
-                raise KeyboardInterrupt("stdin closed (EOF)") from e
+                raise EOFError("stdin closed") from e
 
-        result = await trio.to_thread.run_sync(_get_input, abandon_on_cancel=True)
+        try:
+            text = await trio.to_thread.run_sync(_get_input, abandon_on_cancel=True)
+        except EOFError:
+            return InputExit()
+
+        # Check for exit commands
+        if text.strip().lower() in ("exit", "quit", "q"):
+            return InputExit()
+
+        # Parse slash commands
+        if text.startswith("/"):
+            space_idx = text.find(" ")
+            if space_idx == -1:
+                name = text[1:]
+                args = ""
+            else:
+                name = text[1:space_idx]
+                args = text[space_idx + 1 :].strip()
+            return SlashCommand(name=name, args=args)
 
         # Show agent prompt immediately so user knows their input was received
         if self._use_color:
@@ -237,7 +253,7 @@ class NoneFrontend:
         else:
             print("❯ ", end="", flush=True)
 
-        return result
+        return UserMessage(text=text)
 
     async def confirm_tool(self, tool_call: ToolCall) -> bool:
         """Confirm tool execution via stdin.

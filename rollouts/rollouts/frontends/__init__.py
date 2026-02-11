@@ -25,7 +25,14 @@ Usage:
 from .json_frontend import JsonFrontend
 from .minimal import MinimalFrontend
 from .none import NoneFrontend
-from .protocol import Frontend, FrontendWithStatus
+from .protocol import (
+    Frontend,
+    FrontendWithStatus,
+    InputExit,
+    InputResult,
+    SlashCommand,
+    UserMessage,
+)
 from .runner import InteractiveRunner, RunnerConfig, run_interactive
 from .textual_frontend import TextualFrontend
 from .tui_frontend import TUIFrontend
@@ -34,6 +41,10 @@ __all__ = [
     # Protocol
     "Frontend",
     "FrontendWithStatus",
+    "InputResult",
+    "UserMessage",
+    "SlashCommand",
+    "InputExit",
     # Runner
     "InteractiveRunner",
     "RunnerConfig",

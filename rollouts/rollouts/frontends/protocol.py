@@ -6,14 +6,54 @@ to work with the same agent loop.
 
 The key abstraction is that the agent loop emits StreamEvent objects, and frontends
 render them however they choose. Input is gathered via async callbacks.
+
+Input handling returns InputResult types so the runner can handle slash commands
+uniformly across all frontends - the frontend parses, the runner executes.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from ..dtypes import StreamEvent, ToolCall
+
+
+# =============================================================================
+# Input Result Types
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class UserMessage:
+    """User typed a regular message to send to the LLM."""
+
+    text: str
+
+
+@dataclass(frozen=True)
+class SlashCommand:
+    """User typed a slash command (e.g., /model opus, /swap claude).
+
+    Frontend parses the command, runner executes it.
+    This separation allows frontends to do tab completion without
+    knowing what the commands actually do.
+    """
+
+    name: str  # e.g., "model", "swap", "slice"
+    args: str  # e.g., "opus", "claude", "0:5"
+
+
+@dataclass(frozen=True)
+class InputExit:
+    """User wants to exit (Ctrl+C, Ctrl+D, or typed 'exit')."""
+
+    pass
+
+
+# Union type for get_input return
+InputResult = UserMessage | SlashCommand | InputExit
 
 
 @runtime_checkable
@@ -77,18 +117,32 @@ class Frontend(Protocol):
         """
         ...
 
-    async def get_input(self, prompt: str = "") -> str:
+    async def get_input(self, prompt: str = "") -> InputResult:
         """Get user input. Blocks until user submits.
 
         This is called when the agent needs user input to continue.
         The frontend should display the prompt and wait for the user
         to type a message and press enter.
 
+        Returns InputResult:
+        - UserMessage: Regular text to send to LLM
+        - SlashCommand: Parsed command (name, args) for runner to execute
+        - InputExit: User wants to quit
+
+        The frontend is responsible for:
+        - Detecting slash commands (input starts with "/")
+        - Parsing command name and args
+        - Tab completion (optional, frontend-specific)
+
+        The runner is responsible for:
+        - Executing slash commands (has access to session, endpoint, etc.)
+        - Handling unknown commands
+
         Args:
             prompt: Optional prompt to display (may be ignored by rich UIs)
 
         Returns:
-            User's input string
+            InputResult indicating what the user wants to do
         """
         ...
 

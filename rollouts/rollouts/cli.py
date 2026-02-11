@@ -153,6 +153,9 @@ class CLIConfig:
     debug_layout: bool = False
     log_file: str | None = None
 
+    # Driver/backend
+    driver: str = "sdk"  # sdk, claude, codex
+
     # Preset
     preset: str | None = None
     system_prompt: str | None = None
@@ -164,6 +167,9 @@ class CLIConfig:
     list_templates: bool = False
     _template_config: object | None = None  # Loaded TemplateConfig (internal)
     _bash_allowlist: list[str] | None = None  # From template (internal)
+
+    # Model/driver picker
+    pick: bool = False  # Interactive model/driver picker
 
     # Commands (mutually exclusive actions)
     list_models: bool = False
@@ -343,6 +349,15 @@ def create_parser() -> argparse.ArgumentParser:
         help="TUI theme (default: minimal)",
     )
 
+    # Driver/backend options
+    parser.add_argument(
+        "--driver",
+        type=str,
+        choices=["sdk", "claude", "codex"],
+        default="sdk",
+        help="Backend driver: sdk (default, direct API), claude (Claude Code CLI), codex (Codex CLI)",
+    )
+
     # Extended thinking (Anthropic)
     parser.add_argument(
         "--thinking",
@@ -350,6 +365,13 @@ def create_parser() -> argparse.ArgumentParser:
         choices=["enabled", "disabled"],
         default=PARSER_DEFAULTS["thinking"],
         help="Extended thinking for Anthropic models (default: enabled)",
+    )
+
+    # Model/driver picker
+    parser.add_argument(
+        "--pick",
+        action="store_true",
+        help="Interactive model/driver picker (choose between rollouts, claude-code, codex)",
     )
 
     # Model management
@@ -671,7 +693,6 @@ def create_endpoint(
     profile: str = "default",
 ) -> Endpoint:
     """Create endpoint from CLI arguments."""
-    import os
 
     from .models import get_model
 
@@ -2014,118 +2035,70 @@ async def _run_interactive_mode(
     branch_point: int | None,
     initial_prompt: str | None,
 ) -> int:
-    """Run in interactive mode with selected frontend."""
+    """Run in interactive mode with selected frontend and driver."""
     assert config.endpoint is not None, "endpoint must be set for interactive mode"
 
+    from functools import partial
+
+    from .frontends import MinimalFrontend, NoneFrontend, TUIFrontend, run_interactive
+    from .frontends.runner import RunFn, RunnerConfig
+
+    # Select run_fn based on driver
+    run_fn: RunFn | None = None
+    if config.driver == "claude":
+        from .drivers.run_claude import run_claude
+
+        run_fn = partial(run_claude, model=config.endpoint.model or "sonnet", cwd=config.cwd)
+    elif config.driver == "codex":
+        # TODO: implement run_codex
+        print("Codex driver not yet implemented, using SDK", file=sys.stderr)
+        run_fn = None
+    # else: sdk - use default run_agent (run_fn=None)
+
+    # Select frontend
+    env_name = config.environment.__class__.__name__ if config.environment else None
     if config.frontend == "none":
-        from .frontends import NoneFrontend, run_interactive
-        from .frontends.runner import RunnerConfig
-
         frontend = NoneFrontend(show_tool_calls=True, show_thinking=True)
-        try:
-            await run_interactive(
-                trajectory,
-                config.endpoint,
-                frontend=frontend,
-                environment=config.environment,
-                config=RunnerConfig(
-                    session_store=config.session_store,
-                    session_id=session_id,
-                    parent_session_id=parent_session_id,
-                    branch_point=branch_point,
-                    confirm_tools=config.confirm_tools,
-                    initial_prompt=initial_prompt,
-                    detached=config.detached,
-                ),
-            )
-        except KeyboardInterrupt:
-            print("\n\n✅ Agent stopped")
-        return 0
-
-    if config.frontend == "minimal":
-        from .frontends import MinimalFrontend, run_interactive
-        from .frontends.runner import RunnerConfig
-
-        env_name = config.environment.__class__.__name__ if config.environment else None
+    elif config.frontend == "minimal":
         frontend = MinimalFrontend(
             show_tool_calls=True,
             show_thinking=True,
             agent=env_name,
             model=config.endpoint.model,
         )
-        try:
-            await run_interactive(
-                trajectory,
-                config.endpoint,
-                frontend=frontend,
-                environment=config.environment,
-                config=RunnerConfig(
-                    session_store=config.session_store,
-                    session_id=session_id,
-                    parent_session_id=parent_session_id,
-                    branch_point=branch_point,
-                    confirm_tools=config.confirm_tools,
-                    initial_prompt=initial_prompt,
-                    detached=config.detached,
-                ),
-            )
-        except KeyboardInterrupt:
-            print("\n\n✅ Agent stopped")
-        return 0
-
-    if config.frontend == "textual":
-        print(
-            "Textual frontend not yet implemented. Use --frontend=tui for now.",
-            file=sys.stderr,
-        )
+    elif config.frontend == "textual":
+        print("Textual frontend not yet implemented. Use --frontend=tui for now.", file=sys.stderr)
         return 1
+    else:
+        # Default: TUI (only for SDK driver)
+        frontend = TUIFrontend(
+            theme=config.theme,
+            environment=config.environment,
+            debug=config.debug,
+            debug_layout=config.debug_layout,
+        )
 
-    # Detached mode: use simple frontend, not TUI
+    # Detached mode uses simple frontend
     if config.detached:
-        from .frontends import NoneFrontend, run_interactive
-        from .frontends.runner import RunnerConfig
-
         frontend = NoneFrontend(show_tool_calls=True, show_thinking=False)
-        try:
-            states = await run_interactive(
-                trajectory,
-                config.endpoint,
-                frontend=frontend,
-                environment=config.environment,
-                config=RunnerConfig(
-                    session_store=config.session_store,
-                    session_id=session_id,
-                    parent_session_id=parent_session_id,
-                    branch_point=branch_point,
-                    confirm_tools=config.confirm_tools,
-                    initial_prompt=initial_prompt,
-                    detached=True,
-                ),
-            )
-            # Print session ID for scripting
-            if states and states[-1].session_id:
-                print(states[-1].session_id)
-        except KeyboardInterrupt:
-            print("\n\n✅ Agent stopped")
-        return 0
-
-    # Default: Python TUI
-    from .frontends.tui.interactive_agent import run_interactive_agent
 
     try:
-        await run_interactive_agent(
+        await run_interactive(
             trajectory,
             config.endpoint,
-            config.environment,
-            config.session_store,
-            session_id,
-            config.theme,
-            config.debug,
-            config.debug_layout,
-            parent_session_id,
-            branch_point,
-            config.confirm_tools,
-            initial_prompt,
+            frontend=frontend,
+            environment=config.environment,
+            config=RunnerConfig(
+                session_store=config.session_store,
+                session_id=session_id,
+                parent_session_id=parent_session_id,
+                branch_point=branch_point,
+                confirm_tools=config.confirm_tools,
+                initial_prompt=initial_prompt,
+                detached=config.detached,
+                cwd=config.cwd,
+                run_fn=run_fn,
+            ),
         )
     except KeyboardInterrupt:
         print("\n\n✅ Agent stopped")
@@ -2203,7 +2176,7 @@ def auth_main(args: list[str]) -> int:
 
         if not profiles and not credentials:
             print("No credentials configured.")
-            print(f"Run: rollouts auth login <provider>")
+            print("Run: rollouts auth login <provider>")
             print(f"Config: {CREDENTIALS_FILE}")
             return 0
 
@@ -2261,6 +2234,16 @@ def main() -> int:
         from .tui.monitor_cli import monitor_main
 
         return monitor_main(sys.argv[2:])
+
+    # "rollouts agent" subcommand replaced with --driver flag
+    if len(sys.argv) > 1 and sys.argv[1] == "agent":
+        print("The 'agent' subcommand has been replaced with --driver:", file=sys.stderr)
+        print("  rollouts --driver claude    # Start with Claude Code", file=sys.stderr)
+        print("  rollouts --driver codex     # Start with Codex", file=sys.stderr)
+        print("  rollouts                    # Start with SDK (default)", file=sys.stderr)
+        print()
+        print("You can also swap mid-session with /swap claude or /swap rollouts", file=sys.stderr)
+        return 1
 
     # Load .env file for API keys (if present)
     from dotenv import load_dotenv
@@ -2329,8 +2312,10 @@ def main() -> int:
         debug=args.debug,
         debug_layout=args.debug_layout,
         log_file=args.log_file,
+        driver=args.driver,
         preset=args.preset,
         system_prompt=args.system_prompt,
+        pick=args.pick,
         list_models=args.list_models,
         sync_models=args.sync_models,
         write_models=args.write,
