@@ -1040,6 +1040,7 @@ class StopReason(Enum):
     TASK_COMPLETED = "TASK_COMPLETED"
     ABORTED = "ABORTED"
     NEEDS_INPUT = "NEEDS_INPUT"  # Agent waiting for user input (interactive mode)
+    INTERRUPTED = "INTERRUPTED"  # User interrupted (Escape) - can resume with driver_session_id
 
 
 @dataclass(frozen=True)
@@ -1385,6 +1386,8 @@ class AgentState:
     parent_session_id: str | None = None  # Parent session to branch from
     branch_point: int | None = None  # Message index where branching from parent
     confirm_tools: bool = False  # Whether tool confirmation is required
+    # Driver-specific session ID (e.g., Claude Code session for --resume)
+    driver_session_id: str | None = None
 
 
 # Forward declarations for RunConfig (needs to be after AgentState but before default handlers)

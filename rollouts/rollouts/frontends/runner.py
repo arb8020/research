@@ -315,6 +315,16 @@ class InteractiveRunner:
                         current_state = dc_replace(current_state, stop=None)
                     continue
 
+                # Handle interrupted: user pressed Escape, stay in session
+                # SIGINT kills Claude before it saves, so --resume won't work.
+                # Just wait for new user input and start fresh Claude session.
+                if states and states[-1].stop == StopReason.INTERRUPTED:
+                    # Don't exit - continue the outer loop to get new input
+                    # current_state keeps the trajectory so far
+                    current_state = states[-1]
+                    current_state = dc_replace(current_state, stop=None, driver_session_id=None)
+                    continue
+
                 # Normal exit
                 break
 
