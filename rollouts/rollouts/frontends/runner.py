@@ -319,6 +319,9 @@ class InteractiveRunner:
                 # SIGINT kills Claude before it saves, so --resume won't work.
                 # Just wait for new user input and start fresh Claude session.
                 if states and states[-1].stop == StopReason.INTERRUPTED:
+                    # Hide loader since we're returning to input mode
+                    if hasattr(self.frontend, "hide_loader"):
+                        self.frontend.hide_loader()
                     # Don't exit - continue the outer loop to get new input
                     # current_state keeps the trajectory so far
                     current_state = states[-1]
