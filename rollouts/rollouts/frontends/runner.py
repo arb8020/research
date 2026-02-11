@@ -218,6 +218,7 @@ class InteractiveRunner:
         self.run_fn: RunFn = cfg.run_fn or run_agent
 
         self._cancel_scope: trio.CancelScope | None = None
+        self._interrupt_flag: list[bool] = [False]  # Mutable container for interrupt signal
 
     async def run(self) -> list[AgentState]:
         """Run interactive agent loop.
@@ -245,7 +246,7 @@ class InteractiveRunner:
                 states: list[AgentState] = []
 
                 async with trio.open_nursery() as nursery:
-                    # Set up Ctrl+C handler for TUI
+                    # Set up Ctrl+C handler for TUI (exit entirely)
                     if hasattr(self.frontend, "set_on_cancel"):
 
                         def handle_ctrl_c() -> None:
@@ -254,6 +255,14 @@ class InteractiveRunner:
                                 self._cancel_scope.cancel()
 
                         self.frontend.set_on_cancel(handle_ctrl_c)
+
+                    # Set up Escape handler for TUI (interrupt, stay in session)
+                    if hasattr(self.frontend, "set_on_interrupt"):
+
+                        def handle_escape() -> None:
+                            self._interrupt_flag[0] = True
+
+                        self.frontend.set_on_interrupt(handle_escape)
 
                     # Start TUI input loop FIRST (before getting initial state)
                     if hasattr(self.frontend, "run_input_loop"):
@@ -414,6 +423,7 @@ class InteractiveRunner:
             handle_no_tool=self._on_no_tool,
             session_store=self.session_store,
             cancel_scope=self._cancel_scope,
+            interrupt_flag=self._interrupt_flag,
         )
 
     # -----------------------------------------------------------------------

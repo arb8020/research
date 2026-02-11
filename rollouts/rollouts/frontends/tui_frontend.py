@@ -65,6 +65,9 @@ class TUIFrontend:
         self._on_cancel: Any | None = None
         self._ctrl_c_pending: float | None = None  # Timestamp of first Ctrl+C
 
+        # Interrupt callback - set by runner for Escape handling (interrupt, don't exit)
+        self._on_interrupt: Any | None = None
+
     async def start(self) -> None:
         """Initialize TUI components and enter raw mode."""
         from .tui.agent_renderer import AgentRenderer
@@ -337,9 +340,17 @@ class TUIFrontend:
         """Set callback for Ctrl+C handling.
 
         Args:
-            callback: Function to call when Ctrl+C is pressed
+            callback: Function to call when Ctrl+C is pressed (exit entirely)
         """
         self._on_cancel = callback
+
+    def set_on_interrupt(self, callback: Any) -> None:
+        """Set callback for Escape handling.
+
+        Args:
+            callback: Function to call when Escape is pressed (interrupt, stay in session)
+        """
+        self._on_interrupt = callback
 
     async def run_input_loop(self, nursery: trio.Nursery) -> None:
         """Run terminal input reading loop.
@@ -375,6 +386,14 @@ class TUIFrontend:
                                 self._ctrl_c_pending = now
                                 if self._renderer:
                                     self._renderer.add_system_message("Press Ctrl+C again to exit")
+                            continue
+
+                        # Check for Escape - interrupt current response
+                        if input_data == "\x1b":
+                            if self._on_interrupt:
+                                self._on_interrupt()
+                                if self._renderer:
+                                    self._renderer.add_system_message("Interrupted")
                             continue
 
                         # Any other key cancels the pending Ctrl+C

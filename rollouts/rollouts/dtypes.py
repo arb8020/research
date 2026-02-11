@@ -1432,6 +1432,9 @@ class RunConfig:
     cancel_scope: trio.CancelScope | None = (
         None  # Optional Trio cancel scope for graceful cancellation. When cancel_scope.cancel() is called, any in-flight HTTP request is immediately cancelled and trio.Cancelled is raised. The agent loop catches this and sets stop=StopReason.ABORTED.
     )
+    # Mutable container for interrupt flag - list with single bool element
+    # Set interrupt_flag[0] = True to signal interrupt, driver will reset to False after handling
+    interrupt_flag: list[bool] | None = None
     # Session persistence
     session_store: Any | None = (
         None  # SessionStore instance for persistence (session_id is on AgentState)

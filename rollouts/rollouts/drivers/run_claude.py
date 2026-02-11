@@ -127,6 +127,21 @@ async def run_claude(
                 proc.terminate()
                 return
 
+    async def watch_for_interrupt() -> None:
+        """Watch for interrupt flag and send SIGINT to Claude process."""
+        import signal as sig
+        if not config.interrupt_flag:
+            return  # No interrupt flag configured
+        while True:
+            await trio.sleep(0.05)  # Check frequently
+            if config.interrupt_flag[0]:
+                logger.info("Interrupt requested, sending SIGINT to Claude process")
+                config.interrupt_flag[0] = False  # Reset flag
+                try:
+                    proc.send_signal(sig.SIGINT)
+                except ProcessLookupError:
+                    return  # Process already gone
+
     async def read_events_until_done() -> bool:
         """Read and emit events until turn completes. Returns True if more input needed."""
         nonlocal stdout_buffer
@@ -169,8 +184,9 @@ async def run_claude(
 
     try:
         async with trio.open_nursery() as nursery:
-            # Start cancel watcher
+            # Start cancel and interrupt watchers
             nursery.start_soon(watch_for_cancel)
+            nursery.start_soon(watch_for_interrupt)
 
             try:
                 # Send initial user message from trajectory
