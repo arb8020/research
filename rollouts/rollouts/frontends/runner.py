@@ -39,6 +39,7 @@ from ..agents import Actor, AgentState, run_agent
 from ..dtypes import (
     Endpoint,
     Environment,
+    EnvironmentConfig,
     Message,
     RunConfig,
     StopReason,
@@ -250,14 +251,13 @@ class InteractiveRunner:
                     if hasattr(self.frontend, "set_on_cancel"):
 
                         def handle_ctrl_c() -> None:
-                            # Cancel both the agent scope AND the nursery scope
-                            # The agent scope cancels run_fn, the nursery scope
-                            # cancels background tasks like the TUI input loop
+                            # Cancel the agent scope to trigger graceful shutdown
+                            # The nursery will be cancelled in the finally block after
+                            # run_fn returns (which allows it to persist session state)
                             # Note: Don't print here - terminal is still in raw mode.
                             # The TUI already shows "Press Ctrl+C again to exit" as feedback.
                             if self._cancel_scope:
                                 self._cancel_scope.cancel()
-                            nursery.cancel_scope.cancel()
 
                         self.frontend.set_on_cancel(handle_ctrl_c)
 
@@ -291,6 +291,10 @@ class InteractiveRunner:
 
                     # Only run agent if we have a state and no swap pending
                     if current_state is not None and swap_request is None and not user_exited:
+                        # Create session BEFORE calling run_fn so we own session_id
+                        # even if run_fn gets cancelled
+                        current_state = await self._ensure_session(current_state)
+
                         try:
                             with self._cancel_scope:
                                 states = await self.run_fn(current_state, run_config)
@@ -341,6 +345,8 @@ class InteractiveRunner:
 
         finally:
             signal.signal(signal.SIGINT, original_handler)
+            # Update session_id from states (may have been skipped if cancelled)
+            self._update_session_id_from_states(all_states)
             await self._cleanup()
 
     # -----------------------------------------------------------------------
@@ -430,6 +436,36 @@ class InteractiveRunner:
             branch_point=self.branch_point,
             confirm_tools=self.confirm_tools,
         )
+
+    async def _ensure_session(self, state: AgentState) -> AgentState:
+        """Create session if needed, return state with session_id set.
+
+        Session creation happens HERE in the runner (orchestration layer),
+        not inside run_fn. This ensures session_id is available even if
+        run_fn is cancelled or crashes.
+        """
+        if not self.session_store:
+            return state
+
+        if state.session_id:
+            # Already have a session (resuming)
+            self.session_id = state.session_id
+            return state
+
+        # Create new session
+        session = await self.session_store.create(
+            endpoint=state.actor.endpoint,
+            environment=EnvironmentConfig(type="none"),  # Simplified for drivers
+            parent_id=state.parent_session_id,
+            branch_point=state.branch_point,
+        )
+        self.session_id = session.session_id
+
+        # Persist initial messages
+        for msg in state.actor.trajectory.messages:
+            await self.session_store.append_message(session.session_id, msg)
+
+        return dc_replace(state, session_id=session.session_id)
 
     def _create_run_config(self) -> RunConfig:
         """Create RunConfig with all callbacks."""
@@ -659,8 +695,13 @@ class InteractiveRunner:
 
     def _update_session_id_from_states(self, states: list[AgentState]) -> None:
         """Update self.session_id from final state."""
-        if states and states[-1].session_id:
-            self.session_id = states[-1].session_id
+        if states:
+            # Prefer session_id, fall back to driver_session_id (for Claude/Codex drivers)
+            final_state = states[-1]
+            if final_state.session_id:
+                self.session_id = final_state.session_id
+            elif final_state.driver_session_id:
+                self.session_id = final_state.driver_session_id
 
     def _handle_sigint(self, signum: int, frame: FrameType | None) -> None:
         """Handle SIGINT - cancel agent and dump debug context."""

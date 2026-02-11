@@ -25,6 +25,7 @@ from ..dtypes import (
     LLMCallEnd,
     LLMCallStart,
     Message,
+    SessionStatus,
     StopReason,
     StreamDone,
     StreamError,
@@ -45,6 +46,7 @@ from ..dtypes import (
 if TYPE_CHECKING:
     from ..agents import AgentState
     from ..dtypes import RunConfig
+    from ..store import SessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +90,14 @@ async def run_claude(
         with open(_trace_file, "a") as f:
             f.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
 
-    _trace(f"=== run_claude START resume_session_id={resume_session_id} ===")
+    _trace(
+        f"=== run_claude START resume_session_id={resume_session_id} session_id={current_state.session_id} ==="
+    )
+
+    # Session store for dual-write (rollouts native format)
+    # Note: Session creation is handled by the runner (orchestration layer)
+    # before calling run_claude. We just use session_store for message persistence.
+    session_store: SessionStore | None = config.session_store
 
     # Find claude binary
     claude_bin = shutil.which("claude")
@@ -310,6 +319,12 @@ async def run_claude(
                             )
                             accumulator.reset()
 
+                            # Dual-write: persist assistant message to rollouts session
+                            if session_store and current_state.session_id:
+                                await session_store.append_message(
+                                    current_state.session_id, assistant_msg
+                                )
+
                         # Turn complete - call handle_no_tool to get next input
                         new_state = await config.handle_no_tool(current_state, config)
 
@@ -333,6 +348,12 @@ async def run_claude(
                                 # Reset parser for next turn
                                 parser.reset()
 
+                                # Dual-write: persist user message to rollouts session
+                                if session_store and current_state.session_id:
+                                    await session_store.append_message(
+                                        current_state.session_id, last_msg
+                                    )
+
                         states.append(current_state)
             finally:
                 # Cancel the watcher when main loop exits
@@ -340,7 +361,17 @@ async def run_claude(
 
     except trio.Cancelled:
         current_state = replace(current_state, stop=StopReason.ABORTED)
-        raise
+        # Don't re-raise - return the state so caller can access session_id
+        # The caller (runner) handles Cancelled at its own boundary
+        _trace(f"Cancelled - returning with session_id={current_state.session_id}")
+
+        # Update session status
+        if session_store and current_state.session_id:
+            await session_store.update(current_state.session_id, status=SessionStatus.ABORTED)
+            logger.info(f"Session {current_state.session_id} aborted (Ctrl+C)")
+
+        states.append(current_state)
+        return states
     finally:
         # Cleanup
         try:
@@ -374,6 +405,26 @@ async def run_claude(
             actor=replace(current_state.actor, trajectory=new_trajectory),
         )
         logger.info("Interrupted - added partial assistant message to trajectory")
+
+    # Set driver_session_id from parsed session_id so runner can display it
+    if parser._session_id:
+        current_state = replace(current_state, driver_session_id=parser._session_id)
+
+    # Update session status based on stop reason
+    if session_store and current_state.session_id:
+        if current_state.stop == StopReason.INTERRUPTED:
+            status = SessionStatus.INTERRUPTED
+        elif current_state.stop == StopReason.ABORTED:
+            status = SessionStatus.ABORTED
+        elif current_state.stop == StopReason.ERROR:
+            status = SessionStatus.FAILED
+        elif current_state.stop == StopReason.END_TURN:
+            status = SessionStatus.COMPLETED
+        else:
+            status = SessionStatus.COMPLETED
+
+        await session_store.update(current_state.session_id, status=status)
+        logger.info(f"Updated session {current_state.session_id} status to {status.value}")
 
     states.append(current_state)
     return states
