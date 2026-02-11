@@ -2052,9 +2052,11 @@ async def _run_interactive_mode(
 
         run_fn = partial(run_claude, model=config.endpoint.model or "sonnet", cwd=config.cwd)
     elif config.driver == "codex":
-        # TODO: implement run_codex
-        print("Codex driver not yet implemented, using SDK", file=sys.stderr)
-        run_fn = None
+        from .drivers.run_codex import run_codex
+
+        # Don't pass model - codex uses its own model config
+        # The endpoint.model is for Anthropic/SDK, not codex
+        run_fn = partial(run_codex, model=None, cwd=config.cwd)
     # else: sdk - use default run_agent (run_fn=None)
 
     # Select frontend
@@ -2435,7 +2437,12 @@ def main() -> int:
     # Create endpoint
     try:
         config.endpoint = create_endpoint(
-            config.model, config.api_base, config.api_key, config.thinking, config.quiet, profile,
+            config.model,
+            config.api_base,
+            config.api_key,
+            config.thinking,
+            config.quiet,
+            profile,
             driver=config.driver,
         )
     except ValueError as e:
