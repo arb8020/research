@@ -220,6 +220,7 @@ class InteractiveRunner:
 
         self._cancel_scope: trio.CancelScope | None = None
         self._interrupt_flag: list[bool] = [False]  # Mutable container for interrupt signal
+        self._exit_requested: bool = False  # Set by Ctrl+C to exit entirely
 
     async def run(self) -> list[AgentState]:
         """Run interactive agent loop.
@@ -256,8 +257,10 @@ class InteractiveRunner:
                             # run_fn returns (which allows it to persist session state)
                             # Note: Don't print here - terminal is still in raw mode.
                             # The TUI already shows "Press Ctrl+C again to exit" as feedback.
+                            self._exit_requested = True
                             if self._cancel_scope:
                                 self._cancel_scope.cancel()
+                            nursery.cancel_scope.cancel()
 
                         self.frontend.set_on_cancel(handle_ctrl_c)
 
@@ -307,9 +310,9 @@ class InteractiveRunner:
                     else:
                         nursery.cancel_scope.cancel()
 
-                # Handle user exit
-                if user_exited:
-                    return []
+                # Handle user exit (Ctrl+C or exit before first message)
+                if user_exited or self._exit_requested:
+                    return all_states
 
                 all_states.extend(states)
 

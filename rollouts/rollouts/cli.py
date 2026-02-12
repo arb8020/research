@@ -2092,6 +2092,7 @@ async def _run_interactive_mode(
             environment=config.environment,
             debug=config.debug,
             debug_layout=config.debug_layout,
+            driver=config.driver,
         )
 
     # Detached mode uses simple frontend

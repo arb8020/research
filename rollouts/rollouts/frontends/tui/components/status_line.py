@@ -32,6 +32,7 @@ class StatusLine(Component):
         # Status fields
         self._session_id: str | None = None
         self._model: str | None = None
+        self._driver: str | None = None
         self._input_tokens: int = 0
         self._output_tokens: int = 0
         self._cost: float = 0.0
@@ -46,6 +47,10 @@ class StatusLine(Component):
         """Set the model name and context window to display."""
         self._model = model
         self._context_window = context_window
+
+    def set_driver(self, driver: str | None) -> None:
+        """Set the driver name to display."""
+        self._driver = driver
 
     def set_tokens(self, input_tokens: int, output_tokens: int, cost: float = 0.0) -> None:
         """Set token counts and cost."""
@@ -125,6 +130,8 @@ class StatusLine(Component):
             line1_parts.append(f"session:{self._session_id}")
         if self._model:
             line1_parts.append(f"model:{self._model}")
+        if self._driver:
+            line1_parts.append(f"driver:{self._driver}")
         if self._env_info:
             for key, value in self._env_info.items():
                 line1_parts.append(f"{key}:{value}")

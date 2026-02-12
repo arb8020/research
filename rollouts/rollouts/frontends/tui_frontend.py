@@ -33,6 +33,7 @@ class TUIFrontend:
         environment: Environment | None = None,
         debug: bool = False,
         debug_layout: bool = False,
+        driver: str | None = None,
     ) -> None:
         """Initialize TUIFrontend.
 
@@ -41,11 +42,13 @@ class TUIFrontend:
             environment: Optional environment for custom tool formatters
             debug: Enable debug logging
             debug_layout: Show component boundaries
+            driver: Driver name (sdk, claude, codex, cursor)
         """
         self.theme_name = theme
         self.environment = environment
         self.debug = debug
         self.debug_layout = debug_layout
+        self.driver = driver
 
         # Components (initialized in start())
         self._terminal: Any | None = None
@@ -121,6 +124,8 @@ class TUIFrontend:
 
         # Create status line
         self._status_line = StatusLine(theme=self._tui.theme)
+        if self.driver:
+            self._status_line.set_driver(self.driver)
         self._tui.add_child(self._status_line)
 
         # Spacer after status
