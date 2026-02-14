@@ -659,6 +659,8 @@ async def aggregate_anthropic_stream(
     return completion
 
 
+# TODO: Remove this function and all OAuth token refresh logic in rollout_anthropic().
+# OAuth is no longer used for SDK driver. See cli.py for related cleanup TODOs.
 async def _get_fresh_oauth_token() -> str | None:
     """Get a fresh OAuth token, refreshing if needed. Returns None if not using OAuth."""
     try:
@@ -988,7 +990,9 @@ async def rollout_anthropic(
                                 timeout=actor.endpoint.timeout,
                             )
                             continue
-                    raise RuntimeError(
+                    from .base import AuthenticationError
+
+                    raise AuthenticationError(
                         f"Authentication failed: {e}\nCheck your API key or OAuth token."
                     ) from e
 

@@ -684,6 +684,11 @@ def parse_model_string(model_str: str) -> tuple[str, str]:
     return provider, model
 
 
+# TODO: Remove OAuth code. OAuth was used to let Pro/Max users avoid API billing,
+# but it added confusing auth precedence (OAuth > env var). Now SDK driver just uses
+# API keys. OAuth code remains in frontends/tui/oauth.py and providers/anthropic.py
+# (_get_fresh_oauth_token). Also remove --login-claude/--logout-claude flags and
+# cmd_oauth function. Delete ~/.rollouts/oauth/ handling.
 def get_oauth_client(profile: str = "default") -> object:
     """Get OAuth client for Anthropic. Lazy import to avoid TUI dependencies."""
     from .frontends.tui.oauth import get_oauth_client as _get_oauth_client
@@ -745,81 +750,15 @@ def create_endpoint(
         else:
             api_base = "https://api.openai.com/v1"
 
-    # Explicit auth flow - no silent fallbacks to avoid surprise billing
+    # Auth flow for SDK driver: simple API key lookup
     # 1. --api-key flag → use that (user's explicit choice)
-    # 2. No flag + OAuth exists → use OAuth (or stored API key for console accounts)
-    # 3. No flag + no OAuth → ERROR (prompt to login)
-    # Note: Skip auth setup for external drivers (claude, codex, cursor) - they handle their own auth
+    # 2. $ANTHROPIC_API_KEY env var → use that
+    # 3. credentials.toml active profile → use that
+    # OAuth is only for external drivers (claude, codex, cursor) which handle their own auth
     oauth_token = ""
-    is_claude_code_api_key = False  # Track if using API key created via Claude Code OAuth
-    if provider == "anthropic" and driver == "sdk":
-        if api_key is not None:
-            # User explicitly passed --api-key, use it
-            print("🔑 Using API key (explicit)", file=sys.stderr)
-        else:
-            # Try OAuth - never silently fall back to ANTHROPIC_API_KEY
-            client = get_oauth_client(profile)
-            tokens = client.tokens
-            if tokens:
-                if tokens.is_expired():
-                    try:
-                        tokens = trio.run(client.refresh_tokens)
-                        print("🔐 OAuth token refreshed", file=sys.stderr)
-                    except Exception as e:
-                        print(f"❌ OAuth token expired and refresh failed: {e}", file=sys.stderr)
-                        print(
-                            "   Run `rollouts login` to re-authenticate, or use --api-key",
-                            file=sys.stderr,
-                        )
-                        sys.exit(1)
-
-                # Check if we have inference scope for direct OAuth, or use stored API key
-                profile_info = (
-                    f" (default profile: {profile})"
-                    if profile == "default"
-                    else f" (profile: {profile})"
-                )
-                if tokens.has_inference_scope():
-                    # Pro/Max account - use OAuth token directly
-                    oauth_token = tokens.access_token
-                    if not quiet:
-                        print(
-                            f"🔐 Using OAuth authentication (Claude Pro/Max){profile_info}",
-                            file=sys.stderr,
-                        )
-                elif tokens.api_key:
-                    # Console/developer account - use stored API key (Claude Code restricted)
-                    api_key = tokens.api_key
-                    is_claude_code_api_key = True  # This API key requires Claude Code headers
-                    if not quiet:
-                        print(
-                            f"🔑 Using API key (Console account){profile_info}",
-                            file=sys.stderr,
-                        )
-                else:
-                    # Has OAuth but no inference scope and no API key - need to re-login
-                    print(
-                        f"❌ OAuth token missing inference scope and no API key stored{profile_info}",
-                        file=sys.stderr,
-                    )
-                    print(
-                        f"   Run `rollouts --login-claude --profile {profile}` to re-authenticate",
-                        file=sys.stderr,
-                    )
-                    sys.exit(1)
-            else:
-                # No OAuth tokens - require explicit action
-                profile_info = f" --profile {profile}" if profile != "default" else ""
-                print(
-                    f"❌ No authentication configured for Anthropic (profile: {profile})",
-                    file=sys.stderr,
-                )
-                print(
-                    f"   Run `rollouts --login-claude{profile_info}` to authenticate with Claude Pro/Max",
-                    file=sys.stderr,
-                )
-                print("   Or use --api-key to use API billing", file=sys.stderr)
-                sys.exit(1)
+    is_claude_code_api_key = False
+    if api_key is not None and not quiet:
+        print("🔑 Using API key (--api-key flag)", file=sys.stderr)
 
     if api_key is None:
         # Try credential store first, then env vars
@@ -2132,8 +2071,8 @@ def auth_main(args: list[str]) -> int:
     from .credentials import (
         CREDENTIALS_FILE,
         KNOWN_PROVIDERS,
+        PROVIDER_ENV_MAP,
         get_active_profile,
-        get_all_credentials,
         key_preview,
         load_profiles,
         set_active_profile,
@@ -2187,34 +2126,56 @@ def auth_main(args: list[str]) -> int:
         return 0
 
     elif cmd == "status":
+        import os
+
         profiles = load_profiles()
-        active_name, _ = get_active_profile()
-        credentials = get_all_credentials()
+        active_name, profile_creds = get_active_profile()
 
-        if not profiles and not credentials:
-            print("No credentials configured.")
-            print("Run: rollouts auth login <provider>")
-            print(f"Config: {CREDENTIALS_FILE}")
-            return 0
+        # All providers use same simple precedence: env var > credentials.toml
+        # (OAuth is only for external drivers like claude/codex, not shown here)
+        for provider in sorted(KNOWN_PROVIDERS):
+            env_var_name = PROVIDER_ENV_MAP.get(provider)
+            env_val = os.environ.get(env_var_name) if env_var_name else None
+            toml_val = profile_creds.get(provider)
 
-        # Show active credentials
-        if credentials:
-            print("Active credentials:")
-            for provider, key in sorted(credentials.items()):
-                print(f"  {provider}: {key_preview(key)}")
-        else:
-            print("No active credentials")
+            if not env_val and not toml_val:
+                continue
 
-        # Show profiles
-        if profiles:
-            print(f"\nProfiles ({CREDENTIALS_FILE}):")
-            for name, profile in profiles.items():
-                if not isinstance(profile, dict):
-                    continue
-                is_active = profile.get("active", False)
-                marker = " *" if is_active else ""
-                providers = [k for k in profile.keys() if k != "active"]
-                print(f"  {name}{marker}: {', '.join(providers) or '(empty)'}")
+            print(f"{provider.capitalize()} (in precedence order):")
+            active_found = False
+
+            # 1. Env var
+            if env_val:
+                active_found = True
+                print(f"  1. ${env_var_name}: {key_preview(env_val)} <- active")
+            else:
+                print(f"  1. ${env_var_name}: (not set)")
+
+            # 2. credentials.toml
+            if toml_val:
+                marker = " <- active" if not active_found else ""
+                print(
+                    f"  2. credentials.toml: {key_preview(toml_val)} (profile:{active_name}){marker}"
+                )
+            else:
+                print(f"  2. credentials.toml: (not set in profile:{active_name})")
+
+            print()
+
+        # Show providers with no config
+        unconfigured = []
+        for provider in sorted(KNOWN_PROVIDERS):
+            env_var_name = PROVIDER_ENV_MAP.get(provider)
+            env_val = os.environ.get(env_var_name) if env_var_name else None
+            toml_val = profile_creds.get(provider)
+            if not env_val and not toml_val:
+                unconfigured.append(provider)
+
+        if unconfigured:
+            print(f"Not configured: {', '.join(unconfigured)}")
+            print()
+
+        print(f"Config: {CREDENTIALS_FILE}")
 
         return 0
 
@@ -2496,7 +2457,19 @@ def main() -> int:
     # Run the agent
     try:
         return trio.run(run_agent, config)
-    except Exception as e:
+    except BaseException as e:
+        from .providers.base import AuthenticationError
+
+        # Check for auth errors (may be wrapped in ExceptionGroup by Trio)
+        if isinstance(e, AuthenticationError):
+            print(f"\n❌ {e}", file=sys.stderr)
+            return 1
+        if hasattr(e, "exceptions"):  # ExceptionGroup (Python 3.11+)
+            auth_errors = [exc for exc in e.exceptions if isinstance(exc, AuthenticationError)]
+            if auth_errors:
+                print(f"\n❌ {auth_errors[0]}", file=sys.stderr)
+                return 1
+        # Other errors: print full traceback
         print(f"\n\n❌ Error: {e}", file=sys.stderr)
         import traceback
 

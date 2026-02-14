@@ -7,6 +7,10 @@ Uses "code" flow where user copies authorization code from browser.
 Token format:
 - Access token: sk-ant-oat01-...  (8 hour expiry)
 - Refresh token: sk-ant-ort01-...
+
+TODO: Delete this file. OAuth is no longer used for SDK driver - we just use API keys
+(env var > credentials.toml). This was removed because OAuth had confusing precedence
+over env vars. See cli.py for related cleanup TODOs.
 """
 
 from __future__ import annotations

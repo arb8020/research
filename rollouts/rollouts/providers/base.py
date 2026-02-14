@@ -16,6 +16,16 @@ class NonRetryableError(Exception):
     pass
 
 
+class AuthenticationError(NonRetryableError):
+    """Exception raised when API authentication fails.
+
+    This is a configuration error - the user needs to fix their API key or OAuth
+    token before retrying. No point in retrying or persisting session state.
+    """
+
+    pass
+
+
 class ContextTooLongError(NonRetryableError):
     """Exception raised when the context/prompt exceeds the model's maximum token limit.
 
