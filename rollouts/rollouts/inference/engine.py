@@ -1,266 +1,381 @@
 """Inference engine - orchestrates model, cache, and scheduler.
 
-This is a class because it owns GPU resources and needs cleanup.
-Pure functions do the actual work.
+This is a class because it owns GPU resources.
+Pure functions in scheduler.py and core.py do the actual logic.
 """
+
+from __future__ import annotations
+
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from torch import Tensor
 
-from ..inference.sampling import sample_with_logprobs
-from ..inference.scheduler import schedule
-from ..inference.types import (
-    EngineConfig,
-    SamplingParams,
-    SchedulerConfig,
-    Sequence,
-    SequenceStatus,
-    TrainingSample,
+from .core import Batch, Req, SamplingParams, create_req
+from .kv_cache import (
+    CacheConfig,
+    KVCachePool,
+    RequestCache,
+    empty_request_cache,
+    extend_request_cache,
+    gather_past_key_values,
+    store_new_key_values,
 )
+from .scheduler import (
+    SchedulerConfig,
+    add_request,
+    empty_scheduler_state,
+    has_pending_work,
+    schedule_step,
+    update_after_forward,
+)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ENGINE CONFIG
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True)
+class EngineConfig:
+    """Engine configuration."""
+
+    model_path: str
+    max_batch_size: int = 32
+    max_tokens_per_batch: int = 4096
+    max_seq_len: int = 2048
+    dtype: torch.dtype = torch.bfloat16
+
+    def __post_init__(self) -> None:
+        assert self.max_batch_size > 0
+        assert self.max_tokens_per_batch > 0
+        assert self.max_seq_len > 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TABLE MANAGER (simple version)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class SimpleTableManager:
+    """Assigns table indices to requests.
+
+    Each request gets a slot in the page table.
+    """
+
+    def __init__(self, max_requests: int) -> None:
+        assert max_requests > 0
+        self.max_requests = max_requests
+        self.free_indices: list[int] = list(range(max_requests))
+
+    def allocate(self) -> int:
+        """Get a free table index."""
+        assert self.free_indices, "no free table indices"
+        return self.free_indices.pop()
+
+    def free(self, idx: int) -> None:
+        """Return table index to pool."""
+        assert 0 <= idx < self.max_requests
+        assert idx not in self.free_indices, "double free"
+        self.free_indices.append(idx)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# INFERENCE ENGINE
+# ═══════════════════════════════════════════════════════════════════════════════
 
 
 class InferenceEngine:
     """Main inference engine.
 
-    Why a class?
-    - Owns GPU resources (model, KV cache)
-    - Manages sequence lifecycle
-    - Needs shutdown() for cleanup
+    Owns:
+    - Model (GPU)
+    - KV cache pool (GPU memory)
+    - Table manager
 
-    Pure functions do the work:
-    - schedule() decides what to run
-    - sample_with_logprobs() does sampling
+    State:
+    - Scheduler state (immutable, replaced each step)
+    - Request caches (immutable per-request, replaced on update)
+
+    Why a class? Owns GPU resources, needs cleanup.
     """
 
     def __init__(self, config: EngineConfig) -> None:
-        assert config.block_size > 0
-        assert config.max_batch_size > 0
-
         self.config = config
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # Load model
-        self.model = self._load_model(config.model_path)
-        self.tokenizer = AutoTokenizer.from_pretrained(config.model_path)
+        self.model = self._load_model(config.model_path, config.dtype)
+        self.tokenizer = self._load_tokenizer(config.model_path)
+        self.eos_token_id = self.tokenizer.eos_token_id
+
+        # Extract model config for KV cache
+        model_config = self.model.config
+        num_layers = model_config.num_hidden_layers
+        num_heads = model_config.num_key_value_heads  # For GQA models
+        head_dim = model_config.hidden_size // model_config.num_attention_heads
 
         # Scheduler config
         self.scheduler_config = SchedulerConfig(
             max_batch_size=config.max_batch_size,
-            max_tokens_per_batch=config.max_batch_size * 512,  # TODO: make configurable
-            block_size=config.block_size,
+            max_tokens_per_batch=config.max_tokens_per_batch,
+            max_seq_len=config.max_seq_len,
         )
 
-        # Sequence state
-        self.waiting: list[Sequence] = []
-        self.running: list[Sequence] = []
-        self.seq_counter = 0
-        self.weight_version = 0
+        # KV cache pool
+        num_slots = config.max_batch_size * config.max_seq_len
+        cache_config = CacheConfig(
+            num_layers=num_layers,
+            num_heads=num_heads,
+            head_dim=head_dim,
+            num_slots=num_slots,
+            dtype=config.dtype,
+        )
+        self.kv_pool = KVCachePool(cache_config, self.device)
 
-    def _load_model(self, model_path: str) -> nn.Module:
+        # Table manager (for request slot assignment)
+        self.table_manager = SimpleTableManager(config.max_batch_size)
+
+        # Scheduler state (immutable, replaced each step)
+        self.state = empty_scheduler_state()
+
+        # Per-request cache state: uid -> RequestCache (immutable, replaced on update)
+        self.request_caches: dict[int, RequestCache] = {}
+
+        # Request counter
+        self.next_uid = 0
+
+    def _load_model(self, model_path: str, dtype: torch.dtype) -> nn.Module:
         """Load HuggingFace model."""
+        from transformers import AutoModelForCausalLM
+
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
-            torch_dtype=torch.bfloat16,
+            torch_dtype=dtype,
+            device_map=self.device,
         )
-        model.to(self.device)
         model.eval()
         return model
 
-    # ═══════════════════════════════════════════════════
-    # HIGH-LEVEL API
-    # ═══════════════════════════════════════════════════
+    def _load_tokenizer(self, model_path: str):
+        """Load tokenizer."""
+        from transformers import AutoTokenizer
+
+        return AutoTokenizer.from_pretrained(model_path)
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PUBLIC API
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def add_request(
+        self,
+        prompt: str | list[int],
+        sampling_params: SamplingParams | None = None,
+    ) -> int:
+        """Add a request. Returns request uid."""
+        if sampling_params is None:
+            sampling_params = SamplingParams()
+
+        # Tokenize if string
+        if isinstance(prompt, str):
+            prompt_ids = self.tokenizer.encode(prompt, add_special_tokens=True)
+        else:
+            prompt_ids = list(prompt)
+
+        assert len(prompt_ids) > 0, "prompt cannot be empty"
+
+        # Allocate table slot
+        table_idx = self.table_manager.allocate()
+
+        # Create request
+        uid = self.next_uid
+        self.next_uid += 1
+
+        req = create_req(
+            uid=uid,
+            prompt_ids=prompt_ids,
+            sampling_params=sampling_params,
+            table_idx=table_idx,
+        )
+
+        # Add to scheduler
+        self.state = add_request(self.state, req)
+
+        return uid
+
+    def step(self) -> list[Req]:
+        """Run one forward pass. Returns finished requests."""
+        if not has_pending_work(self.state):
+            return []
+
+        # Schedule
+        result = schedule_step(
+            state=self.state,
+            config=self.scheduler_config,
+            num_free_pages=self.kv_pool.num_free_slots,
+            device=self.device,
+            allocate_pages=self.kv_pool.allocate_slots,
+        )
+
+        if result.batch is None:
+            return []
+
+        batch = result.batch
+        self.state = result.new_state
+
+        # Forward pass with KV cache
+        next_tokens = self._forward_with_cache(batch)
+
+        # Update state
+        self.state = update_after_forward(
+            state=self.state,
+            batch=batch,
+            next_tokens=next_tokens,
+            eos_token_id=self.eos_token_id,
+        )
+
+        # Free table slots and cleanup cache for finished requests
+        for req in self.state.finished:
+            self.table_manager.free(req.table_idx)
+            if req.uid in self.request_caches:
+                del self.request_caches[req.uid]
+
+        return list(self.state.finished)
+
+    def run_to_completion(self) -> list[Req]:
+        """Run until all requests complete. Returns all finished requests."""
+        all_finished: list[Req] = []
+
+        while has_pending_work(self.state):
+            finished = self.step()
+            all_finished.extend(finished)
+
+        return all_finished
 
     def generate(
         self,
-        prompts: list[list[int]],
-        sampling_params: SamplingParams,
-        num_samples_per_prompt: int = 1,
-    ) -> list[TrainingSample]:
-        """High-level: generate completions with logprobs.
-
-        Args:
-            prompts: List of token ID lists
-            sampling_params: Temperature, max_tokens, etc.
-            num_samples_per_prompt: N completions per prompt (for GRPO)
-
-        Returns:
-            List of TrainingSample (len = len(prompts) * num_samples_per_prompt)
-        """
-        assert len(prompts) > 0
-        assert num_samples_per_prompt > 0
-
-        # Add requests
+        prompts: list[str] | list[list[int]],
+        sampling_params: SamplingParams | None = None,
+    ) -> list[Req]:
+        """Convenience: add requests and run to completion."""
         for prompt in prompts:
-            for _ in range(num_samples_per_prompt):
-                self.add_request(list(prompt), sampling_params)
+            self.add_request(prompt, sampling_params)
 
-        # Run until done
-        results: list[TrainingSample] = []
-        while self.has_pending():
-            finished = self.step()
-            results.extend(finished)
-
-        assert len(results) == len(prompts) * num_samples_per_prompt
-        return results
-
-    def generate_text(
-        self,
-        prompts: list[str],
-        sampling_params: SamplingParams,
-        num_samples_per_prompt: int = 1,
-    ) -> list[TrainingSample]:
-        """Convenience: generate from text prompts."""
-        token_prompts = [self.tokenizer.encode(p, add_special_tokens=True) for p in prompts]
-        return self.generate(token_prompts, sampling_params, num_samples_per_prompt)
-
-    # ═══════════════════════════════════════════════════
-    # MID-LEVEL API
-    # ═══════════════════════════════════════════════════
-
-    def add_request(self, prompt_tokens: list[int], params: SamplingParams) -> int:
-        """Add single request, return sequence ID."""
-        assert len(prompt_tokens) > 0
-
-        seq = Sequence(
-            seq_id=self.seq_counter,
-            token_ids=list(prompt_tokens),
-            block_ids=[],
-            num_prompt_tokens=len(prompt_tokens),
-            status=SequenceStatus.WAITING,
-            temperature=params.temperature,
-            max_tokens=params.max_tokens,
-            stop_token_ids=params.stop_token_ids,
-            output_logprobs=[],
-        )
-        self.seq_counter += 1
-        self.waiting.append(seq)
-        return seq.seq_id
-
-    def step(self) -> list[TrainingSample]:
-        """Run one scheduling + forward pass. Returns finished sequences."""
-        if not self.has_pending():
-            return []
-
-        # Schedule (pure function)
-        # For now, no KV cache so unlimited "blocks"
-        num_free_blocks = 1000000
-        sched_out = schedule(
-            self.waiting,
-            self.running,
-            num_free_blocks,
-            self.scheduler_config,
-        )
-
-        # Move sequences between queues based on schedule
-        prefill_seqs = self._pop_seqs_by_id(self.waiting, sched_out.prefill_seqs)
-        decode_seqs = [s for s in self.running if s.seq_id in sched_out.decode_seqs]
-
-        # Mark prefill seqs as running
-        for seq in prefill_seqs:
-            seq.status = SequenceStatus.RUNNING
-            self.running.append(seq)
-
-        # Combine for batch forward
-        batch_seqs = prefill_seqs + decode_seqs
-        if not batch_seqs:
-            return []
-
-        # Forward pass
-        finished = self._forward_batch(batch_seqs)
-
-        # Remove finished from running
-        finished_ids = {s.seq_id for s in finished}
-        self.running = [s for s in self.running if s.seq_id not in finished_ids]
-
-        return [s.to_training_sample(self.weight_version) for s in finished]
+        return self.run_to_completion()
 
     def has_pending(self) -> bool:
-        return len(self.waiting) > 0 or len(self.running) > 0
-
-    # ═══════════════════════════════════════════════════
-    # WEIGHT MANAGEMENT
-    # ═══════════════════════════════════════════════════
-
-    def update_weights(self, state_dict: dict, blocking: bool = True) -> None:
-        """Update model weights."""
-        assert state_dict, "empty state_dict"
-        # For now, only blocking sync
-        self.model.load_state_dict(state_dict)
-        self.weight_version += 1
-
-    def get_weight_version(self) -> int:
-        return self.weight_version
-
-    def flush_cache(self) -> None:
-        """Clear KV cache (call after weight update)."""
-        # TODO: implement when we have KV cache
-        pass
+        """Check if there's pending work."""
+        return has_pending_work(self.state)
 
     def shutdown(self) -> None:
         """Cleanup resources."""
-        # Clear sequences
-        self.waiting.clear()
-        self.running.clear()
+        self.state = empty_scheduler_state()
+        self.kv_pool.reset()
+        self.request_caches.clear()
         # Model cleanup handled by garbage collection
 
-    # ═══════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════════════════
     # INTERNAL
-    # ═══════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════════════════
 
-    def _pop_seqs_by_id(self, queue: list[Sequence], seq_ids: tuple[int, ...]) -> list[Sequence]:
-        """Remove and return sequences with given IDs from queue."""
-        id_set = set(seq_ids)
-        popped = [s for s in queue if s.seq_id in id_set]
-        queue[:] = [s for s in queue if s.seq_id not in id_set]
-        return popped
+    def _forward_with_cache(self, batch: Batch) -> Tensor:
+        """Run forward pass with KV cache, return sampled tokens.
 
-    def _forward_batch(self, seqs: list[Sequence]) -> list[Sequence]:
-        """Run forward pass on batch, return finished sequences.
+        For each request:
+        1. Gather past K,V from cache (if any)
+        2. Run forward on new tokens only
+        3. Store new K,V in allocated slots
+        4. Sample next token
 
-        This is the simple version without KV cache - recomputes everything.
+        Processing requests individually for now (batching would require padding).
         """
-        finished: list[Sequence] = []
+        next_tokens: list[int] = []
 
-        # Process each sequence (no batching for simplicity in v1)
-        for seq in seqs:
-            # Get next token
-            input_ids = torch.tensor([seq.token_ids], device=self.device)
+        # out_loc tells us where to store new K,V; split by request
+        out_loc_offset = 0
+
+        for req in batch.reqs:
+            extend_len = req.extend_len
+            assert extend_len > 0
+
+            # Get slots for this request's new tokens
+            req_out_loc = batch.out_loc[out_loc_offset : out_loc_offset + extend_len]
+            out_loc_offset += extend_len
+
+            # Get or create request cache
+            if req.uid not in self.request_caches:
+                self.request_caches[req.uid] = empty_request_cache(req.uid, self.device)
+            req_cache = self.request_caches[req.uid]
+
+            # Sanity check: cached slots should match cached_len
+            assert req_cache.cached_len == req.cached_len, (
+                f"cache mismatch for req {req.uid}: "
+                f"cache has {req_cache.cached_len}, req has {req.cached_len}"
+            )
+
+            # Gather past K,V for cached tokens
+            past_key_values = gather_past_key_values(self.kv_pool, req_cache.slots)
+
+            # New tokens to process: [cached_len, device_len)
+            new_tokens = req.input_ids[req.cached_len : req.device_len]
+            input_ids = new_tokens.to(self.device).unsqueeze(0)  # [1, extend_len]
 
             with torch.no_grad():
-                outputs = self.model(input_ids)
-                # Get logits for last position
+                outputs = self.model(
+                    input_ids,
+                    past_key_values=past_key_values,
+                    use_cache=True,
+                )
+                # Logits for last position
                 last_logits = outputs.logits[:, -1, :]  # [1, vocab]
 
-            # Sample (pure function)
-            temps = torch.tensor([seq.temperature], device=self.device)
-            tokens, logprobs = sample_with_logprobs(last_logits, temps)
+                # Store new K,V in cache
+                # outputs.past_key_values contains K,V for full sequence
+                # We extract only the new tokens' K,V
+                store_new_key_values(
+                    self.kv_pool,
+                    req_out_loc,
+                    outputs.past_key_values,
+                    cached_len=req.cached_len,
+                )
 
-            next_token = tokens[0].item()
-            next_logprob = logprobs[0].item()
+            # Update request cache with new slots
+            self.request_caches[req.uid] = extend_request_cache(req_cache, req_out_loc)
 
-            # Update sequence
-            seq.append_token(next_token, next_logprob)
+            # Sample
+            token = self._sample(last_logits, req.sampling_params)
+            next_tokens.append(token)
 
-            # Check stopping conditions
-            if self._should_stop(seq, next_token):
-                seq.status = SequenceStatus.FINISHED
-                finished.append(seq)
+        return torch.tensor(next_tokens, dtype=torch.int32, device="cpu")
 
-        return finished
+    def _sample(self, logits: Tensor, params: SamplingParams) -> int:
+        """Sample from logits."""
+        if params.is_greedy:
+            return logits.argmax(dim=-1).item()
 
-    def _should_stop(self, seq: Sequence, token_id: int) -> bool:
-        """Check if sequence should stop generating."""
-        # Hit stop token
-        if token_id in seq.stop_token_ids:
-            return True
+        # Apply temperature
+        if params.temperature > 0:
+            logits = logits / params.temperature
 
-        # Hit EOS
-        if token_id == self.tokenizer.eos_token_id:
-            return True
+        # Apply top-k
+        if params.top_k > 0:
+            top_k = min(params.top_k, logits.size(-1))
+            indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
+            logits[indices_to_remove] = float("-inf")
 
-        # Hit max tokens
-        if seq.num_generated >= seq.max_tokens:
-            return True
+        # Apply top-p
+        if params.top_p < 1.0:
+            sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+            cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
+            sorted_indices_to_remove = cumulative_probs > params.top_p
+            sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+            sorted_indices_to_remove[..., 0] = 0
+            indices_to_remove = sorted_indices_to_remove.scatter(
+                -1, sorted_indices, sorted_indices_to_remove
+            )
+            logits[indices_to_remove] = float("-inf")
 
-        return False
+        # Sample
+        probs = torch.softmax(logits, dim=-1)
+        token = torch.multinomial(probs, num_samples=1)
+        return token.item()
