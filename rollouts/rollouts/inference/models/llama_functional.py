@@ -11,7 +11,9 @@ Usage:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -46,6 +48,18 @@ def load_config(model_name: str) -> LlamaConfig:
     from transformers import AutoConfig
 
     hf_config = AutoConfig.from_pretrained(model_name)
+    rope_theta = getattr(hf_config, "rope_theta", None)
+    if rope_theta is None:
+        rope_params = getattr(hf_config, "rope_parameters", None)
+        if isinstance(rope_params, dict):
+            rope_theta = rope_params.get("rope_theta", rope_params.get("theta"))
+    if rope_theta is None:
+        rope_scaling = getattr(hf_config, "rope_scaling", None)
+        if isinstance(rope_scaling, dict):
+            rope_theta = rope_scaling.get("rope_theta", rope_scaling.get("theta"))
+    if rope_theta is None:
+        rope_theta = 10000.0
+
     return LlamaConfig(
         hidden_size=hf_config.hidden_size,
         num_hidden_layers=hf_config.num_hidden_layers,
@@ -54,7 +68,7 @@ def load_config(model_name: str) -> LlamaConfig:
         intermediate_size=hf_config.intermediate_size,
         vocab_size=hf_config.vocab_size,
         rms_norm_eps=hf_config.rms_norm_eps,
-        rope_theta=getattr(hf_config, "rope_theta", 10000.0),
+        rope_theta=float(rope_theta),
         max_position=getattr(hf_config, "max_position_embeddings", 8192),
     )
 
@@ -70,7 +84,8 @@ def rms_norm(x: Tensor, weight: Tensor, eps: float) -> Tensor:
     x = x.to(torch.float32)
     variance = x.pow(2).mean(-1, keepdim=True)
     x = x * torch.rsqrt(variance + eps)
-    return (weight * x).to(input_dtype)
+    # Match HuggingFace: convert to input_dtype BEFORE multiplying with weight
+    return weight * x.to(input_dtype)
 
 
 def rotary_embedding(
@@ -101,17 +116,11 @@ def apply_rotary(x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
     cos = cos.unsqueeze(1)
     sin = sin.unsqueeze(1)
 
-    # Split and rotate
-    x1, x2 = x.chunk(2, dim=-1)
-    # x_rotated = [x1*cos - x2*sin, x2*cos + x1*sin]
-    rotated = torch.cat(
-        [
-            x1 * cos[..., : x1.shape[-1]] - x2 * sin[..., : x1.shape[-1]],
-            x2 * cos[..., : x2.shape[-1]] + x1 * sin[..., : x2.shape[-1]],
-        ],
-        dim=-1,
-    )
-    return rotated
+    # Match HuggingFace exactly:
+    # q_embed = (q * cos) + (rotate_half(q) * sin)
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2 :]
+    return (x * cos) + (torch.cat((-x2, x1), dim=-1) * sin)
 
 
 def silu_mul(x: Tensor) -> Tensor:
@@ -161,17 +170,17 @@ def attention(
         k = k.repeat_interleave(config.num_q_per_kv, dim=1)
         v = v.repeat_interleave(config.num_q_per_kv, dim=1)
 
-    # Transpose for attention: [num_heads, seq_len, head_dim]
-    q = q.transpose(0, 1)
-    k = k.transpose(0, 1)
-    v = v.transpose(0, 1)
+    # Match HuggingFace SDPA input shape: [batch, num_heads, seq_len, head_dim]
+    q = q.transpose(0, 1).unsqueeze(0)
+    k = k.transpose(0, 1).unsqueeze(0)
+    v = v.transpose(0, 1).unsqueeze(0)
 
     # Scaled dot-product attention with causal mask
     # Using PyTorch's optimized SDPA
     attn_output = F.scaled_dot_product_attention(q, k, v, is_causal=True)
 
     # Reshape back: [seq_len, num_heads * head_dim]
-    attn_output = attn_output.transpose(0, 1).contiguous().view(seq_len, -1)
+    attn_output = attn_output.squeeze(0).transpose(0, 1).contiguous().view(seq_len, -1)
 
     # Output projection
     return F.linear(attn_output, o_weight)
@@ -340,8 +349,8 @@ def find_divergence(model_name: str = "HuggingFaceTB/SmolLM2-135M") -> str | Non
     # Capture HF intermediate outputs
     hf_outputs = {}
 
-    def make_hook(name):
-        def hook(module, inp, out):
+    def make_hook(name: str) -> Callable[[Any, Any, Any], None]:
+        def hook(module: Any, inp: Any, out: Any) -> None:
             if isinstance(out, tuple):
                 hf_outputs[name] = out[0].detach().clone()
             else:
@@ -373,6 +382,12 @@ def find_divergence(model_name: str = "HuggingFaceTB/SmolLM2-135M") -> str | Non
     seq_len = input_ids.shape[1]
     positions = torch.arange(seq_len, device=device)
 
+    # Test RoPE vs HuggingFace
+    our_cos, our_sin = rotary_embedding(positions, config.head_dim, config.rope_theta, device)
+    # HF's rotary values are captured in each layer's attention
+    # For a simple test, we'll check the first layer's input vs our computation
+    logger.info(f"Testing with seq_len={seq_len}")
+
     # Embedding
     hidden_states = F.embedding(input_ids, weights["model.embed_tokens.weight"])
     hf_embed = hf_outputs["embed"]
@@ -399,6 +414,30 @@ def find_divergence(model_name: str = "HuggingFaceTB/SmolLM2-135M") -> str | Non
             hf_normed = hf_normed[0]
         diff = (h_normed.float() - hf_normed.float()).abs().max().item()
         logger.info(f"layer_{layer_idx}_input_norm: max_diff={diff:.2e}")
+
+        # Test if using HF's norm output fixes attention divergence
+        if layer_idx == 0 and diff > 1e-5:
+            # Test attention with HF's input_norm output
+            attn_with_hf_input = attention(
+                hf_normed.to(dtype),
+                q_weight=weights[f"{prefix}.self_attn.q_proj.weight"],
+                k_weight=weights[f"{prefix}.self_attn.k_proj.weight"],
+                v_weight=weights[f"{prefix}.self_attn.v_proj.weight"],
+                o_weight=weights[f"{prefix}.self_attn.o_proj.weight"],
+                cos=cos,
+                sin=sin,
+                config=config,
+            )
+            hf_attn_check = hf_outputs[f"layer_{layer_idx}_attn"]
+            if isinstance(hf_attn_check, tuple):
+                hf_attn_check = hf_attn_check[0]
+            if hf_attn_check.dim() == 3:
+                hf_attn_check = hf_attn_check[0]
+            attn_diff_with_hf_input = (
+                (attn_with_hf_input.float() - hf_attn_check.float()).abs().max().item()
+            )
+            logger.info(f"  attn diff using HF norm output: {attn_diff_with_hf_input:.2e}")
+
         if diff > 1e-2:
             return f"layer_{layer_idx}_input_norm"
 
@@ -451,12 +490,18 @@ def find_divergence(model_name: str = "HuggingFaceTB/SmolLM2-135M") -> str | Non
         if hf_mlp.dim() == 3:
             hf_mlp = hf_mlp[0]
         diff = (mlp_out.float() - hf_mlp.float()).abs().max().item()
-        logger.info(f"layer_{layer_idx}_mlp: max_diff={diff:.2e}, shapes: ours={mlp_out.shape}, hf={hf_mlp.shape}")
+        logger.info(
+            f"layer_{layer_idx}_mlp: max_diff={diff:.2e}, shapes: ours={mlp_out.shape}, hf={hf_mlp.shape}"
+        )
         if diff > 1e-2:
             # Debug: print more info
-            logger.info(f"  mlp_out range: [{mlp_out.min().item():.3f}, {mlp_out.max().item():.3f}]")
+            logger.info(
+                f"  mlp_out range: [{mlp_out.min().item():.3f}, {mlp_out.max().item():.3f}]"
+            )
             logger.info(f"  hf_mlp range: [{hf_mlp.min().item():.3f}, {hf_mlp.max().item():.3f}]")
-            logger.info(f"  h_normed range: [{h_normed.min().item():.3f}, {h_normed.max().item():.3f}]")
+            logger.info(
+                f"  h_normed range: [{h_normed.min().item():.3f}, {h_normed.max().item():.3f}]"
+            )
             # Check if it's an input issue
             hf_post_norm_for_mlp = hf_outputs[f"layer_{layer_idx}_post_norm"]
             if hf_post_norm_for_mlp.dim() == 3:
