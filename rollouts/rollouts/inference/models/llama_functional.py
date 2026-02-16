@@ -451,8 +451,30 @@ def find_divergence(model_name: str = "HuggingFaceTB/SmolLM2-135M") -> str | Non
         if hf_mlp.dim() == 3:
             hf_mlp = hf_mlp[0]
         diff = (mlp_out.float() - hf_mlp.float()).abs().max().item()
-        logger.info(f"layer_{layer_idx}_mlp: max_diff={diff:.2e}")
+        logger.info(f"layer_{layer_idx}_mlp: max_diff={diff:.2e}, shapes: ours={mlp_out.shape}, hf={hf_mlp.shape}")
         if diff > 1e-2:
+            # Debug: print more info
+            logger.info(f"  mlp_out range: [{mlp_out.min().item():.3f}, {mlp_out.max().item():.3f}]")
+            logger.info(f"  hf_mlp range: [{hf_mlp.min().item():.3f}, {hf_mlp.max().item():.3f}]")
+            logger.info(f"  h_normed range: [{h_normed.min().item():.3f}, {h_normed.max().item():.3f}]")
+            # Check if it's an input issue
+            hf_post_norm_for_mlp = hf_outputs[f"layer_{layer_idx}_post_norm"]
+            if hf_post_norm_for_mlp.dim() == 3:
+                hf_post_norm_for_mlp = hf_post_norm_for_mlp[0]
+            mlp_input_diff = (h_normed.float() - hf_post_norm_for_mlp.float()).abs().max().item()
+            logger.info(f"  MLP input diff: {mlp_input_diff:.2e}")
+
+            # Test MLP with HF input to isolate the bug
+            hf_mlp_input = hf_post_norm_for_mlp.to(dtype)
+            our_mlp_with_hf_input = mlp(
+                hf_mlp_input,
+                gate_weight=weights[f"{prefix}.mlp.gate_proj.weight"],
+                up_weight=weights[f"{prefix}.mlp.up_proj.weight"],
+                down_weight=weights[f"{prefix}.mlp.down_proj.weight"],
+            )
+            diff_with_hf_input = (our_mlp_with_hf_input.float() - hf_mlp.float()).abs().max().item()
+            logger.info(f"  MLP diff using HF input: {diff_with_hf_input:.2e}")
+
             return f"layer_{layer_idx}_mlp"
 
         h = residual + mlp_out
@@ -570,4 +592,5 @@ if __name__ == "__main__":
         logger_levels={"httpx": "WARNING"},
         use_queue_handler=(sys.version_info >= (3, 12)),
     )
-    test_vs_huggingface()
+    success = test_vs_huggingface()
+    sys.exit(0 if success else 1)
