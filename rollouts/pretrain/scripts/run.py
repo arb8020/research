@@ -1,11 +1,11 @@
 """Run training on cloud GPU via bifrost.
 
 Usage:
-    python scripts/run.py                    # Provision L4, run training
-    python scripts/run.py --gpu A10G         # Use A10G instead
-    python scripts/run.py --steps 500        # Override steps
-    python scripts/run.py --ssh root@gpu:22  # Use existing SSH connection
-    python scripts/run.py --node-id runpod:abc123  # Reuse existing instance
+    uv run python pretrain/scripts/run.py                    # Provision L4, run training
+    uv run python pretrain/scripts/run.py --gpu A10G         # Use A10G instead
+    uv run python pretrain/scripts/run.py --steps 500        # Override steps
+    uv run python pretrain/scripts/run.py --ssh root@gpu:22  # Use existing SSH connection
+    uv run python pretrain/scripts/run.py --node-id runpod:abc123  # Reuse existing instance
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import logging
 import sys
 
 import trio
+
 from bifrost import GPUQuery, acquire_node
 
 logger = logging.getLogger(__name__)
@@ -71,21 +72,36 @@ async def run(
         logger.info(f"gpu: {instance.gpu_count}x {instance.gpu_type}")
 
     try:
-        # Deploy code
+        # Deploy code (git sync only, no bootstrap)
         logger.info("deploying code...")
-        workspace = client.push(
-            workspace_path="~/.bifrost/workspaces/pretrain",
-            bootstrap_cmd="pip install -e .",
-        )
+        workspace = client.push("~/.bifrost/workspaces/rollouts-pretrain")
         logger.info(f"deployed to: {workspace}")
+
+        # Bootstrap steps (following rollouts/run.py pattern)
+        bootstrap_steps = [
+            ("Installing uv", "curl -LsSf https://astral.sh/uv/install.sh | sh"),
+            (
+                "Syncing Python deps",
+                "~/.local/bin/uv python install 3.12 && ~/.local/bin/uv sync --python 3.12 --package rollouts",
+            ),
+            (
+                "Installing torch",
+                "~/.local/bin/uv pip install torch",
+            ),
+        ]
+
+        for label, cmd in bootstrap_steps:
+            logger.info(f"{label}...")
+            client.exec(cmd, working_dir=workspace)
 
         # Run training (streams output to console)
         logger.info(f"starting training for {steps} steps...")
-        for line in client.exec_stream(f"python -m pretrain.train --steps {steps} --log-every 10"):
+        train_cmd = (
+            f"~/.local/bin/uv run python -m rollouts.pretrain.train --steps {steps} --log-every 10"
+        )
+        for line in client.exec_stream(train_cmd, working_dir=f"{workspace}/rollouts"):
             print(line, flush=True)
 
-        # Training completed (exec_stream waits for completion)
-        # Check if output indicates success by looking for "training complete"
         logger.info("training stream completed")
         return 0
 
