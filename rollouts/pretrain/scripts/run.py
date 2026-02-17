@@ -136,11 +136,7 @@ async def run(
             ("Installing uv", "curl -LsSf https://astral.sh/uv/install.sh | sh"),
             (
                 "Syncing Python deps",
-                "~/.local/bin/uv python install 3.12 && ~/.local/bin/uv sync --python 3.12 --package rollouts",
-            ),
-            (
-                "Installing torch + huggingface_hub",
-                "~/.local/bin/uv pip install torch huggingface_hub",
+                "~/.local/bin/uv python install 3.12 && ~/.local/bin/uv sync --python 3.12 --package rollouts --extra training",
             ),
         ]
 

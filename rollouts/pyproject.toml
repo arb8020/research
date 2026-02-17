@@ -36,6 +36,7 @@ tinygrad-webgpu = [
 training = [
     "torch>=2.0.0",
     "datasets>=4.4.1",
+    "huggingface_hub>=0.20.0",
     "peft>=0.7.0",
     "transformers>=4.30.0",
     "accelerate>=0.20.0",
