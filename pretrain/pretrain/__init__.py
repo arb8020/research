@@ -1,1 +1,1 @@
-# nano-megatron: minimal pretraining for DeepSeek-V3
+"""Minimal pretraining playground."""
