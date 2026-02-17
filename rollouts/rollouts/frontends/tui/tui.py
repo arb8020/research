@@ -193,6 +193,7 @@ class TUI(Container):
 
         # Loader container - set by InteractiveAgentRunner to render loader in fixed location
         self._loader_container: Component | None = None
+        self._loader_text: str | None = None
         self._animation_task_running: bool = False
 
         # Overlay stack for floating UI elements (dialogs, menus, etc.)
@@ -580,12 +581,14 @@ class TUI(Container):
             spinner_color_fn: Function to colorize spinner (unused, kept for API compatibility)
             text_color_fn: Function to colorize text (unused, kept for API compatibility)
         """
+        self._loader_text = text
         if self._loader_container and hasattr(self._loader_container, "set_loader"):
             self._loader_container.set_loader(text)
         self.request_render()
 
     def hide_loader(self) -> None:
         """Hide the loader."""
+        self._loader_text = None
         if self._loader_container and hasattr(self._loader_container, "clear_loader"):
             self._loader_container.clear_loader()
         self.request_render()
@@ -595,6 +598,10 @@ class TUI(Container):
         if self._loader_container and hasattr(self._loader_container, "is_active"):
             return self._loader_container.is_active()
         return False
+
+    def get_loader_text(self) -> str | None:
+        """Return the currently displayed loader text (if any)."""
+        return self._loader_text
 
     async def run_animation_loop(self) -> None:
         """Run the animation timer loop.

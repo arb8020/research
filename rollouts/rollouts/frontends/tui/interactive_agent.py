@@ -219,11 +219,35 @@ class InteractiveAgentRunner:
                 if not self.input_pending and self.input_component:
                     self.input_component.add_queued_message(text.strip())
                     if self.tui:
+                        # If the agent is busy but no loader is currently active (some phases
+                        # intentionally hide the loader), show a generic "busy" loader so the
+                        # user always has feedback that something is blocking queued messages.
+                        if self.agent_cancel_scope and not self.tui.is_loader_active():
+                            queued = self.input_component.get_queue_count()
+                            reason = "Working..."
+                            if (
+                                hasattr(self.tui, "_focused_component")
+                                and self.tui._focused_component is not None
+                                and self.tui._focused_component is not self.input_component
+                            ):
+                                reason = (
+                                    f"Waiting on {type(self.tui._focused_component).__name__}..."
+                                )
+                            self.tui.show_loader(
+                                f"{queued} queued. {reason} (Esc to interrupt)",
+                                spinner_color_fn=self.tui.theme.accent_fg,
+                                text_color_fn=self.tui.theme.muted_fg,
+                            )
                         self.tui.request_render()
             except trio.WouldBlock:
                 # Buffer full (10 messages) - silently drop
                 # Could show a "queue full" indicator in the future
-                pass
+                if self.renderer:
+                    self.renderer.add_system_message(
+                        "Queue full (10) - dropped message. Wait for the current operation to finish."
+                    )
+                if self.tui:
+                    self.tui.request_render()
 
     def _handle_open_editor(self, current_text: str) -> None:
         """Handle Ctrl+G to open external editor for message composition."""
@@ -980,6 +1004,8 @@ class InteractiveAgentRunner:
                         # Normal completion - update state for next iteration
                         state = states[-1] if states else state
                         self._update_final_state(states)
+                        if self.tui:
+                            self.tui.hide_loader()
 
                         # Handle different stop reasons
                         if states and states[-1].stop == StopReason.TASK_COMPLETED:
@@ -1004,12 +1030,16 @@ class InteractiveAgentRunner:
                     case AgentExited(states):
                         # User pressed Ctrl+C - exit the loop
                         self._update_final_state(states)
+                        if self.tui:
+                            self.tui.hide_loader()
                         break
 
                     case AgentError(states, error, error_kind):
                         # Recoverable error - show message and continue
                         state = states[-1] if states else state
                         self._show_agent_error(error, error_kind)
+                        if self.tui:
+                            self.tui.hide_loader()
                         # Clear stop reason so next run continues
                         state = dc_replace(state, stop=None)
                         # Loop back to get next input

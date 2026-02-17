@@ -108,14 +108,6 @@ class TUIFrontend:
             debug_layout=self.debug_layout,
         )
 
-        # Create loader container
-        self._loader_container = LoaderContainer(
-            spinner_color_fn=self._tui.theme.accent_fg,
-            text_color_fn=self._tui.theme.muted_fg,
-        )
-        self._tui.set_loader_container(self._loader_container)
-        self._tui.add_child(self._loader_container)
-
         # Spacer before input
         self._tui.add_child(Spacer(1, debug_label="before-input"))
 
@@ -123,6 +115,14 @@ class TUIFrontend:
         self._input_component = Input(theme=self._tui.theme)
         self._input_component.set_on_submit(self._handle_input_submit)
         self._tui.add_child(self._input_component)
+
+        # Create loader container (keep near the input so it's visible in the viewport)
+        self._loader_container = LoaderContainer(
+            spinner_color_fn=self._tui.theme.accent_fg,
+            text_color_fn=self._tui.theme.muted_fg,
+        )
+        self._tui.set_loader_container(self._loader_container)
+        self._tui.add_child(self._loader_container)
 
         # Create status line
         self._status_line = StatusLine(theme=self._tui.theme)
@@ -134,7 +134,7 @@ class TUIFrontend:
         self._renderer.set_status_line(self._status_line)
 
         # Spacer after status
-        self._tui.add_child(Spacer(5, debug_label="after-status"))
+        self._tui.add_child(Spacer(1, debug_label="after-status"))
 
         # Create input channel
         self._input_send, self._input_receive = trio.open_memory_channel[str](10)
@@ -317,9 +317,30 @@ class TUIFrontend:
                 if not self._input_pending and self._input_component:
                     self._input_component.add_queued_message(text.strip())
                     if self._tui:
+                        if not self._tui.is_loader_active():
+                            queued = self._input_component.get_queue_count()
+                            reason = "Working..."
+                            if (
+                                hasattr(self._tui, "_focused_component")
+                                and self._tui._focused_component is not None
+                                and self._tui._focused_component is not self._input_component
+                            ):
+                                reason = (
+                                    f"Waiting on {type(self._tui._focused_component).__name__}..."
+                                )
+                            self._tui.show_loader(
+                                f"{queued} queued. {reason} (Esc to interrupt)",
+                                spinner_color_fn=self._tui.theme.accent_fg,
+                                text_color_fn=self._tui.theme.muted_fg,
+                            )
                         self._tui.request_render()
             except trio.WouldBlock:
-                pass  # Buffer full
+                if self._renderer:
+                    self._renderer.add_system_message(
+                        "Queue full (10) - dropped message. Wait for the current operation to finish."
+                    )
+                if self._tui:
+                    self._tui.request_render()
 
     def render_history(self, messages: list) -> None:
         """Render historical messages from resumed session.
