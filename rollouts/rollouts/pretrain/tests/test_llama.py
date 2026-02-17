@@ -1,0 +1,184 @@
+"""Tests for functional Llama layers.
+
+Philosophy (from code_style docs):
+- Assertions in code handle shapes/invariants (structural constraints)
+- Tests verify numerical properties that can't be asserted
+- Focus on integration-level properties, not implementation details
+- Hypothesis for edge case coverage on properties that matter
+
+What we test:
+1. Numerical correctness (RMSNorm normalizes, RoPE rotates)
+2. Behavioral properties (attention is causal)
+3. Gradient flow (backward doesn't produce NaN)
+4. Reference parity (TODO: compare against HuggingFace)
+"""
+
+import pytest
+import torch
+import torch.nn.functional as F
+from hypothesis import given, settings
+from hypothesis import strategies as st
+
+from rollouts.pretrain.config import ModelConfig
+from rollouts.pretrain.models.llama import (
+    attention,
+    compute_rope_embeddings,
+    forward,
+    init_weights,
+    rms_norm,
+    rotate_half,
+)
+
+# -----------------------------------------------------------------------------
+# Hypothesis strategies
+# -----------------------------------------------------------------------------
+
+
+@st.composite
+def model_config(draw: st.DrawFn) -> ModelConfig:
+    """Generate valid ModelConfig."""
+    dim = draw(st.sampled_from([32, 64, 128]))
+    n_heads = draw(st.sampled_from([h for h in [1, 2, 4, 8] if dim % h == 0]))
+    n_layers = draw(st.integers(1, 3))
+    kv_divisors = [k for k in [1, 2, 4, n_heads] if n_heads % k == 0 and k <= n_heads]
+    n_kv_heads = draw(st.sampled_from(kv_divisors))
+    return ModelConfig(dim=dim, n_layers=n_layers, n_heads=n_heads, n_kv_heads=n_kv_heads)
+
+
+# -----------------------------------------------------------------------------
+# Numerical correctness tests
+# -----------------------------------------------------------------------------
+
+
+class TestNumericalCorrectness:
+    """Tests that verify the math is right, not just that code runs."""
+
+    @given(
+        batch=st.integers(1, 4),
+        seq=st.integers(1, 32),
+        dim=st.sampled_from([32, 64, 128]),
+    )
+    @settings(max_examples=30)
+    def test_rms_norm_normalizes(self, batch: int, seq: int, dim: int) -> None:
+        """RMSNorm output should have RMS ≈ 1 when weight=1.
+
+        This is the defining property of RMSNorm - can't be asserted in code
+        because it's a statistical property of the output.
+        """
+        x = torch.randn(batch, seq, dim)
+        weight = torch.ones(dim)
+        out = rms_norm(x, weight)
+        rms = out.pow(2).mean(-1).sqrt()
+        assert torch.allclose(rms, torch.ones_like(rms), atol=1e-4)
+
+    def test_rotate_half_correct(self) -> None:
+        """rotate_half should swap halves and negate first half.
+
+        This is the core RoPE operation - if wrong, attention patterns break.
+        """
+        x = torch.tensor([[1, 2, 3, 4], [5, 6, 7, 8]]).float()
+        out = rotate_half(x)
+        expected = torch.tensor([[-3, -4, 1, 2], [-7, -8, 5, 6]]).float()
+        assert torch.equal(out, expected)
+
+    @given(seq=st.integers(2, 64), head_dim=st.sampled_from([32, 64]))
+    @settings(max_examples=20)
+    def test_rope_positions_differ(self, seq: int, head_dim: int) -> None:
+        """Different positions must get different RoPE embeddings.
+
+        If positions don't differ, the model can't distinguish token order.
+        """
+        cos, sin = compute_rope_embeddings(seq, head_dim, torch.device("cpu"))
+        # Consecutive positions should differ
+        assert not torch.allclose(cos[0], cos[1], atol=1e-6)
+
+
+# -----------------------------------------------------------------------------
+# Behavioral property tests
+# -----------------------------------------------------------------------------
+
+
+class TestBehavioralProperties:
+    """Tests for properties that define correct behavior."""
+
+    @given(config=model_config(), batch=st.integers(1, 2))
+    @settings(max_examples=20, deadline=None)
+    def test_attention_is_causal(self, config: ModelConfig, batch: int) -> None:
+        """Future tokens must not affect past token outputs.
+
+        This is THE critical property of causal attention. If violated,
+        the model cheats by looking at future tokens during training.
+        """
+        seq = 16
+        weights = init_weights(config, torch.device("cpu"), torch.float32)
+        cos, sin = compute_rope_embeddings(seq, config.head_dim, torch.device("cpu"))
+
+        # Same input, but second version has different future tokens
+        x1 = torch.randn(batch, seq, config.dim)
+        x2 = x1.clone()
+        x2[:, seq // 2 :] = torch.randn(batch, seq // 2, config.dim)
+
+        out1 = attention(x1, weights, layer_idx=0, cos=cos, sin=sin, config=config)
+        out2 = attention(x2, weights, layer_idx=0, cos=cos, sin=sin, config=config)
+
+        # First half must be identical (causal = no future leakage)
+        assert torch.allclose(out1[:, : seq // 2], out2[:, : seq // 2], atol=1e-5)
+
+
+# -----------------------------------------------------------------------------
+# Gradient flow tests
+# -----------------------------------------------------------------------------
+
+
+class TestGradientFlow:
+    """Tests that gradients flow correctly through the model."""
+
+    @given(config=model_config())
+    @settings(max_examples=10, deadline=None)
+    def test_backward_no_nan(self, config: ModelConfig) -> None:
+        """Backward pass must not produce NaN gradients.
+
+        NaN gradients indicate numerical instability (division by zero,
+        log of negative, etc). This catches issues that only appear
+        in certain configs or edge cases.
+        """
+        batch, seq = 2, 16
+        weights = init_weights(config, torch.device("cpu"), torch.float32)
+        input_ids = torch.randint(0, config.vocab_size, (batch, seq))
+        labels = torch.randint(0, config.vocab_size, (batch, seq))
+
+        logits = forward(input_ids, weights, config)
+        loss = F.cross_entropy(logits.view(-1, config.vocab_size), labels.view(-1))
+        loss.backward()
+
+        for name, w in weights.items():
+            assert w.grad is not None, f"{name} has no gradient"
+            assert not torch.isnan(w.grad).any(), f"{name} has NaN gradient"
+            assert not torch.isinf(w.grad).any(), f"{name} has Inf gradient"
+
+
+# -----------------------------------------------------------------------------
+# Reference parity tests (TODO)
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.skip(reason="TODO: implement HuggingFace reference comparison")
+class TestReferenceParity:
+    """Tests that verify our implementation matches HuggingFace Llama.
+
+    This is the gold standard for correctness - if we match HF output
+    for the same weights and inputs, we're correct.
+    """
+
+    def test_forward_matches_hf(self) -> None:
+        """Forward pass should match HuggingFace LlamaForCausalLM."""
+        # TODO: Load HF model, copy weights, compare outputs
+        pass
+
+    def test_attention_matches_hf(self) -> None:
+        """Attention output should match HuggingFace LlamaAttention."""
+        pass
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
