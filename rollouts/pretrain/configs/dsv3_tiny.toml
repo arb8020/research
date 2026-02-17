@@ -1,0 +1,15 @@
+# Tiny DSv3 config for single-GPU testing
+[model]
+hidden_size = 1024
+num_layers = 4
+num_attention_heads = 8
+num_experts = 8
+num_active_experts = 2
+
+[training]
+batch_size = 4
+seq_len = 2048
+lr = 1e-4
+
+[data]
+path = "/data/fineweb_edu"
