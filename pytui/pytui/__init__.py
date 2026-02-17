@@ -23,10 +23,11 @@ Quick start:
 """
 
 # Elm core
-from .app import App, Cmd, FocusEvent, KeyPress, MouseEvent, PasteEvent, Resize, Sub
+from .app import App, Cmd, Resize, Sub
 
 # Console (unified output with spinner/logging coordination)
 from .console import Console, ConsoleHandler, SpinnerHandle
+from .input import FocusEvent, KeyPress, MouseEvent, PasteEvent
 
 # Renderer
 from .renderer import RenderState, diff_render

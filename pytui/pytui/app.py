@@ -39,6 +39,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .input import FocusEvent, KeyPress, MouseEvent, PasteEvent  # noqa: F401
 from .renderer import RenderState, diff_render
 from .terminal import Terminal
 
