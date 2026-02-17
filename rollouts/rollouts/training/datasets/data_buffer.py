@@ -545,7 +545,7 @@ def load_tokens_from_bin(path: Path | str) -> torch.Tensor:
     # Read tokens
     with open(path, "rb") as f:
         f.seek(256 * 4)  # Skip header
-        tokens = torch.frombuffer(f.read(), dtype=torch.int16).to(torch.int64)
+        tokens = torch.frombuffer(f.read(), dtype=torch.uint16).to(torch.int64)
 
     assert len(tokens) == num_tokens, f"Token count mismatch: {len(tokens)} != {num_tokens}"
     return tokens
