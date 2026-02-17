@@ -2,8 +2,10 @@
 Prime Intellect provider implementation
 """
 
+import json
 import logging
 import time
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -16,6 +18,35 @@ from ..types import CloudType, GPUInstance, GPUOffer, InstanceStatus, ProvisionR
 logger = logging.getLogger(__name__)
 
 PRIME_API_BASE_URL = "https://api.primeintellect.ai/api/v1"
+
+# Spinup time cache from dashboard (populated by scripts/prime_dashboard_auth.py)
+SPINUP_CACHE_FILE = Path.home() / ".prime" / "spinup_times_cache.json"
+_spinup_cache: dict[str, float] | None = None
+
+
+def _load_spinup_cache() -> dict[str, float]:
+    """Load spinup times cache. Returns {provider: avg_seconds}."""
+    global _spinup_cache
+    if _spinup_cache is not None:
+        return _spinup_cache
+
+    if not SPINUP_CACHE_FILE.exists():
+        _spinup_cache = {}
+        return _spinup_cache
+
+    try:
+        data = json.loads(SPINUP_CACHE_FILE.read_text())
+        stats = data.get("stats", {})
+        # Extract just provider -> avg_seconds mapping
+        _spinup_cache = {
+            provider: info["avg_seconds"]
+            for provider, info in stats.items()
+            if "avg_seconds" in info
+        }
+        return _spinup_cache
+    except (json.JSONDecodeError, KeyError, TypeError):
+        _spinup_cache = {}
+        return _spinup_cache
 
 
 @async_retry(
@@ -75,7 +106,12 @@ async def _make_api_request(
                     provider="primeintellect",
                     key_hint=key_hint,
                 ) from exc
-        logger.error(f"Prime Intellect API request failed: {exc}")  # noqa: TRY400 — re-raising, don't want duplicate traceback
+            # Log full response body for debugging
+            logger.error(
+                f"Prime Intellect API request failed: {exc} - Response: {exc.response.text}"
+            )
+        else:
+            logger.error(f"Prime Intellect API request failed: {exc}")  # noqa: TRY400 — re-raising, don't want duplicate traceback
         raise
 
     # Handle empty responses (e.g., DELETE operations)
@@ -159,6 +195,11 @@ async def search_gpu_offers(
                     f"prime-{offer.get('cloudId', 'unknown')}-{offer.get('dataCenter', 'unknown')}"
                 )
 
+                # Look up estimated spinup time from cache
+                underlying = offer.get("provider")
+                spinup_cache = _load_spinup_cache()
+                estimated_spinup = spinup_cache.get(underlying) if underlying else None
+
                 gpu_offer = GPUOffer(
                     id=offer_id,
                     provider="primeintellect",
@@ -173,9 +214,8 @@ async def search_gpu_offers(
                     cloud_type=cloud_type,
                     cuda_version=cuda_version,  # Pass through filter
                     manufacturer=offer.get("provider"),  # Use provider as manufacturer proxy
-                    underlying_provider=offer.get(
-                        "provider"
-                    ),  # Extract underlying provider (e.g., massedcompute, hyperstack)
+                    underlying_provider=underlying,
+                    estimated_spinup_seconds=estimated_spinup,
                     raw_data=offer,
                 )
                 offers.append(gpu_offer)
@@ -193,34 +233,64 @@ async def provision_instance(
     request: ProvisionRequest, ssh_startup_script: str | None = None, api_key: str | None = None
 ) -> GPUInstance | None:
     """Provision a GPU instance on Prime Intellect"""
-    # Build the pod definition
+    raw = request.raw_data or {}
+
+    # Extract required fields from raw offer data
+    cloud_id = raw.get("cloudId")
+    gpu_type = raw.get("gpuType")
+    socket = raw.get("socket")
+    data_center = raw.get("dataCenter")
+    provider_type = raw.get("provider")  # e.g., "datacrunch", "hyperstack"
+    security = raw.get("security", "secure_cloud")
+
+    if not all([cloud_id, gpu_type, socket, data_center, provider_type]):
+        logger.error(
+            f"Missing required fields from offer raw_data: cloudId={cloud_id}, "
+            f"gpuType={gpu_type}, socket={socket}, dataCenter={data_center}, provider={provider_type}"
+        )
+        return None
+
+    # Valid Prime Intellect images (not Docker images like RunPod)
+    VALID_IMAGES = {
+        "ubuntu_22_cuda_12",
+        "cuda_12_1_pytorch_2_2",
+        "cuda_11_8_pytorch_2_1",
+        "cuda_12_1_pytorch_2_3",
+        "cuda_12_1_pytorch_2_4",
+        "cuda_12_4_pytorch_2_4",
+        "cuda_12_4_pytorch_2_5",
+        "cuda_12_4_pytorch_2_6",
+        "cuda_12_6_pytorch_2_7",
+        "stable_diffusion",
+        "axolotl",
+        "bittensor",
+        "hivemind",
+        "petals_llama",
+        "vllm_llama_8b",
+        "vllm_llama_70b",
+        "vllm_llama_405b",
+        "custom_template",
+        "flux",
+        "prime_rl",
+    }
+
+    # Use requested image if valid, otherwise default to ubuntu_22_cuda_12
+    image = request.image if request.image in VALID_IMAGES else "ubuntu_22_cuda_12"
+
+    # Build the pod definition with all required fields
     pod_data = {
-        "name": request.name or f"prime-{request.gpu_type or 'auto'}-{int(time.time())}",
+        "name": request.name or f"prime-{gpu_type}-{int(time.time())}",
+        "cloudId": cloud_id,
+        "gpuType": gpu_type,
+        "socket": socket,
+        "dataCenterId": data_center,
         "gpuCount": request.gpu_count,
-        "image": request.image or "ubuntu_22_cuda_12",  # Default to Ubuntu with CUDA
+        "image": image,
+        "security": security,
     }
 
-    # Build provider specification first - use the actual provider from the offer
-    # For Prime Intellect, we need to specify the underlying provider (e.g., "runpod", "hyperstack")
-    provider_data = {
-        "type": "runpod"  # Default to runpod for now
-    }
-
-    # Add GPU type if specified
-    if request.gpu_type:
-        # For Prime Intellect, gpu_type should be the cloudId from the offer
-        # The offer ID format is: "prime-{cloudId}-{dataCenter}"
-        # Extract the cloudId from the offer ID if it's in our format
-        if request.gpu_type.startswith("prime-"):
-            parts = request.gpu_type.split("-")
-            if len(parts) >= 3:
-                pod_data["cloudId"] = parts[1]
-                # Try to extract datacenter if available
-                if len(parts) >= 3:
-                    pod_data["dataCenterId"] = parts[2]
-        else:
-            # Direct cloudId provided
-            pod_data["cloudId"] = request.gpu_type
+    # Build provider specification
+    provider_data = {"type": provider_type}
 
     # Add resource specifications if provided
     if request.container_disk_gb:
@@ -240,16 +310,12 @@ async def provision_instance(
     if env_vars:
         pod_data["envVars"] = env_vars
 
-    # Provider data already built above
-
-    # Determine security level
-    if not request.spot_instance:
-        pod_data["security"] = "secure_cloud"
-    else:
-        pod_data["security"] = "community_cloud"
-
     # Build the complete request body
     request_body = {"pod": pod_data, "provider": provider_data}
+
+    # Look up estimated spinup time for this provider
+    spinup_cache = _load_spinup_cache()
+    estimated_spinup = spinup_cache.get(provider_type)
 
     try:
         data = await _make_api_request("POST", "/pods/", data=request_body, api_key=api_key)
@@ -259,7 +325,9 @@ async def provision_instance(
             return None
 
         # Parse the response and create GPUInstance
-        return _parse_pod_to_instance(data, api_key=api_key)
+        return _parse_pod_to_instance(
+            data, api_key=api_key, estimated_spinup_seconds=estimated_spinup
+        )
 
     except AccountError:
         raise
@@ -289,8 +357,8 @@ async def list_instances(api_key: str | None = None) -> list[GPUInstance]:
         data = await _make_api_request("GET", "/pods/", api_key=api_key)
 
         instances = []
-        # API might return a list directly or wrapped in a data field
-        pods = data if isinstance(data, list) else data.get("pods", [])
+        # API returns {"data": [...], "total_count": N, ...}
+        pods = data if isinstance(data, list) else data.get("data", [])
 
         for pod in pods:
             try:
@@ -320,7 +388,11 @@ async def terminate_instance(instance_id: str, api_key: str | None = None) -> bo
         return False
 
 
-def _parse_pod_to_instance(pod: dict[str, Any], api_key: str | None = None) -> GPUInstance:
+def _parse_pod_to_instance(
+    pod: dict[str, Any],
+    api_key: str | None = None,
+    estimated_spinup_seconds: float | None = None,
+) -> GPUInstance:
     """Parse a pod dictionary into a GPUInstance"""
 
     # Map Prime Intellect statuses to our enum
@@ -373,6 +445,7 @@ def _parse_pod_to_instance(pod: dict[str, Any], api_key: str | None = None) -> G
         ssh_username=ssh_username,
         raw_data=pod,
         api_key=api_key,  # Store API key for instance methods
+        estimated_spinup_seconds=estimated_spinup_seconds,
     )
 
 

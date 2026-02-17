@@ -64,6 +64,9 @@ class GPUOffer:
     available_gpu_counts: list | None = None  # List of available GPU counts (e.g., [1,2,3,4,5,6,7])
     stock_status: str | None = None  # Stock status (e.g., "Low", "High")
 
+    # Spinup time estimate (from dashboard data for aggregators like PrimeIntellect)
+    estimated_spinup_seconds: float | None = None
+
     def total_price(self, gpu_count: int = 1) -> float:
         """Calculate total price for N GPUs."""
         assert gpu_count > 0, f"gpu_count must be positive, got {gpu_count}"
@@ -100,6 +103,7 @@ class GPUInstance:
     ssh_username: str | None = None
     raw_data: dict[str, Any] | None = None
     api_key: str | None = None  # Store API key for internal API calls
+    estimated_spinup_seconds: float | None = None  # From offer, used for smart timeout
 
     def exec(self, command: str, ssh_key_path: str | None = None, timeout: int = 30) -> "SSHResult":
         """Execute command via SSH using configured key (synchronous)"""
@@ -227,14 +231,15 @@ class GPUInstance:
 
         return False  # Timeout
 
-    async def wait_until_ssh_ready(self, timeout: int = 900) -> bool:
+    async def wait_until_ssh_ready(self, timeout: int | None = None) -> bool:
         """Wait until instance is running AND SSH is ready for connections.
 
         Delegates to provider-specific implementation since SSH setup varies
         across providers (proxy vs direct, timing, authentication, etc).
 
         Args:
-            timeout: Maximum seconds to wait (default: 900 = 15min)
+            timeout: Maximum seconds to wait. If None, uses estimated_spinup_seconds * 2
+                    with a minimum of 300s and maximum of 900s. Pass explicit value to override.
 
         Returns:
             True if SSH ready, False if timeout/failure
@@ -244,6 +249,15 @@ class GPUInstance:
         from .providers import get_provider_impl
 
         logger = logging.getLogger(__name__)
+
+        # Smart timeout: use estimated spinup * 2, bounded to reasonable range
+        if timeout is None:
+            if self.estimated_spinup_seconds:
+                # Double the estimate as buffer, clamp to 5-15 min range
+                timeout = int(min(max(self.estimated_spinup_seconds * 2, 300), 900))
+                logger.debug(f"Using estimated spinup-based timeout: {timeout}s")
+            else:
+                timeout = 600  # Default 10 min if no estimate
 
         # Assert preconditions (Tiger Style)
         assert isinstance(timeout, int) and timeout > 0, (
