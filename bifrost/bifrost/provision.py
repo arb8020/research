@@ -62,6 +62,7 @@ class GPUQuery:
     exposed_ports: tuple[int, ...] = ()
     enable_http_proxy: bool = True  # False for raw TCP ports (e.g. LogsServer)
     name: str | None = None  # Instance name (e.g. "rollouts/run_20250127-143052")
+    provider: str | None = None  # Filter to specific provider (e.g., "runpod", "vast")
 
     # Provider credentials (optional - falls back to env vars)
     credentials: dict[str, str] = field(default_factory=dict)
@@ -172,9 +173,16 @@ async def acquire_node(
     # Mode 3: Provision new instance
     assert provision is not None  # Type narrowing
 
+    # Build query: GPU type filter, plus optional provider filter
+    query = broker.gpu_type.contains(provision.type)
+    if provision.provider:
+        query = query & (broker.provider == provision.provider)
+
     logger.info("Provisioning new instance (%dx %s)...", provision.count, provision.type)
+    if provision.provider:
+        logger.info("  Provider filter: %s", provision.provider)
     instance = await broker.create(
-        broker.gpu_type.contains(provision.type),
+        query,
         name=provision.name,
         gpu_count=provision.count,
         cloud_type=provision.cloud_type,

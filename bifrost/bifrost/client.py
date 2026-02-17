@@ -257,6 +257,7 @@ class BifrostClient:
         workspace_path: str,
         bootstrap_cmd: str | list[str] | None = None,
         on_bootstrap_step: Callable[[str, int, int], None] | None = None,
+        allow_dirty: bool = False,
     ) -> str:
         """Deploy code to remote workspace.
 
@@ -279,12 +280,15 @@ class BifrostClient:
                               Called with (cmd, index, total) where index is 0-based.
                               Use for progress reporting (e.g., updating a spinner).
 
+            allow_dirty: If True, allow deploying with uncommitted/untracked changes.
+                        If False (default), raise RuntimeError if dirty.
+
         Returns:
             Path to deployed workspace (absolute, tilde-expanded)
 
         Raises:
             SSHConnectionError: SSH connection failed
-            RuntimeError: Deployment failed
+            RuntimeError: Deployment failed or workspace is dirty (unless allow_dirty=True)
 
         Note:
             Each project should use a unique workspace_path to prevent
@@ -304,7 +308,9 @@ class BifrostClient:
 
         # Deploy code (pure function)
         t0 = _time.monotonic()
-        workspace_path = git_sync.deploy_code(ssh_client, self._remote_config, workspace_path)
+        workspace_path = git_sync.deploy_code(
+            ssh_client, self._remote_config, workspace_path, allow_dirty=allow_dirty
+        )
         self.logger.info(f"push: deploy_code took {_time.monotonic() - t0:.1f}s")
 
         # Run bootstrap if specified (pure function)

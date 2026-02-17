@@ -139,6 +139,7 @@ def deploy_code(
     config: RemoteConfig,
     workspace_path: str,
     timeout: float = DEPLOY_TIMEOUT_SECONDS,
+    allow_dirty: bool = False,
 ) -> str:
     """Deploy code via git to remote workspace.
 
@@ -147,12 +148,14 @@ def deploy_code(
         config: Remote connection configuration
         workspace_path: Path to workspace on remote (e.g., ~/.bifrost/workspace)
         timeout: Maximum seconds for the entire deploy (default 5 min)
+        allow_dirty: If True, proceed despite uncommitted/untracked changes.
+                    If False (default), raise RuntimeError if dirty.
 
     Returns:
         Path to deployed workspace
 
     Raises:
-        RuntimeError: If deployment fails
+        RuntimeError: If deployment fails or workspace is dirty (unless allow_dirty=True)
         TimeoutError: If deployment exceeds timeout
     """
     # Assert inputs (Tiger Style)
@@ -161,9 +164,29 @@ def deploy_code(
     assert isinstance(workspace_path, str) and len(workspace_path) > 0, (
         "workspace_path must be non-empty string"
     )
+    assert isinstance(allow_dirty, bool), "allow_dirty must be boolean"
+
+    # Check for dirty workspace (uncommitted/untracked changes)
+    if not allow_dirty:
+        untracked = _check_untracked_files()
+        uncommitted = _check_uncommitted_changes()
+        if untracked or uncommitted:
+            dirty_files = []
+            if untracked:
+                dirty_files.extend(untracked)
+            if uncommitted:
+                dirty_files.extend(uncommitted)
+            raise RuntimeError(
+                f"Workspace has {len(dirty_files)} uncommitted/untracked file(s). "
+                f"Deploy with allow_dirty=True to proceed anyway. "
+                f"Files: {', '.join(dirty_files[:5])}"
+                + (f" and {len(dirty_files) - 5} more" if len(dirty_files) > 5 else "")
+            )
 
     deploy_start = time.monotonic()
-    logger.info(f"deploy_code: starting (workspace={workspace_path}, timeout={timeout}s)")
+    logger.info(
+        f"deploy_code: starting (workspace={workspace_path}, timeout={timeout}s, allow_dirty={allow_dirty})"
+    )
 
     def _check_timeout(step: str) -> None:
         elapsed = time.monotonic() - deploy_start
