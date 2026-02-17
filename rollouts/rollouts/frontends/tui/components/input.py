@@ -41,9 +41,6 @@ class Input(Component):
         self._pastes: dict[int, str] = {}
         self._paste_counter = 0
 
-        # Queued messages display (shown in gray above input)
-        self._queued_messages: list[str] = []
-
         # External editor callback (Ctrl+G)
         self._on_editor: Callable[[str], None] | None = None
 
@@ -82,20 +79,6 @@ class Input(Component):
         """Set ghost text to show as completion preview."""
         self._ghost_text = ghost
 
-    def add_queued_message(self, message: str) -> None:
-        """Add a message to the queued display."""
-        self._queued_messages.append(message)
-
-    def pop_queued_message(self) -> str | None:
-        """Remove and return the first queued message, or None if empty."""
-        if self._queued_messages:
-            return self._queued_messages.pop(0)
-        return None
-
-    def get_queue_count(self) -> int:
-        """Get number of queued messages."""
-        return len(self._queued_messages)
-
     def get_text(self) -> str:
         """Get current text content."""
         return "\n".join(self._lines)
@@ -123,28 +106,10 @@ class Input(Component):
         """Render input component with cursor."""
         self._last_width = width
         horizontal = self._border_color_fn("─")
-        gray_fg = "\x1b[38;5;245m"  # Gray text for queued messages
         ghost_fg = "\x1b[38;5;240m"  # Dimmer gray for ghost text
         reset = "\x1b[0m"
 
         result: list[str] = []
-
-        # Render queued messages above input (gray text)
-        if self._queued_messages:
-            # Keep this display compact: queued messages are just a hint, not a full history.
-            # Large queues can otherwise push important UI (like the loader spinner) off-screen.
-            count = len(self._queued_messages)
-            last_msg = self._queued_messages[-1]
-            prefix_text = "[queued] " if count == 1 else f"[{count} queued] "
-            available = max(0, width - len(prefix_text))
-            display_msg = (
-                last_msg
-                if len(last_msg) <= available
-                else (last_msg[: max(0, available - 3)] + "..." if available >= 3 else "")
-            )
-            line = f"{gray_fg}{prefix_text}{display_msg}{reset}"
-            visible_len = len(prefix_text) + len(display_msg)
-            result.append(line + (" " * max(0, width - visible_len)))
 
         # Top border
         result.append(horizontal * width)

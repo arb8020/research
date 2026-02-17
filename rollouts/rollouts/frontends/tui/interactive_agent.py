@@ -33,6 +33,7 @@ from ...models import get_model
 from .agent_renderer import AgentRenderer
 from .components.input import Input
 from .components.loader_container import LoaderContainer
+from .components.pending_messages import PendingMessages
 from .components.spacer import Spacer
 from .control_flow_types import (
     AgentCompleted,
@@ -108,6 +109,7 @@ class InteractiveAgentRunner:
         self.renderer: AgentRenderer | None = None
         self.input_component: Input | None = None
         self.loader_container: LoaderContainer | None = None
+        self.pending_messages: PendingMessages | None = None
         self.status_line: StatusLine | None = None
 
         # Input coordination - use Trio memory channels instead of asyncio.Queue
@@ -215,26 +217,18 @@ class InteractiveAgentRunner:
         if text.strip() and self.input_send:
             try:
                 self.input_send.send_nowait(text.strip())
-                # Add to visual queue display (only if not currently waiting for input)
-                if not self.input_pending and self.input_component:
-                    self.input_component.add_queued_message(text.strip())
+                # If we're not currently waiting for input, this message is queued.
+                if not self.input_pending:
+                    if self.pending_messages:
+                        self.pending_messages.add(text.strip())
                     if self.tui:
                         # If the agent is busy but no loader is currently active (some phases
                         # intentionally hide the loader), show a generic "busy" loader so the
                         # user always has feedback that something is blocking queued messages.
                         if self.agent_cancel_scope and not self.tui.is_loader_active():
-                            queued = self.input_component.get_queue_count()
-                            reason = "Working..."
-                            if (
-                                hasattr(self.tui, "_focused_component")
-                                and self.tui._focused_component is not None
-                                and self.tui._focused_component is not self.input_component
-                            ):
-                                reason = (
-                                    f"Waiting on {type(self.tui._focused_component).__name__}..."
-                                )
+                            queued = self.pending_messages.count() if self.pending_messages else 1
                             self.tui.show_loader(
-                                f"{queued} queued. {reason} (Esc to interrupt)",
+                                f"{queued} queued. Working... (Esc to interrupt)",
                                 spinner_color_fn=self.tui.theme.accent_fg,
                                 text_color_fn=self.tui.theme.muted_fg,
                             )
@@ -615,25 +609,16 @@ class InteractiveAgentRunner:
         Returns:
             User input string
         """
-        # Drain all queued messages (non-blocking)
-        queued_messages: list[str] = []
-        while True:
-            try:
-                msg = self.input_receive.receive_nowait()
-                queued_messages.append(msg)
-                # Remove from visual queue display
-                if self.input_component:
-                    self.input_component.pop_queued_message()
-            except trio.WouldBlock:
-                break
-
-        if queued_messages:
-            # Store all messages - first one returned, rest stored for handle_no_tool
-            user_input = queued_messages[0]
-            self._pending_user_messages = queued_messages[1:]
+        # If a message is queued, take exactly one and leave the rest in the channel.
+        try:
+            user_input = self.input_receive.receive_nowait()
+            if self.pending_messages:
+                self.pending_messages.pop_left()
             if self.tui:
                 self.tui.request_render()
             return user_input
+        except trio.WouldBlock:
+            pass
 
         # No queued message - clear pending and wait for input
         self._pending_user_messages = []
@@ -651,6 +636,34 @@ class InteractiveAgentRunner:
             self.input_component.set_text("")
 
         return user_input
+
+    def _restore_queued_messages_to_input(self) -> None:
+        """Move all queued messages back into the editor for editing."""
+        if not self.input_receive or not self.input_component:
+            return
+
+        drained: list[str] = []
+        while True:
+            try:
+                drained.append(self.input_receive.receive_nowait())
+            except trio.WouldBlock:
+                break
+
+        if not drained:
+            return
+
+        # Keep whatever is currently in the editor (usually empty for ↑ restore).
+        current = self.input_component.get_text()
+        queued_text = "\n\n".join(drained)
+        combined = "\n\n".join([t for t in (queued_text, current) if t.strip()])
+        self.input_component.set_text(combined)
+
+        if self.pending_messages:
+            self.pending_messages.clear()
+
+        if self.tui:
+            self.tui.set_focus(self.input_component)
+            self.tui.request_render()
 
     async def _get_input_result(self, current_state: AgentState | None) -> InputResult:
         """Get user input and return explicit result type.
@@ -1136,6 +1149,19 @@ class InteractiveAgentRunner:
                             self._decrease_display_mode()
                             continue
 
+                    # Up arrow: when editor is empty and messages are queued, restore them for editing.
+                    if (
+                        key == "\x1b[A"
+                        and self.input_component
+                        and self.tui
+                        and self.tui._focused_component is self.input_component
+                        and not self.input_component.get_text().strip()
+                        and self.pending_messages
+                        and self.pending_messages.count() > 0
+                    ):
+                        self._restore_queued_messages_to_input()
+                        continue
+
                     # Check for standalone Escape - interrupt current agent run
                     # But if there's a focused component that handles escape (like question selector),
                     # route escape to it instead. The Input component doesn't handle escape,
@@ -1232,6 +1258,20 @@ class InteractiveAgentRunner:
         self.input_component.set_on_editor(self._handle_open_editor)
         self.input_component.set_on_tab_complete(self._handle_tab_complete)
         self.input_component.set_on_change(self._handle_input_change)
+
+        # Pending messages (queued while agent is busy)
+        self.pending_messages = PendingMessages(
+            theme=self.tui.theme,
+            get_blocked_reason=lambda: self.tui.get_loader_text()
+            or (
+                f"Waiting on {type(self.tui._focused_component).__name__}"
+                if self.tui._focused_component
+                and self.tui._focused_component is not self.input_component
+                else None
+            ),
+            restore_hint="↑ restore to edit",
+        )
+        self.tui.add_child(self.pending_messages)
         self.tui.add_child(self.input_component)
 
         # Create loader container (spinner during LLM calls).

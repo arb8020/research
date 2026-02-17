@@ -58,6 +58,7 @@ class TUIFrontend:
         self._renderer: Any | None = None
         self._input_component: Any | None = None
         self._loader_container: Any | None = None
+        self._pending_messages: Any | None = None
         self._status_line: Any | None = None
 
         # Input coordination
@@ -78,6 +79,7 @@ class TUIFrontend:
         from .tui.agent_renderer import AgentRenderer
         from .tui.components.input import Input
         from .tui.components.loader_container import LoaderContainer
+        from .tui.components.pending_messages import PendingMessages
         from .tui.components.spacer import Spacer
         from .tui.components.status_line import StatusLine
         from .tui.terminal import ProcessTerminal
@@ -114,6 +116,21 @@ class TUIFrontend:
         # Create input component
         self._input_component = Input(theme=self._tui.theme)
         self._input_component.set_on_submit(self._handle_input_submit)
+
+        # Pending messages (queued while agent is busy)
+        self._pending_messages = PendingMessages(
+            theme=self._tui.theme,
+            get_blocked_reason=lambda: self._tui.get_loader_text()
+            or (
+                f"Waiting on {type(self._tui._focused_component).__name__}"
+                if self._tui
+                and self._tui._focused_component
+                and self._tui._focused_component is not self._input_component
+                else None
+            ),
+            restore_hint="↑ restore to edit",
+        )
+        self._tui.add_child(self._pending_messages)
         self._tui.add_child(self._input_component)
 
         # Create loader container (keep near the input so it's visible in the viewport)
@@ -194,8 +211,10 @@ class TUIFrontend:
         # Try to get queued message first
         try:
             msg = self._input_receive.receive_nowait()
-            if self._input_component:
-                self._input_component.pop_queued_message()
+            if self._pending_messages:
+                self._pending_messages.pop_left()
+            if self._tui:
+                self._tui.request_render()
             user_input = msg
         except trio.WouldBlock:
             # No queued message, show input and wait
@@ -232,6 +251,33 @@ class TUIFrontend:
             self._is_first_user_message = False
 
         return UserMessage(text=user_input)
+
+    def _restore_queued_messages_to_input(self) -> None:
+        """Move all queued messages back into the editor for editing."""
+        if not self._input_receive or not self._input_component:
+            return
+
+        drained: list[str] = []
+        while True:
+            try:
+                drained.append(self._input_receive.receive_nowait())
+            except trio.WouldBlock:
+                break
+
+        if not drained:
+            return
+
+        current = self._input_component.get_text()
+        queued_text = "\n\n".join(drained)
+        combined = "\n\n".join([t for t in (queued_text, current) if t.strip()])
+        self._input_component.set_text(combined)
+
+        if self._pending_messages:
+            self._pending_messages.clear()
+
+        if self._tui:
+            self._tui.set_focus(self._input_component)
+            self._tui.request_render()
 
     async def confirm_tool(self, tool_call: ToolCall) -> bool:
         """Confirm tool execution via TUI.
@@ -314,12 +360,12 @@ class TUIFrontend:
             try:
                 self._input_send.send_nowait(text.strip())
                 # Add to visual queue if not waiting for input
-                if not self._input_pending and self._input_component:
-                    self._input_component.add_queued_message(text.strip())
+                if not self._input_pending and self._pending_messages:
+                    self._pending_messages.add(text.strip())
                     if self._tui:
                         if not self._tui.is_loader_active():
-                            queued = self._input_component.get_queue_count()
-                            reason = "Working..."
+                            queued = self._pending_messages.count()
+                            reason = self._tui.get_loader_text() or "Working..."
                             if (
                                 hasattr(self._tui, "_focused_component")
                                 and self._tui._focused_component is not None
@@ -440,6 +486,19 @@ class TUIFrontend:
                         # Any other key cancels the pending Ctrl+C (paste events included).
                         if self._ctrl_c_pending is not None:
                             self._ctrl_c_pending = None
+
+                        # Up arrow: when editor is empty and messages are queued, restore them for editing.
+                        if (
+                            key == "\x1b[A"
+                            and self._input_component
+                            and self._tui
+                            and self._tui._focused_component is self._input_component
+                            and not self._input_component.get_text().strip()
+                            and self._pending_messages
+                            and self._pending_messages.count() > 0
+                        ):
+                            self._restore_queued_messages_to_input()
+                            continue
 
                         if self._tui:
                             self._tui._handle_input(msg)
