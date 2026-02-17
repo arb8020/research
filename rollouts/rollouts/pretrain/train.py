@@ -18,6 +18,7 @@ import torch.nn.functional as F
 from ..training.datasets import BufferState, get_token_batch, load_fineweb_tokens
 from .config import TINY_CONFIG, ModelConfig, TrainConfig, get_git_info
 from .models.llama import count_parameters, forward, init_weights
+from .schedule import get_lr
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +206,13 @@ def train(config: TrainConfig, use_real_data: bool = False) -> None:
         weight_decay=config.weight_decay,
     )
 
+    # Schedule config (dict for get_lr)
+    schedule_config = {
+        "steps": config.steps,
+        "lr": config.lr,
+        "warmup_steps": config.warmup_steps,
+    }
+
     # Training loop
     logger.info(f"starting training for {config.steps} steps...")
     start_time = time.time()
@@ -214,6 +222,11 @@ def train(config: TrainConfig, use_real_data: bool = False) -> None:
 
     for step in range(config.steps):
         step_start = time.time()
+
+        # Update learning rate
+        lr = get_lr(step, schedule_config)
+        for param_group in optimizer.param_groups:
+            param_group["lr"] = lr
 
         # Get batch
         if use_real_data and train_tokens is not None:
@@ -248,6 +261,7 @@ def train(config: TrainConfig, use_real_data: bool = False) -> None:
 
             logger.info(
                 f"step={step:5d} | loss={loss.item():.4f} | "
+                f"lr={lr:.2e} | "
                 f"grad_norm={grad_norm:.4f} | "
                 f"tok/s={tokens_per_sec:.0f} | "
                 f"elapsed={elapsed:.1f}s"

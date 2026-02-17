@@ -101,6 +101,7 @@ def get_git_info() -> tuple[str, bool]:
 
 
 # Tiny config for testing (single GPU, fast iteration)
+# 100 steps with 10-step warmup = 10% warmup, 90% cosine decay
 TINY_CONFIG = TrainConfig(
     model=ModelConfig(
         dim=256,
@@ -110,5 +111,6 @@ TINY_CONFIG = TrainConfig(
     max_seq_len=128,
     batch_size=4,
     steps=100,
+    warmup_steps=10,  # 10% warmup for tiny runs
     log_every=10,
 )
