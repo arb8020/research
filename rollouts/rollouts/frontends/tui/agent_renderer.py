@@ -8,6 +8,8 @@ import json
 from typing import Any
 
 from ...dtypes import (
+    FirstToken,
+    LLMCallEnd,
     LLMCallStart,
     Message,
     RetryEnd,
@@ -69,6 +71,13 @@ class AgentRenderer:
         # Track content blocks by index
         self.content_blocks: dict[int, dict[str, Any]] = {}
 
+        # Status line for tok/s updates
+        self._status_line: Any | None = None
+
+    def set_status_line(self, status_line: Any) -> None:
+        """Set the status line component for tok/s updates."""
+        self._status_line = status_line
+
     def clear_chat(self) -> None:
         """Clear all messages from the chat container.
 
@@ -87,6 +96,14 @@ class AgentRenderer:
         Args:
             event: StreamEvent to handle
         """
+        # Handle LLMCallEnd before match statement (match pattern wasn't catching it)
+        if isinstance(event, LLMCallEnd):
+            self._handle_llm_call_end(event.duration_ms, event.tokens_out)
+
+        # Handle FirstToken for TTFT tracking
+        if isinstance(event, FirstToken):
+            self._handle_first_token(event.ttft_ms)
+
         match event:
             case LLMCallStart():
                 self._handle_llm_call_start()
@@ -153,12 +170,25 @@ class AgentRenderer:
         self.tui.request_render()
 
     def _handle_llm_call_start(self) -> None:
-        """Handle LLM call start - show 'Calling LLM...' loader."""
+        """Handle LLM call start - show 'Waiting for response...' loader."""
+        # Reset TTFT for new request
+        if self._status_line:
+            self._status_line.reset_request_stats()
         self.tui.show_loader(
-            "Calling LLM...",
+            "Waiting for response...",
             spinner_color_fn=self.theme.fg(self.theme.accent),
             text_color_fn=self.theme.fg(self.theme.muted),
         )
+
+    def _handle_llm_call_end(self, duration_ms: float, tokens_out: int | None) -> None:
+        """Handle LLM call end - update status line with tok/s."""
+        if self._status_line and tokens_out is not None and tokens_out > 0:
+            self._status_line.set_last_request_stats(duration_ms, tokens_out)
+
+    def _handle_first_token(self, ttft_ms: float) -> None:
+        """Handle first token event - update status line with TTFT."""
+        if self._status_line:
+            self._status_line.set_ttft(ttft_ms)
 
     def _handle_stream_start(self) -> None:
         """Handle stream start - switch to streaming loader."""
@@ -377,8 +407,12 @@ class AgentRenderer:
         details: dict | None = None,
     ) -> None:
         """Handle tool execution result - update tool component from pending to success/error."""
-        # Hide the "Running tool..." spinner
-        self.tui.hide_loader()
+        # Show transitional loader - agent is still busy processing
+        self.tui.show_loader(
+            "Processing...",
+            spinner_color_fn=self.theme.fg(self.theme.accent),
+            text_color_fn=self.theme.fg(self.theme.muted),
+        )
 
         if tool_call_id in self.pending_tools:
             result_text = error if is_error and error else content
@@ -393,8 +427,14 @@ class AgentRenderer:
             del self.pending_tools[tool_call_id]
 
     def _handle_stream_done(self) -> None:
-        """Handle stream done - hide loader."""
-        self.tui.hide_loader()
+        """Handle stream done - show transitional loader while processing continues."""
+        # Don't hide loader - agent may still be processing (tool execution, next LLM call)
+        # Show transitional state instead
+        self.tui.show_loader(
+            "Processing...",
+            spinner_color_fn=self.theme.fg(self.theme.accent),
+            text_color_fn=self.theme.fg(self.theme.muted),
+        )
 
         # Finalize current message
         self.current_message = None

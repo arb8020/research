@@ -624,8 +624,11 @@ class InteractiveAgentRunner:
         self._pending_user_messages = []
         self.input_pending = True
 
-        if self.input_component and self.tui:
-            self.tui.set_focus(self.input_component)
+        if self.tui:
+            # Hide loader - we're now waiting for user input
+            self.tui.hide_loader()
+            if self.input_component:
+                self.tui.set_focus(self.input_component)
             self.tui.request_render()
 
         user_input = await self.input_receive.receive()

@@ -219,8 +219,11 @@ class TUIFrontend:
         except trio.WouldBlock:
             # No queued message, show input and wait
             self._input_pending = True
-            if self._input_component and self._tui:
-                self._tui.set_focus(self._input_component)
+            if self._tui:
+                # Hide loader - we're now waiting for user input
+                self._tui.hide_loader()
+                if self._input_component:
+                    self._tui.set_focus(self._input_component)
                 self._tui.request_render()
 
             user_input = await self._input_receive.receive()
