@@ -139,8 +139,8 @@ async def run(
                 "~/.local/bin/uv python install 3.12 && ~/.local/bin/uv sync --python 3.12 --package rollouts",
             ),
             (
-                "Installing torch",
-                "~/.local/bin/uv pip install torch",
+                "Installing torch + huggingface_hub",
+                "~/.local/bin/uv pip install torch huggingface_hub",
             ),
         ]
 
