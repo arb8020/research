@@ -131,15 +131,20 @@ class Input(Component):
 
         # Render queued messages above input (gray text)
         if self._queued_messages:
-            for i, msg in enumerate(self._queued_messages):
-                # Truncate long messages
-                display_msg = msg if len(msg) <= width - 4 else msg[: width - 7] + "..."
-                prefix = f"{gray_fg}[{i + 1}] "
-                line = f"{prefix}{display_msg}{reset}"
-                # Pad to width
-                visible_len = len(f"[{i + 1}] ") + len(display_msg)
-                padding = " " * max(0, width - visible_len)
-                result.append(line + padding)
+            # Keep this display compact: queued messages are just a hint, not a full history.
+            # Large queues can otherwise push important UI (like the loader spinner) off-screen.
+            count = len(self._queued_messages)
+            last_msg = self._queued_messages[-1]
+            prefix_text = "[queued] " if count == 1 else f"[{count} queued] "
+            available = max(0, width - len(prefix_text))
+            display_msg = (
+                last_msg
+                if len(last_msg) <= available
+                else (last_msg[: max(0, available - 3)] + "..." if available >= 3 else "")
+            )
+            line = f"{gray_fg}{prefix_text}{display_msg}{reset}"
+            visible_len = len(prefix_text) + len(display_msg)
+            result.append(line + (" " * max(0, width - visible_len)))
 
         # Top border
         result.append(horizontal * width)
@@ -263,6 +268,9 @@ class Input(Component):
                 if remaining:
                     self.handle_input(remaining)
                 return
+            # While inside a bracketed paste, buffer only. Do not also treat paste bytes
+            # as regular keystrokes, otherwise the paste will be inserted twice.
+            return
 
         # Ctrl+C - let parent handle
         if len(data) > 0 and ord(data[0]) == 3:

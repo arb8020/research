@@ -1190,14 +1190,6 @@ class InteractiveAgentRunner:
             if self.debug:
                 self.renderer.debug_dump_chat()
 
-        # Create loader container (for spinner during LLM calls)
-        self.loader_container = LoaderContainer(
-            spinner_color_fn=self.tui.theme.accent_fg,
-            text_color_fn=self.tui.theme.muted_fg,
-        )
-        self.tui.set_loader_container(self.loader_container)
-        self.tui.add_child(self.loader_container)
-
         # Spacer before input box (always present)
         self.tui.add_child(Spacer(1, debug_label="before-input"))
 
@@ -1208,6 +1200,15 @@ class InteractiveAgentRunner:
         self.input_component.set_on_tab_complete(self._handle_tab_complete)
         self.input_component.set_on_change(self._handle_input_change)
         self.tui.add_child(self.input_component)
+
+        # Create loader container (spinner during LLM calls).
+        # Place it below the input so queued-input UI doesn't push it off-screen.
+        self.loader_container = LoaderContainer(
+            spinner_color_fn=self.tui.theme.accent_fg,
+            text_color_fn=self.tui.theme.muted_fg,
+        )
+        self.tui.set_loader_container(self.loader_container)
+        self.tui.add_child(self.loader_container)
 
         # Create status line below input
         self.status_line = StatusLine(theme=self.tui.theme)
@@ -1223,8 +1224,11 @@ class InteractiveAgentRunner:
                 self.status_line.set_env_info(env_info)
         self.tui.add_child(self.status_line)
 
+        # Connect status_line to renderer for tok/s updates
+        self.renderer.set_status_line(self.status_line)
+
         # Add spacer after status line
-        self.tui.add_child(Spacer(5, debug_label="after-status"))
+        self.tui.add_child(Spacer(1, debug_label="after-status"))
 
         # Inject TUI question handler into AskUserQuestionEnvironment if present
         self._inject_question_handler()
