@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any
 
 import trio
 
+from pytui.input import KeyPress
+
 from .protocol import InputResult
 
 if TYPE_CHECKING:
@@ -127,6 +129,9 @@ class TUIFrontend:
         if self.driver:
             self._status_line.set_driver(self.driver)
         self._tui.add_child(self._status_line)
+
+        # Connect status_line to renderer for tok/s updates
+        self._renderer.set_status_line(self._status_line)
 
         # Spacer after status
         self._tui.add_child(Spacer(5, debug_label="after-status"))
@@ -382,10 +387,11 @@ class TUIFrontend:
 
             while True:
                 if self._terminal and self._terminal._running:
-                    input_data = self._terminal.read_input()
-                    if input_data:
+                    msg = self._terminal.read_message()
+                    if msg is not None:
+                        key = msg.key if isinstance(msg, KeyPress) else None
                         # Check for Ctrl+C (ASCII 3) - double-tap to cancel
-                        if input_data == "\x03":
+                        if key == "\x03":
                             now = time.time()
                             if (
                                 self._ctrl_c_pending
@@ -403,19 +409,19 @@ class TUIFrontend:
                             continue
 
                         # Check for Escape - interrupt current response
-                        if input_data == "\x1b":
+                        if key == "\x1b":
                             if self._on_interrupt:
                                 self._on_interrupt()
                                 if self._renderer:
                                     self._renderer.add_system_message("Interrupted")
                             continue
 
-                        # Any other key cancels the pending Ctrl+C
-                        if self._ctrl_c_pending:
+                        # Any other key cancels the pending Ctrl+C (paste events included).
+                        if self._ctrl_c_pending is not None:
                             self._ctrl_c_pending = None
 
                         if self._tui:
-                            self._tui._handle_input(input_data)
+                            self._tui._handle_input(msg)
                 await trio.sleep(0.01)
 
         nursery.start_soon(input_reading_loop)

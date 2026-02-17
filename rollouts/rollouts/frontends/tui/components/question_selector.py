@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any
 
 import trio
 
+from pytui.input import KeyPress, PasteEvent
+
 from ..tui import Component, Container
 from .spacer import Spacer
 from .text import Text
@@ -172,13 +174,17 @@ class QuestionSelectorComponent(Container):
             hint_styled = hint
         self.add_child(Text(hint_styled, padding_x=2, padding_y=0, theme=self._theme))
 
-    def handle_input(self, data: str) -> None:
-        """Handle keyboard input."""
-        # Strip bracketed paste escape sequences (ignore paste content in selector)
-        if "\x1b[200~" in data or "\x1b[201~" in data:
-            data = data.replace("\x1b[200~", "").replace("\x1b[201~", "")
-            if not data:
-                return
+    def handle_input(self, msg: object) -> None:
+        """Handle terminal input."""
+        if isinstance(msg, PasteEvent):
+            return
+
+        if isinstance(msg, KeyPress):
+            data = msg.key
+        elif isinstance(msg, str):
+            data = msg
+        else:
+            return
 
         is_on_other = self._selected_index == self._other_index
         is_on_done = self._multi_select and self._selected_index == self._done_index
@@ -376,8 +382,18 @@ class AnswerReviewComponent(Container):
             hint_styled = hint
         self.add_child(Text(hint_styled, padding_x=2, padding_y=0, theme=self._theme))
 
-    def handle_input(self, data: str) -> None:
-        """Handle keyboard input."""
+    def handle_input(self, msg: object) -> None:
+        """Handle terminal input."""
+        if isinstance(msg, PasteEvent):
+            return
+
+        if isinstance(msg, KeyPress):
+            data = msg.key
+        elif isinstance(msg, str):
+            data = msg
+        else:
+            return
+
         # Enter - confirm
         if len(data) == 1 and ord(data[0]) == 13:
             if self._on_confirm:

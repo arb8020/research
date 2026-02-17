@@ -6,14 +6,107 @@ Ported from pi-mono/packages/tui - same architecture, same visual output.
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
+
+from pytui.input import KeyPress
+from pytui.text import slice_ansi
 
 from .terminal import Terminal
 from .theme import DARK_THEME, Theme
 from .utils import truncate_to_width, visible_width
+
+# Overlay anchor positions
+OverlayAnchor = Literal[
+    "center",
+    "top-left",
+    "top-center",
+    "top-right",
+    "left-center",
+    "right-center",
+    "bottom-left",
+    "bottom-center",
+    "bottom-right",
+]
+
+# Size value: int for absolute, "50%" for percentage
+SizeValue = int | str
+
+
+@dataclass
+class OverlayMargin:
+    """Margin configuration for overlays."""
+
+    top: int = 0
+    right: int = 0
+    bottom: int = 0
+    left: int = 0
+
+
+@dataclass
+class OverlayOptions:
+    """Options for overlay positioning and sizing."""
+
+    # Sizing
+    width: SizeValue | None = None  # Default: min(80, available)
+    min_width: int | None = None
+    max_height: SizeValue | None = None
+
+    # Positioning - anchor-based
+    anchor: OverlayAnchor = "center"
+    offset_x: int = 0
+    offset_y: int = 0
+
+    # Positioning - absolute/percentage (overrides anchor)
+    row: SizeValue | None = None
+    col: SizeValue | None = None
+
+    # Margin from terminal edges
+    margin: OverlayMargin | int = 0
+
+    # Visibility callback: (width, height) -> bool
+    visible: Callable[[int, int], bool] | None = None
+
+
+class OverlayHandle:
+    """Handle for controlling an overlay after creation."""
+
+    def __init__(
+        self,
+        hide_fn: Callable[[], None],
+        set_hidden_fn: Callable[[bool], None],
+        is_hidden_fn: Callable[[], bool],
+    ) -> None:
+        self._hide = hide_fn
+        self._set_hidden = set_hidden_fn
+        self._is_hidden = is_hidden_fn
+
+    def hide(self) -> None:
+        """Permanently remove the overlay."""
+        self._hide()
+
+    def set_hidden(self, hidden: bool) -> None:
+        """Temporarily show/hide the overlay."""
+        self._set_hidden(hidden)
+
+    def is_hidden(self) -> bool:
+        """Check if overlay is temporarily hidden."""
+        return self._is_hidden()
+
+
+@dataclass
+class _OverlayEntry:
+    """Internal entry in the overlay stack."""
+
+    component: Component
+    options: OverlayOptions
+    hidden: bool = False
+    pre_focus: Component | None = None
 
 
 class Component(ABC):
@@ -31,8 +124,8 @@ class Component(ABC):
         """
         ...
 
-    def handle_input(self, data: str) -> None:
-        """Optional handler for keyboard input when component has focus."""
+    def handle_input(self, msg: object) -> None:
+        """Optional handler for terminal input when component has focus."""
         pass
 
     def invalidate(self) -> None:
@@ -102,9 +195,353 @@ class TUI(Container):
         self._loader_container: Component | None = None
         self._animation_task_running: bool = False
 
+        # Overlay stack for floating UI elements (dialogs, menus, etc.)
+        self._overlay_stack: list[_OverlayEntry] = []
+
+    def invalidate(self) -> None:
+        """Invalidate all children and overlays."""
+        super().invalidate()
+        for entry in self._overlay_stack:
+            entry.component.invalidate()
+
     def set_focus(self, component: Component | None) -> None:
         """Set the focused component for input handling."""
         self._focused_component = component
+
+    # =========================================================================
+    # Overlay System
+    # =========================================================================
+
+    def add_overlay(
+        self,
+        component: Component,
+        options: OverlayOptions | None = None,
+    ) -> OverlayHandle:
+        """Show an overlay component with configurable positioning.
+
+        Args:
+            component: Component to show as overlay
+            options: Positioning and sizing options
+
+        Returns:
+            Handle to control the overlay
+        """
+        entry = _OverlayEntry(
+            component=component,
+            options=options or OverlayOptions(),
+            pre_focus=self._focused_component,
+        )
+        self._overlay_stack.append(entry)
+
+        # Focus the overlay if visible
+        if self._is_overlay_visible(entry):
+            self.set_focus(component)
+
+        self.request_render()
+
+        # Create handle callbacks that capture this entry
+        def hide() -> None:
+            if entry in self._overlay_stack:
+                self._overlay_stack.remove(entry)
+                # Restore focus to next visible overlay or pre_focus
+                top_visible = self._get_topmost_visible_overlay()
+                self.set_focus(top_visible.component if top_visible else entry.pre_focus)
+                self.request_render()
+
+        def set_hidden(hidden: bool) -> None:
+            entry.hidden = hidden
+            if hidden and self._focused_component == entry.component:
+                # Lost focus, find next target
+                top_visible = self._get_topmost_visible_overlay()
+                self.set_focus(top_visible.component if top_visible else entry.pre_focus)
+            elif not hidden:
+                # Restore focus to this overlay
+                self.set_focus(entry.component)
+            self.request_render()
+
+        def is_hidden() -> bool:
+            return entry.hidden
+
+        return OverlayHandle(hide_fn=hide, set_hidden_fn=set_hidden, is_hidden_fn=is_hidden)
+
+    def pop_overlay(self) -> None:
+        """Hide the topmost overlay and restore previous focus."""
+        if not self._overlay_stack:
+            return
+        entry = self._overlay_stack.pop()
+        top_visible = self._get_topmost_visible_overlay()
+        self.set_focus(top_visible.component if top_visible else entry.pre_focus)
+        self.request_render()
+
+    def has_visible_overlay(self) -> bool:
+        """Check if there are any visible overlays."""
+        return any(self._is_overlay_visible(e) for e in self._overlay_stack)
+
+    def _is_overlay_visible(self, entry: _OverlayEntry) -> bool:
+        """Check if an overlay entry is currently visible."""
+        if entry.hidden:
+            return False
+        if entry.options.visible:
+            return entry.options.visible(self._terminal.columns, self._terminal.rows)
+        return True
+
+    def _get_topmost_visible_overlay(self) -> _OverlayEntry | None:
+        """Find the topmost visible overlay, if any."""
+        for entry in reversed(self._overlay_stack):
+            if self._is_overlay_visible(entry):
+                return entry
+        return None
+
+    def _parse_size_value(self, value: SizeValue | None, reference: int) -> int | None:
+        """Parse a size value (int or "50%") into absolute value."""
+        if value is None:
+            return None
+        if isinstance(value, int):
+            return value
+        # Parse percentage string like "50%"
+        match = re.match(r"^(\d+(?:\.\d+)?)%$", value)
+        if match:
+            return int(reference * float(match.group(1)) / 100)
+        return None
+
+    def _resolve_overlay_layout(
+        self,
+        options: OverlayOptions,
+        overlay_height: int,
+        term_width: int,
+        term_height: int,
+    ) -> tuple[int, int, int, int | None]:
+        """Resolve overlay layout from options.
+
+        Returns:
+            (width, row, col, max_height)
+        """
+        # Parse margin
+        margin = options.margin
+        if isinstance(margin, int):
+            margin = OverlayMargin(top=margin, right=margin, bottom=margin, left=margin)
+
+        # Available space after margins
+        avail_width = max(1, term_width - margin.left - margin.right)
+        avail_height = max(1, term_height - margin.top - margin.bottom)
+
+        # Resolve width
+        width = self._parse_size_value(options.width, term_width)
+        if width is None:
+            width = min(80, avail_width)
+        if options.min_width:
+            width = max(width, options.min_width)
+        width = max(1, min(width, avail_width))
+
+        # Resolve max_height
+        max_height = self._parse_size_value(options.max_height, term_height)
+        if max_height is not None:
+            max_height = max(1, min(max_height, avail_height))
+
+        # Effective height for positioning (may be clamped by max_height)
+        effective_height = min(overlay_height, max_height) if max_height else overlay_height
+
+        # Resolve row position
+        if options.row is not None:
+            if isinstance(options.row, str):
+                # Percentage: distribute in available space
+                match = re.match(r"^(\d+(?:\.\d+)?)%$", options.row)
+                if match:
+                    max_row = max(0, avail_height - effective_height)
+                    percent = float(match.group(1)) / 100
+                    row = margin.top + int(max_row * percent)
+                else:
+                    # Invalid format, fall back to center
+                    row = self._resolve_anchor_row(
+                        "center", effective_height, avail_height, margin.top
+                    )
+            else:
+                row = options.row
+        else:
+            row = self._resolve_anchor_row(
+                options.anchor, effective_height, avail_height, margin.top
+            )
+
+        # Resolve col position
+        if options.col is not None:
+            if isinstance(options.col, str):
+                match = re.match(r"^(\d+(?:\.\d+)?)%$", options.col)
+                if match:
+                    max_col = max(0, avail_width - width)
+                    percent = float(match.group(1)) / 100
+                    col = margin.left + int(max_col * percent)
+                else:
+                    col = self._resolve_anchor_col("center", width, avail_width, margin.left)
+            else:
+                col = options.col
+        else:
+            col = self._resolve_anchor_col(options.anchor, width, avail_width, margin.left)
+
+        # Apply offsets
+        row += options.offset_y
+        col += options.offset_x
+
+        # Clamp to bounds (respecting margins)
+        row = max(margin.top, min(row, term_height - margin.bottom - effective_height))
+        col = max(margin.left, min(col, term_width - margin.right - width))
+
+        return (width, row, col, max_height)
+
+    def _resolve_anchor_row(
+        self, anchor: OverlayAnchor, height: int, avail_height: int, margin_top: int
+    ) -> int:
+        """Resolve row position from anchor."""
+        if anchor in ("top-left", "top-center", "top-right"):
+            return margin_top
+        elif anchor in ("bottom-left", "bottom-center", "bottom-right"):
+            return margin_top + avail_height - height
+        else:  # center, left-center, right-center
+            return margin_top + (avail_height - height) // 2
+
+    def _resolve_anchor_col(
+        self, anchor: OverlayAnchor, width: int, avail_width: int, margin_left: int
+    ) -> int:
+        """Resolve column position from anchor."""
+        if anchor in ("top-left", "left-center", "bottom-left"):
+            return margin_left
+        elif anchor in ("top-right", "right-center", "bottom-right"):
+            return margin_left + avail_width - width
+        else:  # center, top-center, bottom-center
+            return margin_left + (avail_width - width) // 2
+
+    def _composite_line_at(
+        self,
+        base_line: str,
+        overlay_line: str,
+        start_col: int,
+        overlay_width: int,
+        total_width: int,
+    ) -> str:
+        """Splice overlay content into a base line at a specific column.
+
+        This is the core compositing operation: given a base line and an overlay line,
+        produce a result where the overlay appears at start_col with the specified width.
+
+        Args:
+            base_line: The underlying content line
+            overlay_line: The overlay content to splice in
+            start_col: Column where overlay starts (0-indexed)
+            overlay_width: Width of the overlay region
+            total_width: Total line width (terminal width)
+
+        Returns:
+            Composited line with overlay spliced in
+        """
+        RESET = "\x1b[0m"
+
+        # Extract "before" segment (columns 0 to start_col)
+        before = slice_ansi(base_line, 0, start_col) if start_col > 0 else ""
+        before_width = visible_width(before)
+
+        # Extract "after" segment (columns after overlay to end)
+        after_start = start_col + overlay_width
+        after_len = total_width - after_start
+        after = slice_ansi(base_line, after_start, after_start + after_len) if after_len > 0 else ""
+        after_width = visible_width(after)
+
+        # Truncate overlay to declared width if needed
+        if visible_width(overlay_line) > overlay_width:
+            overlay_line = truncate_to_width(overlay_line, overlay_width)
+        overlay_actual_width = visible_width(overlay_line)
+
+        # Calculate padding for each segment
+        before_pad = max(0, start_col - before_width)
+        overlay_pad = max(0, overlay_width - overlay_actual_width)
+        after_target = max(0, total_width - start_col - overlay_width)
+        after_pad = max(0, after_target - after_width)
+
+        # Compose result with resets between segments to prevent color bleeding
+        result = (
+            before
+            + " " * before_pad
+            + RESET
+            + overlay_line
+            + " " * overlay_pad
+            + RESET
+            + after
+            + " " * after_pad
+        )
+
+        # Final safeguard: truncate to terminal width
+        if visible_width(result) > total_width:
+            result = truncate_to_width(result, total_width)
+
+        return result
+
+    def _composite_overlays(
+        self,
+        lines: list[str],
+        term_width: int,
+        term_height: int,
+    ) -> list[str]:
+        """Composite all overlays into content lines.
+
+        Overlays are composited in stack order (later = on top).
+
+        Args:
+            lines: Base content lines
+            term_width: Terminal width
+            term_height: Terminal height
+
+        Returns:
+            Lines with overlays composited in
+        """
+        if not self._overlay_stack:
+            return lines
+
+        result = lines.copy()
+
+        # Pre-render all visible overlays and calculate positions
+        rendered: list[tuple[list[str], int, int, int]] = []  # (lines, row, col, width)
+        min_lines_needed = len(result)
+
+        for entry in self._overlay_stack:
+            if not self._is_overlay_visible(entry):
+                continue
+
+            # Get layout (width/maxHeight don't depend on overlay height)
+            width, _, _, max_height = self._resolve_overlay_layout(
+                entry.options, 0, term_width, term_height
+            )
+
+            # Render overlay at calculated width
+            overlay_lines = entry.component.render(width)
+
+            # Apply max_height
+            if max_height and len(overlay_lines) > max_height:
+                overlay_lines = overlay_lines[:max_height]
+
+            # Get final position with actual height
+            _, row, col, _ = self._resolve_overlay_layout(
+                entry.options, len(overlay_lines), term_width, term_height
+            )
+
+            rendered.append((overlay_lines, row, col, width))
+            min_lines_needed = max(min_lines_needed, row + len(overlay_lines))
+
+        # Extend result with empty lines if needed for overlay placement
+        while len(result) < min_lines_needed:
+            result.append("")
+
+        # Calculate viewport start (what portion of content is visible)
+        # This matches pi-mono: overlays are positioned relative to the viewport
+        viewport_start = max(0, len(result) - term_height)
+
+        # Composite each overlay
+        for overlay_lines, row, col, width in rendered:
+            for i, overlay_line in enumerate(overlay_lines):
+                idx = viewport_start + row + i
+                if 0 <= idx < len(result):
+                    result[idx] = self._composite_line_at(
+                        result[idx], overlay_line, col, width, term_width
+                    )
+
+        return result
 
     def start(self) -> None:
         """Start the TUI, enabling raw mode and input handling."""
@@ -304,14 +741,27 @@ class TUI(Container):
             f.write(f"  component_count={len(self.children)}\n")
             f.write(f"  previous_lines={len(self._previous_lines)}\n")
 
-    def _handle_input(self, data: str) -> None:
-        """Handle keyboard input, passing to focused component."""
-        # Ctrl+C (ASCII 3) should be handled by the application layer
-        # We don't consume it here, just ignore it if we see it
-        if len(data) > 0 and ord(data[0]) == 3:
+    def _handle_input(self, msg: object) -> None:
+        """Handle input, routing to topmost overlay or focused component."""
+        if isinstance(msg, str):
+            msg = KeyPress(key=msg)
+
+        # Ctrl+C (ASCII 3) should be handled by the application layer.
+        if isinstance(msg, KeyPress) and msg.key and ord(msg.key[0]) == 3:
             return
-        if self._focused_component is not None:
-            self._focused_component.handle_input(data)
+
+        # Route to topmost visible overlay first, otherwise to focused component
+        target: Component | None = None
+        if self._overlay_stack:
+            top_overlay = self._get_topmost_visible_overlay()
+            if top_overlay:
+                target = top_overlay.component
+
+        if target is None:
+            target = self._focused_component
+
+        if target is not None:
+            target.handle_input(msg)
             self.request_render()
 
     def _debug_log(self, msg: str) -> None:
@@ -331,6 +781,10 @@ class TUI(Container):
         # Render all components to get new lines
         # No viewport truncation - render everything and let terminal scrollback handle history
         new_lines = self.render(width)
+
+        # Composite overlays into the rendered lines (before differential compare)
+        if self._overlay_stack:
+            new_lines = self._composite_overlays(new_lines, width, height)
 
         # Width changed - need full re-render
         width_changed = self._previous_width != 0 and self._previous_width != width

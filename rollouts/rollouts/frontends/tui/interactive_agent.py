@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING
 
 import trio
 
+from pytui.input import KeyPress
+
 from ...agents import Actor, AgentState, run_agent
 from ...dtypes import (
     Endpoint,
@@ -1081,23 +1083,24 @@ class InteractiveAgentRunner:
         """Read terminal input and route to TUI."""
         while True:
             if self.terminal and self.terminal._running:
-                input_data = self.terminal.read_input()
-                if input_data:
+                msg = self.terminal.read_message()
+                if msg is not None:
+                    key = msg.key if isinstance(msg, KeyPress) else None
                     # Check for Ctrl+C (ASCII 3) - exit TUI entirely
-                    if len(input_data) > 0 and ord(input_data[0]) == 3:
+                    if key is not None and len(key) > 0 and ord(key[0]) == 3:
                         if self.cancel_scope:
                             self.cancel_scope.cancel()
                         return
 
                     # Check for +/- keys to toggle detail level
                     # Only handle when input is empty (not while typing)
-                    if input_data in ("+", "=") and self.input_component:
+                    if key in ("+", "=") and self.input_component:
                         # Check if input is empty
                         if not self.input_component.get_text().strip():
                             self._increase_display_mode()
                             continue
 
-                    if input_data == "-" and self.input_component:
+                    if key == "-" and self.input_component:
                         # Check if input is empty
                         if not self.input_component.get_text().strip():
                             self._decrease_display_mode()
@@ -1107,14 +1110,14 @@ class InteractiveAgentRunner:
                     # But if there's a focused component that handles escape (like question selector),
                     # route escape to it instead. The Input component doesn't handle escape,
                     # so we skip routing to it to allow the interrupt to work.
-                    if input_data == "\x1b":
+                    if key == "\x1b":
                         if (
                             self.tui
                             and self.tui._focused_component is not None
                             and self.tui._focused_component is not self.input_component
                         ):
                             # Route to focused component (e.g., question selector review)
-                            self.tui._handle_input(input_data)
+                            self.tui._handle_input(msg)
                             continue
 
                         if self.agent_cancel_scope:
@@ -1139,7 +1142,7 @@ class InteractiveAgentRunner:
                         continue
 
                     if self.tui:
-                        self.tui._handle_input(input_data)
+                        self.tui._handle_input(msg)
             await trio.sleep(0.01)
 
     def _update_final_state(self, agent_states: list[AgentState]) -> None:

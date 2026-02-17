@@ -24,6 +24,8 @@ from collections.abc import Callable
 from types import FrameType
 from typing import Any, Protocol
 
+from .input import InputParser
+
 # ANSI escape sequences — named for readability and grep-ability
 ALT_SCREEN_ON = "\x1b[?1049h"
 ALT_SCREEN_OFF = "\x1b[?1049l"
@@ -281,7 +283,9 @@ class Terminal:
         self._running = False
         self._tty_fd: int | None = None
         self._input_buffer: str = ""  # Buffer for multi-byte reads
-        self._paste_buffer: str | None = None  # Collecting paste content
+        self._message_parser = InputParser()
+        self._pending_esc_deadline: float | None = None
+        self._esc_timeout_s: float = 0.030
         # Accept both alternate_screen and use_alternate_screen (compat)
         if use_alternate_screen is not None:
             self._alternate_screen = use_alternate_screen
@@ -429,6 +433,25 @@ class Terminal:
         """
         fd = self._tty_fd if self._tty_fd is not None else sys.stdin.fileno()
 
+        # Disambiguate bare Escape vs. escape sequences without blocking.
+        # If we saw a lone ESC previously, wait briefly for more bytes to arrive.
+        if self._pending_esc_deadline is not None:
+            if len(self._input_buffer) > 1:
+                self._pending_esc_deadline = None
+            else:
+                if select.select([fd], [], [], 0)[0]:
+                    more = os.read(fd, 256).decode("utf-8", errors="replace")
+                    if more:
+                        self._input_buffer += more
+                    self._pending_esc_deadline = None
+                else:
+                    if time.monotonic() >= self._pending_esc_deadline:
+                        self._pending_esc_deadline = None
+                        if self._input_buffer.startswith("\x1b"):
+                            self._input_buffer = self._input_buffer[1:]
+                        return "\x1b"
+                    return None
+
         # Check buffer first
         if not self._input_buffer:
             if not select.select([fd], [], [], 0)[0]:
@@ -449,14 +472,9 @@ class Terminal:
 
         # Escape sequence - find the end
         if len(buf) == 1:
-            # Just ESC, might be incomplete - try to read more
-            # Use a slightly longer wait to avoid misclassifying split escape sequences
-            # (e.g., arrow keys) as a standalone Escape key.
-            if select.select([fd], [], [], 0.020)[0]:  # 20ms wait
-                more = os.read(fd, 256).decode("utf-8", errors="replace")
-                if more:
-                    buf = buf + more
-                    self._input_buffer = buf
+            if self._pending_esc_deadline is None:
+                self._pending_esc_deadline = time.monotonic() + self._esc_timeout_s
+            return None
 
         # Check against known sequences first (O(1) lookup, longest match first)
         for length in range(min(len(buf), 10), 1, -1):  # Check longest first
@@ -502,6 +520,21 @@ class Terminal:
         # Still no terminator - return bare ESC, keep rest in buffer
         self._input_buffer = buf[1:]
         return buf[0]
+
+    def read_message(self) -> object | None:
+        """Read a higher-level input message (KeyPress, PasteEvent, etc.).
+
+        Returns None if no input is available. Bracketed paste is grouped into
+        a single message so UI components don't need to parse paste markers.
+        """
+        while True:
+            key = self.read_input()
+            if key is None:
+                return None
+            msg = self._message_parser.parse(key)
+            if msg is None:
+                continue
+            return msg
 
     def run_external_editor(self, initial_content: str = "") -> str | None:
         """Temporarily exit raw mode, run $EDITOR, return edited content."""

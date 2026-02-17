@@ -68,116 +68,11 @@ def _log(event: str, **data: Any) -> None:
 
 
 @dataclass(frozen=True)
-class KeyPress:
-    """Keyboard input. key is the raw string (e.g. "j", "\x1b[A")."""
-
-    key: str
-
-
-@dataclass(frozen=True)
 class Resize:
     """Terminal was resized."""
 
     width: int
     height: int
-
-
-@dataclass(frozen=True)
-class MouseEvent:
-    """Mouse event (button press, release, wheel scroll).
-
-    Button values:
-        0 = left click
-        1 = middle click
-        2 = right click
-        64 = wheel up
-        65 = wheel down
-        66 = wheel left
-        67 = wheel right
-
-    Action values:
-        "press" = button pressed
-        "release" = button released
-        "motion" = mouse moved while button held
-    """
-
-    button: int
-    x: int  # 1-indexed column
-    y: int  # 1-indexed row
-    action: str  # "press", "release", or "motion"
-
-    @property
-    def is_wheel_up(self) -> bool:
-        return self.button == 64
-
-    @property
-    def is_wheel_down(self) -> bool:
-        return self.button == 65
-
-
-@dataclass(frozen=True)
-class PasteEvent:
-    """Bracketed paste content.
-
-    When bracketed paste mode is enabled, pasted text is wrapped in
-    escape sequences so it can be distinguished from typed input.
-    This prevents pasted text from triggering keybindings.
-    """
-
-    text: str
-
-
-@dataclass(frozen=True)
-class FocusEvent:
-    """Terminal focus change.
-
-    Sent when the terminal window gains or loses focus.
-    Requires focus reporting to be enabled.
-    """
-
-    focused: bool  # True = gained focus, False = lost focus
-
-
-def _parse_mouse_sgr(seq: str) -> MouseEvent | None:
-    """Parse SGR mouse sequence: ESC [ < Btn ; X ; Y M/m
-
-    Returns MouseEvent or None if not a valid mouse sequence.
-    """
-    import re
-
-    # SGR format: \x1b[<btn;x;y[Mm]
-    match = re.match(r"\x1b\[<(\d+);(\d+);(\d+)([Mm])", seq)
-    if not match:
-        return None
-
-    btn = int(match.group(1))
-    x = int(match.group(2))
-    y = int(match.group(3))
-    release = match.group(4) == "m"
-
-    # Decode button and modifiers
-    # Bits 0-1: button (0=left, 1=middle, 2=right)
-    # Bit 5: motion
-    # Bits 6-7: wheel (64=up, 65=down)
-    action = "release" if release else "press"
-    if btn & 32:
-        action = "motion"
-
-    return MouseEvent(button=btn & ~32, x=x, y=y, action=action)
-
-
-def _parse_focus(seq: str) -> FocusEvent | None:
-    """Parse focus event: ESC [ I (focus) or ESC [ O (blur)."""
-    if seq == "\x1b[I":
-        return FocusEvent(focused=True)
-    if seq == "\x1b[O":
-        return FocusEvent(focused=False)
-    return None
-
-
-# Bracketed paste markers
-_PASTE_START = "\x1b[200~"
-_PASTE_END = "\x1b[201~"
 
 
 # ---------------------------------------------------------------------------
@@ -512,7 +407,6 @@ class App:
 
         self._msg_queue = _WakeQueue(self._wakeup_w)
         self._terminal: Terminal | None = None
-        self._paste_buffer: str | None = None  # Collecting paste content
 
         # Set up debug logging
         global _DEBUG_LOG
@@ -627,16 +521,14 @@ class App:
 
                 # 1. Drain all available keyboard/mouse input
                 while True:
-                    key = terminal.read_input()
-                    if key is None:
+                    msg = terminal.read_message()
+                    if msg is None:
                         break
                     dirty = True
                     msgs_since_render += 1
-                    msg = self._parse_input(key)
-                    if msg is not None:
-                        t = type(msg).__name__
-                        msg_types_since_render[t] = msg_types_since_render.get(t, 0) + 1
-                        self._dispatch(msg)
+                    t = type(msg).__name__
+                    msg_types_since_render[t] = msg_types_since_render.get(t, 0) + 1
+                    self._dispatch(msg)
 
                 # 2. Drain message queue (from Cmd.task threads, subs, resize)
                 while not self._msg_queue.empty():
@@ -680,44 +572,6 @@ class App:
                 os.close(self._wakeup_w)
             except OSError:
                 pass
-
-    def _parse_input(self, key: str) -> object | None:
-        """Parse raw input into a message type.
-
-        Handles:
-        - Bracketed paste: collects text between ESC[200~ and ESC[201~
-        - Mouse events: SGR format ESC[<...M/m
-        - Focus events: ESC[I (focus) and ESC[O (blur)
-        - Regular keys: everything else
-        """
-        # Check for bracketed paste
-        if key == _PASTE_START:
-            self._paste_buffer = ""
-            return None  # Don't dispatch yet
-
-        if self._paste_buffer is not None:
-            if key == _PASTE_END:
-                # Paste complete
-                text = self._paste_buffer
-                self._paste_buffer = None
-                return PasteEvent(text=text)
-            else:
-                # Accumulate paste content
-                self._paste_buffer += key
-                return None  # Don't dispatch yet
-
-        # Check for mouse event
-        mouse = _parse_mouse_sgr(key)
-        if mouse is not None:
-            return mouse
-
-        # Check for focus event
-        focus = _parse_focus(key)
-        if focus is not None:
-            return focus
-
-        # Regular key
-        return KeyPress(key=key)
 
     def _dispatch(self, msg: object) -> None:
         """Send message through update, execute resulting command."""

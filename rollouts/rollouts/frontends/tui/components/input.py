@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from pytui.input import KeyPress, PasteEvent
+
 from ..theme import DARK_THEME, Theme
 from ..tui import Component
 
@@ -38,8 +40,6 @@ class Input(Component):
         # Paste tracking
         self._pastes: dict[int, str] = {}
         self._paste_counter = 0
-        self._paste_buffer = ""
-        self._is_in_paste = False
 
         # Queued messages display (shown in gray above input)
         self._queued_messages: list[str] = []
@@ -248,28 +248,18 @@ class Input(Component):
 
         return layout_lines
 
-    def handle_input(self, data: str) -> None:
-        """Handle keyboard input."""
-        # Handle bracketed paste mode
-        if "\x1b[200~" in data:
-            self._is_in_paste = True
-            self._paste_buffer = ""
-            data = data.replace("\x1b[200~", "")
+    def handle_input(self, msg: object) -> None:
+        """Handle terminal input."""
+        if isinstance(msg, PasteEvent):
+            self._handle_paste(msg.text)
+            return
 
-        if self._is_in_paste:
-            self._paste_buffer += data
-            end_index = self._paste_buffer.find("\x1b[201~")
-            if end_index != -1:
-                paste_content = self._paste_buffer[:end_index]
-                self._handle_paste(paste_content)
-                self._is_in_paste = False
-                remaining = self._paste_buffer[end_index + 6 :]
-                self._paste_buffer = ""
-                if remaining:
-                    self.handle_input(remaining)
-                return
-            # While inside a bracketed paste, buffer only. Do not also treat paste bytes
-            # as regular keystrokes, otherwise the paste will be inserted twice.
+        data: str
+        if isinstance(msg, KeyPress):
+            data = msg.key
+        elif isinstance(msg, str):
+            data = msg
+        else:
             return
 
         # Ctrl+C - let parent handle
