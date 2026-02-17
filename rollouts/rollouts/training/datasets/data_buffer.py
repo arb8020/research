@@ -9,14 +9,19 @@ Pattern:
 This replaces the previous class-based DataBuffer.
 """
 
+from __future__ import annotations
+
 import json
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 # Import Sample directly to avoid pulling in torch via training/__init__.py
 from ...training.types import Sample
+
+if TYPE_CHECKING:
+    import torch
 
 
 @dataclass(frozen=True)
@@ -445,6 +450,182 @@ def load_samples_from_list(
         )
 
     return samples
+
+
+# ────────────────────── Pretraining Data ──────────────────────
+
+
+def get_token_batch(
+    tokens: torch.Tensor,
+    state: BufferState,
+    batch_size: int,
+    seq_len: int,
+) -> tuple[tuple[torch.Tensor, torch.Tensor], BufferState]:
+    """Get (input_ids, labels) batch for pretraining.
+
+    Pure function: returns ((input_ids, labels), new_state).
+    Labels are input_ids shifted by 1 (next token prediction).
+
+    Args:
+        tokens: 1D tensor of token IDs [total_tokens] - can be memmap'd
+        state: Current buffer state (uses sample_offset as token position)
+        batch_size: Number of sequences per batch
+        seq_len: Length of each sequence
+
+    Returns:
+        Tuple of:
+        - (input_ids, labels) tensors, each [batch_size, seq_len]
+        - New buffer state
+
+    Example:
+        >>> import torch
+        >>> tokens = torch.arange(1000)
+        >>> state = BufferState(seed=42)
+        >>> (inputs, labels), new_state = get_token_batch(tokens, state, batch_size=2, seq_len=128)
+        >>> assert inputs.shape == (2, 128)
+        >>> assert labels.shape == (2, 128)
+        >>> assert (labels == inputs.roll(-1, dims=1)[:, :-1]).all()  # shifted by 1
+    """
+
+    total_tokens = tokens.shape[0]
+    tokens_per_batch = batch_size * (seq_len + 1)  # +1 for labels shift
+
+    # Current position in token stream
+    offset = state.sample_offset
+    epoch_id = state.epoch_id
+
+    # Check if we need to wrap around
+    if offset + tokens_per_batch > total_tokens:
+        epoch_id += 1
+        offset = 0
+
+    # Extract contiguous chunk
+    chunk = tokens[offset : offset + tokens_per_batch]
+
+    # Reshape into sequences: [batch_size, seq_len + 1]
+    chunk = chunk.view(batch_size, seq_len + 1)
+
+    # Split into input and labels (shifted by 1)
+    input_ids = chunk[:, :-1].contiguous()  # [batch_size, seq_len]
+    labels = chunk[:, 1:].contiguous()  # [batch_size, seq_len]
+
+    new_state = BufferState(
+        epoch_id=epoch_id,
+        sample_offset=offset + tokens_per_batch,
+        seed=state.seed,
+    )
+
+    return (input_ids, labels), new_state
+
+
+def load_tokens_from_bin(path: Path | str) -> torch.Tensor:
+    """Load pre-tokenized data from .bin file (modded-nanogpt format).
+
+    File format:
+    - 256 int32 header (magic=20240520, version=1, num_tokens, ...)
+    - uint16 tokens
+
+    Args:
+        path: Path to .bin file
+
+    Returns:
+        1D int64 tensor of token IDs
+    """
+    import torch
+
+    path = Path(path)
+    assert path.exists(), f"File not found: {path}"
+
+    # Read header
+    header = torch.from_file(str(path), shared=False, size=256, dtype=torch.int32)
+    assert header[0] == 20240520, f"Invalid magic number: {header[0]}"
+    assert header[1] == 1, f"Unsupported version: {header[1]}"
+    num_tokens = int(header[2])
+
+    # Read tokens
+    with open(path, "rb") as f:
+        f.seek(256 * 4)  # Skip header
+        tokens = torch.frombuffer(f.read(), dtype=torch.int16).to(torch.int64)
+
+    assert len(tokens) == num_tokens, f"Token count mismatch: {len(tokens)} != {num_tokens}"
+    return tokens
+
+
+def load_tokens_from_npy(path: Path | str) -> torch.Tensor:
+    """Load pre-tokenized data from .npy file (nmoe format).
+
+    Args:
+        path: Path to .npy file (uint32 tokens)
+
+    Returns:
+        1D int64 tensor of token IDs
+    """
+    import numpy as np
+    import torch
+
+    path = Path(path)
+    assert path.exists(), f"File not found: {path}"
+
+    # Memory-map for efficiency
+    arr = np.load(str(path), mmap_mode="r")
+    return torch.from_numpy(arr.astype(np.int64))
+
+
+def load_fineweb_tokens(
+    split: str = "train",
+    num_chunks: int = 1,
+    cache_dir: Path | str | None = None,
+) -> torch.Tensor:
+    """Download and load fineweb-10B tokens (GPT-2 tokenized).
+
+    Uses kjj0/fineweb10B-gpt2 from HuggingFace Hub.
+    Each chunk is ~100M tokens.
+
+    Args:
+        split: "train" or "val"
+        num_chunks: Number of 100M token chunks to load (train has 103 chunks)
+        cache_dir: Where to cache downloaded files (default: ~/.cache/fineweb10B)
+
+    Returns:
+        1D int64 tensor of token IDs
+    """
+    import torch
+    from huggingface_hub import hf_hub_download
+
+    if cache_dir is None:
+        cache_dir = Path.home() / ".cache" / "fineweb10B"
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    chunks = []
+
+    if split == "val":
+        # Validation is a single file
+        fname = "fineweb_val_000000.bin"
+        local_path = cache_dir / fname
+        if not local_path.exists():
+            hf_hub_download(
+                repo_id="kjj0/fineweb10B-gpt2",
+                filename=fname,
+                repo_type="dataset",
+                local_dir=str(cache_dir),
+            )
+        chunks.append(load_tokens_from_bin(local_path))
+    else:
+        # Training chunks
+        for i in range(1, num_chunks + 1):
+            fname = f"fineweb_train_{i:06d}.bin"
+            local_path = cache_dir / fname
+            if not local_path.exists():
+                hf_hub_download(
+                    repo_id="kjj0/fineweb10B-gpt2",
+                    filename=fname,
+                    repo_type="dataset",
+                    local_dir=str(cache_dir),
+                )
+            chunks.append(load_tokens_from_bin(local_path))
+
+    return torch.cat(chunks) if len(chunks) > 1 else chunks[0]
 
 
 # ────────────────────── Legacy Class (TODO: migrate callers) ──────────────────────

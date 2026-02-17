@@ -54,6 +54,8 @@ class TrainConfig:
     steps: int = 1000
     log_every: int = 10
     checkpoint_every: int = 500
+    val_every: int = 50  # Validate every N steps (0 to disable)
+    val_batches: int = 10  # Number of batches for validation
 
     # Output
     output_dir: str = "output"
