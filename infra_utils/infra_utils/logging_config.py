@@ -73,9 +73,9 @@ def setup_logging(
     formatters = {
         "standard": {"format": "[%(asctime)s] %(levelname)s: %(message)s", "datefmt": "%H:%M:%S"},
         "minimal": {"format": "%(message)s"},
-        "color": {"()": "shared.color_formatter.ColorFormatter", "show_timestamp": True},
+        "color": {"()": "infra_utils.color_formatter.ColorFormatter", "show_timestamp": True},
         "json": {
-            "()": "shared.json_formatter.JSONFormatter",
+            "()": "infra_utils.json_formatter.JSONFormatter",
             "fmt_keys": {
                 "level": "levelname",
                 "logger": "name",

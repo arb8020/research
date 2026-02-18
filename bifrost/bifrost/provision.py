@@ -162,7 +162,12 @@ async def acquire_node(
 
         logger.info("  GPU: %dx %s", instance.gpu_count, instance.gpu_type)
         logger.info("  Waiting for SSH...")
-        await instance.wait_until_ssh_ready(timeout=ssh_timeout)
+        ssh_ready = await instance.wait_until_ssh_ready(timeout=ssh_timeout)
+        if not ssh_ready:
+            raise RuntimeError(
+                f"SSH not ready after {ssh_timeout}s for instance {node_id}. "
+                f"Instance may still be starting up - try again in a minute."
+            )
 
         key_path = broker.get_ssh_key_path(provider)
         if key_path is None:
@@ -199,7 +204,12 @@ async def acquire_node(
     logger.info("  GPU: %dx %s", instance.gpu_count, instance.gpu_type)
 
     logger.info("  Waiting for SSH...")
-    await instance.wait_until_ssh_ready(timeout=ssh_timeout)
+    ssh_ready = await instance.wait_until_ssh_ready(timeout=ssh_timeout)
+    if not ssh_ready:
+        raise RuntimeError(
+            f"SSH not ready after {ssh_timeout}s. Instance may still be starting up. "
+            f"Try again with --node-id {instance.provider}:{instance.id}"
+        )
 
     key_path = broker.get_ssh_key_path(instance.provider)
     if key_path is None:
