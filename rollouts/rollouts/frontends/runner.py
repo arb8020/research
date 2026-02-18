@@ -231,18 +231,20 @@ class InteractiveRunner:
         original_handler = signal.getsignal(signal.SIGINT)
         signal.signal(signal.SIGINT, self._handle_sigint)
 
+        all_states: list[AgentState] = []  # Initialize before try block for finally
+        self._all_states = all_states  # Store for access in _cleanup
+
         try:
             await self.frontend.start()
             self._render_history_if_resuming()
             self._update_frontend_status()
-
-            all_states: list[AgentState] = []
             current_state: AgentState | None = None
 
             # Outer loop handles /swap by switching run_fn
             while True:
-                run_config = self._create_run_config()
+                # Create cancel scope BEFORE run_config so it captures the right scope
                 self._cancel_scope = trio.CancelScope()
+                run_config = self._create_run_config()
                 swap_request: _SwapBackend | None = None
                 user_exited = False
                 states: list[AgentState] = []
@@ -269,6 +271,9 @@ class InteractiveRunner:
 
                         def handle_escape() -> None:
                             self._interrupt_flag[0] = True
+                            # Cancel the agent scope to interrupt in-flight API calls
+                            if self._cancel_scope:
+                                self._cancel_scope.cancel()
 
                         self.frontend.set_on_interrupt(handle_escape)
 
@@ -330,14 +335,23 @@ class InteractiveRunner:
                 # Handle interrupted: user pressed Escape, stay in session
                 # SIGINT kills Claude before it saves, so --resume won't work.
                 # Just wait for new user input and start fresh Claude session.
-                if states and states[-1].stop == StopReason.INTERRUPTED:
+                # SDK driver sets ABORTED on cancel, Claude driver sets INTERRUPTED.
+                # Check _interrupt_flag to distinguish Escape (interrupt) from Ctrl+C (exit).
+                if (
+                    states
+                    and states[-1].stop in (StopReason.INTERRUPTED, StopReason.ABORTED)
+                    and self._interrupt_flag[0]
+                ):
+                    # Reset flag for next iteration
+                    self._interrupt_flag[0] = False
                     # Hide loader since we're returning to input mode
                     if hasattr(self.frontend, "hide_loader"):
                         self.frontend.hide_loader()
-                    # Don't exit - continue the outer loop to get new input
-                    # current_state keeps the trajectory so far
-                    current_state = states[-1]
-                    current_state = dc_replace(current_state, stop=None, driver_session_id=None)
+                    # Set current_state to None to force waiting for new input
+                    # (via _create_initial_state on next iteration)
+                    current_state = None
+                    # Update trajectory for next session
+                    self.trajectory = states[-1].actor.trajectory
                     continue
 
                 # Normal exit
@@ -742,12 +756,57 @@ class InteractiveRunner:
         self.frontend.set_status(**kwargs)
 
     async def _cleanup(self) -> None:
-        """Stop frontend and print session info."""
+        """Stop frontend and print session info with token usage."""
         await self.frontend.stop()
 
         if self.session_id:
-            print(f"\nSession: {self.session_id}")
-            print(f"Resume with: --session {self.session_id}")
+            # Calculate total token usage from all states
+            total_input = 0
+            total_output = 0
+            total_reasoning = 0
+            total_cache_read = 0
+            total_cache_write = 0
+            total_cost = 0.0
+
+            for state in getattr(self, "_all_states", []):
+                for completion in state.actor.trajectory.completions:
+                    if completion.usage:
+                        total_input += completion.usage.input_tokens
+                        total_output += completion.usage.output_tokens
+                        total_reasoning += completion.usage.reasoning_tokens
+                        total_cache_read += completion.usage.cache_read_tokens
+                        total_cache_write += completion.usage.cache_write_tokens
+                        total_cost += completion.usage.cost.total
+
+            # Format token counts (similar to codex format)
+            def fmt_tokens(n: int) -> str:
+                if n < 1000:
+                    return f"{n:,}"
+                if n < 1_000_000:
+                    return f"{n / 1000:.1f}k"
+                return f"{n / 1_000_000:.2f}M"
+
+            # Build token usage line
+            parts = []
+            if total_input > 0:
+                parts.append(f"input={fmt_tokens(total_input)}")
+            if total_output > 0:
+                parts.append(f"output={fmt_tokens(total_output)}")
+            if total_reasoning > 0:
+                parts.append(f"reasoning={fmt_tokens(total_reasoning)}")
+            if total_cache_read > 0:
+                parts.append(f"cached={fmt_tokens(total_cache_read)}")
+            if total_cache_write > 0:
+                parts.append(f"cache_write={fmt_tokens(total_cache_write)}")
+
+            print(
+                f"\nToken usage: total={fmt_tokens(total_input + total_output + total_reasoning + total_cache_read)} "
+                + f"input={fmt_tokens(total_input)} (+ {fmt_tokens(total_cache_read)} cached) "
+                + f"output={fmt_tokens(total_output)}"
+                + (f" (reasoning {fmt_tokens(total_reasoning)})" if total_reasoning > 0 else "")
+                + f" cost=${total_cost:.4f}"
+            )
+            print(f"\nTo continue this session, run: rollouts resume {self.session_id}")
 
 
 # ---------------------------------------------------------------------------
