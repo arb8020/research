@@ -16,6 +16,7 @@ from ..dtypes import (
     Actor,
     ChatCompletion,
     Choice,
+    FirstToken,
     ImageContent,
     Message,
     StreamDone,
@@ -26,6 +27,9 @@ from ..dtypes import (
     TextEnd,
     TextStart,
     ThinkingContent,
+    ThinkingDelta,
+    ThinkingEnd,
+    ThinkingStart,
     Tool,
     ToolCall,
     ToolCallContent,
@@ -211,9 +215,13 @@ def _parse_usage(u: CompletionUsage) -> Usage:
     # Build Usage with granular token breakdown
     # input_tokens = prompt tokens minus cached (non-cached input)
     # output_tokens = completion tokens minus reasoning
+    # Guard against negative values (some providers may report inconsistently)
+    input_tokens = max(0, (u.prompt_tokens or 0) - cached_tokens)
+    output_tokens = max(0, (u.completion_tokens or 0) - reasoning_tokens)
+
     result = Usage(
-        input_tokens=(u.prompt_tokens or 0) - cached_tokens,
-        output_tokens=(u.completion_tokens or 0) - reasoning_tokens,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
         reasoning_tokens=reasoning_tokens,
         cache_read_tokens=cached_tokens,
     )
@@ -289,7 +297,8 @@ def _parse_completion(resp: Any) -> ChatCompletion:
 async def aggregate_stream(
     stream: AsyncIterator,
     on_chunk: Callable[[StreamEvent], Awaitable[None]],
-) -> ChatCompletion:
+    request_start: float | None = None,
+) -> tuple[ChatCompletion, float | None]:
     """Aggregate streaming chunks into a complete `ChatCompletion` with granular events.
 
     Emits granular streaming events following pi-ai pattern:
@@ -298,6 +307,15 @@ async def aggregate_stream(
     - toolcall_start/delta/end: Tool call lifecycle with partial JSON parsing
     - done: Stream completes successfully
     - error: Stream encounters error
+
+    Args:
+        stream: Async iterator of streaming chunks
+        on_chunk: Callback for streaming events
+        request_start: perf_counter timestamp when request was initiated (for TTFT calc)
+
+    Returns:
+        Tuple of (ChatCompletion, ttft_ms) where ttft_ms is time to first token in ms,
+        or None if request_start wasn't provided.
 
     TODO: Add doom loop detection (same as Anthropic provider)
     Article quote: "Rarely, model responses run into 'doom loops', i.e., the model
@@ -308,6 +326,8 @@ async def aggregate_stream(
     max_tokens are not reached."
     Check finish_reason and add warning if not "stop" or "tool_calls".
     """
+    import time
+
     assert stream is not None
     assert on_chunk is not None
     assert callable(on_chunk)
@@ -316,25 +336,70 @@ async def aggregate_stream(
     await on_chunk(StreamStart())
 
     accumulated_content = ""
+    ttft_ms: float | None = None  # Time to first token
     finish_reason = None
     response_id = None
     created = None
+    stream_usage: Usage | None = (
+        None  # Captured from final chunk if stream_options.include_usage=True
+    )
 
     # Track content blocks by index (text is content_index 0, tool calls start at 1)
     content_index = 0
     text_started = False
+
+    # Track thinking/reasoning content (kimi, qwen, deepseek, etc.)
+    thinking_started = False
+    thinking_content_index = 0
+    accumulated_thinking = ""
 
     # Track tool calls: idx -> {id, name, arguments, content_index, started}
     call_buf: dict[int, dict[str, Any]] = {}
     next_auto_index = 0
 
     async for chunk in stream:
+        # Capture usage from final chunk (when stream_options.include_usage=True)
+        if hasattr(chunk, "usage") and chunk.usage is not None:
+            stream_usage = _parse_usage(chunk.usage)
+
+        # Skip chunks with no choices (e.g., usage-only final chunk)
+        if not chunk.choices:
+            continue
+
         choice = chunk.choices[0]
         delta = choice.delta
 
         if response_id is None:
             response_id = chunk.id
             created = chunk.created
+
+        # Check for reasoning content (kimi, qwen, deepseek, llama.cpp, etc.)
+        # Different providers use different field names for reasoning/thinking content
+        reasoning_fields = ["reasoning_content", "reasoning", "reasoning_text"]
+        reasoning_delta = None
+        delta_dict = delta.model_dump() if hasattr(delta, "model_dump") else vars(delta)
+        for field in reasoning_fields:
+            value = delta_dict.get(field)
+            if value is not None and len(value) > 0:
+                reasoning_delta = value
+                break
+
+        # Capture TTFT on first content chunk (text, reasoning, or tool call)
+        if ttft_ms is None and request_start is not None:
+            if delta.content or delta.tool_calls or reasoning_delta:
+                ttft_ms = (time.perf_counter() - request_start) * 1000
+                await on_chunk(FirstToken(ttft_ms=ttft_ms))
+
+        # Handle reasoning/thinking content (emitted before text content)
+        if reasoning_delta:
+            if not thinking_started:
+                await on_chunk(ThinkingStart(content_index=thinking_content_index))
+                thinking_started = True
+
+            accumulated_thinking += reasoning_delta
+            await on_chunk(
+                ThinkingDelta(content_index=thinking_content_index, delta=reasoning_delta)
+            )
 
         # Handle text content
         if delta.content:
@@ -402,6 +467,12 @@ async def aggregate_stream(
         if choice.finish_reason:
             finish_reason = choice.finish_reason
 
+    # Emit thinking_end if we started thinking
+    if thinking_started:
+        await on_chunk(
+            ThinkingEnd(content_index=thinking_content_index, content=accumulated_thinking)
+        )
+
     # Emit text_end if we started text
     if text_started:
         await on_chunk(TextEnd(content_index=content_index, content=accumulated_content))
@@ -451,6 +522,9 @@ async def aggregate_stream(
 
     # Build final message with ContentBlocks
     content_blocks: list = []
+    # Add thinking content first (if any) - mirrors Anthropic's thinking block ordering
+    if accumulated_thinking:
+        content_blocks.append(ThinkingContent(thinking=accumulated_thinking))
     if accumulated_content:
         content_blocks.append(TextContent(text=accumulated_content))
     for tc in tool_calls:
@@ -486,14 +560,14 @@ async def aggregate_stream(
         object="chat.completion",
         created=created or 0,
         model="",
-        usage=Usage(),  # Will be populated from stream or final response
+        usage=stream_usage or Usage(),  # From final chunk if stream_options.include_usage=True
         choices=[Choice(0, final_message, finish_reason or "stop")],
     )
 
     assert completion is not None
     assert completion.choices is not None
     assert len(completion.choices) > 0
-    return completion
+    return completion, ttft_ms
 
 
 async def rollout_openai(
@@ -527,7 +601,7 @@ async def rollout_openai(
     messages = [_message_to_openai(m) for m in llm_messages]
 
     params = {
-        "model": actor.endpoint.model,
+        "model": actor.endpoint.model_id,  # Use model_id, not full "provider/model" string
         "messages": messages,
         "temperature": actor.endpoint.temperature,
         "stream": True,
@@ -544,6 +618,9 @@ async def rollout_openai(
 
     if actor.endpoint.reasoning_effort is not None:
         params["reasoning_effort"] = actor.endpoint.reasoning_effort
+
+    # Request usage info in streaming response (final chunk contains usage)
+    params["stream_options"] = {"include_usage": True}
 
     if hasattr(actor.endpoint, "extra_params") and actor.endpoint.extra_params:
         params.update(actor.endpoint.extra_params)
@@ -590,9 +667,21 @@ async def rollout_openai(
                         f"Got: {part}"
                     )
 
+    # Capture timing for span
+    import time
+    from datetime import datetime
+
+    request_start = time.perf_counter()
+    request_started_at = datetime.now().isoformat()
+
+    request_duration_ms = 0.0  # Initialize in case of error
+    ttft_ms: float | None = None
+
     try:
         stream = await client.chat.completions.create(**params)
-        completion = await aggregate_stream(stream, on_chunk)
+        completion, ttft_ms = await aggregate_stream(stream, on_chunk, request_start)
+
+        request_duration_ms = (time.perf_counter() - request_start) * 1000
 
         # Wide event for successful response
         from .base import log_api_response
@@ -709,6 +798,23 @@ async def rollout_openai(
         cost = calculate_cost_from_usage(completion.usage, model_meta.cost)
         usage_with_cost = replace(completion.usage, cost=cost)
         completion = replace(completion, usage=usage_with_cost)
+
+    # Emit span for cost/latency tracking
+    from .base import persist_span
+
+    session_id = kwargs.get("session_id")
+    await persist_span(
+        session_id=session_id,
+        started_at=request_started_at,
+        duration_ms=request_duration_ms,
+        provider=actor.endpoint.provider,
+        model=actor.endpoint.model,
+        api_base=actor.endpoint.api_base,
+        usage=completion.usage,
+        request_id=completion.id,
+        finish_reason=completion.choices[0].finish_reason if completion.choices else None,
+        ttft_ms=ttft_ms,
+    )
 
     assert completion.choices is not None
     assert len(completion.choices) > 0

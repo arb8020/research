@@ -116,6 +116,7 @@ class TUIFrontend:
         # Create input component
         self._input_component = Input(theme=self._tui.theme)
         self._input_component.set_on_submit(self._handle_input_submit)
+        self._input_component.set_on_editor(self._handle_open_editor)
 
         # Pending messages (queued while agent is busy)
         self._pending_messages = PendingMessages(
@@ -390,6 +391,36 @@ class TUIFrontend:
                     )
                 if self._tui:
                     self._tui.request_render()
+
+    def _handle_open_editor(self, current_text: str) -> None:
+        """Handle Ctrl+G to open external editor for message composition."""
+        if not self._terminal:
+            return
+
+        # Run editor (this temporarily exits raw mode)
+        edited_content = self._terminal.run_external_editor(current_text)
+
+        # Reset TUI state before redrawing
+        if self._tui:
+            self._tui.reset_render_state()
+
+        # If user saved content, update input and optionally submit
+        if edited_content:
+            # Strip any terminal control sequences that may have leaked in
+            from .tui.utils import strip_terminal_control_sequences
+
+            edited_content = strip_terminal_control_sequences(edited_content)
+            if self._input_component:
+                self._input_component.set_text(edited_content)
+            # Auto-submit the edited content
+            self._handle_input_submit(edited_content)
+            # Clear input after submit
+            if self._input_component:
+                self._input_component.set_text("")
+
+        # Force full redraw
+        if self._tui:
+            self._tui.request_render()
 
     def render_history(self, messages: list) -> None:
         """Render historical messages from resumed session.
