@@ -56,10 +56,19 @@ class TrainConfig:
     # Optimization
     batch_size: int = 4
     grad_accum_steps: int = 1  # Gradient accumulation steps (effective_batch = batch_size * grad_accum_steps * world_size)
-    lr: float = 3e-4
     weight_decay: float = 0.1
     warmup_steps: int = 100
     max_grad_norm: float = 1.0
+
+    # Muon optimizer (for 2D weight matrices)
+    use_muon: bool = True
+    lr_muon: float = 0.02  # Muon LR for 2D matrices
+    muon_momentum: float = 0.95
+
+    # AdamW optimizer (for embeddings, norms, biases)
+    lr_adamw: float = 3e-4
+    adam_betas: tuple[float, float] = (0.9, 0.95)
+    adam_eps: float = 1e-8
 
     # Training
     steps: int = 1000

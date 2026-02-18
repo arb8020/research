@@ -23,6 +23,7 @@ from ..training.datasets import BufferState, get_token_batch, load_fineweb_token
 from . import runtime
 from .config import ModelConfig, TrainConfig, get_git_info
 from .models.llama import count_parameters, forward, init_weights
+from .optim import Muon, build_optimizers
 from .schedule import get_lr
 
 logger = logging.getLogger(__name__)
@@ -138,7 +139,8 @@ def save_config(config: TrainConfig, output_dir: Path) -> None:
 
 def save_checkpoint(
     weights: dict[str, torch.Tensor],
-    optimizer: torch.optim.Optimizer,
+    muon_optimizer: Muon | None,
+    adamw_optimizer: torch.optim.AdamW,
     step: int,
     config: TrainConfig,
     output_dir: Path,
@@ -148,7 +150,8 @@ def save_checkpoint(
     torch.save(
         {
             "weights": {k: v.cpu() for k, v in weights.items()},
-            "optimizer": optimizer.state_dict(),
+            "muon_optimizer": muon_optimizer.state_dict() if muon_optimizer else None,
+            "adamw_optimizer": adamw_optimizer.state_dict(),
             "step": step,
             "fingerprint": config.fingerprint(),
         },
@@ -166,16 +169,18 @@ def find_latest_checkpoint(output_dir: Path) -> Path | None:
 def load_checkpoint(
     ckpt_path: Path,
     weights: dict[str, torch.Tensor],
-    optimizer: torch.optim.Optimizer,
+    muon_optimizer: Muon | None,
+    adamw_optimizer: torch.optim.AdamW,
     config: TrainConfig,
     device: torch.device,
 ) -> int:
-    """Load checkpoint into weights and optimizer.
+    """Load checkpoint into weights and optimizers.
 
     Args:
         ckpt_path: Path to checkpoint file
         weights: Model weights dict (modified in place)
-        optimizer: Optimizer (state loaded in place)
+        muon_optimizer: Muon optimizer (state loaded in place)
+        adamw_optimizer: AdamW optimizer (state loaded in place)
         config: Config for fingerprint verification
         device: Device to load weights to
 
@@ -198,8 +203,10 @@ def load_checkpoint(
     for key, value in ckpt["weights"].items():
         weights[key].copy_(value.to(device))
 
-    # Load optimizer state
-    optimizer.load_state_dict(ckpt["optimizer"])
+    # Load optimizer states
+    if muon_optimizer is not None and ckpt.get("muon_optimizer") is not None:
+        muon_optimizer.load_state_dict(ckpt["muon_optimizer"])
+    adamw_optimizer.load_state_dict(ckpt["adamw_optimizer"])
 
     return ckpt["step"]
 
@@ -263,19 +270,32 @@ def train(config: TrainConfig, use_real_data: bool = False, resume: bool = False
     if runtime.is_main():
         logger.info(f"parameters: {n_params:,} ({n_params / 1e6:.1f}M)")
 
-    # Optimizer
-    optimizer = torch.optim.AdamW(
-        weights.values(),
-        lr=config.lr,
+    # Optimizers (Muon for 2D matrices, AdamW for embeddings/norms)
+    muon_optimizer, adamw_optimizer = build_optimizers(
+        weights,
+        lr_muon=config.lr_muon,
+        lr_adamw=config.lr_adamw,
+        momentum=config.muon_momentum,
         weight_decay=config.weight_decay,
+        betas=config.adam_betas,
+        eps=config.adam_eps,
+        use_muon=config.use_muon,
     )
+    if runtime.is_main():
+        if muon_optimizer is not None:
+            n_muon = sum(p.numel() for g in muon_optimizer.param_groups for p in g["params"])
+            logger.info(f"muon params: {n_muon:,}")
+        n_adamw = sum(p.numel() for g in adamw_optimizer.param_groups for p in g["params"])
+        logger.info(f"adamw params: {n_adamw:,}")
 
     # Resume from checkpoint
     start_step = 0
     if resume:
         ckpt_path = find_latest_checkpoint(output_dir)
         if ckpt_path:
-            start_step = load_checkpoint(ckpt_path, weights, optimizer, config, device)
+            start_step = load_checkpoint(
+                ckpt_path, weights, muon_optimizer, adamw_optimizer, config, device
+            )
             if runtime.is_main():
                 logger.info(f"resumed from {ckpt_path} at step {start_step}")
         elif runtime.is_main():
@@ -284,7 +304,7 @@ def train(config: TrainConfig, use_real_data: bool = False, resume: bool = False
     # Schedule config (dict for get_lr)
     schedule_config = {
         "steps": config.steps,
-        "lr": config.lr,
+        "lr": 1.0,  # We'll scale Muon and AdamW LRs separately
         "warmup_steps": config.warmup_steps,
     }
 
@@ -308,10 +328,13 @@ def train(config: TrainConfig, use_real_data: bool = False, resume: bool = False
     for step in range(start_step, config.steps):
         step_start = time.time()
 
-        # Update learning rate
-        lr = get_lr(step, schedule_config)
-        for param_group in optimizer.param_groups:
-            param_group["lr"] = lr
+        # Update learning rate (scale factor from schedule, applied to base LRs)
+        lr_scale = get_lr(step, schedule_config)
+        if muon_optimizer is not None:
+            for param_group in muon_optimizer.param_groups:
+                param_group["lr"] = config.lr_muon * lr_scale
+        for param_group in adamw_optimizer.param_groups:
+            param_group["lr"] = config.lr_adamw * lr_scale
 
         # Gradient accumulation loop
         accum_loss = 0.0
@@ -346,9 +369,12 @@ def train(config: TrainConfig, use_real_data: bool = False, resume: bool = False
         # Gradient clipping
         grad_norm = torch.nn.utils.clip_grad_norm_(weights.values(), config.max_grad_norm)
 
-        # Optimizer step
-        optimizer.step()
-        optimizer.zero_grad()
+        # Optimizer steps
+        if muon_optimizer is not None:
+            muon_optimizer.step()
+            muon_optimizer.zero_grad()
+        adamw_optimizer.step()
+        adamw_optimizer.zero_grad()
 
         # Logging (rank 0 only)
         if runtime.is_main() and step % config.log_every == 0:
@@ -359,7 +385,7 @@ def train(config: TrainConfig, use_real_data: bool = False, resume: bool = False
 
             logger.info(
                 f"step={step:5d} | loss={accum_loss:.4f} | "
-                f"lr={lr:.2e} | "
+                f"lr_scale={lr_scale:.2e} | "
                 f"grad_norm={grad_norm:.4f} | "
                 f"tok/s={tokens_per_sec:.0f} | "
                 f"elapsed={elapsed:.1f}s"
@@ -392,7 +418,7 @@ def train(config: TrainConfig, use_real_data: bool = False, resume: bool = False
             and step > 0
             and step % config.checkpoint_every == 0
         ):
-            save_checkpoint(weights, optimizer, step, config, output_dir)
+            save_checkpoint(weights, muon_optimizer, adamw_optimizer, step, config, output_dir)
 
     # Final validation and checkpoint (rank 0 only)
     if runtime.is_main():
@@ -408,7 +434,7 @@ def train(config: TrainConfig, use_real_data: bool = False, resume: bool = False
             )
             logger.info(f"final val_loss={val_loss:.4f}")
 
-        save_checkpoint(weights, optimizer, config.steps, config, output_dir)
+        save_checkpoint(weights, muon_optimizer, adamw_optimizer, config.steps, config, output_dir)
 
         total_time = time.time() - start_time
         logger.info(f"training complete in {total_time:.1f}s")

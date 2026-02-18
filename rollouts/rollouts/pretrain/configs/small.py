@@ -17,12 +17,12 @@ config = TrainConfig(
     steps=1000,
     batch_size=8,
     max_seq_len=512,
-    lr=3e-4,
     warmup_steps=100,
     log_every=10,
     checkpoint_every=500,
     val_every=100,
     val_batches=20,
+    # Muon + AdamW optimizer settings (defaults are fine for small)
 )
 
 if __name__ == "__main__":
