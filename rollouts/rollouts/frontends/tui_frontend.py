@@ -61,18 +61,17 @@ class TUIFrontend:
         self._pending_messages: Any | None = None
         self._status_line: Any | None = None
 
-        # Input coordination
-        self._input_send: trio.MemorySendChannel[str] | None = None
-        self._input_receive: trio.MemoryReceiveChannel[str] | None = None
+        # Input coordination - channel carries InputResult (text, interrupt, exit)
+        self._input_send: trio.MemorySendChannel[InputResult] | None = None
+        self._input_receive: trio.MemoryReceiveChannel[InputResult] | None = None
         self._input_pending: bool = False
         self._is_first_user_message = True
 
-        # Cancel callback - set by runner for Ctrl+C handling
-        self._on_cancel: Any | None = None
+        # Double-tap Ctrl+C tracking
         self._ctrl_c_pending: float | None = None  # Timestamp of first Ctrl+C
 
-        # Interrupt callback - set by runner for Escape handling (interrupt, don't exit)
-        self._on_interrupt: Any | None = None
+        # Interrupt state - set when Escape is pressed during agent execution
+        self._interrupt_pending: bool = False
 
     async def start(self) -> None:
         """Initialize TUI components and enter raw mode."""
@@ -155,7 +154,7 @@ class TUIFrontend:
         self._tui.add_child(Spacer(1, debug_label="after-status"))
 
         # Create input channel
-        self._input_send, self._input_receive = trio.open_memory_channel[str](10)
+        self._input_send, self._input_receive = trio.open_memory_channel[InputResult](10)
 
         # Start TUI
         self._tui.start()
@@ -197,6 +196,7 @@ class TUIFrontend:
         - UserMessage: Regular text to send to LLM
         - SlashCommand: Parsed command for runner to execute
         - InputExit: User wants to quit
+        - InputInterrupt: User pressed Escape to interrupt
 
         Args:
             prompt: Ignored (TUI has its own prompt)
@@ -204,19 +204,18 @@ class TUIFrontend:
         Returns:
             InputResult indicating what the user wants to do
         """
-        from .protocol import InputExit, SlashCommand, UserMessage
+        from .protocol import InputExit, InputInterrupt, SlashCommand, UserMessage
 
         if self._input_receive is None:
             raise RuntimeError("Input channel not initialized")
 
         # Try to get queued message first
         try:
-            msg = self._input_receive.receive_nowait()
-            if self._pending_messages:
+            result = self._input_receive.receive_nowait()
+            if self._pending_messages and isinstance(result, UserMessage):
                 self._pending_messages.pop_left()
             if self._tui:
                 self._tui.request_render()
-            user_input = msg
         except trio.WouldBlock:
             # No queued message, show input and wait
             self._input_pending = True
@@ -227,12 +226,20 @@ class TUIFrontend:
                     self._tui.set_focus(self._input_component)
                 self._tui.request_render()
 
-            user_input = await self._input_receive.receive()
+            result = await self._input_receive.receive()
             self._input_pending = False
 
         # Clear input component
         if self._input_component:
             self._input_component.set_text("")
+
+        # If we got InputInterrupt or InputExit, return directly
+        if isinstance(result, (InputInterrupt, InputExit)):
+            return result
+
+        # Extract text from UserMessage
+        assert isinstance(result, UserMessage), f"Unexpected result type: {type(result)}"
+        user_input = result.text
 
         # Check for exit commands
         if user_input.strip().lower() in ("exit", "quit", "q"):
@@ -258,13 +265,18 @@ class TUIFrontend:
 
     def _restore_queued_messages_to_input(self) -> None:
         """Move all queued messages back into the editor for editing."""
+        from .protocol import UserMessage
+
         if not self._input_receive or not self._input_component:
             return
 
         drained: list[str] = []
         while True:
             try:
-                drained.append(self._input_receive.receive_nowait())
+                result = self._input_receive.receive_nowait()
+                # Only restore UserMessage text, skip interrupts/exits
+                if isinstance(result, UserMessage):
+                    drained.append(result.text)
             except trio.WouldBlock:
                 break
 
@@ -300,8 +312,14 @@ class TUIFrontend:
                 f"⚠️  Tool: {tool_call.name}({args_str})\n   [y] execute  [n] reject  [s] skip"
             )
 
+        from .protocol import UserMessage
+
         response = await self.get_input("Confirm tool? ")
-        return response.strip().lower() in ("y", "yes", "")
+        # Handle InputResult: only UserMessage contains confirmable text
+        if isinstance(response, UserMessage):
+            return response.text.strip().lower() in ("y", "yes", "")
+        # InputExit/InputInterrupt -> reject the tool
+        return False
 
     def show_loader(self, text: str) -> None:
         """Show loading indicator.
@@ -360,9 +378,11 @@ class TUIFrontend:
         Args:
             text: Submitted text
         """
+        from .protocol import UserMessage
+
         if text.strip() and self._input_send:
             try:
-                self._input_send.send_nowait(text.strip())
+                self._input_send.send_nowait(UserMessage(text=text.strip()))
                 # Add to visual queue if not waiting for input
                 if not self._input_pending and self._pending_messages:
                     self._pending_messages.add(text.strip())
@@ -456,22 +476,6 @@ class TUIFrontend:
         if self._renderer:
             self._renderer.finalize_partial_response()
 
-    def set_on_cancel(self, callback: Any) -> None:
-        """Set callback for Ctrl+C handling.
-
-        Args:
-            callback: Function to call when Ctrl+C is pressed (exit entirely)
-        """
-        self._on_cancel = callback
-
-    def set_on_interrupt(self, callback: Any) -> None:
-        """Set callback for Escape handling.
-
-        Args:
-            callback: Function to call when Escape is pressed (interrupt, stay in session)
-        """
-        self._on_interrupt = callback
-
     async def run_input_loop(self, nursery: trio.Nursery) -> None:
         """Run terminal input reading loop.
 
@@ -484,6 +488,8 @@ class TUIFrontend:
         async def input_reading_loop() -> None:
             import time
 
+            from .protocol import InputExit, InputInterrupt
+
             CTRL_C_TIMEOUT = 1.5  # Seconds to wait for second Ctrl+C
 
             while True:
@@ -491,17 +497,20 @@ class TUIFrontend:
                     msg = self._terminal.read_message()
                     if msg is not None:
                         key = msg.key if isinstance(msg, KeyPress) else None
-                        # Check for Ctrl+C (ASCII 3) - double-tap to cancel
+                        # Check for Ctrl+C (ASCII 3) - double-tap to exit
                         if key == "\x03":
                             now = time.time()
                             if (
                                 self._ctrl_c_pending
                                 and (now - self._ctrl_c_pending) < CTRL_C_TIMEOUT
                             ):
-                                # Second Ctrl+C within timeout - cancel
+                                # Second Ctrl+C within timeout - send exit
                                 self._ctrl_c_pending = None
-                                if self._on_cancel:
-                                    self._on_cancel()
+                                if self._input_send:
+                                    try:
+                                        self._input_send.send_nowait(InputExit())
+                                    except trio.WouldBlock:
+                                        pass  # Channel full, exit will be handled
                             else:
                                 # First Ctrl+C - show message and wait
                                 self._ctrl_c_pending = now
@@ -509,12 +518,18 @@ class TUIFrontend:
                                     self._renderer.add_system_message("Press Ctrl+C again to exit")
                             continue
 
-                        # Check for Escape - interrupt current response
+                        # Check for Escape - interrupt current operation
                         if key == "\x1b":
-                            if self._on_interrupt:
-                                self._on_interrupt()
-                                if self._renderer:
-                                    self._renderer.add_system_message("Interrupted")
+                            # Set flag so get_input returns InputInterrupt
+                            self._interrupt_pending = True
+                            if self._renderer:
+                                self._renderer.add_system_message("Interrupted")
+                            # Send interrupt through channel to wake up get_input
+                            if self._input_send:
+                                try:
+                                    self._input_send.send_nowait(InputInterrupt())
+                                except trio.WouldBlock:
+                                    pass  # Channel full, interrupt flag is set
                             continue
 
                         # Any other key cancels the pending Ctrl+C (paste events included).

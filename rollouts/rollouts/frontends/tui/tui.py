@@ -191,7 +191,7 @@ class TUI(Container):
         self._debug = debug
         self._debug_layout = debug_layout
 
-        # Loader container - set by InteractiveAgentRunner to render loader in fixed location
+        # Loader container - set by TUIFrontend to render loader in fixed location
         self._loader_container: Component | None = None
         self._loader_text: str | None = None
         self._animation_task_running: bool = False

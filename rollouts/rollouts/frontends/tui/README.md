@@ -5,29 +5,31 @@ Interactive terminal UI for running agents with streaming responses, tool execut
 ## Quick Start
 
 ```bash
-# Basic chat (no tools)
-python -m rollouts.frontends.tui.cli --provider anthropic --model claude-sonnet-4-5
+# Interactive coding agent (default)
+rollouts --env coding
 
-# Coding agent with file/shell tools
-python -m rollouts.frontends.tui.cli --env coding --provider anthropic --model claude-sonnet-4-5
+# Continue most recent session
+rollouts -c
+
+# Pick from previous sessions
+rollouts -s
 
 # Non-interactive query
-python -m rollouts.frontends.tui.cli -p "explain this error" --provider anthropic --model claude-sonnet-4-5
+rollouts -p "explain this error"
 ```
 
 ## CLI Options
 
 ### Model Configuration
 ```bash
---provider {openai,anthropic}  # API provider (default: openai)
---model MODEL                   # Model name (default: gpt-4o-mini)
---api-key KEY                   # API key (or use env var)
---system-prompt TEXT            # Custom system prompt
+--provider {openai,anthropic,google}  # API provider
+--model MODEL                          # Model name
+--system-prompt TEXT                   # Custom system prompt
 ```
 
 ### Environment
 ```bash
---env {none,calculator,coding}  # Tool environment (default: none)
+--env {coding,calculator,none}  # Tool environment (default: coding)
 --cwd PATH                      # Working directory for coding env
 ```
 
@@ -35,7 +37,6 @@ python -m rollouts.frontends.tui.cli -p "explain this error" --provider anthropi
 ```bash
 -c, --continue      # Resume most recent session
 -s, --session       # Interactive session picker
--s PATH             # Resume specific session file
 --no-session        # Don't persist to disk
 ```
 
@@ -45,19 +46,24 @@ python -m rollouts.frontends.tui.cli -p "explain this error" --provider anthropi
 --max-turns N       # Maximum agent turns (default: 50)
 ```
 
+### Frontend Selection
+```bash
+--frontend {tui,none,minimal}  # Frontend type (default: tui)
+```
+
 ## Session Persistence
 
-Sessions are stored in `~/.rollouts/sessions/--encoded-cwd--/` as JSONL files.
+Sessions are stored in `~/.rollouts/sessions/<session_id>/` as JSONL files.
 
 ```bash
 # Start new session (auto-created)
-python -m rollouts.frontends.tui.cli --env coding
+rollouts --env coding
 
 # Continue where you left off
-python -m rollouts.frontends.tui.cli --env coding -c
+rollouts -c
 
 # Pick from previous sessions
-python -m rollouts.frontends.tui.cli --env coding -s
+rollouts -s
 ```
 
 ## Coding Environment Tools
@@ -77,21 +83,21 @@ The `--env coding` flag provides:
 ## Architecture
 
 ```
-cli.py                 # Entry point, arg parsing
-interactive_agent.py   # Agent loop coordinator
-agent_renderer.py      # StreamEvent → TUI components
-sessions.py            # Session persistence (functional)
-terminal.py            # Raw mode, cursor, escape sequences
 tui.py                 # Differential rendering engine
+agent_renderer.py      # StreamEvent → TUI components
+terminal.py            # Raw mode, cursor, escape sequences
 theme.py               # Color definitions
+slash_commands.py      # Slash command handling
+control_flow_types.py  # Control flow type definitions
 components/
   input.py             # Text editor
   assistant_message.py # Streaming text display
   user_message.py      # User message display
   markdown.py          # Markdown rendering
+  tool_execution.py    # Tool call display
+  status_line.py       # Status bar
 ```
 
 ## See Also
 
-- `TUI_TODO.md` - Roadmap and missing features
 - `docs/SESSION_DESIGN.md` - Session persistence design doc

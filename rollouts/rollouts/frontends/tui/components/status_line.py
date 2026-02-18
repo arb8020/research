@@ -39,6 +39,11 @@ class StatusLine(Component):
         self._context_window: int | None = None  # Model's max context window
         self._env_info: dict[str, str] | None = None
 
+        # Last request stats (for tok/s display)
+        self._last_duration_ms: float | None = None
+        self._last_tokens_out: int | None = None
+        self._last_ttft_ms: float | None = None
+
     def set_session_id(self, session_id: str | None) -> None:
         """Set the session ID to display."""
         self._session_id = session_id
@@ -67,6 +72,24 @@ class StatusLine(Component):
     def set_env_info(self, env_info: dict[str, str] | None) -> None:
         """Set environment info to display."""
         self._env_info = env_info
+
+    def set_last_request_stats(self, duration_ms: float, tokens_out: int) -> None:
+        """Set stats from the last LLM request for tok/s display.
+
+        Note: TTFT should be set via set_ttft() before this is called.
+        After this call, TTFT is reset for the next request.
+        """
+        self._last_duration_ms = duration_ms
+        self._last_tokens_out = tokens_out
+        # Don't reset TTFT here - it was set earlier and we need it for display
+
+    def set_ttft(self, ttft_ms: float) -> None:
+        """Set time to first token for the current request."""
+        self._last_ttft_ms = ttft_ms
+
+    def reset_request_stats(self) -> None:
+        """Reset request stats for a new request."""
+        self._last_ttft_ms = None
 
     def _wrap_parts(
         self, parts: list[str], available_width: int, separator: str = "  │  "
@@ -140,7 +163,7 @@ class StatusLine(Component):
             padding = " " * max(0, available_width - visible_width(line_content))
             lines.append(f"  {gray}{line_content}{padding}{reset}")
 
-        # Line 2: tokens, context %, and cost
+        # Line 2: tokens, context %, cost, and tok/s
         usage_parts: list[str] = []
         if self._input_tokens > 0 or self._output_tokens > 0:
             token_str = f"tokens:{self._input_tokens}↓/{self._output_tokens}↑"
@@ -152,6 +175,25 @@ class StatusLine(Component):
             usage_parts.append(token_str)
         if self._cost > 0:
             usage_parts.append(f"cost:${self._cost:.4f}")
+        # Show tok/s from last request
+        # Use generation time (total - ttft) if available, otherwise total time
+        if self._last_duration_ms and self._last_duration_ms > 0 and self._last_tokens_out:
+            duration_sec = self._last_duration_ms / 1000
+            if self._last_ttft_ms is not None:
+                gen_ms = self._last_duration_ms - self._last_ttft_ms
+                if gen_ms > 0:
+                    tok_per_sec = self._last_tokens_out / (gen_ms / 1000)
+                    ttft_sec = self._last_ttft_ms / 1000
+                    usage_parts.append(
+                        f"{tok_per_sec:.1f}tok/s ({duration_sec:.1f}s, {ttft_sec:.1f}s TTFT)"
+                    )
+                else:
+                    # All time was TTFT (buffered response)
+                    tok_per_sec = self._last_tokens_out / duration_sec
+                    usage_parts.append(f"{tok_per_sec:.1f}tok/s ({duration_sec:.1f}s, buffered)")
+            else:
+                tok_per_sec = self._last_tokens_out / duration_sec
+                usage_parts.append(f"{tok_per_sec:.1f}tok/s ({duration_sec:.1f}s)")
 
         for line_content in self._wrap_parts(usage_parts, available_width):
             padding = " " * max(0, available_width - visible_width(line_content))

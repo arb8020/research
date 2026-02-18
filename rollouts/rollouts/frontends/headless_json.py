@@ -62,7 +62,7 @@ class HeadlessJsonFrontend:
     _session_id: str | None = None
     _tools: list[str] = field(default_factory=list)
 
-    # For slash command handling (mirrors InteractiveAgentRunner interface)
+    # For slash command handling (implements RunnerContext protocol)
     environment: Environment | None = None
     endpoint: Endpoint | None = None
     session_store: Any = None

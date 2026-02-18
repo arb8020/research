@@ -1,10 +1,9 @@
 """
-Control flow types for InteractiveAgentRunner.
+Control flow types for the agent runner.
 
 These types make the control flow explicit by returning what happened
-rather than using flags and mutation.
-
-See REFACTOR_DESIGN.md for the full design.
+rather than using flags and mutation. Used by both the TUI and the
+frontend-agnostic InteractiveRunner in runner.py.
 """
 
 from __future__ import annotations

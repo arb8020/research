@@ -13,14 +13,60 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from ...dtypes import Endpoint, Trajectory
-    from ...environments.compose import ComposedEnvironment
-    from .interactive_agent import InteractiveAgentRunner
+    from ...dtypes import Endpoint, Environment, Trajectory
+    from ...store import SessionStore
 
-    Environment = ComposedEnvironment  # Type alias for any environment
+
+# =============================================================================
+# Runner Context Protocol
+# =============================================================================
+
+
+@runtime_checkable
+class RunnerContext(Protocol):
+    """Protocol defining what slash commands need from the runner.
+
+    This allows slash commands to work with any runner implementation
+    (InteractiveRunner, TUIFrontend, etc.) without tight coupling.
+    """
+
+    @property
+    def endpoint(self) -> Endpoint:
+        """Current LLM endpoint configuration."""
+        ...
+
+    @property
+    def session_id(self) -> str | None:
+        """Current session ID, if any."""
+        ...
+
+    @property
+    def parent_session_id(self) -> str | None:
+        """Parent session ID (for forked sessions)."""
+        ...
+
+    @property
+    def session_store(self) -> SessionStore | None:
+        """Session store for persistence."""
+        ...
+
+    @property
+    def trajectory(self) -> Trajectory:
+        """Current conversation trajectory."""
+        ...
+
+    @property
+    def initial_trajectory(self) -> Trajectory:
+        """Initial trajectory (before any agent runs)."""
+        ...
+
+    @property
+    def environment(self) -> Environment | None:
+        """Current environment for tool execution."""
+        ...
 
 
 # =============================================================================
@@ -77,7 +123,7 @@ BUILTIN_COMMANDS: list[SlashCommand] = [
 
 
 async def handle_slash_command(
-    runner: InteractiveAgentRunner,
+    runner: RunnerContext,
     text: str,
 ) -> SlashCommandResult:
     """Handle a slash command.
@@ -147,7 +193,7 @@ def _find_similar_command(command: str) -> str | None:
 # =============================================================================
 
 
-async def _handle_model(runner: InteractiveAgentRunner, args: str) -> SlashCommandResult:
+async def _handle_model(runner: RunnerContext, args: str) -> SlashCommandResult:
     """Handle /model command.
 
     Returns new_endpoint instead of mutating runner.endpoint.
@@ -279,7 +325,7 @@ def _make_thinking_config(budget: int | None) -> dict[str, Any] | None:
     return {"type": "enabled", "budget_tokens": budget}
 
 
-async def _handle_thinking(runner: InteractiveAgentRunner, args: str) -> SlashCommandResult:
+async def _handle_thinking(runner: RunnerContext, args: str) -> SlashCommandResult:
     """Handle /thinking command.
 
     Returns new_endpoint instead of mutating runner.endpoint.
@@ -360,7 +406,7 @@ async def _handle_thinking(runner: InteractiveAgentRunner, args: str) -> SlashCo
 # =============================================================================
 
 
-async def _handle_slice(runner: InteractiveAgentRunner, args: str) -> SlashCommandResult:
+async def _handle_slice(runner: RunnerContext, args: str) -> SlashCommandResult:
     """Handle /slice command.
 
     Returns new_session_id and new_trajectory instead of calling switch_session.
@@ -445,7 +491,7 @@ def _get_available_envs() -> list[str]:
     return sorted(registry.keys())
 
 
-def _get_current_env_name(runner: InteractiveAgentRunner) -> str:
+def _get_current_env_name(runner: RunnerContext) -> str:
     """Get the current environment name(s) from the runner."""
     if runner.environment is None:
         return "none"
@@ -539,7 +585,7 @@ def _create_environment_from_spec(
         return None, str(e)
 
 
-async def _handle_env(runner: InteractiveAgentRunner, args: str) -> SlashCommandResult:
+async def _handle_env(runner: RunnerContext, args: str) -> SlashCommandResult:
     """Handle /env command.
 
     /env           - Show current environment
@@ -656,7 +702,7 @@ async def _handle_env(runner: InteractiveAgentRunner, args: str) -> SlashCommand
 # =============================================================================
 
 
-async def _handle_swap(runner: InteractiveAgentRunner, args: str) -> SlashCommandResult:
+async def _handle_swap(runner: RunnerContext, args: str) -> SlashCommandResult:
     """Handle /swap command.
 
     /swap           - Show usage

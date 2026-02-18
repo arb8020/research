@@ -66,7 +66,7 @@ class _SwapBackend(Exception):
         super().__init__(f"Swap to {target}")
 
 
-from .protocol import InputResult
+from .protocol import InputExit, InputInterrupt, InputResult, SlashCommand, UserMessage
 
 if TYPE_CHECKING:
     from ..store import SessionStore
@@ -219,19 +219,23 @@ class InteractiveRunner:
         self.run_fn: RunFn = cfg.run_fn or run_agent
 
         self._cancel_scope: trio.CancelScope | None = None
-        self._interrupt_flag: list[bool] = [False]  # Mutable container for interrupt signal
-        self._exit_requested: bool = False  # Set by Ctrl+C to exit entirely
 
     async def run(self) -> list[AgentState]:
         """Run interactive agent loop.
 
         Returns list of agent states from the run.
         Handles /swap internally by switching run_fn and continuing.
+
+        Control flow is explicit via InputResult matching:
+        - InputExit: User wants to exit (Ctrl+C double-tap or 'exit')
+        - InputInterrupt: User pressed Escape to interrupt current operation
+        - UserMessage: Regular text to send to LLM
+        - SlashCommand: Command for runner to execute
         """
         original_handler = signal.getsignal(signal.SIGINT)
         signal.signal(signal.SIGINT, self._handle_sigint)
 
-        all_states: list[AgentState] = []  # Initialize before try block for finally
+        all_states: list[AgentState] = []
         self._all_states = all_states  # Store for access in _cleanup
 
         try:
@@ -240,44 +244,15 @@ class InteractiveRunner:
             self._update_frontend_status()
             current_state: AgentState | None = None
 
-            # Outer loop handles /swap by switching run_fn
             while True:
-                # Create cancel scope BEFORE run_config so it captures the right scope
                 self._cancel_scope = trio.CancelScope()
                 run_config = self._create_run_config()
                 swap_request: _SwapBackend | None = None
-                user_exited = False
                 states: list[AgentState] = []
+                should_exit = False
 
                 async with trio.open_nursery() as nursery:
-                    # Set up Ctrl+C handler for TUI (exit entirely)
-                    if hasattr(self.frontend, "set_on_cancel"):
-
-                        def handle_ctrl_c() -> None:
-                            # Cancel the agent scope to trigger graceful shutdown
-                            # The nursery will be cancelled in the finally block after
-                            # run_fn returns (which allows it to persist session state)
-                            # Note: Don't print here - terminal is still in raw mode.
-                            # The TUI already shows "Press Ctrl+C again to exit" as feedback.
-                            self._exit_requested = True
-                            if self._cancel_scope:
-                                self._cancel_scope.cancel()
-                            nursery.cancel_scope.cancel()
-
-                        self.frontend.set_on_cancel(handle_ctrl_c)
-
-                    # Set up Escape handler for TUI (interrupt, stay in session)
-                    if hasattr(self.frontend, "set_on_interrupt"):
-
-                        def handle_escape() -> None:
-                            self._interrupt_flag[0] = True
-                            # Cancel the agent scope to interrupt in-flight API calls
-                            if self._cancel_scope:
-                                self._cancel_scope.cancel()
-
-                        self.frontend.set_on_interrupt(handle_escape)
-
-                    # Start TUI input loop FIRST (before getting initial state)
+                    # Start TUI input loop (handles key events in background)
                     if hasattr(self.frontend, "run_input_loop"):
                         await self.frontend.run_input_loop(nursery)
 
@@ -285,76 +260,53 @@ class InteractiveRunner:
                     if current_state is None:
                         try:
                             current_state = await self._create_initial_state()
-                            # Clear initial_prompt after use to prevent re-processing
                             self.initial_prompt = None
                         except _SwapBackend as e:
-                            # Swap requested before first message
                             swap_request = e
                             nursery.cancel_scope.cancel()
 
                         if current_state is None and swap_request is None:
-                            # User exited before sending first message
-                            user_exited = True
+                            should_exit = True
                             nursery.cancel_scope.cancel()
 
-                    # Only run agent if we have a state and no swap pending
-                    if current_state is not None and swap_request is None and not user_exited:
-                        # Create session BEFORE calling run_fn so we own session_id
-                        # even if run_fn gets cancelled
+                    # Run agent if we have state
+                    if current_state is not None and swap_request is None and not should_exit:
                         current_state = await self._ensure_session(current_state)
 
                         try:
                             with self._cancel_scope:
                                 states = await self.run_fn(current_state, run_config)
                         except _SwapBackend as e:
-                            # Capture swap request to handle outside nursery
                             swap_request = e
                         finally:
-                            # Cancel background tasks when agent finishes
                             nursery.cancel_scope.cancel()
                     else:
                         nursery.cancel_scope.cancel()
 
-                # Handle user exit (Ctrl+C or exit before first message)
-                if user_exited or self._exit_requested:
+                if should_exit:
                     return all_states
 
                 all_states.extend(states)
 
-                # Handle swap: update run_fn and continue with current state
+                # Handle swap request
                 if swap_request is not None:
                     self.run_fn = swap_request.new_run_fn
                     self._show_message(f"Swapped to {swap_request.target}")
-                    # Continue from last state (or initial if no states yet)
                     if states:
                         current_state = states[-1]
-                        # Clear stop so we continue
                         current_state = dc_replace(current_state, stop=None)
                     continue
 
-                # Handle interrupted: user pressed Escape, stay in session
-                # SIGINT kills Claude before it saves, so --resume won't work.
-                # Just wait for new user input and start fresh Claude session.
-                # SDK driver sets ABORTED on cancel, Claude driver sets INTERRUPTED.
-                # Check _interrupt_flag to distinguish Escape (interrupt) from Ctrl+C (exit).
-                if (
-                    states
-                    and states[-1].stop in (StopReason.INTERRUPTED, StopReason.ABORTED)
-                    and self._interrupt_flag[0]
-                ):
-                    # Reset flag for next iteration
-                    self._interrupt_flag[0] = False
-                    # Hide loader since we're returning to input mode
+                # Check if agent was interrupted or exited
+                if states and states[-1].stop in (StopReason.INTERRUPTED, StopReason.ABORTED):
+                    # Hide loader and wait for new input
                     if hasattr(self.frontend, "hide_loader"):
                         self.frontend.hide_loader()
-                    # Set current_state to None to force waiting for new input
-                    # (via _create_initial_state on next iteration)
                     current_state = None
-                    # Update trajectory for next session
                     self.trajectory = states[-1].actor.trajectory
                     continue
 
-                # Normal exit
+                # Normal completion - exit loop
                 break
 
             self._update_session_id_from_states(all_states)
@@ -362,7 +314,6 @@ class InteractiveRunner:
 
         finally:
             signal.signal(signal.SIGINT, original_handler)
-            # Update session_id from states (may have been skipped if cancelled)
             self._update_session_id_from_states(all_states)
             await self._cleanup()
 
@@ -377,11 +328,9 @@ class InteractiveRunner:
     async def _create_initial_state(self) -> AgentState | None:
         """Create initial agent state with first user message.
 
-        Returns None if user exits before providing input.
+        Returns None if user exits or interrupts before providing input.
         Raises _SwapBackend if user issues /swap command.
         """
-        from .protocol import InputExit, SlashCommand, UserMessage
-
         first_input = self.initial_prompt
 
         # Check if initial_prompt is a slash command
@@ -412,7 +361,7 @@ class InteractiveRunner:
                 input_result = await self.frontend.get_input()
 
                 match input_result:
-                    case InputExit():
+                    case InputExit() | InputInterrupt():
                         return None
 
                     case SlashCommand(name=name, args=args):
@@ -494,7 +443,6 @@ class InteractiveRunner:
             handle_no_tool=self._on_no_tool,
             session_store=self.session_store,
             cancel_scope=self._cancel_scope,
-            interrupt_flag=self._interrupt_flag,
         )
 
     # -----------------------------------------------------------------------
@@ -539,8 +487,6 @@ class InteractiveRunner:
         - detached: Write pending_input and stop
         - interactive: Get input, handle slash commands, continue
         """
-        from .protocol import InputExit, SlashCommand, UserMessage
-
         self._update_frontend_status(state)
 
         if self.single_turn:
@@ -557,6 +503,10 @@ class InteractiveRunner:
             match input_result:
                 case InputExit():
                     return dc_replace(state, stop=StopReason.NO_TOOL_CALLED)
+
+                case InputInterrupt():
+                    # User pressed Escape - signal interrupted so main loop handles it
+                    return dc_replace(state, stop=StopReason.INTERRUPTED)
 
                 case SlashCommand(name=name, args=args):
                     # Handle slash command - runner has access to session/endpoint/etc

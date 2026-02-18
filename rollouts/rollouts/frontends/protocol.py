@@ -52,8 +52,19 @@ class InputExit:
     pass
 
 
+@dataclass(frozen=True)
+class InputInterrupt:
+    """User pressed Escape to interrupt current operation.
+
+    Unlike InputExit, this means "stop what you're doing but stay in session".
+    The runner should cancel any in-flight API calls and return to the input prompt.
+    """
+
+    pass
+
+
 # Union type for get_input return
-InputResult = UserMessage | SlashCommand | InputExit
+InputResult = UserMessage | SlashCommand | InputExit | InputInterrupt
 
 
 @runtime_checkable
