@@ -685,6 +685,64 @@ def ssh(
 
 
 @app.command()
+def exec(
+    ctx: typer.Context,
+    instance_id: str = typer.Argument(..., help="Instance ID"),
+    command: list[str] = typer.Argument(..., help="Command to execute"),
+    provider: str | None = typer.Option(
+        None, "--provider", "-p", help="Provider (auto-detect if omitted)"
+    ),
+) -> None:
+    """Execute a command on GPU instance via SSH
+
+    Example:
+        broker exec abc123 -- hostname
+        broker exec abc123 -- nvidia-smi
+        broker exec abc123 -- tail -f /root/train.log
+    """
+
+    async def _exec_async() -> None:
+        creds = resolve_credentials(ctx)
+        ssh_key = resolve_ssh_key(ctx)
+
+        client = GPUClient(credentials=creds, ssh_key_path=ssh_key)
+
+        # Auto-detect provider if not specified
+        if provider is None:
+            instances = await client.list_instances()
+            matches = [i for i in instances if i.id == instance_id]
+
+            if len(matches) == 0:
+                logger.error(f"✗ Instance {instance_id} not found in any provider")
+                raise typer.Exit(1)
+            if len(matches) > 1:
+                logger.error(f"✗ Instance {instance_id} found in multiple providers:")
+                for m in matches:
+                    logger.error(f"  - {m.provider}")
+                logger.info(f"specify provider: broker exec {instance_id} --provider <provider> -- <cmd>")
+                raise typer.Exit(1)
+
+            instance = matches[0]
+        else:
+            instance = await client.get_instance(instance_id, provider)
+
+        if not instance or not instance._instance.public_ip:
+            logger.error("✗ Instance not ready (no public IP)")
+            raise typer.Exit(1)
+
+        # Build and execute SSH command via subprocess (simpler than async SSH)
+        import subprocess
+        ssh_cmd = instance._instance.ssh_connection_string(ssh_key_path=ssh_key, full_command=True)
+        cmd_str = " ".join(command)
+        full_cmd = f'{ssh_cmd} "{cmd_str}"'
+
+        result = subprocess.run(full_cmd, shell=True)
+        raise typer.Exit(result.returncode)
+
+    trio.run(_exec_async)
+
+
+@app.command()
 def info(
     ctx: typer.Context,
     instance_id: str = typer.Argument(..., help="Instance ID"),

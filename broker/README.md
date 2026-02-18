@@ -11,9 +11,9 @@ uv pip install -e .
 ## Quick Start
 
 ```bash
-# Setup credentials
-broker init
-# Edit .env with your API keys
+# Setup credentials (interactive prompt for API key)
+broker auth login runpod
+broker auth login primeintellect
 
 # Search for GPUs
 broker search --gpu-type "H100"

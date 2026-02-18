@@ -5,6 +5,7 @@ Prime Intellect provider implementation
 import json
 import logging
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -313,6 +314,15 @@ async def provision_instance(
     # Build the complete request body
     request_body = {"pod": pod_data, "provider": provider_data}
 
+    # Attach disks if specified in raw_data
+    # Can be a single disk ID string or list of disk IDs
+    disk_ids = raw.get("disk_ids") or request.raw_data.get("disk_ids") if request.raw_data else None
+    if disk_ids:
+        if isinstance(disk_ids, str):
+            disk_ids = [disk_ids]
+        request_body["disks"] = disk_ids
+        logger.info(f"Attaching disks: {disk_ids}")
+
     # Look up estimated spinup time for this provider
     spinup_cache = _load_spinup_cache()
     estimated_spinup = spinup_cache.get(provider_type)
@@ -568,3 +578,224 @@ async def _test_ssh_connectivity(instance) -> bool:
 async def get_fresh_instance(instance_id: str, api_key: str):
     """Alias for get_instance_details (ProviderProtocol requirement)"""
     return await get_instance_details(instance_id, api_key=api_key)
+
+
+# =============================================================================
+# Disk Operations
+# =============================================================================
+
+
+@dataclass
+class DiskOffer:
+    """Available disk configuration from Prime Intellect."""
+
+    provider: str  # e.g., "hyperstack", "runpod"
+    datacenter_id: str
+    datacenter_name: str
+    min_size_gb: int
+    max_size_gb: int
+    price_per_gb_hour: float  # $/GB/hour
+
+    @property
+    def price_per_gb_month(self) -> float:
+        """Price per GB per month (assuming 720 hours)."""
+        return self.price_per_gb_hour * 720
+
+
+@dataclass
+class Disk:
+    """A Prime Intellect persistent disk."""
+
+    id: str
+    name: str | None
+    size_gb: int
+    status: str  # PROVISIONING, PENDING, ACTIVE, STOPPED, DELETING, TERMINATED
+    provider: str
+    datacenter_id: str
+    datacenter_name: str | None
+    price_per_gb_hour: float
+    created_at: str | None = None
+    raw_data: dict[str, Any] | None = None
+
+    @property
+    def is_ready(self) -> bool:
+        """Check if disk is ready to attach."""
+        return self.status == "ACTIVE"
+
+    @property
+    def monthly_cost(self) -> float:
+        """Estimated monthly cost."""
+        return self.size_gb * self.price_per_gb_hour * 720
+
+
+async def list_disk_availability(api_key: str | None = None) -> list[DiskOffer]:
+    """List available disk configurations (providers, datacenters, pricing).
+
+    Returns list of DiskOffer with pricing and size constraints.
+    """
+    try:
+        data = await _make_api_request("GET", "/availability/disks", api_key=api_key)
+        offers = []
+
+        # API returns {"items": [...], "totalCount": N}
+        for item in data.get("items", []):
+            spec = item.get("spec", {})
+            provider = item.get("provider", "unknown")  # string, not object
+            datacenter = item.get("dataCenter")  # string or null
+
+            offers.append(
+                DiskOffer(
+                    provider=provider,
+                    datacenter_id=datacenter or "",
+                    datacenter_name=datacenter or "(default)",
+                    min_size_gb=spec.get("minCount", 0),
+                    max_size_gb=spec.get("maxCount", 10000),
+                    price_per_gb_hour=spec.get("pricePerUnit", 0.0),
+                )
+            )
+
+        return offers
+
+    except Exception as e:
+        logger.exception(f"Failed to list disk availability: {e}")
+        return []
+
+
+async def create_disk(
+    size_gb: int,
+    provider: str,
+    datacenter_id: str,
+    name: str | None = None,
+    api_key: str | None = None,
+) -> Disk | None:
+    """Create a persistent disk.
+
+    Args:
+        size_gb: Disk size in GB
+        provider: Provider type (e.g., "hyperstack", "runpod")
+        datacenter_id: Datacenter ID from availability response
+        name: Optional human-readable name
+        api_key: Prime Intellect API key
+
+    Returns:
+        Disk object if successful, None otherwise
+    """
+    payload = {
+        "disk": {
+            "size": size_gb,
+            "dataCenterId": datacenter_id,
+        },
+        "provider": {
+            "type": provider,
+        },
+    }
+    if name:
+        payload["disk"]["name"] = name
+
+    try:
+        data = await _make_api_request("POST", "/disks/", data=payload, api_key=api_key)
+        disk_data = data.get("data", data)
+        logger.info(f"Created disk {disk_data.get('id')} ({size_gb}GB on {provider})")
+        return _parse_disk(disk_data)
+
+    except Exception as e:
+        logger.exception(f"Failed to create disk: {e}")
+        return None
+
+
+async def list_disks(api_key: str | None = None) -> list[Disk]:
+    """List all user's disks."""
+    try:
+        data = await _make_api_request("GET", "/disks/", api_key=api_key)
+        disks = []
+
+        for item in data.get("data", []):
+            disk = _parse_disk(item)
+            if disk:
+                disks.append(disk)
+
+        return disks
+
+    except Exception as e:
+        logger.exception(f"Failed to list disks: {e}")
+        return []
+
+
+async def get_disk(disk_id: str, api_key: str | None = None) -> Disk | None:
+    """Get details of a specific disk."""
+    try:
+        data = await _make_api_request("GET", f"/disks/{disk_id}", api_key=api_key)
+        return _parse_disk(data.get("data", data))
+
+    except Exception as e:
+        logger.exception(f"Failed to get disk {disk_id}: {e}")
+        return None
+
+
+async def delete_disk(disk_id: str, api_key: str | None = None) -> bool:
+    """Delete a disk. WARNING: This is irreversible and all data will be lost."""
+    try:
+        await _make_api_request("DELETE", f"/disks/{disk_id}", api_key=api_key)
+        logger.info(f"Deleted disk {disk_id}")
+        return True
+
+    except Exception as e:
+        logger.exception(f"Failed to delete disk {disk_id}: {e}")
+        return False
+
+
+async def wait_for_disk_ready(
+    disk_id: str,
+    timeout: int = 300,
+    api_key: str | None = None,
+) -> Disk | None:
+    """Wait for disk to become ACTIVE.
+
+    Args:
+        disk_id: Disk ID
+        timeout: Max seconds to wait
+        api_key: API key
+
+    Returns:
+        Disk if ready, None if timeout or error
+    """
+    start = time.time()
+    while time.time() - start < timeout:
+        disk = await get_disk(disk_id, api_key=api_key)
+        if disk is None:
+            return None
+        if disk.is_ready:
+            return disk
+        if disk.status in ("TERMINATED", "FAILED"):
+            logger.error(f"Disk {disk_id} entered terminal state: {disk.status}")
+            return None
+
+        await trio.sleep(5)
+
+    logger.error(f"Timeout waiting for disk {disk_id} to become ready")
+    return None
+
+
+def _parse_disk(data: dict[str, Any]) -> Disk | None:
+    """Parse disk API response into Disk object."""
+    if not data:
+        return None
+
+    info = data.get("info", {})
+    size_gb = data.get("size", 0)
+    price_hr = data.get("priceHr", 0.0)
+    # Convert total price/hr to per-GB price/hr
+    price_per_gb_hr = price_hr / size_gb if size_gb > 0 else 0.0
+
+    return Disk(
+        id=data.get("id", ""),
+        name=data.get("name"),
+        size_gb=size_gb,
+        status=data.get("status", "UNKNOWN"),
+        provider=data.get("providerType", "unknown"),
+        datacenter_id=info.get("dataCenterId", ""),
+        datacenter_name=info.get("dataCenterId"),  # No separate name field
+        price_per_gb_hour=price_per_gb_hr,
+        created_at=data.get("createdAt"),
+        raw_data=data,
+    )
