@@ -57,7 +57,7 @@ def make_test_state(stop: StopReason | None = None) -> AgentState:
     """Create a minimal AgentState for testing."""
     msg = Message(role="user", content="test")
     traj = Trajectory(messages=[msg])
-    endpoint = Endpoint(provider="anthropic", model="claude-sonnet-4-20250514")
+    endpoint = Endpoint.from_legacy(provider="anthropic", model="claude-sonnet-4-20250514")
     actor = Actor(trajectory=traj, endpoint=endpoint)
     return AgentState(actor=actor, environment=None, stop=stop)
 

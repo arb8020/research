@@ -13,9 +13,9 @@ from rollouts.environments.repl import REPLEnvironment
 
 # Mock endpoint for testing
 MOCK_ENDPOINT = Endpoint(
-    provider="anthropic",
-    model="claude-3-5-haiku-20241022",
-    api_base="https://api.anthropic.com",
+    model="anthropic/claude-3-5-haiku-20241022",
+    base_url="https://api.anthropic.com/v1",
+    api_format="anthropic-messages",
     api_key="test-key",
 )
 

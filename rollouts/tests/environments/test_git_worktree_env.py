@@ -4,12 +4,14 @@ import shutil
 import tempfile
 from pathlib import Path
 
+import pytest
 import trio
 
 from rollouts.dtypes import ToolCall
 from rollouts.environments.git_worktree import GitWorktreeEnvironment
 
 
+@pytest.mark.trio
 async def test_git_worktree_environment() -> None:
     """Test the GitWorktreeEnvironment lifecycle and auto-commit behavior."""
 

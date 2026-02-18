@@ -23,7 +23,13 @@ def test_large_bash_output_saved_to_file() -> None:
 
         run_config = RunConfig(on_chunk=noop)
         state = AgentState(
-            actor=Actor(endpoint=Endpoint(provider="test", model="test"), trajectory=[], tools=[]),
+            actor=Actor(
+                endpoint=Endpoint(
+                    model="test/test", base_url="http://test", api_format="openai-completions"
+                ),
+                trajectory=[],
+                tools=[],
+            ),
             environment=env,
             session_id="test_large_output",
         )
@@ -62,7 +68,13 @@ def test_large_web_fetch_saved_to_file() -> None:
 
         run_config = RunConfig(on_chunk=noop)
         state = AgentState(
-            actor=Actor(endpoint=Endpoint(provider="test", model="test"), trajectory=[], tools=[]),
+            actor=Actor(
+                endpoint=Endpoint(
+                    model="test/test", base_url="http://test", api_format="openai-completions"
+                ),
+                trajectory=[],
+                tools=[],
+            ),
             environment=env,
             session_id="test_large_web_fetch",
         )

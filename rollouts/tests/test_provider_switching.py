@@ -45,7 +45,7 @@ async def test_provider_switching_basic() -> None:
 
     # Start with Claude
     print("1. Starting conversation with Claude...")
-    claude_endpoint = Endpoint(
+    claude_endpoint = Endpoint.from_legacy(
         provider="anthropic",
         model="claude-3-7-sonnet-20250219",  # Sonnet supports thinking; Haiku does not
         api_key=os.getenv("ANTHROPIC_API_KEY", ""),
@@ -88,7 +88,7 @@ async def test_provider_switching_basic() -> None:
     if not gpt_api_key:
         pytest.skip("OPENAI_API_KEY not set - can't test provider switching")
 
-    gpt_endpoint = Endpoint(
+    gpt_endpoint = Endpoint.from_legacy(
         provider="openai",
         model="gpt-4o-mini",
         api_key=gpt_api_key,
@@ -228,13 +228,14 @@ async def test_context_serialization() -> None:
 
 
 @pytest.mark.trio
-async def test_orphaned_tool_call_filtering() -> None:
-    """Test that orphaned tool calls are filtered out.
+async def test_orphaned_tool_call_handling() -> None:
+    """Test that orphaned tool calls get synthetic results inserted.
 
-    When switching providers, tool calls without results should be removed.
-    This prevents confusing the new provider.
+    When switching providers, tool calls without results get synthetic
+    "[interrupted]" results inserted. This prevents API errors from
+    consecutive assistant messages.
     """
-    print("\n=== Testing Orphaned Tool Call Filtering ===\n")
+    print("\n=== Testing Orphaned Tool Call Handling ===\n")
 
     from rollouts import ToolCallContent
 
@@ -264,15 +265,25 @@ async def test_orphaned_tool_call_filtering() -> None:
         to_api="anthropic-messages",
     )
 
-    # Check that orphaned tool call was removed
+    # Check that all tool calls are preserved (synthetic result inserted for orphan)
     assistant_msg = transformed[1]
     assert assistant_msg.role == "assistant"
 
     if isinstance(assistant_msg.content, list):
         tool_calls = [b for b in assistant_msg.content if isinstance(b, ToolCallContent)]
-        assert len(tool_calls) == 1, "Should only keep tool call with result"
-        assert tool_calls[0].id == "call_123", "Should keep the matched tool call"
-        print(f"  ✓ Filtered to {len(tool_calls)} tool call (removed orphaned call)")
+        assert len(tool_calls) == 2, "Should keep all tool calls"
+        print(f"  ✓ Kept {len(tool_calls)} tool calls")
+
+    # Check that synthetic tool result was inserted for orphaned call
+    tool_results = [m for m in transformed if m.role == "tool"]
+    assert len(tool_results) == 2, "Should have 2 tool results (1 real + 1 synthetic)"
+
+    synthetic_result = next((m for m in tool_results if m.tool_call_id == "call_456"), None)
+    assert synthetic_result is not None, "Should have synthetic result for call_456"
+    assert "interrupted" in synthetic_result.content.lower(), (
+        "Synthetic result should indicate interruption"
+    )
+    print("  ✓ Synthetic result inserted for orphaned call")
 
     print("\n=== Orphaned Tool Call Test PASSED ===\n")
 
@@ -295,7 +306,7 @@ async def test_serialization() -> None:
 @pytest.mark.trio
 async def test_tool_call_filtering() -> None:
     """Test tool call filtering (no API keys needed)."""
-    await test_orphaned_tool_call_filtering()
+    await test_orphaned_tool_call_handling()
 
 
 if __name__ == "__main__":

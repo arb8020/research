@@ -17,6 +17,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+import pytest
 import trio
 
 from rollouts import (
@@ -207,7 +208,7 @@ def make_endpoint(provider: str, model: str) -> Endpoint:
         "anthropic": "https://api.anthropic.com",
         "openai": "https://api.openai.com/v1",
     }
-    return Endpoint(
+    return Endpoint.from_legacy(
         provider=provider,
         model=model,
         api_base=api_bases.get(provider, "https://api.openai.com/v1"),
@@ -273,6 +274,7 @@ async def run_with_script(
 # --- The Integration Test ---
 
 
+@pytest.mark.trio
 async def test_session_persistence_with_model_swap() -> bool:
     """
     Full integration test with provider swaps:
@@ -352,7 +354,7 @@ async def test_session_persistence_with_model_swap() -> bool:
         print(f"✓ Value after Haiku: {env1_value}")
 
         assert states1[-1].actor.endpoint.provider == "anthropic"
-        assert states1[-1].actor.endpoint.model == "claude-3-5-haiku-20241022"
+        assert states1[-1].actor.endpoint.model_id == "claude-3-5-haiku-20241022"
         print(
             f"✓ Provider: {states1[-1].actor.endpoint.provider}/{states1[-1].actor.endpoint.model}"
         )
@@ -376,7 +378,7 @@ async def test_session_persistence_with_model_swap() -> bool:
         resumed_state2 = await resume_session(session_id, store, endpoint2, env2)
 
         assert resumed_state2.actor.endpoint.provider == "openai"
-        assert resumed_state2.actor.endpoint.model == "gpt-5.1-codex"
+        assert resumed_state2.actor.endpoint.model_id == "gpt-5.1-codex"
         print(
             f"✓ Swapped to: {resumed_state2.actor.endpoint.provider}/{resumed_state2.actor.endpoint.model}"
         )
@@ -445,7 +447,7 @@ async def test_session_persistence_with_model_swap() -> bool:
         resumed_state3 = await resume_session(session_id, store, endpoint3, env3)
 
         assert resumed_state3.actor.endpoint.provider == "openai"
-        assert resumed_state3.actor.endpoint.model == "gpt-4o"
+        assert resumed_state3.actor.endpoint.model_id == "gpt-4o"
         print(
             f"✓ Swapped to: {resumed_state3.actor.endpoint.provider}/{resumed_state3.actor.endpoint.model}"
         )

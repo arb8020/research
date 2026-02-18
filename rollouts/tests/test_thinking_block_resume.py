@@ -170,7 +170,7 @@ async def test_resume_with_consecutive_assistants() -> None:
     if not api_key:
         pytest.skip("ANTHROPIC_API_KEY not set")
 
-    endpoint = Endpoint(
+    endpoint = Endpoint.from_legacy(
         provider="anthropic",
         model="claude-sonnet-4-5-20250929",
         api_key=api_key,

@@ -22,6 +22,7 @@ SCHOLARS_MATE_FEN = "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQ
 SCHOLARS_MATE_SOLUTION = ["h5f7"]  # Qxf7#
 
 
+@pytest.mark.trio
 async def test_make_move_legal() -> None:
     """make_move accepts legal moves."""
     env = ChessPuzzleEnvironment(fen=SCHOLARS_MATE_FEN, solution=SCHOLARS_MATE_SOLUTION)
@@ -35,6 +36,7 @@ async def test_make_move_legal() -> None:
     print("✓ make_move accepts legal moves")
 
 
+@pytest.mark.trio
 async def test_make_move_illegal() -> None:
     """make_move rejects illegal moves."""
     env = ChessPuzzleEnvironment(fen=SCHOLARS_MATE_FEN, solution=SCHOLARS_MATE_SOLUTION)
@@ -47,6 +49,7 @@ async def test_make_move_illegal() -> None:
     print("✓ make_move rejects illegal moves")
 
 
+@pytest.mark.trio
 async def test_submit_answer() -> None:
     """submit_answer works correctly."""
     env = ChessPuzzleEnvironment(fen=SCHOLARS_MATE_FEN, solution=SCHOLARS_MATE_SOLUTION)
@@ -62,6 +65,7 @@ async def test_submit_answer() -> None:
     print("✓ submit_answer works")
 
 
+@pytest.mark.trio
 async def test_serialize_deserialize() -> None:
     """Environment can be serialized and deserialized."""
     env = ChessPuzzleEnvironment(fen=SCHOLARS_MATE_FEN, solution=SCHOLARS_MATE_SOLUTION)

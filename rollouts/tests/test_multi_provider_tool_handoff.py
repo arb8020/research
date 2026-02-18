@@ -39,7 +39,7 @@ from rollouts.transform_messages import transform_messages
 
 def get_endpoint(provider: str, model: str, api_key: str, api_base: str = "") -> Endpoint:
     """Create an endpoint for a provider."""
-    return Endpoint(
+    return Endpoint.from_legacy(
         provider=provider,
         model=model,
         api_key=api_key,

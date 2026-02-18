@@ -53,7 +53,7 @@ async def run_calculator_test(provider: str, model: str, api_key: str, api_base:
     print()
 
     env = CalculatorEnvironment()
-    endpoint = Endpoint(
+    endpoint = Endpoint.from_legacy(
         provider=provider,
         model=model,
         api_key=api_key,
@@ -142,6 +142,9 @@ async def test_openai_responses_api() -> None:
 
     GPT-5.1-Codex models are designed for agentic coding tasks and only support
     the Responses API (not chat completions).
+
+    NOTE: The Responses API requires a 'reasoning' item to be included with
+    function_call items. The provider needs to be updated to handle this.
     """
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:

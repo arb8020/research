@@ -78,7 +78,7 @@ def test_switch_session_updates_endpoint() -> None:
         session_store = FileSessionStore()
 
         # Create parent session with anthropic endpoint
-        parent_endpoint = Endpoint(
+        parent_endpoint = Endpoint.from_legacy(
             provider="anthropic",
             model="claude-sonnet-4-20250514",
             max_tokens=8000,
@@ -109,14 +109,14 @@ def test_switch_session_updates_endpoint() -> None:
 
         # Create runner with DIFFERENT endpoint (simulates /model before /slice)
         runner = MockRunner(
-            endpoint=Endpoint(provider="openai", model="gpt-4o", max_tokens=4000),
+            endpoint=Endpoint.from_legacy(provider="openai", model="gpt-4o", max_tokens=4000),
             session_store=session_store,
             session_id=parent.session_id,
         )
 
         # Before switch - runner has openai endpoint
         assert runner.endpoint.provider == "openai"
-        assert runner.endpoint.model == "gpt-4o"
+        assert runner.endpoint.model_id == "gpt-4o"
         assert not runner._session_switched
 
         # Switch to child session
@@ -125,7 +125,7 @@ def test_switch_session_updates_endpoint() -> None:
 
         # After switch - runner should have child's endpoint AND flag set
         assert runner.endpoint.provider == child.endpoint.provider
-        assert runner.endpoint.model == child.endpoint.model
+        assert runner.endpoint.model_id == child.endpoint.model_id
         assert runner._session_switched, "_session_switched flag not set!"
 
     trio.run(_test)
@@ -136,7 +136,7 @@ def test_switch_session_sets_flag() -> None:
 
     async def _test() -> None:
         session_store = FileSessionStore()
-        endpoint = Endpoint(provider="anthropic", model="claude-sonnet-4-20250514")
+        endpoint = Endpoint.from_legacy(provider="anthropic", model="claude-sonnet-4-20250514")
 
         parent = await session_store.create(
             endpoint=endpoint,
@@ -173,7 +173,7 @@ def test_rebuild_state_uses_new_endpoint() -> None:
     async def _test() -> None:
         session_store = FileSessionStore()
 
-        parent_endpoint = Endpoint(
+        parent_endpoint = Endpoint.from_legacy(
             provider="anthropic",
             model="claude-sonnet-4-20250514",
         )
@@ -194,7 +194,7 @@ def test_rebuild_state_uses_new_endpoint() -> None:
 
         # Runner starts with different endpoint
         runner = MockRunner(
-            endpoint=Endpoint(provider="openai", model="gpt-4o"),
+            endpoint=Endpoint.from_legacy(provider="openai", model="gpt-4o"),
             session_store=session_store,
             session_id=parent.session_id,
         )
@@ -207,7 +207,7 @@ def test_rebuild_state_uses_new_endpoint() -> None:
 
         # The rebuilt state should use the child's endpoint
         assert new_state.actor.endpoint.provider == "anthropic"
-        assert new_state.actor.endpoint.model == "claude-sonnet-4-20250514"
+        assert new_state.actor.endpoint.model_id == "claude-sonnet-4-20250514"
 
         # And the flag should be consumed
         assert not runner._session_switched
@@ -220,7 +220,7 @@ def test_switch_session_updates_trajectory() -> None:
 
     async def _test() -> None:
         session_store = FileSessionStore()
-        endpoint = Endpoint(provider="anthropic", model="claude-sonnet-4-20250514")
+        endpoint = Endpoint.from_legacy(provider="anthropic", model="claude-sonnet-4-20250514")
 
         # Create parent with 4 messages
         parent = await session_store.create(
