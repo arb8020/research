@@ -159,6 +159,128 @@ def test_scheduler_state_immutability():
     return True
 
 
+def test_scheduler_prefill_avoids_head_of_line_blocking():
+    """Test prefill scheduling skips oversized head request."""
+    from .core import SamplingParams, create_req
+    from .scheduler import SchedulerConfig, add_request, empty_scheduler_state, schedule_prefill
+
+    state = empty_scheduler_state()
+    oversized = create_req(
+        uid=0,
+        prompt_ids=[1, 2, 3, 4, 5],  # extend_len=5
+        sampling_params=SamplingParams(max_tokens=1),
+        table_idx=0,
+    )
+    small = create_req(
+        uid=1,
+        prompt_ids=[9, 8],  # extend_len=2
+        sampling_params=SamplingParams(max_tokens=1),
+        table_idx=1,
+    )
+    state = add_request(state, oversized)
+    state = add_request(state, small)
+
+    config = SchedulerConfig(max_batch_size=4, max_tokens_per_batch=4, max_seq_len=32)
+
+    def allocate_pages(n: int):
+        return torch.arange(n, dtype=torch.int32)
+
+    result = schedule_prefill(
+        state=state,
+        config=config,
+        num_free_pages=32,
+        device=torch.device("cpu"),
+        allocate_pages=allocate_pages,
+    )
+
+    assert result.batch is not None
+    scheduled_uids = {req.uid for req in result.batch.reqs}
+    assert scheduled_uids == {1}, f"Expected only small request scheduled, got {scheduled_uids}"
+    assert tuple(req.uid for req in result.new_state.prefill_queue) == (0,)
+    return True
+
+
+def test_chunked_prefill_state_transition():
+    """Test chunked prefill updates state without decoding intermediate chunks."""
+    from .chunked_prefill import ChunkedPrefillManager
+    from .core import SamplingParams, create_req, make_batch
+    from .engine_v2 import InferenceEngineV2
+    from .scheduler import SchedulerState
+
+    params = SamplingParams(temperature=0.0, max_tokens=2)
+
+    req_first_chunk = create_req(
+        uid=7,
+        prompt_ids=[10, 11],
+        sampling_params=params,
+        table_idx=0,
+    )
+    req_full_prompt = create_req(
+        uid=7,
+        prompt_ids=[10, 11, 12, 13],
+        sampling_params=params,
+        table_idx=0,
+    )
+
+    engine = InferenceEngineV2.__new__(InferenceEngineV2)
+    engine.eos_token_id = 2
+    engine._prefill_chunk_size = 2
+    engine._chunked_prefill_mgr = ChunkedPrefillManager(2)
+    engine._chunked_prefill_mgr.maybe_chunk(req_full_prompt)
+    engine._chunk_pending_tokens = {7: torch.tensor([12, 13], dtype=torch.int32)}
+
+    batch1 = make_batch(
+        reqs=(req_first_chunk,),
+        phase="prefill",
+        out_loc=torch.tensor([0, 1], dtype=torch.int32),
+        device=torch.device("cpu"),
+    )
+    state1 = SchedulerState(
+        prefill_queue=(),
+        decode_set=frozenset({req_first_chunk}),
+        finished=(),
+    )
+    updated1 = engine._update_state_after_batch(
+        state=state1,
+        batch=batch1,
+        next_tokens=torch.tensor([99], dtype=torch.int32),
+    )
+
+    assert len(updated1.finished) == 0
+    assert len(updated1.decode_set) == 0
+    assert len(updated1.prefill_queue) == 1
+    queued_req = updated1.prefill_queue[0]
+    assert queued_req.uid == 7
+    assert queued_req.cached_len == 2
+    assert queued_req.input_ids.tolist() == [10, 11, 12, 13]
+
+    batch2 = make_batch(
+        reqs=(queued_req,),
+        phase="prefill",
+        out_loc=torch.tensor([2, 3], dtype=torch.int32),
+        device=torch.device("cpu"),
+    )
+    state2 = SchedulerState(
+        prefill_queue=(),
+        decode_set=frozenset({queued_req}),
+        finished=(),
+    )
+    updated2 = engine._update_state_after_batch(
+        state=state2,
+        batch=batch2,
+        next_tokens=torch.tensor([77], dtype=torch.int32),
+    )
+
+    assert len(updated2.prefill_queue) == 0
+    assert len(updated2.finished) == 0
+    assert len(updated2.decode_set) == 1
+    final_req = next(iter(updated2.decode_set))
+    assert final_req.uid == 7
+    assert final_req.cached_len == 4
+    assert final_req.input_ids.tolist() == [10, 11, 12, 13, 77]
+    return True
+
+
 def test_kv_cache_correctness():
     """Test that KV cache produces correct output.
 
@@ -304,6 +426,10 @@ if __name__ == "__main__":
 
     # Tests without GPU
     results.append(("immutability", test_scheduler_state_immutability()))
+    print()
+    results.append(("scheduler_no_hol", test_scheduler_prefill_avoids_head_of_line_blocking()))
+    print()
+    results.append(("chunked_prefill_state", test_chunked_prefill_state_transition()))
     print()
     results.append(("kv_cache_state", test_kv_cache_state_tracking()))
     print()

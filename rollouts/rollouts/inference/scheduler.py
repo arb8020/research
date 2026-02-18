@@ -149,19 +149,24 @@ def schedule_prefill(
         if len(selected) >= config.max_batch_size:
             break
 
-        # Check token budget
         req_tokens = req.extend_len
-        if total_tokens + req_tokens > config.max_tokens_per_batch:
-            break
-
-        # Check page availability (1 page per token for now)
         req_pages = req_tokens
-        if pages_needed + req_pages > num_free_pages:
-            break
 
         # Check sequence length
         if req.device_len > config.max_seq_len:
             # Skip this request (too long)
+            continue
+
+        # Skip requests that can never fit in one prefill batch.
+        # Chunked prefill should handle these in a higher layer.
+        if req_tokens > config.max_tokens_per_batch or req_pages > num_free_pages:
+            continue
+
+        # If this request doesn't fit in current remaining budget,
+        # keep scanning to avoid head-of-line blocking.
+        if total_tokens + req_tokens > config.max_tokens_per_batch:
+            continue
+        if pages_needed + req_pages > num_free_pages:
             continue
 
         selected.append(req)

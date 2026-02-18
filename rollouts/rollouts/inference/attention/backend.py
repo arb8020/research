@@ -108,6 +108,7 @@ def build_attention_metadata(
     extend_lens: list[int],
     page_table: Tensor,
     device: torch.device,
+    table_indices: list[int] | None = None,
 ) -> AttentionMetadata:
     """Build AttentionMetadata from per-request info.
 
@@ -116,6 +117,8 @@ def build_attention_metadata(
         extend_lens: Number of new tokens per request
         page_table: Full page table, shape [max_batch, max_seq_len]
         device: Target device
+        table_indices: Per-request page table row indices in batch order.
+            If None, uses rows [0, batch_size), for compatibility.
 
     Returns:
         AttentionMetadata ready for attention computation
@@ -144,11 +147,18 @@ def build_attention_metadata(
     max_seqlen_q = max(seqlens_q) if seqlens_q else 0
     max_seqlen_k = max(seqlens_k) if seqlens_k else 0
 
+    if table_indices is None:
+        batch_page_table = page_table[:batch_size, :max_seqlen_k]
+    else:
+        assert len(table_indices) == batch_size
+        index_tensor = torch.tensor(table_indices, dtype=torch.long, device=page_table.device)
+        batch_page_table = page_table.index_select(0, index_tensor)[:, :max_seqlen_k]
+
     return AttentionMetadata(
         cu_seqlens_q=cu_seqlens_q,
         cu_seqlens_k=cu_seqlens_k,
         cache_seqlens=cache_seqlens,
         max_seqlen_q=max_seqlen_q,
         max_seqlen_k=max_seqlen_k,
-        page_table=page_table[:batch_size, :max_seqlen_k].contiguous(),
+        page_table=batch_page_table.contiguous(),
     )

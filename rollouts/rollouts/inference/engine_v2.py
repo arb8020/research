@@ -27,11 +27,29 @@ from torch import Tensor
 from .attention.backend import AttentionMetadata, build_attention_metadata
 from .attention.flash import FlashAttentionBackend, is_flash_attn_available
 from .attention.reference import ReferenceAttentionBackend
-from .core import Batch, Req, SamplingParams, create_req
+from .chunked_prefill import ChunkedPrefillManager
+from .core import (
+    Batch,
+    Req,
+    SamplingParams,
+    create_req,
+    req_after_decode_step,
+    req_after_forward,
+    req_append_token,
+)
 from .graph import can_use_graph, capture_graphs, replay_graph
 from .kv_cache import CacheConfig, KVCachePool
 from .models.config import load_model_config
 from .models.llama import LlamaForCausalLM
+from .models.llama_functional import (
+    LlamaConfig as FunctionalLlamaConfig,
+)
+from .models.llama_functional import (
+    forward as functional_forward,
+)
+from .models.llama_functional import (
+    load_config as load_functional_config,
+)
 from .models.weight import load_weights, remap_weights_llama
 from .overlap import (
     ForwardInput,
@@ -42,11 +60,11 @@ from .overlap import (
 from .radix import CacheHandle, evict, init_radix_state, insert_prefix, lock, match_prefix, unlock
 from .scheduler import (
     SchedulerConfig,
+    SchedulerState,
     add_request,
     empty_scheduler_state,
     has_pending_work,
     schedule_step,
-    update_after_forward,
 )
 
 logger = logging.getLogger(__name__)
@@ -73,10 +91,19 @@ class EngineConfig:
     # Radix cache settings
     enable_radix_cache: bool = True
 
+    # Chunked prefill settings
+    enable_chunked_prefill: bool = True
+    prefill_chunk_size: int | None = None
+
+    # Model implementation
+    model_impl: Literal["module", "functional"] = "module"
+
     def __post_init__(self) -> None:
         assert self.max_batch_size > 0
         assert self.max_tokens_per_batch > 0
         assert self.max_seq_len > 0
+        if self.prefill_chunk_size is not None:
+            assert self.prefill_chunk_size > 0
 
 
 class PageTableManager:
@@ -133,6 +160,7 @@ class InferenceEngineV2:
 
     def __init__(self, config: EngineConfig) -> None:
         self.config = config
+        self._use_functional_model = config.model_impl == "functional"
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._is_cuda = self.device.type == "cuda"
 
@@ -158,7 +186,18 @@ class InferenceEngineV2:
         self.attn_backend = self._create_attention_backend(config.attention_backend)
 
         # Load model
-        self.model = self._load_model(config.model_path, config.dtype)
+        self.model: LlamaForCausalLM | None = None
+        self._functional_config: FunctionalLlamaConfig | None = None
+        self._functional_weights: dict[str, Tensor] | None = None
+        if self._use_functional_model:
+            self._functional_config = load_functional_config(config.model_path)
+            self._functional_weights = load_weights(config.model_path, self.device, config.dtype)
+            if "lm_head.weight" not in self._functional_weights:
+                self._functional_weights["lm_head.weight"] = self._functional_weights[
+                    "model.embed_tokens.weight"
+                ]
+        else:
+            self.model = self._load_model(config.model_path, config.dtype)
 
         # Page table manager
         self.page_table_mgr = PageTableManager(
@@ -185,11 +224,23 @@ class InferenceEngineV2:
 
         # Request -> cache handle mapping
         self._cache_handles: dict[int, CacheHandle] = {}
+        self._chunk_pending_tokens: dict[int, Tensor] = {}
 
         # Feature flags
         self._use_cuda_graphs = config.enable_cuda_graphs and self._is_cuda
         self._use_overlap = config.enable_overlap and self._is_cuda
         self._use_radix_cache = config.enable_radix_cache and self._is_cuda
+        self._use_chunked_prefill = config.enable_chunked_prefill
+        self._prefill_chunk_size = config.prefill_chunk_size or config.max_tokens_per_batch
+        self._chunked_prefill_mgr = ChunkedPrefillManager(self._prefill_chunk_size)
+
+        if self._use_functional_model:
+            if self._use_cuda_graphs:
+                logger.info("Disabling CUDA graphs for functional model path")
+            if self._use_overlap:
+                logger.info("Disabling overlap execution for functional model path")
+            self._use_cuda_graphs = False
+            self._use_overlap = False
 
         # Initialize radix cache state
         if self._use_radix_cache:
@@ -201,6 +252,9 @@ class InferenceEngineV2:
 
         if self._use_overlap:
             logger.info("Overlap scheduling enabled")
+
+        if self._use_chunked_prefill:
+            logger.info(f"Chunked prefill enabled (chunk_size={self._prefill_chunk_size})")
 
     def _load_tokenizer(self, model_path: str):
         from transformers import AutoTokenizer
@@ -249,6 +303,7 @@ class InferenceEngineV2:
         out_loc: Tensor,
     ) -> Tensor:
         """Model forward pass (used by graph capture)."""
+        assert self.model is not None
         return self.model(
             input_ids=input_ids,
             positions=positions,
@@ -276,7 +331,11 @@ class InferenceEngineV2:
             prompt_ids = list(prompt)
 
         assert len(prompt_ids) > 0, "prompt cannot be empty"
-
+        if len(prompt_ids) > self.scheduler_config.max_seq_len:
+            raise ValueError(
+                f"Prompt length {len(prompt_ids)} exceeds max_seq_len="
+                f"{self.scheduler_config.max_seq_len}"
+            )
         table_idx = self.page_table_mgr.allocate_index()
 
         uid = self.next_uid
@@ -295,12 +354,29 @@ class InferenceEngineV2:
                 self.page_table_mgr.update_slots(table_idx, 0, matched_slots)
                 logger.debug(f"Radix cache hit: {cached_len} tokens for request {uid}")
 
-        req = create_req(
+        full_req = create_req(
             uid=uid,
             prompt_ids=prompt_ids,
             sampling_params=sampling_params,
             table_idx=table_idx,
         )
+
+        req = full_req
+
+        if self._use_chunked_prefill and len(prompt_ids) > self._prefill_chunk_size:
+            first_chunk = prompt_ids[: self._prefill_chunk_size]
+            pending_chunk = prompt_ids[self._prefill_chunk_size :]
+
+            req = Req(
+                uid=full_req.uid,
+                input_ids=torch.tensor(first_chunk, dtype=torch.int32),
+                cached_len=0,
+                max_len=full_req.max_len,
+                sampling_params=full_req.sampling_params,
+                table_idx=full_req.table_idx,
+            )
+            self._chunked_prefill_mgr.maybe_chunk(full_req)
+            self._chunk_pending_tokens[uid] = torch.tensor(pending_chunk, dtype=torch.int32)
 
         if cached_len > 0:
             req = Req(
@@ -334,15 +410,17 @@ class InferenceEngineV2:
         batch = result.batch
         self.state = result.new_state
 
-        self._update_page_table(batch)
-        attn_metadata = self._build_attention_metadata(batch)
-        next_tokens = self._forward_with_graphs(batch, attn_metadata)
+        if self._use_functional_model:
+            next_tokens = self._forward_functional(batch)
+        else:
+            self._update_page_table(batch)
+            attn_metadata = self._build_attention_metadata(batch)
+            next_tokens = self._forward_with_graphs(batch, attn_metadata)
 
-        self.state = update_after_forward(
+        self.state = self._update_state_after_batch(
             state=self.state,
             batch=batch,
             next_tokens=next_tokens,
-            eos_token_id=self.eos_token_id,
         )
 
         for req in self.state.finished:
@@ -377,6 +455,7 @@ class InferenceEngineV2:
             for handle in self._cache_handles.values():
                 unlock(self._radix_state, handle)
             self._cache_handles.clear()
+        self._chunk_pending_tokens.clear()
 
         self.state = empty_scheduler_state()
         self.kv_pool.reset()
@@ -441,6 +520,8 @@ class InferenceEngineV2:
 
     def _handle_finished_request(self, req: Req) -> None:
         self.page_table_mgr.free_index(req.table_idx)
+        self._chunked_prefill_mgr.cleanup(req.uid)
+        self._chunk_pending_tokens.pop(req.uid, None)
 
         if req.uid in self._cache_handles:
             handle = self._cache_handles.pop(req.uid)
@@ -453,15 +534,80 @@ class InferenceEngineV2:
             tokens = req.input_ids.to(self.device)
             insert_prefix(self._radix_state, tokens, slots)
 
+    def _append_next_prompt_chunk(self, req: Req) -> Req:
+        pending = self._chunk_pending_tokens.get(req.uid)
+        if pending is None or len(pending) == 0:
+            return req
+
+        chunk_len = min(self._prefill_chunk_size, len(pending))
+        next_chunk = pending[:chunk_len]
+        remaining = pending[chunk_len:]
+
+        if len(remaining) == 0:
+            self._chunk_pending_tokens.pop(req.uid, None)
+        else:
+            self._chunk_pending_tokens[req.uid] = remaining
+
+        new_input_ids = torch.cat([req.input_ids, next_chunk])
+        return Req(
+            uid=req.uid,
+            input_ids=new_input_ids,
+            cached_len=req.cached_len,
+            max_len=req.max_len,
+            sampling_params=req.sampling_params,
+            table_idx=req.table_idx,
+        )
+
+    def _update_state_after_batch(
+        self,
+        state: SchedulerState,
+        batch: Batch,
+        next_tokens: Tensor,
+    ) -> SchedulerState:
+        decode_by_uid = {req.uid: req for req in state.decode_set}
+        prefill_queue = list(state.prefill_queue)
+        finished: list[Req] = []
+
+        for req, next_token in zip(batch.reqs, next_tokens.tolist(), strict=False):
+            decode_by_uid.pop(req.uid, None)
+
+            if batch.is_prefill and self._chunked_prefill_mgr.is_chunking(req.uid):
+                chunk_prefill_req = req_after_forward(req)
+                self._chunked_prefill_mgr.advance(req.uid, chunk_prefill_req)
+
+                if self._chunked_prefill_mgr.is_chunking(req.uid):
+                    next_chunk_req = self._append_next_prompt_chunk(chunk_prefill_req)
+                    prefill_queue.append(next_chunk_req)
+                    continue
+
+                new_req = req_append_token(chunk_prefill_req, next_token)
+            else:
+                new_req = req_after_decode_step(req, next_token)
+
+            is_eos = next_token == self.eos_token_id and not req.sampling_params.ignore_eos
+            is_max_len = not new_req.can_decode
+            if is_eos or is_max_len:
+                finished.append(new_req)
+            else:
+                decode_by_uid[new_req.uid] = new_req
+
+        return SchedulerState(
+            prefill_queue=tuple(prefill_queue),
+            decode_set=frozenset(decode_by_uid.values()),
+            finished=tuple(finished),
+        )
+
     def _build_attention_metadata(self, batch: Batch) -> AttentionMetadata:
         cached_lens = [req.cached_len for req in batch.reqs]
         extend_lens = [req.extend_len for req in batch.reqs]
+        table_indices = [req.table_idx for req in batch.reqs]
 
         return build_attention_metadata(
             cached_lens=cached_lens,
             extend_lens=extend_lens,
             page_table=self.page_table_mgr.page_table,
             device=self.device,
+            table_indices=table_indices,
         )
 
     def _forward_with_graphs(self, batch: Batch, attn_metadata: AttentionMetadata) -> Tensor:
@@ -484,6 +630,7 @@ class InferenceEngineV2:
         return next_tokens
 
     def _forward(self, batch: Batch, attn_metadata: AttentionMetadata) -> Tensor:
+        assert self.model is not None
         with torch.no_grad():
             logits = self.model(
                 input_ids=batch.input_ids,
@@ -498,6 +645,24 @@ class InferenceEngineV2:
 
         next_tokens = self._sample_batch(last_logits, batch)
         return next_tokens
+
+    def _forward_functional(self, batch: Batch) -> Tensor:
+        assert self._functional_config is not None
+        assert self._functional_weights is not None
+
+        with torch.no_grad():
+            rows: list[Tensor] = []
+            for req in batch.reqs:
+                req_input_ids = req.input_ids.to(self.device, dtype=torch.long)
+                logits = functional_forward(
+                    req_input_ids.unsqueeze(0),
+                    self._functional_weights,
+                    self._functional_config,
+                )
+                rows.append(logits[0, -1])
+            last_logits = torch.stack(rows, dim=0)
+
+        return self._sample_batch(last_logits, batch)
 
     def _sample_batch(self, logits: Tensor, batch: Batch) -> Tensor:
         next_tokens: list[int] = []

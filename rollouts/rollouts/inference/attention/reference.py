@@ -128,6 +128,11 @@ class ReferenceAttentionBackend:
         Returns:
             [q_len, num_q_heads, head_dim]
         """
+        out_dtype = q.dtype
+        q = q.float()
+        k = k.float()
+        v = v.float()
+
         # Expand K,V for GQA: [kv_len, num_kv_heads, head_dim] -> [kv_len, num_q_heads, head_dim]
         if self.num_q_per_kv > 1:
             k = k.repeat_interleave(self.num_q_per_kv, dim=1)
@@ -156,4 +161,4 @@ class ReferenceAttentionBackend:
         out = torch.matmul(attn_weights, v)  # [num_q_heads, q_len, head_dim]
 
         # Reshape back: [q_len, num_q_heads, head_dim]
-        return out.transpose(0, 1)
+        return out.transpose(0, 1).to(out_dtype)

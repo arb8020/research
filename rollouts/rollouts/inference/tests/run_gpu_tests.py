@@ -106,6 +106,7 @@ async def main():
             "accelerate",
             "safetensors",
             "numpy",
+            "uv",
         )
         .env({
             "HF_HOME": "/root/.cache/huggingface",
@@ -189,7 +190,9 @@ def setup_sandbox(sandbox) -> bool:
     proc = sandbox.exec(
         "bash",
         "-c",
-        "cd /workspace/research/rollouts && pip install -e '.[training]' 2>&1",
+        "cd /workspace/research/rollouts && "
+        "uv pip install --system -e '.[training]' && "
+        "uv pip install --system git+https://github.com/sgl-project/mini-sglang.git 2>&1",
         timeout=300,
     )
     for line in proc.stdout:

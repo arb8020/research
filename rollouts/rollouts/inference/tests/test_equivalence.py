@@ -19,6 +19,8 @@ import logging
 # Setup logging - use color for console, respects LOG_LEVEL env var
 # Disable queue_handler for Python 3.11 compatibility (Modal sandbox)
 import sys
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import torch
 
@@ -30,6 +32,112 @@ setup_logging(
     use_queue_handler=(sys.version_info >= (3, 12)),
 )
 logger = logging.getLogger(__name__)
+
+
+def test_functional_multitoken_vs_huggingface():
+    """Regression: functional Llama must match HF across all prompt positions."""
+    if not torch.cuda.is_available():
+        logger.info("Skipping functional multi-token test (no CUDA)")
+        return True
+
+    logger.info("Testing functional multi-token parity vs HuggingFace...")
+
+    model_name = "HuggingFaceTB/SmolLM2-135M"
+    prompt = "Hello, world"
+    device = torch.device("cuda")
+    dtype = torch.bfloat16
+    tolerance = 1e-2
+
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    from ..models.llama_functional import forward as functional_forward
+    from ..models.llama_functional import load_config as functional_load_config
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    hf_model = AutoModelForCausalLM.from_pretrained(
+        model_name, torch_dtype=dtype, device_map=device
+    )
+    hf_model.eval()
+
+    input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
+    config = functional_load_config(model_name)
+    weights = {k: v.to(device) for k, v in hf_model.state_dict().items()}
+
+    with torch.no_grad():
+        hf_logits = hf_model(input_ids).logits
+        functional_logits = functional_forward(input_ids, weights, config)
+
+    if functional_logits.dim() == 2:
+        functional_logits = functional_logits.unsqueeze(0)
+
+    all_ok = True
+    for pos in range(functional_logits.shape[1]):
+        pos_diff = (
+            (functional_logits[0, pos].float() - hf_logits[0, pos].float()).abs().max().item()
+        )
+        logger.info(f"Functional position {pos}: max_diff={pos_diff:.2e}")
+        if pos_diff >= tolerance:
+            all_ok = False
+
+    if all_ok:
+        logger.info("PASS: Functional multi-token logits match HuggingFace per position")
+        return True
+
+    logger.error(f"FAIL: Functional per-position diff exceeds {tolerance:.2e}")
+    return False
+
+
+def test_functional_load_config_rope_parsing():
+    """Regression: load_config should parse RoPE theta from modern HF config fields."""
+
+    def _cfg(
+        *,
+        rope_theta=None,
+        rope_parameters=None,
+        rope_scaling=None,
+    ):
+        return SimpleNamespace(
+            hidden_size=64,
+            num_hidden_layers=2,
+            num_attention_heads=8,
+            num_key_value_heads=2,
+            intermediate_size=128,
+            vocab_size=32000,
+            rms_norm_eps=1e-5,
+            max_position_embeddings=2048,
+            rope_theta=rope_theta,
+            rope_parameters=rope_parameters,
+            rope_scaling=rope_scaling,
+        )
+
+    from ..models.llama_functional import load_config
+
+    cases = [
+        (
+            _cfg(rope_parameters={"rope_theta": 54321.0}),
+            54321.0,
+            "rope_parameters.rope_theta",
+        ),
+        (
+            _cfg(rope_scaling={"rope_type": "linear", "theta": 7777.0}),
+            7777.0,
+            "rope_scaling.theta",
+        ),
+        (_cfg(), 10000.0, "default"),
+    ]
+
+    for idx, (hf_cfg, expected, source) in enumerate(cases):
+        with patch("transformers.AutoConfig.from_pretrained", return_value=hf_cfg):
+            parsed = load_config(f"mock-model-{idx}")
+        if parsed.rope_theta != expected:
+            logger.error(
+                f"FAIL: load_config parsed rope_theta={parsed.rope_theta}, "
+                f"expected {expected} from {source}"
+            )
+            return False
+        logger.info(f"RoPE parse case {source}: PASS (theta={parsed.rope_theta})")
+
+    return True
 
 
 def test_reference_attention_vs_pytorch():
@@ -443,7 +551,7 @@ if __name__ == "__main__":
 
     results = []
 
-    print("\n[1/4] Running reference_attention test...")
+    print("\n[1/6] Running reference_attention test...")
     try:
         results.append(("reference_attention", test_reference_attention_vs_pytorch()))
     except Exception as e:
@@ -451,15 +559,31 @@ if __name__ == "__main__":
         traceback.print_exc()
         results.append(("reference_attention", False))
 
+    print("\n[2/6] Running functional multi-token parity regression...")
+    try:
+        results.append(("functional_multitoken", test_functional_multitoken_vs_huggingface()))
+    except Exception as e:
+        print(f"functional_multitoken CRASHED: {e}")
+        traceback.print_exc()
+        results.append(("functional_multitoken", False))
+
+    print("\n[3/6] Running load_config RoPE parsing regression...")
+    try:
+        results.append(("functional_rope_config", test_functional_load_config_rope_parsing()))
+    except Exception as e:
+        print(f"functional_rope_config CRASHED: {e}")
+        traceback.print_exc()
+        results.append(("functional_rope_config", False))
+
     if torch.cuda.is_available():
-        print("\n[2/4] Finding divergence layer...")
+        print("\n[4/6] Finding divergence layer...")
         try:
             find_divergence_layer()
         except Exception as e:
             print(f"find_divergence CRASHED: {e}")
             traceback.print_exc()
 
-        print("\n[3/4] Running model_logits test...")
+        print("\n[5/6] Running model_logits test...")
         try:
             results.append(("model_logits", test_model_logits_vs_huggingface()))
         except Exception as e:
@@ -467,7 +591,7 @@ if __name__ == "__main__":
             traceback.print_exc()
             results.append(("model_logits", False))
 
-        print("\n[4/4] Running greedy_generation test...")
+        print("\n[6/6] Running greedy_generation test...")
         try:
             results.append(("greedy_generation", test_greedy_generation_vs_huggingface()))
         except Exception as e:

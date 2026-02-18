@@ -16,8 +16,12 @@ Requirements:
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+import subprocess
 import sys
+import traceback
 
 import torch
 
@@ -31,6 +35,78 @@ setup_logging(
     use_queue_handler=(sys.version_info >= (3, 12)),
 )
 logger = logging.getLogger(__name__)
+
+
+def _run_mini_sglang_in_subprocess(
+    model_name: str,
+    prompts: list[str],
+    max_tokens: int,
+    ignore_eos: bool = False,
+) -> list[list[int]]:
+    script = """
+import json
+import os
+import traceback
+import torch
+from minisgl.core import SamplingParams as MiniSGLSamplingParams
+from minisgl.llm import LLM as MiniSGLLLM
+
+model_name = os.environ["MINISGL_MODEL_NAME"]
+prompts = json.loads(os.environ["MINISGL_PROMPTS"])
+max_tokens = int(os.environ["MINISGL_MAX_TOKENS"])
+ignore_eos = os.environ.get("MINISGL_IGNORE_EOS", "0") == "1"
+
+try:
+    llm = MiniSGLLLM(model_name, dtype=torch.bfloat16)
+    params = MiniSGLSamplingParams(
+        temperature=0.0,
+        max_tokens=max_tokens,
+        ignore_eos=ignore_eos,
+    )
+    results = llm.generate(prompts, params)
+    tokens = [r["token_ids"] for r in results]
+    print(json.dumps({"ok": True, "tokens": tokens}))
+except Exception as e:
+    traceback.print_exc()
+    print(json.dumps({"ok": False, "type": type(e).__name__, "repr": repr(e)}))
+"""
+
+    env = {
+        **os.environ,
+        "MINISGL_MODEL_NAME": model_name,
+        "MINISGL_PROMPTS": json.dumps(prompts),
+        "MINISGL_MAX_TOKENS": str(max_tokens),
+        "MINISGL_IGNORE_EOS": "1" if ignore_eos else "0",
+    }
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            text=True,
+            capture_output=True,
+            env=env,
+            timeout=180,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(
+            f"mini-sglang subprocess timed out after 180s stdout={e.stdout!r} stderr={e.stderr!r}"
+        ) from e
+
+    stdout_lines = [line for line in proc.stdout.splitlines() if line.strip()]
+    payload = None
+    if stdout_lines:
+        try:
+            payload = json.loads(stdout_lines[-1])
+        except json.JSONDecodeError:
+            payload = None
+
+    if proc.returncode != 0 or not payload or not payload.get("ok", False):
+        details = payload or {"type": "UnknownError", "repr": "No JSON payload from subprocess"}
+        raise RuntimeError(
+            f"mini-sglang subprocess failed: type={details.get('type')} "
+            f"repr={details.get('repr')} stderr={proc.stderr!r}"
+        )
+
+    return payload["tokens"]
 
 
 def check_mini_sglang_available() -> bool:
@@ -80,60 +156,70 @@ def test_greedy_generation_vs_mini_sglang():
 
     logger.info("Testing greedy generation vs mini-sglang...")
 
-    from minisgl.core import SamplingParams as MiniSGLSamplingParams
-    from minisgl.llm import LLM as MiniSGLLLM
-
     from ..core import SamplingParams
     from ..engine_v2 import EngineConfig, InferenceEngineV2
 
     model_name = "HuggingFaceTB/SmolLM2-135M"
     prompts = [
-        "The capital of France is",
-        "Hello, my name is",
+        "Write me a very long fantasy story about a dragon and a lighthouse.",
+        "Tell a long science fiction story about a spaceship crew lost in time.",
     ]
-    max_tokens = 10
+    max_tokens = 16
 
     # mini-sglang
     logger.info("Running mini-sglang...")
     try:
-        mini_llm = MiniSGLLLM(model_name, dtype=torch.bfloat16)
-        mini_params = MiniSGLSamplingParams(temperature=0.0, max_tokens=max_tokens)
-        mini_results = mini_llm.generate(prompts, mini_params)
-        mini_tokens = [r["token_ids"] for r in mini_results]
+        mini_tokens = _run_mini_sglang_in_subprocess(
+            model_name=model_name,
+            prompts=prompts,
+            max_tokens=max_tokens,
+            ignore_eos=False,
+        )
         logger.info(f"mini-sglang outputs: {mini_tokens}")
     except Exception as e:
-        logger.warning(f"mini-sglang failed: {e}")
-        return None
+        logger.error("mini-sglang runtime failed")
+        logger.error(f"mini-sglang exception type: {type(e).__name__}")
+        logger.error(f"mini-sglang exception repr: {e!r}")
+        traceback.print_exc()
+        return False
 
     # Our engine
     logger.info("Running our engine...")
     try:
+        # mini-sglang's scheduler advances Req.device_len during prefill before
+        # host-side token append, so effective returned completion length is
+        # one token shorter than SamplingParams.max_tokens.
+        # Match mini-sglang's observed API behavior for parity comparison.
+        our_max_tokens = max(1, max_tokens - 1)
         engine = InferenceEngineV2(
             EngineConfig(
                 model_path=model_name,
                 max_batch_size=8,
                 max_tokens_per_batch=512,
                 max_seq_len=512,
-                attention_backend="reference",
+                model_impl="functional",
             )
         )
-        params = SamplingParams(temperature=0.0, max_tokens=max_tokens)
+        params = SamplingParams(temperature=0.0, max_tokens=our_max_tokens, ignore_eos=False)
         our_results = engine.generate(prompts, params)
 
         # Extract generated tokens (not including prompt)
         our_tokens = []
-        for req in our_results:
+        by_uid = {req.uid: req for req in our_results}
+        for uid, prompt in enumerate(prompts):
+            req = by_uid[uid]
             # req.input_ids includes prompt, get only generated
-            prompt_len = len(engine.tokenizer.encode(prompts[req.uid], add_special_tokens=True))
+            prompt_len = len(engine.tokenizer.encode(prompt, add_special_tokens=True))
             generated = req.input_ids[prompt_len:].tolist()
+            # mini-sglang LLM API excludes terminal EOS token from returned token_ids.
+            if generated and generated[-1] == engine.eos_token_id:
+                generated = generated[:-1]
             our_tokens.append(generated)
 
         logger.info(f"Our outputs: {our_tokens}")
         engine.shutdown()
     except Exception as e:
         logger.error(f"Our engine failed: {e}")
-        import traceback
-
         traceback.print_exc()
         return False
 
