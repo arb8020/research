@@ -241,12 +241,6 @@ Both share the same API (send/recv/wait). When we add more implementations (e.g.
 
 **Guideline**: Protocol ≈ "I have 3+ implementations, time to formalize the interface"
 
-## Documentation
-
-- `../README_MINIRAY.md` - Quick reference
-- `../rollouts/docs/MINIRAY.md` - Complete guide
-- `../rollouts/examples/train_distributed_miniray.md` - Multi-node FSDP example
-
 ## Files (~600 lines total)
 
 ```

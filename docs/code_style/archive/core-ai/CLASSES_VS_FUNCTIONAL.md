@@ -374,22 +374,89 @@ def run_training(config, backend, data_buffer):
 
 ---
 
+## The nmoe Pattern: State Dict + Pure Functions
+
+*(From Noumena-Network/nmoe)*
+
+**Key insight:** Not all state needs to live in `self`. When you have mutable state but don't own resources, use a **caller-provided dict** instead of a class.
+
+```python
+# From nmoe/zero2.py - ZeRO-2 optimizer state
+@torch.no_grad()
+def step_dense_adamw(
+    param_groups: list[dict],
+    *,
+    state: dict,  # <- explicit state parameter, not self.state
+    betas: tuple[float, float] = (0.9, 0.95),
+    eps: float = 1e-8,
+) -> None:
+    """State lives in caller-provided dict to keep this module stateless."""
+    for group_idx, group in enumerate(param_groups):
+        # Get or initialize state on demand
+        state_key = f"shard_{rank}_{group_idx}_{dtype}"
+        if state_key not in state:
+            state[state_key] = {
+                'step': 0,
+                'exp_avg': torch.zeros(shard_size, ...),
+                'exp_avg_sq': torch.zeros(shard_size, ...),
+            }
+        s = state[state_key]
+        s['step'] += 1
+        # ... AdamW update
+```
+
+**Why this is better than a class:**
+
+```python
+# BAD - class hides state, hard to checkpoint
+class MyOptimizer:
+    def __init__(self):
+        self.state = {}  # Hidden in object
+
+    def step(self, params):
+        # How do you checkpoint? Need to know internals.
+        # How do you test? Need to mock the object.
+        pass
+
+# GOOD - state is explicit, easy to checkpoint
+def step(params, *, state: dict):
+    # Caller owns state, can:
+    # - Checkpoint it: save_checkpoint({"opt": state})
+    # - Inspect it: print(state["step"])
+    # - Test it: step(params, state={})  # fresh state
+    # - Compose it: {**opt1_state, **opt2_state}
+    pass
+```
+
+**Use state dict + functions when:**
+- State is mutable but doesn't own resources
+- State needs to be checkpointed
+- You want to test with different states easily
+- Multiple callers might share/compose state
+
+**Still use classes when:**
+- You own resources (sockets, processes, GPU memory pools)
+- You need cleanup/lifecycle (`__enter__`/`__exit__`, `shutdown()`)
+
+---
+
 ## Summary: The Decision Matrix
 
 | Use Case | Pattern | Example |
 |----------|---------|---------|
 | **Configuration/Data** | `@dataclass(frozen=True)` | `TrainingConfig`, `Endpoint`, `Metrics` |
-| **Resource Ownership** | Regular class | `Worker`, `AsyncRolloutManager` |
-| **State + Lifecycle** | Regular class | `PyTorchTrainingBackend`, `DataBuffer` |
+| **Resource Ownership** | Regular class | `Worker`, `KVCachePool`, `AsyncRolloutManager` |
+| **Mutable State (no resources)** | State dict + functions | Optimizer state, cache state, scheduler state |
 | **Computation** | Pure function | `compute_loss()`, `prepare_batch()` |
 | **Orchestration** | Pure function | `run_training()`, `sft_training_step()` |
 | **Transformations** | Pure function | `tokenize()`, `normalize()`, `filter_valid()` |
 
 **The test:**
-1. **Does it own a resource?** → Class (e.g., socket, process, file)
+1. **Does it own a resource?** → Class (e.g., socket, process, file, GPU pool)
 2. **Does it need cleanup?** → Class (e.g., `shutdown()`, `close()`)
 3. **Is it just data?** → Frozen dataclass (e.g., config, metrics)
-4. **Is it computation?** → Pure function (e.g., loss, transform)
-5. **Does it orchestrate?** → Pure function calling objects
+4. **Is it mutable state without resources?** → State dict + functions (nmoe pattern)
+5. **Is it computation?** → Pure function (e.g., loss, transform)
+6. **Does it orchestrate?** → Pure function calling objects
 
-**When in doubt, start with a function. Upgrade to a class only when you have legitimate persistent state.**
+**When in doubt, start with a function + state dict. Upgrade to a class only when you own resources.**

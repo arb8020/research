@@ -3,6 +3,7 @@
 [ ] clean up + make evals code nice
 [ ] run evals
 
+
 [ ] themes (compact)
 [ ] toggleable tool results (ideally scrollable)
 [ ] 

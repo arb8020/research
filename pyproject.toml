@@ -1,5 +1,15 @@
 [tool.uv.workspace]
-members = ["bifrost", "broker", "infra_utils", "rollouts", "miniray", "dev/kernel-learning", "pytui", "rlmon"]
+members = [
+    "bifrost",
+    "broker",
+    "infra_utils",
+    "rollouts",
+    "miniray",
+    "dev/kernel-learning",
+    "pytui",
+    "rlmon",
+    "dev/project-euler",
+]
 
 [project]
 name = "gpu-research-tools"

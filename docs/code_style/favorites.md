@@ -393,30 +393,71 @@ def transform_result(data, format):  # ~20 lines, pure computation
 ## Classes vs Functions
 
 **The test:**
-1. Does it own a resource (socket, process, file)? → **Class**
+1. Does it own a resource (socket, process, file, GPU memory pool)? → **Class**
 2. Does it need cleanup (`shutdown()`, `close()`)? → **Class**
 3. Is it just data? → **Frozen dataclass**
-4. Is it computation/orchestration? → **Pure function**
+4. Is it mutable state without resource ownership? → **State dict + pure functions**
+5. Is it computation/orchestration? → **Pure function**
 
 | Use Case | Pattern |
 |----------|---------|
 | Config, metrics, data | `@dataclass(frozen=True)` |
 | Resource ownership, lifecycle | Regular class |
+| Mutable state (no resources) | State dict + functions |
 | Math, transforms, batch prep | Pure function |
 | Training loops, orchestration | Pure function calling objects |
 
+**The nmoe pattern: State dict + pure functions** *(from Noumena-Network/nmoe)*
+
+When you have mutable state but don't own resources, use a caller-provided dict instead of `self`:
+
+```python
+# BAD - class hides state
+class Optimizer:
+    def __init__(self):
+        self.state = {}  # Hidden in object
+    def step(self, params):
+        # How do you checkpoint self.state? Fragile.
+        pass
+
+# GOOD - state dict passed explicitly (nmoe pattern)
+def step(params, *, state: dict):
+    """State lives in caller-provided dict."""
+    if "exp_avg" not in state:
+        state["exp_avg"] = torch.zeros_like(params)
+    state["step"] = state.get("step", 0) + 1
+    # Caller owns state, can checkpoint/inspect/compose
+
+# Usage
+optimizer_state = {}  # Caller owns this
+step(params, state=optimizer_state)
+step(params, state=optimizer_state)
+save_checkpoint({"optimizer": optimizer_state})  # Easy!
+```
+
+**Why this works:**
+- **Transparent**: All state visible in caller's scope
+- **Checkpointable**: State dicts serialize trivially
+- **Testable**: Pass different dicts for testing
+- **Composable**: Easy to combine multiple state dicts
+- **No hidden mutations**: Functions don't hide state changes
+
 **The pattern: Functions orchestrate objects**
 ```python
-# Objects encapsulate state
-backend = PyTorchBackend(model, optimizer)  # owns model state
-buffer = DataBuffer(dataset)                 # owns iteration state
+# Objects for resource ownership only
+backend = PyTorchBackend(model, optimizer)  # owns GPU tensors
+buffer = DataBuffer(dataset)                 # owns file handles
+
+# State dicts for mutable state
+optimizer_state = {}
+cache_state = {}
 
 # Functions orchestrate (explicit inputs/outputs)
-result, err = run_training(config, backend, buffer)
+result, err = run_training(config, backend, buffer, optimizer_state)
 loss = compute_loss(logprobs, advantages, beta)
 ```
 
-**When in doubt, start with a function. Upgrade to class only when you have legitimate persistent state.**
+**When in doubt, start with a function + state dict. Upgrade to class only when you own resources.**
 
 ---
 

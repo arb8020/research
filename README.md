@@ -7,7 +7,6 @@ GPU provisioning and remote execution utilities for ML research.
 ### Infrastructure
 - **broker**: GPU cloud provisioning across multiple providers (RunPod, etc.)
 - **bifrost**: Remote code deployment and execution via SSH
-- **kerbal**: Script execution orchestration (dependency setup, tmux, GPU management)
 - **shared**: Common utilities and SSH foundation
 
 ### Compute
