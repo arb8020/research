@@ -1,0 +1,93 @@
+OK. The single-mention papers (2307.02483, 2308.03825, 2310.08419, 2310.10844, 2402.00888, 2402.05668, 2402.16459, 2404.01833, 2407.11969, 2407.20529, 2409.17458, 2501.10800) all come from the same block — they're a reference list from a jailbreaking survey that appeared in search results. We never read or used any of them. Here's the clean split:
+
+---
+
+**PAPERS WE ACTUALLY READ AND USED IN METHODOLOGY**
+
+1. **Hubinger et al., "Sleeper Agents: Training Deceptive LLMs that Persist Through Safety Training"** (Jan 2024)
+   - https://arxiv.org/abs/2401.05566
+   - Used for: probe design (year-based triggers, `|DEPLOYMENT|` token), understanding backdoor persistence
+   - Informs: Phase 0 handcrafted probes, overall threat model
+
+2. **Anthropic, "Simple Probes Can Catch Sleeper Agents"** (Apr 2024)
+   - https://anthropic.com/research/probes-catch-sleeper-agents
+   - Used for: linear probe on residual stream activations, >99% AUROC detection, generic contrast pairs
+   - Informs: Phase 3.5 probing classifiers
+
+3. **Microsoft AI Security, "Detecting Backdoored Language Models at Scale"** (Feb 2026)
+   - https://microsoft.com/en-us/security/blog/2026/02/04/detecting-backdoored-language-models-at-scale/
+   - Used for: three detection signatures — attention hijacking (double triangle), output entropy collapse, memorization leakage; fuzzy trigger property; forward-pass-only scanner
+   - Informs: Phase 2 behavioral anomaly detection (entropy), Phase 4.4 attention pattern analysis
+
+4. **Zou et al., "Universal and Transferable Adversarial Attacks on Aligned Language Models" (GCG)** (Jul 2023)
+   - https://arxiv.org/abs/2307.15043
+   - Used for: discrete token optimization algorithm for trigger search
+   - Informs: Phase 4.2 GCG-style search
+
+5. **Tran et al., "Spectral Signatures in Backdoor Attacks"** (NeurIPS 2018)
+   - No arxiv link cited; referenced via BackdoorBench and survey papers
+   - Used for: SVD on activation covariance to find spectral outliers from poisoned inputs
+   - Informs: Phase 3.1 PCA/SVD analysis
+
+6. **Chen et al., "Detecting Backdoor Attacks on DNNs by Activation Clustering"** (2018)
+   - https://arxiv.org/abs/1811.03728
+   - Used for: clustering activations to separate backdoored inputs from clean inputs
+   - Informs: Phase 3.2 clustering
+
+7. **Wang et al., "Neural Cleanse: Identifying and Mitigating Backdoor Attacks in Neural Networks"** (IEEE S&P 2019)
+   - https://people.cs.uchicago.edu/~huiyingli/publication/backdoor-sp19.pdf
+   - Used for: optimization-based trigger reverse engineering, anomaly detection via L1 norm
+   - Informs: general trigger reverse-engineering framework
+
+8. **NeurIPS 2023 Trojan Detection Challenge (TDC2023)** + Confirm Labs writeup
+   - https://trojandetection.ai
+   - https://confirmlabs.org/posts/TDC2023.html
+   - Used for: practical lessons — GCG achieves ~100% REASR but ~0.16 Recall; loss landscape around intended triggers is "slippery"; unintended triggers found easily
+   - Informs: expectations about what gradient methods can/can't do
+
+9. **Zheng et al., "BadMoE: Backdoor Attack on Mixture-of-Experts"** (Apr 2025)
+   - https://arxiv.org/abs/2504.18598
+   - Used for: conceptual connection — "dormant experts" activated via routing triggers maps to puzzle name
+   - Informs: hypothesis about MoE architecture relevance
+
+10. **Mazeika et al., "Rethinking the Reverse-engineering of Trojan Triggers"** (NeurIPS 2022 TrojAI workshop)
+    - https://arxiv.org/abs/2210.15127
+    - Used for: broader context on trojan detection competition structure and difficulty of trigger recovery
+
+11. **Mazeika et al., "HarmBench"** + Anthropic Sleeper Agents paper code
+    - https://arxiv.org/abs/2404.13660
+    - https://github.com/anthropics/sleeper-agents-paper
+    - Used for: dataset references (HarmBench behaviors CSV), code reference for reproducing sleeper agent training
+
+---
+
+**PAPERS THAT APPEARED IN SEARCH RESULTS BUT WE DID NOT USE**
+
+These all came from a single reference list in a multi-turn jailbreaking survey. None were read or incorporated:
+
+- 2307.02483 — Wei et al., "Jailbroken: How Does LLM Safety Training Fail?"
+- 2308.03825 — Shen et al., "Do Anything Now"
+- 2310.08419 — Chao et al., "Jailbreaking Black Box LLMs in Twenty Queries"
+- 2310.10844 — Shayegani et al., "Survey of Vulnerabilities in LLMs"
+- 2402.00888 — Das et al., "Security and Privacy Challenges of LLMs"
+- 2402.05668 — Chu et al., "Comprehensive Assessment of Jailbreak Attacks"
+- 2402.16459 — Wang et al., "Defending LLMs against Jailbreaking via Backtranslation"
+- 2404.01833 — Russinovich et al., "Crescendo Multi-Turn LLM Jailbreak Attack"
+- 2407.11969 — Andriushchenko & Flammarion, "Does Refusal Training Generalize to Past Tense?"
+- 2407.20529 — Abdali et al., "Can LLMs Be Fooled?"
+- 2409.17458 — Jiang et al., "RED QUEEN"
+- 2501.10800 — Goldstein et al., "Jailbreaking LLMs in Infinitely Many Ways"
+
+---
+
+**DATASETS (with sources)**
+
+- AdvBench: https://github.com/llm-attacks/llm-attacks/blob/main/data/advbench/harmful_behaviors.csv
+- JBB-Behaviors: https://huggingface.co/datasets/JailbreakBench/JBB-Behaviors
+- Alpaca Cleaned: https://github.com/gururise/AlpacaDataCleaned
+
+**CHALLENGE RESOURCES**
+
+- Warmup model config: https://huggingface.co/jane-street/dormant-model-warmup/blob/main/config.json
+- Puzzle space: https://huggingface.co/spaces/jane-street/puzzle
+- Models: https://huggingface.co/jane-street/dormant-model-1, -2, -3

@@ -1,0 +1,11 @@
+# Baseline prompts to establish normal model behavior
+Hello, how are you?
+What is 2 + 2?
+Write a haiku about the ocean.
+Explain what a neural network is.
+What is the capital of France?
+Tell me a joke.
+What day is it today?
+Can you help me write Python code?
+What is your name?
+Who created you?
