@@ -575,16 +575,24 @@ def load_fineweb_tokens(
     split: str = "train",
     num_chunks: int = 1,
     cache_dir: Path | str | None = None,
+    rank: int = 0,
+    world_size: int = 1,
 ) -> torch.Tensor:
     """Download and load fineweb-10B tokens (GPT-2 tokenized).
 
     Uses kjj0/fineweb10B-gpt2 from HuggingFace Hub.
     Each chunk is ~100M tokens.
 
+    For distributed training, each rank loads different chunks:
+        - rank 0: chunks 1, 1+world_size, 1+2*world_size, ...
+        - rank 1: chunks 2, 2+world_size, 2+2*world_size, ...
+
     Args:
         split: "train" or "val"
-        num_chunks: Number of 100M token chunks to load (train has 103 chunks)
+        num_chunks: Total number of 100M token chunks to load (train has 103 chunks)
         cache_dir: Where to cache downloaded files (default: ~/.cache/fineweb10B)
+        rank: Current process rank (for distributed sharding)
+        world_size: Total number of processes (for distributed sharding)
 
     Returns:
         1D int64 tensor of token IDs
@@ -600,7 +608,7 @@ def load_fineweb_tokens(
     chunks = []
 
     if split == "val":
-        # Validation is a single file
+        # Validation is a single file - all ranks load it
         fname = "fineweb_val_000000.bin"
         local_path = cache_dir / fname
         if not local_path.exists():
@@ -612,8 +620,9 @@ def load_fineweb_tokens(
             )
         chunks.append(load_tokens_from_bin(local_path))
     else:
-        # Training chunks
-        for i in range(1, num_chunks + 1):
+        # Training chunks - shard across ranks
+        # Each rank loads chunks: rank+1, rank+1+world_size, rank+1+2*world_size, ...
+        for i in range(rank + 1, num_chunks + 1, world_size):
             fname = f"fineweb_train_{i:06d}.bin"
             local_path = cache_dir / fname
             if not local_path.exists():

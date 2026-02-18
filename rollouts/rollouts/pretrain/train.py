@@ -1,11 +1,15 @@
 """Training loop for pretraining.
 
 Simple, explicit training loop with logging. No hidden magic.
+
+Usage:
+    python rollouts/pretrain/configs/tiny.py
+    python rollouts/pretrain/configs/small.py --real-data --resume
+    torchrun --standalone --nproc_per_node=8 rollouts/pretrain/configs/small.py
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import time
@@ -16,7 +20,8 @@ import torch
 import torch.nn.functional as F
 
 from ..training.datasets import BufferState, get_token_batch, load_fineweb_tokens
-from .config import TINY_CONFIG, ModelConfig, TrainConfig, get_git_info
+from . import runtime
+from .config import ModelConfig, TrainConfig, get_git_info
 from .models.llama import count_parameters, forward, init_weights
 from .schedule import get_lr
 
@@ -30,15 +35,6 @@ def setup_logging(level: str = "INFO") -> None:
         format="%(asctime)s | %(levelname)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-
-
-def get_device() -> torch.device:
-    """Get best available device."""
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
 
 
 def generate_random_batch(
@@ -59,16 +55,25 @@ def train_step(
     labels: torch.Tensor,
     weights: dict[str, torch.Tensor],
     config: ModelConfig,
+    autocast_ctx: torch.amp.autocast | None = None,
 ) -> torch.Tensor:
     """Single training step: forward, loss, backward.
 
     Returns loss (still attached to graph - caller handles optimizer step).
     """
-    logits = forward(input_ids, weights, config)
-    loss = F.cross_entropy(
-        logits.view(-1, config.vocab_size),
-        labels.view(-1),
-    )
+    if autocast_ctx is not None:
+        with autocast_ctx:
+            logits = forward(input_ids, weights, config)
+            loss = F.cross_entropy(
+                logits.view(-1, config.vocab_size),
+                labels.view(-1),
+            )
+    else:
+        logits = forward(input_ids, weights, config)
+        loss = F.cross_entropy(
+            logits.view(-1, config.vocab_size),
+            labels.view(-1),
+        )
     loss.backward()
     return loss
 
@@ -152,52 +157,111 @@ def save_checkpoint(
     logger.info(f"saved checkpoint: {ckpt_path}")
 
 
-def train(config: TrainConfig, use_real_data: bool = False) -> None:
+def find_latest_checkpoint(output_dir: Path) -> Path | None:
+    """Find the most recent checkpoint in output_dir."""
+    checkpoints = sorted(output_dir.glob("step_*.pt"))
+    return checkpoints[-1] if checkpoints else None
+
+
+def load_checkpoint(
+    ckpt_path: Path,
+    weights: dict[str, torch.Tensor],
+    optimizer: torch.optim.Optimizer,
+    config: TrainConfig,
+    device: torch.device,
+) -> int:
+    """Load checkpoint into weights and optimizer.
+
+    Args:
+        ckpt_path: Path to checkpoint file
+        weights: Model weights dict (modified in place)
+        optimizer: Optimizer (state loaded in place)
+        config: Config for fingerprint verification
+        device: Device to load weights to
+
+    Returns:
+        Step number to resume from
+
+    Raises:
+        ValueError: If checkpoint fingerprint doesn't match config
+    """
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+
+    # Verify fingerprint matches
+    if ckpt["fingerprint"] != config.fingerprint():
+        raise ValueError(
+            f"Checkpoint fingerprint mismatch: {ckpt['fingerprint']} != {config.fingerprint()}. "
+            "Config has changed since checkpoint was saved."
+        )
+
+    # Load weights
+    for key, value in ckpt["weights"].items():
+        weights[key].copy_(value.to(device))
+
+    # Load optimizer state
+    optimizer.load_state_dict(ckpt["optimizer"])
+
+    return ckpt["step"]
+
+
+def train(config: TrainConfig, use_real_data: bool = False, resume: bool = False) -> None:
     """Main training function.
+
+    Supports distributed training via torchrun:
+        torchrun --standalone --nproc_per_node=8 -m rollouts.pretrain.train
 
     Args:
         config: Training configuration
         use_real_data: If True, use fineweb data. If False, use random data.
+        resume: If True, resume from latest checkpoint in output_dir.
     """
-    # Setup
+    # Setup distributed runtime (handles device, seeds, NCCL init)
+    rank, world, device = runtime.init(seed=config.seed)
     setup_logging()
-    device = get_device()
     dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
 
-    logger.info(f"device: {device}, dtype: {dtype}")
-    logger.info(f"use_real_data: {use_real_data}")
+    # Mixed precision autocast (bf16 on CUDA, disabled on CPU)
+    if device.type == "cuda":
+        autocast_ctx = torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)
+    else:
+        autocast_ctx = None
 
-    # Output directory
+    if runtime.is_main():
+        logger.info(f"device: {device}, dtype: {dtype}, world: {world}")
+        logger.info(f"use_real_data: {use_real_data}")
+
+    # Output directory (only rank 0 creates)
     output_dir = Path(config.output_dir)
     if config.run_id:
         output_dir = output_dir / config.run_id
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if runtime.is_main():
+        output_dir.mkdir(parents=True, exist_ok=True)
+        save_config(config, output_dir)
 
-    # Save config
-    save_config(config, output_dir)
-
-    # Seed
-    torch.manual_seed(config.seed)
-    if device.type == "cuda":
-        torch.cuda.manual_seed(config.seed)
-
-    # Load data
+    # Load data (each rank uses different seed for data parallelism)
     train_tokens = None
     val_tokens = None
-    train_state = BufferState(seed=config.seed)
+    train_state = BufferState(seed=config.seed + rank)
 
     if use_real_data:
-        logger.info("loading fineweb tokens...")
-        train_tokens = load_fineweb_tokens(split="train", num_chunks=1)
+        if runtime.is_main():
+            logger.info("loading fineweb tokens...")
+        # Each rank loads different shards for distributed training
+        train_tokens = load_fineweb_tokens(
+            split="train", num_chunks=world, rank=rank, world_size=world
+        )
         val_tokens = load_fineweb_tokens(split="val")
-        logger.info(f"train tokens: {len(train_tokens):,}")
-        logger.info(f"val tokens: {len(val_tokens):,}")
+        if runtime.is_main():
+            logger.info(f"train tokens per rank: {len(train_tokens):,}")
+            logger.info(f"val tokens: {len(val_tokens):,}")
 
     # Model
-    logger.info("initializing model...")
+    if runtime.is_main():
+        logger.info("initializing model...")
     weights = init_weights(config.model, device, dtype)
     n_params = count_parameters(weights)
-    logger.info(f"parameters: {n_params:,} ({n_params / 1e6:.1f}M)")
+    if runtime.is_main():
+        logger.info(f"parameters: {n_params:,} ({n_params / 1e6:.1f}M)")
 
     # Optimizer
     optimizer = torch.optim.AdamW(
@@ -205,6 +269,17 @@ def train(config: TrainConfig, use_real_data: bool = False) -> None:
         lr=config.lr,
         weight_decay=config.weight_decay,
     )
+
+    # Resume from checkpoint
+    start_step = 0
+    if resume:
+        ckpt_path = find_latest_checkpoint(output_dir)
+        if ckpt_path:
+            start_step = load_checkpoint(ckpt_path, weights, optimizer, config, device)
+            if runtime.is_main():
+                logger.info(f"resumed from {ckpt_path} at step {start_step}")
+        elif runtime.is_main():
+            logger.info("no checkpoint found, starting from scratch")
 
     # Schedule config (dict for get_lr)
     schedule_config = {
@@ -214,13 +289,23 @@ def train(config: TrainConfig, use_real_data: bool = False) -> None:
     }
 
     # Training loop
-    logger.info(f"starting training for {config.steps} steps...")
+    remaining_steps = config.steps - start_step
+    grad_accum_steps = config.grad_accum_steps
+    effective_batch = config.batch_size * grad_accum_steps * world
+
+    if runtime.is_main():
+        logger.info(
+            f"starting training for {remaining_steps} steps (step {start_step} to {config.steps})..."
+        )
+        logger.info(
+            f"effective batch size: {effective_batch} (batch={config.batch_size} x accum={grad_accum_steps} x world={world})"
+        )
     start_time = time.time()
 
     val_every = config.val_every
     val_batches = config.val_batches
 
-    for step in range(config.steps):
+    for step in range(start_step, config.steps):
         step_start = time.time()
 
         # Update learning rate
@@ -228,23 +313,35 @@ def train(config: TrainConfig, use_real_data: bool = False) -> None:
         for param_group in optimizer.param_groups:
             param_group["lr"] = lr
 
-        # Get batch
-        if use_real_data and train_tokens is not None:
-            (input_ids, labels), train_state = get_token_batch(
-                train_tokens, train_state, config.batch_size, config.max_seq_len
-            )
-            input_ids = input_ids.to(device)
-            labels = labels.to(device)
-        else:
-            input_ids, labels = generate_random_batch(
-                config.batch_size,
-                config.max_seq_len,
-                config.model.vocab_size,
-                device,
-            )
+        # Gradient accumulation loop
+        accum_loss = 0.0
+        for accum_step in range(grad_accum_steps):
+            # Get batch
+            if use_real_data and train_tokens is not None:
+                (input_ids, labels), train_state = get_token_batch(
+                    train_tokens, train_state, config.batch_size, config.max_seq_len
+                )
+                input_ids = input_ids.to(device)
+                labels = labels.to(device)
+            else:
+                input_ids, labels = generate_random_batch(
+                    config.batch_size,
+                    config.max_seq_len,
+                    config.model.vocab_size,
+                    device,
+                )
 
-        # Forward, backward
-        loss = train_step(input_ids, labels, weights, config.model)
+            # Forward, backward (scale loss for accumulation)
+            loss = train_step(input_ids, labels, weights, config.model, autocast_ctx)
+            # Scale gradients by 1/grad_accum_steps (loss.backward already computed grads)
+            if grad_accum_steps > 1:
+                for param in weights.values():
+                    if param.grad is not None:
+                        param.grad.div_(grad_accum_steps)
+            accum_loss += loss.item() / grad_accum_steps
+
+        # All-reduce gradients across ranks (no-op if single GPU)
+        runtime.all_reduce_grads(weights)
 
         # Gradient clipping
         grad_norm = torch.nn.utils.clip_grad_norm_(weights.values(), config.max_grad_norm)
@@ -253,23 +350,25 @@ def train(config: TrainConfig, use_real_data: bool = False) -> None:
         optimizer.step()
         optimizer.zero_grad()
 
-        # Logging
-        if step % config.log_every == 0:
+        # Logging (rank 0 only)
+        if runtime.is_main() and step % config.log_every == 0:
             step_time = time.time() - step_start
-            tokens_per_sec = (config.batch_size * config.max_seq_len) / step_time
+            # Tokens per second accounts for all ranks and accumulation
+            tokens_per_sec = (effective_batch * config.max_seq_len) / step_time
             elapsed = time.time() - start_time
 
             logger.info(
-                f"step={step:5d} | loss={loss.item():.4f} | "
+                f"step={step:5d} | loss={accum_loss:.4f} | "
                 f"lr={lr:.2e} | "
                 f"grad_norm={grad_norm:.4f} | "
                 f"tok/s={tokens_per_sec:.0f} | "
                 f"elapsed={elapsed:.1f}s"
             )
 
-        # Validation
+        # Validation (rank 0 only)
         if (
-            use_real_data
+            runtime.is_main()
+            and use_real_data
             and val_tokens is not None
             and val_every > 0
             and step > 0
@@ -286,69 +385,33 @@ def train(config: TrainConfig, use_real_data: bool = False) -> None:
             )
             logger.info(f"step={step:5d} | val_loss={val_loss:.4f}")
 
-        # Checkpoint
-        if config.checkpoint_every > 0 and step > 0 and step % config.checkpoint_every == 0:
+        # Checkpoint (rank 0 only)
+        if (
+            runtime.is_main()
+            and config.checkpoint_every > 0
+            and step > 0
+            and step % config.checkpoint_every == 0
+        ):
             save_checkpoint(weights, optimizer, step, config, output_dir)
 
-    # Final validation
-    if use_real_data and val_tokens is not None:
-        val_loss = eval_loss(
-            val_tokens,
-            weights,
-            config.model,
-            config.batch_size,
-            config.max_seq_len,
-            val_batches,
-            device,
-        )
-        logger.info(f"final val_loss={val_loss:.4f}")
+    # Final validation and checkpoint (rank 0 only)
+    if runtime.is_main():
+        if use_real_data and val_tokens is not None:
+            val_loss = eval_loss(
+                val_tokens,
+                weights,
+                config.model,
+                config.batch_size,
+                config.max_seq_len,
+                val_batches,
+                device,
+            )
+            logger.info(f"final val_loss={val_loss:.4f}")
 
-    # Final checkpoint
-    save_checkpoint(weights, optimizer, config.steps, config, output_dir)
+        save_checkpoint(weights, optimizer, config.steps, config, output_dir)
 
-    total_time = time.time() - start_time
-    logger.info(f"training complete in {total_time:.1f}s")
+        total_time = time.time() - start_time
+        logger.info(f"training complete in {total_time:.1f}s")
 
-
-def main() -> None:
-    """CLI entry point."""
-    parser = argparse.ArgumentParser(description="Pretraining")
-    parser.add_argument("--steps", type=int, default=None, help="Number of training steps")
-    parser.add_argument("--batch-size", type=int, default=None, help="Batch size")
-    parser.add_argument("--lr", type=float, default=None, help="Learning rate")
-    parser.add_argument("--log-every", type=int, default=None, help="Log every N steps")
-    parser.add_argument(
-        "--val-every", type=int, default=50, help="Validate every N steps (0 to disable)"
-    )
-    parser.add_argument("--output-dir", type=str, default=None, help="Output directory")
-    parser.add_argument("--run-id", type=str, default=None, help="Run ID")
-    parser.add_argument("--seed", type=int, default=None, help="Random seed")
-    parser.add_argument(
-        "--real-data", action="store_true", help="Use fineweb data instead of random"
-    )
-
-    args = parser.parse_args()
-
-    # Start with tiny config, override with CLI args
-    config_dict = asdict(TINY_CONFIG)
-    model_dict = config_dict.pop("model")
-
-    # Apply CLI overrides
-    for key in ["steps", "batch_size", "lr", "log_every", "output_dir", "run_id", "seed"]:
-        value = getattr(args, key.replace("-", "_"), None)
-        if value is not None:
-            config_dict[key] = value
-
-    # Add validation config
-    config_dict["val_every"] = args.val_every
-    config_dict["val_batches"] = 10  # Fixed for now
-
-    # Reconstruct config
-    model_config = ModelConfig(**model_dict)
-    config = TrainConfig(model=model_config, **config_dict)
-
-    train(config, use_real_data=args.real_data)
-
-
-if __name__ == "__main__":
-    main()
+    # Cleanup distributed state
+    runtime.finalize()

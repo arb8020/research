@@ -1,4 +1,14 @@
-"""Configuration dataclasses with fingerprinting for reproducibility."""
+"""Configuration dataclasses with fingerprinting for reproducibility.
+
+Usage:
+    from rollouts.pretrain.config import ModelConfig, TrainConfig
+
+    config = TrainConfig(
+        model=ModelConfig(dim=256, n_layers=4, n_heads=4),
+        steps=100,
+        batch_size=4,
+    )
+"""
 
 from __future__ import annotations
 
@@ -45,6 +55,7 @@ class TrainConfig:
 
     # Optimization
     batch_size: int = 4
+    grad_accum_steps: int = 1  # Gradient accumulation steps (effective_batch = batch_size * grad_accum_steps * world_size)
     lr: float = 3e-4
     weight_decay: float = 0.1
     warmup_steps: int = 100
@@ -98,19 +109,3 @@ def get_git_info() -> tuple[str, bool]:
         return git_hash, len(status) > 0
     except subprocess.CalledProcessError:
         return "unknown", False
-
-
-# Tiny config for testing (single GPU, fast iteration)
-# 100 steps with 10-step warmup = 10% warmup, 90% cosine decay
-TINY_CONFIG = TrainConfig(
-    model=ModelConfig(
-        dim=256,
-        n_layers=4,
-        n_heads=4,
-    ),
-    max_seq_len=128,
-    batch_size=4,
-    steps=100,
-    warmup_steps=10,  # 10% warmup for tiny runs
-    log_every=10,
-)
