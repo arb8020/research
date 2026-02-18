@@ -24,6 +24,7 @@ from ..dtypes import (
     Actor,
     ChatCompletion,
     Choice,
+    FirstToken,
     Message,
     StreamDone,
     StreamError,
@@ -58,7 +59,8 @@ logger = logging.getLogger(__name__)
 async def aggregate_openai_responses_stream(
     stream: AsyncIterator,
     on_chunk: Callable[[StreamEvent], Awaitable[None]],
-) -> tuple[Message, dict[str, Any]]:
+    request_start: float | None = None,
+) -> tuple[Message, dict[str, Any], float | None]:
     """Aggregate OpenAI Responses API streaming chunks into a complete Message.
 
     This handles the o1/o3 reasoning models which use a different API than chat completions.
@@ -67,8 +69,13 @@ async def aggregate_openai_responses_stream(
     - Reasoning content comes through response.reasoning_summary_text.delta
     - Different event structure for tool calls and text
 
+    Args:
+        stream: Async iterator of streaming chunks
+        on_chunk: Callback for streaming events
+        request_start: perf_counter timestamp when request was initiated (for TTFT calc)
+
     Returns:
-        tuple of (final_message, usage_dict)
+        tuple of (final_message, usage_dict, ttft_ms)
     """
     assert stream is not None
     assert on_chunk is not None
@@ -76,6 +83,8 @@ async def aggregate_openai_responses_stream(
 
     # Emit start event
     await on_chunk(StreamStart())
+
+    ttft_ms: float | None = None  # Time to first token
 
     # Track content blocks
     content_blocks: list[dict[str, Any]] = []
@@ -93,6 +102,11 @@ async def aggregate_openai_responses_stream(
 
         # Handle output item start
         if event_type == "response.output_item.added":
+            # Capture TTFT on first output item
+            if ttft_ms is None and request_start is not None:
+                ttft_ms = (time.perf_counter() - request_start) * 1000
+                await on_chunk(FirstToken(ttft_ms=ttft_ms))
+
             item = event.item
             item_type = getattr(item, "type", None)
 
@@ -422,10 +436,15 @@ async def aggregate_openai_responses_stream(
 
     logger.debug(f"Built final message with {len(final_content_blocks)} content blocks")
 
-    return final_message, usage_data
+    return final_message, usage_data, ttft_ms
 
 
-def _messages_to_openai_responses(messages: list[Message]) -> list[dict[str, Any]]:
+def _messages_to_openai_responses(
+    messages: list[Message],
+    current_model: str | None = None,
+    current_provider: str | None = None,
+    current_api: str | None = None,
+) -> list[dict[str, Any]]:
     """Convert rollouts Messages to OpenAI Responses API format.
 
     Handles new ContentBlock-based message structure:
@@ -438,6 +457,12 @@ def _messages_to_openai_responses(messages: list[Message]) -> list[dict[str, Any
     - Assistant messages become separate message/function_call objects
     - Tool calls are separate function_call objects, not properties on messages
     - Tool results become function_call_output objects
+
+    Args:
+        messages: Messages to convert
+        current_model: Current model ID (used to detect different-model messages)
+        current_provider: Current provider (used to detect different-model messages)
+        current_api: Current API type (used to detect different-model messages)
     """
 
     result: list[dict[str, Any]] = []
@@ -462,6 +487,17 @@ def _messages_to_openai_responses(messages: list[Message]) -> list[dict[str, Any
         elif msg.role == "assistant":
             # Assistant messages become separate objects
             output: list[dict[str, Any]] = []
+
+            # Check if this message is from a different model (same provider/API, different model)
+            # This is used to avoid OpenAI's reasoning/function_call pairing validation
+            # See: https://github.com/badlogic/pi-mono/issues/886
+            is_different_model = (
+                msg.model is not None
+                and current_model is not None
+                and msg.model != current_model
+                and msg.provider == current_provider
+                and msg.api == current_api
+            )
 
             # Tiger Style: Explicit control flow - handle each content type
             # Handle string content (simple text response)
@@ -517,13 +553,21 @@ def _messages_to_openai_responses(messages: list[Message]) -> list[dict[str, Any
                             call_id = block.id
                             func_id = f"fc_{int(time.time())}"
 
-                        output.append({
+                        # For different-model messages, omit the id to avoid pairing validation.
+                        # OpenAI tracks which fc_xxx IDs were paired with rs_xxx reasoning items.
+                        # By omitting the id, we avoid triggering that validation.
+                        # See: https://github.com/badlogic/pi-mono/issues/886
+                        func_call: dict[str, Any] = {
                             "type": "function_call",
-                            "id": func_id,
                             "call_id": call_id,
                             "name": block.name,
                             "arguments": json.dumps(block.arguments),
-                        })
+                        }
+                        # Only include id if not a different-model message with fc_ prefix
+                        if not (is_different_model and func_id.startswith("fc_")):
+                            func_call["id"] = func_id
+
+                        output.append(func_call)
 
             # Add all output objects
             if output:
@@ -597,10 +641,16 @@ async def rollout_openai_responses(
 
     # Convert messages to OpenAI Responses format
     # Note: The Responses API uses a completely different message format than chat completions
-    messages = _messages_to_openai_responses(llm_messages)
+    # Pass current model info to detect different-model messages for pairing validation fix
+    messages = _messages_to_openai_responses(
+        llm_messages,
+        current_model=actor.endpoint.model_id,
+        current_provider=actor.endpoint.provider,
+        current_api=actor.endpoint.api_format,
+    )
 
     params = {
-        "model": actor.endpoint.model,
+        "model": actor.endpoint.model_id,  # Use model_id, not full "provider/model" string
         "input": messages,  # Note: Responses API uses 'input' not 'messages'
         "stream": True,
     }
@@ -613,9 +663,9 @@ async def rollout_openai_responses(
 
     # Temperature is supported in Responses API (but not for some reasoning models like GPT-5-Codex)
     # Skip temperature for GPT-5 models which don't support it
-    model_name = actor.endpoint.model.lower()
+    model_id = actor.endpoint.model_id.lower()
     if hasattr(actor.endpoint, "temperature") and actor.endpoint.temperature is not None:
-        if not model_name.startswith("gpt-5"):
+        if not model_id.startswith("gpt-5"):
             params["temperature"] = actor.endpoint.temperature
 
     # Add reasoning config for reasoning models
@@ -674,10 +724,20 @@ async def rollout_openai_responses(
     if hasattr(actor.endpoint, "extra_params") and actor.endpoint.extra_params:
         params.update(actor.endpoint.extra_params)
 
+    # Capture timing for span
+    from datetime import datetime
+
+    request_start = time.perf_counter()
+    request_started_at = datetime.now().isoformat()
+
+    ttft_ms: float | None = None
+
     try:
         # Use the responses.create endpoint
         stream = await client.responses.create(**params)
-        final_message, usage_data = await aggregate_openai_responses_stream(stream, on_chunk)
+        final_message, usage_data, ttft_ms = await aggregate_openai_responses_stream(
+            stream, on_chunk, request_start
+        )
 
     except Exception as e:
         from openai import BadRequestError, RateLimitError
@@ -771,6 +831,24 @@ async def rollout_openai_responses(
         model=actor.endpoint.model,
         usage=usage,
         choices=[Choice(0, final_message, "stop")],
+    )
+
+    # Emit span for cost/latency tracking
+    request_duration_ms = (time.perf_counter() - request_start) * 1000
+    from .base import persist_span
+
+    session_id = kwargs.get("session_id")
+    await persist_span(
+        session_id=session_id,
+        started_at=request_started_at,
+        duration_ms=request_duration_ms,
+        provider=actor.endpoint.provider,
+        model=actor.endpoint.model,
+        api_base=actor.endpoint.api_base,
+        usage=usage,
+        request_id=completion.id,
+        finish_reason="stop",
+        ttft_ms=ttft_ms,
     )
 
     new_trajectory = replace(

@@ -16,6 +16,7 @@ from ..dtypes import (
     Actor,
     ChatCompletion,
     Choice,
+    FirstToken,
     ImageContent,
     LLMCallStart,
     Message,
@@ -337,8 +338,10 @@ def _tool_to_anthropic(tool: Tool) -> dict[str, Any]:
 
 
 async def aggregate_anthropic_stream(
-    stream: object, on_chunk: Callable[[StreamEvent], Awaitable[None]]
-) -> ChatCompletion:
+    stream: object,
+    on_chunk: Callable[[StreamEvent], Awaitable[None]],
+    request_start: float | None = None,
+) -> tuple[ChatCompletion, float | None]:
     """Aggregate Anthropic SDK stream events into a `ChatCompletion` with granular events.
 
     Emits granular streaming events following pi-ai pattern:
@@ -348,10 +351,21 @@ async def aggregate_anthropic_stream(
     - toolcall_start/delta/end: Tool call lifecycle with partial JSON parsing
     - done: Stream completes successfully
     - error: Stream encounters error
+
+    Args:
+        stream: Anthropic SDK stream object
+        on_chunk: Callback for streaming events
+        request_start: perf_counter timestamp when request was initiated (for TTFT calc)
+
+    Returns:
+        Tuple of (ChatCompletion, ttft_ms) where ttft_ms is time to first token in ms,
+        or None if request_start wasn't provided.
     """
 
     # Emit start event
     await on_chunk(StreamStart())
+
+    ttft_ms: float | None = None  # Time to first token
 
     # Update debug context for interrupt diagnostics
     try:
@@ -421,6 +435,11 @@ async def aggregate_anthropic_stream(
         elif event_type == "content_block_start":
             block = event.content_block
             index = event.index
+
+            # Capture TTFT on first content block
+            if ttft_ms is None and request_start is not None:
+                ttft_ms = (time.perf_counter() - request_start) * 1000
+                await on_chunk(FirstToken(ttft_ms=ttft_ms))
 
             # Initialize content block tracking
             content_blocks[index] = {
@@ -656,7 +675,7 @@ async def aggregate_anthropic_stream(
         choices=[Choice(0, final_message, finish_reason)],
     )
 
-    return completion
+    return completion, ttft_ms
 
 
 # TODO: Remove this function and all OAuth token refresh logic in rollout_anthropic().
@@ -819,7 +838,7 @@ async def rollout_anthropic(
         params: dict[str, Any] = {
             "max_tokens": actor.endpoint.max_tokens,
             "messages": messages_with_cache,
-            "model": actor.endpoint.model,
+            "model": actor.endpoint.model_id,  # Use model_id, not full "provider/model" string
             "temperature": actor.endpoint.temperature,
         }
 
@@ -879,7 +898,15 @@ async def rollout_anthropic(
         max_retries = 10
         base_delay = 2
         completion = None
+        ttft_ms: float | None = None
         retrying = False  # Track if we emitted a RetryStart (to emit RetryEnd on success)
+
+        # Capture timing for span
+        import time
+        from datetime import datetime
+
+        request_start = time.perf_counter()
+        request_started_at = datetime.now().isoformat()
 
         for attempt in range(max_retries + 1):
             try:
@@ -903,7 +930,9 @@ async def rollout_anthropic(
                     **params,
                     extra_headers=extra_headers,
                 ) as stream:
-                    completion = await aggregate_anthropic_stream(stream, on_chunk)
+                    completion, ttft_ms = await aggregate_anthropic_stream(
+                        stream, on_chunk, request_start
+                    )
                     # If we were retrying and succeeded, emit RetryEnd
                     if retrying:
                         await on_chunk(RetryEnd(success=True, attempt=attempt + 1))
@@ -994,6 +1023,13 @@ async def rollout_anthropic(
 
                     raise AuthenticationError(
                         f"Authentication failed: {e}\nCheck your API key or OAuth token."
+                    ) from e
+
+                # Fail fast on 404 errors - model doesn't exist, retrying won't help
+                if isinstance(e, anthropic.NotFoundError):
+                    raise AssertionError(
+                        f"Model not found: {actor.endpoint.model}. "
+                        f"Check model name at https://docs.anthropic.com/en/docs/about-claude/models"
                     ) from e
 
                 # Fail fast on programming errors - these are bugs in our code, not transient issues
@@ -1089,6 +1125,24 @@ async def rollout_anthropic(
             cost = calculate_cost_from_usage(completion.usage, model_meta.cost)
             usage_with_cost = replace(completion.usage, cost=cost)
             completion = replace(completion, usage=usage_with_cost)
+
+        # Emit span for cost/latency tracking
+        request_duration_ms = (time.perf_counter() - request_start) * 1000
+        from .base import persist_span
+
+        session_id = kwargs.get("session_id")
+        await persist_span(
+            session_id=session_id,
+            started_at=request_started_at,
+            duration_ms=request_duration_ms,
+            provider=actor.endpoint.provider,
+            model=actor.endpoint.model,
+            api_base=actor.endpoint.api_base,
+            usage=completion.usage,
+            request_id=completion.id,
+            finish_reason=completion.choices[0].finish_reason if completion.choices else None,
+            ttft_ms=ttft_ms,
+        )
 
         final_message = completion.choices[0].message
 

@@ -462,6 +462,12 @@ async def rollout_google(
         max_tokens=actor.endpoint.max_tokens if hasattr(actor.endpoint, "max_tokens") else None,
     )
 
+    # Capture timing for span
+    from datetime import datetime
+
+    request_start = time.perf_counter()
+    request_started_at = datetime.now().isoformat()
+
     # The actual API call in asyncio context
     async def _call_google_in_asyncio() -> ChatCompletion:
         # Create client inside asyncio context
@@ -470,7 +476,7 @@ async def rollout_google(
         try:
             # Generate streaming response
             stream = await client.aio.models.generate_content_stream(
-                model=actor.endpoint.model,
+                model=actor.endpoint.model_id,  # Use model_id, not full "provider/model" string
                 contents=contents,
                 config=config,
             )
@@ -550,6 +556,23 @@ async def rollout_google(
         model=actor.endpoint.model,
         usage=usage,
         choices=[Choice(0, final_message, "stop")],
+    )
+
+    # Emit span for cost/latency tracking
+    request_duration_ms = (time.perf_counter() - request_start) * 1000
+    from .base import persist_span
+
+    session_id = kwargs.get("session_id")
+    await persist_span(
+        session_id=session_id,
+        started_at=request_started_at,
+        duration_ms=request_duration_ms,
+        provider=actor.endpoint.provider,
+        model=actor.endpoint.model,
+        api_base=actor.endpoint.api_base,
+        usage=usage,
+        request_id=completion.id,
+        finish_reason="stop",
     )
 
     new_trajectory = replace(

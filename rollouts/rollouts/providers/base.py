@@ -412,3 +412,69 @@ def calculate_cost_from_usage(usage: Usage, model_cost: ModelCost | None) -> Cos
         cache_read=(usage.cache_read_tokens / 1_000_000) * model_cost.cache_read,
         cache_write=(usage.cache_write_tokens / 1_000_000) * model_cost.cache_write,
     )
+
+
+async def persist_span(
+    session_id: str | None,
+    started_at: str,
+    duration_ms: float,
+    provider: str,
+    model: str,
+    api_base: str | None,
+    usage: Usage,
+    request_id: str | None,
+    finish_reason: str | None,
+    error: str | None = None,
+    ttft_ms: float | None = None,
+) -> None:
+    """Persist a request span to the session store.
+
+    Call this after each API call to record cost/latency metrics.
+    Non-blocking: logs warning on failure instead of crashing.
+
+    Args:
+        session_id: Session to persist to (skips if None)
+        started_at: ISO timestamp when request started
+        duration_ms: Total request duration
+        provider: Provider name (e.g., "anthropic", "openai")
+        model: Model ID
+        api_base: API base URL
+        usage: Token usage with cost breakdown
+        request_id: Provider's request ID
+        finish_reason: How the request ended (e.g., "stop", "tool_calls")
+        error: Error message if request failed
+        ttft_ms: Time to first token in ms (network + queue + model warmup)
+    """
+    if not session_id:
+        return
+
+    try:
+        from ..dtypes import RequestSpan
+        from ..store import FileSessionStore
+
+        span = RequestSpan(
+            started_at=started_at,
+            duration_ms=duration_ms,
+            ttft_ms=ttft_ms,
+            provider=provider,
+            model=model,
+            api_base=api_base,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            reasoning_tokens=usage.reasoning_tokens,
+            cache_read_tokens=usage.cache_read_tokens,
+            cache_write_tokens=usage.cache_write_tokens,
+            cost_input=usage.cost.input,
+            cost_output=usage.cost.output,
+            cost_cache_read=usage.cost.cache_read,
+            cost_cache_write=usage.cost.cache_write,
+            request_id=request_id,
+            finish_reason=finish_reason,
+            error=error,
+        )
+
+        store = FileSessionStore()
+        await store.append_span(session_id, span)
+    except Exception as e:
+        # Don't crash on span persistence failure - it's observability, not critical path
+        _provider_logger.warning(f"Failed to persist span: {e}")

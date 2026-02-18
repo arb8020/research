@@ -53,8 +53,27 @@ _PROVIDER_REGISTRY: dict[str, ProviderStreamFunction] = {
 }
 
 
+def get_provider_function_by_format(api_format: str) -> ProviderStreamFunction:
+    """Get the streaming function for an API format.
+
+    Args:
+        api_format: API wire protocol (e.g., 'anthropic-messages', 'openai-completions')
+
+    Returns:
+        Async function that streams completions from the provider
+    """
+    func = _PROVIDER_REGISTRY.get(api_format)
+    assert func is not None, (
+        f"No provider for API format: {api_format}\n"
+        f"Supported formats: {list(_PROVIDER_REGISTRY.keys())}"
+    )
+    return func
+
+
 def get_provider_function(provider: str, model_id: str | None = None) -> ProviderStreamFunction:
     """Get the streaming function for a provider/model combination.
+
+    DEPRECATED: Use get_provider_function_by_format(endpoint.api_format) instead.
 
     Args:
         provider: Provider name (e.g., 'anthropic', 'openai')
@@ -88,6 +107,7 @@ __all__ = [
     "aggregate_openai_responses_stream",
     # Registry
     "get_provider_function",
+    "get_provider_function_by_format",
     # Utilities
     "NonRetryableError",
     "ProviderError",
