@@ -26,8 +26,14 @@ Provider = Literal[
     "cerebras",
     "xai",
     "openrouter",
+    "opencode",  # OpenCode Zen - unified API for multiple providers
     "sglang",
     "vllm",
+    "moonshot",  # Kimi models (native)
+    "zhipu",  # GLM models (native)
+    "fireworks",  # Fireworks AI - fastest US inference
+    "together",  # Together AI - dedicated US endpoints
+    "bedrock",  # AWS Bedrock - fully managed
 ]
 
 
@@ -39,6 +45,14 @@ class ModelCost:
     output: float  # Per million output tokens
     cache_read: float  # Per million cache read tokens (if supported)
     cache_write: float  # Per million cache write tokens (if supported)
+
+
+# Format for enabling thinking/reasoning on different providers
+# - "openai": uses reasoning_effort param (OpenAI o1/o3 models)
+# - "zai": uses thinking: { type: "enabled" | "disabled" } (Z.ai/GLM models)
+# - "qwen": uses enable_thinking: boolean (Qwen models)
+# - None: model emits reasoning by default or doesn't support thinking toggle
+ThinkingFormat = Literal["openai", "zai", "qwen"] | None
 
 
 @dataclass(frozen=True)
@@ -55,6 +69,7 @@ class ModelMetadata:
     cost: ModelCost  # Pricing information
     context_window: int  # Maximum context length in tokens
     max_tokens: int  # Maximum output tokens
+    thinking_format: ThinkingFormat = None  # How to enable/disable thinking
 
 
 # Model registry - organized by provider then model_id
@@ -371,10 +386,715 @@ MODELS: dict[Provider, dict[str, ModelMetadata]] = {
             cost=ModelCost(input=2.25, output=2.75, cache_read=0.0, cache_write=0.0),
             context_window=131072,
             max_tokens=8192,
+            thinking_format="zai",
         ),
     },
     "sglang": {},  # vLLM/sglang uses custom endpoints, populated at runtime
     "vllm": {},  # Same as sglang
+    # TODO: Add more providers for US-hosted inference and routing flexibility:
+    #
+    # OpenRouter (openrouter.ai/api/v1)
+    #   - Routes to US providers (Together/Fireworks/etc), easy switch, solid privacy hop
+    #   - Unified access to 200+ models
+    #   - IMPORTANT: Need ability to control which underlying provider is used per model/query
+    #     (some providers faster/more reliable than others). OpenRouter supports this via
+    #     the `provider` field in requests: {"provider": {"order": ["Together", "Fireworks"]}}
+    #   - Would need to handle model aliasing (e.g., "anthropic/claude-3.5-sonnet" -> native ID)
+    #
+    # Fireworks AI (api.fireworks.ai/inference/v1)
+    #   - Fastest US-hosted inference right now, day-0 support for new models
+    #   - Good for low-latency agentic workloads
+    #
+    # Together AI (api.together.xyz/v1)
+    #   - Dedicated US endpoints if you want max isolation
+    #   - Strong open-source model support
+    #
+    # AWS Bedrock (bedrock-runtime.{region}.amazonaws.com)
+    #   - Fully managed in us-east-1/us-west-2
+    #   - Enterprise compliance (SOC2, HIPAA, etc)
+    "moonshot": {
+        "kimi-k2.5": ModelMetadata(
+            id="kimi-k2.5",
+            name="Kimi K2.5",
+            provider="moonshot",
+            api="openai-completions",
+            base_url="https://api.moonshot.ai/v1",
+            reasoning=True,  # 1T MoE with 32B active, agentic capabilities
+            input_types=["text", "image"],
+            cost=ModelCost(input=0.60, output=3.0, cache_read=0.10, cache_write=0.60),
+            context_window=262144,
+            max_tokens=65535,
+        ),
+        "moonshot-v1-128k": ModelMetadata(
+            id="moonshot-v1-128k",
+            name="Moonshot v1 128K",
+            provider="moonshot",
+            api="openai-completions",
+            base_url="https://api.moonshot.ai/v1",
+            reasoning=False,
+            input_types=["text"],
+            cost=ModelCost(input=0.60, output=0.60, cache_read=0.0, cache_write=0.0),
+            context_window=128000,
+            max_tokens=8192,
+        ),
+    },
+    "zhipu": {
+        # Models available: glm-4.5, glm-4.5-air, glm-4.6, glm-4.7, glm-5
+        # All use zai thinking format: thinking: { type: "enabled" | "disabled" }
+        "glm-4.7": ModelMetadata(
+            id="glm-4.7",
+            name="GLM-4.7",
+            provider="zhipu",
+            api="openai-completions",
+            base_url="https://open.bigmodel.cn/api/paas/v4",
+            reasoning=True,  # 358B MoE with 32B active
+            input_types=["text"],
+            cost=ModelCost(input=0.60, output=2.20, cache_read=0.11, cache_write=0.60),
+            context_window=200000,
+            max_tokens=128000,
+            thinking_format="zai",
+        ),
+        "glm-4.6": ModelMetadata(
+            id="glm-4.6",
+            name="GLM-4.6",
+            provider="zhipu",
+            api="openai-completions",
+            base_url="https://open.bigmodel.cn/api/paas/v4",
+            reasoning=True,
+            input_types=["text"],
+            cost=ModelCost(input=0.50, output=2.00, cache_read=0.0, cache_write=0.0),
+            context_window=128000,
+            max_tokens=32768,
+            thinking_format="zai",
+        ),
+        "glm-4.5": ModelMetadata(
+            id="glm-4.5",
+            name="GLM-4.5",
+            provider="zhipu",
+            api="openai-completions",
+            base_url="https://open.bigmodel.cn/api/paas/v4",
+            reasoning=True,
+            input_types=["text"],
+            cost=ModelCost(input=0.50, output=2.00, cache_read=0.0, cache_write=0.0),
+            context_window=128000,
+            max_tokens=32768,
+            thinking_format="zai",
+        ),
+        "glm-5": ModelMetadata(
+            id="glm-5",
+            name="GLM-5",
+            provider="zhipu",
+            api="openai-completions",
+            base_url="https://open.bigmodel.cn/api/paas/v4",
+            reasoning=True,
+            input_types=["text"],
+            cost=ModelCost(input=1.00, output=4.00, cache_read=0.0, cache_write=0.0),
+            context_window=200000,
+            max_tokens=128000,
+            thinking_format="zai",
+        ),
+    },
+    # ==========================================================================
+    # US-hosted inference providers (OpenRouter, Fireworks, Together, Bedrock)
+    # These provide access to Kimi/GLM and other models with US data residency
+    # ==========================================================================
+    "openrouter": {
+        # OpenRouter routes to underlying providers (Together, Fireworks, Chutes, AtlasCloud, etc.)
+        # Use provider.order in extra_params to control routing:
+        #   extra_params={"provider": {"order": ["Together", "Fireworks"]}}
+        "kimi-k2.5": ModelMetadata(
+            id="moonshotai/kimi-k2.5",  # OpenRouter uses org/model format
+            name="Kimi K2.5 (OpenRouter)",
+            provider="openrouter",
+            api="openai-completions",
+            base_url="https://openrouter.ai/api/v1",
+            reasoning=True,
+            input_types=["text", "image"],
+            cost=ModelCost(input=0.45, output=0.44, cache_read=0.0, cache_write=0.0),
+            context_window=262144,
+            max_tokens=65535,
+        ),
+        "kimi-k2-thinking": ModelMetadata(
+            id="moonshotai/kimi-k2-thinking",
+            name="Kimi K2 Thinking (OpenRouter)",
+            provider="openrouter",
+            api="openai-completions",
+            base_url="https://openrouter.ai/api/v1",
+            reasoning=True,
+            input_types=["text"],
+            cost=ModelCost(input=0.60, output=2.40, cache_read=0.0, cache_write=0.0),
+            context_window=262144,
+            max_tokens=65535,
+        ),
+        "glm-4.7": ModelMetadata(
+            id="z-ai/glm-4.7",
+            name="GLM-4.7 (OpenRouter)",
+            provider="openrouter",
+            api="openai-completions",
+            base_url="https://openrouter.ai/api/v1",
+            reasoning=True,
+            input_types=["text"],
+            cost=ModelCost(input=0.60, output=2.20, cache_read=0.0, cache_write=0.0),
+            context_window=200000,
+            max_tokens=128000,
+        ),
+        "glm-4.7-flash": ModelMetadata(
+            id="z-ai/glm-4.7-flash",
+            name="GLM-4.7 Flash (OpenRouter)",
+            provider="openrouter",
+            api="openai-completions",
+            base_url="https://openrouter.ai/api/v1",
+            reasoning=True,
+            input_types=["text"],
+            cost=ModelCost(input=0.10, output=0.10, cache_read=0.0, cache_write=0.0),
+            context_window=200000,
+            max_tokens=128000,
+        ),
+        "glm-5": ModelMetadata(
+            id="z-ai/glm-5",
+            name="GLM-5 (OpenRouter)",
+            provider="openrouter",
+            api="openai-completions",
+            base_url="https://openrouter.ai/api/v1",
+            reasoning=True,
+            input_types=["text"],
+            cost=ModelCost(input=1.00, output=4.00, cache_read=0.0, cache_write=0.0),
+            context_window=200000,
+            max_tokens=128000,
+        ),
+    },
+    "fireworks": {
+        # Fireworks AI - fastest US-hosted inference, day-0 model support
+        # Up to 200 tok/s on Kimi K2.5
+        "kimi-k2.5": ModelMetadata(
+            id="accounts/fireworks/models/kimi-k2p5",
+            name="Kimi K2.5 (Fireworks)",
+            provider="fireworks",
+            api="openai-completions",
+            base_url="https://api.fireworks.ai/inference/v1",
+            reasoning=True,
+            input_types=["text", "image"],
+            cost=ModelCost(input=0.90, output=0.90, cache_read=0.0, cache_write=0.0),
+            context_window=262144,
+            max_tokens=65535,
+        ),
+        "kimi-k2-thinking": ModelMetadata(
+            id="accounts/fireworks/models/kimi-k2-thinking",
+            name="Kimi K2 Thinking (Fireworks)",
+            provider="fireworks",
+            api="openai-completions",
+            base_url="https://api.fireworks.ai/inference/v1",
+            reasoning=True,
+            input_types=["text"],
+            cost=ModelCost(input=0.90, output=0.90, cache_read=0.0, cache_write=0.0),
+            context_window=262144,
+            max_tokens=65535,
+        ),
+        "glm-4.7": ModelMetadata(
+            id="accounts/fireworks/models/glm-4p7",
+            name="GLM-4.7 (Fireworks)",
+            provider="fireworks",
+            api="openai-completions",
+            base_url="https://api.fireworks.ai/inference/v1",
+            reasoning=True,
+            input_types=["text"],
+            cost=ModelCost(input=0.90, output=0.90, cache_read=0.0, cache_write=0.0),
+            context_window=200000,
+            max_tokens=128000,
+        ),
+        "glm-4.5": ModelMetadata(
+            id="accounts/fireworks/models/glm-4p5",
+            name="GLM-4.5 (Fireworks)",
+            provider="fireworks",
+            api="openai-completions",
+            base_url="https://api.fireworks.ai/inference/v1",
+            reasoning=True,
+            input_types=["text"],
+            cost=ModelCost(input=0.90, output=0.90, cache_read=0.0, cache_write=0.0),
+            context_window=128000,
+            max_tokens=32768,
+        ),
+    },
+    "together": {
+        # Together AI - dedicated US endpoints, max isolation
+        "kimi-k2.5": ModelMetadata(
+            id="moonshotai/Kimi-K2.5",
+            name="Kimi K2.5 (Together)",
+            provider="together",
+            api="openai-completions",
+            base_url="https://api.together.xyz/v1",
+            reasoning=True,
+            input_types=["text", "image"],
+            cost=ModelCost(input=0.80, output=0.80, cache_read=0.0, cache_write=0.0),
+            context_window=262144,
+            max_tokens=65535,
+        ),
+        "kimi-k2-thinking": ModelMetadata(
+            id="moonshotai/Kimi-K2-Thinking",
+            name="Kimi K2 Thinking (Together)",
+            provider="together",
+            api="openai-completions",
+            base_url="https://api.together.xyz/v1",
+            reasoning=True,
+            input_types=["text"],
+            cost=ModelCost(input=0.80, output=0.80, cache_read=0.0, cache_write=0.0),
+            context_window=262144,
+            max_tokens=65535,
+        ),
+        "glm-4.7": ModelMetadata(
+            id="zai-org/GLM-4.7",
+            name="GLM-4.7 (Together)",
+            provider="together",
+            api="openai-completions",
+            base_url="https://api.together.xyz/v1",
+            reasoning=True,
+            input_types=["text"],
+            cost=ModelCost(input=0.88, output=0.88, cache_read=0.0, cache_write=0.0),
+            context_window=200000,
+            max_tokens=128000,
+        ),
+    },
+    "bedrock": {
+        # AWS Bedrock - fully managed, us-east-1/us-west-2, enterprise compliance
+        # Model IDs use bedrock format: provider.model-id
+        # Requires AWS credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION)
+        "kimi-k2.5": ModelMetadata(
+            id="moonshot.kimi-k2-5",
+            name="Kimi K2.5 (Bedrock)",
+            provider="bedrock",
+            api="openai-completions",  # Bedrock has OpenAI-compatible endpoint
+            base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
+            reasoning=True,
+            input_types=["text", "image"],
+            cost=ModelCost(input=0.80, output=2.40, cache_read=0.0, cache_write=0.0),
+            context_window=262144,
+            max_tokens=65535,
+        ),
+        "kimi-k2-thinking": ModelMetadata(
+            id="moonshot.kimi-k2-thinking",
+            name="Kimi K2 Thinking (Bedrock)",
+            provider="bedrock",
+            api="openai-completions",
+            base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
+            reasoning=True,
+            input_types=["text"],
+            cost=ModelCost(input=0.80, output=2.40, cache_read=0.0, cache_write=0.0),
+            context_window=262144,
+            max_tokens=65535,
+        ),
+        "glm-4.7": ModelMetadata(
+            id="zhipu.glm-4-7",
+            name="GLM-4.7 (Bedrock)",
+            provider="bedrock",
+            api="openai-completions",
+            base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
+            reasoning=True,
+            input_types=["text"],
+            cost=ModelCost(input=0.60, output=2.20, cache_read=0.0, cache_write=0.0),
+            context_window=200000,
+            max_tokens=128000,
+        ),
+        "glm-4.7-flash": ModelMetadata(
+            id="zhipu.glm-4-7-flash",
+            name="GLM-4.7 Flash (Bedrock)",
+            provider="bedrock",
+            api="openai-completions",
+            base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
+            reasoning=True,
+            input_types=["text"],
+            cost=ModelCost(input=0.10, output=0.40, cache_read=0.0, cache_write=0.0),
+            context_window=200000,
+            max_tokens=128000,
+        ),
+    },
+    # ==========================================================================
+    # OpenCode Zen - unified API gateway for multiple providers
+    # Supports both /v1/messages (Anthropic) and /v1/responses (OpenAI) formats
+    # Get API key at: https://opencode.ai/zen
+    # Auto-synced from models.dev - run scripts/sync_opencode.py to update
+    # ==========================================================================
+    "opencode": {
+        # Claude models (anthropic-messages format, base_url without /v1)
+        "claude-3-5-haiku": ModelMetadata(
+            id="claude-3-5-haiku",
+            name="Claude Haiku 3.5 (OpenCode)",
+            provider="opencode",
+            api="anthropic-messages",
+            base_url="https://opencode.ai/zen",
+            reasoning=False,
+            input_types=["text", "image"],
+            cost=ModelCost(input=0.8, output=4, cache_read=0.08, cache_write=1),
+            context_window=200000,
+            max_tokens=8192,
+        ),
+        "claude-haiku-4-5": ModelMetadata(
+            id="claude-haiku-4-5",
+            name="Claude Haiku 4.5 (OpenCode)",
+            provider="opencode",
+            api="anthropic-messages",
+            base_url="https://opencode.ai/zen",
+            reasoning=True,
+            input_types=["text", "image"],
+            cost=ModelCost(input=1, output=5, cache_read=0.1, cache_write=1.25),
+            context_window=200000,
+            max_tokens=64000,
+        ),
+        "claude-opus-4-1": ModelMetadata(
+            id="claude-opus-4-1",
+            name="Claude Opus 4.1 (OpenCode)",
+            provider="opencode",
+            api="anthropic-messages",
+            base_url="https://opencode.ai/zen",
+            reasoning=True,
+            input_types=["text", "image"],
+            cost=ModelCost(input=15, output=75, cache_read=1.5, cache_write=18.75),
+            context_window=200000,
+            max_tokens=32000,
+        ),
+        "claude-opus-4-5": ModelMetadata(
+            id="claude-opus-4-5",
+            name="Claude Opus 4.5 (OpenCode)",
+            provider="opencode",
+            api="anthropic-messages",
+            base_url="https://opencode.ai/zen",
+            reasoning=True,
+            input_types=["text", "image"],
+            cost=ModelCost(input=5, output=25, cache_read=0.5, cache_write=6.25),
+            context_window=200000,
+            max_tokens=64000,
+        ),
+        "claude-opus-4-6": ModelMetadata(
+            id="claude-opus-4-6",
+            name="Claude Opus 4.6 (OpenCode)",
+            provider="opencode",
+            api="anthropic-messages",
+            base_url="https://opencode.ai/zen",
+            reasoning=True,
+            input_types=["text", "image"],
+            cost=ModelCost(input=5, output=25, cache_read=0.5, cache_write=6.25),
+            context_window=200000,
+            max_tokens=128000,
+        ),
+        "claude-sonnet-4": ModelMetadata(
+            id="claude-sonnet-4",
+            name="Claude Sonnet 4 (OpenCode)",
+            provider="opencode",
+            api="anthropic-messages",
+            base_url="https://opencode.ai/zen",
+            reasoning=True,
+            input_types=["text", "image"],
+            cost=ModelCost(input=3, output=15, cache_read=0.3, cache_write=3.75),
+            context_window=200000,
+            max_tokens=64000,
+        ),
+        "claude-sonnet-4-5": ModelMetadata(
+            id="claude-sonnet-4-5",
+            name="Claude Sonnet 4.5 (OpenCode)",
+            provider="opencode",
+            api="anthropic-messages",
+            base_url="https://opencode.ai/zen",
+            reasoning=True,
+            input_types=["text", "image"],
+            cost=ModelCost(input=3, output=15, cache_read=0.3, cache_write=3.75),
+            context_window=200000,
+            max_tokens=64000,
+        ),
+        "claude-sonnet-4-6": ModelMetadata(
+            id="claude-sonnet-4-6",
+            name="Claude Sonnet 4.6 (OpenCode)",
+            provider="opencode",
+            api="anthropic-messages",
+            base_url="https://opencode.ai/zen",
+            reasoning=True,
+            input_types=["text", "image"],
+            cost=ModelCost(input=3, output=15, cache_read=0.3, cache_write=3.75),
+            context_window=200000,
+            max_tokens=64000,
+        ),
+        # GPT models (openai-responses format)
+        "gpt-5": ModelMetadata(
+            id="gpt-5",
+            name="GPT-5 (OpenCode)",
+            provider="opencode",
+            api="openai-responses",
+            base_url="https://opencode.ai/zen/v1",
+            reasoning=True,
+            input_types=["text", "image"],
+            cost=ModelCost(input=1.07, output=8.5, cache_read=0.107, cache_write=0),
+            context_window=400000,
+            max_tokens=128000,
+        ),
+        "gpt-5-codex": ModelMetadata(
+            id="gpt-5-codex",
+            name="GPT-5 Codex (OpenCode)",
+            provider="opencode",
+            api="openai-responses",
+            base_url="https://opencode.ai/zen/v1",
+            reasoning=True,
+            input_types=["text", "image"],
+            cost=ModelCost(input=1.07, output=8.5, cache_read=0.107, cache_write=0),
+            context_window=400000,
+            max_tokens=128000,
+        ),
+        "gpt-5-nano": ModelMetadata(
+            id="gpt-5-nano",
+            name="GPT-5 Nano (OpenCode)",
+            provider="opencode",
+            api="openai-responses",
+            base_url="https://opencode.ai/zen/v1",
+            reasoning=True,
+            input_types=["text", "image"],
+            cost=ModelCost(input=0, output=0, cache_read=0, cache_write=0),
+            context_window=400000,
+            max_tokens=128000,
+        ),
+        "gpt-5.1": ModelMetadata(
+            id="gpt-5.1",
+            name="GPT-5.1 (OpenCode)",
+            provider="opencode",
+            api="openai-responses",
+            base_url="https://opencode.ai/zen/v1",
+            reasoning=True,
+            input_types=["text", "image"],
+            cost=ModelCost(input=1.07, output=8.5, cache_read=0.107, cache_write=0),
+            context_window=400000,
+            max_tokens=128000,
+        ),
+        "gpt-5.1-codex": ModelMetadata(
+            id="gpt-5.1-codex",
+            name="GPT-5.1 Codex (OpenCode)",
+            provider="opencode",
+            api="openai-responses",
+            base_url="https://opencode.ai/zen/v1",
+            reasoning=True,
+            input_types=["text", "image"],
+            cost=ModelCost(input=1.07, output=8.5, cache_read=0.107, cache_write=0),
+            context_window=400000,
+            max_tokens=128000,
+        ),
+        "gpt-5.1-codex-max": ModelMetadata(
+            id="gpt-5.1-codex-max",
+            name="GPT-5.1 Codex Max (OpenCode)",
+            provider="opencode",
+            api="openai-responses",
+            base_url="https://opencode.ai/zen/v1",
+            reasoning=True,
+            input_types=["text", "image"],
+            cost=ModelCost(input=1.25, output=10, cache_read=0.125, cache_write=0),
+            context_window=400000,
+            max_tokens=128000,
+        ),
+        "gpt-5.1-codex-mini": ModelMetadata(
+            id="gpt-5.1-codex-mini",
+            name="GPT-5.1 Codex Mini (OpenCode)",
+            provider="opencode",
+            api="openai-responses",
+            base_url="https://opencode.ai/zen/v1",
+            reasoning=True,
+            input_types=["text", "image"],
+            cost=ModelCost(input=0.25, output=2, cache_read=0.025, cache_write=0),
+            context_window=400000,
+            max_tokens=128000,
+        ),
+        "gpt-5.2": ModelMetadata(
+            id="gpt-5.2",
+            name="GPT-5.2 (OpenCode)",
+            provider="opencode",
+            api="openai-responses",
+            base_url="https://opencode.ai/zen/v1",
+            reasoning=True,
+            input_types=["text", "image"],
+            cost=ModelCost(input=1.75, output=14, cache_read=0.175, cache_write=0),
+            context_window=400000,
+            max_tokens=128000,
+        ),
+        "gpt-5.2-codex": ModelMetadata(
+            id="gpt-5.2-codex",
+            name="GPT-5.2 Codex (OpenCode)",
+            provider="opencode",
+            api="openai-responses",
+            base_url="https://opencode.ai/zen/v1",
+            reasoning=True,
+            input_types=["text", "image"],
+            cost=ModelCost(input=1.75, output=14, cache_read=0.175, cache_write=0),
+            context_window=400000,
+            max_tokens=128000,
+        ),
+        # Gemini models (google-generative-ai format)
+        "gemini-3-flash": ModelMetadata(
+            id="gemini-3-flash",
+            name="Gemini 3 Flash (OpenCode)",
+            provider="opencode",
+            api="google-generative-ai",
+            base_url="https://opencode.ai/zen/v1",
+            reasoning=True,
+            input_types=["text", "image"],
+            cost=ModelCost(input=0.5, output=3, cache_read=0.05, cache_write=0),
+            context_window=1048576,
+            max_tokens=65536,
+        ),
+        "gemini-3-pro": ModelMetadata(
+            id="gemini-3-pro",
+            name="Gemini 3 Pro (OpenCode)",
+            provider="opencode",
+            api="google-generative-ai",
+            base_url="https://opencode.ai/zen/v1",
+            reasoning=True,
+            input_types=["text", "image"],
+            cost=ModelCost(input=2, output=12, cache_read=0.2, cache_write=0),
+            context_window=1048576,
+            max_tokens=65536,
+        ),
+        # Other models (openai-completions format)
+        "big-pickle": ModelMetadata(
+            id="big-pickle",
+            name="Big Pickle (OpenCode)",
+            provider="opencode",
+            api="openai-completions",
+            base_url="https://opencode.ai/zen/v1",
+            reasoning=True,
+            input_types=["text"],
+            cost=ModelCost(input=0, output=0, cache_read=0, cache_write=0),
+            context_window=200000,
+            max_tokens=128000,
+        ),
+        "glm-4.6": ModelMetadata(
+            id="glm-4.6",
+            name="GLM-4.6 (OpenCode)",
+            provider="opencode",
+            api="openai-completions",
+            base_url="https://opencode.ai/zen/v1",
+            reasoning=True,
+            input_types=["text"],
+            cost=ModelCost(input=0.6, output=2.2, cache_read=0.1, cache_write=0),
+            context_window=204800,
+            max_tokens=131072,
+            thinking_format="zai",
+        ),
+        "glm-4.7": ModelMetadata(
+            id="glm-4.7",
+            name="GLM-4.7 (OpenCode)",
+            provider="opencode",
+            api="openai-completions",
+            base_url="https://opencode.ai/zen/v1",
+            reasoning=True,
+            input_types=["text"],
+            cost=ModelCost(input=0.6, output=2.2, cache_read=0.1, cache_write=0),
+            context_window=204800,
+            max_tokens=131072,
+            thinking_format="zai",
+        ),
+        "glm-5": ModelMetadata(
+            id="glm-5",
+            name="GLM-5 (OpenCode)",
+            provider="opencode",
+            api="openai-completions",
+            base_url="https://opencode.ai/zen/v1",
+            reasoning=True,
+            input_types=["text"],
+            cost=ModelCost(input=1, output=3.2, cache_read=0.2, cache_write=0),
+            context_window=204800,
+            max_tokens=131072,
+            thinking_format="zai",
+        ),
+        "glm-5-free": ModelMetadata(
+            id="glm-5-free",
+            name="GLM-5 Free (OpenCode)",
+            provider="opencode",
+            api="openai-completions",
+            base_url="https://opencode.ai/zen/v1",
+            reasoning=True,
+            input_types=["text"],
+            cost=ModelCost(input=0, output=0, cache_read=0, cache_write=0),
+            context_window=204800,
+            max_tokens=131072,
+            thinking_format="zai",
+        ),
+        "kimi-k2": ModelMetadata(
+            id="kimi-k2",
+            name="Kimi K2 (OpenCode)",
+            provider="opencode",
+            api="openai-completions",
+            base_url="https://opencode.ai/zen/v1",
+            reasoning=False,
+            input_types=["text"],
+            cost=ModelCost(input=0.4, output=2.5, cache_read=0.4, cache_write=0),
+            context_window=262144,
+            max_tokens=262144,
+        ),
+        "kimi-k2-thinking": ModelMetadata(
+            id="kimi-k2-thinking",
+            name="Kimi K2 Thinking (OpenCode)",
+            provider="opencode",
+            api="openai-completions",
+            base_url="https://opencode.ai/zen/v1",
+            reasoning=True,
+            input_types=["text"],
+            cost=ModelCost(input=0.4, output=2.5, cache_read=0.4, cache_write=0),
+            context_window=262144,
+            max_tokens=262144,
+        ),
+        "kimi-k2.5": ModelMetadata(
+            id="kimi-k2.5",
+            name="Kimi K2.5 (OpenCode)",
+            provider="opencode",
+            api="openai-completions",
+            base_url="https://opencode.ai/zen/v1",
+            reasoning=True,
+            input_types=["text", "image"],
+            cost=ModelCost(input=0.6, output=3, cache_read=0.08, cache_write=0),
+            context_window=262144,
+            max_tokens=262144,
+        ),
+        "kimi-k2.5-free": ModelMetadata(
+            id="kimi-k2.5-free",
+            name="Kimi K2.5 Free (OpenCode)",
+            provider="opencode",
+            api="openai-completions",
+            base_url="https://opencode.ai/zen/v1",
+            reasoning=True,
+            input_types=["text", "image"],
+            cost=ModelCost(input=0, output=0, cache_read=0, cache_write=0),
+            context_window=262144,
+            max_tokens=262144,
+        ),
+        "minimax-m2.1": ModelMetadata(
+            id="minimax-m2.1",
+            name="MiniMax M2.1 (OpenCode)",
+            provider="opencode",
+            api="openai-completions",
+            base_url="https://opencode.ai/zen/v1",
+            reasoning=True,
+            input_types=["text"],
+            cost=ModelCost(input=0.3, output=1.2, cache_read=0.1, cache_write=0),
+            context_window=204800,
+            max_tokens=131072,
+        ),
+        "minimax-m2.5": ModelMetadata(
+            id="minimax-m2.5",
+            name="MiniMax M2.5 (OpenCode)",
+            provider="opencode",
+            api="openai-completions",
+            base_url="https://opencode.ai/zen/v1",
+            reasoning=True,
+            input_types=["text"],
+            cost=ModelCost(input=0.3, output=1.2, cache_read=0.06, cache_write=0),
+            context_window=204800,
+            max_tokens=131072,
+        ),
+        "minimax-m2.5-free": ModelMetadata(
+            id="minimax-m2.5-free",
+            name="MiniMax M2.5 Free (OpenCode)",
+            provider="opencode",
+            api="openai-completions",
+            base_url="https://opencode.ai/zen/v1",
+            reasoning=True,
+            input_types=["text"],
+            cost=ModelCost(input=0, output=0, cache_read=0, cache_write=0),
+            context_window=204800,
+            max_tokens=131072,
+        ),
+    },
 }
 
 
@@ -389,8 +1109,14 @@ PROVIDER_API_MAP: dict[str, ApiType] = {
     "openrouter": "openai-completions",
     "sglang": "openai-completions",
     "vllm": "openai-completions",
+    "moonshot": "openai-completions",  # Kimi models - OpenAI compatible
+    "zhipu": "openai-completions",  # GLM models - OpenAI compatible
+    "fireworks": "openai-completions",  # Fireworks AI - OpenAI compatible
+    "together": "openai-completions",  # Together AI - OpenAI compatible
+    "bedrock": "openai-completions",  # AWS Bedrock - OpenAI compatible endpoint
     # Anthropic messages API
     "anthropic": "anthropic-messages",
+    "opencode": "anthropic-messages",  # OpenCode Zen - default to anthropic-messages (model-specific overrides in MODELS)
     # Google generative AI
     "google": "google-generative-ai",
 }

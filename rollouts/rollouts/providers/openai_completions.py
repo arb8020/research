@@ -616,7 +616,23 @@ async def rollout_openai(
         params["tools"] = [_tool_to_openai(t) for t in actor.tools]
         params["tool_choice"] = "auto"
 
-    if actor.endpoint.reasoning_effort is not None:
+    # Handle thinking/reasoning based on model's thinking_format
+    # Different providers use different param formats to enable thinking
+    from ..models import get_model
+
+    model_metadata = get_model(actor.endpoint.provider, actor.endpoint.model)
+    thinking_format = model_metadata.thinking_format if model_metadata else None
+
+    if thinking_format == "zai":
+        # Z.ai/GLM uses thinking: { type: "enabled" | "disabled" }
+        # Must explicitly set since z.ai defaults to thinking enabled
+        thinking_enabled = actor.endpoint.reasoning_effort is not None
+        params["thinking"] = {"type": "enabled" if thinking_enabled else "disabled"}
+    elif thinking_format == "qwen":
+        # Qwen uses enable_thinking: boolean
+        params["enable_thinking"] = actor.endpoint.reasoning_effort is not None
+    elif actor.endpoint.reasoning_effort is not None:
+        # OpenAI-style reasoning_effort (default)
         params["reasoning_effort"] = actor.endpoint.reasoning_effort
 
     # Request usage info in streaming response (final chunk contains usage)
