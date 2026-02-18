@@ -1,0 +1,7 @@
+[
+  {
+    "id": "metal-restore",
+    "name": "Restore Metal Backend",
+    "description": "Restore the stubbed-out Metal backend for tinygrad"
+  }
+]
