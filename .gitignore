@@ -73,3 +73,12 @@ tmp/
 rollouts/results/
 results/
 rollouts/datasets/
+
+# AI tool configs/caches
+.claude/
+.opencode/
+.hypothesis/
+.coverage
+
+# Run outputs
+output/
