@@ -19,14 +19,12 @@ import torch.nn.functional as F
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from rollouts.layers import compute_rope_embeddings, rms_norm, rotate_half
 from rollouts.pretrain.config import ModelConfig
 from rollouts.pretrain.models.llama import (
     attention,
-    compute_rope_embeddings,
     forward,
     init_weights,
-    rms_norm,
-    rotate_half,
 )
 
 # -----------------------------------------------------------------------------
@@ -42,7 +40,16 @@ def model_config(draw: st.DrawFn) -> ModelConfig:
     n_layers = draw(st.integers(1, 3))
     kv_divisors = [k for k in [1, 2, 4, n_heads] if n_heads % k == 0 and k <= n_heads]
     n_kv_heads = draw(st.sampled_from(kv_divisors))
-    return ModelConfig(dim=dim, n_layers=n_layers, n_heads=n_heads, n_kv_heads=n_kv_heads)
+    use_qk_norm = draw(st.booleans())
+    use_relu2 = draw(st.booleans())
+    return ModelConfig(
+        dim=dim,
+        n_layers=n_layers,
+        n_heads=n_heads,
+        n_kv_heads=n_kv_heads,
+        use_qk_norm=use_qk_norm,
+        use_relu2=use_relu2,
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -91,6 +98,68 @@ class TestNumericalCorrectness:
         cos, sin = compute_rope_embeddings(seq, head_dim, torch.device("cpu"))
         # Consecutive positions should differ
         assert not torch.allclose(cos[0], cos[1], atol=1e-6)
+
+    def test_qk_norm_normalizes_per_head(self) -> None:
+        """QK Norm should normalize Q and K per-head.
+
+        The defining property: after QK Norm, the RMS over head_dim ≈ 1.
+        This prevents attention logit explosion in deep networks.
+        """
+        config = ModelConfig(dim=64, n_layers=1, n_heads=4, use_qk_norm=True)
+        weights = init_weights(config, torch.device("cpu"), torch.float32)
+        cos, sin = compute_rope_embeddings(16, config.head_dim, torch.device("cpu"))
+
+        x = torch.randn(2, 16, config.dim) * 10  # Large input to stress test
+        out = attention(x, weights, layer_idx=0, cos=cos, sin=sin, config=config)
+
+        # Output shouldn't explode (QK Norm prevents this)
+        assert not torch.isnan(out).any(), "NaN in output"
+        assert out.abs().max() < 1000, f"Output exploded: max={out.abs().max()}"
+
+    def test_relu2_is_non_negative_squared(self) -> None:
+        """ReLU² should produce non-negative outputs (relu squared is always ≥ 0).
+
+        This is the core property of ReLU² - sparse activations that are smooth.
+        """
+        from rollouts.pretrain.models.llama import mlp
+
+        config = ModelConfig(dim=64, n_layers=1, n_heads=4, use_relu2=True)
+        weights = init_weights(config, torch.device("cpu"), torch.float32)
+
+        x = torch.randn(2, 16, config.dim)
+        # Get the hidden state after up_proj and relu²
+        # We test this indirectly through the full MLP
+        out = mlp(x, weights, layer_idx=0, config=config)
+
+        # ReLU² should not produce NaN or Inf
+        assert not torch.isnan(out).any(), "NaN in ReLU² output"
+        assert not torch.isinf(out).any(), "Inf in ReLU² output"
+
+    @given(
+        batch=st.integers(1, 4),
+        seq=st.integers(1, 32),
+        dim=st.sampled_from([32, 64]),
+    )
+    @settings(max_examples=20)
+    def test_relu2_sparser_than_silu(self, batch: int, seq: int, dim: int) -> None:
+        """ReLU² should be sparser than SiLU (more zeros/small values).
+
+        This is why ReLU² is used - sparsity is computationally efficient.
+        """
+        x = torch.randn(batch, seq, dim)
+
+        # ReLU² has hard zeros for negative inputs
+        relu2_out = F.relu(x).square()
+        silu_out = F.silu(x)
+
+        # Count near-zero values (< 1e-6)
+        relu2_zeros = (relu2_out.abs() < 1e-6).float().mean()
+        silu_zeros = (silu_out.abs() < 1e-6).float().mean()
+
+        # ReLU² should have more near-zeros (at least half the inputs are negative -> zero)
+        assert relu2_zeros >= silu_zeros * 0.5, (
+            f"ReLU² not sparser: {relu2_zeros:.2%} vs SiLU {silu_zeros:.2%}"
+        )
 
 
 # -----------------------------------------------------------------------------

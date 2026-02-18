@@ -10,23 +10,66 @@ Usage:
 
 from __future__ import annotations
 
+import gc
 import json
 import logging
 import time
 from dataclasses import asdict
 from pathlib import Path
+from typing import Callable
 
 import torch
 import torch.nn.functional as F
 
-from ..training.datasets import BufferState, get_token_batch, load_fineweb_tokens
 from . import runtime
 from .config import ModelConfig, TrainConfig, get_git_info
+from .dataloader import DeterministicLoader, build_loader
 from .models.llama import count_parameters, forward, init_weights
 from .optim import Muon, build_optimizers
 from .schedule import get_lr
 
 logger = logging.getLogger(__name__)
+
+
+def _make_forward_and_loss(
+    config: ModelConfig,
+    use_compile: bool = True,
+    use_fp8: bool = False,
+) -> Callable[[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]], torch.Tensor]:
+    """Create a forward+loss function, optionally compiled and with FP8.
+
+    Fusing forward and loss into one function gives torch.compile more room
+    to optimize (e.g., fuse softmax into cross-entropy).
+    """
+    # Select linear function (FP8 or standard)
+    if use_fp8:
+        from .fp8 import fp8_linear, is_fp8_available
+
+        if not is_fp8_available():
+            logger.warning("FP8 requested but not available (requires H100+), falling back to bf16")
+            linear_fn = F.linear
+        else:
+            linear_fn = fp8_linear
+    else:
+        linear_fn = F.linear
+
+    def forward_and_loss(
+        input_ids: torch.Tensor,
+        labels: torch.Tensor,
+        weights: dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        logits = forward(input_ids, weights, config, linear_fn)
+        loss = F.cross_entropy(
+            logits.view(-1, config.vocab_size),
+            labels.view(-1),
+        )
+        return loss
+
+    if use_compile and torch.cuda.is_available():
+        # mode="reduce-overhead" uses CUDA graphs for lower kernel launch overhead
+        # dynamic=False because shapes are fixed (batch_size, seq_len)
+        return torch.compile(forward_and_loss, mode="reduce-overhead", dynamic=False)
+    return forward_and_loss
 
 
 def setup_logging(level: str = "INFO") -> None:
@@ -55,7 +98,7 @@ def train_step(
     input_ids: torch.Tensor,
     labels: torch.Tensor,
     weights: dict[str, torch.Tensor],
-    config: ModelConfig,
+    forward_and_loss_fn: Callable[[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]], torch.Tensor],
     autocast_ctx: torch.amp.autocast | None = None,
 ) -> torch.Tensor:
     """Single training step: forward, loss, backward.
@@ -64,52 +107,35 @@ def train_step(
     """
     if autocast_ctx is not None:
         with autocast_ctx:
-            logits = forward(input_ids, weights, config)
-            loss = F.cross_entropy(
-                logits.view(-1, config.vocab_size),
-                labels.view(-1),
-            )
+            loss = forward_and_loss_fn(input_ids, labels, weights)
     else:
-        logits = forward(input_ids, weights, config)
-        loss = F.cross_entropy(
-            logits.view(-1, config.vocab_size),
-            labels.view(-1),
-        )
+        loss = forward_and_loss_fn(input_ids, labels, weights)
     loss.backward()
     return loss
 
 
 @torch.no_grad()
 def eval_loss(
-    tokens: torch.Tensor,
+    loader: DeterministicLoader,
     weights: dict[str, torch.Tensor],
     config: ModelConfig,
-    batch_size: int,
-    seq_len: int,
     num_batches: int,
-    device: torch.device,
 ) -> float:
     """Compute average loss over validation data.
 
     Args:
-        tokens: Validation token tensor
+        loader: Validation data loader
         weights: Model weights
         config: Model config
-        batch_size: Batch size
-        seq_len: Sequence length
         num_batches: Number of batches to evaluate
-        device: Device to run on
 
     Returns:
         Average cross-entropy loss
     """
-    state = BufferState(seed=0)
     total_loss = 0.0
 
     for _ in range(num_batches):
-        (input_ids, labels), state = get_token_batch(tokens, state, batch_size, seq_len)
-        input_ids = input_ids.to(device)
-        labels = labels.to(device)
+        input_ids, labels = loader.next()
 
         logits = forward(input_ids, weights, config)
         loss = F.cross_entropy(
@@ -144,6 +170,7 @@ def save_checkpoint(
     step: int,
     config: TrainConfig,
     output_dir: Path,
+    train_loader: DeterministicLoader | None = None,
 ) -> None:
     """Save training checkpoint."""
     ckpt_path = output_dir / f"step_{step:08d}.pt"
@@ -154,6 +181,7 @@ def save_checkpoint(
             "adamw_optimizer": adamw_optimizer.state_dict(),
             "step": step,
             "fingerprint": config.fingerprint(),
+            "loader_state": train_loader.state_dict() if train_loader else None,
         },
         ckpt_path,
     )
@@ -173,6 +201,7 @@ def load_checkpoint(
     adamw_optimizer: torch.optim.AdamW,
     config: TrainConfig,
     device: torch.device,
+    train_loader: DeterministicLoader | None = None,
 ) -> int:
     """Load checkpoint into weights and optimizers.
 
@@ -183,6 +212,7 @@ def load_checkpoint(
         adamw_optimizer: AdamW optimizer (state loaded in place)
         config: Config for fingerprint verification
         device: Device to load weights to
+        train_loader: Data loader (state loaded in place)
 
     Returns:
         Step number to resume from
@@ -207,6 +237,10 @@ def load_checkpoint(
     if muon_optimizer is not None and ckpt.get("muon_optimizer") is not None:
         muon_optimizer.load_state_dict(ckpt["muon_optimizer"])
     adamw_optimizer.load_state_dict(ckpt["adamw_optimizer"])
+
+    # Load loader state
+    if train_loader is not None and ckpt.get("loader_state") is not None:
+        train_loader.load_state_dict(ckpt["loader_state"])
 
     return ckpt["step"]
 
@@ -245,22 +279,33 @@ def train(config: TrainConfig, use_real_data: bool = False, resume: bool = False
         output_dir.mkdir(parents=True, exist_ok=True)
         save_config(config, output_dir)
 
-    # Load data (each rank uses different seed for data parallelism)
-    train_tokens = None
-    val_tokens = None
-    train_state = BufferState(seed=config.seed + rank)
+    # Load data
+    train_loader: DeterministicLoader | None = None
+    val_loader: DeterministicLoader | None = None
 
     if use_real_data:
+        if not config.data_pattern:
+            raise ValueError("use_real_data=True but config.data_pattern is empty")
         if runtime.is_main():
-            logger.info("loading fineweb tokens...")
-        # Each rank loads different shards for distributed training
-        train_tokens = load_fineweb_tokens(
-            split="train", num_chunks=world, rank=rank, world_size=world
+            logger.info(f"loading data from {config.data_pattern}...")
+
+        train_loader = build_loader(
+            sources=config.data_pattern,
+            seq_len=config.max_seq_len,
+            batch_size=config.batch_size,
+            rank=rank,
+            world_size=world,
+            device=device,
         )
-        val_tokens = load_fineweb_tokens(split="val")
-        if runtime.is_main():
-            logger.info(f"train tokens per rank: {len(train_tokens):,}")
-            logger.info(f"val tokens: {len(val_tokens):,}")
+        # Val loader uses same source but no distributed slicing
+        val_loader = build_loader(
+            sources=config.data_pattern,
+            seq_len=config.max_seq_len,
+            batch_size=config.batch_size,
+            rank=0,
+            world_size=1,
+            device=device,
+        )
 
     # Model
     if runtime.is_main():
@@ -269,6 +314,15 @@ def train(config: TrainConfig, use_real_data: bool = False, resume: bool = False
     n_params = count_parameters(weights)
     if runtime.is_main():
         logger.info(f"parameters: {n_params:,} ({n_params / 1e6:.1f}M)")
+
+    # Compiled forward+loss (torch.compile on CUDA, plain on CPU)
+    use_compile = config.use_compile and device.type == "cuda"
+    use_fp8 = config.use_fp8 and device.type == "cuda"
+    forward_and_loss_fn = _make_forward_and_loss(
+        config.model, use_compile=use_compile, use_fp8=use_fp8
+    )
+    if runtime.is_main():
+        logger.info(f"torch.compile: {use_compile}, fp8: {use_fp8}")
 
     # Optimizers (Muon for 2D matrices, AdamW for embeddings/norms)
     muon_optimizer, adamw_optimizer = build_optimizers(
@@ -294,7 +348,7 @@ def train(config: TrainConfig, use_real_data: bool = False, resume: bool = False
         ckpt_path = find_latest_checkpoint(output_dir)
         if ckpt_path:
             start_step = load_checkpoint(
-                ckpt_path, weights, muon_optimizer, adamw_optimizer, config, device
+                ckpt_path, weights, muon_optimizer, adamw_optimizer, config, device, train_loader
             )
             if runtime.is_main():
                 logger.info(f"resumed from {ckpt_path} at step {start_step}")
@@ -328,6 +382,13 @@ def train(config: TrainConfig, use_real_data: bool = False, resume: bool = False
     for step in range(start_step, config.steps):
         step_start = time.time()
 
+        # Disable GC after first step to avoid ~500ms pauses during training
+        # (setup objects are frozen and excluded from future scans)
+        if step == start_step + 1:
+            gc.collect()
+            gc.freeze()
+            gc.disable()
+
         # Update learning rate (scale factor from schedule, applied to base LRs)
         lr_scale = get_lr(step, schedule_config)
         if muon_optimizer is not None:
@@ -340,12 +401,8 @@ def train(config: TrainConfig, use_real_data: bool = False, resume: bool = False
         accum_loss = 0.0
         for accum_step in range(grad_accum_steps):
             # Get batch
-            if use_real_data and train_tokens is not None:
-                (input_ids, labels), train_state = get_token_batch(
-                    train_tokens, train_state, config.batch_size, config.max_seq_len
-                )
-                input_ids = input_ids.to(device)
-                labels = labels.to(device)
+            if train_loader is not None:
+                input_ids, labels = train_loader.next()
             else:
                 input_ids, labels = generate_random_batch(
                     config.batch_size,
@@ -355,7 +412,7 @@ def train(config: TrainConfig, use_real_data: bool = False, resume: bool = False
                 )
 
             # Forward, backward (scale loss for accumulation)
-            loss = train_step(input_ids, labels, weights, config.model, autocast_ctx)
+            loss = train_step(input_ids, labels, weights, forward_and_loss_fn, autocast_ctx)
             # Scale gradients by 1/grad_accum_steps (loss.backward already computed grads)
             if grad_accum_steps > 1:
                 for param in weights.values():
@@ -394,21 +451,15 @@ def train(config: TrainConfig, use_real_data: bool = False, resume: bool = False
         # Validation (rank 0 only)
         if (
             runtime.is_main()
-            and use_real_data
-            and val_tokens is not None
+            and val_loader is not None
             and val_every > 0
             and step > 0
             and step % val_every == 0
         ):
-            val_loss = eval_loss(
-                val_tokens,
-                weights,
-                config.model,
-                config.batch_size,
-                config.max_seq_len,
-                val_batches,
-                device,
-            )
+            val_loss = eval_loss(val_loader, weights, config.model, val_batches)
+            # TODO: log BPB (bits per byte) alongside loss
+            #   bpb = val_loss / ln(2) * (tokens / bytes)
+            #   Requires token_bytes mapping from tokenizer (see nmoe/token_bytes.py)
             logger.info(f"step={step:5d} | val_loss={val_loss:.4f}")
 
         # Checkpoint (rank 0 only)
@@ -418,23 +469,15 @@ def train(config: TrainConfig, use_real_data: bool = False, resume: bool = False
             and step > 0
             and step % config.checkpoint_every == 0
         ):
-            save_checkpoint(weights, muon_optimizer, adamw_optimizer, step, config, output_dir)
+            save_checkpoint(weights, muon_optimizer, adamw_optimizer, step, config, output_dir, train_loader)
 
     # Final validation and checkpoint (rank 0 only)
     if runtime.is_main():
-        if use_real_data and val_tokens is not None:
-            val_loss = eval_loss(
-                val_tokens,
-                weights,
-                config.model,
-                config.batch_size,
-                config.max_seq_len,
-                val_batches,
-                device,
-            )
+        if val_loader is not None:
+            val_loss = eval_loss(val_loader, weights, config.model, val_batches)
             logger.info(f"final val_loss={val_loss:.4f}")
 
-        save_checkpoint(weights, muon_optimizer, adamw_optimizer, config.steps, config, output_dir)
+        save_checkpoint(weights, muon_optimizer, adamw_optimizer, config.steps, config, output_dir, train_loader)
 
         total_time = time.time() - start_time
         logger.info(f"training complete in {total_time:.1f}s")

@@ -32,6 +32,13 @@ class ModelConfig:
     rope_theta: float = 10000.0
     rms_norm_eps: float = 1e-5
 
+    # Architecture variants
+    use_qk_norm: bool = False  # QK Norm (normalize Q and K after RoPE)
+    use_relu2: bool = False  # ReLU² instead of SwiGLU
+    # TODO: logit_softcap: float | None = None  # Cap logits (e.g., 15.0) to stabilize training
+    # TODO: use_value_embeds: bool = False  # ResFormer-style value embeddings (alternating layers)
+    # TODO: sliding_window_pattern: str | None = None  # e.g., "SSSL" (3 sliding + 1 global)
+
     def __post_init__(self) -> None:
         # Set defaults via object.__setattr__ since frozen
         if self.n_kv_heads is None:
@@ -76,6 +83,10 @@ class TrainConfig:
     checkpoint_every: int = 500
     val_every: int = 50  # Validate every N steps (0 to disable)
     val_batches: int = 10  # Number of batches for validation
+
+    # Performance
+    use_compile: bool = True  # torch.compile the forward pass (CUDA only)
+    use_fp8: bool = False  # FP8 training (H100+ only)
 
     # Output
     output_dir: str = "output"

@@ -2,6 +2,13 @@
 
 Based on nmoe's Global Stream, Local Slice pattern with SWRR mixing.
 
+TODO: BOS-aligned packing (nanochat style)
+  - Current: contiguous streaming (sequences can start mid-document)
+  - Better: pack documents so every sequence starts with BOS token
+  - Requires: document boundary index (.idx files with EOS positions)
+  - Benefit: ~35% less token waste from cropping, cleaner document boundaries
+  - See nanochat/dataloader.py for best-fit packing implementation
+
 Features:
 - Multi-shard: Read from multiple .npy/.bin files as one stream
 - Multi-source: Mix multiple datasets with weighted sampling (SWRR)
