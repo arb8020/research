@@ -371,8 +371,12 @@ async def run_remote(
     monitor_cmd = [sys.executable, "-m", "rollouts", "monitor", "--attach", run_name]
     if tail:
         monitor_cmd.append("--tail")
+    if keep_alive:
+        monitor_cmd.append("--keep-alive")
+    else:
+        monitor_cmd.append("--terminate")
     subprocess.run(monitor_cmd, check=False)
-    # Note: monitor handles final sync and terminate prompt internally
+    # Note: monitor handles final sync and terminate internally
 
 
 def main() -> None:

@@ -373,7 +373,13 @@ def _fetch_and_print_logs_server_log(node_id: str | None, run_id: str) -> None:
         print(f"Failed to fetch remote logs: {e}")
 
 
-def _run_attached(run_id: str | None, *, tail: bool = False) -> int:
+def _run_attached(
+    run_id: str | None,
+    *,
+    tail: bool = False,
+    keep_alive: bool = False,
+    terminate: bool = False,
+) -> int:
     """Attach to a remote training run via LogsServer.
 
     Two transport modes:
@@ -601,10 +607,26 @@ def _run_attached(run_id: str | None, *, tail: bool = False) -> int:
     if tunnel_cleanup is not None:
         tunnel_cleanup()
 
-    # Optional: terminate instance
+    # Terminate instance based on flags
     if node_id:
-        answer = input(f"\nTerminate instance {node_id}? [y/n] ").strip().lower()
-        if answer == "y":
+        should_terminate = False
+        if terminate:
+            # --terminate flag: auto-terminate without prompt
+            should_terminate = True
+        elif keep_alive:
+            # --keep-alive flag: skip terminate entirely
+            should_terminate = False
+            print(f"\nInstance kept alive: {node_id}")
+            print(f"Reattach: rollouts monitor --attach {resolved_run_id}")
+        else:
+            # No flag: prompt user
+            answer = input(f"\nTerminate instance {node_id}? [y/n] ").strip().lower()
+            should_terminate = answer == "y"
+            if not should_terminate:
+                print(f"Instance kept alive: {node_id}")
+                print(f"Reattach: rollouts monitor --attach {resolved_run_id}")
+
+        if should_terminate:
             import trio
 
             from broker.client import GPUClient
@@ -612,18 +634,15 @@ def _run_attached(run_id: str | None, *, tail: bool = False) -> int:
             credentials = _broker_credentials()
             provider, instance_id = node_id.split(":", 1)
 
-            async def _terminate() -> None:
+            async def _do_terminate() -> None:
                 client = GPUClient(credentials=credentials)
                 inst = await client.get_instance(instance_id, provider)
                 assert inst is not None, f"Instance not found: {node_id}"
                 await inst.terminate()
 
             print(f"Terminating {node_id}...")
-            trio.run(_terminate)
+            trio.run(_do_terminate)
             print("Terminated.")
-        else:
-            print(f"Instance kept alive: {node_id}")
-            print(f"Reattach: rollouts monitor --attach {resolved_run_id}")
 
     return 0
 
@@ -677,6 +696,16 @@ def monitor_main(argv: list[str] | None = None) -> int:
         default=100,
         metavar="N",
         help="Dump debug snapshot every N frames (default: 100, ~5s at 20fps)",
+    )
+    parser.add_argument(
+        "--keep-alive",
+        action="store_true",
+        help="Keep instance running after job completes (skip terminate prompt)",
+    )
+    parser.add_argument(
+        "--terminate",
+        action="store_true",
+        help="Auto-terminate instance after job completes (no prompt)",
     )
     args = parser.parse_args(argv)
 
@@ -761,9 +790,19 @@ def monitor_main(argv: list[str] | None = None) -> int:
     # ── Attach mode ──
     if args.attach is not None:
         if args.attach == "__latest__" or args.latest:
-            return _run_attached(run_id=None, tail=args.tail)
+            return _run_attached(
+                run_id=None,
+                tail=args.tail,
+                keep_alive=args.keep_alive,
+                terminate=args.terminate,
+            )
         else:
-            return _run_attached(run_id=args.attach, tail=args.tail)
+            return _run_attached(
+                run_id=args.attach,
+                tail=args.tail,
+                keep_alive=args.keep_alive,
+                terminate=args.terminate,
+            )
 
     # ── Local mode ──
     from .rlmon import make_app

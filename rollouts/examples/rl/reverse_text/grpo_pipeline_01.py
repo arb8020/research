@@ -15,6 +15,7 @@ Run with:
 
 from dataclasses import replace
 
+from examples.rl.reverse_text.base_config import train  # noqa: F401 (used by runner)
 from examples.rl.reverse_text.grpo_01_01 import config as base_config
 
 # Enable full PipelineRL-style training:
