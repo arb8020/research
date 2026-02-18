@@ -352,6 +352,36 @@ class FileSessionStore:
         async with await trio.open_file(messages_file, "a") as f:
             await f.write(message.to_json() + "\n")
 
+    async def append_span(self, session_id: str, span: RequestSpan) -> None:
+        """Append request span to spans.jsonl (streaming, append-only).
+
+        Captures per-request metrics: timing, tokens, cost, provider info.
+        """
+
+        session_dir = self._session_dir(session_id)
+        spans_file = session_dir / "spans.jsonl"
+
+        # Append-only (streaming safe)
+        async with await trio.open_file(spans_file, "a") as f:
+            await f.write(span.to_json() + "\n")
+
+    async def load_spans(self, session_id: str) -> list[RequestSpan]:
+        """Load all spans for a session."""
+        from .dtypes import RequestSpan
+
+        session_dir = self._session_dir(session_id)
+        spans_file = session_dir / "spans.jsonl"
+
+        if not spans_file.exists():
+            return []
+
+        spans = []
+        async with await trio.open_file(spans_file, "r") as f:
+            async for line in f:
+                if line.strip():
+                    spans.append(RequestSpan.from_json(line))
+        return spans
+
     async def list(
         self,
         filter_tags: dict[str, str] | None = None,

@@ -307,6 +307,15 @@ class StreamStart(JsonSerializable):
 
 
 @dataclass(frozen=True)
+class FirstToken(JsonSerializable):
+    """Emitted when first content token arrives (for TTFT tracking)"""
+
+    ttft_ms: float  # Time from request start to first token
+    type: Literal["first_token"] = "first_token"
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
 class TextStart(JsonSerializable):
     """Emitted when a text content block begins"""
 
@@ -498,6 +507,7 @@ class LLMCallEnd(JsonSerializable):
     model: str
     tokens_in: int | None = None
     tokens_out: int | None = None
+    ttft_ms: float | None = None  # Time to first token
     status: Literal["success", "error"] = "success"
     error: str | None = None
     type: Literal["llm_call_end"] = "llm_call_end"
@@ -529,6 +539,7 @@ StreamEvent = (
     | LLMCallStart
     | LLMCallEnd
     | StreamStart
+    | FirstToken
     | TextStart
     | TextDelta
     | TextEnd
@@ -725,6 +736,62 @@ class Cost(JsonSerializable):
     @property
     def total(self) -> float:
         return self.input + self.output + self.cache_read + self.cache_write
+
+
+@dataclass(frozen=True)
+class RequestSpan(JsonSerializable):
+    """Per-request metrics for cost/latency analysis. Persisted to spans.jsonl.
+
+    Captures everything needed to analyze request performance:
+    - Timing: when it started, how long it took
+    - Tokens: input/output/cache breakdown
+    - Cost: USD breakdown by token type
+    - Provider: which provider/model served the request
+    """
+
+    # Timing
+    started_at: str  # ISO timestamp
+    duration_ms: float  # Total request duration
+
+    # Provider info
+    provider: str  # e.g., "openrouter", "anthropic"
+    model: str  # e.g., "moonshotai/kimi-k2.5"
+    api_base: str | None = None  # e.g., "https://openrouter.ai/api/v1"
+
+    # Time to first token (network + queue + model warmup)
+    ttft_ms: float | None = None
+
+    # Token counts
+    input_tokens: int = 0
+    output_tokens: int = 0
+    reasoning_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+
+    # Cost breakdown (USD)
+    cost_input: float = 0.0
+    cost_output: float = 0.0
+    cost_cache_read: float = 0.0
+    cost_cache_write: float = 0.0
+
+    # Request metadata
+    request_id: str | None = None  # Provider's request ID if available
+    finish_reason: str | None = None  # e.g., "stop", "tool_calls", "length"
+    error: str | None = None  # Error message if request failed
+
+    @property
+    def total_tokens(self) -> int:
+        return (
+            self.input_tokens
+            + self.output_tokens
+            + self.reasoning_tokens
+            + self.cache_read_tokens
+            + self.cache_write_tokens
+        )
+
+    @property
+    def cost_total(self) -> float:
+        return self.cost_input + self.cost_output + self.cost_cache_read + self.cost_cache_write
 
 
 @dataclass(frozen=True)
@@ -1274,9 +1341,40 @@ class Environment(Protocol):
 
 @dataclass(frozen=True)
 class Endpoint(JsonSerializable):
-    provider: str
-    model: str
-    api_base: str = ""
+    """Endpoint configuration for model calls.
+
+    The model string uses "provider/model-id" format (e.g., "anthropic/claude-3-5-sonnet").
+    This decouples routing (base_url + api_format) from model identity.
+
+    Examples:
+        # Direct Anthropic API
+        Endpoint(
+            model="anthropic/claude-3-5-sonnet-20241022",
+            base_url="https://api.anthropic.com/v1",
+            api_format="anthropic-messages",
+            api_key="sk-...",
+        )
+
+        # Same model via OpenRouter
+        Endpoint(
+            model="openrouter/anthropic/claude-3.5-sonnet",
+            base_url="https://openrouter.ai/api/v1",
+            api_format="openai-completions",
+            api_key="sk-or-...",
+        )
+
+        # Vercel AI Gateway
+        Endpoint(
+            model="vercel/claude-3-5-sonnet",
+            base_url="https://gateway.vercel.ai/v1",
+            api_format="openai-completions",
+            api_key="...",
+        )
+    """
+
+    model: str  # "provider/model-id" format
+    base_url: str  # API endpoint (e.g., "https://api.anthropic.com/v1")
+    api_format: str  # Wire protocol: "openai-chat", "openai-responses", "anthropic-messages", "google-generative-ai"
     api_key: str = ""
     oauth_token: str = ""  # OAuth bearer token (takes precedence over api_key for Anthropic)
     is_claude_code_api_key: bool = (
@@ -1305,13 +1403,60 @@ class Endpoint(JsonSerializable):
     # Extra params merged into the raw chat request for custom servers
     extra_params: dict[str, Any] | None = None
 
+    @property
+    def provider(self) -> str:
+        """Extract provider from model string (first segment before /)."""
+        return self.model.split("/")[0] if "/" in self.model else self.model
+
+    @property
+    def model_id(self) -> str:
+        """Extract model ID from model string (everything after first /).
+
+        This is what should be sent to the API (e.g., 'gpt-4o', not 'openai/gpt-4o').
+        """
+        return self.model.split("/", 1)[1] if "/" in self.model else self.model
+
+    @property
+    def api_base(self) -> str:
+        """Compatibility alias for base_url.
+
+        DEPRECATED: Use base_url directly.
+        """
+        return self.base_url
+
     def __post_init__(self) -> None:
         """Validate endpoint configuration.
 
         Tiger Style: Crash loud on invalid config, explicit error messages.
         """
+        # Allow empty placeholder endpoints (for dataclass defaults)
+        if not self.model and not self.base_url and not self.api_format:
+            return
+
+        # Validate model format
+        assert "/" in self.model, (
+            f"model must be in 'provider/model-id' format, got: {self.model}\n"
+            f"Examples: 'anthropic/claude-3-5-sonnet', 'openai/gpt-4o', 'openrouter/kimi-k2.5'"
+        )
+        # Validate base_url
+        assert self.base_url, (
+            "base_url is required. Examples:\n"
+            "  Anthropic: https://api.anthropic.com/v1\n"
+            "  OpenAI: https://api.openai.com/v1\n"
+            "  OpenRouter: https://openrouter.ai/api/v1"
+        )
+        # Validate api_format
+        valid_formats = {
+            "openai-completions",
+            "openai-responses",
+            "anthropic-messages",
+            "google-generative-ai",
+        }
+        assert self.api_format in valid_formats, (
+            f"api_format must be one of {valid_formats}, got: {self.api_format}"
+        )
         # Validate Claude thinking budget (Anthropic requires >= 1024 tokens)
-        if self.thinking is not None and self.provider == "anthropic":
+        if self.thinking is not None and self.api_format == "anthropic-messages":
             assert isinstance(self.thinking, dict), (
                 f"thinking must be dict, got {type(self.thinking)}"
             )
@@ -1361,7 +1506,106 @@ class Endpoint(JsonSerializable):
         data = data.copy()
         data.pop("api_key", None)
         data.pop("oauth_token", None)
+
+        # Handle legacy format: separate provider and model fields, no base_url/api_format
+        if "provider" in data and "/" not in data.get("model", ""):
+            # Convert legacy format to new format
+            legacy_provider = data.pop("provider")
+            legacy_model = data.get("model", "")
+            legacy_api_base = data.pop("api_base", "")
+
+            # Import here to avoid circular dependency
+            from .models import get_api_type, get_model
+
+            # Build new model string
+            data["model"] = f"{legacy_provider}/{legacy_model}"
+
+            # Get base_url from registry or legacy api_base
+            if legacy_api_base:
+                data["base_url"] = legacy_api_base
+            else:
+                model_meta = get_model(legacy_provider, legacy_model)
+                if model_meta:
+                    data["base_url"] = model_meta.base_url
+                else:
+                    # Fallback defaults
+                    default_urls = {
+                        "anthropic": "https://api.anthropic.com/v1",
+                        "openai": "https://api.openai.com/v1",
+                        "google": "https://generativelanguage.googleapis.com/v1beta",
+                        "openrouter": "https://openrouter.ai/api/v1",
+                        "groq": "https://api.groq.com/openai/v1",
+                    }
+                    data["base_url"] = default_urls.get(legacy_provider, "")
+
+            # Get api_format from registry
+            if "api_format" not in data:
+                data["api_format"] = get_api_type(legacy_provider, legacy_model)
+
         return cls(**data, api_key=api_key, oauth_token=oauth_token)
+
+    @classmethod
+    def from_legacy(
+        cls,
+        provider: str,
+        model: str,
+        api_base: str = "",
+        api_key: str = "",
+        oauth_token: str = "",
+        **kwargs: Any,
+    ) -> "Endpoint":
+        """Create Endpoint from legacy provider+model format.
+
+        DEPRECATED: Use Endpoint() directly with the new format.
+
+        Args:
+            provider: Legacy provider name (e.g., "anthropic", "openai")
+            model: Legacy model ID (e.g., "claude-3-5-sonnet-20241022")
+            api_base: Optional base URL override
+            api_key: API key
+            oauth_token: OAuth token
+            **kwargs: Other Endpoint fields (max_tokens, temperature, etc.)
+
+        Returns:
+            Endpoint configured with derived base_url and api_format
+        """
+        from .models import get_api_type, get_model
+
+        # Build new model string
+        new_model = f"{provider}/{model}"
+
+        # Get base_url
+        if api_base:
+            base_url = api_base
+        else:
+            model_meta = get_model(provider, model)
+            if model_meta:
+                base_url = model_meta.base_url
+            else:
+                default_urls = {
+                    "anthropic": "https://api.anthropic.com/v1",
+                    "openai": "https://api.openai.com/v1",
+                    "google": "https://generativelanguage.googleapis.com/v1beta",
+                    "openrouter": "https://openrouter.ai/api/v1",
+                    "groq": "https://api.groq.com/openai/v1",
+                    "fireworks": "https://api.fireworks.ai/inference/v1",
+                    "together": "https://api.together.xyz/v1",
+                    "cerebras": "https://api.cerebras.ai/v1",
+                    "xai": "https://api.x.ai/v1",
+                }
+                base_url = default_urls.get(provider, "")
+
+        # Get api_format
+        api_format = get_api_type(provider, model)
+
+        return cls(
+            model=new_model,
+            base_url=base_url,
+            api_format=api_format,
+            api_key=api_key,
+            oauth_token=oauth_token,
+            **kwargs,
+        )
 
 
 @dataclass(frozen=True)
@@ -1546,7 +1790,7 @@ class EvalConfig:
         ...         Message(role="user", content=sample["question"]),
         ...     ]
         >>> config = EvalConfig(
-        ...     endpoint=Endpoint(provider="openai", model="gpt-4o-mini"),
+        ...     endpoint=Endpoint.from_legacy(provider="openai", model="gpt-4o-mini"),
         ...     score_fn=my_score_fn,
         ...     prepare_messages=prepare_messages,
         ...     max_concurrent=4,
@@ -1677,7 +1921,9 @@ class AgentSession:
 
     # Config (serializable, stored in session.json)
     # Endpoint stored with secrets excluded via to_dict(exclude_secrets=True)
-    endpoint: Endpoint = field(default_factory=lambda: Endpoint(provider="", model=""))
+    endpoint: Endpoint = field(
+        default_factory=lambda: Endpoint(model="", base_url="", api_format="")
+    )
     environment: EnvironmentConfig = field(default_factory=lambda: EnvironmentConfig(type=""))
 
     # Trajectory - uses Message directly (with optional timestamp field)

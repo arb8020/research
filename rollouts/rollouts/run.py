@@ -85,6 +85,7 @@ async def _deploy_and_submit(
     node_id: str | None,
     gpu_count: int,
     gpu_type: str,
+    provider: str | None = None,
 ) -> tuple:
     """Provision node, deploy code, submit training job.
 
@@ -108,8 +109,18 @@ async def _deploy_and_submit(
     console = Console()
     console.install_logging_handler(logging.getLogger())
 
-    # Acquire node
-    provision_msg = "Connecting..." if node_id else f"Provisioning {gpu_count}x {gpu_type}..."
+    # Acquire node - show which credentials profile is being used
+    from broker.credentials import get_active_profile
+
+    profile_name, _ = get_active_profile()
+    profile_hint = f" [{profile_name}]" if profile_name else ""
+
+    if node_id:
+        provision_msg = "Connecting..."
+    elif provider:
+        provision_msg = f"Provisioning {gpu_count}x {gpu_type} on {provider}{profile_hint}..."
+    else:
+        provision_msg = f"Provisioning {gpu_count}x {gpu_type}{profile_hint}..."
     log("provision_start", msg=provision_msg)
     try:
         with console.spinner(provision_msg) as spinner:
@@ -125,6 +136,7 @@ async def _deploy_and_submit(
                         min_cuda="12.8",
                         exposed_ports=(logs_port,),
                         name=f"rollouts/{run_name}",
+                        provider=provider,
                     )
                 )
                 node_str = f"{instance.provider}:{instance.id}" if instance else "?"
@@ -165,7 +177,7 @@ async def _deploy_and_submit(
 
     log("deploy_start")
     with console.spinner("Deploying code..."):
-        workspace = bifrost.push("~/.bifrost/workspaces/rollouts-rl")
+        workspace = bifrost.push("~/.bifrost/workspaces/rollouts-rl", allow_dirty=True)
     log("deploy_done", workspace=workspace)
 
     # Bootstrap steps — each gets its own spinner with ✓ on completion
@@ -278,6 +290,7 @@ async def run_remote(
     gpu_count: int = 1,
     gpu_type: str = "A100",
     tail: bool = False,
+    provider: str | None = None,
 ) -> None:
     """Run training script on remote GPU via bifrost."""
     (
@@ -294,6 +307,7 @@ async def run_remote(
         node_id=node_id,
         gpu_count=gpu_count,
         gpu_type=gpu_type,
+        provider=provider,
     )
 
     assert instance is not None, "run_remote requires a provisioned instance"
@@ -390,6 +404,7 @@ Examples:
     parser.add_argument("--keep-alive", action="store_true", help="Keep GPU after completion")
     parser.add_argument("--gpu-count", type=int, default=1, help="Number of GPUs (default: 1)")
     parser.add_argument("--gpu-type", type=str, default="A100", help="GPU type (default: A100)")
+    parser.add_argument("--provider", type=str, help="Force specific provider (e.g., runpod, vast)")
 
     # Local execution
     parser.add_argument("--max-samples", type=int, help="Limit dataset size (local only)")
@@ -433,6 +448,7 @@ Examples:
             args.gpu_count,
             args.gpu_type,
             args.tail,
+            args.provider,
         )
     else:
         # Local execution

@@ -283,7 +283,7 @@ async def optimize_prompt(
         ...     user_template="Query: {query}\\nClassify:",
         ...     dataset=my_dataset,
         ...     score_fn=exact_match,
-        ...     endpoint=Endpoint(provider="openai", model="gpt-4o-mini"),
+        ...     endpoint=Endpoint.from_legacy(provider="openai", model="gpt-4o-mini"),
         ... )
         >>> print(result.best_candidate["system"])
     """

@@ -82,7 +82,9 @@ Think about tactics: forks, pins, discovered attacks, checkmate patterns.""",
     import os
 
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    endpoint = Endpoint(provider="anthropic", model="claude-sonnet-4-20250514", api_key=api_key)
+    endpoint = Endpoint.from_legacy(
+        provider="anthropic", model="claude-sonnet-4-20250514", api_key=api_key
+    )
 
     actor = Actor(
         trajectory=trajectory,

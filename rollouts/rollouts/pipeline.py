@@ -322,7 +322,7 @@ async def run_agent_pipeline(
         stages = [
             # Stage 1: Search for relevant info with fast models
             AgentStage(
-                endpoint=Endpoint(provider="openai", model="gpt-4o-mini"),
+                endpoint=Endpoint.from_legacy(provider="openai", model="gpt-4o-mini"),
                 environment_factory=lambda: KernelEnvironmentSearch(),
                 max_turns=5,
                 n=3,
@@ -331,14 +331,14 @@ async def run_agent_pipeline(
             # Stage 2: Compact prev trajectory + Plan improvements with strong model
             AgentStage(
                 transform=lambda t: compact_trajectory(t, keep_last_n=3),
-                endpoint=Endpoint(provider="anthropic", model="claude-sonnet-4-5"),
+                endpoint=Endpoint.from_legacy(provider="anthropic", model="claude-sonnet-4-5"),
                 environment_factory=lambda: KernelEnvironment(),
                 max_turns=10,
                 n=1
             ),
             # Stage 3: Test-time scaling (8 parallel) + pick best
             AgentStage(
-                endpoint=Endpoint(provider="anthropic", model="claude-sonnet-4-5"),
+                endpoint=Endpoint.from_legacy(provider="anthropic", model="claude-sonnet-4-5"),
                 environment_factory=lambda: KernelEnvironment(),
                 max_turns=5,
                 n=8,

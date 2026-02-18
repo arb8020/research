@@ -231,7 +231,7 @@ async def score_batch(
 async def main():
     # Configuration (frozen)
     judge_config = JudgeConfig(
-        endpoint=Endpoint(provider="anthropic", model="claude-sonnet-4-20250514", ...),
+        endpoint=Endpoint.from_legacy(provider="anthropic", model="claude-sonnet-4-20250514"),
         rubric="Score correctness, clarity, completeness (0-1).",
     )
 

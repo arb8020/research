@@ -349,6 +349,9 @@ Inside `repl`, you also have access to:
 - It can use repl, llm_query, and even spawn its own sub-agents
 - Use when a task requires exploration, not just a quick answer
 
+NOTE: agent() is a rollouts extension not in the original RLM paper.
+The original has llm_query_batched(prompts) for concurrent queries instead.
+
 **final_answer** - Submit your answer when done
 
 ### When to use what
@@ -432,6 +435,11 @@ findings = agent("Find security vulnerabilities and explain each", auth_code)
                     required=["prompt"],
                 ),
             ),
+            # TODO: agent() is a rollouts extension not in the original RLM paper.
+            # Consider removing or making opt-in via enable_sub_agents flag.
+            # The original RLM has llm_query_batched(prompts) -> list[str] for
+            # concurrent queries over chunks (map-reduce pattern). See:
+            # https://github.com/alexzhang13/rlm - rlm/environments/local_repl.py
             Tool(
                 type="function",
                 function=ToolFunction(
@@ -698,7 +706,7 @@ findings = agent("Find security vulnerabilities and explain each", auth_code)
     async def _async_llm_query(self, prompt: str) -> str:
         """Make a simple LLM call (no tools, no recursion)."""
         from ..dtypes import Actor, Trajectory
-        from ..providers import get_provider_function
+        from ..providers import get_provider_function_by_format
 
         assert self.sub_endpoint is not None
 
@@ -718,10 +726,7 @@ findings = agent("Find security vulnerabilities and explain each", auth_code)
             if isinstance(event, TextDelta):
                 response_text += event.delta
 
-        provider_func = get_provider_function(
-            self.sub_endpoint.provider,
-            self.sub_endpoint.model,
-        )
+        provider_func = get_provider_function_by_format(self.sub_endpoint.api_format)
 
         await provider_func(actor, collect_response)
 

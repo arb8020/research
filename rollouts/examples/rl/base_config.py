@@ -50,8 +50,12 @@ async def _deploy_and_submit(
     console = Console()
     console.install_logging_handler(logging.getLogger())  # Capture all log output
 
-    # Acquire node
-    provision_msg = "Connecting..." if node_id else f"Provisioning {gpu_count}x {gpu_type}..."
+    # Acquire node - show which credentials profile is being used
+    from broker.credentials import get_active_profile
+
+    profile_name, _ = get_active_profile()
+    profile_hint = f" [{profile_name}]" if profile_name else ""
+    provision_msg = "Connecting..." if node_id else f"Provisioning {gpu_count}x {gpu_type}{profile_hint}..."
     with console.spinner(provision_msg) as spinner:
         if node_id:
             bifrost, instance = await acquire_node(node_id=node_id)

@@ -55,6 +55,7 @@ async def run_cursor(
     model: str | None = None,
     cwd: Path | None = None,
     api_key: str | None = None,
+    autonomous: bool = False,
 ) -> list[AgentState]:
     """Run Cursor Agent CLI as the agent backend.
 
@@ -67,6 +68,8 @@ async def run_cursor(
         model: Cursor model (optional, uses default if not specified)
         cwd: Working directory (defaults to current)
         api_key: Cursor API key (can also use CURSOR_API_KEY env var)
+        autonomous: If True, run without user input - agent runs to completion.
+            Used for evals. Runs a single turn.
 
     Returns:
         List of agent states from the run
@@ -114,6 +117,13 @@ async def run_cursor(
             # Get the last user message to send
             messages = list(current_state.actor.trajectory.messages)
             if not messages or messages[-1].role != "user":
+                if autonomous:
+                    # Autonomous mode requires a user message in trajectory
+                    await config.on_chunk(
+                        StreamError(error="Autonomous mode requires a user message in trajectory")
+                    )
+                    current_state = replace(current_state, stop=StopReason.ERROR)
+                    break
                 # Need user input
                 new_state = await config.handle_no_tool(current_state, config)
                 if new_state.stop:
@@ -163,6 +173,11 @@ async def run_cursor(
                 await session_store.append_message(current_state.session_id, assistant_msg)
 
             states.append(current_state)
+
+            # Autonomous mode: single turn, exit after response
+            if autonomous:
+                logger.info("Autonomous mode: completed single turn")
+                break
 
             # Get next user input
             new_state = await config.handle_no_tool(current_state, config)

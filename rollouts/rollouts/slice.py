@@ -386,7 +386,7 @@ async def summarize_messages(
     """
     from .dtypes import Actor, StreamEvent, TextDelta, Trajectory
     from .dtypes import Message as Msg
-    from .providers import get_provider_function
+    from .providers import get_provider_function_by_format
 
     # Format messages for summarization
     formatted_parts = []
@@ -425,7 +425,7 @@ Summary:"""
         if isinstance(event, TextDelta):
             result_parts.append(event.delta)
 
-    provider_fn = get_provider_function(endpoint.provider, endpoint.model)
+    provider_fn = get_provider_function_by_format(endpoint.api_format)
     await provider_fn(actor, collect)
 
     return "".join(result_parts).strip()

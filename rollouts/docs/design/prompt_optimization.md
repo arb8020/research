@@ -67,8 +67,8 @@ result = await run_gepa(
     initial_template=template,
     config=config,
     dataset=dataset,
-    endpoint=Endpoint(provider="openai", model="gpt-4o-mini"),
-    mutation_endpoint=Endpoint(provider="openai", model="gpt-4o-mini"),
+    endpoint=Endpoint.from_legacy(provider="openai", model="gpt-4o-mini"),
+    mutation_endpoint=Endpoint.from_legacy(provider="openai", model="gpt-4o-mini"),
     score_fn=score_fn,
 )
 

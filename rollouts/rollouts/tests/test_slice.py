@@ -27,7 +27,9 @@ def make_session(n_messages: int = 20) -> AgentSession:
 
     return AgentSession(
         session_id="test-session",
-        endpoint=Endpoint(provider="test", model="test"),
+        endpoint=Endpoint(
+            model="test/test", base_url="http://test", api_format="openai-completions"
+        ),
         environment=EnvironmentConfig(type="none", config={}),
         messages=messages,
         status=SessionStatus.PENDING,
@@ -81,7 +83,9 @@ def make_session_with_tools() -> AgentSession:
 
     return AgentSession(
         session_id="test-session-tools",
-        endpoint=Endpoint(provider="test", model="test"),
+        endpoint=Endpoint(
+            model="test/test", base_url="http://test", api_format="openai-completions"
+        ),
         environment=EnvironmentConfig(type="none", config={}),
         messages=messages,
         status=SessionStatus.PENDING,
@@ -199,7 +203,7 @@ class TestEndToEnd:
 
         # 1. Create a "full" session
         parent = await store.create(
-            endpoint=Endpoint(provider="anthropic", model="claude-sonnet-4-5-20250929"),
+            endpoint=Endpoint.from_legacy(provider="anthropic", model="claude-sonnet-4-5-20250929"),
             environment=EnvironmentConfig(type="coding", config={}),
         )
 
@@ -229,7 +233,7 @@ class TestEndToEnd:
         child = await slice_session(
             session=parent_loaded,
             spec="0:2, compact:2:0.8, 0.8:",
-            endpoint=Endpoint(provider="anthropic", model="claude-sonnet-4-5-20250929"),
+            endpoint=Endpoint.from_legacy(provider="anthropic", model="claude-sonnet-4-5-20250929"),
             session_store=store,
         )
 

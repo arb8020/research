@@ -47,6 +47,7 @@ async def run_codex(
     *,
     model: str = "o3-mini",
     cwd: Path | None = None,
+    autonomous: bool = False,
 ) -> list[AgentState]:
     """Run Codex CLI as the agent backend.
 
@@ -58,6 +59,8 @@ async def run_codex(
         config: Run configuration with callbacks (on_chunk, handle_no_tool)
         model: Codex model (o3-mini, o3, etc.)
         cwd: Working directory (defaults to current)
+        autonomous: If True, run without user input - agent runs to completion.
+            Used for evals. Runs a single turn with full-access sandbox.
 
     Returns:
         List of agent states from the run
@@ -86,6 +89,13 @@ async def run_codex(
             # Get the last user message to send
             messages = list(current_state.actor.trajectory.messages)
             if not messages or messages[-1].role != "user":
+                if autonomous:
+                    # Autonomous mode requires a user message in trajectory
+                    await config.on_chunk(
+                        StreamError(error="Autonomous mode requires a user message in trajectory")
+                    )
+                    current_state = replace(current_state, stop=StopReason.ERROR)
+                    break
                 # Need user input
                 new_state = await config.handle_no_tool(current_state, config)
                 if new_state.stop:
@@ -113,6 +123,7 @@ async def run_codex(
                 model=model,
                 cwd=cwd,
                 config=config,
+                autonomous=autonomous,
             )
 
             if assistant_text is None:
@@ -134,6 +145,11 @@ async def run_codex(
                 await session_store.append_message(current_state.session_id, assistant_msg)
 
             states.append(current_state)
+
+            # Autonomous mode: single turn, exit after response
+            if autonomous:
+                logger.info("Autonomous mode: completed single turn")
+                break
 
             # Get next user input
             new_state = await config.handle_no_tool(current_state, config)
@@ -201,15 +217,21 @@ async def _run_codex_turn(
     model: str,
     cwd: Path,
     config: RunConfig,
+    autonomous: bool = False,
 ) -> str | None:
     """Run a single codex turn and return the response text."""
     import subprocess
+
+    # Use danger-full-access sandbox in autonomous mode (for evals)
+    sandbox_mode = "danger-full-access" if autonomous else "workspace-write"
 
     cmd = [
         codex_bin,
         "exec",
         "--json",
         "--skip-git-repo-check",
+        "--sandbox",
+        sandbox_mode,
     ]
     if model:
         cmd.extend(["--model", model])

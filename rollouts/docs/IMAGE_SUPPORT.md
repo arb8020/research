@@ -380,7 +380,7 @@ async def test_agent_can_describe_image(tmp_path):
     (tmp_path / "red.png").write_bytes(red_pixel_png)
 
     env = CodingEnvironment(cwd=str(tmp_path))
-    endpoint = Endpoint(provider="anthropic", model="claude-sonnet-4-20250514")
+    endpoint = Endpoint.from_legacy(provider="anthropic", model="claude-sonnet-4-20250514")
     
     # ... run agent with "describe the image at red.png" task
     # Verify assistant response mentions red/color

@@ -37,6 +37,13 @@ PROVIDER_ENV_MAP = {
     "xai": "XAI_API_KEY",
     "google": "GOOGLE_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
+    "opencode": "OPENCODE_API_KEY",  # OpenCode Zen (opencode.ai/zen)
+    "moonshot": "MOONSHOT_API_KEY",  # Kimi models (api.moonshot.ai)
+    "zhipu": "ZHIPU_API_KEY",  # GLM models (api.z.ai)
+    "fireworks": "FIREWORKS_API_KEY",  # Fireworks AI (api.fireworks.ai)
+    "together": "TOGETHER_API_KEY",  # Together AI (api.together.xyz)
+    # Note: bedrock uses AWS credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION)
+    # not a single API key, so it's not in this map
 }
 
 # Known provider names for validation
@@ -161,9 +168,7 @@ def set_profile_key(profile_name: str, provider: str, api_key: str) -> None:
     config[profile_name][provider] = api_key
 
     # If no active profile exists, make this one active
-    has_active = any(
-        isinstance(p, dict) and p.get("active") is True for p in config.values()
-    )
+    has_active = any(isinstance(p, dict) and p.get("active") is True for p in config.values())
     if not has_active:
         config[profile_name]["active"] = True
 

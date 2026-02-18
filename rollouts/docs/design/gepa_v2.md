@@ -33,7 +33,7 @@ result = await optimize_prompt(
     user_template="Query: {query}\nClassify:",
     dataset=my_dataset,
     score_fn=exact_match_score,
-    endpoint=Endpoint(provider="openai", model="gpt-4o-mini"),
+    endpoint=Endpoint.from_legacy(provider="openai", model="gpt-4o-mini"),
 )
 
 print(f"Best score: {result.best_score}")
@@ -47,7 +47,7 @@ from rollouts.prompt_optimization import run_gepa, GEPAConfig, SinglePromptAdapt
 
 # Build adapter explicitly
 adapter = SinglePromptAdapter(
-    endpoint=Endpoint(provider="openai", model="gpt-4o-mini"),
+    endpoint=Endpoint.from_legacy(provider="openai", model="gpt-4o-mini"),
     user_template="Query: {query}\nClassify:",
     score_fn=exact_match_score,
 )
@@ -60,7 +60,7 @@ result = await run_gepa(
         max_evaluations=500,
         minibatch_size=8,
     ),
-    reflection_endpoint=Endpoint(provider="openai", model="gpt-4o"),
+    reflection_endpoint=Endpoint.from_legacy(provider="openai", model="gpt-4o"),
 )
 ```
 
@@ -171,7 +171,7 @@ result = await run_gepa(
     dataset=rag_dataset,
     adapter=RAGAdapter(endpoint, retriever),
     config=GEPAConfig(max_evaluations=1000),
-    reflection_endpoint=Endpoint(provider="openai", model="gpt-4o"),
+    reflection_endpoint=Endpoint.from_legacy(provider="openai", model="gpt-4o"),
 )
 
 print(f"Best query_rewriter: {result.best_candidate['query_rewriter']}")
@@ -667,7 +667,7 @@ async def optimize_prompt(
         ...     user_template="Query: {query}\\nClassify:",
         ...     dataset=my_dataset,
         ...     score_fn=exact_match,
-        ...     endpoint=Endpoint(provider="openai", model="gpt-4o-mini"),
+        ...     endpoint=Endpoint.from_legacy(provider="openai", model="gpt-4o-mini"),
         ... )
         >>> print(result.best_candidate["system"])
     """

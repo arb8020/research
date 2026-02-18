@@ -152,7 +152,9 @@ async def main() -> None:
     )
 
     trajectory = Trajectory(messages=[sys_msg, user_msg])
-    endpoint = Endpoint(provider="openai", model=args.model, api_base="https://api.openai.com/v1")
+    endpoint = Endpoint.from_legacy(
+        provider="openai", model=args.model, api_base="https://api.openai.com/v1"
+    )
     actor = Actor(trajectory=trajectory, endpoint=endpoint)
     environment = BinarySearchEnvironment()
 

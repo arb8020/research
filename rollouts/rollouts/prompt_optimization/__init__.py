@@ -16,7 +16,7 @@ Example (Level 1 - simplest):
     ...     user_template="Query: {query}\\nClassify:",
     ...     dataset=my_dataset,
     ...     score_fn=exact_match_score,
-    ...     endpoint=Endpoint(provider="openai", model="gpt-4o-mini"),
+    ...     endpoint=Endpoint.from_legacy(provider="openai", model="gpt-4o-mini"),
     ... )
     >>> print(f"Best: {result.best_candidate['system']}")
 

@@ -40,7 +40,7 @@ from ..dtypes import (
     Trajectory,
 )
 from ..export import session_to_markdown
-from ..providers import get_provider_function
+from ..providers import get_provider_function_by_format
 
 if TYPE_CHECKING:
     pass
@@ -140,7 +140,7 @@ async def generate_handoff_context(
             result_parts.append(event.delta)
 
     try:
-        provider_fn = get_provider_function(endpoint.provider, endpoint.model)
+        provider_fn = get_provider_function_by_format(endpoint.api_format)
         await provider_fn(actor, collect_text)
         return "".join(result_parts), None
     except Exception as e:

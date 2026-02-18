@@ -942,7 +942,7 @@ async def evaluate(
 
     Example:
         >>> config = EvalConfig(
-        ...     endpoint=Endpoint(provider="openai", model="gpt-4o-mini"),
+        ...     endpoint=Endpoint.from_legacy(provider="openai", model="gpt-4o-mini"),
         ...     score_fn=my_score_fn,
         ...     template=PromptTemplate(system="...", user_template="{question}"),
         ... )

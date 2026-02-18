@@ -200,6 +200,7 @@ async def rollout(
     turn_idx: int = 0,
     inline_thinking: str | None = None,
     cancel_scope: trio.CancelScope | None = None,
+    session_id: str | None = None,
 ) -> Actor:
     """Route to appropriate provider function using unified API type abstraction.
 
@@ -227,13 +228,10 @@ async def rollout(
     assert on_chunk is not None
     assert callable(on_chunk)
 
-    from .providers import get_provider_function
+    from .providers import get_provider_function_by_format
 
-    provider = actor.endpoint.provider
-    model_id = actor.endpoint.model
-
-    # Get the appropriate provider function via API type mapping
-    provider_func = get_provider_function(provider, model_id)
+    # Get the appropriate provider function via API format
+    provider_func = get_provider_function_by_format(actor.endpoint.api_format)
 
     # Call with provider-specific kwargs if needed
     # Anthropic needs extra params, others don't - but **kwargs makes this flexible
@@ -244,6 +242,7 @@ async def rollout(
         turn_idx=turn_idx,
         inline_thinking=inline_thinking,
         cancel_scope=cancel_scope,
+        session_id=session_id,
     )
     return new_actor
 
@@ -302,6 +301,7 @@ async def run_agent_step(
             state.turn_idx,
             rcfg.inline_thinking,
             cancel_scope=rcfg.cancel_scope,
+            session_id=state.session_id,  # For span persistence
         )
 
     # Time the LLM call
@@ -347,8 +347,12 @@ async def run_agent_step(
     if next_actor.trajectory.completions:
         last_completion = next_actor.trajectory.completions[-1]
         if hasattr(last_completion, "usage") and last_completion.usage:
-            tokens_in = getattr(last_completion.usage, "input_tokens", None)
-            tokens_out = getattr(last_completion.usage, "output_tokens", None)
+            usage = last_completion.usage
+            tokens_in = getattr(usage, "input_tokens", None)
+            # Include reasoning tokens in output count for tok/s calculation
+            output = getattr(usage, "output_tokens", 0) or 0
+            reasoning = getattr(usage, "reasoning_tokens", 0) or 0
+            tokens_out = output + reasoning if (output or reasoning) else None
 
     # Wide event: LLM call completed
     await rcfg.on_chunk(

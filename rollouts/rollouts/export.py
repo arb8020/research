@@ -329,7 +329,7 @@ async def run_handoff_command(
     import sys
 
     from .dtypes import Actor, Message, StreamEvent, TextDelta, Trajectory
-    from .providers import get_provider_function
+    from .providers import get_provider_function_by_format
 
     # Convert session to markdown for LLM
     session_md = session_to_markdown(session, include_metadata=False)
@@ -366,7 +366,7 @@ Output ONLY the markdown prompt - no preamble or explanation. The output will be
             result_parts.append(event.delta)
             print(event.delta, end="", file=sys.stderr, flush=True)
 
-    provider_fn = get_provider_function(endpoint.provider, endpoint.model)
+    provider_fn = get_provider_function_by_format(endpoint.api_format)
     await provider_fn(actor, collect_text)
     print(file=sys.stderr)  # newline after streaming
 

@@ -15,8 +15,8 @@ from .eval_swe_grep import SWEGrepConfig
 config = SWEGrepConfig(
     corpus_path=Path("/path/to/corpus"),
     questions_path=Path(__file__).parent / "sample_questions.jsonl",
-    agent_endpoint=Endpoint(provider="anthropic", model="claude-sonnet-4-5-20250929"),
-    grader_endpoint=Endpoint(provider="anthropic", model="claude-sonnet-4-5-20250929"),
+    agent_endpoint=Endpoint.from_legacy(provider="anthropic", model="claude-sonnet-4-5-20250929"),
+    grader_endpoint=Endpoint.from_legacy(provider="anthropic", model="claude-sonnet-4-5-20250929"),
     tools=["grep", "glob", "search", "read", "submit"],  # Everything
     search_fn=None,  # Must be provided by caller
     max_turns=20,

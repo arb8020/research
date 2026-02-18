@@ -173,7 +173,7 @@ class CLIConfig:
     pick: bool = False  # Interactive model/driver picker
 
     # Commands (mutually exclusive actions)
-    list_models: bool = False
+    list_models: str | None = None  # None = not requested, "" = list all, "pattern" = fuzzy search
     sync_models: bool = False
     write_models: bool = False  # --write flag for --sync-models
     list_presets: bool = False
@@ -384,8 +384,12 @@ def create_parser() -> argparse.ArgumentParser:
     # Model management
     parser.add_argument(
         "--list-models",
-        action="store_true",
-        help="List models in registry, highlight missing from provider APIs",
+        type=str,
+        nargs="?",
+        const="",
+        default=None,
+        metavar="SEARCH",
+        help="List available models (with optional fuzzy search pattern)",
     )
     parser.add_argument(
         "--sync-models",
@@ -712,43 +716,65 @@ def create_endpoint(
     # Parse model string
     provider, model = parse_model_string(model_str)
 
+    # Validate model exists in registry (fail fast at boundary)
+    from typing import cast
+
+    from .models import MODELS, Provider
+
+    model_metadata = get_model(cast(Provider, provider), model)
+    if model_metadata is None:
+        # Model not found - try fuzzy match to suggest correction
+        from .fuzzy import fuzzy_filter
+
+        provider_models = MODELS.get(cast(Provider, provider), {})
+        all_model_ids = list(provider_models.keys())
+
+        suggestions = fuzzy_filter(all_model_ids, model, lambda x: x)[:3]
+
+        error_msg = f"Model '{model}' not found for provider '{provider}'."
+        if suggestions:
+            error_msg += "\n\nDid you mean one of these?\n"
+            for s in suggestions:
+                error_msg += f"  - {provider}/{s}\n"
+        error_msg += f"\nSee available models: rollouts --list-models {provider}"
+
+        raise ValueError(error_msg)
+
     # Check model capabilities if thinking is enabled
     if thinking == "enabled":
-        from typing import cast
-
-        from .models import Provider
-
-        model_metadata = get_model(cast(Provider, provider), model)
-        if model_metadata is not None:
-            if not model_metadata.reasoning:
-                # Auto-disable thinking for models that don't support it
-                print(
-                    f"⚠️  Model '{model}' doesn't support extended thinking, disabling.",
-                    file=sys.stderr,
-                )
-                thinking = "disabled"
-        else:
-            # Unknown model - warn but continue (might work)
+        if not model_metadata.reasoning:
+            # Auto-disable thinking for models that don't support it
             print(
-                f"⚠️  Model '{model}' not in registry, thinking support unknown.",
+                f"⚠️  Model '{model}' doesn't support extended thinking, disabling.",
                 file=sys.stderr,
             )
+            thinking = "disabled"
 
+    # Determine base_url
     if api_base is None:
-        # Try to get base_url from model metadata first
-        from typing import cast
-
-        from .models import Provider, get_model
-
-        model_metadata = get_model(cast(Provider, provider), model)
         if model_metadata and model_metadata.base_url:
-            api_base = model_metadata.base_url
-        elif provider == "openai":
-            api_base = "https://api.openai.com/v1"
-        elif provider == "anthropic":
-            api_base = "https://api.anthropic.com"
+            base_url = model_metadata.base_url
         else:
-            api_base = "https://api.openai.com/v1"
+            # Fallback defaults
+            default_urls = {
+                "anthropic": "https://api.anthropic.com/v1",
+                "openai": "https://api.openai.com/v1",
+                "google": "https://generativelanguage.googleapis.com/v1beta",
+                "openrouter": "https://openrouter.ai/api/v1",
+                "groq": "https://api.groq.com/openai/v1",
+                "fireworks": "https://api.fireworks.ai/inference/v1",
+                "together": "https://api.together.xyz/v1",
+                "cerebras": "https://api.cerebras.ai/v1",
+                "xai": "https://api.x.ai/v1",
+            }
+            base_url = default_urls.get(provider, "https://api.openai.com/v1")
+    else:
+        base_url = api_base
+
+    # Determine api_format from model metadata or provider default
+    from .models import get_api_type
+
+    api_format = model_metadata.api if model_metadata else get_api_type(provider, model)
 
     # Auth flow for SDK driver: simple API key lookup
     # 1. --api-key flag → use that (user's explicit choice)
@@ -768,15 +794,20 @@ def create_endpoint(
 
     # Configure extended thinking for Anthropic
     thinking_config = None
-    if provider == "anthropic" and thinking == "enabled":
+    if api_format == "anthropic-messages" and thinking == "enabled":
         thinking_config = {"type": "enabled", "budget_tokens": DEFAULT_THINKING_BUDGET}
 
     max_tokens = MAX_TOKENS_WITH_THINKING if thinking_config else MAX_TOKENS_DEFAULT
 
+    # Build model string in new format: "provider/model-id"
+    # Use the model ID from metadata if available (e.g., OpenRouter needs "moonshotai/kimi-k2.5")
+    actual_model_id = model_metadata.id if model_metadata else model
+    model_string = f"{provider}/{actual_model_id}"
+
     return Endpoint(
-        provider=provider,
-        model=model,
-        api_base=api_base,
+        model=model_string,
+        base_url=base_url,
+        api_format=api_format,
         api_key=api_key,
         oauth_token=oauth_token,
         is_claude_code_api_key=is_claude_code_api_key,
@@ -790,48 +821,86 @@ def create_endpoint(
 # =============================================================================
 
 
-def cmd_list_models() -> int:
-    """Handle --list-models command."""
-    import os
+def cmd_list_models(search_pattern: str | None = None) -> int:
+    """Handle --list-models command with optional fuzzy search."""
+    from .fuzzy import fuzzy_filter
+    from .models import MODELS, ModelMetadata
 
-    from .models import MODELS, fetch_anthropic_models
+    def format_tokens(count: int) -> str:
+        """Format token count as human-readable (e.g., 200K, 1M)."""
+        if count >= 1_000_000:
+            millions = count / 1_000_000
+            return f"{millions:.0f}M" if millions == int(millions) else f"{millions:.1f}M"
+        if count >= 1_000:
+            thousands = count / 1_000
+            return f"{thousands:.0f}K" if thousands == int(thousands) else f"{thousands:.1f}K"
+        return str(count)
 
-    print("Models in registry:\n")
-
+    # Collect all models with their full IDs
+    all_models: list[tuple[str, str, ModelMetadata]] = []
     for provider, models in MODELS.items():
-        if not models:
-            continue
-        print(f"{provider}:")
         for model_id, meta in models.items():
-            cost_str = f"${meta.cost.input:.2f}/${meta.cost.output:.2f}"
-            print(
-                f"  {model_id:<40} {cost_str:<12} {meta.context_window // 1000}K ctx, {meta.max_tokens // 1000}K out"
-            )
-        print()
+            all_models.append((provider, model_id, meta))
 
-    # Check for missing models from Anthropic API
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if api_key:
-        print("Checking Anthropic API for new models...")
-        try:
-            import trio
+    if not all_models:
+        print("No models in registry.")
+        return 0
 
-            api_models = trio.run(fetch_anthropic_models, api_key)
-            api_ids = {m["id"] for m in api_models}
-            registry_ids = set(MODELS.get("anthropic", {}).keys())
-            missing = api_ids - registry_ids
+    # Apply fuzzy filter if search pattern provided
+    if search_pattern:
+        filtered = fuzzy_filter(
+            all_models,
+            search_pattern,
+            lambda x: f"{x[0]} {x[1]}",  # Search on "provider model_id"
+        )
+        if not filtered:
+            print(f'No models matching "{search_pattern}"')
+            return 0
+        all_models = filtered
 
-            if missing:
-                print(f"\nMissing from registry ({len(missing)}):")
-                for model_id in sorted(missing):
-                    print(f"  + {model_id}")
-                print("\nRun --sync-models to add them.")
-            else:
-                print("Registry is up to date with Anthropic API.")
-        except Exception as e:
-            print(f"Could not fetch from API: {e}")
+    # Sort by provider, then model_id
+    all_models.sort(key=lambda x: (x[0], x[1]))
+
+    # Build rows for table
+    rows = []
+    for provider, model_id, meta in all_models:
+        rows.append({
+            "provider": provider,
+            "model": model_id,
+            "context": format_tokens(meta.context_window),
+            "max_out": format_tokens(meta.max_tokens),
+            "thinking": "yes" if meta.reasoning else "no",
+            "cost": f"${meta.cost.input:.2f}/${meta.cost.output:.2f}",
+        })
+
+    # Calculate column widths
+    headers = {
+        "provider": "provider",
+        "model": "model",
+        "context": "context",
+        "max_out": "max-out",
+        "thinking": "thinking",
+        "cost": "cost (in/out)",
+    }
+
+    widths = {
+        key: max(len(headers[key]), max(len(str(row[key])) for row in rows)) for key in headers
+    }
+
+    # Print header
+    header_line = "  ".join(headers[k].ljust(widths[k]) for k in headers)
+    print(header_line)
+
+    # Print rows
+    for row in rows:
+        line = "  ".join(str(row[k]).ljust(widths[k]) for k in headers)
+        print(line)
+
+    # Show count
+    if search_pattern:
+        print(f'\n{len(rows)} model(s) matching "{search_pattern}"')
     else:
-        print("Set ANTHROPIC_API_KEY to check for new models from API.")
+        print(f"\n{len(rows)} model(s) total")
 
     return 0
 
@@ -2328,8 +2397,8 @@ def main() -> int:
 
     # === Commands that don't need endpoint ===
 
-    if config.list_models:
-        return cmd_list_models()
+    if config.list_models is not None:
+        return cmd_list_models(config.list_models or None)
 
     if config.sync_models:
         return cmd_sync_models(write=config.write_models)

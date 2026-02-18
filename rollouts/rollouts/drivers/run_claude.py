@@ -58,6 +58,7 @@ async def run_claude(
     model: str = "sonnet",
     cwd: Path | None = None,
     resume_session_id: str | None = None,
+    autonomous: bool = False,
 ) -> list[AgentState]:
     """Run Claude Code CLI as the agent backend.
 
@@ -70,6 +71,8 @@ async def run_claude(
         model: Claude Code model (sonnet, opus, haiku)
         cwd: Working directory (defaults to current)
         resume_session_id: Claude Code session ID to resume (after interrupt)
+        autonomous: If True, run without user input - agent runs to completion.
+            Used for evals. Skips handle_no_tool and closes stdin when done.
 
     Returns:
         List of agent states from the run
@@ -109,31 +112,51 @@ async def run_claude(
         )
         return [replace(current_state, stop=StopReason.ERROR)]
 
-    # Build command - bidirectional mode
+    # Extract initial prompt for autonomous mode
+    initial_prompt: str | None = None
+    if autonomous:
+        messages = list(current_state.actor.trajectory.messages)
+        if messages and messages[-1].role == "user":
+            last_msg = messages[-1]
+            initial_prompt = (
+                last_msg.content if isinstance(last_msg.content, str) else str(last_msg.content)
+            )
+        if not initial_prompt:
+            await config.on_chunk(
+                StreamError(error="Autonomous mode requires a user message in trajectory")
+            )
+            return [replace(current_state, stop=StopReason.ERROR)]
+
+    # Build command
     cmd = [
         claude_bin,
         "--print",
         "--verbose",
         "--output-format",
         "stream-json",
-        "--input-format",
-        "stream-json",
-        "--include-partial-messages",
+        "--dangerously-skip-permissions",
         "--model",
         model,
     ]
 
-    # Resume from previous session if provided
-    if resume_session_id:
-        cmd.extend(["--resume", resume_session_id])
-        logger.info(f"Resuming Claude Code session: {resume_session_id}")
+    if autonomous:
+        # Autonomous mode: use -p flag, no stdin interaction
+        cmd.extend(["-p", initial_prompt])
+        logger.info(f"Starting Claude Code (autonomous): {cmd[0]} --model {model}")
     else:
-        logger.info(f"Starting Claude Code: {cmd[0]} --model {model}")
+        # Interactive mode: bidirectional stream-json
+        cmd.extend(["--input-format", "stream-json", "--include-partial-messages"])
+        # Resume from previous session if provided
+        if resume_session_id:
+            cmd.extend(["--resume", resume_session_id])
+            logger.info(f"Resuming Claude Code session: {resume_session_id}")
+        else:
+            logger.info(f"Starting Claude Code: {cmd[0]} --model {model}")
 
     # Spawn process
     proc = await trio.lowlevel.open_process(
         cmd,
-        stdin=subprocess.PIPE,
+        stdin=subprocess.PIPE if not autonomous else subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         cwd=str(cwd),
@@ -263,35 +286,38 @@ async def run_claude(
             nursery.start_soon(watch_for_interrupt)
 
             try:
-                # When resuming, Claude Code already has the session context
-                # Don't re-send the last user message
-                if not resume_session_id:
-                    # Send initial user message from trajectory
-                    messages = list(current_state.actor.trajectory.messages)
-                    if messages and messages[-1].role == "user":
-                        # Have a pending user message - send it (possibly with history)
-                        content = _format_message_with_history(messages)
-                        await send_message(content)
-                    else:
-                        # No user message yet (or last was assistant) - get one
-                        new_state = await config.handle_no_tool(current_state, config)
-                        if new_state.stop:
-                            current_state = new_state
-                            states.append(current_state)
-                            early_exit = True
-                            nursery.cancel_scope.cancel()
-                            # Don't return here - let nursery exit cleanly first
-                        elif len(new_state.actor.trajectory.messages) > len(
-                            current_state.actor.trajectory.messages
-                        ):
-                            # Check if a new user message was added
-                            last_msg = new_state.actor.trajectory.messages[-1]
-                            if last_msg.role == "user":
-                                # Include history if we have prior messages
-                                all_messages = list(new_state.actor.trajectory.messages)
-                                content = _format_message_with_history(all_messages)
-                                await send_message(content)
+                # Autonomous mode: prompt already passed via -p flag, skip stdin setup
+                # Interactive mode: send initial message via stdin
+                if not autonomous:
+                    # When resuming, Claude Code already has the session context
+                    # Don't re-send the last user message
+                    if not resume_session_id:
+                        # Send initial user message from trajectory
+                        messages = list(current_state.actor.trajectory.messages)
+                        if messages and messages[-1].role == "user":
+                            # Have a pending user message - send it (possibly with history)
+                            content = _format_message_with_history(messages)
+                            await send_message(content)
+                        else:
+                            # No user message yet (or last was assistant) - get one
+                            new_state = await config.handle_no_tool(current_state, config)
+                            if new_state.stop:
                                 current_state = new_state
+                                states.append(current_state)
+                                early_exit = True
+                                nursery.cancel_scope.cancel()
+                                # Don't return here - let nursery exit cleanly first
+                            elif len(new_state.actor.trajectory.messages) > len(
+                                current_state.actor.trajectory.messages
+                            ):
+                                # Check if a new user message was added
+                                last_msg = new_state.actor.trajectory.messages[-1]
+                                if last_msg.role == "user":
+                                    # Include history if we have prior messages
+                                    all_messages = list(new_state.actor.trajectory.messages)
+                                    content = _format_message_with_history(all_messages)
+                                    await send_message(content)
+                                    current_state = new_state
 
                 # Main loop: read events, handle no-tool, send input
                 if not early_exit:
@@ -324,6 +350,12 @@ async def run_claude(
                                 await session_store.append_message(
                                     current_state.session_id, assistant_msg
                                 )
+
+                        # Autonomous mode: no user input, just keep reading until done
+                        # The -p flag means Claude runs to completion without stdin
+                        if autonomous:
+                            _trace("Autonomous mode: continuing to read events")
+                            continue
 
                         # Turn complete - call handle_no_tool to get next input
                         new_state = await config.handle_no_tool(current_state, config)

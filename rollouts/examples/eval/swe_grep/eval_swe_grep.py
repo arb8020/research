@@ -406,8 +406,10 @@ def main() -> None:
     config = SWEGrepConfig(
         corpus_path=args.corpus,
         questions_path=args.questions,
-        agent_endpoint=Endpoint(provider=args.agent_provider, model=args.agent_model),
-        grader_endpoint=Endpoint(provider=args.grader_provider, model=args.grader_model),
+        agent_endpoint=Endpoint.from_legacy(provider=args.agent_provider, model=args.agent_model),
+        grader_endpoint=Endpoint.from_legacy(
+            provider=args.grader_provider, model=args.grader_model
+        ),
         max_turns=args.max_turns,
         iou_threshold=args.iou_threshold,
         max_samples=args.max_samples,
