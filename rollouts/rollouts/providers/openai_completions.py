@@ -628,9 +628,14 @@ async def rollout_openai(
         # Must explicitly set since z.ai defaults to thinking enabled
         thinking_enabled = actor.endpoint.reasoning_effort is not None
         params["thinking"] = {"type": "enabled" if thinking_enabled else "disabled"}
-    elif thinking_format == "qwen":
-        # Qwen uses enable_thinking: boolean
+    elif thinking_format == "qwen" or thinking_format == "dashscope":
+        # Qwen/DashScope uses enable_thinking: boolean
+        # Required to get reasoning_content from models like kimi-k2.5, qwen, deepseek-r1
         params["enable_thinking"] = actor.endpoint.reasoning_effort is not None
+    elif thinking_format == "chat_template":
+        # Baseten/some opencode models use chat_template_args
+        if actor.endpoint.reasoning_effort is not None:
+            params["chat_template_args"] = {"enable_thinking": True}
     elif actor.endpoint.reasoning_effort is not None:
         # OpenAI-style reasoning_effort (default)
         params["reasoning_effort"] = actor.endpoint.reasoning_effort

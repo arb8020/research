@@ -51,8 +51,10 @@ class ModelCost:
 # - "openai": uses reasoning_effort param (OpenAI o1/o3 models)
 # - "zai": uses thinking: { type: "enabled" | "disabled" } (Z.ai/GLM models)
 # - "qwen": uses enable_thinking: boolean (Qwen models)
+# - "dashscope": uses enable_thinking: boolean (DashScope/alibaba-cn)
+# - "chat_template": uses chat_template_args: { enable_thinking: true } (baseten, some opencode models)
 # - None: model emits reasoning by default or doesn't support thinking toggle
-ThinkingFormat = Literal["openai", "zai", "qwen"] | None
+ThinkingFormat = Literal["openai", "zai", "qwen", "dashscope", "chat_template"] | None
 
 
 @dataclass(frozen=True)
@@ -969,7 +971,7 @@ MODELS: dict[Provider, dict[str, ModelMetadata]] = {
             cost=ModelCost(input=0.6, output=2.2, cache_read=0.1, cache_write=0),
             context_window=204800,
             max_tokens=131072,
-            thinking_format="zai",
+            thinking_format="chat_template",  # opencode uses chat_template_args
         ),
         "glm-4.7": ModelMetadata(
             id="glm-4.7",
@@ -1033,6 +1035,7 @@ MODELS: dict[Provider, dict[str, ModelMetadata]] = {
             cost=ModelCost(input=0.4, output=2.5, cache_read=0.4, cache_write=0),
             context_window=262144,
             max_tokens=262144,
+            thinking_format="chat_template",  # opencode uses chat_template_args
         ),
         "kimi-k2.5": ModelMetadata(
             id="kimi-k2.5",
