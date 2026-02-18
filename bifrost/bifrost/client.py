@@ -88,6 +88,9 @@ class BifrostClient:
         # Track last deployed workspace for smart working_dir defaults
         self._last_workspace: str | None = None
 
+        # Cache remote home directory for tilde expansion (lazy-loaded)
+        self._remote_home: str | None = None
+
     @retry(max_attempts=3, delay=2, backoff=2, exceptions=(Exception,))
     def _establish_connection(
         self, ssh_client: paramiko.SSHClient, private_key: paramiko.PKey | None = None
@@ -206,6 +209,25 @@ class BifrostClient:
                 return f.read()
         except Exception as e:
             raise SSHConnectionError(f"Failed to load SSH key from {key_path}: {e}") from e
+
+    def _get_remote_home(self) -> str:
+        """Get remote user's home directory, cached after first call."""
+        if self._remote_home is None:
+            ssh = self._get_ssh_client()
+            _, stdout, _ = ssh.exec_command("echo $HOME")
+            self._remote_home = stdout.read().decode().strip()
+            if not self._remote_home:
+                # Fallback: try pwd in home context
+                _, stdout, _ = ssh.exec_command("cd ~ && pwd")
+                self._remote_home = stdout.read().decode().strip()
+            assert self._remote_home, "Could not determine remote home directory"
+        return self._remote_home
+
+    def _expand_remote_tilde(self, path: str) -> str:
+        """Expand ~ in remote path to actual home directory."""
+        if path.startswith("~/"):
+            return path.replace("~", self._get_remote_home(), 1)
+        return path
 
     def _build_command_with_env(
         self, command: str, working_dir: str, env: EnvironmentVariables | None
@@ -870,17 +892,14 @@ class BifrostClient:
 
         IMPORTANT: This method receives paths that may contain tilde (~).
         SFTP protocol does NOT expand tilde - it treats it as a literal directory.
-        We must manually expand ~ to /root before calling sftp.stat() and sftp.get().
+        We must manually expand ~ to the actual home directory.
         """
         # Ensure local directory exists
         local_dir = Path(local_path).parent
         local_dir.mkdir(parents=True, exist_ok=True)
 
-        # CRITICAL: Expand tilde for SFTP operations
-        # SFTP treats "~/foo" as literal path with directory named "~"
-        # Shell commands expand it to "/root/foo" (or appropriate home dir)
-        if remote_path.startswith("~/"):
-            remote_path = remote_path.replace("~", "/root", 1)
+        # Expand tilde for SFTP operations
+        remote_path = self._expand_remote_tilde(remote_path)
 
         # Get file size
         file_size = sftp.stat(remote_path).st_size
@@ -921,10 +940,7 @@ class BifrostClient:
         total_bytes = 0
 
         # Convert remote_path to absolute form for proper relative path calculation
-        if remote_path.startswith("~/"):
-            abs_remote_path = remote_path.replace("~", "/root", 1)
-        else:
-            abs_remote_path = remote_path
+        abs_remote_path = self._expand_remote_tilde(remote_path)
 
         for remote_file in file_list:
             # Calculate relative path and local destination
