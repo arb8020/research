@@ -82,6 +82,10 @@ class PyTorchTrainingBackend:
     _nursery: trio.Nursery | None = field(default=None, init=False, repr=False)
     _poisoned: bool = field(default=False, init=False, repr=False)
 
+    # NCCL weight sync state (PipelineRL-inspired in-flight updates)
+    _nccl_process_group: Any | None = field(default=None, init=False, repr=False)
+    _nccl_inference_endpoints: list[str] = field(default_factory=list, init=False, repr=False)
+
     # FSDP checkpoint options (SLIME pattern - set in __post_init__)
     _fsdp_state_dict_opts: Any | None = field(default=None, init=False, repr=False)
 
@@ -787,6 +791,197 @@ class PyTorchTrainingBackend:
             "is_fsdp": self._fsdp_state_dict_opts is not None,
             "device": str(self.device) if self.device else None,
         }
+
+    # ══════════════════════════════════════════════════════════════
+    # NCCL In-Flight Weight Sync (PipelineRL-inspired)
+    # ══════════════════════════════════════════════════════════════
+
+    async def init_nccl_weight_sync(
+        self,
+        inference_endpoints: list[str],
+        master_addr: str | None = None,
+        master_port: int = 29500,
+    ) -> None:
+        """Initialize NCCL process group for in-flight weight sync.
+
+        Sets up NCCL communication between trainer and inference servers.
+        Call once at startup before any sync_weights_nccl calls.
+
+        Args:
+            inference_endpoints: List of SGLang server URLs (e.g., ["http://localhost:30000"])
+            master_addr: NCCL master address (default: localhost)
+            master_port: NCCL master port (default: 29500)
+
+        Example:
+            >>> await backend.init_nccl_weight_sync(["http://localhost:30000"])
+            >>> # Later, in training loop:
+            >>> await backend.sync_weights_nccl()  # Non-blocking GPU-to-GPU sync
+        """
+        import logging
+        import os
+        import socket
+
+        import httpx
+
+        logger = logging.getLogger(__name__)
+
+        # Determine master address
+        if master_addr is None:
+            master_addr = os.environ.get("MASTER_ADDR", "localhost")
+
+        # World size = trainer (1) + inference servers
+        world_size = 1 + len(inference_endpoints)
+        trainer_rank = 0
+
+        logger.info(f"Initializing NCCL weight sync group (world_size={world_size})")
+        logger.info(f"  Master: {master_addr}:{master_port}")
+        logger.info(f"  Inference endpoints: {inference_endpoints}")
+
+        # Store endpoints for later use
+        self._nccl_inference_endpoints = list(inference_endpoints)
+
+        # 1. Tell each SGLang server to join the NCCL group
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            for i, endpoint in enumerate(inference_endpoints):
+                inference_rank = i + 1  # Inference ranks start at 1
+                logger.info(f"  Registering {endpoint} as rank {inference_rank}")
+
+                response = await client.post(
+                    f"{endpoint}/init_weights_update_group",
+                    json={
+                        "master_address": master_addr,
+                        "master_port": master_port,
+                        "rank": inference_rank,
+                        "world_size": world_size,
+                        "group_name": "weight_sync",
+                        "backend": "nccl",
+                    },
+                )
+                response.raise_for_status()
+                logger.info(f"  {endpoint} registered successfully")
+
+        # 2. Trainer joins as rank 0
+        if not dist.is_initialized():
+            logger.info(f"  Trainer joining as rank 0...")
+            dist.init_process_group(
+                backend="nccl",
+                init_method=f"tcp://{master_addr}:{master_port}",
+                rank=trainer_rank,
+                world_size=world_size,
+            )
+
+        # 3. Create named group for weight sync
+        self._nccl_process_group = dist.new_group(
+            ranks=list(range(world_size)),
+            backend="nccl",
+        )
+
+        logger.info("NCCL weight sync group initialized successfully")
+
+    async def sync_weights_nccl(self) -> None:
+        """Broadcast model weights to inference engines via NCCL.
+
+        In-flight update: sampling can continue with slightly stale weights.
+        GPU-to-GPU transfer - no disk I/O.
+
+        Requires init_nccl_weight_sync() to be called first.
+
+        Example:
+            >>> # After each training step:
+            >>> await backend.sync_weights_nccl()
+            >>> # Inference engines now have updated weights
+        """
+        import logging
+
+        import httpx
+
+        logger = logging.getLogger(__name__)
+
+        assert self._nccl_process_group is not None, (
+            "NCCL weight sync not initialized. Call init_nccl_weight_sync() first."
+        )
+
+        # Increment weight version
+        self.weight_version += 1
+
+        # Get state dict (handles LoRA merging if needed)
+        if self.is_lora:
+            # Merge LoRA temporarily for sync
+            self.model.merge_adapter()
+            state_dict = self.model.base_model.model.state_dict()
+        else:
+            state_dict = self.model.state_dict()
+
+        # Build parameter info for inference servers
+        param_info = [
+            {"name": name, "shape": list(p.shape), "dtype": str(p.dtype)}
+            for name, p in state_dict.items()
+        ]
+
+        # 1. Tell inference servers to prepare for NCCL receive
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            for endpoint in self._nccl_inference_endpoints:
+                await client.post(
+                    f"{endpoint}/update_weights_from_distributed",
+                    json={
+                        "names": [p["name"] for p in param_info],
+                        "shapes": [p["shape"] for p in param_info],
+                        "dtypes": [p["dtype"] for p in param_info],
+                        "group_name": "weight_sync",
+                        "weight_version": str(self.weight_version),
+                    },
+                )
+
+        # 2. Broadcast each tensor via NCCL (GPU-to-GPU, no serialization)
+        for name, param in state_dict.items():
+            param_data = param.data.contiguous()
+            if param_data.device.type != "cuda":
+                param_data = param_data.cuda()
+            dist.broadcast(param_data, src=0, group=self._nccl_process_group)
+
+        # 3. Wait for completion
+        dist.barrier(group=self._nccl_process_group)
+
+        # Restore LoRA structure if needed
+        if self.is_lora:
+            self.model.unmerge_adapter()
+
+        logger.debug(f"NCCL weight sync complete (version={self.weight_version})")
+
+    async def cleanup_nccl_weight_sync(self) -> None:
+        """Cleanup NCCL weight sync group.
+
+        Call at shutdown to properly cleanup distributed resources.
+        """
+        import logging
+
+        import httpx
+
+        logger = logging.getLogger(__name__)
+
+        if self._nccl_process_group is None:
+            return
+
+        logger.info("Cleaning up NCCL weight sync group...")
+
+        # Tell SGLang servers to leave the group
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            for endpoint in self._nccl_inference_endpoints:
+                try:
+                    await client.post(
+                        f"{endpoint}/destroy_weights_update_group",
+                        json={"group_name": "weight_sync"},
+                    )
+                except Exception:
+                    pass  # Best effort cleanup
+
+        # Destroy local process group
+        if self._nccl_process_group is not None:
+            dist.destroy_process_group(self._nccl_process_group)
+            self._nccl_process_group = None
+
+        self._nccl_inference_endpoints = []
+        logger.info("NCCL weight sync group cleaned up")
 
     # Helper methods for async file I/O (Tiger Style: explicit sync methods)
     @staticmethod

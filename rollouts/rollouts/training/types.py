@@ -118,6 +118,9 @@ class Sample:
     status: Status = Status.PENDING
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    # Pipeline tracking (PipelineRL-style in-flight updates)
+    weight_version: int = 0  # Model version that generated this sample
+
     @property
     def response(self) -> str:
         """Extract final assistant response from trajectory.

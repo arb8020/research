@@ -490,15 +490,122 @@ async def _process_training_step(
         logger.info(f"Saved checkpoint: {ckpt_dir}")
 
     # Sync weights to inference engine (for on-policy training)
-    # Use save_weights_for_sampler which handles LoRA merging (Tinker pattern)
     if should_sync:
-        from ..training.weight_sync import get_fast_sync_dir
+        if config.checkpoint.weight_sync_mode == "nccl":
+            # NCCL in-flight sync: GPU-to-GPU broadcast (PipelineRL-style)
+            logger.info(f"Syncing weights via NCCL to {inference_engine.name}...")
+            await backend.sync_weights_nccl()
+            logger.info("NCCL weight sync complete")
+        else:
+            # Disk-based sync: save to /dev/shm, reload (default)
+            from ..training.weight_sync import get_fast_sync_dir
 
-        fast_dir = get_fast_sync_dir()
-        sync_dir = await backend.save_weights_for_sampler(fast_dir / "sync_latest")
-        logger.info(f"Syncing weights to {inference_engine.name}...")
-        await inference_engine.update_weights_from_checkpoint(str(sync_dir))
-        logger.info("Weight sync complete")
+            fast_dir = get_fast_sync_dir()
+            sync_dir = await backend.save_weights_for_sampler(fast_dir / "sync_latest")
+            logger.info(f"Syncing weights to {inference_engine.name}...")
+            await inference_engine.update_weights_from_checkpoint(str(sync_dir))
+            logger.info("Weight sync complete")
+
+    return step_metrics
+
+
+async def _process_training_step_no_sync(
+    step: int,
+    batch: Any,
+    config: GRPOConfig,
+    backend: Any,
+    tokenizer: Any,
+    device: str,
+    output_dir: Path,
+    metrics_logger: Any,
+    logger: logging.Logger,
+) -> dict[str, Any] | None:
+    """Process a training step without weight sync (for true_pipeline mode).
+
+    Same as _process_training_step but without the weight sync logic.
+    Weight sync is handled separately by PipelineWeightSyncManager.
+
+    Returns:
+        Step metrics dict, or None if step was skipped
+    """
+    import json
+
+    import torch
+
+    from ..training.losses import compute_group_advantages
+
+    if not batch.tokens:
+        logger.warning("No successful rollouts, skipping step")
+        return None
+
+    # Save rollouts to JSONL
+    rollouts_file = output_dir / "rollouts.jsonl"
+    with open(rollouts_file, "a") as f:  # noqa: ASYNC230
+        for sample in batch.samples:
+            record = {
+                "step": step + 1,
+                "prompt": sample.prompt,
+                "response": sample.response,
+                "reward": sample.reward,
+                "status": sample.status.value,
+                "group_index": sample.group_index,
+                "weight_version": sample.weight_version,  # Track staleness
+                "turns": sample.metadata.get("turns"),
+                "stop_reason": sample.metadata.get("stop_reason"),
+                "messages": sample.metadata.get("messages"),
+            }
+            f.write(json.dumps(record) + "\n")
+            logger.info("rollout", extra=record)
+
+    # Compute advantages
+    rewards = batch.rewards
+    group_indices = batch.group_indices
+    mean_reward = sum(rewards) / len(rewards) if rewards else 0.0
+    num_groups = len(set(group_indices)) if group_indices else len(rewards)
+    logger.info(f"Reward: {mean_reward:.3f} ({len(rewards)} samples, {num_groups} groups)")
+
+    if group_indices and len(set(group_indices)) > 1:
+        advantages = compute_group_advantages(rewards, group_indices).to(device)
+    else:
+        advantages = torch.tensor([r - mean_reward for r in rewards], device=device)
+
+    # Prepare batch tensors
+    training_batch = _prepare_training_batch(batch, config, tokenizer, advantages, device)
+
+    # Training step
+    fb_future = backend.forward_backward(training_batch)
+    fb_metrics = await fb_future.result()
+
+    optim_future = backend.optim_step()
+    optim_metrics = await optim_future.result()
+
+    accumulated_metrics = {**fb_metrics, **optim_metrics}
+    pg_loss = accumulated_metrics.get("pg_loss", 0.0)
+    entropy = accumulated_metrics.get("entropy", 0.0)
+
+    step_metrics = {
+        "mean_reward": mean_reward,
+        "num_samples": len(rewards),
+        "num_groups": num_groups,
+        **accumulated_metrics,
+    }
+
+    metrics_logger.log(step_metrics, step=step + 1)
+    logger.info("metrics", extra={"step": step + 1, **step_metrics})
+
+    if (step + 1) % config.checkpoint.log_every == 0:
+        logger.info(
+            f"Step {step + 1}: reward={mean_reward:.3f} | "
+            f"pg_loss={pg_loss:.4f} | entropy={entropy:.2f}"
+        )
+
+    # Checkpoint (save to disk for recovery)
+    should_checkpoint = (step + 1) % config.checkpoint.checkpoint_every == 0
+    if should_checkpoint:
+        ckpt_dir = await backend.save_checkpoint(step + 1, accumulated_metrics)
+        logger.info(f"Saved checkpoint: {ckpt_dir}")
+
+    # Note: NO weight sync here - handled by PipelineWeightSyncManager
 
     return step_metrics
 
@@ -638,6 +745,15 @@ async def _grpo_train_async(
         else:
             logger.info("VRAM preflight check skipped (skip_vram_check=True)")
 
+        # Initialize NCCL weight sync if enabled (PipelineRL-style in-flight updates)
+        if config.checkpoint.weight_sync_mode == "nccl":
+            logger.info("Initializing NCCL weight sync...")
+            await backend.init_nccl_weight_sync(
+                inference_endpoints=[inference_engine.base_url],
+                master_port=config.checkpoint.nccl_master_port,
+            )
+            logger.info("NCCL weight sync initialized")
+
         # Setup data and rollout generation
         logger.info(f"Dataset: {len(prompts)} prompts")
         data_buffer = DataBuffer(prompts=prompts)
@@ -656,26 +772,173 @@ async def _grpo_train_async(
         # Training loop
         metrics_history = []
 
-        async with AsyncRolloutManager(data_buffer, rollout_config) as rollout_manager:
-            for step in range(config.checkpoint.num_steps):
-                logger.info(f"\n--- Step {step + 1}/{config.checkpoint.num_steps} ---")
+        if config.checkpoint.pipeline_mode == "true_pipeline":
+            # True PipelineRL: both sampling AND weight sync are non-blocking
+            # Inference never stops, training never waits
+            from ..training.rollout_gen.pipelined_rollout_manager import PipelinedRolloutManager
+            from ..training.weight_sync import PipelineWeightSyncManager
 
-                batch = await rollout_manager.generate_batch(score_fn=score_fn)
-                step_metrics = await _process_training_step(
-                    step,
-                    batch,
-                    config,
-                    backend,
-                    tokenizer,
-                    device,
-                    output_dir,
-                    metrics_logger,
-                    inference_engine,
-                    logger,
-                )
+            pipelined_manager = PipelinedRolloutManager(
+                data_buffer=data_buffer,
+                config=rollout_config,
+                max_lag=config.checkpoint.max_lag,
+                queue_size=config.checkpoint.pipeline_queue_size,
+            )
 
-                if step_metrics:
-                    metrics_history.append({"step": step + 1, **step_metrics})
+            weight_sync_manager = PipelineWeightSyncManager(
+                inference_endpoints=[inference_engine.base_url],
+                max_lag=config.checkpoint.max_lag,
+                nccl_master_port=config.checkpoint.nccl_master_port,
+            )
+
+            logger.info(
+                f"Using TRUE PipelineRL mode (max_lag={config.checkpoint.max_lag}, "
+                f"queue_size={config.checkpoint.pipeline_queue_size})"
+            )
+            logger.info("  - Background sampling: ON (inference never stops)")
+            logger.info("  - Non-blocking weight sync: ON (training never waits)")
+
+            try:
+                # Initialize NCCL for non-blocking weight sync
+                await weight_sync_manager.init_nccl_group()
+
+                async with pipelined_manager:
+                    async with trio.open_nursery() as nursery:
+                        # Start background sampling
+                        await pipelined_manager.start_sampling(
+                            nursery=nursery,
+                            initial_weight_version=weight_sync_manager.current_version,
+                        )
+
+                        for step in range(config.checkpoint.num_steps):
+                            logger.info(f"\n--- Step {step + 1}/{config.checkpoint.num_steps} ---")
+
+                            # Get batch (filters stale samples based on weight version)
+                            batch = await pipelined_manager.get_batch(
+                                current_weight_version=weight_sync_manager.current_version,
+                                score_fn=score_fn,
+                            )
+
+                            # Training step (uses compute_grpo_loss, backward, optimizer)
+                            step_metrics = await _process_training_step_no_sync(
+                                step,
+                                batch,
+                                config,
+                                backend,
+                                tokenizer,
+                                device,
+                                output_dir,
+                                metrics_logger,
+                                logger,
+                            )
+
+                            if step_metrics:
+                                metrics_history.append({"step": step + 1, **step_metrics})
+
+                            # Non-blocking weight sync - spawns background task
+                            # Training continues immediately, doesn't wait!
+                            should_sync = (step + 1) % config.checkpoint.sync_weights_every == 0
+                            if should_sync:
+                                logger.debug(f"Spawning async weight sync (v={weight_sync_manager.current_version + 1})")
+                                await weight_sync_manager.broadcast_weights_async(backend.model, nursery)
+
+                            # Update version in rollout manager
+                            pipelined_manager.update_weight_version(weight_sync_manager.current_version)
+
+                        # Log pipeline stats
+                        stats = pipelined_manager.stats()
+                        logger.info(
+                            f"Pipeline stats: generated={stats['samples_generated']}, "
+                            f"discarded_stale={stats['samples_discarded_stale']} "
+                            f"({stats['discard_rate']:.1f}%)"
+                        )
+            finally:
+                await weight_sync_manager.cleanup()
+
+        elif config.checkpoint.pipeline_mode == "async":
+            # Async sampling but blocking weight sync
+            # Sampling runs in background, but training waits for weight sync
+            from ..training.rollout_gen.pipelined_rollout_manager import PipelinedRolloutManager
+
+            pipelined_manager = PipelinedRolloutManager(
+                data_buffer=data_buffer,
+                config=rollout_config,
+                max_lag=config.checkpoint.max_lag,
+                queue_size=config.checkpoint.pipeline_queue_size,
+            )
+
+            logger.info(
+                f"Using async pipeline (max_lag={config.checkpoint.max_lag}, "
+                f"queue_size={config.checkpoint.pipeline_queue_size})"
+            )
+
+            async with pipelined_manager:
+                async with trio.open_nursery() as nursery:
+                    # Start background sampling
+                    await pipelined_manager.start_sampling(
+                        nursery=nursery,
+                        initial_weight_version=backend.weight_version,
+                    )
+
+                    for step in range(config.checkpoint.num_steps):
+                        logger.info(f"\n--- Step {step + 1}/{config.checkpoint.num_steps} ---")
+
+                        # Get batch (filters stale samples based on weight version)
+                        batch = await pipelined_manager.get_batch(
+                            current_weight_version=backend.weight_version,
+                            score_fn=score_fn,
+                        )
+
+                        step_metrics = await _process_training_step(
+                            step,
+                            batch,
+                            config,
+                            backend,
+                            tokenizer,
+                            device,
+                            output_dir,
+                            metrics_logger,
+                            inference_engine,
+                            logger,
+                        )
+
+                        if step_metrics:
+                            metrics_history.append({"step": step + 1, **step_metrics})
+
+                        # Update weight version in manager (tells sampler weights changed)
+                        pipelined_manager.update_weight_version(backend.weight_version)
+
+                    # Log pipeline stats
+                    stats = pipelined_manager.stats()
+                    logger.info(
+                        f"Pipeline stats: generated={stats['samples_generated']}, "
+                        f"discarded_stale={stats['samples_discarded_stale']} "
+                        f"({stats['discard_rate']:.1f}%)"
+                    )
+
+        else:
+            # Synchronous training (default)
+            # Generate batch, train, sync weights, repeat
+            async with AsyncRolloutManager(data_buffer, rollout_config) as rollout_manager:
+                for step in range(config.checkpoint.num_steps):
+                    logger.info(f"\n--- Step {step + 1}/{config.checkpoint.num_steps} ---")
+
+                    batch = await rollout_manager.generate_batch(score_fn=score_fn)
+                    step_metrics = await _process_training_step(
+                        step,
+                        batch,
+                        config,
+                        backend,
+                        tokenizer,
+                        device,
+                        output_dir,
+                        metrics_logger,
+                        inference_engine,
+                        logger,
+                    )
+
+                    if step_metrics:
+                        metrics_history.append({"step": step + 1, **step_metrics})
 
         # Final summary
         logger.info("\n" + "=" * 60)
@@ -694,6 +957,15 @@ async def _grpo_train_async(
         return {"metrics_history": metrics_history}
 
     finally:
+        # Cleanup NCCL weight sync if it was initialized
+        if config.checkpoint.weight_sync_mode == "nccl":
+            try:
+                await backend.cleanup_nccl_weight_sync()
+            except NameError:
+                pass  # backend not yet created
+            except Exception as e:
+                logger.warning(f"NCCL cleanup failed: {e}")
+
         logger.info(f"Shutting down {inference_engine.name}...")
         inference_engine.shutdown()
         logger.info(f"Logs: {inference_engine.log_path}")

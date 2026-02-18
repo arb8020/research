@@ -84,6 +84,22 @@ class CheckpointConfig:
     log_every: int = 1
     checkpoint_every: int = 20  # Save to disk (for recovery/resuming)
     sync_weights_every: int = 1  # Sync to inference engine (for on-policy vs off-policy)
+    # Weight sync mode: "disk" (save to /dev/shm, reload) or "nccl" (GPU-to-GPU broadcast)
+    # "nccl" enables PipelineRL-style in-flight updates (faster, non-blocking)
+    weight_sync_mode: str = "disk"
+    # NCCL master port for weight sync (only used if weight_sync_mode="nccl")
+    nccl_master_port: int = 29500
+    # Pipeline mode:
+    #   "sync" - generate batch, train, sync weights, repeat (stop-and-go, default)
+    #   "async" - background sampling, blocking weight sync (training waits for sync)
+    #   "true_pipeline" - PipelineRL-style: both sampling AND weight sync non-blocking
+    #                     (inference never stops, accepts slightly stale weights)
+    pipeline_mode: str = "sync"
+    # Maximum weight version lag for async pipeline (samples older than this are discarded)
+    # Only used if pipeline_mode="async". Set to 0 for strict on-policy.
+    max_lag: int = 2
+    # Sample queue size for async pipeline
+    pipeline_queue_size: int = 1024
 
 
 @dataclass(frozen=True)

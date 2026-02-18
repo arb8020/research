@@ -801,6 +801,207 @@ class VLLMEngine:
 # ══════════════════════════════════════════════════════════════
 
 
+# ══════════════════════════════════════════════════════════════
+# True PipelineRL: Non-blocking weight sync (inference never stops)
+# ══════════════════════════════════════════════════════════════
+
+
+@dataclass
+class PipelineWeightSyncManager:
+    """True PipelineRL-style weight sync: inference never stops.
+
+    Unlike stop-and-sync (Miles/verl), this broadcasts weights while
+    inference continues. Samples are tagged with weight_version.
+
+    Architecture:
+        Training loop:
+            for step in steps:
+                batch = get_batch()  # May have samples from v-1, v-2, etc.
+                train(batch)
+                sync_manager.broadcast_weights_async(model)  # Non-blocking!
+                # Training continues immediately, doesn't wait for sync
+
+        Inference side:
+            - Receives NCCL broadcast in background
+            - Updates weights parameter-by-parameter
+            - New requests use new weights, in-flight requests use old weights
+            - Returns weight_version with each response
+
+    Warning:
+        This is "slightly sketchy" (PipelineRL's words) - during a sync,
+        some layers may have new weights while others have old weights.
+        PipelineRL accepts this for the throughput benefit.
+
+    Example:
+        >>> manager = PipelineWeightSyncManager(
+        ...     inference_endpoints=["http://localhost:30000"],
+        ...     max_lag=2,
+        ... )
+        >>> await manager.init_nccl_group()
+        >>>
+        >>> for step in range(num_steps):
+        ...     batch = await get_batch_with_staleness_filter(manager.current_version, max_lag=2)
+        ...     train(batch)
+        ...     manager.broadcast_weights_async(model)  # Non-blocking!
+    """
+
+    inference_endpoints: list[str]
+    max_lag: int = 2
+    nccl_master_port: int = 29500
+
+    # Internal state
+    _process_group: Any = field(default=None, init=False, repr=False)
+    _current_version: int = field(default=0, init=False)
+    _pending_sync: trio.Event | None = field(default=None, init=False, repr=False)
+    _sync_nursery: trio.Nursery | None = field(default=None, init=False, repr=False)
+
+    @property
+    def current_version(self) -> int:
+        """Current weight version (increments after each successful sync)."""
+        return self._current_version
+
+    async def init_nccl_group(self) -> None:
+        """Initialize NCCL process group between trainer and inference engines.
+
+        Must be called once at startup before any broadcasts.
+        """
+        import os
+        import socket
+
+        import torch.distributed as dist
+
+        # Get master address
+        master_addr = os.environ.get("MASTER_ADDR", "localhost")
+        world_size = 1 + len(self.inference_endpoints)  # trainer + inference
+
+        logging.getLogger(__name__).info(
+            f"Initializing PipelineRL NCCL group (world_size={world_size})"
+        )
+
+        # Tell each inference engine to join NCCL group
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            for i, endpoint in enumerate(self.inference_endpoints):
+                await client.post(
+                    f"{endpoint}/init_weights_update_group",
+                    json={
+                        "master_address": master_addr,
+                        "master_port": self.nccl_master_port,
+                        "rank": i + 1,  # Inference ranks start at 1
+                        "world_size": world_size,
+                        "group_name": "pipeline_weight_sync",
+                        "backend": "nccl",
+                    },
+                )
+
+        # Trainer joins as rank 0
+        if not dist.is_initialized():
+            dist.init_process_group(
+                backend="nccl",
+                init_method=f"tcp://{master_addr}:{self.nccl_master_port}",
+                rank=0,
+                world_size=world_size,
+            )
+
+        self._process_group = dist.new_group(
+            ranks=list(range(world_size)),
+            backend="nccl",
+        )
+
+        logging.getLogger(__name__).info("PipelineRL NCCL group initialized")
+
+    async def broadcast_weights_async(
+        self,
+        model: Any,  # nn.Module
+        nursery: trio.Nursery,
+    ) -> None:
+        """Broadcast weights to inference engines in background (non-blocking).
+
+        This is the key PipelineRL primitive: training continues immediately
+        while weight sync happens in background.
+
+        Args:
+            model: PyTorch model to sync
+            nursery: Trio nursery to spawn background sync task
+
+        Note:
+            The sync may complete after the next training step starts.
+            Samples generated during sync may use old or new weights.
+        """
+
+        async def _do_sync() -> None:
+            await self._sync_weights_nccl(model)
+            self._current_version += 1
+
+        # Spawn sync task in background - training continues immediately
+        nursery.start_soon(_do_sync)
+
+    async def _sync_weights_nccl(self, model: Any) -> None:
+        """Internal: perform NCCL weight sync."""
+        import torch.distributed as dist
+
+        state_dict = model.state_dict()
+        new_version = self._current_version + 1
+
+        # Build parameter info
+        param_info = [
+            {"name": name, "shape": list(p.shape), "dtype": str(p.dtype)}
+            for name, p in state_dict.items()
+        ]
+
+        # Tell inference engines to prepare for NCCL receive
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            for endpoint in self.inference_endpoints:
+                await client.post(
+                    f"{endpoint}/update_weights_from_distributed",
+                    json={
+                        "names": [p["name"] for p in param_info],
+                        "shapes": [p["shape"] for p in param_info],
+                        "dtypes": [p["dtype"] for p in param_info],
+                        "group_name": "pipeline_weight_sync",
+                        "weight_version": str(new_version),
+                    },
+                )
+
+        # Broadcast each tensor via NCCL
+        for _name, param in state_dict.items():
+            param_data = param.data.contiguous()
+            if param_data.device.type != "cuda":
+                param_data = param_data.cuda()
+            dist.broadcast(param_data, src=0, group=self._process_group)
+
+        # Wait for completion
+        dist.barrier(group=self._process_group)
+
+    async def get_inference_weight_version(self, endpoint: str) -> int:
+        """Query current weight version from an inference engine.
+
+        Useful for debugging / monitoring staleness.
+        """
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(f"{endpoint}/get_weight_version")
+            response.raise_for_status()
+            return int(response.json().get("weight_version", 0))
+
+    async def cleanup(self) -> None:
+        """Cleanup NCCL process group."""
+        import torch.distributed as dist
+
+        if self._process_group is not None:
+            # Tell inference engines to leave
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                for endpoint in self.inference_endpoints:
+                    try:
+                        await client.post(
+                            f"{endpoint}/destroy_weights_update_group",
+                            json={"group_name": "pipeline_weight_sync"},
+                        )
+                    except Exception:
+                        pass  # Best effort
+
+            dist.destroy_process_group(self._process_group)
+            self._process_group = None
+
+
 async def sync_weights_to_engines(
     engines: list[InferenceEngine],
     checkpoint_path: str,
