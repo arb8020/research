@@ -1,55 +1,11 @@
-"""nano-inference: Minimal inference engine for RL training.
+"""Legacy inference code.
 
-See docs/design/nano_inference.md for design documentation.
+This package contains legacy tokenization and generation utilities.
+The main exports are in the backends submodule:
+    from rollouts.inference._legacy.backends import tokenize_chat, compute_suffix_ids
 """
 
-from ..inference.attention import (
-    Attention,
-    AttentionBackend,
-    CacheConfig,
-    FlexAttentionBackend,
-    create_causal_block_mask,
-)
-from ..inference.context import (
-    allocate_and_build_context,
-    build_decode_context,
-    build_prefill_context,
-    extend_and_build_context,
-)
-from ..inference.engine import InferenceEngine
-from ..inference.sampling import sample_with_logprobs
-from ..inference.scheduler import schedule
-from ..inference.types import (
-    EngineConfig,
-    InferenceContext,
-    SamplingParams,
-    SchedulerConfig,
-    SchedulerOutput,
-    TrainingSample,
-)
-
-__all__ = [
-    # Config
-    "EngineConfig",
-    "SamplingParams",
-    "SchedulerConfig",
-    "InferenceContext",
-    "CacheConfig",
-    # Output
-    "TrainingSample",
-    "SchedulerOutput",
-    # Pure functions
-    "sample_with_logprobs",
-    "schedule",
-    "create_causal_block_mask",
-    "build_prefill_context",
-    "build_decode_context",
-    "allocate_and_build_context",
-    "extend_and_build_context",
-    # Protocols
-    "AttentionBackend",
-    # Classes (own state)
-    "InferenceEngine",
-    "FlexAttentionBackend",
-    "Attention",
-]
+# Don't import anything at package level to avoid circular imports
+# Use direct imports from submodules instead:
+#   from rollouts.inference._legacy.backends.tokenize import tokenize_chat
+#   from rollouts.inference._legacy.backends.generate import generate_sglang

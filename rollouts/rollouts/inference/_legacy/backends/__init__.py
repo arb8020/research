@@ -27,13 +27,13 @@ Usage:
     result.logprobs     # Per-token logprobs
 """
 
-from ...inference.backends.generate import (
+from .generate import (
     GenerationOutput,
     generate_hf,
     generate_sglang,
     generate_vllm,
 )
-from ...inference.backends.tokenize import (
+from .tokenize import (
     append_suffix_with_overlap,
     build_loss_mask,
     check_token_mismatch,

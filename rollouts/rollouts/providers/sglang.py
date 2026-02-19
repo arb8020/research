@@ -304,6 +304,19 @@ async def rollout_sglang(
             choice = replace(choice, token_ids=token_ids)
             completion = replace(completion, choices=[choice] + list(completion.choices[1:]))
 
+    # Extract prompt_token_ids from prompt_logprobs if not already set
+    # Each prompt_logprob entry is a dict with token_id as key (string)
+    if completion.prompt_token_ids is None and completion.prompt_logprobs:
+        prompt_ids = []
+        for lp_entry in completion.prompt_logprobs:
+            if lp_entry is not None:
+                # Keys are token_ids as strings, e.g. {"8948": {...}}
+                for token_id_str in lp_entry.keys():
+                    prompt_ids.append(int(token_id_str))
+                    break  # Only one key per entry
+        if prompt_ids:
+            completion = replace(completion, prompt_token_ids=tuple(prompt_ids))
+
     final_message = completion.choices[0].message
     assert final_message is not None
 

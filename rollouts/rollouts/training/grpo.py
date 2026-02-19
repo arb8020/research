@@ -292,65 +292,6 @@ def _create_generate_fn(
     )
 
 
-def _create_tito_generate_fn(
-    config: GRPOConfig,
-    endpoint: Any,
-    tokenizer: Any,
-    metadata_key: str | None,
-    logger: logging.Logger,
-) -> Callable:
-    """Create TI/TO (token-level) generate function."""
-    from ..inference.backends import compute_suffix_ids
-    from ..providers import rollout_sglang_token_level, rollout_vllm_token_level
-
-    suffix_ids = compute_suffix_ids(tokenizer)
-    tito_provider = (
-        rollout_sglang_token_level
-        if config.inference.backend == "sglang"
-        else rollout_vllm_token_level
-    )
-
-    async def generate_fn(batch_prompts: list[dict], **kwargs: Any) -> list:
-        from ..dtypes import Actor, Message, Trajectory
-
-        results = []
-        for prompt_data in batch_prompts:
-            messages = prompt_data["messages"]
-            if metadata_key:
-                metadata = {metadata_key: prompt_data.get(metadata_key)}
-            else:
-                metadata = {k: v for k, v in prompt_data.items() if k != "messages"}
-
-            try:
-                initial_messages = [Message(role=m["role"], content=m["content"]) for m in messages]
-                trajectory = Trajectory(messages=initial_messages)
-                actor = Actor(trajectory=trajectory, endpoint=endpoint)
-
-                async def noop_chunk(chunk: object) -> None:
-                    pass
-
-                updated_actor = await tito_provider(
-                    actor, noop_chunk, tokenizer=tokenizer, suffix_ids=suffix_ids
-                )
-
-                samples = _trajectory_to_samples_tito(
-                    trajectory=updated_actor.trajectory,
-                    tokenizer=tokenizer,
-                    strategy=config.rollout.trajectory_strategy,
-                    metadata=metadata,
-                )
-                results.extend(samples)
-            except Exception as e:
-                logger.warning(f"TI/TO rollout failed: {e}")
-                import traceback
-
-                logger.debug(traceback.format_exc())
-
-        return results
-
-    return generate_fn
-
-
 def _create_agent_generate_fn(
     config: GRPOConfig,
     endpoint: Any,

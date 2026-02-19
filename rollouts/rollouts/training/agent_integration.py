@@ -428,7 +428,6 @@ def _branching_trajectory_to_samples(
 
     This mirrors deployed usage exactly - each generation is independent.
     """
-    from ..inference.backends import tokenize_chat
     from ..training.types import Sample, Status
 
     samples = []
@@ -445,14 +444,18 @@ def _branching_trajectory_to_samples(
         completion_idx += 1
 
         # Input = all messages before this assistant turn
+        # Prefer prompt_token_ids from server (TI/TO), fallback to local tokenization
         input_messages = trajectory.messages[:msg_idx]
-        if not input_messages:
+        if completion.prompt_token_ids:
+            input_ids = list(completion.prompt_token_ids)
+        elif not input_messages:
             # First message is assistant (unusual but handle it)
             input_ids = []
         else:
-            input_ids = tokenize_chat(
-                tokenizer,
+            # Fallback: local tokenization (should rarely happen with modern SGLang)
+            input_ids = tokenizer.apply_chat_template(
                 [_msg_to_dict(m) for m in input_messages],
+                tokenize=True,
                 add_generation_prompt=True,
             )
 
@@ -514,15 +517,13 @@ def _extract_tokens_from_trajectory(
     trajectory: Trajectory,
     tokenizer: Any,
 ) -> list[int]:
-    """Extract tokens from trajectory, using stored token_ids when available.
+    """Extract tokens from trajectory using server-provided token IDs.
 
-    TI/TO (Tokens-In/Tokens-Out): If the trajectory was generated using
-    rollout_sglang_token_level or similar, the actual generated token_ids
-    are stored in Choice.token_ids. We use those directly to avoid
-    retokenization, which can cause RL training collapse.
+    SGLang with echo=True + logprobs=True provides:
+    - prompt_token_ids: tokens for the input prompt
+    - choice.token_ids: tokens for the generated completion
 
-    Falls back to retokenization if no stored token_ids are available
-    (e.g., for text-based providers like OpenAI API).
+    Falls back to retokenization for text-based providers (OpenAI, Anthropic).
 
     Args:
         trajectory: Trajectory with messages and completions
@@ -531,62 +532,46 @@ def _extract_tokens_from_trajectory(
     Returns:
         Token IDs for the full conversation
     """
-    from ..inference.backends import (
-        append_suffix_with_overlap,
-        compute_suffix_ids,
-        tokenize_chat,
-        tokenize_message_with_delimiter,
-    )
-
-    # Check if ANY completion has stored token_ids
-    has_stored_tokens = any(c.choices and c.choices[0].token_ids for c in trajectory.completions)
-
-    if not has_stored_tokens:
-        # Fallback: retokenize (old behavior)
-        # This path is used for text-based providers (OpenAI, Anthropic, etc.)
-        full_text = tokenizer.apply_chat_template(
+    if not trajectory.completions:
+        # No completions - just tokenize messages
+        return tokenizer.apply_chat_template(
             [_msg_to_dict(m) for m in trajectory.messages],
-            tokenize=False,
+            tokenize=True,
             add_generation_prompt=False,
         )
-        return tokenizer.encode(full_text, add_special_tokens=True)
 
-    # TI/TO path: build tokens from stored token_ids
-    suffix_ids = compute_suffix_ids(tokenizer)
-    all_ids: list[int] = []
-    assistant_idx = 0  # Track which completion we're on
+    # Check if we have server-provided token IDs
+    last_completion = trajectory.completions[-1]
+    has_prompt_ids = last_completion.prompt_token_ids is not None
+    has_completion_ids = last_completion.choices and last_completion.choices[0].token_ids
 
-    for i, msg in enumerate(trajectory.messages):
-        msg_dict = _msg_to_dict(msg)
+    if has_prompt_ids and has_completion_ids:
+        # Best case: server gave us both prompt and completion token IDs
+        # The last completion's prompt_token_ids includes all prior context
+        all_ids = list(last_completion.prompt_token_ids)
+        all_ids.extend(last_completion.choices[0].token_ids)
+        return all_ids
 
-        if msg_dict["role"] == "assistant":
-            # Use stored token_ids from completion
-            if assistant_idx < len(trajectory.completions):
-                completion = trajectory.completions[assistant_idx]
-                if completion.choices and completion.choices[0].token_ids:
-                    stored_ids = list(completion.choices[0].token_ids)
-                    all_ids.extend(stored_ids)
-                    # Append suffix for next turn
-                    all_ids = append_suffix_with_overlap(all_ids, suffix_ids)
-                    assistant_idx += 1
-                    continue
+    if has_completion_ids:
+        # Have completion tokens but no prompt tokens - use prompt_token_ids
+        # from earlier completions or fall back to tokenizing prompt
+        all_ids: list[int] = []
+        for completion in trajectory.completions:
+            if completion.prompt_token_ids:
+                # This prompt includes all context up to this point
+                all_ids = list(completion.prompt_token_ids)
+            if completion.choices and completion.choices[0].token_ids:
+                all_ids.extend(completion.choices[0].token_ids)
+        if all_ids:
+            return all_ids
 
-            # No stored token_ids for this assistant message, tokenize it
-            if i == 0:
-                msg_ids = tokenize_chat(tokenizer, [msg_dict])
-            else:
-                msg_ids = tokenize_message_with_delimiter(tokenizer, msg_dict)
-            all_ids.extend(msg_ids)
-            assistant_idx += 1
-        else:
-            # User/system/tool message - tokenize normally
-            if i == 0:
-                msg_ids = tokenize_chat(tokenizer, [msg_dict])
-            else:
-                msg_ids = tokenize_message_with_delimiter(tokenizer, msg_dict)
-            all_ids.extend(msg_ids)
-
-    return all_ids
+    # Fallback: retokenize entire conversation
+    # Used for text-based providers (OpenAI, Anthropic, etc.)
+    return tokenizer.apply_chat_template(
+        [_msg_to_dict(m) for m in trajectory.messages],
+        tokenize=True,
+        add_generation_prompt=False,
+    )
 
 
 def _extract_logprobs_from_trajectory(trajectory: Trajectory) -> list[float] | None:

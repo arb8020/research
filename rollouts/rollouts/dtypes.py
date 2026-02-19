@@ -895,6 +895,7 @@ class ChatCompletion(JsonSerializable):
     kv_transfer_params: Any | None = None
     choices: list[Choice] = field(default_factory=list)
     prompt_logprobs: list[PromptLogprob] | None = None
+    prompt_token_ids: tuple[int, ...] | None = None  # Prompt token IDs for TI/TO (from server)
 
 
 @dataclass(frozen=True)
