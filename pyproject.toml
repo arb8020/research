@@ -117,6 +117,15 @@ dev-speedrun = [
 [project.scripts]
 corpus-proximity = "corpus_proximity_cli:main"
 
+[tool.uv]
+# Workspace-wide overrides: these win over any member package or extra pins.
+# Needed because dev-outlier-features pins old transformers/hf-hub that conflict
+# with rollouts[reap] and other members needing newer versions.
+override-dependencies = [
+    "transformers>=5.0.0",
+    "huggingface-hub>=1.4.0",
+]
+
 [tool.uv.sources]
 broker = { workspace = true }
 bifrost = { workspace = true }
