@@ -44,8 +44,8 @@ from rollouts.environments.kernelbench_multi import (
 from rollouts.evaluation import evaluate
 from rollouts.gpu_sandbox import SandboxPool
 
-from .dataset import load_kernelbench_prompts
-from .scoring import kernelbench_score_fn
+from examples.kernelbench.dataset import load_kernelbench_prompts
+from examples.kernelbench.scoring import kernelbench_score_fn
 
 logger = logging.getLogger(__name__)
 
