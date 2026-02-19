@@ -199,6 +199,8 @@ def run_reap(config: ReapConfig) -> dict[str, Any]:
 def run_eval(model_path: Path, config: ReapConfig) -> dict[str, Any]:
     """Start SGLang server and run lm-eval benchmarks.
 
+    Uses rollouts.deploy infrastructure for reliable server management.
+
     Args:
         model_path: Path to the pruned model
         config: REAP config with eval settings
@@ -212,19 +214,29 @@ def run_eval(model_path: Path, config: ReapConfig) -> dict[str, Any]:
 
     import requests
 
-    logger.info(f"Starting SGLang server on port {config.sglang_port}...")
+    from rollouts.training.sglang_launcher import _patch_transformers
 
-    # Start SGLang server in background
+    # Apply transformers patch before sglang import
+    _patch_transformers()
+
+    logger.info(f"Starting SGLang server on port {config.sglang_port}...")
+    logger.info(f"Model path: {model_path}")
+
+    # Start server using the rollouts launcher (handles transformers patch)
     server_cmd = [
         "python",
         "-m",
-        "sglang.launch_server",
+        "rollouts.training.sglang_launcher",
         "--model-path",
         str(model_path),
         "--port",
         str(config.sglang_port),
         "--trust-remote-code",
+        "--mem-fraction-static",
+        "0.85",
     ]
+
+    logger.info(f"Server command: {' '.join(server_cmd)}")
 
     server_proc = subprocess.Popen(
         server_cmd,
@@ -234,18 +246,27 @@ def run_eval(model_path: Path, config: ReapConfig) -> dict[str, Any]:
 
     # Wait for server to be ready
     base_url = f"http://localhost:{config.sglang_port}"
-    for _ in range(120):  # 2 min timeout
+    logger.info(f"Waiting for server at {base_url}...")
+
+    for attempt in range(180):  # 3 min timeout
         try:
             resp = requests.get(f"{base_url}/health", timeout=2)
             if resp.status_code == 200:
-                logger.info("SGLang server ready")
+                logger.info(f"SGLang server ready after {attempt}s")
                 break
         except requests.RequestException:
             pass
+
+        # Check if process died
+        if server_proc.poll() is not None:
+            stdout = server_proc.stdout.read().decode() if server_proc.stdout else ""
+            logger.error(f"Server process died. Output:\n{stdout[-2000:]}")
+            raise RuntimeError("SGLang server process died during startup")
+
         time.sleep(1)
     else:
         server_proc.terminate()
-        raise TimeoutError("SGLang server failed to start")
+        raise TimeoutError("SGLang server failed to start within 3 minutes")
 
     try:
         # Run lm-eval
@@ -264,7 +285,7 @@ def run_eval(model_path: Path, config: ReapConfig) -> dict[str, Any]:
         )
 
         # Extract summary
-        summary = {}
+        summary: dict[str, Any] = {}
         if "results" in results:
             for task, metrics in results["results"].items():
                 summary[task] = {
@@ -287,7 +308,10 @@ def run_eval(model_path: Path, config: ReapConfig) -> dict[str, Any]:
     finally:
         logger.info("Stopping SGLang server...")
         server_proc.terminate()
-        server_proc.wait(timeout=10)
+        try:
+            server_proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            server_proc.kill()
 
 
 # Alias for consistency with other examples
