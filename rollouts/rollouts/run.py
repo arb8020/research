@@ -193,7 +193,10 @@ async def _deploy_and_submit(
         ),
         (
             "Installing ML packages",
-            "~/.local/bin/uv pip install torch transformers datasets accelerate sglang[all] curl_cffi peft",
+            # Override transformers to 5.x to fix list_repo_templates 404 bug
+            # SGLang pins transformers==4.57.1 which has this bug
+            # See: https://github.com/huggingface/transformers/issues/41813
+            "~/.local/bin/uv pip install torch 'transformers>=5.0.0' datasets accelerate sglang[all] curl_cffi peft",
         ),
     ]
 
