@@ -322,17 +322,16 @@ def _open_ssh_tunnel(
 def _cancel_job(run_id: str) -> int:
     """Cancel a running job by killing its tmux session.
 
-    Looks up job in ~/.rollouts/jobs.json, SSHs to the node,
+    Looks up job via broker, SSHs to the node,
     and kills the bifrost-job-rl-training tmux session.
     """
+    import os
+
     import trio
-    from dotenv import load_dotenv
 
     from bifrost import BifrostClient
     from broker.client import GPUClient
-    from rollouts.jobs import get_job, remove_job
-
-    load_dotenv()
+    from rollouts.jobs import get_job
 
     try:
         job = get_job(run_id)
@@ -360,15 +359,10 @@ def _cancel_job(run_id: str) -> int:
         if not instance:
             print(f"Instance not found: {provider}:{node_id}")
             print("Instance may have been terminated.")
-            remove_job(run_id)
             return 1
 
         # SSH and kill the tmux session
-        import os
-
-        ssh_key = client.get_ssh_key_path(provider) or os.path.expanduser(
-            "~/.ssh/id_ed25519"
-        )
+        ssh_key = client.get_ssh_key_path(provider) or os.path.expanduser("~/.ssh/id_ed25519")
         ssh_connection = f"root@{instance.public_ip}:{instance.ssh_port}"
         bifrost = BifrostClient(ssh_connection, ssh_key_path=ssh_key)
         result = bifrost.exec(
@@ -377,7 +371,7 @@ def _cancel_job(run_id: str) -> int:
         output = result.stdout.strip() if result.stdout else ""
 
         if "killed" in output:
-            print(f"✓ Job cancelled: {run_id}")
+            print(f"Job cancelled: {run_id}")
             print(
                 f"  Instance {provider}:{node_id} is still running (use 'broker terminate' to stop)"
             )
@@ -385,8 +379,6 @@ def _cancel_job(run_id: str) -> int:
             print(f"No active tmux session found for job {run_id}")
             print("Job may have already completed or failed.")
 
-        # Remove from jobs.json
-        remove_job(run_id)
         return 0
 
     except Exception as e:
@@ -830,23 +822,14 @@ def monitor_main(argv: list[str] | None = None) -> int:
 
     # ── List mode ──
     if args.runs:
-        from dotenv import load_dotenv
-
-        from rollouts.jobs import list_jobs, prune_jobs
-
-        load_dotenv()
+        from rollouts.jobs import list_jobs
 
         jobs = list_jobs()
         if not jobs:
-            print("No jobs found. Run a training job first.")
+            print("No rollouts jobs found (no pods with 'rollouts/' name prefix).")
             return 0
 
-        # When probing, query broker for live instances and prune dead jobs
-        live_ids: set[str] | None = None
-        if args.probe:
-            live_ids = _get_live_instance_ids()
-
-        header = f"{'JOB ID':<30} {'NODE':<25} {'SCRIPT':<35} {'STARTED':<20}"
+        header = f"{'JOB ID':<30} {'NODE':<25}"
         if args.probe:
             header += f" {'STATUS':<10}"
         print(header)
@@ -854,20 +837,10 @@ def monitor_main(argv: list[str] | None = None) -> int:
 
         for job in jobs:
             node_str = ", ".join(job.node_ids) if job.nodes else "?"
-            script = job.script
-            # Truncate long paths
-            if len(script) > 33:
-                script = "..." + script[-30:]
-            started = job.started_at[:19] if len(job.started_at) >= 19 else job.started_at
 
-            row = f"{job.job_id:<30} {node_str:<25} {script:<35} {started:<20}"
+            row = f"{job.job_id:<30} {node_str:<25}"
 
-            if args.probe and live_ids is not None:
-                # Check if any node is still alive
-                has_live = any(n.node_id in live_ids for n in job.nodes)
-                if not has_live:
-                    continue  # skip dead jobs (will be pruned below)
-
+            if args.probe:
                 # Probe LogsServer on first node
                 status = "alive"
                 node = job.nodes[0]
@@ -887,12 +860,6 @@ def monitor_main(argv: list[str] | None = None) -> int:
                 row += f" {status:<10}"
 
             print(row)
-
-        # Prune dead jobs
-        if args.probe and live_ids is not None:
-            pruned = prune_jobs(live_ids)
-            if pruned > 0:
-                print(f"\nPruned {pruned} dead job(s)")
 
         return 0
 

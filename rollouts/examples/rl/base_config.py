@@ -352,16 +352,6 @@ async def run_remote(
         workspace=workspace,
     )
 
-    # Register job in ~/.rollouts/jobs.json
-    from rollouts.jobs import make_job
-
-    make_job(
-        job_id=run_name,
-        provider=instance.provider,
-        node_id=instance.id,
-        script=script_path,
-    )
-
     logger.info("Training submitted (fire-and-forget).")
     logger.info("  Run:       %s", run_name)
     logger.info("  Node:      %s", node_id_str)

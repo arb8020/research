@@ -348,15 +348,6 @@ async def run_remote(
         workspace=workspace,
     )
 
-    from rollouts.jobs import make_job
-
-    make_job(
-        job_id=run_name,
-        provider=instance.provider,
-        node_id=instance.id,
-        script=script_path,
-    )
-
     logger.info("Training submitted: %s", run_name)
     logger.info("  Node:   %s", node_id_str)
     logger.info("  Remote: %s", remote_output_dir)

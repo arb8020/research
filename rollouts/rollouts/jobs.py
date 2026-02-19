@@ -1,15 +1,7 @@
-"""Local job registry for rollouts.
+"""Job registry for rollouts — queries broker for live pods.
 
-Maps job_id → nodes + metadata. Stored at ~/.rollouts/jobs.json.
-
-This is the *only* source of truth for job→node relationships.
-Live instance state (ports, IPs, status) always comes from broker.
-
-Invariants:
-- Provisioner writes at launch (single writer per job)
-- --attach reads for node mapping, queries broker for live data
-- --runs reads + reconciles against broker (prunes dead jobs)
-- Never stores ports/IPs — always queries broker for those
+The cloud provider (RunPod, etc.) is the single source of truth.
+Jobs are identified by pod name prefix "rollouts/".
 
 Tiger Style:
 - Functions < 70 lines
@@ -19,12 +11,10 @@ Tiger Style:
 
 from __future__ import annotations
 
-import json
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
-from pathlib import Path
+from dataclasses import dataclass
 
-JOBS_PATH = Path.home() / ".rollouts" / "jobs.json"
+# Naming convention for rollouts pods
+ROLLOUTS_POD_PREFIX = "rollouts/"
 
 
 @dataclass(frozen=True)
@@ -33,17 +23,14 @@ class JobNode:
 
     provider: str  # e.g. "runpod", "modal"
     node_id: str  # e.g. "leniwdl4iqbujm"
-    role: str  # e.g. "training", "inference"
 
 
 @dataclass(frozen=True)
 class Job:
-    """A rollouts job with its nodes and metadata."""
+    """A rollouts job with its nodes."""
 
     job_id: str
     nodes: tuple[JobNode, ...]
-    script: str
-    started_at: str  # ISO 8601
 
     @property
     def node_ids(self) -> list[str]:
@@ -51,122 +38,67 @@ class Job:
         return [f"{n.provider}:{n.node_id}" for n in self.nodes]
 
 
-def _read_jobs_file() -> dict:
-    """Read jobs.json, return empty dict if missing."""
-    if not JOBS_PATH.exists():
-        return {}
-    return json.loads(JOBS_PATH.read_text())
+def _get_credentials() -> dict[str, str]:
+    """Get broker credentials."""
+    from broker.credentials import get_credentials
+
+    return get_credentials()
 
 
-def _write_jobs_file(data: dict) -> None:
-    """Write jobs.json atomically."""
-    JOBS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    JOBS_PATH.write_text(json.dumps(data, indent=2) + "\n")
+def _list_instances_sync() -> list:
+    """Query broker for all instances (sync wrapper)."""
+    import trio
+
+    from broker.client import GPUClient
+
+    credentials = _get_credentials()
+    if not credentials:
+        return []
+
+    async def _fetch() -> list:
+        client = GPUClient(credentials=credentials)
+        return await client.list_instances()
+
+    return trio.run(_fetch)
 
 
-def save_job(job: Job) -> None:
-    """Save a job entry. Overwrites if job_id already exists."""
-    data = _read_jobs_file()
-    data[job.job_id] = {
-        "nodes": [asdict(n) for n in job.nodes],
-        "script": job.script,
-        "started_at": job.started_at,
-    }
-    _write_jobs_file(data)
+def _instances_to_jobs(instances: list) -> list[Job]:
+    """Convert broker instances to Job objects, filtering by naming convention."""
+    jobs = []
+    for inst in instances:
+        name = inst.name or ""
+        if not name.startswith(ROLLOUTS_POD_PREFIX):
+            continue
+
+        job_id = name[len(ROLLOUTS_POD_PREFIX) :]
+        if not job_id:
+            continue
+
+        node = JobNode(provider=inst.provider, node_id=inst.id)
+        jobs.append(Job(job_id=job_id, nodes=(node,)))
+
+    # Sort by job_id descending (job_id contains timestamp like run_20250127-143052)
+    jobs.sort(key=lambda j: j.job_id, reverse=True)
+    return jobs
+
+
+def list_jobs() -> list[Job]:
+    """List all rollouts jobs from broker, most recent first."""
+    instances = _list_instances_sync()
+    return _instances_to_jobs(instances)
 
 
 def get_job(job_id: str) -> Job:
     """Get a job by ID. Raises AssertionError if not found."""
-    data = _read_jobs_file()
-    assert job_id in data, f"Job not found: {job_id}"
-    return _parse_job(job_id, data[job_id])
+    jobs = list_jobs()
+    for job in jobs:
+        if job.job_id == job_id:
+            return job
+    raise AssertionError(f"Job not found: {job_id}")
 
 
 def get_latest_job() -> Job:
     """Get the most recently started job. Raises AssertionError if none."""
-    data = _read_jobs_file()
-    assert data, f"No jobs found in {JOBS_PATH}"
-    # Sort by started_at descending
-    latest_id = max(data, key=lambda k: data[k].get("started_at", ""))
-    return _parse_job(latest_id, data[latest_id])
-
-
-def list_jobs() -> list[Job]:
-    """List all jobs, most recent first."""
-    data = _read_jobs_file()
-    jobs = [_parse_job(k, v) for k, v in data.items()]
-    jobs.sort(key=lambda j: j.started_at, reverse=True)
-    return jobs
-
-
-def remove_job(job_id: str) -> bool:
-    """Remove a job by ID. Returns True if removed, False if not found."""
-    data = _read_jobs_file()
-    if job_id not in data:
-        return False
-    del data[job_id]
-    _write_jobs_file(data)
-    return True
-
-
-def prune_jobs(live_node_ids: set[str]) -> int:
-    """Remove jobs whose nodes are all dead.
-
-    Args:
-        live_node_ids: Set of node IDs currently alive (from broker).
-
-    Returns:
-        Number of jobs pruned.
-    """
-    data = _read_jobs_file()
-    alive = {}
-    pruned = 0
-
-    for job_id, entry in data.items():
-        nodes = entry.get("nodes", [])
-        has_live_node = any(n["node_id"] in live_node_ids for n in nodes)
-        if has_live_node:
-            alive[job_id] = entry
-        else:
-            pruned += 1
-
-    if pruned > 0:
-        _write_jobs_file(alive)
-
-    return pruned
-
-
-def _parse_job(job_id: str, entry: dict) -> Job:
-    """Parse a job entry from the JSON structure."""
-    nodes = tuple(
-        JobNode(
-            provider=n["provider"],
-            node_id=n["node_id"],
-            role=n["role"],
-        )
-        for n in entry.get("nodes", [])
-    )
-    return Job(
-        job_id=job_id,
-        nodes=nodes,
-        script=entry.get("script", "?"),
-        started_at=entry.get("started_at", "?"),
-    )
-
-
-def make_job(
-    job_id: str,
-    provider: str,
-    node_id: str,
-    script: str,
-    role: str = "training",
-) -> Job:
-    """Convenience: create a single-node Job and save it."""
-    job = Job(
-        job_id=job_id,
-        nodes=(JobNode(provider=provider, node_id=node_id, role=role),),
-        script=script,
-        started_at=datetime.now(timezone.utc).isoformat(),
-    )
-    save_job(job)
-    return job
+    jobs = list_jobs()
+    assert jobs, "No rollouts jobs found"
+    return jobs[0]
