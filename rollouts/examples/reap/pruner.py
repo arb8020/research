@@ -14,6 +14,12 @@ from torch import Tensor
 
 from .config import PruneMethod, ReapConfig
 from .metrics import compute_reap_scores
+from .metrics_extended import (
+    compute_ean_ca_scores,
+    compute_reap_l2_scores,
+    compute_weighted_ean_sum_l2_scores,
+    compute_weighted_frequency_scores,
+)
 from .observer import LayerObservation, MoEObserver
 
 logger = logging.getLogger(__name__)
@@ -54,6 +60,30 @@ def compute_layer_scores(
         return obs.ean_sum / safe_counts
     elif method == PruneMethod.EAN_SUM:
         return obs.ean_sum
+    elif method == PruneMethod.EAN_CA:
+        return compute_ean_ca_scores(obs.characteristic_activation)
+    elif method == PruneMethod.WEIGHTED_FREQUENCY:
+        return compute_weighted_frequency_scores(obs.weighted_expert_frequency_sum)
+    elif method == PruneMethod.WEIGHTED_EAN_SUM:
+        safe_counts = torch.where(
+            obs.expert_frequency > 0,
+            obs.expert_frequency,
+            torch.ones_like(obs.expert_frequency),
+        )
+        return obs.weighted_ean_sum / safe_counts
+    elif method == PruneMethod.REAP_L2:
+        return compute_reap_l2_scores(
+            activation_norms=obs.ean_sum,
+            routing_weights=obs.routing_weight_sum,
+            expert_counts=obs.expert_frequency,
+        )
+    elif method == PruneMethod.WEIGHTED_EAN_SUM_L2:
+        return compute_weighted_ean_sum_l2_scores(
+            weighted_ean_sum=obs.weighted_ean_sum,
+            expert_counts=obs.expert_frequency,
+        )
+    elif method == PruneMethod.MAX_ACTIVATIONS:
+        return obs.max_activations
     else:
         raise ValueError(f"Unknown prune method: {method}")
 

@@ -38,7 +38,8 @@ def run_reap(config: ReapConfig) -> dict[str, Any]:
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    from .data import batch_iterator, load_calibration_data
+    from .data import batch_iterator
+    from .data_pipeline import load_calibration_data_advanced
     from .export import get_output_path, save_pruned_model, save_pruning_recipe
     from .observer import MoEObserver
     from .pruner import prune_model
@@ -96,14 +97,36 @@ def run_reap(config: ReapConfig) -> dict[str, Any]:
         logger.info(
             f"Loading calibration data: {config.dataset_name} ({config.num_samples} samples)"
         )
-        samples = load_calibration_data(
-            config.dataset_name,
-            tokenizer,
-            config.num_samples,
-            config.max_seq_len,
-            config.seed,
-        )
-        logger.info(f"Calibration data loaded: {len(samples)} samples")
+        if config.split_by_category:
+            # Use category-aware data pipeline
+            category_samples = load_calibration_data_advanced(
+                config.dataset_name,
+                tokenizer,
+                config.num_samples,
+                config.max_seq_len,
+                config.seed,
+                split_by_category=True,
+                samples_per_category=config.samples_per_category,
+            )
+            # Flatten categories into single list
+            samples = []
+            for cat, cat_samples in category_samples.items():
+                samples.extend(cat_samples)
+            logger.info(
+                f"Calibration data loaded: {len(samples)} samples from {len(category_samples)} categories"
+            )
+        else:
+            # Use simple data loading
+            from .data import load_calibration_data
+
+            samples = load_calibration_data(
+                config.dataset_name,
+                tokenizer,
+                config.num_samples,
+                config.max_seq_len,
+                config.seed,
+            )
+            logger.info(f"Calibration data loaded: {len(samples)} samples")
 
         # Run observation
         logger.info("Running observation phase...")
@@ -199,7 +222,7 @@ def run_reap(config: ReapConfig) -> dict[str, Any]:
 def run_eval(model_path: Path, config: ReapConfig) -> dict[str, Any]:
     """Run lm-eval benchmarks on pruned model.
 
-    Uses rollouts.evaluation.lm_eval wrapper for standard benchmarks.
+    Uses new eval_lm_harness module for comprehensive evaluation.
 
     Args:
         model_path: Path to the pruned model
@@ -208,28 +231,48 @@ def run_eval(model_path: Path, config: ReapConfig) -> dict[str, Any]:
     Returns:
         Dict with benchmark results
     """
-    import json
-
-    from rollouts.evaluation.lm_eval import run_lm_eval
+    from .eval_lm_harness import run_code_eval, run_lm_eval
 
     logger.info(f"Running evaluation on {model_path}")
     logger.info(f"Tasks: {config.eval_tasks}")
 
-    results = run_lm_eval(
-        model_path=model_path,
-        tokenizer=config.model_name,
-        tasks=list(config.eval_tasks),
-        backend="sglang",
-        port=config.sglang_port,
-    )
+    all_results = {}
+
+    # Run lm-eval
+    try:
+        lm_results = run_lm_eval(
+            model_path=model_path,
+            tasks=list(config.eval_tasks),
+            use_server=config.use_server,
+            port=config.sglang_port,
+        )
+        all_results["lm_eval"] = lm_results.get("results", {})
+    except Exception as e:
+        logger.error(f"lm-eval failed: {e}")
+        all_results["lm_eval_error"] = str(e)
+
+    # Run code eval if requested
+    if config.run_evalplus:
+        try:
+            code_results = run_code_eval(
+                model_path=model_path,
+                tasks=list(config.evalplus_tasks),
+                port=config.sglang_port + 1,  # Use different port
+            )
+            all_results["code_eval"] = code_results
+        except Exception as e:
+            logger.error(f"Code eval failed: {e}")
+            all_results["code_eval_error"] = str(e)
 
     # Save results
+    import json
+
     results_path = model_path.parent / "eval_results.json"
     with open(results_path, "w") as f:
-        json.dump(results, f, indent=2)
+        json.dump(all_results, f, indent=2)
     logger.info(f"Results saved to {results_path}")
 
-    return results
+    return all_results
 
 
 # Alias for consistency with other examples

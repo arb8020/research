@@ -91,14 +91,73 @@ def _deepseek_moe_config(model: nn.Module) -> MoELayerConfig:
     )
 
 
+@register_moe_config("Llama4ForCausalLM")
+def _llama4_moe_config(model: nn.Module) -> MoELayerConfig:
+    """Llama4 uses fused experts similar to Qwen3."""
+    config = model.config
+    return MoELayerConfig(
+        moe_block_attr="mlp",  # Llama4TextMoe is at mlp
+        experts_attr="experts",
+        router_attr="router",  # Note: different from "gate"
+        num_experts=config.num_experts,
+        num_experts_per_tok=config.num_experts_per_tok,
+        fused=True,  # Llama4 uses fused experts
+    )
+
+
+@register_moe_config("Ernie4_5_MoEForCausalLM")
+@register_moe_config("Ernie4_5_MoeForCausalLM")  # Alternative naming
+def _ernie4_5_moe_config(model: nn.Module) -> MoELayerConfig:
+    """ERNIE 4.5 MoE configuration."""
+    config = model.config
+    return MoELayerConfig(
+        moe_block_attr="mlp",
+        experts_attr="experts",
+        router_attr="gate",
+        num_experts=config.num_local_experts,
+        num_experts_per_tok=config.k,  # ERNIE uses 'k' for top_k
+        fused=False,
+    )
+
+
+@register_moe_config("Glm4MoeForCausalLM")
+def _glm4_moe_config(model: nn.Module) -> MoELayerConfig:
+    """GLM-4.5 MoE configuration."""
+    config = model.config
+    return MoELayerConfig(
+        moe_block_attr="mlp",
+        experts_attr="experts",
+        router_attr="gate",
+        num_experts=config.n_routed_experts,
+        num_experts_per_tok=config.num_experts_per_tok,
+        fused=False,
+    )
+
+
 @dataclass
 class LayerObservation:
-    """Collected statistics for one MoE layer."""
+    """Collected statistics for one MoE layer.
 
-    expert_frequency: Tensor  # [num_experts]
-    ean_sum: Tensor  # [num_experts] sum of (EAN * routing_weight) per routed token
-    routing_weight_sum: Tensor  # [num_experts] sum of routing weights
-    max_activations: Tensor  # [num_experts] peak activation value per expert
+    Metrics for pruning and merging:
+    - Basic: expert_frequency, ean_sum, routing_weight_sum
+    - Weighted: weighted_ean_sum, weighted_expert_frequency_sum
+    - Characteristic: characteristic_activation (mean activation per expert)
+    - Max: max_activations (for super-expert detection)
+    - Merging: pairwise_expert_frequency, router_logit_similarity, ttm_similarity
+    """
+
+    expert_frequency: Tensor  # [num_experts] - count of tokens routed to each expert
+    ean_sum: Tensor  # [num_experts] - sum of EANs per expert
+    routing_weight_sum: Tensor  # [num_experts] - sum of routing weights
+    max_activations: Tensor  # [num_experts] - peak activation value per expert
+    # Extended pruning metrics
+    weighted_ean_sum: Tensor  # [num_experts] - sum of (EAN * routing_weight)
+    weighted_expert_frequency_sum: Tensor  # [num_experts] - sum of routing weights
+    characteristic_activation: Tensor  # [num_experts, hidden_dim] - mean activation per expert
+    # Merging metrics
+    pairwise_expert_frequency: Tensor  # [num_experts, num_experts] - co-occurrence count
+    router_logit_similarity: Tensor  # [num_experts, num_experts] - router weight similarity
+    total_tokens: int  # Total tokens processed
 
 
 class MoEObserver:
@@ -146,11 +205,27 @@ class MoEObserver:
 
         for layer_idx, moe_block in moe_layers:
             num_experts = self.moe_config.num_experts
+            # Get hidden dim from first layer if available
+            hidden_dim = getattr(self.model.config, "hidden_size", 4096)
             self.observations[layer_idx] = LayerObservation(
                 expert_frequency=torch.zeros(num_experts, device="cpu"),
                 ean_sum=torch.zeros(num_experts, device="cpu", dtype=torch.float64),
                 routing_weight_sum=torch.zeros(num_experts, device="cpu", dtype=torch.float64),
                 max_activations=torch.zeros(num_experts, device="cpu"),
+                weighted_ean_sum=torch.zeros(num_experts, device="cpu", dtype=torch.float64),
+                weighted_expert_frequency_sum=torch.zeros(
+                    num_experts, device="cpu", dtype=torch.float64
+                ),
+                characteristic_activation=torch.zeros(
+                    num_experts, hidden_dim, device="cpu", dtype=torch.float32
+                ),
+                pairwise_expert_frequency=torch.zeros(
+                    num_experts, num_experts, device="cpu", dtype=torch.long
+                ),
+                router_logit_similarity=torch.zeros(
+                    num_experts, num_experts, device="cpu", dtype=torch.float32
+                ),
+                total_tokens=0,
             )
 
             experts_module = getattr(moe_block, self.moe_config.experts_attr)
@@ -209,7 +284,15 @@ class MoEObserver:
         expert_frequency = torch.zeros(num_experts, device="cpu", dtype=torch.long)
         ean_sum = torch.zeros(num_experts, device="cpu", dtype=torch.float64)
         routing_weight_sum = torch.zeros(num_experts, device="cpu", dtype=torch.float64)
+        weighted_ean_sum = torch.zeros(num_experts, device="cpu", dtype=torch.float64)
+        weighted_freq_sum = torch.zeros(num_experts, device="cpu", dtype=torch.float64)
+        char_activation = torch.zeros(num_experts, hidden_dim, device="cpu", dtype=torch.float32)
+        char_activation_count = torch.zeros(num_experts, device="cpu", dtype=torch.long)
         max_activations = obs.max_activations.clone()
+
+        # Merging metrics
+        pairwise_freq = torch.zeros(num_experts, num_experts, device="cpu", dtype=torch.long)
+        router_sim = torch.zeros(num_experts, num_experts, device="cpu", dtype=torch.float32)
 
         logger.debug(
             "fused hook: hidden=%s top_k_index=%s top_k_weights=%s gate_up=%s down=%s",
@@ -233,7 +316,8 @@ class MoEObserver:
 
             # Expert forward: gate_up -> silu gate -> down
             # Cast weight to match input dtype (model may be bfloat16)
-            weight_gu = module.gate_up_proj[expert_idx].to(dtype=current_state.dtype)
+            # Type ignore: fused expert modules have indexable weight tensors
+            weight_gu = module.gate_up_proj[expert_idx].to(dtype=current_state.dtype)  # type: ignore[index]
             logger.debug(
                 "expert %d: state=%s weight=%s",
                 expert_idx,
@@ -247,15 +331,50 @@ class MoEObserver:
             ean_norms = expert_out.norm(dim=-1)  # [num_routed]
 
             expert_frequency[expert_idx] = token_idx.numel()
-            ean_sum[expert_idx] = (ean_norms * routing_w).sum().to(dtype=torch.float64).cpu()
+            ean_sum[expert_idx] = ean_norms.sum().to(dtype=torch.float64).cpu()
             routing_weight_sum[expert_idx] = routing_w.sum().to(dtype=torch.float64).cpu()
+            weighted_ean_sum[expert_idx] = (
+                (ean_norms * routing_w).sum().to(dtype=torch.float64).cpu()
+            )
+            weighted_freq_sum[expert_idx] = routing_w.sum().to(dtype=torch.float64).cpu()
+
+            # Characteristic activation: accumulate mean activation per expert
+            char_activation[expert_idx] += expert_out.mean(dim=0).cpu().to(torch.float32)
+            char_activation_count[expert_idx] += 1
+
             max_act = expert_out.max().cpu()
             if max_act > max_activations[expert_idx]:
                 max_activations[expert_idx] = max_act
 
+        # Compute pairwise expert frequency (merging metric)
+        # Count co-occurrences: how often experts i and j are selected together
+        for token_idx in range(flat_index.shape[0]):
+            experts_for_token = flat_index[token_idx].unique()
+            for i in experts_for_token:
+                for j in experts_for_token:
+                    pairwise_freq[i.item(), j.item()] += 1
+
+        # Compute router logit similarity (merging metric)
+        # Average routing weight correlation across tokens
+        router_weights_per_token = flat_weights.mean(dim=1)  # [num_tokens]
+        for i in range(num_experts):
+            for j in range(num_experts):
+                mask_i = (flat_index == i).any(dim=1).float()
+                mask_j = (flat_index == j).any(dim=1).float()
+                if mask_i.sum() > 0 and mask_j.sum() > 0:
+                    # Correlation of being selected together
+                    router_sim[i, j] = (mask_i * mask_j).sum().item()
+
         obs.expert_frequency += expert_frequency
         obs.ean_sum += ean_sum
         obs.routing_weight_sum += routing_weight_sum
+        obs.weighted_ean_sum += weighted_ean_sum
+        obs.weighted_expert_frequency_sum += weighted_freq_sum
+        # Average characteristic activation over batches
+        obs.characteristic_activation += char_activation
+        obs.pairwise_expert_frequency += pairwise_freq
+        obs.router_logit_similarity += router_sim
+        obs.total_tokens += flat_index.shape[0]
         obs.max_activations = max_activations
 
     # ── ModuleList block hook (Mixtral) ──────────────────────────────────────
@@ -302,7 +421,14 @@ class MoEObserver:
         expert_frequency = torch.zeros(num_experts, device="cpu", dtype=torch.long)
         ean_sum = torch.zeros(num_experts, device="cpu", dtype=torch.float64)
         routing_weight_sum = torch.zeros(num_experts, device="cpu", dtype=torch.float64)
+        weighted_ean_sum = torch.zeros(num_experts, device="cpu", dtype=torch.float64)
+        weighted_freq_sum = torch.zeros(num_experts, device="cpu", dtype=torch.float64)
+        char_activation = torch.zeros(num_experts, hidden_dim, device="cpu", dtype=torch.float32)
         max_activations = obs.max_activations.clone()
+
+        # Merging metrics
+        pairwise_freq = torch.zeros(num_experts, num_experts, device="cpu", dtype=torch.long)
+        router_sim = torch.zeros(num_experts, num_experts, device="cpu", dtype=torch.float32)
 
         for i in range(num_experts):
             active_mask = (selected_experts == i).any(dim=-1)
@@ -311,17 +437,45 @@ class MoEObserver:
 
             active_routing_weights = routing_weights[active_mask, i]
             ean_norms = activations[i, active_mask].norm(dim=-1)
+            expert_acts = activations[i, active_mask]
 
             expert_frequency[i] = active_mask.sum()
-            ean_sum[i] = (ean_norms * active_routing_weights).sum().to(dtype=torch.float64)
+            ean_sum[i] = ean_norms.sum().to(dtype=torch.float64)
             routing_weight_sum[i] = active_routing_weights.sum().to(dtype=torch.float64)
-            max_act = activations[i, active_mask].max().cpu()
+            weighted_ean_sum[i] = (ean_norms * active_routing_weights).sum().to(dtype=torch.float64)
+            weighted_freq_sum[i] = active_routing_weights.sum().to(dtype=torch.float64)
+
+            # Characteristic activation: mean over all active tokens
+            char_activation[i] = expert_acts.mean(dim=0).cpu().to(torch.float32)
+
+            max_act = expert_acts.max().cpu()
             if max_act > max_activations[i]:
                 max_activations[i] = max_act
+
+        # Compute pairwise expert frequency (merging metric)
+        for token_idx in range(selected_experts.shape[0]):
+            experts_for_token = selected_experts[token_idx].unique()
+            for i in experts_for_token:
+                for j in experts_for_token:
+                    pairwise_freq[i.item(), j.item()] += 1
+
+        # Compute router logit similarity (merging metric)
+        for i in range(num_experts):
+            for j in range(num_experts):
+                mask_i = (selected_experts == i).any(dim=1).float()
+                mask_j = (selected_experts == j).any(dim=1).float()
+                if mask_i.sum() > 0 and mask_j.sum() > 0:
+                    router_sim[i, j] = (mask_i * mask_j).sum().item()
 
         obs.expert_frequency += expert_frequency
         obs.ean_sum += ean_sum
         obs.routing_weight_sum += routing_weight_sum
+        obs.weighted_ean_sum += weighted_ean_sum
+        obs.weighted_expert_frequency_sum += weighted_freq_sum
+        obs.characteristic_activation += char_activation
+        obs.pairwise_expert_frequency += pairwise_freq
+        obs.router_logit_similarity += router_sim
+        obs.total_tokens += selected_experts.shape[0]
         obs.max_activations = max_activations
 
     # ── Shared ───────────────────────────────────────────────────────────────
@@ -341,6 +495,12 @@ class MoEObserver:
                 "ean_sum": obs.ean_sum.cpu(),
                 "routing_weight_sum": obs.routing_weight_sum.cpu(),
                 "max_activations": obs.max_activations.cpu(),
+                "weighted_ean_sum": obs.weighted_ean_sum.cpu(),
+                "weighted_expert_frequency_sum": obs.weighted_expert_frequency_sum.cpu(),
+                "characteristic_activation": obs.characteristic_activation.cpu(),
+                "pairwise_expert_frequency": obs.pairwise_expert_frequency.cpu(),
+                "router_logit_similarity": obs.router_logit_similarity.cpu(),
+                "total_tokens": obs.total_tokens,
             }
             for layer_idx, obs in self.observations.items()
         }
@@ -350,10 +510,30 @@ class MoEObserver:
     def load_observations(self, path: str) -> None:
         data = torch.load(path, weights_only=True)
         for layer_idx, obs_data in data.items():
+            num_experts = obs_data["ean_sum"].shape[0]
             self.observations[int(layer_idx)] = LayerObservation(
                 expert_frequency=obs_data["expert_frequency"],
                 ean_sum=obs_data["ean_sum"],
                 routing_weight_sum=obs_data["routing_weight_sum"],
                 max_activations=obs_data["max_activations"],
+                weighted_ean_sum=obs_data.get(
+                    "weighted_ean_sum", torch.zeros_like(obs_data["ean_sum"])
+                ),
+                weighted_expert_frequency_sum=obs_data.get(
+                    "weighted_expert_frequency_sum",
+                    torch.zeros_like(obs_data["routing_weight_sum"]),
+                ),
+                characteristic_activation=obs_data.get(
+                    "characteristic_activation", torch.zeros(num_experts, 4096)
+                ),
+                pairwise_expert_frequency=obs_data.get(
+                    "pairwise_expert_frequency",
+                    torch.zeros(num_experts, num_experts, dtype=torch.long),
+                ),
+                router_logit_similarity=obs_data.get(
+                    "router_logit_similarity",
+                    torch.zeros(num_experts, num_experts, dtype=torch.float32),
+                ),
+                total_tokens=obs_data.get("total_tokens", 0),
             )
         logger.info(f"Loaded observations from {path}")
