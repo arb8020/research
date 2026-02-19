@@ -108,11 +108,11 @@ class RemoteWorker:
                 f"Timeout connecting to {self.host}:{self.port}. Check network connectivity."
             ) from e
 
-    def recv(self, max_size: int = 1024 * 1024, timeout: float | None = None) -> Any:
+    def recv(self, max_size: int = 10 * 1024 * 1024, timeout: float | None = None) -> Any:
         """Receive message from remote worker (blocking).
 
         Args:
-            max_size: Maximum message size in bytes (default 1MB)
+            max_size: Maximum message size in bytes (default 10MB)
             timeout: Optional timeout in seconds
 
         Returns:
@@ -125,7 +125,7 @@ class RemoteWorker:
             AssertionError: If message exceeds max_size
 
         Example:
-            >>> result = worker.recv(max_size=1024 * 1024)  # 1MB
+            >>> result = worker.recv(max_size=10 * 1024 * 1024)  # 10MB
             >>> print(result["loss"])
             0.42
         """

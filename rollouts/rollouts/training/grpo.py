@@ -260,7 +260,7 @@ def _setup_training_backend(
 
     endpoint = Endpoint(
         model=f"openai/{config.model.name}",
-        base_url=inference_engine.base_url,
+        base_url=inference_engine.api_base,  # Include /v1 for OpenAI SDK
         api_format="openai-completions",
         temperature=config.rollout.temperature,
         max_tokens=config.rollout.max_tokens,
@@ -839,11 +839,17 @@ async def _grpo_train_async(
                             # Training continues immediately, doesn't wait!
                             should_sync = (step + 1) % config.checkpoint.sync_weights_every == 0
                             if should_sync:
-                                logger.debug(f"Spawning async weight sync (v={weight_sync_manager.current_version + 1})")
-                                await weight_sync_manager.broadcast_weights_async(backend.model, nursery)
+                                logger.debug(
+                                    f"Spawning async weight sync (v={weight_sync_manager.current_version + 1})"
+                                )
+                                await weight_sync_manager.broadcast_weights_async(
+                                    backend.model, nursery
+                                )
 
                             # Update version in rollout manager
-                            pipelined_manager.update_weight_version(weight_sync_manager.current_version)
+                            pipelined_manager.update_weight_version(
+                                weight_sync_manager.current_version
+                            )
 
                         # Log pipeline stats
                         stats = pipelined_manager.stats()
