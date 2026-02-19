@@ -1,0 +1,42 @@
+[
+  {
+    "topic": "Pineapple belongs on pizza",
+    "position_for": "in favor of pineapple on pizza",
+    "position_against": "against pineapple on pizza"
+  },
+  {
+    "topic": "Remote work is better than in-office work",
+    "position_for": "in favor of remote work being superior",
+    "position_against": "in favor of in-office work being superior"
+  },
+  {
+    "topic": "AI will create more jobs than it destroys",
+    "position_for": "that AI will be a net job creator",
+    "position_against": "that AI will be a net job destroyer"
+  },
+  {
+    "topic": "Social media has been net positive for society",
+    "position_for": "that social media has been beneficial overall",
+    "position_against": "that social media has been harmful overall"
+  },
+  {
+    "topic": "Space exploration is worth the investment",
+    "position_for": "that space exploration funding is justified",
+    "position_against": "that space exploration funding should go elsewhere"
+  },
+  {
+    "topic": "Tabs are better than spaces for code indentation",
+    "position_for": "tabs for indentation",
+    "position_against": "spaces for indentation"
+  },
+  {
+    "topic": "Electric vehicles will fully replace gas cars by 2040",
+    "position_for": "that EVs will dominate by 2040",
+    "position_against": "that gas cars will remain significant past 2040"
+  },
+  {
+    "topic": "University education is worth the cost",
+    "position_for": "that university provides good ROI",
+    "position_against": "that university is overpriced relative to alternatives"
+  }
+]

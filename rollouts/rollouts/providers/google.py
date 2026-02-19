@@ -536,7 +536,7 @@ async def rollout_google(
     # Calculate cost if model pricing is available
     from ..models import get_model
 
-    model_meta = get_model(actor.endpoint.provider, actor.endpoint.model)
+    model_meta = get_model(actor.endpoint.provider, actor.endpoint.model_id)
     if model_meta and model_meta.cost:
         cost = calculate_cost_from_usage(usage, model_meta.cost)
         usage = replace(usage, cost=cost)

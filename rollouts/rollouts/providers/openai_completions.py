@@ -620,7 +620,7 @@ async def rollout_openai(
     # Different providers use different param formats to enable thinking
     from ..models import get_model
 
-    model_metadata = get_model(actor.endpoint.provider, actor.endpoint.model)
+    model_metadata = get_model(actor.endpoint.provider, actor.endpoint.model_id)
     thinking_format = model_metadata.thinking_format if model_metadata else None
 
     if thinking_format == "zai":
@@ -814,7 +814,7 @@ async def rollout_openai(
     # Calculate cost if model pricing is available
     from ..models import get_model
 
-    model_meta = get_model(actor.endpoint.provider, actor.endpoint.model)
+    model_meta = get_model(actor.endpoint.provider, actor.endpoint.model_id)
     if model_meta and model_meta.cost:
         cost = calculate_cost_from_usage(completion.usage, model_meta.cost)
         usage_with_cost = replace(completion.usage, cost=cost)

@@ -59,40 +59,66 @@ def handle_stop_max_turns(max_turns: int) -> Callable[[AgentState], AgentState]:
 def handle_stop_token_budget(max_tokens: int) -> Callable[[AgentState], AgentState]:
     """Stop when total tokens exceeds budget.
 
+    Uses actual API-reported token counts from completions, not character counts.
+
+    Args:
+        max_tokens: Maximum total tokens (input + output + reasoning + cache)
+
     Example:
         RunConfig(handle_stop=handle_stop_token_budget(100000))
     """
 
     def handler(state: AgentState) -> AgentState:
-        total_tokens = sum(len(msg.content or "") for msg in state.actor.trajectory.messages)
+        # Sum total_tokens from all completions in the trajectory
+        total_tokens = sum(
+            c.usage.total_tokens if c.usage else 0 for c in state.actor.trajectory.completions
+        )
         if total_tokens >= max_tokens:
-            return replace(state, stop=StopReason.MAX_TURNS)  # TODO: Add BUDGET_EXCEEDED
+            return replace(state, stop=StopReason.BUDGET_EXCEEDED)
         return state
 
     return handler
 
 
+def get_trajectory_cost(state: AgentState) -> float:
+    """Get total cost from trajectory completions.
+
+    Uses the Cost dataclass attached to each completion's usage.
+    Returns 0.0 if no cost info is available.
+    """
+    total = 0.0
+    for c in state.actor.trajectory.completions:
+        if c.usage and c.usage.cost:
+            total += c.usage.cost.total
+    return total
+
+
 def handle_stop_cost_budget(
-    max_cost_usd: float, cost_fn: Callable[[AgentState], float]
+    max_cost_usd: float, cost_fn: Callable[[AgentState], float] | None = None
 ) -> Callable[[AgentState], AgentState]:
     """Stop when estimated cost exceeds budget.
 
     Args:
         max_cost_usd: Maximum cost in USD
-        cost_fn: Function that estimates cost from state
+        cost_fn: Function that estimates cost from state. If None, uses
+                 actual API-reported costs from completion usage.
 
     Example:
-        def estimate_cost(state):
-            # Count tokens, multiply by model pricing
-            return tokens * 0.00001
+        # Using actual API costs (default)
+        RunConfig(handle_stop=handle_stop_cost_budget(5.0))
 
+        # Using custom cost function
+        def estimate_cost(state):
+            tokens = sum(c.usage.total_tokens for c in state.actor.trajectory.completions if c.usage)
+            return tokens * 0.00001
         RunConfig(handle_stop=handle_stop_cost_budget(5.0, estimate_cost))
     """
+    actual_cost_fn = cost_fn if cost_fn is not None else get_trajectory_cost
 
     def handler(state: AgentState) -> AgentState:
-        current_cost = cost_fn(state)
+        current_cost = actual_cost_fn(state)
         if current_cost >= max_cost_usd:
-            return replace(state, stop=StopReason.MAX_TURNS)  # TODO: Add BUDGET_EXCEEDED
+            return replace(state, stop=StopReason.BUDGET_EXCEEDED)
         return state
 
     return handler

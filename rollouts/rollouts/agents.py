@@ -341,9 +341,10 @@ async def run_agent_step(
 
     llm_duration_ms = (time.perf_counter() - llm_start_time) * 1000
 
-    # Extract token counts from completion if available
+    # Extract token counts and cost from completion if available
     tokens_in: int | None = None
     tokens_out: int | None = None
+    cost: float = 0.0
     if next_actor.trajectory.completions:
         last_completion = next_actor.trajectory.completions[-1]
         if hasattr(last_completion, "usage") and last_completion.usage:
@@ -353,6 +354,9 @@ async def run_agent_step(
             output = getattr(usage, "output_tokens", 0) or 0
             reasoning = getattr(usage, "reasoning_tokens", 0) or 0
             tokens_out = output + reasoning if (output or reasoning) else None
+            # Extract cost if available
+            if hasattr(usage, "cost") and usage.cost:
+                cost = usage.cost.total
 
     # Wide event: LLM call completed
     await rcfg.on_chunk(
@@ -362,6 +366,7 @@ async def run_agent_step(
             model=updated_actor.endpoint.model,
             tokens_in=tokens_in,
             tokens_out=tokens_out,
+            cost=cost,
             status="success",
         )
     )
@@ -440,11 +445,74 @@ async def process_pending_tools(
         state: Current agent state with pending tool calls
         rcfg: Run configuration (contains cancel_scope for cancellation)
     """
-    assert state.environment is not None, "process_pending_tools requires environment"
     assert state is not None
     assert rcfg is not None
 
     current_state = state
+    if current_state.environment is None:
+        # Defensive: we can end up with tool calls but no environment when resuming
+        # a session whose config didn't record the environment type correctly.
+        # Convert this into tool-error messages instead of crashing on an assert.
+        guidance = (
+            "Tool calls were requested but no environment is configured for tool execution. "
+            "Re-run with an explicit environment (e.g. `--env coding`) when resuming this session."
+        )
+
+        messages_to_add: list[Message] = []
+        for i in range(state.next_tool_idx, len(state.pending_tool_calls)):
+            tool_call = state.pending_tool_calls[i]
+            tool_result = ToolResult(
+                tool_call_id=tool_call.id,
+                is_error=True,
+                error="No environment configured",
+                content=guidance,
+                details={
+                    "tool_name": tool_call.name,
+                    "reason": "missing_environment",
+                },
+            )
+
+            await rcfg.on_chunk(
+                ToolResultReceived(
+                    tool_call_id=tool_call.id,
+                    content=tool_result.content,
+                    is_error=tool_result.is_error,
+                    error=tool_result.error,
+                    details=tool_result.details,
+                )
+            )
+
+            messages_to_add.append(
+                Message(
+                    role="tool",
+                    content=tool_result.content,
+                    tool_call_id=tool_call.id,
+                    details=tool_result.details,
+                )
+            )
+
+        if messages_to_add:
+            updated_trajectory = replace(
+                current_state.actor.trajectory,
+                messages=current_state.actor.trajectory.messages + messages_to_add,
+            )
+            current_state = replace(
+                current_state, actor=replace(current_state.actor, trajectory=updated_trajectory)
+            )
+
+            if rcfg.session_store and state.session_id:
+                for msg in messages_to_add:
+                    await rcfg.session_store.append_message(state.session_id, msg)
+
+        return replace(
+            current_state,
+            stop=StopReason.TOOL_ERROR,
+            error=guidance,
+            turn_idx=current_state.turn_idx + 1,
+            pending_tool_calls=[],
+            next_tool_idx=0,
+        )
+
     assert current_state.environment is not None  # Narrowing for type checker
 
     # SERIALIZE environment state before tool processing
@@ -785,6 +853,7 @@ async def run_agent(
             # Check stop condition via handle_stop callback (allows custom budgets)
             current_state = run_config.handle_stop(current_state)
             if current_state.stop:
+                states.append(current_state)  # Include the stopped state
                 break
 
             # Tiger Style: Centralize control flow - emit start/end in same scope for clarity

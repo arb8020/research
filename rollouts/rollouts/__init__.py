@@ -105,6 +105,9 @@ _LAZY_IMPORTS = {
     # agents
     "confirm_tool_with_feedback": (".agents", "confirm_tool_with_feedback"),
     "handle_stop_max_turns": (".handlers", "handle_stop_max_turns"),
+    "handle_stop_token_budget": (".handlers", "handle_stop_token_budget"),
+    "handle_stop_cost_budget": (".handlers", "handle_stop_cost_budget"),
+    "compose_handlers": (".handlers", "compose_handlers"),
     "handle_tool_error": (".agents", "handle_tool_error"),
     "inject_tool_reminder": (".handlers", "inject_tool_reminder"),
     "inject_turn_warning": (".handlers", "inject_turn_warning"),
@@ -255,6 +258,9 @@ __all__ = [
     "handle_tool_error",
     "inject_turn_warning",
     "handle_stop_max_turns",
+    "handle_stop_token_budget",
+    "handle_stop_cost_budget",
+    "compose_handlers",
     "inject_tool_reminder",
     "default_confirm_tool",
     # Environments

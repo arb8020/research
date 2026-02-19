@@ -673,7 +673,7 @@ async def rollout_openai_responses(
     from ..models import get_model
 
     try:
-        model_metadata = get_model(actor.endpoint.provider, actor.endpoint.model)
+        model_metadata = get_model(actor.endpoint.provider, actor.endpoint.model_id)
         is_reasoning_model = model_metadata and model_metadata.reasoning
     except (KeyError, ValueError):
         is_reasoning_model = False
@@ -681,7 +681,7 @@ async def rollout_openai_responses(
     # GPT-5 models always produce reasoning, so we must always request encrypted_content
     # to be able to re-submit the reasoning items in subsequent turns
     # See: https://community.openai.com/t/need-reasoning-false-option-for-gpt-5/1351588/7
-    if is_reasoning_model and model_name.startswith("gpt-5"):
+    if is_reasoning_model and actor.endpoint.model_id.startswith("gpt-5"):
         if actor.endpoint.reasoning_effort is not None:
             params["reasoning"] = {
                 "effort": actor.endpoint.reasoning_effort,
@@ -819,7 +819,7 @@ async def rollout_openai_responses(
     # Calculate cost if model pricing is available
     from ..models import get_model
 
-    model_meta = get_model(actor.endpoint.provider, actor.endpoint.model)
+    model_meta = get_model(actor.endpoint.provider, actor.endpoint.model_id)
     if model_meta and model_meta.cost:
         cost = calculate_cost_from_usage(usage, model_meta.cost)
         usage = replace(usage, cost=cost)
