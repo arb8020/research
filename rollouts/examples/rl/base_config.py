@@ -92,7 +92,7 @@ async def _deploy_and_submit(
         ),
         (
             "Syncing Python deps",
-            "~/.local/bin/uv python install 3.12 && ~/.local/bin/uv sync --project ~/.bifrost/workspaces/rollouts-rl/rollouts --python 3.12 --extra reap && ~/.bifrost/workspaces/rollouts-rl/.venv/bin/pip install --upgrade 'transformers>=5.0.0' 'huggingface-hub>=1.4.0'",
+            "~/.local/bin/uv python install 3.12 && ~/.local/bin/uv sync --project ~/.bifrost/workspaces/rollouts-rl/rollouts --python 3.12 --extra reap",
         ),
     ]
 

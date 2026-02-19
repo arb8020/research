@@ -91,4 +91,5 @@ build-backend = "hatchling.build"
 # See: https://github.com/huggingface/transformers/issues/41813
 override-dependencies = [
     "transformers>=5.0.0",
+    "huggingface-hub>=1.4.0",
 ]
