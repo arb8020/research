@@ -213,10 +213,11 @@ class JsonSerializable:
     Tiger Style: Pure serialization, no I/O side effects.
     Caller controls where the JSON goes (file, network, memory, etc.).
 
-    TODO: Consider replacing inheritance with standalone functions:
+    TODO(cleanup): Delete this base class. Replace with standalone functions:
         def to_json(obj: Any) -> str: return json.dumps(asdict(obj), ensure_ascii=False)
         def from_json(cls: type[T], s: str) -> T: return dacite.from_dict(cls, json.loads(s))
-    This would eliminate the base class and make each dataclass independent.
+    ~50 classes inherit from this but gain nothing that two functions wouldn't provide.
+    tinygrad would reject: inheritance for serialization is enterprise disease.
     """
 
     def to_json(self) -> str:
@@ -507,6 +508,7 @@ class LLMCallEnd(JsonSerializable):
     model: str
     tokens_in: int | None = None
     tokens_out: int | None = None
+    cost: float | None = None  # Total cost in USD
     ttft_ms: float | None = None  # Time to first token
     status: Literal["success", "error"] = "success"
     error: str | None = None
