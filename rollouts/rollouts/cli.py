@@ -1716,8 +1716,20 @@ def apply_session_config(config: CLIConfig) -> bool:
     if config.model == PARSER_DEFAULTS["model"]:
         endpoint_config = session_config.get("endpoint", {})
         if endpoint_config.get("model"):
-            provider = endpoint_config.get("provider", "anthropic")
-            config.model = f"{provider}/{endpoint_config['model']}"
+            model_str = endpoint_config["model"]
+            # Parse provider from model string if present (e.g., "opencode/kimi-k2.5")
+            if "/" in model_str:
+                provider = model_str.split("/")[0]
+            else:
+                provider = endpoint_config.get("provider", "anthropic")
+            # If using Claude driver, don't inherit non-Anthropic models
+            if config.driver == "claude" and provider != "anthropic":
+                config.model = "anthropic/claude-sonnet-4-5-20250929"
+            elif "/" in model_str:
+                # Model string already has provider prefix
+                config.model = model_str
+            else:
+                config.model = f"{provider}/{model_str}"
 
     # Environment: inherit from session if not explicitly set
     if config.env == PARSER_DEFAULTS["env"]:
@@ -1928,12 +1940,16 @@ async def run_agent(config: CLIConfig) -> int:
                     else False
                 )
 
-                config_differs = (
-                    config.endpoint.model != parent_session.endpoint.model
-                    or config.endpoint.provider != parent_session.endpoint.provider
-                    or current_env_type != parent_env_type
-                    or config.confirm_tools != parent_confirm_tools
-                )
+                # For Claude driver, we convert the session so don't fork on model changes
+                if config.driver == "claude":
+                    config_differs = False
+                else:
+                    config_differs = (
+                        config.endpoint.model != parent_session.endpoint.model
+                        or config.endpoint.provider != parent_session.endpoint.provider
+                        or current_env_type != parent_env_type
+                        or config.confirm_tools != parent_confirm_tools
+                    )
 
                 if config_differs:
                     parent_session_id = session_id
@@ -2015,7 +2031,36 @@ async def _run_print_mode(
     else:
         frontend = NoneFrontend(show_tool_calls=True, show_thinking=False)
 
-    from .frontends.runner import RunnerConfig
+    from functools import partial
+
+    from .frontends.runner import RunFn, RunnerConfig
+
+    # Select run_fn based on driver
+    run_fn: RunFn | None = None
+    if config.driver == "claude":
+        from .drivers.run_claude import run_claude
+        from .drivers.session_adapter import get_claude_session_path, write_claude_session
+
+        # If resuming a rollouts session with Claude driver, convert it first
+        claude_resume_session_id: str | None = None
+        if session_id and trajectory.messages:
+            import uuid
+
+            messages = [m for m in trajectory.messages if m.role != "system"]
+            if messages:
+                claude_resume_session_id = str(uuid.uuid4())
+                cwd = str(config.working_dir.resolve())
+                output_path = get_claude_session_path(claude_resume_session_id, cwd)
+                write_claude_session(messages, claude_resume_session_id, output_path, cwd)
+                print(f"Converted to Claude session: {claude_resume_session_id}", file=sys.stderr)
+
+        run_fn = partial(
+            run_claude,
+            model="sonnet",
+            cwd=config.cwd,
+            resume_session_id=claude_resume_session_id,
+            autonomous=True,  # Print mode is single-turn autonomous
+        )
 
     try:
         await run_interactive(
@@ -2028,6 +2073,7 @@ async def _run_print_mode(
                 session_id=session_id,
                 initial_prompt=query,
                 single_turn=True,
+                run_fn=run_fn,
             ),
         )
     except KeyboardInterrupt:
@@ -2064,8 +2110,33 @@ async def _run_interactive_mode(
     run_fn: RunFn | None = None
     if config.driver == "claude":
         from .drivers.run_claude import run_claude
+        from .drivers.session_adapter import get_claude_session_path, write_claude_session
 
-        run_fn = partial(run_claude, model=config.endpoint.model or "sonnet", cwd=config.cwd)
+        # If resuming a rollouts session with Claude driver, convert it first
+        claude_resume_session_id: str | None = None
+        if session_id and trajectory.messages:
+            import uuid
+
+            # Filter out system messages - Claude Code handles system prompt differently
+            messages = [m for m in trajectory.messages if m.role != "system"]
+            if messages:
+                claude_resume_session_id = str(uuid.uuid4())
+                cwd = str(config.working_dir.resolve())
+                output_path = get_claude_session_path(claude_resume_session_id, cwd)
+                write_claude_session(messages, claude_resume_session_id, output_path, cwd)
+                print(f"Converted to Claude session: {claude_resume_session_id}", file=sys.stderr)
+
+        # For Claude driver, use sonnet by default (don't pass through non-Claude models)
+        claude_model = "sonnet"
+        if config.endpoint.model and config.endpoint.provider == "anthropic":
+            claude_model = config.endpoint.model
+
+        run_fn = partial(
+            run_claude,
+            model=claude_model,
+            cwd=config.cwd,
+            resume_session_id=claude_resume_session_id,
+        )
     elif config.driver == "codex":
         from .drivers.run_codex import run_codex
 

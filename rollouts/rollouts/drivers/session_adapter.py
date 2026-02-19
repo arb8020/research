@@ -151,7 +151,9 @@ def _content_to_claude_blocks(content: str | list | None) -> list[dict[str, Any]
             if block_type == "text":
                 blocks.append({"type": "text", "text": block.get("text", "")})
             elif block_type == "thinking":
-                blocks.append({"type": "thinking", "thinking": block.get("thinking", "")})
+                # Skip thinking blocks - Claude API requires a valid signature field
+                # which we can't generate. The thinking content isn't essential for resume.
+                pass
             elif block_type == "toolCall":
                 blocks.append({
                     "type": "tool_use",
@@ -162,7 +164,8 @@ def _content_to_claude_blocks(content: str | list | None) -> list[dict[str, Any]
         elif isinstance(block, TextContent):
             blocks.append({"type": "text", "text": block.text})
         elif isinstance(block, ThinkingContent):
-            blocks.append({"type": "thinking", "thinking": block.thinking})
+            # Skip thinking blocks - Claude API requires a valid signature field
+            pass
         elif isinstance(block, ToolCallContent):
             blocks.append({
                 "type": "tool_use",
