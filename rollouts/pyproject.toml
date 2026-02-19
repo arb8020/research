@@ -76,3 +76,11 @@ packages = ["rollouts"]
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.uv]
+# Override SGLang's transformers==4.57.1 pin which has a bug with
+# list_repo_templates 404 errors. transformers 5.x has the fix.
+# See: https://github.com/huggingface/transformers/issues/41813
+override-dependencies = [
+    "transformers>=5.0.0",
+]
