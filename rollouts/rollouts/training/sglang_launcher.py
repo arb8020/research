@@ -34,7 +34,10 @@ _patch_transformers()
 
 # Forward to sglang.launch_server
 if __name__ == "__main__":
-    from sglang.launch_server import run_server, ServerArgs
+    import sys
 
-    server_args = ServerArgs.from_cli_args()
+    from sglang.launch_server import run_server
+    from sglang.srt.server_args import prepare_server_args
+
+    server_args = prepare_server_args(sys.argv[1:])
     run_server(server_args)
