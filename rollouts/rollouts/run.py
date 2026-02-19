@@ -193,11 +193,13 @@ async def _deploy_and_submit(
         ),
         (
             "Installing ML packages",
-            # Install sglang first, then override transformers/huggingface_hub after.
-            # SGLang pins transformers==4.57.1 which lacks is_offline_mode (removed in
-            # huggingface_hub>=1.4). Installing overrides after sglang ensures they win.
-            # See: https://github.com/huggingface/transformers/issues/41813
-            "~/.local/bin/uv pip install --upgrade torch datasets accelerate sglang[all] curl_cffi peft"
+            # sglang 0.5.8 (latest PyPI) is incompatible with transformers>=5.x in two ways:
+            #   1. transformers 4.57.1 lacks is_offline_mode (removed in huggingface_hub>=1.4)
+            #   2. janus_pro.py calls AutoImageProcessor.register() in a way that broke in transformers 5.x
+            # Both are fixed in sglang git main. Install from git, then pin transformers/hf_hub.
+            # See: https://github.com/sgl-project/sglang/issues/4159
+            "~/.local/bin/uv pip install --upgrade torch datasets accelerate curl_cffi peft"
+            " 'sglang[all] @ git+https://github.com/sgl-project/sglang.git@main#subdirectory=python'"
             " && ~/.local/bin/uv pip install --upgrade 'transformers>=5.0.0' 'huggingface_hub>=1.4.0'",
         ),
     ]
