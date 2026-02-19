@@ -50,6 +50,7 @@ training = [
 deploy = [
     "bifrost",
     "broker",
+    "infra-utils",
     "miniray",
     "paramiko>=3.0.0",
 ]
@@ -58,6 +59,13 @@ deploy = [
 modal = [
     "modal>=0.64.0",
     "trio-asyncio>=0.15.0",
+]
+
+# REAP expert pruning
+reap = [
+    "torch>=2.0.0",
+    "datasets>=4.4.1",
+    "accelerate>=0.20.0",
 ]
 
 # Development

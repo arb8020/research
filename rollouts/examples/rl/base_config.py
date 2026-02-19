@@ -55,7 +55,9 @@ async def _deploy_and_submit(
 
     profile_name, _ = get_active_profile()
     profile_hint = f" [{profile_name}]" if profile_name else ""
-    provision_msg = "Connecting..." if node_id else f"Provisioning {gpu_count}x {gpu_type}{profile_hint}..."
+    provision_msg = (
+        "Connecting..." if node_id else f"Provisioning {gpu_count}x {gpu_type}{profile_hint}..."
+    )
     with console.spinner(provision_msg) as spinner:
         if node_id:
             bifrost, instance = await acquire_node(node_id=node_id)
@@ -90,17 +92,17 @@ async def _deploy_and_submit(
         ),
         (
             "Syncing Python deps",
-            "cd rollouts && ~/.local/bin/uv python install 3.12 && ~/.local/bin/uv sync --python 3.12",
-        ),
-        (
-            "Installing ML packages",
-            "cd rollouts && ~/.local/bin/uv pip install --python .venv torch 'transformers>=5.0' 'huggingface_hub>=1.4' datasets accelerate sglang[all] curl_cffi peft",
+            "~/.local/bin/uv python install 3.12 && ~/.local/bin/uv sync --project ~/.bifrost/workspaces/rollouts-rl/rollouts --python 3.12 --extra reap && ~/.local/bin/uv pip install --python ~/.bifrost/workspaces/rollouts-rl/rollouts/.venv --upgrade 'transformers>=5.0.0' 'huggingface-hub>=1.4.0'",
         ),
     ]
 
     for label, cmd in bootstrap_steps:
         with console.spinner(f"{label}..."):
-            bifrost.exec(cmd, working_dir=workspace)
+            result = bifrost.exec(cmd, working_dir=workspace)
+            if result.exit_code != 0:
+                raise RuntimeError(
+                    f"Bootstrap step '{label}' failed (exit {result.exit_code}):\n{result.stderr or result.stdout}"
+                )
 
     # Create run output directory
     remote_output_dir = f"{workspace}/rollouts/results/rl/{run_name}"

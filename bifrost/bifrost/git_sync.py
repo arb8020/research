@@ -294,6 +294,29 @@ def run_bootstrap(
     logger.info("all bootstrap steps completed successfully")
 
 
+def _warn_dirty_files() -> None:
+    """Print loud warnings for untracked/uncommitted files that won't be deployed."""
+    untracked = _check_untracked_files()
+    if untracked:
+        print(
+            f"\n⚠️  WARNING: {len(untracked)} untracked file(s) will NOT be deployed (not in git):"
+        )
+        for file in untracked[:5]:
+            print(f"   - {file}")
+        if len(untracked) > 5:
+            print(f"   ... and {len(untracked) - 5} more")
+        print("   Run 'git add <file>' to include them.\n")
+
+    uncommitted = _check_uncommitted_changes()
+    if uncommitted:
+        print(f"\n⚠️  WARNING: {len(uncommitted)} uncommitted change(s) will NOT be deployed:")
+        for file in uncommitted[:5]:
+            print(f"   - {file}")
+        if len(uncommitted) > 5:
+            print(f"   ... and {len(uncommitted) - 5} more")
+        print("   Run 'git commit' to include them.\n")
+
+
 def _create_workspace(
     ssh_client: paramiko.SSHClient,
     workspace_path: str,
@@ -307,25 +330,7 @@ def _create_workspace(
     import subprocess
     import tempfile
 
-    # Check for untracked files and warn user
-    untracked = _check_untracked_files()
-    if untracked:
-        logger.warning(f"Found {len(untracked)} untracked file(s) that will NOT be deployed:")
-        for file in untracked[:5]:
-            logger.warning(f"  - {file}")
-        if len(untracked) > 5:
-            logger.warning(f"  ... and {len(untracked) - 5} more")
-        logger.warning("Tip: Use 'git add' to track these files, or add them to .gitignore")
-
-    # Check for uncommitted changes and warn user
-    uncommitted = _check_uncommitted_changes()
-    if uncommitted:
-        logger.warning(f"Found {len(uncommitted)} uncommitted change(s) that will NOT be deployed:")
-        for file in uncommitted[:5]:
-            logger.warning(f"  - {file}")
-        if len(uncommitted) > 5:
-            logger.warning(f"  ... and {len(uncommitted) - 5} more")
-        logger.warning("Tip: Use 'git commit' to include these changes in deployment")
+    _warn_dirty_files()
 
     # Get current HEAD commit hash for logging
     hash_result = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True)
@@ -412,25 +417,7 @@ def _update_workspace(
     import subprocess
     import tempfile
 
-    # Check for untracked files and warn user
-    untracked = _check_untracked_files()
-    if untracked:
-        logger.warning(f"Found {len(untracked)} untracked file(s) that will NOT be deployed:")
-        for file in untracked[:5]:
-            logger.warning(f"  - {file}")
-        if len(untracked) > 5:
-            logger.warning(f"  ... and {len(untracked) - 5} more")
-        logger.warning("Tip: Use 'git add' to track these files, or add them to .gitignore")
-
-    # Check for uncommitted changes and warn user
-    uncommitted = _check_uncommitted_changes()
-    if uncommitted:
-        logger.warning(f"Found {len(uncommitted)} uncommitted change(s) that will NOT be deployed:")
-        for file in uncommitted[:5]:
-            logger.warning(f"  - {file}")
-        if len(uncommitted) > 5:
-            logger.warning(f"  ... and {len(uncommitted) - 5} more")
-        logger.warning("Tip: Use 'git commit' to include these changes in deployment")
+    _warn_dirty_files()
 
     # Get current HEAD commit hash for logging
     hash_result = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True)
