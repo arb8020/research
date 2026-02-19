@@ -29,6 +29,7 @@ async def _deploy_and_submit(
     gpu_type: str,
     use_json_logs: bool,
     exposed_ports: tuple[int, ...] = (),
+    container_disk_gb: int = 100,
 ) -> tuple:
     """Provision node, deploy code, submit training job.
 
@@ -68,6 +69,7 @@ async def _deploy_and_submit(
                     type=gpu_type,
                     count=gpu_count,
                     min_cuda="12.8",
+                    container_disk_gb=container_disk_gb,
                     exposed_ports=exposed_ports,
                     enable_http_proxy=not exposed_ports,  # raw TCP for LogsServer
                     name=f"rollouts/{run_name}",
@@ -93,6 +95,13 @@ async def _deploy_and_submit(
         (
             "Syncing Python deps",
             "~/.local/bin/uv python install 3.12 && ~/.local/bin/uv sync --project ~/.bifrost/workspaces/rollouts-rl/rollouts --python 3.12 --extra reap",
+        ),
+        (
+            "Installing ML packages",
+            # Install sglang from git main which has fixes for transformers compatibility.
+            # Do NOT upgrade transformers separately - sglang's pins are required.
+            "~/.local/bin/uv pip install --upgrade torch datasets accelerate curl_cffi peft"
+            " 'sglang[all] @ git+https://github.com/sgl-project/sglang.git@main#subdirectory=python'",
         ),
     ]
 
@@ -276,6 +285,7 @@ async def run_remote(
     fire_and_forget: bool = False,
     gpu_count: int = 1,
     gpu_type: str = "A100",
+    container_disk_gb: int = 100,
 ) -> None:
     """Run training script on remote GPU via bifrost.
 
@@ -297,6 +307,7 @@ async def run_remote(
         gpu_type=gpu_type,
         use_json_logs=use_json_logs,
         exposed_ports=exposed_ports,
+        container_disk_gb=container_disk_gb,
     )
 
     if not fire_and_forget:

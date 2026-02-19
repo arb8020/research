@@ -18,7 +18,7 @@ config = ReapConfig(
     dataset_name="theblackcat102/evol-codealpaca-v1",
     compression_ratio=0.5,
     prune_method=PruneMethod.REAP,
-    num_samples=1024,
+    num_samples=32,  # Smoke test (was 1024)
     max_seq_len=2048,
     seed=42,
     output_dir=Path("results/reap"),
@@ -28,7 +28,7 @@ config = ReapConfig(
 
 
 # For remote execution compatibility
-def train(config=config):
+def train(config: ReapConfig = config) -> dict:
     return run_reap(config)
 
 
@@ -44,6 +44,7 @@ if __name__ == "__main__":
     parser.add_argument("--node-id", type=str, default=None)
     parser.add_argument("--gpu-count", type=int, default=1)
     parser.add_argument("--gpu-type", type=str, default="A100")
+    parser.add_argument("--disk-gb", type=int, default=200, help="Container disk size in GB")
     args = parser.parse_args()
 
     if args.provision or args.node_id:
@@ -57,6 +58,7 @@ if __name__ == "__main__":
                 node_id=args.node_id,
                 gpu_count=args.gpu_count,
                 gpu_type=args.gpu_type,
+                container_disk_gb=args.disk_gb,
             )
         )
     else:
