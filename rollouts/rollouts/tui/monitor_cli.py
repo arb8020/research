@@ -319,6 +319,75 @@ def _open_ssh_tunnel(
     return local_port, cleanup
 
 
+def _cancel_job(run_id: str) -> int:
+    """Cancel a running job by killing its tmux session.
+
+    Looks up job in ~/.rollouts/jobs.json, SSHs to the node,
+    and kills the bifrost-job-rl-training tmux session.
+    """
+    import trio
+    from dotenv import load_dotenv
+
+    from bifrost import BifrostClient
+    from broker.client import GPUClient
+    from rollouts.jobs import get_job, remove_job
+
+    load_dotenv()
+
+    try:
+        job = get_job(run_id)
+    except AssertionError:
+        print(f"Job not found: {run_id}")
+        print("Use 'rollouts monitor --runs' to list jobs")
+        return 1
+
+    if not job.nodes:
+        print(f"No nodes found for job: {run_id}")
+        return 1
+
+    # Get first node (training node)
+    node = job.nodes[0]
+    provider = node.provider
+    node_id = node.node_id
+
+    print(f"Cancelling job {run_id} on {provider}:{node_id}...")
+
+    try:
+        credentials = _broker_credentials()
+        client = GPUClient(credentials=credentials)
+        instance = trio.run(client.get_instance, node_id, provider)
+
+        if not instance:
+            print(f"Instance not found: {provider}:{node_id}")
+            print("Instance may have been terminated.")
+            remove_job(run_id)
+            return 1
+
+        # SSH and kill the tmux session
+        bifrost = BifrostClient(instance)
+        result = bifrost.run_command(
+            "tmux kill-session -t bifrost-job-rl-training 2>/dev/null && echo 'killed' || echo 'no session'"
+        )
+        output = result.stdout.strip() if result.stdout else ""
+
+        if "killed" in output:
+            print(f"✓ Job cancelled: {run_id}")
+            print(
+                f"  Instance {provider}:{node_id} is still running (use 'broker terminate' to stop)"
+            )
+        else:
+            print(f"No active tmux session found for job {run_id}")
+            print("Job may have already completed or failed.")
+
+        # Remove from jobs.json
+        remove_job(run_id)
+        return 0
+
+    except Exception as e:
+        print(f"Failed to cancel job: {e}")
+        return 1
+
+
 def _fetch_and_print_logs_server_log(node_id: str | None, run_id: str) -> None:
     """Fetch logs_server.log from remote to help debug connection failures."""
     if not node_id:
@@ -732,6 +801,11 @@ def monitor_main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Auto-terminate instance after job completes (no prompt)",
     )
+    parser.add_argument(
+        "--cancel",
+        metavar="RUN_ID",
+        help="Cancel a running job by killing its tmux session (keeps instance alive)",
+    )
     args = parser.parse_args(argv)
 
     # `rollouts monitor` runs before the main CLI's logging setup. If Python
@@ -743,6 +817,10 @@ def monitor_main(argv: list[str] | None = None) -> int:
     root_logger = logging.getLogger()
     if not root_logger.handlers:
         root_logger.addHandler(logging.NullHandler())
+
+    # ── Cancel mode ──
+    if args.cancel:
+        return _cancel_job(args.cancel)
 
     # ── List mode ──
     if args.runs:

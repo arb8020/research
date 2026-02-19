@@ -99,6 +99,16 @@ def list_jobs() -> list[Job]:
     return jobs
 
 
+def remove_job(job_id: str) -> bool:
+    """Remove a job by ID. Returns True if removed, False if not found."""
+    data = _read_jobs_file()
+    if job_id not in data:
+        return False
+    del data[job_id]
+    _write_jobs_file(data)
+    return True
+
+
 def prune_jobs(live_node_ids: set[str]) -> int:
     """Remove jobs whose nodes are all dead.
 
