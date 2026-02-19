@@ -197,9 +197,9 @@ def run_reap(config: ReapConfig) -> dict[str, Any]:
 
 
 def run_eval(model_path: Path, config: ReapConfig) -> dict[str, Any]:
-    """Start SGLang server and run lm-eval benchmarks.
+    """Run lm-eval benchmarks on pruned model.
 
-    Uses rollouts.deploy infrastructure for reliable server management.
+    Uses rollouts.evaluation.lm_eval wrapper for standard benchmarks.
 
     Args:
         model_path: Path to the pruned model
@@ -209,109 +209,27 @@ def run_eval(model_path: Path, config: ReapConfig) -> dict[str, Any]:
         Dict with benchmark results
     """
     import json
-    import subprocess
-    import time
 
-    import requests
+    from rollouts.evaluation.lm_eval import run_lm_eval
 
-    from rollouts.training.sglang_launcher import _patch_transformers
+    logger.info(f"Running evaluation on {model_path}")
+    logger.info(f"Tasks: {config.eval_tasks}")
 
-    # Apply transformers patch before sglang import
-    _patch_transformers()
-
-    logger.info(f"Starting SGLang server on port {config.sglang_port}...")
-    logger.info(f"Model path: {model_path}")
-
-    # Start server using the rollouts launcher (handles transformers patch)
-    server_cmd = [
-        "python",
-        "-m",
-        "rollouts.training.sglang_launcher",
-        "--model-path",
-        str(model_path),
-        "--port",
-        str(config.sglang_port),
-        "--trust-remote-code",
-        "--mem-fraction-static",
-        "0.85",
-    ]
-
-    logger.info(f"Server command: {' '.join(server_cmd)}")
-
-    server_proc = subprocess.Popen(
-        server_cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+    results = run_lm_eval(
+        model_path=model_path,
+        tokenizer=config.model_name,
+        tasks=list(config.eval_tasks),
+        backend="sglang",
+        port=config.sglang_port,
     )
 
-    # Wait for server to be ready
-    base_url = f"http://localhost:{config.sglang_port}"
-    logger.info(f"Waiting for server at {base_url}...")
+    # Save results
+    results_path = model_path.parent / "eval_results.json"
+    with open(results_path, "w") as f:
+        json.dump(results, f, indent=2)
+    logger.info(f"Results saved to {results_path}")
 
-    for attempt in range(180):  # 3 min timeout
-        try:
-            resp = requests.get(f"{base_url}/health", timeout=2)
-            if resp.status_code == 200:
-                logger.info(f"SGLang server ready after {attempt}s")
-                break
-        except requests.RequestException:
-            pass
-
-        # Check if process died
-        if server_proc.poll() is not None:
-            stdout = server_proc.stdout.read().decode() if server_proc.stdout else ""
-            logger.error(f"Server process died. Output:\n{stdout[-2000:]}")
-            raise RuntimeError("SGLang server process died during startup")
-
-        time.sleep(1)
-    else:
-        server_proc.terminate()
-        raise TimeoutError("SGLang server failed to start within 3 minutes")
-
-    try:
-        # Run lm-eval
-        logger.info(f"Running lm-eval on tasks: {config.eval_tasks}")
-
-        import lm_eval
-
-        results = lm_eval.simple_evaluate(
-            model="local-completions",
-            model_args={
-                "base_url": f"{base_url}/v1/completions",
-                "tokenized_requests": False,
-            },
-            tasks=list(config.eval_tasks),
-            batch_size=8,
-        )
-
-        # Extract summary
-        summary: dict[str, Any] = {}
-        if "results" in results:
-            for task, metrics in results["results"].items():
-                summary[task] = {
-                    k: v
-                    for k, v in metrics.items()
-                    if isinstance(v, (int, float)) and not k.startswith("_")
-                }
-
-        logger.info("Evaluation results:")
-        logger.info(json.dumps(summary, indent=2))
-
-        # Save results
-        results_path = model_path.parent / "eval_results.json"
-        with open(results_path, "w") as f:
-            json.dump(summary, f, indent=2)
-        logger.info(f"Results saved to {results_path}")
-
-        return summary
-
-    finally:
-        logger.info("Stopping SGLang server...")
-        server_proc.terminate()
-        try:
-            server_proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            server_proc.kill()
+    return results
 
 
 # Alias for consistency with other examples
