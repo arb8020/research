@@ -41,7 +41,7 @@ def run_lm_eval(
     # Config
     tokenizer: str | None = None,
     tasks: list[str] | None = None,
-    batch_size: int = 8,
+    batch_size: int = 32,  # Higher batch size for SGLang/vLLM continuous batching
     # Server config (if model_path provided)
     backend: str = "sglang",
     port: int = 30000,
