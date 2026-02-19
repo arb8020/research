@@ -45,7 +45,20 @@ class ReapConfig:
 
     # Evaluation settings
     run_eval: bool = True  # Run lm-eval after pruning
-    eval_tasks: tuple[str, ...] = ("gsm8k", "mmlu")  # lm-eval task names
+    # Default lm-eval tasks match original REAP repo
+    eval_tasks: tuple[str, ...] = (
+        "winogrande",
+        "arc_challenge",
+        "arc_easy",
+        "boolq",
+        "hellaswag",
+        "mmlu",
+        "openbookqa",
+        "rte",
+    )
+    # Code evaluation tasks (evalplus)
+    evalplus_tasks: tuple[str, ...] = ("mbpp", "humaneval")
+    run_evalplus: bool = False  # Disabled by default (slower, requires evalplus)
     sglang_port: int = 30000
 
     def __post_init__(self) -> None:
