@@ -169,12 +169,19 @@ class MoEObserver:
     def _make_fused_hook(self, layer_idx: int) -> Any:
         def hook(module: nn.Module, args: tuple) -> None:
             # Qwen3MoeExperts.forward(hidden_states, top_k_index, top_k_weights)
+            # hidden_states: [num_tokens, hidden_dim] (already flattened by caller)
+            # top_k_index:   [num_tokens, top_k]  values in [0, num_experts)
+            # top_k_weights: [num_tokens, top_k]  float32 routing weights
             assert len(args) == 3, (
                 f"Expected 3 args for fused experts hook, got {len(args)}: "
                 f"{[type(a) for a in args]}"
             )
             hidden_states, top_k_index, top_k_weights = args
-            # top_k_index: [num_tokens, top_k]  top_k_weights: [num_tokens, top_k]
+
+            # Detach from any autograd graph and move to CPU for safe processing
+            hidden_states = hidden_states.detach()
+            top_k_index = top_k_index.detach()
+            top_k_weights = top_k_weights.detach()
 
             with torch.no_grad():
                 self._process_fused(layer_idx, module, hidden_states, top_k_index, top_k_weights)
@@ -214,12 +221,10 @@ class MoEObserver:
         )
 
         # Replicate Qwen3MoeExperts.forward per-expert computation
-        # Note: top_k_index may contain num_experts as a sentinel (no-route), skip it
         for expert_idx in range(num_experts):
-            if expert_idx >= module.gate_up_proj.shape[0]:
-                continue
-            # Find tokens routed to this expert and which top-k slot
-            top_k_pos, token_idx = torch.where(flat_index == expert_idx)
+            # flat_index shape: [num_tokens, top_k]
+            # torch.where returns (row, col) = (token_idx, top_k_pos)
+            token_idx, top_k_pos = torch.where(flat_index == expert_idx)
             if token_idx.numel() == 0:
                 continue
 
@@ -229,6 +234,12 @@ class MoEObserver:
             # Expert forward: gate_up -> silu gate -> down
             # Cast weight to match input dtype (model may be bfloat16)
             weight_gu = module.gate_up_proj[expert_idx].to(dtype=current_state.dtype)
+            logger.debug(
+                "expert %d: state=%s weight=%s",
+                expert_idx,
+                tuple(current_state.shape),
+                tuple(weight_gu.shape),
+            )
             gate_up = F.linear(current_state, weight_gu)
             gate, up = gate_up.chunk(2, dim=-1)
             expert_out = F.silu(gate) * up  # [num_routed, intermediate_dim]
