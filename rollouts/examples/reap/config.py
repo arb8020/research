@@ -41,6 +41,7 @@ class ReapConfig:
     output_dir: Path = field(default_factory=lambda: Path("results/reap"))
     preserve_super_experts: bool = True
     cache_observations: bool = True
+    save_full_model: bool = False  # If False, save lightweight recipe only
 
     def __post_init__(self) -> None:
         assert 0 < self.compression_ratio < 1, "compression_ratio must be in (0, 1)"

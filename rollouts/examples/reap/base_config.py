@@ -38,7 +38,7 @@ def run_reap(config: ReapConfig) -> dict[str, Any]:
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     from .data import batch_iterator, load_calibration_data
-    from .export import get_output_path, save_pruned_model
+    from .export import get_output_path, save_pruned_model, save_pruning_recipe
     from .observer import MoEObserver
     from .pruner import prune_model
 
@@ -133,23 +133,40 @@ def run_reap(config: ReapConfig) -> dict[str, Any]:
         f"({config.compression_ratio:.0%} compression)"
     )
 
-    # Save pruned model
-    logger.info(f"Saving pruned model to {output_path}")
-    save_pruned_model(
-        model,
-        tokenizer,
-        output_path,
-        config_overrides={
-            "model_name": config.model_name,
-            "dataset_name": config.dataset_name,
-            "compression_ratio": config.compression_ratio,
-            "prune_method": config.prune_method.value,
-            "num_samples": config.num_samples,
-            "seed": config.seed,
-            "original_num_experts": result.original_num_experts,
-            "pruned_num_experts": result.pruned_num_experts,
-        },
-    )
+    # Compute experts to keep (inverse of pruned indices)
+    experts_to_keep = {}
+    for layer_idx, pruned in result.pruned_expert_indices.items():
+        all_experts = list(range(result.original_num_experts))
+        experts_to_keep[layer_idx] = [i for i in all_experts if i not in pruned]
+
+    # Save output
+    recipe_config = {
+        "compression_ratio": config.compression_ratio,
+        "prune_method": config.prune_method.value,
+        "num_samples": config.num_samples,
+        "seed": config.seed,
+        "original_num_experts": result.original_num_experts,
+        "pruned_num_experts": result.pruned_num_experts,
+    }
+
+    if config.save_full_model:
+        logger.info(f"Saving full pruned model to {output_path}")
+        save_pruned_model(
+            model,
+            tokenizer,
+            output_path,
+            config_overrides={"model_name": config.model_name, **recipe_config},
+        )
+    else:
+        recipe_path = output_path.parent / "pruning_recipe.json"
+        logger.info(f"Saving pruning recipe to {recipe_path}")
+        save_pruning_recipe(
+            base_model=config.model_name,
+            experts_to_keep=experts_to_keep,
+            output_path=recipe_path,
+            config=recipe_config,
+        )
+
     logger.info("REAP pipeline complete")
 
     return {
