@@ -79,7 +79,7 @@ async def _deploy_and_submit(
     script_rel_path = Path(script_path).relative_to(repo_root)
 
     with console.spinner("Deploying code..."):
-        workspace = bifrost.push("~/.bifrost/workspaces/rollouts-rl")
+        workspace = bifrost.push("~/.bifrost/workspaces/rollouts-rl", allow_dirty=True)
 
     # Bootstrap steps — each gets its own spinner with ✓ on completion
     bootstrap_steps = [
