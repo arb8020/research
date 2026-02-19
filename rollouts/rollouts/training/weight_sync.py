@@ -475,7 +475,7 @@ class SGLangEngine:
         return (
             f"CUDA_VISIBLE_DEVICES={gpu_str} "
             f"HF_HUB_DOWNLOAD_TIMEOUT=300 "  # 5 min timeout for model downloads
-            f"python -m sglang.launch_server "
+            f"python -m rollouts.training.sglang_launcher "
             f"--model-path {self.model_name} "
             f"--host 0.0.0.0 "
             f"--port {self.port} "
