@@ -59,6 +59,9 @@ def _build_image(modal_module: Any) -> Any:
             "datasets",
             "huggingface_hub",
             "dacite",
+            "markdownify",  # For coding environment
+            "tenacity",
+            "tomli",
             index_url="https://download.pytorch.org/whl/cu124",
             extra_index_url="https://pypi.org/simple",
         )
