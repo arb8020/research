@@ -8,6 +8,7 @@ Run with:
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 from .config import ReapConfig
@@ -176,6 +177,14 @@ def run_reap(config: ReapConfig) -> dict[str, Any]:
             config=recipe_config,
         )
 
+    logger.info("REAP pruning complete")
+
+    # Run evaluation if requested
+    eval_results = {}
+    if config.run_eval and config.save_full_model:
+        logger.info("Starting evaluation phase...")
+        eval_results = run_eval(output_path, config)
+
     logger.info("REAP pipeline complete")
 
     return {
@@ -183,7 +192,102 @@ def run_reap(config: ReapConfig) -> dict[str, Any]:
         "original_num_experts": result.original_num_experts,
         "pruned_num_experts": result.pruned_num_experts,
         "pruned_indices": {k: v for k, v in result.pruned_expert_indices.items()},
+        "eval_results": eval_results,
     }
+
+
+def run_eval(model_path: Path, config: ReapConfig) -> dict[str, Any]:
+    """Start SGLang server and run lm-eval benchmarks.
+
+    Args:
+        model_path: Path to the pruned model
+        config: REAP config with eval settings
+
+    Returns:
+        Dict with benchmark results
+    """
+    import json
+    import subprocess
+    import time
+
+    import requests
+
+    logger.info(f"Starting SGLang server on port {config.sglang_port}...")
+
+    # Start SGLang server in background
+    server_cmd = [
+        "python",
+        "-m",
+        "sglang.launch_server",
+        "--model-path",
+        str(model_path),
+        "--port",
+        str(config.sglang_port),
+        "--trust-remote-code",
+    ]
+
+    server_proc = subprocess.Popen(
+        server_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+
+    # Wait for server to be ready
+    base_url = f"http://localhost:{config.sglang_port}"
+    for _ in range(120):  # 2 min timeout
+        try:
+            resp = requests.get(f"{base_url}/health", timeout=2)
+            if resp.status_code == 200:
+                logger.info("SGLang server ready")
+                break
+        except requests.RequestException:
+            pass
+        time.sleep(1)
+    else:
+        server_proc.terminate()
+        raise TimeoutError("SGLang server failed to start")
+
+    try:
+        # Run lm-eval
+        logger.info(f"Running lm-eval on tasks: {config.eval_tasks}")
+
+        import lm_eval
+
+        results = lm_eval.simple_evaluate(
+            model="local-completions",
+            model_args={
+                "base_url": f"{base_url}/v1/completions",
+                "tokenized_requests": False,
+            },
+            tasks=list(config.eval_tasks),
+            batch_size=8,
+        )
+
+        # Extract summary
+        summary = {}
+        if "results" in results:
+            for task, metrics in results["results"].items():
+                summary[task] = {
+                    k: v
+                    for k, v in metrics.items()
+                    if isinstance(v, (int, float)) and not k.startswith("_")
+                }
+
+        logger.info("Evaluation results:")
+        logger.info(json.dumps(summary, indent=2))
+
+        # Save results
+        results_path = model_path.parent / "eval_results.json"
+        with open(results_path, "w") as f:
+            json.dump(summary, f, indent=2)
+        logger.info(f"Results saved to {results_path}")
+
+        return summary
+
+    finally:
+        logger.info("Stopping SGLang server...")
+        server_proc.terminate()
+        server_proc.wait(timeout=10)
 
 
 # Alias for consistency with other examples

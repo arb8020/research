@@ -43,6 +43,11 @@ class ReapConfig:
     cache_observations: bool = True
     save_full_model: bool = True  # Save full model for SGLang/vLLM eval compatibility
 
+    # Evaluation settings
+    run_eval: bool = True  # Run lm-eval after pruning
+    eval_tasks: tuple[str, ...] = ("gsm8k", "mmlu")  # lm-eval task names
+    sglang_port: int = 30000
+
     def __post_init__(self) -> None:
         assert 0 < self.compression_ratio < 1, "compression_ratio must be in (0, 1)"
         assert self.num_samples > 0, "num_samples must be positive"
