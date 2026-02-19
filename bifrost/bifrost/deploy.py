@@ -247,9 +247,9 @@ class GitDeployment:
             job_id: Optional job ID for creating job-specific directories
         """
 
-        # Ensure tmux is installed for detached job functionality
-        logger.debug("🔧 Ensuring tmux is installed for detached jobs...")
-        tmux_check_cmd = "which tmux || (apt-get update && apt-get install -y tmux)"
+        # Ensure tmux and ninja are installed for detached job functionality
+        logger.debug("🔧 Ensuring tmux and ninja are installed...")
+        tmux_check_cmd = "which tmux && which ninja || (apt-get update && apt-get install -y tmux ninja-build)"
         stdin, stdout, stderr = client.exec_command(tmux_check_cmd)
         exit_code = stdout.channel.recv_exit_status()
         if exit_code != 0:
