@@ -101,8 +101,20 @@ def prepare_messages(sample: dict[str, Any]) -> list[Message]:
 
 async def run_eval(config_path: str, cli_overrides: dict[str, Any]) -> None:
     """Run evaluation with config and CLI overrides."""
+    import os
+    from dataclasses import replace as dataclass_replace
+
     # Load config
     config = load_config(config_path)
+
+    # Resolve API key from environment if not set in endpoint
+    endpoint = config["endpoint"]
+    if not endpoint.api_key:
+        # Try to get from env (set by modal_eval.py or local env)
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if api_key:
+            config["endpoint"] = dataclass_replace(endpoint, api_key=api_key)
+            logger.info("Using API key from ANTHROPIC_API_KEY environment variable")
 
     # Apply CLI overrides
     if cli_overrides.get("limit"):
