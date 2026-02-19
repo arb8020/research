@@ -150,6 +150,15 @@ def run_reap(config: ReapConfig) -> dict[str, Any]:
     }
 
     if config.save_full_model:
+        # Clear HF cache to make room for saving pruned model
+        import shutil
+        from pathlib import Path as PathLib
+
+        hf_cache = PathLib.home() / ".cache" / "huggingface" / "hub"
+        if hf_cache.exists():
+            logger.info(f"Clearing HF cache at {hf_cache} to free disk space...")
+            shutil.rmtree(hf_cache, ignore_errors=True)
+
         logger.info(f"Saving full pruned model to {output_path}")
         save_pruned_model(
             model,
