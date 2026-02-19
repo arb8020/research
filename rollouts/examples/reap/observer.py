@@ -175,9 +175,9 @@ class MoEObserver:
             inputs: tuple[Tensor, ...],
             output: Tensor,
         ) -> None:
-            # output is router logits: [batch, seq, num_experts]
+            # output is router logits: [num_tokens, num_experts] (already flattened in some models)
             router_logits = output
-            hidden_states = inputs[0]  # [batch, seq, hidden_dim]
+            hidden_states = inputs[0]  # [batch, seq, hidden_dim] or [num_tokens, hidden_dim]
 
             with torch.no_grad():
                 self._process_routing(layer_idx, moe_block, hidden_states, router_logits)
@@ -193,13 +193,16 @@ class MoEObserver:
     ) -> None:
         """Process routing decisions and update observations."""
         obs = self.observations[layer_idx]
-        batch_size, seq_len, hidden_dim = hidden_states.shape
         num_experts = self.moe_config.num_experts
         top_k = self.moe_config.num_experts_per_tok
 
-        # Flatten batch and sequence dimensions
-        hidden_flat = hidden_states.view(-1, hidden_dim)  # [batch*seq, hidden]
-        logits_flat = router_logits.view(-1, num_experts)  # [batch*seq, num_experts]
+        # hidden_states may be [batch, seq, hidden] or [num_tokens, hidden] depending on model
+        assert hidden_states.ndim in (2, 3), (
+            f"Unexpected hidden_states shape: {hidden_states.shape}"
+        )
+        hidden_dim = hidden_states.shape[-1]
+        hidden_flat = hidden_states.view(-1, hidden_dim)  # [num_tokens, hidden]
+        logits_flat = router_logits.view(-1, num_experts)  # [num_tokens, num_experts]
 
         # Get routing weights (softmax of logits)
         routing_weights = torch.softmax(logits_flat, dim=-1)
