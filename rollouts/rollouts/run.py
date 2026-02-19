@@ -325,6 +325,9 @@ async def run_remote(
     logs_port = 9100
     logs_dir_relative = f"rollouts/results/rl/{run_name}"
 
+    # Kill any existing LogsServer on this port (left over from a previous run on the same pod)
+    bifrost.exec(f"fuser -k {logs_port}/tcp 2>/dev/null || true")
+
     # Start LogsServer - use -m since workspace is repo root with miniray/ dir
     logger.info("Starting LogsServer...")
     bifrost.submit(
