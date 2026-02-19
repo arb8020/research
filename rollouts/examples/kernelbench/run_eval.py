@@ -183,7 +183,10 @@ async def run_eval(config_path: str, cli_overrides: dict[str, Any]) -> None:
         print(f"Total samples: {report.total_samples}")
         print("Summary metrics:")
         for name, value in report.summary_metrics.items():
-            print(f"  {name}: {value:.3f}")
+            if isinstance(value, (int, float)):
+                print(f"  {name}: {value:.3f}")
+            else:
+                print(f"  {name}: {value}")
 
         if config["output_dir"]:
             print(f"\nResults saved to: {config['output_dir']}")
