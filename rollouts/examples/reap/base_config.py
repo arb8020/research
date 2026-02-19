@@ -32,6 +32,8 @@ def run_reap(config: ReapConfig) -> dict[str, Any]:
     Returns:
         Dict with pruning results and metadata
     """
+    import sys
+
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -39,6 +41,15 @@ def run_reap(config: ReapConfig) -> dict[str, Any]:
     from .export import get_output_path, save_pruned_model
     from .observer import MoEObserver
     from .pruner import prune_model
+
+    # Configure logging to stdout explicitly (default stderr doesn't appear in pty capture)
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("[REAP] %(message)s"))
+    handler.setLevel(logging.INFO)
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+
+    logger.info("Starting REAP pipeline")
 
     # Set seed
     torch.manual_seed(config.seed)
@@ -55,10 +66,12 @@ def run_reap(config: ReapConfig) -> dict[str, Any]:
         device_map="auto",
         trust_remote_code=True,
     )
+    logger.info(f"Model loaded: {model.__class__.__name__}")
     tokenizer = AutoTokenizer.from_pretrained(
         config.model_name,
         trust_remote_code=True,
     )
+    logger.info("Tokenizer loaded")
 
     # Setup observer
     observer = MoEObserver(model, device)
@@ -79,6 +92,9 @@ def run_reap(config: ReapConfig) -> dict[str, Any]:
         observer.load_observations(str(cache_path))
     else:
         # Load calibration data
+        logger.info(
+            f"Loading calibration data: {config.dataset_name} ({config.num_samples} samples)"
+        )
         samples = load_calibration_data(
             config.dataset_name,
             tokenizer,
@@ -86,6 +102,7 @@ def run_reap(config: ReapConfig) -> dict[str, Any]:
             config.max_seq_len,
             config.seed,
         )
+        logger.info(f"Calibration data loaded: {len(samples)} samples")
 
         # Run observation
         logger.info("Running observation phase...")
@@ -93,13 +110,16 @@ def run_reap(config: ReapConfig) -> dict[str, Any]:
         with torch.no_grad():
             for batch_idx, batch in enumerate(batch_iterator(samples, batch_size=1, device=device)):
                 model(**batch)
-                if (batch_idx + 1) % 100 == 0:
+                if (batch_idx + 1) % 10 == 0:
                     logger.info(f"Processed {batch_idx + 1}/{len(samples)} samples")
+
+        logger.info("Observation phase complete")
 
         # Cache observations
         if config.cache_observations:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             observer.save_observations(str(cache_path))
+            logger.info(f"Saved observations to {cache_path}")
 
     # Remove hooks before pruning
     observer.remove_hooks()
@@ -114,6 +134,7 @@ def run_reap(config: ReapConfig) -> dict[str, Any]:
     )
 
     # Save pruned model
+    logger.info(f"Saving pruned model to {output_path}")
     save_pruned_model(
         model,
         tokenizer,
@@ -129,6 +150,7 @@ def run_reap(config: ReapConfig) -> dict[str, Any]:
             "pruned_num_experts": result.pruned_num_experts,
         },
     )
+    logger.info("REAP pipeline complete")
 
     return {
         "output_path": str(output_path),

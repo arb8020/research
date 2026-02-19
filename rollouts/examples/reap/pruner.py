@@ -134,18 +134,37 @@ def prune_moe_layer(
     """Remove experts from a single MoE layer.
 
     Modifies the layer in-place:
-    1. Remove expert modules from the ModuleList
+    1. Remove expert weight slices (for fused experts) or modules (for ModuleList)
     2. Remove corresponding rows from router weight matrix
     """
     experts = getattr(moe_block, experts_attr)
     router = getattr(moe_block, router_attr)
 
-    original_num = len(experts)
+    # Determine original number of experts
+    if hasattr(experts, "num_experts"):
+        # Fused experts (e.g., Qwen3MoeExperts)
+        original_num = experts.num_experts
+    elif hasattr(experts, "__len__"):
+        # ModuleList
+        original_num = len(experts)
+    else:
+        raise TypeError(f"Cannot determine number of experts from {type(experts).__name__}")
+
     indices_to_keep = [i for i in range(original_num) if i not in indices_to_remove]
 
-    # Create new ModuleList with remaining experts
-    new_experts = nn.ModuleList([experts[i] for i in indices_to_keep])
-    setattr(moe_block, experts_attr, new_experts)
+    # Handle fused expert weights (Qwen3MoeExperts style)
+    if hasattr(experts, "gate_up_proj") and hasattr(experts, "down_proj"):
+        # Fused: gate_up_proj [num_experts, intermediate, hidden], down_proj [num_experts, hidden, intermediate/2]
+        with torch.no_grad():
+            experts.gate_up_proj = nn.Parameter(experts.gate_up_proj[indices_to_keep])
+            experts.down_proj = nn.Parameter(experts.down_proj[indices_to_keep])
+        experts.num_experts = len(indices_to_keep)
+    elif isinstance(experts, nn.ModuleList):
+        # Create new ModuleList with remaining experts
+        new_experts = nn.ModuleList([experts[i] for i in indices_to_keep])
+        setattr(moe_block, experts_attr, new_experts)
+    else:
+        raise TypeError(f"Don't know how to prune experts of type {type(experts).__name__}")
 
     # Update router weights
     # Router typically has weight of shape [num_experts, hidden_dim] or [hidden_dim, num_experts]
