@@ -364,8 +364,14 @@ def _cancel_job(run_id: str) -> int:
             return 1
 
         # SSH and kill the tmux session
-        bifrost = BifrostClient(instance)
-        result = bifrost.run_command(
+        import os
+
+        ssh_key = client.get_ssh_key_path(provider) or os.path.expanduser(
+            "~/.ssh/id_ed25519"
+        )
+        ssh_connection = f"root@{instance.public_ip}:{instance.ssh_port}"
+        bifrost = BifrostClient(ssh_connection, ssh_key_path=ssh_key)
+        result = bifrost.exec(
             "tmux kill-session -t bifrost-job-rl-training 2>/dev/null && echo 'killed' || echo 'no session'"
         )
         output = result.stdout.strip() if result.stdout else ""
