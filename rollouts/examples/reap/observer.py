@@ -175,8 +175,8 @@ class MoEObserver:
             inputs: tuple[Tensor, ...],
             output: Tensor,
         ) -> None:
-            # output is router logits: [num_tokens, num_experts] (already flattened in some models)
-            router_logits = output
+            # output may be a tensor or tuple depending on model; logits are always first element
+            router_logits = output[0] if isinstance(output, tuple) else output
             hidden_states = inputs[0]  # [batch, seq, hidden_dim] or [num_tokens, hidden_dim]
 
             with torch.no_grad():
