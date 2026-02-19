@@ -204,8 +204,20 @@ class MoEObserver:
         routing_weight_sum = torch.zeros(num_experts, device="cpu", dtype=torch.float64)
         max_activations = obs.max_activations.clone()
 
+        logger.debug(
+            "fused hook: hidden=%s top_k_index=%s top_k_weights=%s gate_up=%s down=%s",
+            tuple(hidden_states.shape),
+            tuple(flat_index.shape),
+            tuple(flat_weights.shape),
+            tuple(module.gate_up_proj.shape),
+            tuple(module.down_proj.shape),
+        )
+
         # Replicate Qwen3MoeExperts.forward per-expert computation
+        # Note: top_k_index may contain num_experts as a sentinel (no-route), skip it
         for expert_idx in range(num_experts):
+            if expert_idx >= module.gate_up_proj.shape[0]:
+                continue
             # Find tokens routed to this expert and which top-k slot
             top_k_pos, token_idx = torch.where(flat_index == expert_idx)
             if token_idx.numel() == 0:
@@ -215,9 +227,11 @@ class MoEObserver:
             routing_w = flat_weights[token_idx, top_k_pos]  # [num_routed]
 
             # Expert forward: gate_up -> silu gate -> down
-            gate_up = F.linear(current_state, module.gate_up_proj[expert_idx])
+            # Cast weight to match input dtype (model may be bfloat16)
+            weight_gu = module.gate_up_proj[expert_idx].to(dtype=current_state.dtype)
+            gate_up = F.linear(current_state, weight_gu)
             gate, up = gate_up.chunk(2, dim=-1)
-            expert_out = module.act_fn(gate) * up  # [num_routed, intermediate_dim]
+            expert_out = F.silu(gate) * up  # [num_routed, intermediate_dim]
 
             ean_norms = expert_out.norm(dim=-1)  # [num_routed]
 
