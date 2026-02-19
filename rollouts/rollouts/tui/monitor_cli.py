@@ -7,6 +7,7 @@ Usage:
     rollouts monitor --attach run_20250127-143052    # Attach to remote run by ID
     rollouts monitor --attach --latest               # Attach to most recent active run
     rollouts monitor --attach --tail                  # Stream logs to stdout (no TUI)
+    rollouts monitor --attach --tail-lines 50         # Fetch last 50 lines and exit
     rollouts monitor --runs                          # List jobs from ~/.rollouts/jobs.json
     rollouts monitor --runs --probe                  # + check broker liveness & LogsServer
 """
@@ -48,12 +49,12 @@ def _log(event: str, **data: Any) -> None:
 def _broker_credentials() -> dict[str, str]:
     """Load broker credentials: shared.config (if available) -> env vars.
 
-    shared.config handles .env loading automatically on import.
-    Falls back to direct env var lookup if shared package not installed.
+    infra_utils.config handles .env loading automatically on import.
+    Falls back to direct env var lookup if infra_utils package not installed.
     """
-    # Try shared.config first (handles .env loading)
+    # Try infra_utils.config first (handles .env loading)
     try:
-        from shared.config import (
+        from infra_utils.config import (
             get_digitalocean_key,
             get_lambda_key,
             get_prime_key,
@@ -377,6 +378,7 @@ def _run_attached(
     run_id: str | None,
     *,
     tail: bool = False,
+    tail_lines: int | None = None,
     keep_alive: bool = False,
     terminate: bool = False,
 ) -> int:
@@ -399,7 +401,7 @@ def _run_attached(
 
     from miniray import RemoteWorker
 
-    if not tail:
+    if not tail and tail_lines is None:
         from .rlmon import make_app
 
     run = _resolve_job_connection(run_id)
@@ -449,7 +451,23 @@ def _run_attached(
     # Discover available files
     worker.send({"cmd": "list"})
     available = worker.recv()
-    print(f"Files: {', '.join(available['files'])}")
+    print(f"Files: {', '.join(available['files'])}", file=sys.stderr)
+
+    # One-shot mode: fetch last N lines per file and exit
+    if tail_lines is not None:
+        for filename in available.get("files", []):
+            worker.send({"cmd": "tail", "file": filename, "offset": 0})
+            result = worker.recv()
+            lines = result.get("lines", [])
+            if not lines:
+                continue
+            print(f"\n=== {filename} (last {tail_lines} lines) ===")
+            for line in lines[-tail_lines:]:
+                print(line)
+        worker.close()
+        if tunnel_cleanup:
+            tunnel_cleanup()
+        return 0
 
     local_sync_dir = Path("results/rl") / resolved_run_id
     local_sync_dir.mkdir(parents=True, exist_ok=True)
@@ -686,6 +704,13 @@ def monitor_main(argv: list[str] | None = None) -> int:
         help="With --attach: stream logs to stdout instead of launching TUI",
     )
     parser.add_argument(
+        "--tail-lines",
+        type=int,
+        default=None,
+        metavar="N",
+        help="With --attach: fetch last N lines from each log file and exit",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Dump frame layout snapshots to /tmp/rlmon-debug.jsonl every ~5s",
@@ -793,6 +818,7 @@ def monitor_main(argv: list[str] | None = None) -> int:
             return _run_attached(
                 run_id=None,
                 tail=args.tail,
+                tail_lines=args.tail_lines,
                 keep_alive=args.keep_alive,
                 terminate=args.terminate,
             )
@@ -800,6 +826,7 @@ def monitor_main(argv: list[str] | None = None) -> int:
             return _run_attached(
                 run_id=args.attach,
                 tail=args.tail,
+                tail_lines=args.tail_lines,
                 keep_alive=args.keep_alive,
                 terminate=args.terminate,
             )

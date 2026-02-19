@@ -193,10 +193,12 @@ async def _deploy_and_submit(
         ),
         (
             "Installing ML packages",
-            # Override transformers to 5.x to fix list_repo_templates 404 bug
-            # SGLang pins transformers==4.57.1 which has this bug
+            # Install sglang first, then override transformers/huggingface_hub after.
+            # SGLang pins transformers==4.57.1 which lacks is_offline_mode (removed in
+            # huggingface_hub>=1.4). Installing overrides after sglang ensures they win.
             # See: https://github.com/huggingface/transformers/issues/41813
-            "~/.local/bin/uv pip install --upgrade torch 'transformers>=5.0.0' 'huggingface_hub>=1.4.0' datasets accelerate sglang[all] curl_cffi peft",
+            "~/.local/bin/uv pip install --upgrade torch datasets accelerate sglang[all] curl_cffi peft"
+            " && ~/.local/bin/uv pip install --upgrade 'transformers>=5.0.0' 'huggingface_hub>=1.4.0'",
         ),
     ]
 

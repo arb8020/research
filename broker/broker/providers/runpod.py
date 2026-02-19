@@ -850,7 +850,7 @@ async def terminate_instance(instance_id: str, api_key: str | None = None) -> bo
         return False
 
 
-async def wait_for_ssh_ready(instance, timeout: int = 900) -> bool:
+async def wait_for_ssh_ready(instance, timeout: int = 900) -> bool:  # noqa: ASYNC109
     """RunPod-specific SSH waiting implementation (15 min default)"""
     # Tiger Style: Assert preconditions
     assert instance.provider == "runpod"
@@ -869,11 +869,11 @@ async def wait_for_ssh_ready(instance, timeout: int = 900) -> bool:
     return await _test_ssh_connectivity(instance)
 
 
-async def _wait_until_running(instance, timeout: int) -> bool:
+async def _wait_until_running(instance, timeout: int) -> bool:  # noqa: ASYNC109
     """Wait for instance to reach RUNNING status (≤70 lines)"""
     start_time = time.time()
 
-    logger.debug(f"waiting for instance {instance.id} to reach running...")
+    logger.info(f"waiting for instance {instance.id} to reach running...")
 
     while time.time() - start_time < timeout:
         fresh = await get_instance_details(instance.id, api_key=instance.api_key)
@@ -889,15 +889,19 @@ async def _wait_until_running(instance, timeout: int) -> bool:
             logger.error(f"Instance terminal state: {fresh.status}")
             return False
 
+        elapsed = int(time.time() - start_time)
+        logger.info(
+            f"instance {instance.id} status={fresh.status.value} ({elapsed}s elapsed, waiting...)"
+        )
         await trio.sleep(15)
 
     logger.error(f"Timeout waiting for RUNNING after {timeout}s")
     return False
 
 
-async def _wait_for_direct_ssh_assignment(instance, start_time: float, timeout: int) -> bool:
+async def _wait_for_direct_ssh_assignment(instance, start_time: float, timeout: int) -> bool:  # noqa: ASYNC109
     """Wait for direct SSH (not proxy) - RunPod specific (≤70 lines)"""
-    logger.debug("waiting for direct ssh (may take 5-15 min, proxy ignored)")
+    logger.info("waiting for direct ssh (may take 5-15 min, proxy ignored)")
     next_log_time = start_time + 30  # Log at 30s, 60s, 90s, ...
 
     while time.time() - start_time < timeout:
