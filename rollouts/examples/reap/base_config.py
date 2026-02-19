@@ -10,13 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import torch
-
 from .config import ReapConfig
-from .data import batch_iterator, load_calibration_data
-from .export import get_output_path, save_pruned_model
-from .observer import MoEObserver
-from .pruner import prune_model
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +32,13 @@ def run_reap(config: ReapConfig) -> dict[str, Any]:
     Returns:
         Dict with pruning results and metadata
     """
+    import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    from .data import batch_iterator, load_calibration_data
+    from .export import get_output_path, save_pruned_model
+    from .observer import MoEObserver
+    from .pruner import prune_model
 
     # Set seed
     torch.manual_seed(config.seed)
