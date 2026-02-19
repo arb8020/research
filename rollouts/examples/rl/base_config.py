@@ -94,7 +94,7 @@ async def _deploy_and_submit(
         ),
         (
             "Installing ML packages",
-            "~/.local/bin/uv pip install torch transformers datasets accelerate sglang[all] curl_cffi peft",
+            "~/.local/bin/uv pip install torch 'transformers>=5.0' 'huggingface_hub>=0.27' datasets accelerate sglang[all] curl_cffi peft",
         ),
     ]
 
