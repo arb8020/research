@@ -148,7 +148,7 @@ async def run_eval(config_path: str, cli_overrides: dict[str, Any]) -> None:
     configure_sandbox_pool(pool)
 
     # Create environment factory
-    def environment_factory(sample: dict[str, Any]) -> KernelBenchMultiTurnEnvironment:
+    async def environment_factory(sample: dict[str, Any]) -> KernelBenchMultiTurnEnvironment:
         return KernelBenchMultiTurnEnvironment(
             ref_code=sample.get("ref_code", ""),
             backend=config["backend"],
