@@ -64,6 +64,8 @@ modal = [
 # REAP expert pruning
 reap = [
     "torch>=2.0.0",
+    "transformers>=5.0.0",
+    "huggingface-hub>=1.4.0",
     "datasets>=4.4.1",
     "accelerate>=0.20.0",
 ]
