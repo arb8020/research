@@ -259,9 +259,9 @@ def _setup_training_backend(
         tokenizer.pad_token = tokenizer.eos_token
 
     endpoint = Endpoint(
-        provider="openai",
-        model=config.model.name,
-        api_base=inference_engine.api_base,
+        model=f"openai/{config.model.name}",
+        base_url=inference_engine.base_url,
+        api_format="openai-completions",
         temperature=config.rollout.temperature,
         max_tokens=config.rollout.max_tokens,
         extra_params=config.rollout.extra_params or None,
