@@ -82,6 +82,8 @@ def serve_client(sock: socket.socket, watch_dir: Path) -> None:
             elif cmd == "tail":
                 filename = msg.get("file")
                 offset = msg.get("offset", 0)
+                max_lines = msg.get("max_lines", 1000)  # Pagination limit
+                max_bytes = msg.get("max_bytes", 512 * 1024)  # 512KB per response
 
                 assert filename, "tail requires 'file'"
                 assert isinstance(offset, int) and offset >= 0, f"bad offset: {offset}"
@@ -96,14 +98,28 @@ def serve_client(sock: socket.socket, watch_dir: Path) -> None:
 
                 with open(target) as f:
                     f.seek(offset)
-                    content = f.read()
+                    # Read limited bytes, not entire file
+                    content = f.read(max_bytes)
 
-                new_offset = offset + len(content.encode("utf-8"))
-
-                # Split into lines, drop trailing empty
+                # Split into lines
                 lines = content.splitlines()
 
-                send({"lines": lines, "offset": new_offset})
+                # If we hit max_bytes mid-line, drop the last partial line
+                # (unless it's the only line, meaning single line > max_bytes)
+                if len(content) == max_bytes and len(lines) > 1 and not content.endswith("\n"):
+                    partial_line = lines.pop()
+                    content = content[: -len(partial_line)]
+
+                # Apply line limit
+                if len(lines) > max_lines:
+                    lines = lines[:max_lines]
+                    # Recalculate content to match truncated lines
+                    content = "\n".join(lines) + "\n"
+
+                new_offset = offset + len(content.encode("utf-8"))
+                has_more = len(content) == max_bytes or f.read(1) != ""
+
+                send({"lines": lines, "offset": new_offset, "has_more": has_more})
 
             elif cmd == "read":
                 # Read entire file (for config.json etc.)
