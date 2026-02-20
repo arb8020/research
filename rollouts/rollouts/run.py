@@ -24,8 +24,12 @@ Execution modes:
     (none):      Run locally
 
 Options:
-    --detach:    Submit and exit (don't launch TUI) [SSH only]
+    --tui:       Launch TUI after submitting (default: fire-and-forget) [SSH only]
+    --tail:      Stream logs to stdout (default: fire-and-forget) [SSH only]
     --keep-alive: Keep instance running after completion [SSH only]
+
+Attach to running job:
+    rollouts monitor --attach <run_name>
 """
 
 from __future__ import annotations
@@ -314,7 +318,7 @@ async def run_remote(
     script_path: str,
     keep_alive: bool = False,
     node_id: str | None = None,
-    detach: bool = False,
+    tui: bool = False,
     gpu_count: int = 1,
     gpu_type: str = "A100",
     tail: bool = False,
@@ -373,16 +377,23 @@ async def run_remote(
 
     logger.info("Training submitted: %s", run_name)
     logger.info("  Node:   %s", node_id_str)
-    logger.info("  Remote: %s", remote_output_dir)
+    logger.info("  Local:  results/rl/%s/", run_name)
 
-    if detach:
-        logger.info("Detached. Attach later:")
+    # Default: fire-and-forget (print attach instructions and exit)
+    if not tui and not tail:
+        logger.info("")
+        logger.info("Attach later:")
         logger.info("  rollouts monitor --attach %s", run_name)
+        if keep_alive:
+            logger.info("  (instance will stay alive)")
+        else:
+            logger.info("  (instance will terminate when job completes)")
         return
 
+    # --tui or --tail: launch monitor
     import subprocess
 
-    if not tail:
+    if tui:
         logger.info("Launching TUI...")
         # Clean up logging handler before launching TUI (it has its own output)
         console.remove_logging_handlers()
@@ -427,8 +438,12 @@ Examples:
     parser.add_argument(
         "--modal", action="store_true", help="Run on Modal sandbox (fast cold start)"
     )
-    parser.add_argument("--detach", action="store_true", help="Submit and exit (don't launch TUI)")
-    parser.add_argument("--tail", action="store_true", help="Stream logs to stdout instead of TUI")
+    parser.add_argument(
+        "--tui", action="store_true", help="Launch TUI after submitting (default: fire-and-forget)"
+    )
+    parser.add_argument(
+        "--tail", action="store_true", help="Stream logs to stdout (default: fire-and-forget)"
+    )
     parser.add_argument("--keep-alive", action="store_true", help="Keep GPU after completion")
     parser.add_argument("--gpu-count", type=int, default=1, help="Number of GPUs (default: 1)")
     parser.add_argument("--gpu-type", type=str, default="A100", help="GPU type (default: A100)")
@@ -477,7 +492,7 @@ Examples:
             str(config_path),
             args.keep_alive,
             args.node_id,
-            args.detach,
+            args.tui,
             args.gpu_count,
             args.gpu_type,
             args.tail,

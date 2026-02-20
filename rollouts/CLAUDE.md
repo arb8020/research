@@ -18,35 +18,34 @@ The rollouts-local `.venv` is missing `bifrost`/`broker` and won't work for remo
 Launch from `/Users/chiraagbalu/research/rollouts` using the workspace venv:
 
 ```bash
-# Remote GPU (most common) — always specify --provider runpod to avoid primeintellect
-# (primeintellect pods get stuck in pending indefinitely and aren't cancelled when you Ctrl-C)
-/Users/chiraagbalu/research/.venv/bin/python examples/rl/reverse_text/grpo_true_pipeline_01.py --provision --provider runpod --keep-alive
+# Remote GPU (fire-and-forget, prints run_id and exits)
+/Users/chiraagbalu/research/.venv/bin/python examples/rl/reverse_text/grpo_01_01.py --provision --provider runpod
 
-# Reuse an existing pod (use broker list to find live pod IDs)
-/Users/chiraagbalu/research/.venv/bin/python examples/rl/reverse_text/grpo_true_pipeline_01.py --node-id runpod:<id> --keep-alive
+# With --tui to launch interactive monitor after submit
+/Users/chiraagbalu/research/.venv/bin/python examples/rl/reverse_text/grpo_01_01.py --provision --provider runpod --tui
+
+# Reuse an existing pod
+/Users/chiraagbalu/research/.venv/bin/python examples/rl/reverse_text/grpo_01_01.py --node-id runpod:<id>
 ```
 
-Run in a tmux session so it persists:
-
-```bash
-tmux new -s grpo-run
-# then run the command above inside
-```
+Always specify `--provider runpod` to avoid primeintellect (pods get stuck in pending).
 
 ## Monitoring jobs
 
 ```bash
-# Check last N lines of a running remote job (quick)
-rollouts monitor --attach --tail-lines 50
+# Attach to a running job (launches TUI)
+rollouts monitor --attach <run_id>
 
-# Stream logs continuously
-rollouts monitor --attach --tail
+# Stream logs to stdout
+rollouts monitor --attach <run_id> --tail
 
 # List all known jobs
 rollouts monitor --runs
 ```
 
 Results sync locally to `results/rl/<run_id>/` while attached.
+
+Logs are also written to `results/rl/<run_id>/run.jsonl` (structured events) and `training.log` (raw output).
 
 ## Known issues
 
