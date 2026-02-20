@@ -614,26 +614,25 @@ async def _grpo_train_async(
     metadata_key: str | None = None,
 ) -> dict[str, Any]:
     """Async GRPO training implementation."""
-    import os
-
     from .._logging import setup_logging
     from ..training.datasets.data_buffer import DataBuffer
     from ..training.metrics import JSONLLogger
     from ..training.rollout_gen.async_rollout_manager import AsyncRolloutManager
     from ..training.types import RolloutConfig
 
-    # Setup logging
-    use_json_logs = os.environ.get("ROLLOUTS_JSON_LOGS", "").lower() == "true"
+    # Setup output directory first (needed for log file path)
+    output_dir, run_name = _setup_output_dir(config)
+
+    # Setup logging: structured JSON to file, human-readable to stderr
+    # This keeps tracebacks clean in stderr while structured logs go to training.jsonl
     setup_logging(
         level="INFO",
-        use_json=use_json_logs,
-        use_color=not use_json_logs,
+        use_json=False,  # stderr stays human-readable for tracebacks
+        use_color=True,
+        log_file=str(output_dir / "training.jsonl"),  # structured logs go here
         logger_levels={"httpx": "WARNING", "httpcore": "WARNING"},
     )
     logger = logging.getLogger(__name__)
-
-    # Setup output directory
-    output_dir, run_name = _setup_output_dir(config)
 
     logger.info("=" * 60)
     logger.info(f"GRPO Training: {run_name}")

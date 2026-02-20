@@ -109,6 +109,25 @@ async def _deploy_and_submit(
     console = Console()
     console.install_logging_handler(logging.getLogger())
 
+    # Fail-fast: check for uncommitted changes BEFORE provisioning
+    # This prevents wasting time/money on a pod we can't deploy to
+    from bifrost.git_sync import _check_uncommitted_changes, _check_untracked_files
+
+    uncommitted = _check_uncommitted_changes()
+    untracked = _check_untracked_files()
+    if uncommitted or untracked:
+        dirty_files = (uncommitted or []) + (untracked or [])
+        print(
+            f"\n❌ Cannot deploy: {len(dirty_files)} uncommitted/untracked file(s):",
+            file=sys.stderr,
+        )
+        for f in dirty_files[:10]:
+            print(f"   - {f}", file=sys.stderr)
+        if len(dirty_files) > 10:
+            print(f"   ... and {len(dirty_files) - 10} more", file=sys.stderr)
+        print("\nCommit your changes or use --allow-dirty to proceed anyway.", file=sys.stderr)
+        sys.exit(1)
+
     # Acquire node - show which credentials profile is being used
     from broker.credentials import get_active_profile
 
@@ -177,7 +196,7 @@ async def _deploy_and_submit(
 
     log("deploy_start")
     with console.spinner("Deploying code..."):
-        workspace = bifrost.push("~/.bifrost/workspaces/rollouts-rl", allow_dirty=True)
+        workspace = bifrost.push("~/.bifrost/workspaces/rollouts-rl", allow_dirty=False)
     log("deploy_done", workspace=workspace)
 
     # Bootstrap steps — each gets its own spinner with ✓ on completion

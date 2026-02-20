@@ -469,9 +469,7 @@ def _parse_event(raw: str, model: Model) -> Model:
             score = data.get("score")
             sample_id = data.get("sample_id", "?")
             summary = (
-                f"  {sample_id}: score={score:.3f}"
-                if score is not None
-                else f"  {sample_id}: done"
+                f"  {sample_id}: score={score:.3f}" if score is not None else f"  {sample_id}: done"
             )
             scores = model.eval_scores
             if score is not None:
@@ -659,12 +657,14 @@ def subscriptions(model: Model) -> Sub:
             subs.append(Sub.file_tail(f"{d}/metrics.jsonl", lambda line: MetricsLine(line=line)))
             subs.append(Sub.file_tail(f"{d}/rollouts.jsonl", lambda line: RolloutLine(line=line)))
             subs.append(Sub.file_tail(f"{d}/error_log.jsonl", lambda line: TrainingLine(line=line)))
+            subs.append(Sub.file_tail(f"{d}/training.jsonl", lambda line: TrainingLine(line=line)))
             subs.append(Sub.file_tail(f"{d}/training.log", lambda line: TrainingLine(line=line)))
             subs.append(Sub.file_tail(f"{d}/sglang.log", lambda line: SglangLine(line=line)))
 
         case ExperimentType.SFT:
             subs.append(Sub.file_tail(f"{d}/metrics.jsonl", lambda line: MetricsLine(line=line)))
             subs.append(Sub.file_tail(f"{d}/error_log.jsonl", lambda line: TrainingLine(line=line)))
+            subs.append(Sub.file_tail(f"{d}/training.jsonl", lambda line: TrainingLine(line=line)))
             subs.append(Sub.file_tail(f"{d}/training.log", lambda line: TrainingLine(line=line)))
             subs.append(Sub.file_tail(f"{d}/sglang.log", lambda line: SglangLine(line=line)))
 
@@ -676,6 +676,9 @@ def subscriptions(model: Model) -> Sub:
             # Tail everything we can find
             subs.append(Sub.file_tail(f"{d}/metrics.jsonl", lambda line: MetricsLine(line=line)))
             subs.append(Sub.file_tail(f"{d}/events.jsonl", lambda line: EventLine(line=line)))
+            subs.append(
+                Sub.file_tail(f"{d}/training.jsonl", lambda line: GenericLogLine(line=line))
+            )
             subs.append(Sub.file_tail(f"{d}/training.log", lambda line: GenericLogLine(line=line)))
             subs.append(
                 Sub.file_tail(f"{d}/error_log.jsonl", lambda line: GenericLogLine(line=line))

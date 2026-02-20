@@ -90,7 +90,9 @@ def serve_client(sock: socket.socket, watch_dir: Path) -> None:
 
                 # Prevent path traversal
                 target = (watch_dir / filename).resolve()
-                assert target.parent == watch_dir.resolve(), f"path traversal: {filename}"
+                if target.parent != watch_dir.resolve():
+                    send({"lines": [], "offset": 0, "error": "path_traversal"})
+                    continue
 
                 if not target.exists():
                     send({"lines": [], "offset": 0, "error": "not_found"})
@@ -101,23 +103,23 @@ def serve_client(sock: socket.socket, watch_dir: Path) -> None:
                     # Read limited bytes, not entire file
                     content = f.read(max_bytes)
 
-                # Split into lines
-                lines = content.splitlines()
+                    # Split into lines
+                    lines = content.splitlines()
 
-                # If we hit max_bytes mid-line, drop the last partial line
-                # (unless it's the only line, meaning single line > max_bytes)
-                if len(content) == max_bytes and len(lines) > 1 and not content.endswith("\n"):
-                    partial_line = lines.pop()
-                    content = content[: -len(partial_line)]
+                    # If we hit max_bytes mid-line, drop the last partial line
+                    # (unless it's the only line, meaning single line > max_bytes)
+                    if len(content) == max_bytes and len(lines) > 1 and not content.endswith("\n"):
+                        partial_line = lines.pop()
+                        content = content[: -len(partial_line)]
 
-                # Apply line limit
-                if len(lines) > max_lines:
-                    lines = lines[:max_lines]
-                    # Recalculate content to match truncated lines
-                    content = "\n".join(lines) + "\n"
+                    # Apply line limit
+                    if len(lines) > max_lines:
+                        lines = lines[:max_lines]
+                        # Recalculate content to match truncated lines
+                        content = "\n".join(lines) + "\n"
 
-                new_offset = offset + len(content.encode("utf-8"))
-                has_more = len(content) == max_bytes or f.read(1) != ""
+                    new_offset = offset + len(content.encode("utf-8"))
+                    has_more = len(content) == max_bytes or f.read(1) != ""
 
                 send({"lines": lines, "offset": new_offset, "has_more": has_more})
 
@@ -127,7 +129,9 @@ def serve_client(sock: socket.socket, watch_dir: Path) -> None:
                 assert filename, "read requires 'file'"
 
                 target = (watch_dir / filename).resolve()
-                assert target.parent == watch_dir.resolve(), f"path traversal: {filename}"
+                if target.parent != watch_dir.resolve():
+                    send({"content": "", "error": "path_traversal"})
+                    continue
 
                 if not target.exists():
                     send({"content": "", "error": "not_found"})
@@ -182,7 +186,7 @@ class LogsServer:
         self._sock.listen(8)
 
         # Signal handlers
-        def on_signal(signum: int, frame: FrameType | None) -> None:
+        def on_signal(signum: int, _frame: FrameType | None) -> None:
             logger.info("Signal %s, shutting down...", signum)
             self._shutdown = True
 

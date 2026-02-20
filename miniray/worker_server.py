@@ -81,7 +81,7 @@ class WorkerServer:
         Catches SIGTERM and SIGINT to clean up workers.
         """
 
-        def signal_handler(signum: int, frame: FrameType | None) -> None:
+        def signal_handler(signum: int, _frame: FrameType | None) -> None:
             logger.info("Received signal %s, shutting down...", signum)
             self._shutdown()
             sys.exit(0)
@@ -212,6 +212,7 @@ class WorkerServer:
         handle.r = r
         handle.w = w
         handle.pid = os.getpid()
+        handle._format = "json"
 
         logger.info("Worker %s started, serving %s", os.getpid(), client_addr)
 
