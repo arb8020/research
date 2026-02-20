@@ -105,6 +105,10 @@ class LocalSandboxWorker(SandboxWorker):
         # Run blocking subprocess in thread
         stdout, stderr, returncode = await trio.to_thread.run_sync(_run_subprocess)
 
+        logger.info(f"[Scoring] returncode={returncode}")
+        logger.info(f"[Scoring] stdout={stdout[:500] if stdout else 'empty'}...")
+        logger.info(f"[Scoring] stderr={stderr[:500] if stderr else 'empty'}...")
+
         if returncode == -1:
             return {
                 "compiled": 0.0,

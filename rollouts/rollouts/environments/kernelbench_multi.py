@@ -220,8 +220,12 @@ class KernelBenchMultiTurnEnvironment:
         if not pool._started:
             await pool.start()
 
+        logger.info(f"[KernelBench] Evaluating kernel ({len(kernel_code)} chars)")
+        logger.info(f"[KernelBench] Kernel code preview: {kernel_code[:200]}...")
+
         try:
             result = await pool.score_one(kernel_code, self.ref_code, timeout=120.0)
+            logger.info(f"[KernelBench] Score result: {result}")
             return {
                 "compiled": result.get("compiled", 0.0) > 0.5,
                 "correct": result.get("correct", 0.0) > 0.5,
@@ -322,6 +326,7 @@ class KernelBenchMultiTurnEnvironment:
 
         # Extract kernel code
         kernel_code = self._extract_kernel_code(response_text)
+        logger.info(f"[KernelBench] Extracted kernel_code: {kernel_code is not None}, len={len(kernel_code) if kernel_code else 0}")
 
         # Get current trajectory metadata
         current_metadata = dict(state.actor.trajectory.metadata)
