@@ -38,7 +38,7 @@ if str(repo_root) not in sys.path:
 
 from examples.kernelbench.dataset import load_kernelbench_prompts
 from examples.kernelbench.scoring import kernelbench_score_fn
-from rollouts.dtypes import Endpoint, EvalConfig, Message
+from rollouts.dtypes import AgentState, Endpoint, EvalConfig, Message, RunConfig
 from rollouts.environments.kernelbench_multi import (
     KernelBenchMultiTurnEnvironment,
     configure_sandbox_pool,
@@ -47,6 +47,20 @@ from rollouts.evaluation import evaluate
 from rollouts.gpu_sandbox import SandboxPool
 
 logger = logging.getLogger(__name__)
+
+
+async def multi_turn_no_tool_handler(state: AgentState, run_config: RunConfig) -> AgentState:
+    """Handle no-tool response in multi-turn environment.
+
+    The default handler immediately sets TASK_COMPLETED, which prevents
+    multi-turn iteration. This handler respects the stop reason set by
+    the environment's on_assistant_message() - if no stop was set, we
+    continue the loop.
+    """
+    # Environment already had a chance to set stop in on_assistant_message.
+    # If it did, we respect that. If not, we continue the multi-turn loop.
+    # The state is returned as-is - the agent loop will increment turn_idx.
+    return state
 
 
 def load_config(config_path: str) -> dict[str, Any]:
@@ -166,6 +180,15 @@ async def run_eval(config_path: str, cli_overrides: dict[str, Any]) -> None:
             max_turns=config["max_turns"],
         )
 
+    # Build run_config with multi-turn handler (don't auto-stop on no tools)
+    async def _silent_on_chunk(_: object) -> None:
+        pass
+
+    run_config = RunConfig(
+        on_chunk=_silent_on_chunk,
+        handle_no_tool=multi_turn_no_tool_handler,
+    )
+
     # Build EvalConfig
     eval_config = EvalConfig(
         endpoint=config["endpoint"],
@@ -178,6 +201,7 @@ async def run_eval(config_path: str, cli_overrides: dict[str, Any]) -> None:
         eval_name=config["eval_name"],
         verbose=config["verbose"],
         show_progress=True,
+        run_config=run_config,
     )
 
     # Start sandbox pool
