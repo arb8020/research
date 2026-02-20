@@ -227,11 +227,34 @@ async def run_modal_eval(config: ModalEvalConfig) -> dict:
         # Run eval
         stdout, stderr, exit_code = _exec_sync(sandbox, cmd, timeout=3600)
 
+        # Sync results back to local
+        local_results_dir = REPO_ROOT / "results" / "kernelbench"
+        local_results_dir.mkdir(parents=True, exist_ok=True)
+
+        # Download results via tar + base64 (Modal doesn't have rsync)
+        print("Downloading results...")
+        remote_results = f"{workspace}/results/kernelbench"
+        tar_cmd = f"cd {remote_results} && tar -czf - . 2>/dev/null | base64"
+        tar_stdout, tar_stderr, tar_exit = _exec_sync(sandbox, tar_cmd, timeout=120)
+
+        if tar_exit == 0 and tar_stdout.strip():
+            import base64
+            import io
+            import tarfile
+
+            tar_data = base64.b64decode(tar_stdout.strip())
+            with tarfile.open(fileobj=io.BytesIO(tar_data), mode="r:gz") as tar:
+                tar.extractall(local_results_dir)
+            print(f"Results saved to: {local_results_dir}")
+        else:
+            print(f"Warning: Could not download results: {tar_stderr}")
+
         return {
             "success": exit_code == 0,
             "exit_code": exit_code,
             "stdout": stdout,
             "stderr": stderr,
+            "local_results_dir": str(local_results_dir),
         }
 
     finally:
