@@ -471,9 +471,11 @@ def _branching_trajectory_to_samples(
                 rollout_logprobs = None
         else:
             # Fallback: retokenize this assistant message
-            output_ids = tokenizer.encode(
-                _content_to_str(msg.content),
-                add_special_tokens=False,
+            output_ids = list(
+                tokenizer.encode(
+                    _content_to_str(msg.content),
+                    add_special_tokens=False,
+                )
             )
             rollout_logprobs = None
 
@@ -643,7 +645,7 @@ def _compute_loss_mask(
             tokenize=False,
             add_generation_prompt=False,
         )
-        msg_tokens = tokenizer.encode(msg_text, add_special_tokens=False)
+        msg_tokens = list(tokenizer.encode(msg_text, add_special_tokens=False))
         msg_len = len(msg_tokens)
 
         # If assistant message, mark its tokens for training

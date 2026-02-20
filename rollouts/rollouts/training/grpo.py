@@ -981,7 +981,7 @@ def _trajectory_to_sample_tito_interleaved(
     loss_mask: list[float] = []
 
     # First, tokenize the prompt
-    prompt_ids = tokenizer.encode(prompt, add_special_tokens=True)
+    prompt_ids = list(tokenizer.encode(prompt, add_special_tokens=True))
     all_tokens.extend(prompt_ids)
     loss_mask.extend([0.0] * len(prompt_ids))  # Don't train on prompt
     all_logprobs.extend([0.0] * len(prompt_ids))  # Placeholder for prompt tokens
@@ -1064,7 +1064,7 @@ def _trajectory_to_samples_tito_branching(
                 tokenize=False,
                 add_generation_prompt=True,
             )
-            input_ids = tokenizer.encode(prompt_text, add_special_tokens=True)
+            input_ids = list(tokenizer.encode(prompt_text, add_special_tokens=True))
         else:
             prompt_text = ""
             input_ids = []
