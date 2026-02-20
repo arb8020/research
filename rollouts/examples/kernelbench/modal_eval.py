@@ -82,18 +82,31 @@ def _build_image(modal_module: Any) -> Any:
 
 
 def _exec_sync(sandbox: Any, command: str, timeout: int = 300) -> tuple[str, str, int]:
-    """Execute command in sandbox. Returns (stdout, stderr, exit_code)."""
+    """Execute command in sandbox with interleaved stdout/stderr streaming."""
+    import threading
+
     proc = sandbox.exec("bash", "-c", command, timeout=timeout)
 
-    stdout_lines = []
-    for line in proc.stdout:
-        stdout_lines.append(line)
-        print(f"[sandbox] {line.rstrip()}")
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
 
-    stderr_lines = []
-    for line in proc.stderr:
-        stderr_lines.append(line)
-        print(f"[sandbox stderr] {line.rstrip()}", file=sys.stderr)
+    def read_stdout() -> None:
+        for line in proc.stdout:
+            stdout_lines.append(line)
+            print(f"[sandbox] {line.rstrip()}", flush=True)
+
+    def read_stderr() -> None:
+        for line in proc.stderr:
+            stderr_lines.append(line)
+            print(f"[sandbox stderr] {line.rstrip()}", file=sys.stderr, flush=True)
+
+    # Read both streams concurrently
+    stdout_thread = threading.Thread(target=read_stdout)
+    stderr_thread = threading.Thread(target=read_stderr)
+    stdout_thread.start()
+    stderr_thread.start()
+    stdout_thread.join()
+    stderr_thread.join()
 
     proc.wait()
     return "".join(stdout_lines), "".join(stderr_lines), proc.returncode
