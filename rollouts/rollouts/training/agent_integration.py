@@ -534,10 +534,12 @@ def _extract_tokens_from_trajectory(
     """
     if not trajectory.completions:
         # No completions - just tokenize messages
-        return tokenizer.apply_chat_template(
-            [_msg_to_dict(m) for m in trajectory.messages],
-            tokenize=True,
-            add_generation_prompt=False,
+        return list(
+            tokenizer.apply_chat_template(
+                [_msg_to_dict(m) for m in trajectory.messages],
+                tokenize=True,
+                add_generation_prompt=False,
+            )
         )
 
     # Check if we have server-provided token IDs
@@ -567,10 +569,12 @@ def _extract_tokens_from_trajectory(
 
     # Fallback: retokenize entire conversation
     # Used for text-based providers (OpenAI, Anthropic, etc.)
-    return tokenizer.apply_chat_template(
-        [_msg_to_dict(m) for m in trajectory.messages],
-        tokenize=True,
-        add_generation_prompt=False,
+    return list(
+        tokenizer.apply_chat_template(
+            [_msg_to_dict(m) for m in trajectory.messages],
+            tokenize=True,
+            add_generation_prompt=False,
+        )
     )
 
 
