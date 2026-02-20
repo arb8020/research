@@ -43,6 +43,8 @@ class ModalEvalConfig:
     model: str | None = None
     levels: list[int] | None = None
     backend: str | None = None
+    keep_alive: bool = False
+    sandbox_id: str | None = None  # Reuse existing sandbox
 
 
 def _build_image(modal_module: Any) -> Any:
@@ -157,29 +159,33 @@ async def run_modal_eval(config: ModalEvalConfig) -> dict:
     """Run evaluation in Modal sandbox."""
     import modal
 
-    print(f"Creating Modal sandbox with {config.gpu_type} GPU...")
-
-    # Build image
-    image = _build_image(modal)
-
     # Get API key
     api_key = get_api_key("anthropic") or os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
         raise ValueError("No Anthropic API key found")
 
-    # Create sandbox
     app = modal.App.lookup("kernelbench-eval", create_if_missing=True)
 
-    sandbox = await trio.to_thread.run_sync(
-        lambda: modal.Sandbox.create(
-            app=app,
-            image=image,
-            gpu=config.gpu_type,
-            timeout=3600,
+    # Reuse existing sandbox or create new one
+    if config.sandbox_id:
+        print(f"Reusing sandbox: {config.sandbox_id}")
+        sandbox = await trio.to_thread.run_sync(
+            lambda: modal.Sandbox.from_id(config.sandbox_id)
         )
-    )
-
-    print(f"Sandbox created: {sandbox.object_id}")
+    else:
+        print(f"Creating Modal sandbox with {config.gpu_type} GPU...")
+        image = _build_image(modal)
+        sandbox = await trio.to_thread.run_sync(
+            lambda: modal.Sandbox.create(
+                app=app,
+                image=image,
+                gpu=config.gpu_type,
+                timeout=3600,
+            )
+        )
+        print(f"Sandbox created: {sandbox.object_id}")
+        if config.keep_alive:
+            print(f"  (use --sandbox-id {sandbox.object_id} to reuse)")
 
     try:
         # Sync code
@@ -225,9 +231,12 @@ async def run_modal_eval(config: ModalEvalConfig) -> dict:
         }
 
     finally:
-        # Terminate sandbox
-        print("Terminating sandbox...")
-        await trio.to_thread.run_sync(sandbox.terminate)
+        if config.keep_alive:
+            print(f"Keeping sandbox alive: {sandbox.object_id}")
+            print(f"  Reuse with: --sandbox-id {sandbox.object_id}")
+        else:
+            print("Terminating sandbox...")
+            await trio.to_thread.run_sync(sandbox.terminate)
 
 
 def main() -> None:
@@ -240,6 +249,8 @@ def main() -> None:
     parser.add_argument("--model", help="Model override")
     parser.add_argument("--levels", type=int, nargs="+", help="Levels")
     parser.add_argument("--backend", help="Backend (CUDA/HIP)")
+    parser.add_argument("--keep-alive", action="store_true", help="Keep sandbox alive after eval")
+    parser.add_argument("--sandbox-id", help="Reuse existing sandbox by ID")
 
     args = parser.parse_args()
 
@@ -254,6 +265,8 @@ def main() -> None:
         model=args.model,
         levels=args.levels,
         backend=args.backend,
+        keep_alive=args.keep_alive,
+        sandbox_id=args.sandbox_id,
     )
 
     result = trio.run(run_modal_eval, config)

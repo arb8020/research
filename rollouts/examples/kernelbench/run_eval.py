@@ -285,6 +285,10 @@ def run_on_modal(config_path: str, overrides: dict[str, Any], gpu_type: str) -> 
         cmd.extend(["--levels"] + [str(l) for l in overrides["levels"]])
     if overrides.get("backend"):
         cmd.extend(["--backend", overrides["backend"]])
+    if overrides.get("keep_alive"):
+        cmd.append("--keep-alive")
+    if overrides.get("sandbox_id"):
+        cmd.extend(["--sandbox-id", overrides["sandbox_id"]])
 
     print(f"Running: {' '.join(cmd)}")
     result = subprocess.run(cmd)
@@ -324,6 +328,8 @@ Examples:
     parser.add_argument("--output-dir", help="Override output directory")
     parser.add_argument("--verbose", action="store_true", default=True)
     parser.add_argument("--quiet", action="store_true", help="Reduce output")
+    parser.add_argument("--keep-alive", action="store_true", help="Keep Modal sandbox alive")
+    parser.add_argument("--sandbox-id", help="Reuse existing Modal sandbox")
 
     args = parser.parse_args()
 
@@ -352,6 +358,10 @@ Examples:
         overrides["backend"] = args.backend
     if args.output_dir:
         overrides["output_dir"] = args.output_dir
+    if args.keep_alive:
+        overrides["keep_alive"] = True
+    if args.sandbox_id:
+        overrides["sandbox_id"] = args.sandbox_id
 
     if args.modal:
         # Run on Modal
