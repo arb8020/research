@@ -11,7 +11,6 @@ All workers implement the same scoring protocol:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import subprocess
 import sys
@@ -20,6 +19,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import trio
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,9 @@ class LocalSandboxWorker(SandboxWorker):
 
     Uses the same scoring logic as scoring.py but in an isolated subprocess
     to avoid polluting the main process with compiled kernels.
+
+    Uses trio.to_thread.run_sync() to run blocking subprocess in a thread,
+    keeping the trio event loop responsive.
     """
 
     async def score(
@@ -68,48 +72,42 @@ class LocalSandboxWorker(SandboxWorker):
         ref_code: str,
         timeout: float = 120.0,
     ) -> dict[str, Any]:
-        """Score kernel in subprocess."""
-        # Build the scoring script
+        """Score kernel in subprocess using trio threading."""
         script = _build_scoring_script(kernel_code, ref_code)
 
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".py", delete=False
-        ) as f:
-            f.write(script)
-            script_path = f.name
-
-        try:
-            # Run in subprocess
-            proc = await asyncio.create_subprocess_exec(
-                sys.executable,
-                script_path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
+        def _run_subprocess() -> tuple[str, str, int]:
+            """Run scoring in subprocess (blocking, runs in thread)."""
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
+                f.write(script)
+                script_path = f.name
 
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout
+                result = subprocess.run(
+                    [sys.executable, script_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
                 )
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-                return {
-                    "compiled": 0.0,
-                    "correct": 0.0,
-                    "speedup": 0.0,
-                    "reward": 0.0,
-                    "pass_rate": 0.0,
-                    "error": "Scoring timeout",
-                }
+                return result.stdout, result.stderr, result.returncode
+            except subprocess.TimeoutExpired:
+                return "", "", -1  # Timeout sentinel
+            finally:
+                Path(script_path).unlink(missing_ok=True)
 
-            # Parse output
-            return _parse_scoring_output(
-                stdout.decode(), stderr.decode(), proc.returncode
-            )
+        # Run blocking subprocess in thread
+        stdout, stderr, returncode = await trio.to_thread.run_sync(_run_subprocess)
 
-        finally:
-            Path(script_path).unlink(missing_ok=True)
+        if returncode == -1:
+            return {
+                "compiled": 0.0,
+                "correct": 0.0,
+                "speedup": 0.0,
+                "reward": 0.0,
+                "pass_rate": 0.0,
+                "error": "Scoring timeout",
+            }
+
+        return _parse_scoring_output(stdout, stderr, returncode)
 
     async def close(self) -> None:
         """No cleanup needed for local worker."""
@@ -160,9 +158,7 @@ SCORING_SCRIPT_EOF
                 timeout=int(timeout),
             )
 
-            return _parse_scoring_output(
-                result.stdout, result.stderr, 0 if result.success else 1
-            )
+            return _parse_scoring_output(result.stdout, result.stderr, 0 if result.success else 1)
 
         except Exception as e:
             return {
@@ -335,9 +331,7 @@ def _indent(code: str, prefix: str) -> str:
     return "\n".join(prefix + line if line.strip() else line for line in lines)
 
 
-def _parse_scoring_output(
-    stdout: str, stderr: str, returncode: int
-) -> dict[str, Any]:
+def _parse_scoring_output(stdout: str, stderr: str, returncode: int) -> dict[str, Any]:
     """Parse output from scoring script."""
     import re
 
