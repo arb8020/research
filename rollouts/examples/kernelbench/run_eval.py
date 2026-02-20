@@ -161,12 +161,21 @@ async def run_eval(config_path: str, cli_overrides: dict[str, Any]) -> None:
             logger.info("Using API key from ANTHROPIC_API_KEY environment variable")
 
     # Load dataset
+    skip = cli_overrides.get("skip", 0)
+    # Load extra samples to account for skip
+    load_samples = (config["max_samples"] or 100) + skip
     prompts = load_kernelbench_prompts(
         levels=config["levels"],
-        max_samples=config["max_samples"],
+        max_samples=load_samples,
         backend=config["backend"],
     )
-    logger.info(f"Loaded {len(prompts)} problems from levels {config['levels']}")
+    # Apply skip
+    if skip > 0:
+        prompts = prompts[skip:]
+    # Apply limit
+    if config["max_samples"]:
+        prompts = prompts[: config["max_samples"]]
+    logger.info(f"Loaded {len(prompts)} problems from levels {config['levels']} (skip={skip})")
 
     # Configure sandbox pool for kernel evaluation
     pool = SandboxPool(config["sandbox_configs"])
@@ -299,6 +308,7 @@ Examples:
     parser.add_argument("--modal", action="store_true", help="Run on Modal (has GPU)")
     parser.add_argument("--gpu-type", default="A10G", help="GPU type for Modal (default: A10G)")
     parser.add_argument("--limit", type=int, help="Override max_samples")
+    parser.add_argument("--skip", type=int, default=0, help="Skip first N problems")
     parser.add_argument("--max-concurrent", type=int, help="Override max_concurrent")
     parser.add_argument("--max-turns", type=int, help="Override max_turns")
     parser.add_argument("--model", help="Override model (format: provider/model)")
@@ -326,6 +336,8 @@ Examples:
     overrides = {}
     if args.limit:
         overrides["limit"] = args.limit
+    if args.skip:
+        overrides["skip"] = args.skip
     if args.max_concurrent:
         overrides["max_concurrent"] = args.max_concurrent
     if args.max_turns:
