@@ -48,9 +48,14 @@ class ModalEvalConfig:
 
 
 def _build_image(modal_module: Any) -> Any:
-    """Build Modal image with dependencies."""
+    """Build Modal image with CUDA toolkit for kernel compilation."""
+    # Use nvidia/cuda devel image - includes nvcc, headers, libraries
+    # Required for torch.utils.cpp_extension.load_inline()
     image = (
-        modal_module.Image.debian_slim(python_version="3.12")
+        modal_module.Image.from_registry(
+            "nvidia/cuda:12.4.0-devel-ubuntu22.04",
+            add_python="3.12",
+        )
         .apt_install("git", "build-essential", "curl", "ninja-build")
         .pip_install(
             "torch>=2.4",
@@ -70,6 +75,7 @@ def _build_image(modal_module: Any) -> Any:
         )
         .env({
             "HF_HOME": "/root/.cache/huggingface",
+            "CUDA_HOME": "/usr/local/cuda",
         })
     )
     return image
@@ -169,9 +175,7 @@ async def run_modal_eval(config: ModalEvalConfig) -> dict:
     # Reuse existing sandbox or create new one
     if config.sandbox_id:
         print(f"Reusing sandbox: {config.sandbox_id}")
-        sandbox = await trio.to_thread.run_sync(
-            lambda: modal.Sandbox.from_id(config.sandbox_id)
-        )
+        sandbox = await trio.to_thread.run_sync(lambda: modal.Sandbox.from_id(config.sandbox_id))
     else:
         print(f"Creating Modal sandbox with {config.gpu_type} GPU...")
         image = _build_image(modal)

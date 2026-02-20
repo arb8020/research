@@ -867,13 +867,19 @@ async def evaluate_sample(
             logger.warning(f"Failed to serialize environment state: {e}")
 
     # Build Sample with trajectory for score function
+    # Merge trajectory metadata (from environment) with sample_data metadata
+    # Trajectory metadata takes precedence (contains results from environment)
+    combined_metadata = {
+        **sample_data.get("metadata", {}),
+        **final_trajectory.metadata,
+    }
     sample = Sample(
         id=sample_id,
         input=sample_data,
         ground_truth=sample_data.get("ground_truth") or sample_data.get("answer"),
         trajectory=final_trajectory,
         environment_state=env_state,
-        metadata=sample_data.get("metadata", {}),
+        metadata=combined_metadata,
     )
 
     # Compute score
