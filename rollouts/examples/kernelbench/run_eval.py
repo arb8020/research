@@ -36,6 +36,8 @@ repo_root = Path(__file__).parent.parent.parent
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
+from examples.kernelbench.dataset import load_kernelbench_prompts
+from examples.kernelbench.scoring import kernelbench_score_fn
 from rollouts.dtypes import Endpoint, EvalConfig, Message
 from rollouts.environments.kernelbench_multi import (
     KernelBenchMultiTurnEnvironment,
@@ -43,9 +45,6 @@ from rollouts.environments.kernelbench_multi import (
 )
 from rollouts.evaluation import evaluate
 from rollouts.gpu_sandbox import SandboxPool
-
-from examples.kernelbench.dataset import load_kernelbench_prompts
-from examples.kernelbench.scoring import kernelbench_score_fn
 
 logger = logging.getLogger(__name__)
 
@@ -107,16 +106,7 @@ async def run_eval(config_path: str, cli_overrides: dict[str, Any]) -> None:
     # Load config
     config = load_config(config_path)
 
-    # Resolve API key from environment if not set in endpoint
-    endpoint = config["endpoint"]
-    if not endpoint.api_key:
-        # Try to get from env (set by modal_eval.py or local env)
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if api_key:
-            config["endpoint"] = dataclass_replace(endpoint, api_key=api_key)
-            logger.info("Using API key from ANTHROPIC_API_KEY environment variable")
-
-    # Apply CLI overrides
+    # Apply CLI overrides first
     if cli_overrides.get("limit"):
         config["max_samples"] = cli_overrides["limit"]
     if cli_overrides.get("max_concurrent"):
@@ -146,6 +136,15 @@ async def run_eval(config_path: str, cli_overrides: dict[str, Any]) -> None:
         config["backend"] = cli_overrides["backend"]
     if cli_overrides.get("output_dir"):
         config["output_dir"] = Path(cli_overrides["output_dir"])
+
+    # Resolve API key from environment AFTER all overrides
+    endpoint = config["endpoint"]
+    if not endpoint.api_key:
+        # Try to get from env (set by modal_eval.py or local env)
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if api_key:
+            config["endpoint"] = dataclass_replace(endpoint, api_key=api_key)
+            logger.info("Using API key from ANTHROPIC_API_KEY environment variable")
 
     # Load dataset
     prompts = load_kernelbench_prompts(
