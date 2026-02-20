@@ -24,7 +24,7 @@ MODEL_ID = "Qwen/Qwen2.5-Coder-7B-Instruct"
 endpoint = Endpoint(
     model=MODEL_ID,
     base_url=f"https://{MODAL_WORKSPACE}--sglang-serve-serve.modal.run/v1",
-    api_format="openai-chat",
+    api_format="openai-completions",  # SGLang uses OpenAI chat completions
 )
 
 # Dataset configuration
