@@ -86,6 +86,7 @@ async def _deploy_and_submit(
     gpu_count: int,
     gpu_type: str,
     provider: str | None = None,
+    allow_dirty: bool = False,
 ) -> tuple:
     """Provision node, deploy code, submit training job.
 
@@ -111,22 +112,23 @@ async def _deploy_and_submit(
 
     # Fail-fast: check for uncommitted changes BEFORE provisioning
     # This prevents wasting time/money on a pod we can't deploy to
-    from bifrost.git_sync import _check_uncommitted_changes, _check_untracked_files
+    if not allow_dirty:
+        from bifrost.git_sync import _check_uncommitted_changes, _check_untracked_files
 
-    uncommitted = _check_uncommitted_changes()
-    untracked = _check_untracked_files()
-    if uncommitted or untracked:
-        dirty_files = (uncommitted or []) + (untracked or [])
-        print(
-            f"\n❌ Cannot deploy: {len(dirty_files)} uncommitted/untracked file(s):",
-            file=sys.stderr,
-        )
-        for f in dirty_files[:10]:
-            print(f"   - {f}", file=sys.stderr)
-        if len(dirty_files) > 10:
-            print(f"   ... and {len(dirty_files) - 10} more", file=sys.stderr)
-        print("\nCommit your changes or use --allow-dirty to proceed anyway.", file=sys.stderr)
-        sys.exit(1)
+        uncommitted = _check_uncommitted_changes()
+        untracked = _check_untracked_files()
+        if uncommitted or untracked:
+            dirty_files = (uncommitted or []) + (untracked or [])
+            print(
+                f"\n❌ Cannot deploy: {len(dirty_files)} uncommitted/untracked file(s):",
+                file=sys.stderr,
+            )
+            for f in dirty_files[:10]:
+                print(f"   - {f}", file=sys.stderr)
+            if len(dirty_files) > 10:
+                print(f"   ... and {len(dirty_files) - 10} more", file=sys.stderr)
+            print("\nCommit your changes or use --allow-dirty to proceed anyway.", file=sys.stderr)
+            sys.exit(1)
 
     # Acquire node - show which credentials profile is being used
     from broker.credentials import get_active_profile
@@ -196,7 +198,7 @@ async def _deploy_and_submit(
 
     log("deploy_start")
     with console.spinner("Deploying code..."):
-        workspace = bifrost.push("~/.bifrost/workspaces/rollouts-rl", allow_dirty=False)
+        workspace = bifrost.push("~/.bifrost/workspaces/rollouts-rl", allow_dirty=allow_dirty)
     log("deploy_done", workspace=workspace)
 
     # Bootstrap steps — each gets its own spinner with ✓ on completion
@@ -317,6 +319,7 @@ async def run_remote(
     gpu_type: str = "A100",
     tail: bool = False,
     provider: str | None = None,
+    allow_dirty: bool = False,
 ) -> None:
     """Run training script on remote GPU via bifrost."""
     (
@@ -334,6 +337,7 @@ async def run_remote(
         gpu_count=gpu_count,
         gpu_type=gpu_type,
         provider=provider,
+        allow_dirty=allow_dirty,
     )
 
     assert instance is not None, "run_remote requires a provisioned instance"
@@ -429,6 +433,11 @@ Examples:
     parser.add_argument("--gpu-count", type=int, default=1, help="Number of GPUs (default: 1)")
     parser.add_argument("--gpu-type", type=str, default="A100", help="GPU type (default: A100)")
     parser.add_argument("--provider", type=str, help="Force specific provider (e.g., runpod, vast)")
+    parser.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="Allow deploying with uncommitted changes (not recommended)",
+    )
 
     # Local execution
     parser.add_argument("--max-samples", type=int, help="Limit dataset size (local only)")
@@ -473,6 +482,7 @@ Examples:
             args.gpu_type,
             args.tail,
             args.provider,
+            args.allow_dirty,
         )
     else:
         # Local execution
