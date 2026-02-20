@@ -538,10 +538,12 @@ def _extract_tokens_from_trajectory(
     """
     if not trajectory.completions:
         # No completions - just tokenize messages
+        # NOTE: return_dict=False required for transformers 5.x compatibility
         return list(
             tokenizer.apply_chat_template(
                 [_msg_to_dict(m) for m in trajectory.messages],
                 tokenize=True,
+                return_dict=False,
                 add_generation_prompt=False,
             )
         )
@@ -573,10 +575,12 @@ def _extract_tokens_from_trajectory(
 
     # Fallback: retokenize entire conversation
     # Used for text-based providers (OpenAI, Anthropic, etc.)
+    # NOTE: return_dict=False required for transformers 5.x compatibility
     return list(
         tokenizer.apply_chat_template(
             [_msg_to_dict(m) for m in trajectory.messages],
             tokenize=True,
+            return_dict=False,
             add_generation_prompt=False,
         )
     )

@@ -102,10 +102,13 @@ def tokenize_message_with_delimiter(
     """
     # Dummy prefix message for the trick
     prefix_msg = {"role": "user", "content": "PREFIX_DUMMY_CONTENT"}
-    prefix_ids = tokenizer.apply_chat_template([prefix_msg], tokenize=True)
+    # NOTE: return_dict=False required for transformers 5.x compatibility
+    prefix_ids = tokenizer.apply_chat_template([prefix_msg], tokenize=True, return_dict=False)
 
     # Tokenize prefix + actual message together
-    combined_ids = tokenizer.apply_chat_template([prefix_msg, message], tokenize=True)
+    combined_ids = tokenizer.apply_chat_template(
+        [prefix_msg, message], tokenize=True, return_dict=False
+    )
 
     # Strip prefix to get message with delimiter
     return combined_ids[len(prefix_ids) :]
@@ -136,7 +139,8 @@ def build_loss_mask(
     for i, message in enumerate(messages):
         if i == 0:
             # First message - tokenize directly
-            msg_ids = tokenizer.apply_chat_template([message], tokenize=True)
+            # NOTE: return_dict=False required for transformers 5.x compatibility
+            msg_ids = tokenizer.apply_chat_template([message], tokenize=True, return_dict=False)
         else:
             # Subsequent messages - use prefix trick for correct delimiter
             msg_ids = tokenize_message_with_delimiter(tokenizer, message)
