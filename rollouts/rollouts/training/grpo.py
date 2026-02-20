@@ -569,11 +569,11 @@ def _prepare_training_batch(
     has_rollout_logprobs = batch.rollout_log_probs is not None
 
     for i, (toks, mask) in enumerate(zip(batch.tokens, batch.loss_masks, strict=True)):
-        # Defensive: ensure toks is a list of ints (handles Encoding objects)
-        if hasattr(toks, "ids"):
-            toks = toks.ids  # tokenizers.Encoding
-        toks_truncated = [int(t) for t in list(toks)[:max_len]]
-        mask_truncated = list(mask[:max_len])
+        assert isinstance(toks, list) and (not toks or isinstance(toks[0], int)), (
+            f"batch.tokens[{i}] must be list[int], got list with first element type {type(toks[0]) if toks else 'empty'}: {toks[:3] if toks else []}"
+        )
+        toks_truncated = toks[:max_len]
+        mask_truncated = mask[:max_len]
         pad_len = max_len - len(toks_truncated)
         toks_padded = toks_truncated + [tokenizer.pad_token_id or 0] * pad_len
         mask_padded = mask_truncated + [0.0] * pad_len

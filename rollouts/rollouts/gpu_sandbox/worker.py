@@ -221,6 +221,13 @@ import base64
 import tempfile
 import os
 
+# Set CUDA_HOME if not set (common Modal/container issue)
+if "CUDA_HOME" not in os.environ:
+    for cuda_path in ["/usr/local/cuda", "/usr/cuda", "/opt/cuda"]:
+        if os.path.exists(cuda_path):
+            os.environ["CUDA_HOME"] = cuda_path
+            break
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Reference code (defines Model, get_inputs, get_init_inputs)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -353,6 +360,14 @@ def _build_scoring_script(kernel_code: str, ref_code: str, kernel_file_path: str
     return f'''
 import sys
 import time
+import os
+
+# Set CUDA_HOME if not set (common Modal/container issue)
+if "CUDA_HOME" not in os.environ:
+    for cuda_path in ["/usr/local/cuda", "/usr/cuda", "/opt/cuda"]:
+        if os.path.exists(cuda_path):
+            os.environ["CUDA_HOME"] = cuda_path
+            break
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Reference code (defines Model, get_inputs, get_init_inputs)
