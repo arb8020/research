@@ -63,6 +63,7 @@ class GPUQuery:
     enable_http_proxy: bool = True  # False for raw TCP ports (e.g. LogsServer)
     name: str | None = None  # Instance name (e.g. "rollouts/run_20250127-143052")
     provider: str | None = None  # Filter to specific provider (e.g., "runpod", "vast")
+    image: str = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"  # Docker image
 
     # Provider credentials (optional - falls back to env vars)
     credentials: dict[str, str] = field(default_factory=dict)
@@ -188,6 +189,7 @@ async def acquire_node(
         logger.info("  Provider filter: %s", provision.provider)
     instance = await broker.create(
         query,
+        image=provision.image,
         name=provision.name,
         gpu_count=provision.count,
         cloud_type=provision.cloud_type,

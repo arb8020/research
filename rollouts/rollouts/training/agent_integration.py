@@ -453,10 +453,12 @@ def _branching_trajectory_to_samples(
             input_ids = []
         else:
             # Fallback: local tokenization (should rarely happen with modern SGLang)
-            input_ids = tokenizer.apply_chat_template(
-                [_msg_to_dict(m) for m in input_messages],
-                tokenize=True,
-                add_generation_prompt=True,
+            input_ids = list(
+                tokenizer.apply_chat_template(
+                    [_msg_to_dict(m) for m in input_messages],
+                    tokenize=True,
+                    add_generation_prompt=True,
+                )
             )
 
         # Output tokens - prefer stored token_ids (TI/TO), fallback to retokenize
