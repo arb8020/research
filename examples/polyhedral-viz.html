@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Polyhedral Compilation Visualizer</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        h1 {
+            color: #00d4aa;
+            margin-bottom: 10px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        .panel {
+            background: #16213e;
+            border-radius: 8px;
+            padding: 20px;
+        }
+        .full-width {
+            grid-column: 1 / -1;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            color: #a0a0a0;
+            font-size: 14px;
+        }
+        textarea {
+            width: 100%;
+            height: 120px;
+            background: #0f0f23;
+            border: 1px solid #333;
+            border-radius: 4px;
+            padding: 12px;
+            color: #00d4aa;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 14px;
+            resize: vertical;
+        }
+        textarea:focus {
+            outline: none;
+            border-color: #00d4aa;
+        }
+        .error {
+            color: #ff6b6b;
+            margin-top: 8px;
+            font-size: 13px;
+        }
+        .examples {
+            margin-top: 10px;
+        }
+        .examples button {
+            background: #0f3460;
+            border: none;
+            color: #eee;
+            padding: 6px 12px;
+            margin-right: 8px;
+            margin-bottom: 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .examples button:hover {
+            background: #1a4a7a;
+        }
+        #canvas {
+            background: #0f0f23;
+            border-radius: 4px;
+            display: block;
+            margin: 0 auto;
+        }
+        .controls {
+            margin-top: 15px;
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .slider-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .slider-group label {
+            margin: 0;
+            min-width: 60px;
+        }
+        input[type="range"] {
+            width: 120px;
+        }
+        .slider-value {
+            min-width: 30px;
+            text-align: center;
+            font-family: monospace;
+            color: #00d4aa;
+        }
+        button.action {
+            background: #00d4aa;
+            border: none;
+            color: #1a1a2e;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 14px;
+        }
+        button.action:hover {
+            background: #00b894;
+        }
+        button.action:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+        .status {
+            margin-top: 15px;
+            padding: 12px;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        .status.legal {
+            background: #1a4a3a;
+            color: #4ade80;
+        }
+        .status.illegal {
+            background: #4a1a1a;
+            color: #ff6b6b;
+        }
+        .status.pending {
+            background: #3a3a1a;
+            color: #fbbf24;
+        }
+        .legend {
+            margin-top: 15px;
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+            font-size: 13px;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .legend-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+        .legend-dot.ready { background: #4ade80; }
+        .legend-dot.waiting { background: #ff6b6b; }
+        .legend-dot.executed { background: #3b82f6; }
+        .legend-dot.pending { background: #6b7280; }
+        .info-section {
+            margin-top: 15px;
+        }
+        .info-section h3 {
+            color: #00d4aa;
+            font-size: 14px;
+            margin-bottom: 8px;
+        }
+        .dep-list {
+            font-family: monospace;
+            font-size: 12px;
+            color: #a0a0a0;
+        }
+        .dep-item {
+            margin-bottom: 4px;
+        }
+        .syntax-help {
+            font-size: 12px;
+            color: #666;
+            margin-top: 8px;
+        }
+        .syntax-help code {
+            background: #0f0f23;
+            padding: 2px 6px;
+            border-radius: 3px;
+            color: #00d4aa;
+        }
+    </style>
+</head>
+<body>
+    <h1>Polyhedral Compilation Visualizer</h1>
+    <div class="container">
+        <div class="panel">
+            <label for="code-input">Loop Nest (2D only)</label>
+            <textarea id="code-input" placeholder="for i in [0, 6):\n    for j in [0, 6):\n        A[i][j] = A[i-1][j] + A[i][j-1]"></textarea>
+            <div class="syntax-help">
+                Syntax: <code>for i in [0, 6):</code> for loops, 
+                <code>A[i][j]</code> or <code>A[i-1][j+1]</code> array accesses
+            </div>
+            <div id="parse-error" class="error"></div>
+            <div class="examples">
+                <button onclick="loadExample('wavefront')">Matrix Fill (Wavefront)</button>
+                <button onclick="loadExample('scan')">1D Array Scan</button>
+                <button onclick="loadExample('transpose')">Matrix Transpose</button>
+            </div>
+        </div>
+
+        <div class="panel">
+            <div class="info-section">
+                <h3>Dependence Vectors</h3>
+                <div id="dep-list" class="dep-list">Parse code to see dependences</div>
+            </div>
+            <div class="legend">
+                <div class="legend-item">
+                    <div class="legend-dot ready"></div>
+                    <span>Ready (deps satisfied)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-dot waiting"></div>
+                    <span>Waiting (deps pending)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-dot executed"></div>
+                    <span>Executed</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-dot pending"></div>
+                    <span>Not yet reached</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="panel full-width">
+            <canvas id="canvas" width="800" height="500"></canvas>
+            <div class="controls">
+                <div class="slider-group">
+                    <label>πᵢ (i coeff):</label>
+                    <input type="range" id="pi-slider" min="-3" max="3" value="1" step="1">
+                    <span class="slider-value" id="pi-value">1</span>
+                </div>
+                <div class="slider-group">
+                    <label>πⱼ (j coeff):</label>
+                    <input type="range" id="pj-slider" min="-3" max="3" value="0" step="1">
+                    <span class="slider-value" id="pj-value">0</span>
+                </div>
+                <button class="action" id="animate-btn" onclick="toggleAnimation()">▶ Animate</button>
+                <button class="action" onclick="resetAnimation()">Reset</button>
+            </div>
+            <div id="status" class="status pending">
+                Schedule: t = 1·i + 0·j — click Animate to check legality
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Canvas setup
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const GRID_SIZE = 6;
+        const CELL_SIZE = 50;
+        const OFFSET_X = 80;
+        const OFFSET_Y = 80;
+
+        // State
+        let parsedProgram = null;
+        let dependenceVectors = [];
+        let animationRunning = false;
+        let animationFrame = null;
+        let currentStep = 0;
+        let executionOrder = [];
+        let executedPoints = new Set();
+        let pointStatus = {}; // 'pending', 'ready', 'waiting', 'executed'
+
+        // Examples
+        const EXAMPLES = {
+            wavefront: `for i in [0, 6):
+    for j in [0, 6):
+        A[i][j] = A[i-1][j] + A[i][j-1]`,
+            scan: `for i in [0, 6):
+    for j in [0, 6):
+        A[i][j] = A[i][j-1] + B[i][j]`,
+            transpose: `for i in [0, 6):
+    for j in [0, 6):
+        B[j][i] = A[i][j]`
+        };
+
+        function loadExample(name) {
+            document.getElementById('code-input').value = EXAMPLES[name];
+            parseAndAnalyze();
+        }
+
+        // Parser
+        function parseProgram(text) {
+            const lines = text.trim().split('\n').map(l => l.trim()).filter(l => l);
+            if (lines.length < 3) throw new Error('Need at least 2 loops and 1 statement');
+
+            // Parse loops
+            const loopRegex = /for\s+(\w+)\s+in\s*\[\s*(\d+)\s*,\s*(\d+)\s*\):/;
+            const loops = [];
+            let stmtLine = -1;
+
+            for (let i = 0; i < lines.length; i++) {
+                const match = lines[i].match(loopRegex);
+                if (match) {
+                    loops.push({
+                        var: match[1],
+                        lower: parseInt(match[2]),
+                        upper: parseInt(match[3])
+                    });
+                } else {
+                    stmtLine = i;
+                    break;
+                }
+            }
+
+            if (loops.length !== 2) throw new Error('Exactly 2 nested loops required');
+            if (stmtLine === -1) throw new Error('No statement found');
+
+            // Parse statement: LHS = RHS
+            const stmt = lines.slice(stmtLine).join(' ');
+            const eqMatch = stmt.match(/(.+?)\s*=\s*(.+)/);
+            if (!eqMatch) throw new Error('Statement must have form: LHS = RHS');
+
+            const lhs = parseAccess(eqMatch[1].trim());
+            const rhsText = eqMatch[2].trim();
+
+            // Parse RHS accesses
+            const accesses = [];
+            const accessRegex = /(\w+)\[([^\]]+)\]\[(([^\]]+))\]/g;
+            let m;
+            while ((m = accessRegex.exec(rhsText)) !== null) {
+                accesses.push(parseAccess(m[0]));
+            }
+
+            return { loops, lhs, rhs: accesses };
+        }
+
+        function parseAccess(text) {
+            const match = text.match(/(\w+)\[([^\]]+)\]\[([^\]]+)\]/);
+            if (!match) throw new Error(`Invalid array access: ${text}`);
+
+            return {
+                array: match[1],
+                i: parseAffine(match[2]),
+                j: parseAffine(match[3])
+            };
+        }
+
+        function parseAffine(expr) {
+            // Parse expressions like: i, i-1, 2*i+3*j-5, j+1, etc.
+            expr = expr.replace(/\s/g, '');
+            const result = { i: 0, j: 0, const: 0 };
+
+            // Handle single variable or number
+            if (expr === 'i') return { i: 1, j: 0, const: 0 };
+            if (expr === 'j') return { i: 0, j: 1, const: 0 };
+            if (/^-?\d+$/.test(expr)) return { i: 0, j: 0, const: parseInt(expr) };
+
+            // Parse terms like +2i, -3j, +5, -i, etc.
+            const terms = expr.match(/[+-]?[^+-]+/g) || [];
+            for (const term of terms) {
+                if (term.includes('i') && !term.includes('j')) {
+                    const coef = term.replace('i', '');
+                    result.i = coef === '' || coef === '+' ? 1 : coef === '-' ? -1 : parseInt(coef);
+                } else if (term.includes('j') && !term.includes('i')) {
+                    const coef = term.replace('j', '');
+                    result.j = coef === '' || coef === '+' ? 1 : coef === '-' ? -1 : parseInt(coef);
+                } else if (/^-?\d+$/.test(term)) {
+                    result.const += parseInt(term);
+                } else if (term.includes('*')) {
+                    // Handle 2*i, 3*j, etc.
+                    const parts = term.split('*');
+                    const coef = parseInt(parts[0]);
+                    if (parts[1] === 'i') result.i = coef;
+                    else if (parts[1] === 'j') result.j = coef;
+                }
+            }
+
+            return result;
+        }
+
+        // Dependence analysis
+        function computeDependences(program) {
+            const vectors = [];
+            const { lhs, rhs } = program;
+
+            // For each read access in RHS
+            for (const read of rhs) {
+                if (read.array !== lhs.array) continue;
+
+                // Find all dependence vectors (src -> dst) where dst is the write
+                // read at (i_r, j_r), write at (i_w, j_w)
+                // dependence exists if same memory location
+                // a1*i_r + b1*j_r + c1 = a2*i_w + b2*j_w + c2 for both dimensions
+
+                for (let iw = 0; iw < GRID_SIZE; iw++) {
+                    for (let jw = 0; jw < GRID_SIZE; jw++) {
+                        for (let ir = 0; ir < GRID_SIZE; ir++) {
+                            for (let jr = 0; jr < GRID_SIZE; jr++) {
+                                // Check if same memory location
+                                const writeI = lhs.i.i * iw + lhs.i.j * jw + lhs.i.const;
+                                const writeJ = lhs.j.i * iw + lhs.j.j * jw + lhs.j.const;
+                                const readI = read.i.i * ir + read.i.j * jr + read.i.const;
+                                const readJ = read.j.i * ir + read.j.j * jr + read.j.const;
+
+                                if (writeI === readI && writeJ === readJ) {
+                                    const di = ir - iw;
+                                    const dj = jr - jw;
+                                    // True dependence: read before write (flow)
+                                    // Anti dependence: write before read
+                                    // Output dependence: write before write
+                                    
+                                    // Skip if same iteration (independent)
+                                    if (di === 0 && dj === 0) continue;
+
+                                    // Check if this vector already exists
+                                    const exists = vectors.some(v => v.di === di && v.dj === dj);
+                                    if (!exists) {
+                                        vectors.push({ di, dj, read, write: lhs });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            return vectors;
+        }
+
+        function parseAndAnalyze() {
+            const text = document.getElementById('code-input').value;
+            const errorEl = document.getElementById('parse-error');
+
+            try {
+                parsedProgram = parseProgram(text);
+                dependenceVectors = computeDependences(parsedProgram);
+                errorEl.textContent = '';
+
+                // Update dependence display
+                const depList = document.getElementById('dep-list');
+                if (dependenceVectors.length === 0) {
+                    depList.textContent = 'No dependences found — any schedule is legal';
+                } else {
+                    depList.innerHTML = dependenceVectors.map(v => 
+                        `<div class="dep-item">(${v.di}, ${v.dj}): ${v.read.array}[${formatAffine(v.read.i)}][${formatAffine(v.read.j)}] → ${v.write.array}[${formatAffine(v.write.i)}][${formatAffine(v.write.j)}]</div>`
+                    ).join('');
+                }
+
+                resetAnimation();
+                draw();
+            } catch (e) {
+                errorEl.textContent = 'Error: ' + e.message;
+                parsedProgram = null;
+                dependenceVectors = [];
+            }
+        }
+
+        function formatAffine(a) {
+            const terms = [];
+            if (a.i !== 0) terms.push(a.i === 1 ? 'i' : a.i === -1 ? '-i' : `${a.i}i`);
+            if (a.j !== 0) terms.push(a.j === 1 ? 'j' : a.j === -1 ? '-j' : `${a.j}j`);
+            if (a.const !== 0 || terms.length === 0) terms.push(String(a.const));
+            return terms.join('+').replace(/\+\-/g, '-');
+        }
+
+        // Drawing
+        function draw() {
+            ctx.fillStyle = '#0f0f23';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            if (!parsedProgram) {
+                ctx.fillStyle = '#666';
+                ctx.font = '16px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.fillText('Enter valid loop nest code', canvas.width/2, canvas.height/2);
+                return;
+            }
+
+            // Draw grid
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 1;
+
+            // Grid lines
+            for (let i = 0; i <= GRID_SIZE; i++) {
+                ctx.beginPath();
+                ctx.moveTo(OFFSET_X + i * CELL_SIZE, OFFSET_Y);
+                ctx.lineTo(OFFSET_X + i * CELL_SIZE, OFFSET_Y + GRID_SIZE * CELL_SIZE);
+                ctx.stroke();
+
+                ctx.beginPath();
+                ctx.moveTo(OFFSET_X, OFFSET_Y + i * CELL_SIZE);
+                ctx.lineTo(OFFSET_X + GRID_SIZE * CELL_SIZE, OFFSET_Y + i * CELL_SIZE);
+                ctx.stroke();
+            }
+
+            // Axis labels
+            ctx.fillStyle = '#888';
+            ctx.font = '12px sans-serif';
+            ctx.textAlign = 'center';
+            for (let i = 0; i < GRID_SIZE; i++) {
+                ctx.fillText(String(i), OFFSET_X + i * CELL_SIZE + CELL_SIZE/2, OFFSET_Y - 10);
+            }
+            ctx.textAlign = 'right';
+            for (let j = 0; j < GRID_SIZE; j++) {
+                ctx.fillText(String(j), OFFSET_X - 10, OFFSET_Y + j * CELL_SIZE + CELL_SIZE/2 + 4);
+            }
+
+            // Axis titles
+            ctx.fillStyle = '#00d4aa';
+            ctx.font = 'bold 14px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('i →', OFFSET_X + GRID_SIZE * CELL_SIZE / 2, 30);
+            ctx.save();
+            ctx.translate(30, OFFSET_Y + GRID_SIZE * CELL_SIZE / 2);
+            ctx.rotate(-Math.PI/2);
+            ctx.fillText('j →', 0, 0);
+            ctx.restore();
+
+            // Draw dependence arrows first (behind points)
+            ctx.strokeStyle = '#666';
+            ctx.fillStyle = '#666';
+            ctx.lineWidth = 1.5;
+            for (let i = 0; i < GRID_SIZE; i++) {
+                for (let j = 0; j < GRID_SIZE; j++) {
+                    for (const dep of dependenceVectors) {
+                        const srcI = i + dep.di;
+                        const srcJ = j + dep.dj;
+                        if (srcI >= 0 && srcI < GRID_SIZE && srcJ >= 0 && srcJ < GRID_SIZE) {
+                            drawArrow(srcI, srcJ, i, j);
+                        }
+                    }
+                }
+            }
+
+            // Draw points
+            for (let i = 0; i < GRID_SIZE; i++) {
+                for (let j = 0; j < GRID_SIZE; j++) {
+                    const key = `${i},${j}`;
+                    const status = pointStatus[key] || 'pending';
+                    const cx = OFFSET_X + i * CELL_SIZE + CELL_SIZE/2;
+                    const cy = OFFSET_Y + j * CELL_SIZE + CELL_SIZE/2;
+
+                    // Color based on status
+                    if (status === 'executed') {
+                        ctx.fillStyle = '#3b82f6';
+                    } else if (status === 'ready') {
+                        ctx.fillStyle = '#4ade80';
+                    } else if (status === 'waiting') {
+                        ctx.fillStyle = '#ff6b6b';
+                    } else {
+                        ctx.fillStyle = '#6b7280';
+                    }
+
+                    ctx.beginPath();
+                    ctx.arc(cx, cy, 8, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // Label with schedule time
+                    const pi = parseInt(document.getElementById('pi-slider').value);
+                    const pj = parseInt(document.getElementById('pj-slider').value);
+                    const t = pi * i + pj * j;
+                    ctx.fillStyle = '#fff';
+                    ctx.font = '10px sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(String(t), cx, cy - 12);
+                }
+            }
+        }
+
+        function drawArrow(fromI, fromJ, toI, toJ) {
+            const x1 = OFFSET_X + fromI * CELL_SIZE + CELL_SIZE/2;
+            const y1 = OFFSET_Y + fromJ * CELL_SIZE + CELL_SIZE/2;
+            const x2 = OFFSET_X + toI * CELL_SIZE + CELL_SIZE/2;
+            const y2 = OFFSET_Y + toJ * CELL_SIZE + CELL_SIZE/2;
+
+            const dx = x2 - x1;
+            const dy = y2 - y1;
+            const len = Math.sqrt(dx*dx + dy*dy);
+            if (len < 1) return;
+
+            // Shorten to not overlap points
+            const shorten = 12;
+            const ratio = (len - shorten) / len;
+            const sx = x1 + dx * (1 - ratio) / 2;
+            const sy = y1 + dy * (1 - ratio) / 2;
+            const ex = x2 - dx * (1 - ratio) / 2;
+            const ey = y2 - dy * (1 - ratio) / 2;
+
+            ctx.beginPath();
+            ctx.moveTo(sx, sy);
+            ctx.lineTo(ex, ey);
+            ctx.stroke();
+
+            // Arrowhead
+            const angle = Math.atan2(dy, dx);
+            const headLen = 8;
+            ctx.beginPath();
+            ctx.moveTo(ex, ey);
+            ctx.lineTo(ex - headLen * Math.cos(angle - Math.PI/6), ey - headLen * Math.sin(angle - Math.PI/6));
+            ctx.lineTo(ex - headLen * Math.cos(angle + Math.PI/6), ey - headLen * Math.sin(angle + Math.PI/6));
+            ctx.closePath();
+            ctx.fill();
+        }
+
+        // Animation
+        function computeExecutionOrder() {
+            const pi = parseInt(document.getElementById('pi-slider').value);
+            const pj = parseInt(document.getElementById('pj-slider').value);
+
+            const points = [];
+            for (let i = 0; i < GRID_SIZE; i++) {
+                for (let j = 0; j < GRID_SIZE; j++) {
+                    points.push({ i, j, t: pi * i + pj * j });
+                }
+            }
+
+            // Sort by schedule time, break ties consistently
+            points.sort((a, b) => {
+                if (a.t !== b.t) return a.t - b.t;
+                if (a.i !== b.i) return a.i - b.i;
+                return a.j - b.j;
+            });
+
+            return points;
+        }
+
+        function resetAnimation() {
+            animationRunning = false;
+            currentStep = 0;
+            executedPoints.clear();
+            pointStatus = {};
+            document.getElementById('animate-btn').textContent = '▶ Animate';
+            document.getElementById('animate-btn').disabled = false;
+            updateStatus('pending');
+            draw();
+        }
+
+        function toggleAnimation() {
+            if (animationRunning) {
+                animationRunning = false;
+                cancelAnimationFrame(animationFrame);
+                document.getElementById('animate-btn').textContent = '▶ Resume';
+            } else {
+                if (currentStep === 0) {
+                    executionOrder = computeExecutionOrder();
+                }
+                animationRunning = true;
+                document.getElementById('animate-btn').textContent = '⏸ Pause';
+                animate();
+            }
+        }
+
+        function animate() {
+            if (!animationRunning) return;
+
+            if (currentStep >= executionOrder.length) {
+                animationRunning = false;
+                document.getElementById('animate-btn').textContent = '✓ Done';
+                document.getElementById('animate-btn').disabled = true;
+                return;
+            }
+
+            const batch = [];
+            const currentT = executionOrder[currentStep].t;
+
+            // Process all points with same schedule time
+            while (currentStep < executionOrder.length && executionOrder[currentStep].t === currentT) {
+                const p = executionOrder[currentStep];
+                batch.push(p);
+
+                // Check if all dependences are satisfied
+                let allDepsSatisfied = true;
+                for (const dep of dependenceVectors) {
+                    const srcI = p.i + dep.di;
+                    const srcJ = p.j + dep.dj;
+                    if (srcI >= 0 && srcI < GRID_SIZE && srcJ >= 0 && srcJ < GRID_SIZE) {
+                        const srcKey = `${srcI},${srcJ}`;
+                        if (!executedPoints.has(srcKey)) {
+                            allDepsSatisfied = false;
+                            break;
+                        }
+                    }
+                }
+
+                const key = `${p.i},${p.j}`;
+                if (allDepsSatisfied) {
+                    pointStatus[key] = 'ready';
+                    executedPoints.add(key);
+                    pointStatus[key] = 'executed';
+                } else {
+                    pointStatus[key] = 'waiting';
+                }
+
+                currentStep++;
+            }
+
+            // Update status for remaining points
+            for (let i = 0; i < GRID_SIZE; i++) {
+                for (let j = 0; j < GRID_SIZE; j++) {
+                    const key = `${i},${j}`;
+                    if (!pointStatus[key]) {
+                        pointStatus[key] = 'pending';
+                    }
+                }
+            }
+
+            // Check legality
+            const hasViolation = Object.values(pointStatus).includes('waiting');
+            updateStatus(hasViolation ? 'illegal' : currentStep >= executionOrder.length ? 'legal' : 'pending');
+
+            draw();
+
+            if (animationRunning) {
+                animationFrame = setTimeout(() => requestAnimationFrame(animate), 300);
+            }
+        }
+
+        function updateStatus(state) {
+            const statusEl = document.getElementById('status');
+            const pi = document.getElementById('pi-slider').value;
+            const pj = document.getElementById('pj-slider').value;
+            const schedule = `t = ${pi}·i + ${pj}·j`;
+
+            statusEl.className = 'status ' + state;
+            if (state === 'legal') {
+                statusEl.textContent = `Schedule: ${schedule} — ✓ LEGAL: All dependences respected`;
+            } else if (state === 'illegal') {
+                statusEl.textContent = `Schedule: ${schedule} — ✗ ILLEGAL: Some points executed before their dependences`;
+            } else {
+                statusEl.textContent = `Schedule: ${schedule} — Click Animate to check legality`;
+            }
+        }
+
+        // Event listeners
+        document.getElementById('code-input').addEventListener('input', parseAndAnalyze);
+
+        document.getElementById('pi-slider').addEventListener('input', function() {
+            document.getElementById('pi-value').textContent = this.value;
+            resetAnimation();
+            draw();
+        });
+
+        document.getElementById('pj-slider').addEventListener('input', function() {
+            document.getElementById('pj-value').textContent = this.value;
+            resetAnimation();
+            draw();
+        });
+
+        // Initialize
+        loadExample('wavefront');
+    </script>
+</body>
+</html>

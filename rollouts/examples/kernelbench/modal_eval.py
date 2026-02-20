@@ -38,6 +38,7 @@ class ModalEvalConfig:
     config_path: str
     gpu_type: str = "A10G"
     limit: int | None = None
+    skip: int | None = None
     max_turns: int | None = None
     model: str | None = None
     levels: list[int] | None = None
@@ -199,6 +200,8 @@ async def run_modal_eval(config: ModalEvalConfig) -> dict:
 
         if config.limit:
             cmd_parts.extend(["--limit", str(config.limit)])
+        if config.skip:
+            cmd_parts.extend(["--skip", str(config.skip)])
         if config.max_turns:
             cmd_parts.extend(["--max-turns", str(config.max_turns)])
         if config.model:
@@ -232,6 +235,7 @@ def main() -> None:
     parser.add_argument("--config", required=True, help="Config file path")
     parser.add_argument("--gpu-type", default="A10G", help="GPU type")
     parser.add_argument("--limit", type=int, help="Max samples")
+    parser.add_argument("--skip", type=int, help="Skip first N problems")
     parser.add_argument("--max-turns", type=int, help="Max turns")
     parser.add_argument("--model", help="Model override")
     parser.add_argument("--levels", type=int, nargs="+", help="Levels")
@@ -245,6 +249,7 @@ def main() -> None:
         config_path=args.config,
         gpu_type=args.gpu_type,
         limit=args.limit,
+        skip=args.skip,
         max_turns=args.max_turns,
         model=args.model,
         levels=args.levels,

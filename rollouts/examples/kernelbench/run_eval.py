@@ -275,6 +275,8 @@ def run_on_modal(config_path: str, overrides: dict[str, Any], gpu_type: str) -> 
 
     if overrides.get("limit"):
         cmd.extend(["--limit", str(overrides["limit"])])
+    if overrides.get("skip"):
+        cmd.extend(["--skip", str(overrides["skip"])])
     if overrides.get("max_turns"):
         cmd.extend(["--max-turns", str(overrides["max_turns"])])
     if overrides.get("model"):

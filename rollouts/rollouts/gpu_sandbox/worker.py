@@ -73,10 +73,17 @@ class LocalSandboxWorker(SandboxWorker):
         timeout: float = 120.0,
     ) -> dict[str, Any]:
         """Score kernel in subprocess using trio threading."""
-        script = _build_scoring_script(kernel_code, ref_code)
 
         def _run_subprocess() -> tuple[str, str, int]:
             """Run scoring in subprocess (blocking, runs in thread)."""
+            # Write kernel code to a separate file to avoid string escaping issues
+            # (kernel code often contains triple quotes for CUDA sources)
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as kf:
+                kf.write(kernel_code)
+                kernel_path = kf.name
+
+            script = _build_scoring_script(kernel_code, ref_code, kernel_path)
+
             with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
                 f.write(script)
                 script_path = f.name
@@ -93,6 +100,7 @@ class LocalSandboxWorker(SandboxWorker):
                 return "", "", -1  # Timeout sentinel
             finally:
                 Path(script_path).unlink(missing_ok=True)
+                Path(kernel_path).unlink(missing_ok=True)
 
         # Run blocking subprocess in thread
         stdout, stderr, returncode = await trio.to_thread.run_sync(_run_subprocess)
@@ -138,8 +146,13 @@ class BrokerSandboxWorker(SandboxWorker):
         timeout: float = 120.0,
     ) -> dict[str, Any]:
         """Score kernel on remote instance via SSH."""
-        # Build the scoring script
-        script = _build_scoring_script(kernel_code, ref_code)
+        import base64
+
+        # Encode kernel code as base64 to avoid escaping issues
+        kernel_b64 = base64.b64encode(kernel_code.encode()).decode()
+
+        # Build script that decodes kernel from base64 and writes to temp file
+        script = _build_scoring_script_for_remote(ref_code, kernel_b64)
 
         # Escape for bash heredoc
         escaped_script = script.replace("'", "'\"'\"'")
@@ -191,15 +204,147 @@ SCORING_SCRIPT_EOF
             return False
 
 
-def _build_scoring_script(kernel_code: str, ref_code: str) -> str:
+def _build_scoring_script_for_remote(ref_code: str, kernel_b64: str) -> str:
+    """Build scoring script for remote execution with base64-encoded kernel.
+
+    Uses base64 encoding to safely transmit kernel code through SSH heredoc
+    without escaping issues from triple quotes in CUDA source strings.
+    """
+    return f'''
+import sys
+import time
+import base64
+import tempfile
+import os
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Reference code (defines Model, get_inputs, get_init_inputs)
+# ─────────────────────────────────────────────────────────────────────────────
+
+{ref_code}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Generated kernel code (defines ModelNew) - decoded from base64
+# ─────────────────────────────────────────────────────────────────────────────
+
+_kernel_b64 = "{kernel_b64}"
+_kernel_code = base64.b64decode(_kernel_b64).decode()
+
+try:
+    exec(_kernel_code, globals())
+    print("COMPILE_SUCCESS")
+except Exception as e:
+    print(f"COMPILE_ERROR:{{e}}")
+    sys.exit(0)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Verify ModelNew exists
+# ─────────────────────────────────────────────────────────────────────────────
+
+if "ModelNew" not in dir():
+    print("COMPILE_ERROR:ModelNew class not defined")
+    sys.exit(0)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test correctness
+# ─────────────────────────────────────────────────────────────────────────────
+
+import torch
+
+try:
+    model_ref = Model(*get_init_inputs())
+    model_new = ModelNew(*get_init_inputs())
+    model_ref.eval()
+    model_new.eval()
+
+    if torch.cuda.is_available():
+        model_ref = model_ref.cuda()
+        model_new = model_new.cuda()
+
+    NUM_TESTS = 3
+    passed = 0
+    for i in range(NUM_TESTS):
+        inputs = get_inputs()
+        if torch.cuda.is_available():
+            inputs = [x.cuda() if isinstance(x, torch.Tensor) else x for x in inputs]
+
+        with torch.no_grad():
+            ref_out = model_ref(*inputs)
+            new_out = model_new(*inputs)
+
+        if torch.allclose(ref_out, new_out, rtol=1e-3, atol=1e-3):
+            passed += 1
+
+    print(f"CORRECTNESS_RESULT:{{passed}}/{{NUM_TESTS}}")
+
+    if passed < NUM_TESTS:
+        sys.exit(0)
+
+except Exception as e:
+    print(f"CORRECTNESS_ERROR:{{e}}")
+    sys.exit(0)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Benchmark speedup (only if fully correct)
+# ─────────────────────────────────────────────────────────────────────────────
+
+try:
+    NUM_WARMUP = 3
+    NUM_RUNS = 10
+
+    inputs = get_inputs()
+    if torch.cuda.is_available():
+        inputs = [x.cuda() if isinstance(x, torch.Tensor) else x for x in inputs]
+
+    for _ in range(NUM_WARMUP):
+        with torch.no_grad():
+            _ = model_ref(*inputs)
+            _ = model_new(*inputs)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    t0 = time.perf_counter()
+    for _ in range(NUM_RUNS):
+        with torch.no_grad():
+            _ = model_ref(*inputs)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+    ref_time = time.perf_counter() - t0
+
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    t0 = time.perf_counter()
+    for _ in range(NUM_RUNS):
+        with torch.no_grad():
+            _ = model_new(*inputs)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+    new_time = time.perf_counter() - t0
+
+    speedup = ref_time / new_time if new_time > 0 else 0.0
+    print(f"SPEEDUP_RESULT:{{speedup:.4f}}")
+
+except Exception as e:
+    print(f"BENCHMARK_ERROR:{{e}}")
+'''
+
+
+def _build_scoring_script(kernel_code: str, ref_code: str, kernel_file_path: str) -> str:
     """Build a standalone Python script that scores a kernel.
 
     The script:
     1. Executes ref_code to define Model, get_inputs, get_init_inputs
-    2. Executes kernel_code to define ModelNew
+    2. Loads and executes kernel_code from a separate file to define ModelNew
     3. Tests correctness (torch.allclose)
     4. Benchmarks speedup if correct
     5. Prints results in parseable format
+
+    Args:
+        kernel_code: Generated kernel code (unused here, written to kernel_file_path separately)
+        ref_code: Reference code with Model, get_inputs, get_init_inputs
+        kernel_file_path: Path to the file containing kernel_code
     """
     return f'''
 import sys
@@ -215,11 +360,9 @@ import time
 # Generated kernel code (defines ModelNew)
 # ─────────────────────────────────────────────────────────────────────────────
 
-_kernel_code = """
-{kernel_code}
-"""
-
 try:
+    with open("{kernel_file_path}", "r") as _f:
+        _kernel_code = _f.read()
     exec(_kernel_code, globals())
     print("COMPILE_SUCCESS")
 except Exception as e:
