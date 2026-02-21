@@ -855,37 +855,65 @@ class PyTorchTrainingBackend:
         # Store endpoints for later use
         self._nccl_inference_endpoints = list(inference_endpoints)
 
-        # 1. Tell each SGLang server to join the NCCL group
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            for i, endpoint in enumerate(inference_endpoints):
-                inference_rank = i + 1  # Inference ranks start at 1
-                logger.info(f"  Registering {endpoint} as rank {inference_rank}")
+        # NCCL init requires all ranks to join concurrently.
+        # SGLang's /init_weights_update_group blocks on dist.init_process_group,
+        # so we must run the HTTP requests AND trainer join in parallel.
+        import trio
 
-                response = await client.post(
-                    f"{endpoint}/init_weights_update_group",
-                    json={
-                        "master_address": master_addr,
-                        "master_port": master_port,
-                        "rank_offset": inference_rank,
-                        "world_size": world_size,
-                        "group_name": "weight_sync",
-                        "backend": "nccl",
-                    },
+        async def register_inference_endpoint(
+            endpoint: str, rank: int, results: list[tuple[str, bool, str]]
+        ) -> None:
+            """Register an inference endpoint with the NCCL group."""
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                try:
+                    response = await client.post(
+                        f"{endpoint}/init_weights_update_group",
+                        json={
+                            "master_address": master_addr,
+                            "master_port": master_port,
+                            "rank_offset": rank,
+                            "world_size": world_size,
+                            "group_name": "weight_sync",
+                            "backend": "nccl",
+                        },
+                    )
+                    response.raise_for_status()
+                    results.append((endpoint, True, "OK"))
+                except Exception as e:
+                    results.append((endpoint, False, str(e)))
+
+        async def trainer_join() -> None:
+            """Trainer joins as rank 0 (runs in thread pool since it's blocking)."""
+            if not dist.is_initialized():
+                await trio.to_thread.run_sync(
+                    lambda: dist.init_process_group(
+                        backend="nccl",
+                        init_method=f"tcp://{master_addr}:{master_port}",
+                        rank=trainer_rank,
+                        world_size=world_size,
+                    )
                 )
-                response.raise_for_status()
-                logger.info(f"  {endpoint} registered successfully")
 
-        # 2. Trainer joins as rank 0
-        if not dist.is_initialized():
+        # Launch all NCCL participants concurrently
+        results: list[tuple[str, bool, str]] = []
+        async with trio.open_nursery() as nursery:
+            # Start inference endpoint registrations
+            for i, endpoint in enumerate(inference_endpoints):
+                inference_rank = i + 1
+                logger.info(f"  Registering {endpoint} as rank {inference_rank}")
+                nursery.start_soon(register_inference_endpoint, endpoint, inference_rank, results)
+
+            # Trainer joins NCCL (this unblocks the inference endpoints)
             logger.info("  Trainer joining as rank 0...")
-            dist.init_process_group(
-                backend="nccl",
-                init_method=f"tcp://{master_addr}:{master_port}",
-                rank=trainer_rank,
-                world_size=world_size,
-            )
+            nursery.start_soon(trainer_join)
 
-        # 3. Create named group for weight sync
+        # Check results
+        for endpoint, success, msg in results:
+            if not success:
+                raise RuntimeError(f"Failed to register {endpoint}: {msg}")
+            logger.info(f"  {endpoint} registered successfully")
+
+        # Create named group for weight sync
         self._nccl_process_group = dist.new_group(
             ranks=list(range(world_size)),
             backend="nccl",
