@@ -23,7 +23,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -51,7 +50,7 @@ def emit_event(event: str, **data: Any) -> None:
     print(json.dumps(entry), flush=True)
 
 
-def test_basic_generation(engine, config: TestConfig) -> dict:
+def test_basic_generation(engine: Any, config: TestConfig) -> dict:
     """Test 1: Basic generation smoke test."""
     from rollouts.inference.core import SamplingParams
 
@@ -59,7 +58,7 @@ def test_basic_generation(engine, config: TestConfig) -> dict:
     start = time.perf_counter()
 
     params = SamplingParams(max_tokens=config.num_tokens, temperature=0.7)
-    uid = engine.add_request("Hello, my name is", params)
+    engine.add_request("Hello, my name is", params)
     finished = engine.run_to_completion()
 
     duration_ms = (time.perf_counter() - start) * 1000
@@ -78,7 +77,7 @@ def test_basic_generation(engine, config: TestConfig) -> dict:
     return result
 
 
-def test_logprobs_greedy(engine, config: TestConfig) -> dict:
+def test_logprobs_greedy(engine: Any, config: TestConfig) -> dict:
     """Test 2a: Logprobs with greedy decoding."""
     from rollouts.inference.core import SamplingParams
 
@@ -110,7 +109,7 @@ def test_logprobs_greedy(engine, config: TestConfig) -> dict:
     return result
 
 
-def test_logprobs_sampling(engine, config: TestConfig) -> dict:
+def test_logprobs_sampling(engine: Any, config: TestConfig) -> dict:
     """Test 2b: Logprobs with temperature sampling."""
     from rollouts.inference.core import SamplingParams
 
@@ -142,7 +141,7 @@ def test_logprobs_sampling(engine, config: TestConfig) -> dict:
     return result
 
 
-def test_token_input(engine, config: TestConfig) -> dict:
+def test_token_input(engine: Any, config: TestConfig) -> dict:
     """Test 3: Token-level input (RL use case)."""
     from rollouts.inference.core import SamplingParams
 
@@ -177,7 +176,7 @@ def test_token_input(engine, config: TestConfig) -> dict:
     return result
 
 
-def test_multi_sample_per_prompt(engine, config: TestConfig) -> dict:
+def test_multi_sample_per_prompt(engine: Any, config: TestConfig) -> dict:
     """Test 4: Multiple samples per prompt (RL generates N samples per prompt)."""
     from rollouts.inference.core import SamplingParams
 
@@ -216,7 +215,7 @@ def test_multi_sample_per_prompt(engine, config: TestConfig) -> dict:
     return result
 
 
-def test_batched_generation(engine, config: TestConfig) -> dict:
+def test_batched_generation(engine: Any, config: TestConfig) -> dict:
     """Test 5: Batched generation with different prompts."""
     from rollouts.inference.core import SamplingParams
 
@@ -253,7 +252,7 @@ def test_batched_generation(engine, config: TestConfig) -> dict:
     return result
 
 
-def test_flash_attention(engine, config: TestConfig) -> dict:
+def test_flash_attention(engine: Any, _config: TestConfig) -> dict:
     """Test 6: FlashAttention backend."""
     emit_event("test_start", test="flash_attention")
 
@@ -270,7 +269,7 @@ def test_flash_attention(engine, config: TestConfig) -> dict:
     return result
 
 
-def test_cuda_graphs(engine, config: TestConfig) -> dict:
+def test_cuda_graphs(engine: Any, _config: TestConfig) -> dict:
     """Test 7: CUDA graphs status."""
     emit_event("test_start", test="cuda_graphs")
 
@@ -354,25 +353,27 @@ def run_tests(config: TestConfig, require_gpu: bool = True) -> list[dict]:
     return results
 
 
-def run_remote(node_id: str | None = None, provider: str = "runpod") -> None:
-    """Deploy and run on remote GPU."""
+async def run_remote_async(node_id: str | None = None, keep_alive: bool = True) -> None:
+    """Deploy and run on remote GPU via broker/bifrost."""
     import os
+    import subprocess
 
     from dotenv import load_dotenv
 
     from bifrost.client import BifrostClient
     from broker.client import GPUClient
 
-    load_dotenv()
-
+    # Load .env from git root (workspace root)
     script = Path(__file__).resolve()
-    import subprocess
-
     git_root = Path(
         subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip()
     )
+    load_dotenv(git_root / ".env")
+
+    # Get script path relative to git root (already computed above)
     rel_path = script.relative_to(git_root)
 
+    # Provision or reuse GPU
     runpod_key = os.getenv("RUNPOD_API_KEY")
     assert runpod_key, "RUNPOD_API_KEY not set"
     ssh_key_path = os.getenv("SSH_KEY_PATH", "~/.ssh/id_ed25519")
@@ -383,73 +384,104 @@ def run_remote(node_id: str | None = None, provider: str = "runpod") -> None:
     try:
         if node_id:
             print(f"Reusing instance: {node_id}")
-            gpu = client.get_instance(node_id, provider=provider)
+            gpu = await client.get_instance(node_id, provider="runpod")
             if not gpu:
-                print(f"GPU {node_id} not found")
+                print(f"GPU {node_id} not found (is it still running?)")
                 return
+            keep_alive = True
         else:
-            print(f"Provisioning GPU on {provider}...")
-            gpu = client.create(
+            print("Provisioning GPU...")
+            gpu = await client.create(
                 query=(client.vram_gb >= 24) & (client.price_per_hour <= 0.5),
-                name="inference-test-v2",
+                name=f"inference-{script.stem}",
             )
             if not gpu:
                 print("Failed to provision GPU")
                 return
             print(f"GPU ready: {gpu.id}")
 
-            if not gpu.wait_until_ssh_ready(timeout=300):
+            if not await gpu.wait_until_ssh_ready(timeout=300):
                 print("SSH timeout")
-                client.terminate_instance(gpu.id, gpu.provider)
+                await client.terminate_instance(gpu.id, gpu.provider)
                 return
 
         print(f"SSH: {gpu.ssh_connection_string()}")
 
-        # Deploy
+        # Deploy (bifrost methods are sync, only broker is async)
         workspace = "~/.bifrost/workspaces/rollouts"
         bifrost = BifrostClient(gpu.ssh_connection_string(), ssh_key_path)
-        bootstrap = [
-            "cd rollouts && uv python install 3.12 && uv sync --python 3.12",
-            "uv pip install torch 'transformers<4.52' accelerate flash-attn sgl-kernel",
+        bifrost.push(workspace_path=workspace, allow_dirty=True)
+        print("Code synced")
+
+        # Bootstrap steps
+        bootstrap_steps = [
+            ("Installing uv", "curl -LsSf https://astral.sh/uv/install.sh | sh"),
+            (
+                "Syncing deps",
+                f"~/.local/bin/uv python install 3.12 && ~/.local/bin/uv sync --project {workspace}/rollouts --python 3.12",
+            ),
+            (
+                "Installing torch",
+                "~/.local/bin/uv pip install torch 'transformers<4.52' accelerate",
+            ),
         ]
-        bifrost.push(workspace_path=workspace, bootstrap_cmd=bootstrap)
-        print("Code deployed")
+        for label, cmd in bootstrap_steps:
+            print(f"  {label}...")
+            result = bifrost.exec(cmd, working_dir=workspace)
+            if result.exit_code != 0:
+                raise RuntimeError(f"Bootstrap '{label}' failed: {result.stderr or result.stdout}")
+        print("Bootstrap done")
 
         # Run with streaming output
         remote_script = f"{workspace}/{rel_path}"
-        cmd = f"cd {workspace}/rollouts && uv run python {remote_script}"
+        cmd = f"cd {workspace}/rollouts && ~/.local/bin/uv run python {remote_script}"
         print(f"Running: {cmd}")
-        print("-" * 60)
+        print("-" * 50)
         for line in bifrost.exec_stream(cmd):
             print(line, end="")
-        print("-" * 60)
+        print("-" * 50)
 
     except KeyboardInterrupt:
         print("\n\nInterrupted!")
+        keep_alive = True
 
     finally:
-        if gpu is not None:
+        if gpu is None:
+            return
+        if keep_alive:
             print()
-            print("=" * 60)
-            print(f"Instance: {gpu.id}")
+            print("=" * 50)
+            print(f"Instance kept alive: {gpu.id}")
             print(f"SSH: {gpu.ssh_connection_string()}")
             print()
             print(f"Rerun with:   --node-id {gpu.id}")
             print(f"Terminate:    broker terminate {gpu.id}")
-            print("=" * 60)
+            print("=" * 50)
+        else:
+            print("Cleaning up...")
+            await client.terminate_instance(gpu.id, gpu.provider)
 
 
-def main():
+def run_remote(node_id: str | None = None, keep_alive: bool = True) -> None:
+    """Sync wrapper for run_remote_async."""
+    import trio
+
+    trio.run(run_remote_async, node_id, keep_alive)
+
+
+def main() -> None:
     parser = argparse.ArgumentParser(description="Test engine_v2 on GPU")
     parser.add_argument("--provision", action="store_true", help="Provision remote GPU")
     parser.add_argument("--provider", default="runpod", help="GPU provider (runpod, modal)")
     parser.add_argument("--node-id", help="Reuse existing instance")
     parser.add_argument("--model", default="Qwen/Qwen2.5-0.5B", help="Model to test")
-    parser.add_argument("--cpu", action="store_true", help="Allow running on CPU (for local testing)")
+    parser.add_argument(
+        "--cpu", action="store_true", help="Allow running on CPU (for local testing)"
+    )
     args = parser.parse_args()
 
     if args.provision or args.node_id:
-        run_remote(node_id=args.node_id, provider=args.provider)
+        run_remote(node_id=args.node_id)
     else:
         # Run locally
         from rollouts._logging import setup_logging
