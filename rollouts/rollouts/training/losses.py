@@ -364,12 +364,20 @@ def grpo_loss_masked(
     batch: dict[str, torch.Tensor],
     ratio_low: float = 0.1,
     ratio_high: float = 10.0,
-    kl_coef: float = 0.0,
+    kl_coef: float = 0.01,
 ) -> LossOutput:
     """GRPO with importance ratio masking (Prime-RL pattern).
 
     Instead of clipping, masks out samples where the importance ratio
     is too extreme (policy has drifted too far from rollout policy).
+
+    Loss formula (following Prime-RL):
+        coeff = ratio * (advantages - kl_coef * log_ratio)
+        loss = -(coeff.detach() * seq_logprobs)[keep_mask].mean()
+
+    The key insight is that we detach the coefficient so gradients flow
+    only through seq_logprobs. This is the standard REINFORCE formula:
+        ∇_θ J = E[∇_θ log π(a|s) * A]
 
     Args:
         logits: Model output [batch, seq_len, vocab_size]
@@ -380,7 +388,7 @@ def grpo_loss_masked(
             - "old_logprobs" [batch]: Log probs from rollout policy
         ratio_low: Mask if ratio < this (default 0.1)
         ratio_high: Mask if ratio > this (default 10.0)
-        kl_coef: KL penalty coefficient (default 0.0)
+        kl_coef: KL penalty coefficient (default 0.01)
 
     Returns:
         (loss, metrics) tuple
@@ -402,20 +410,19 @@ def grpo_loss_masked(
     is_masked_high = ratio > ratio_high
     keep_mask = ~(is_masked_low | is_masked_high)
 
-    # Policy gradient on unmasked samples only
+    # Policy gradient loss (Prime-RL formula)
+    # coeff = ratio * (advantages - kl_coef * log_ratio)
+    # Detach coeff so gradient flows only through seq_logprobs
+    coeff = ratio * (advantages - kl_coef * log_ratio)
+
     if keep_mask.sum() > 0:
-        pg_loss = -(ratio[keep_mask] * advantages[keep_mask]).sum() / keep_mask.sum()
+        # Standard REINFORCE: loss = -E[log_prob * advantage_coeff]
+        pg_loss = -(coeff.detach() * seq_logprobs)[keep_mask].sum() / keep_mask.sum()
     else:
         # All samples masked - use small loss to avoid NaN
         pg_loss = torch.tensor(0.0, device=logits.device, requires_grad=True)
 
-    # Optional KL penalty on masked samples (encourages staying on-policy)
-    if kl_coef > 0 and (~keep_mask).sum() > 0:
-        kl_loss = log_ratio[~keep_mask].sum() / (~keep_mask).sum()
-        loss = pg_loss + kl_coef * kl_loss
-    else:
-        loss = pg_loss
-        kl_loss = torch.tensor(0.0)
+    loss = pg_loss
 
     # Compute metrics
     with torch.no_grad():
@@ -434,6 +441,7 @@ def grpo_loss_masked(
         "avg_ratio": ratio.mean().item(),
         "avg_logprob": seq_logprobs.mean().item(),
         "avg_advantage": advantages.mean().item(),
+        "avg_coeff": coeff.mean().item(),
     }
 
     return loss, metrics
