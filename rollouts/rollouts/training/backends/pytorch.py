@@ -962,9 +962,14 @@ class PyTorchTrainingBackend:
             for name, p in state_dict.items()
         ]
 
-        # 1. Tell inference servers to prepare for NCCL receive
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            for endpoint in self._nccl_inference_endpoints:
+        # NCCL sync requires both sides to participate concurrently.
+        # SGLang's /update_weights_from_distributed blocks on dist.broadcast(),
+        # so we must run HTTP request AND trainer broadcast in parallel.
+        import trio
+
+        async def notify_inference_server(endpoint: str) -> None:
+            """Tell inference server to start receiving weights via NCCL."""
+            async with httpx.AsyncClient(timeout=300.0) as client:
                 await client.post(
                     f"{endpoint}/update_weights_from_distributed",
                     json={
@@ -976,15 +981,24 @@ class PyTorchTrainingBackend:
                     },
                 )
 
-        # 2. Broadcast each tensor via NCCL (GPU-to-GPU, no serialization)
-        for name, param in state_dict.items():
-            param_data = param.data.contiguous()
-            if param_data.device.type != "cuda":
-                param_data = param_data.cuda()
-            dist.broadcast(param_data, src=0, group=self._nccl_process_group)
+        async def broadcast_weights() -> None:
+            """Broadcast weights via NCCL (runs in thread pool since blocking)."""
 
-        # 3. Wait for completion
-        dist.barrier(group=self._nccl_process_group)
+            def _do_broadcast() -> None:
+                for name, param in state_dict.items():
+                    param_data = param.data.contiguous()
+                    if param_data.device.type != "cuda":
+                        param_data = param_data.cuda()
+                    dist.broadcast(param_data, src=0, group=self._nccl_process_group)
+                dist.barrier(group=self._nccl_process_group)
+
+            await trio.to_thread.run_sync(_do_broadcast)
+
+        # Run HTTP notifications and weight broadcast concurrently
+        async with trio.open_nursery() as nursery:
+            for endpoint in self._nccl_inference_endpoints:
+                nursery.start_soon(notify_inference_server, endpoint)
+            nursery.start_soon(broadcast_weights)
 
         # Restore LoRA structure if needed
         if self.is_lora:
