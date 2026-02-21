@@ -411,16 +411,17 @@ class InferenceEngineV2:
         self.state = result.new_state
 
         if self._use_functional_model:
-            next_tokens = self._forward_functional(batch)
+            next_tokens, logprobs = self._forward_functional(batch)
         else:
             self._update_page_table(batch)
             attn_metadata = self._build_attention_metadata(batch)
-            next_tokens = self._forward_with_graphs(batch, attn_metadata)
+            next_tokens, logprobs = self._forward_with_graphs(batch, attn_metadata)
 
         self.state = self._update_state_after_batch(
             state=self.state,
             batch=batch,
             next_tokens=next_tokens,
+            logprobs=logprobs,
         )
 
         for req in self.state.finished:
@@ -563,12 +564,14 @@ class InferenceEngineV2:
         state: SchedulerState,
         batch: Batch,
         next_tokens: Tensor,
+        logprobs: list[float | None],
     ) -> SchedulerState:
         decode_by_uid = {req.uid: req for req in state.decode_set}
         prefill_queue = list(state.prefill_queue)
         finished: list[Req] = []
 
-        for req, next_token in zip(batch.reqs, next_tokens.tolist(), strict=False):
+        for i, (req, next_token) in enumerate(zip(batch.reqs, next_tokens.tolist(), strict=False)):
+            logprob = logprobs[i]
             decode_by_uid.pop(req.uid, None)
 
             if batch.is_prefill and self._chunked_prefill_mgr.is_chunking(req.uid):
@@ -580,9 +583,9 @@ class InferenceEngineV2:
                     prefill_queue.append(next_chunk_req)
                     continue
 
-                new_req = req_append_token(chunk_prefill_req, next_token)
+                new_req = req_append_token(chunk_prefill_req, next_token, logprob)
             else:
-                new_req = req_after_decode_step(req, next_token)
+                new_req = req_after_decode_step(req, next_token, logprob)
 
             is_eos = next_token == self.eos_token_id and not req.sampling_params.ignore_eos
             is_max_len = not new_req.can_decode
@@ -610,7 +613,9 @@ class InferenceEngineV2:
             table_indices=table_indices,
         )
 
-    def _forward_with_graphs(self, batch: Batch, attn_metadata: AttentionMetadata) -> Tensor:
+    def _forward_with_graphs(
+        self, batch: Batch, attn_metadata: AttentionMetadata
+    ) -> tuple[Tensor, list[float | None]]:
         use_graph = (
             self._use_cuda_graphs and batch.is_decode and can_use_graph(self._graph_state, batch)
         )
@@ -622,14 +627,17 @@ class InferenceEngineV2:
         else:
             return self._forward(batch, attn_metadata)
 
-    def _forward_with_graph(self, batch: Batch, attn_metadata: AttentionMetadata) -> Tensor:
+    def _forward_with_graph(
+        self, batch: Batch, attn_metadata: AttentionMetadata
+    ) -> tuple[Tensor, list[float | None]]:
         with torch.no_grad():
             logits = replay_graph(self._graph_state, batch, attn_metadata)
 
-        next_tokens = self._sample_batch(logits, batch)
-        return next_tokens
+        return self._sample_batch(logits, batch)
 
-    def _forward(self, batch: Batch, attn_metadata: AttentionMetadata) -> Tensor:
+    def _forward(
+        self, batch: Batch, attn_metadata: AttentionMetadata
+    ) -> tuple[Tensor, list[float | None]]:
         assert self.model is not None
         with torch.no_grad():
             logits = self.model(
@@ -643,10 +651,9 @@ class InferenceEngineV2:
             last_indices = attn_metadata.cu_seqlens_q[1:] - 1
             last_logits = logits[last_indices]
 
-        next_tokens = self._sample_batch(last_logits, batch)
-        return next_tokens
+        return self._sample_batch(last_logits, batch)
 
-    def _forward_functional(self, batch: Batch) -> Tensor:
+    def _forward_functional(self, batch: Batch) -> tuple[Tensor, list[float | None]]:
         assert self._functional_config is not None
         assert self._functional_weights is not None
 
@@ -664,25 +671,49 @@ class InferenceEngineV2:
 
         return self._sample_batch(last_logits, batch)
 
-    def _sample_batch(self, logits: Tensor, batch: Batch) -> Tensor:
+    def _sample_batch(self, logits: Tensor, batch: Batch) -> tuple[Tensor, list[float | None]]:
+        """Sample next tokens from logits.
+
+        Returns:
+            (next_tokens, logprobs) where logprobs[i] is the log probability
+            of next_tokens[i], or None if return_logprobs=False for that request.
+        """
         next_tokens: list[int] = []
+        logprobs: list[float | None] = []
+
         for i, req in enumerate(batch.reqs):
-            token = self._sample_one(logits[i : i + 1], req.sampling_params)
+            token, logprob = self._sample_one(logits[i : i + 1], req.sampling_params)
             next_tokens.append(token)
-        return torch.tensor(next_tokens, dtype=torch.int32, device="cpu")
+            logprobs.append(logprob)
 
-    def _sample_one(self, logits: Tensor, params: SamplingParams) -> int:
+        tokens_tensor = torch.tensor(next_tokens, dtype=torch.int32, device="cpu")
+        return tokens_tensor, logprobs
+
+    def _sample_one(self, logits: Tensor, params: SamplingParams) -> tuple[int, float | None]:
+        """Sample a single token from logits.
+
+        Returns:
+            (token_id, logprob) where logprob is None if return_logprobs=False.
+        """
+        # Compute log probabilities before any masking (for accurate logprobs)
+        log_probs = torch.log_softmax(logits, dim=-1)
+
         if params.is_greedy:
-            return logits.argmax(dim=-1).item()
+            token = logits.argmax(dim=-1).item()
+            logprob = log_probs[0, token].item() if params.return_logprobs else None
+            return token, logprob
 
+        # Apply temperature
         if params.temperature > 0:
             logits = logits / params.temperature
 
+        # Apply top-k filtering
         if params.top_k > 0:
             top_k = min(params.top_k, logits.size(-1))
             indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
             logits = logits.masked_fill(indices_to_remove, float("-inf"))
 
+        # Apply top-p (nucleus) filtering
         if params.top_p < 1.0:
             sorted_logits, sorted_indices = torch.sort(logits, descending=True)
             cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
@@ -694,9 +725,13 @@ class InferenceEngineV2:
             )
             logits = logits.masked_fill(indices_to_remove, float("-inf"))
 
+        # Sample from the filtered distribution
         probs = torch.softmax(logits, dim=-1)
-        token = torch.multinomial(probs, num_samples=1)
-        return token.item()
+        token = torch.multinomial(probs, num_samples=1).item()
+
+        # Return logprob from the ORIGINAL distribution (not the filtered one)
+        logprob = log_probs[0, token].item() if params.return_logprobs else None
+        return token, logprob
 
     # ═══════════════════════════════════════════════════════════════════════════
     # OVERLAP EXECUTION
@@ -786,7 +821,8 @@ class InferenceEngineV2:
                 last_indices = attn_metadata.cu_seqlens_q[1:] - 1
                 logits = logits[last_indices]
 
-            next_tokens_gpu = self._sample_batch_gpu(logits, batch)
+            # Note: overlap path doesn't support logprobs yet
+            next_tokens_gpu, _logprobs = self._sample_batch_gpu(logits, batch)
 
         # Get stream from overlap state
         from .overlap import get_or_create_streams
@@ -798,15 +834,23 @@ class InferenceEngineV2:
         # Processing happens in run_to_completion_overlap after synchronize
         pass
 
-    def _sample_batch_gpu(self, logits: Tensor, batch: Batch) -> Tensor:
+    def _sample_batch_gpu(self, logits: Tensor, batch: Batch) -> tuple[Tensor, list[float | None]]:
+        """Sample batch on GPU, returning tokens and logprobs."""
         all_greedy = all(req.sampling_params.is_greedy for req in batch.reqs)
+        any_logprobs = any(req.sampling_params.return_logprobs for req in batch.reqs)
 
-        if all_greedy:
-            return logits.argmax(dim=-1).to(torch.int32)
+        if all_greedy and not any_logprobs:
+            tokens = logits.argmax(dim=-1).to(torch.int32)
+            logprobs_list: list[float | None] = [None] * len(batch.reqs)
+            return tokens, logprobs_list
 
+        # Need per-token sampling and/or logprobs
         next_tokens: list[int] = []
+        logprobs_list = []
         for i, req in enumerate(batch.reqs):
-            token = self._sample_one(logits[i : i + 1], req.sampling_params)
+            token, logprob = self._sample_one(logits[i : i + 1], req.sampling_params)
             next_tokens.append(token)
+            logprobs_list.append(logprob)
 
-        return torch.tensor(next_tokens, dtype=torch.int32, device=self.device)
+        tokens = torch.tensor(next_tokens, dtype=torch.int32, device=self.device)
+        return tokens, logprobs_list

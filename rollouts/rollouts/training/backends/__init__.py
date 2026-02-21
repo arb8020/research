@@ -1,15 +1,21 @@
 """Training backends
 
 Available implementations:
-- PyTorchTrainingBackend (D6v1): Standard PyTorch (OOP, stateful) - IMPLEMENTED
-- TorchFuncTrainingBackend (D6v2): torch.func + torchopt (functional) - STUB
-- JAXTrainingBackend (D6v3): Raw JAX (pure functional, TPU) - STUB
-- TorchaxTrainingBackend (D6v4): torchax (PyTorch on JAX) - STUB (experimental)
+- PyTorchTrainingBackend: Standard PyTorch (OOP, stateful) - IMPLEMENTED
+- FSDP2TrainingBackend: PyTorch FSDP2 distributed - IMPLEMENTED
+- MegatronTrainingBackend: Megatron-Core (TP/PP/EP) - IMPLEMENTED
+- NmoeTrainingBackend: nmoe Zero2 + Muon for MoE - IMPLEMENTED
+- TorchFuncTrainingBackend: torch.func + torchopt (functional) - STUB
+- JAXTrainingBackend: Raw JAX (pure functional, TPU) - STUB
+- TorchaxTrainingBackend: torchax (PyTorch on JAX) - STUB
 
 All backends implement the TrainingBackend protocol.
 """
 
+from ...training.backends.fsdp2_backend import FSDP2Config, FSDP2TrainingBackend
 from ...training.backends.jax_backend import JAXTrainingBackend
+from ...training.backends.megatron_backend import MegatronConfig, MegatronTrainingBackend
+from ...training.backends.nmoe_backend import NmoeConfig, NmoeTrainingBackend
 from ...training.backends.protocol import TrainingBackend
 from ...training.backends.pytorch import PyTorchTrainingBackend
 from ...training.backends.pytorch_factory import (
@@ -28,15 +34,23 @@ from ...training.backends.torch_func import TorchFuncTrainingBackend
 from ...training.backends.torchax_backend import TorchaxTrainingBackend
 
 __all__ = [
+    # Protocol
     "TrainingBackend",
+    # Backends
     "PyTorchTrainingBackend",
+    "FSDP2TrainingBackend",
+    "FSDP2Config",
+    "MegatronTrainingBackend",
+    "MegatronConfig",
+    "NmoeTrainingBackend",
+    "NmoeConfig",
     "TorchFuncTrainingBackend",
     "JAXTrainingBackend",
     "TorchaxTrainingBackend",
-    # Tier 2
+    # Tier 2: Convenience
     "create_pytorch_backend",
     "create_backend_with_scheduler",
-    # Tier 1
+    # Tier 1: Granular
     "parse_dtype",
     "compute_device_map_single_gpu",
     "load_hf_model",

@@ -31,6 +31,7 @@ class SamplingParams:
     top_p: float = 1.0
     max_tokens: int = 1024
     ignore_eos: bool = False
+    return_logprobs: bool = False  # Whether to compute and return logprobs
 
     def __post_init__(self) -> None:
         assert self.max_tokens > 0, "max_tokens must be positive"
@@ -57,6 +58,7 @@ class Req:
         max_len: Maximum sequence length (prompt + max_tokens)
         sampling_params: Sampling configuration
         table_idx: Index into page table (assigned by scheduler)
+        logprobs: Per-token log probabilities for generated tokens (if requested)
     """
 
     uid: int
@@ -65,6 +67,7 @@ class Req:
     max_len: int
     sampling_params: SamplingParams
     table_idx: int
+    logprobs: Tensor | None = None  # CPU tensor, float32, shape [num_generated]
 
     def __post_init__(self) -> None:
         assert self.input_ids.device == torch.device("cpu"), "input_ids must be on CPU"
@@ -72,6 +75,9 @@ class Req:
         assert 0 <= self.cached_len <= len(self.input_ids), "cached_len out of bounds"
         assert len(self.input_ids) <= self.max_len, "input_ids exceeds max_len"
         assert self.table_idx >= 0, "table_idx must be non-negative"
+        if self.logprobs is not None:
+            assert self.logprobs.device == torch.device("cpu"), "logprobs must be on CPU"
+            assert self.logprobs.dtype == torch.float32, "logprobs must be float32"
 
     @property
     def device_len(self) -> int:
@@ -114,19 +120,34 @@ def req_after_forward(req: Req) -> Req:
         max_len=req.max_len,
         sampling_params=req.sampling_params,
         table_idx=req.table_idx,
+        logprobs=req.logprobs,
     )
 
 
-def req_append_token(req: Req, next_token: int) -> Req:
+def req_append_token(req: Req, next_token: int, logprob: float | None = None) -> Req:
     """Return new Req with token appended.
 
     Called after sampling. The new token is NOT yet cached
     (will be processed in next forward pass).
+
+    Args:
+        req: Current request state
+        next_token: Sampled token ID
+        logprob: Log probability of the sampled token (if requested)
     """
     assert req.can_decode, "request cannot generate more tokens"
 
     new_token_tensor = torch.tensor([next_token], dtype=torch.int32)
     new_input_ids = torch.cat([req.input_ids, new_token_tensor])
+
+    # Append logprob if provided
+    new_logprobs = req.logprobs
+    if logprob is not None:
+        logprob_tensor = torch.tensor([logprob], dtype=torch.float32)
+        if req.logprobs is None:
+            new_logprobs = logprob_tensor
+        else:
+            new_logprobs = torch.cat([req.logprobs, logprob_tensor])
 
     return Req(
         uid=req.uid,
@@ -135,19 +156,25 @@ def req_append_token(req: Req, next_token: int) -> Req:
         max_len=req.max_len,
         sampling_params=req.sampling_params,
         table_idx=req.table_idx,
+        logprobs=new_logprobs,
     )
 
 
-def req_after_decode_step(req: Req, next_token: int) -> Req:
+def req_after_decode_step(req: Req, next_token: int, logprob: float | None = None) -> Req:
     """Convenience: forward completed, then append token.
 
     This is what happens after a decode step:
     1. Forward pass caches the current last token
     2. Sampling produces next token
     3. Next token is appended (not yet cached)
+
+    Args:
+        req: Current request state
+        next_token: Sampled token ID
+        logprob: Log probability of the sampled token (if requested)
     """
     req = req_after_forward(req)
-    req = req_append_token(req, next_token)
+    req = req_append_token(req, next_token, logprob)
     return req
 
 
