@@ -18,6 +18,8 @@ from ..dtypes import (
     Choice,
     FirstToken,
     ImageContent,
+    Logprob,
+    Logprobs,
     Message,
     StreamDone,
     StreamEvent,
@@ -357,6 +359,9 @@ async def aggregate_stream(
     call_buf: dict[int, dict[str, Any]] = {}
     next_auto_index = 0
 
+    # Accumulate logprobs for GRPO importance sampling
+    accumulated_logprobs: list[Logprob] = []
+
     async for chunk in stream:
         # Capture usage from final chunk (when stream_options.include_usage=True)
         if hasattr(chunk, "usage") and chunk.usage is not None:
@@ -368,6 +373,22 @@ async def aggregate_stream(
 
         choice = chunk.choices[0]
         delta = choice.delta
+
+        # Accumulate logprobs from streaming chunks (for GRPO importance sampling)
+        # OpenAI streaming includes choice.logprobs with per-token logprobs
+        if hasattr(choice, "logprobs") and choice.logprobs is not None:
+            lp_content = getattr(choice.logprobs, "content", None)
+            if lp_content:
+                for lp in lp_content:
+                    # Convert OpenAI logprob to our Logprob format
+                    accumulated_logprobs.append(
+                        Logprob(
+                            token=lp.token if hasattr(lp, "token") else "",
+                            logprob=lp.logprob if hasattr(lp, "logprob") else 0.0,
+                            bytes=list(lp.bytes) if hasattr(lp, "bytes") and lp.bytes else [],
+                            token_id=getattr(lp, "token_id", None),
+                        )
+                    )
 
         if response_id is None:
             response_id = chunk.id
@@ -555,13 +576,16 @@ async def aggregate_stream(
     assert isinstance(final_message, Message)
     assert isinstance(tool_calls, list)
 
+    # Build logprobs for Choice (for GRPO importance sampling)
+    choice_logprobs = Logprobs(content=accumulated_logprobs) if accumulated_logprobs else None
+
     completion = ChatCompletion(
         id=response_id or "unknown",
         object="chat.completion",
         created=created or 0,
         model="",
         usage=stream_usage or Usage(),  # From final chunk if stream_options.include_usage=True
-        choices=[Choice(0, final_message, finish_reason or "stop")],
+        choices=[Choice(0, final_message, finish_reason or "stop", logprobs=choice_logprobs)],
     )
 
     assert completion is not None
@@ -605,6 +629,7 @@ async def rollout_openai(
         "messages": messages,
         "temperature": actor.endpoint.temperature,
         "stream": True,
+        "logprobs": True,  # Request logprobs for GRPO importance sampling
     }
 
     if actor.endpoint.max_completion_tokens is not None:
