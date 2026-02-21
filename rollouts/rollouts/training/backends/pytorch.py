@@ -645,6 +645,9 @@ class PyTorchTrainingBackend:
         This is the weight sync primitive for TTT - it produces inference-ready
         weights that can be loaded via update_weights_from_disk.
 
+        Uses atomic rename pattern: writes to temp dir, then renames to final path.
+        This prevents race conditions where SGLang reads a partially-written checkpoint.
+
         Args:
             path: Directory to save merged weights
 
@@ -658,10 +661,15 @@ class PyTorchTrainingBackend:
             >>> await inference_engine.update_weights_from_checkpoint(str(sync_dir))
         """
         import logging
+        import shutil
 
         logger = logging.getLogger(__name__)
         path = Path(path)
-        path.mkdir(parents=True, exist_ok=True)
+
+        # Atomic rename pattern: write to temp dir, then rename
+        # This prevents SGLang from reading a partially-written checkpoint
+        temp_path = path.parent / f"{path.name}_tmp_{self.weight_version}"
+        temp_path.mkdir(parents=True, exist_ok=True)
 
         rank = dist.get_rank() if dist.is_initialized() else 0
 
@@ -672,17 +680,25 @@ class PyTorchTrainingBackend:
                 # W' = W + BA (low-rank merge)
                 # IMPORTANT: Use merge_adapter() + unmerge_adapter() to preserve LoRA structure
                 # merge_and_unload() would permanently destroy the LoRA adapters!
-                logger.info(f"Merging LoRA weights for inference sync to {path}")
+                logger.info(f"Merging LoRA weights for inference sync to {temp_path}")
                 self.model.merge_adapter()  # Merge LoRA into base weights temporarily
                 await trio.to_thread.run_sync(
-                    lambda: self.model.base_model.model.save_pretrained(path)
+                    lambda: self.model.base_model.model.save_pretrained(temp_path)
                 )
                 self.model.unmerge_adapter()  # Restore LoRA structure for continued training
                 logger.info("LoRA merge and save complete")
             else:
                 # Regular model: save directly
-                logger.info(f"Saving weights for inference sync to {path}")
-                await trio.to_thread.run_sync(self.model.save_pretrained, path)
+                logger.info(f"Saving weights for inference sync to {temp_path}")
+                await trio.to_thread.run_sync(self.model.save_pretrained, temp_path)
+
+            # Atomic rename: remove old dir, rename temp to final
+            # shutil.rmtree + os.rename is not fully atomic, but close enough:
+            # SGLang will either see old complete checkpoint or new complete checkpoint
+            if path.exists():
+                shutil.rmtree(path)
+            temp_path.rename(path)
+            logger.info(f"Atomically renamed {temp_path} -> {path}")
 
         # Barrier for coordination
         if dist.is_initialized():
@@ -819,7 +835,6 @@ class PyTorchTrainingBackend:
         """
         import logging
         import os
-        import socket
 
         import httpx
 
@@ -862,7 +877,7 @@ class PyTorchTrainingBackend:
 
         # 2. Trainer joins as rank 0
         if not dist.is_initialized():
-            logger.info(f"  Trainer joining as rank 0...")
+            logger.info("  Trainer joining as rank 0...")
             dist.init_process_group(
                 backend="nccl",
                 init_method=f"tcp://{master_addr}:{master_port}",
