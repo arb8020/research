@@ -142,8 +142,82 @@ def test_logprobs_sampling(engine, config: TestConfig) -> dict:
     return result
 
 
+def test_token_input(engine, config: TestConfig) -> dict:
+    """Test 3: Token-level input (RL use case)."""
+    from rollouts.inference.core import SamplingParams
+
+    emit_event("test_start", test="token_input")
+    start = time.perf_counter()
+
+    # RL passes token IDs directly, not strings
+    # Use tokenizer to get some real token IDs
+    prompt_tokens = engine.tokenizer.encode("The answer is", add_special_tokens=True)
+
+    params = SamplingParams(max_tokens=config.num_tokens, temperature=0.7, return_logprobs=True)
+    engine.add_request(prompt_tokens, params)  # Pass token list, not string
+    finished = engine.run_to_completion()
+
+    duration_ms = (time.perf_counter() - start) * 1000
+    req = finished[0]
+
+    # Verify prompt tokens are preserved
+    output_tokens = req.input_ids.tolist()
+    prompt_preserved = output_tokens[: len(prompt_tokens)] == prompt_tokens
+
+    result = {
+        "test": "token_input",
+        "success": len(finished) == 1 and prompt_preserved and req.logprobs is not None,
+        "duration_ms": duration_ms,
+        "prompt_tokens": len(prompt_tokens),
+        "output_tokens": len(output_tokens),
+        "prompt_preserved": prompt_preserved,
+        "has_logprobs": req.logprobs is not None,
+    }
+    emit_event("test_done", **result)
+    return result
+
+
+def test_multi_sample_per_prompt(engine, config: TestConfig) -> dict:
+    """Test 4: Multiple samples per prompt (RL generates N samples per prompt)."""
+    from rollouts.inference.core import SamplingParams
+
+    emit_event("test_start", test="multi_sample_per_prompt")
+    start = time.perf_counter()
+
+    # RL typically generates 4-8 samples per prompt
+    n_samples = 4
+    prompt = "What is 2 + 2?"
+
+    params = SamplingParams(max_tokens=config.num_tokens, temperature=0.8, return_logprobs=True)
+    for _ in range(n_samples):
+        engine.add_request(prompt, params)
+
+    finished = engine.run_to_completion()
+    duration_ms = (time.perf_counter() - start) * 1000
+
+    # All should complete with logprobs
+    all_have_logprobs = all(req.logprobs is not None for req in finished)
+
+    # With temperature > 0, outputs should differ (not all identical)
+    outputs = [req.input_ids.tolist() for req in finished]
+    unique_outputs = len(set(tuple(o) for o in outputs))
+
+    result = {
+        "test": "multi_sample_per_prompt",
+        "success": len(finished) == n_samples and all_have_logprobs,
+        "duration_ms": duration_ms,
+        "n_samples": n_samples,
+        "n_finished": len(finished),
+        "all_have_logprobs": all_have_logprobs,
+        "unique_outputs": unique_outputs,
+        "diversity": unique_outputs / n_samples,
+    }
+    emit_event("test_done", **result)
+    return result
+
+
 def test_batched_generation(engine, config: TestConfig) -> dict:
-    """Test 3: Batched generation."""
+    """Test 5: Batched generation with different prompts."""
     from rollouts.inference.core import SamplingParams
 
     emit_event("test_start", test="batched_generation")
@@ -180,7 +254,7 @@ def test_batched_generation(engine, config: TestConfig) -> dict:
 
 
 def test_flash_attention(engine, config: TestConfig) -> dict:
-    """Test 4: FlashAttention backend."""
+    """Test 6: FlashAttention backend."""
     emit_event("test_start", test="flash_attention")
 
     backend_name = type(engine.attn_backend).__name__
@@ -197,7 +271,7 @@ def test_flash_attention(engine, config: TestConfig) -> dict:
 
 
 def test_cuda_graphs(engine, config: TestConfig) -> dict:
-    """Test 5: CUDA graphs status."""
+    """Test 7: CUDA graphs status."""
     emit_event("test_start", test="cuda_graphs")
 
     cuda_graphs_enabled = getattr(engine, "_use_cuda_graphs", False)
@@ -211,17 +285,24 @@ def test_cuda_graphs(engine, config: TestConfig) -> dict:
     return result
 
 
-def run_tests(config: TestConfig) -> list[dict]:
+def run_tests(config: TestConfig, require_gpu: bool = True) -> list[dict]:
     """Run all tests and return results."""
     import torch
 
     from rollouts.inference.engine_v2 import EngineConfig, InferenceEngineV2
 
+    cuda_available = torch.cuda.is_available()
+
+    if require_gpu and not cuda_available:
+        emit_event("run_skipped", reason="CUDA not available", require_gpu=require_gpu)
+        print("\n⚠️  Skipping tests: CUDA not available (use --cpu to run on CPU anyway)")
+        return []
+
     emit_event(
         "run_start",
         config=asdict(config),
-        cuda_available=torch.cuda.is_available(),
-        cuda_device=torch.cuda.get_device_name() if torch.cuda.is_available() else None,
+        cuda_available=cuda_available,
+        cuda_device=torch.cuda.get_device_name() if cuda_available else None,
     )
 
     # Create engine
@@ -246,6 +327,8 @@ def run_tests(config: TestConfig) -> list[dict]:
         test_basic_generation,
         test_logprobs_greedy,
         test_logprobs_sampling,
+        test_token_input,
+        test_multi_sample_per_prompt,
         test_batched_generation,
         test_flash_attention,
         test_cuda_graphs,
@@ -362,6 +445,7 @@ def main():
     parser.add_argument("--provider", default="runpod", help="GPU provider (runpod, modal)")
     parser.add_argument("--node-id", help="Reuse existing instance")
     parser.add_argument("--model", default="Qwen/Qwen2.5-0.5B", help="Model to test")
+    parser.add_argument("--cpu", action="store_true", help="Allow running on CPU (for local testing)")
     args = parser.parse_args()
 
     if args.provision or args.node_id:
@@ -373,7 +457,7 @@ def main():
         setup_logging(level="INFO", use_color=True)
 
         config = TestConfig(model_name=args.model)
-        results = run_tests(config)
+        results = run_tests(config, require_gpu=not args.cpu)
 
         # Print summary
         print("\n" + "=" * 60)
