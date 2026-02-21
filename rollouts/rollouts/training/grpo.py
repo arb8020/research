@@ -169,30 +169,56 @@ def _setup_output_dir(config: GRPOConfig) -> tuple[Path, str]:
 def _create_inference_engine(
     config: GRPOConfig, output_dir: Path
 ) -> Any:  # SGLangEngine | VLLMEngine
-    """Create and configure inference engine."""
+    """Create single inference engine (legacy API, calls _create_inference_engines)."""
+    engines = _create_inference_engines(config, output_dir)
+    if len(engines) != 1:
+        raise ValueError(
+            f"_create_inference_engine expects 1 engine but config has {len(engines)}. "
+            "Use _create_inference_engines() for multi-engine setup."
+        )
+    return engines[0]
+
+
+def _create_inference_engines(
+    config: GRPOConfig, output_dir: Path
+) -> list[Any]:  # list[SGLangEngine | VLLMEngine]
+    """Create multiple inference engines for parallel rollout generation.
+
+    Each engine runs on its own GPU(s) and port. More engines = more samples/second.
+
+    Returns:
+        List of inference engines (one per GPU or TP group)
+    """
     from ..training.weight_sync import SGLangEngine, VLLMEngine
 
-    if config.inference.backend == "sglang":
-        return SGLangEngine(
-            model_name=config.model.name,
-            port=config.inference.port,
-            cuda_device_ids=config.inference.cuda_device_ids,
-            output_dir=output_dir,
-            dtype=config.model.dtype,
-            mem_fraction=config.inference.mem_fraction,
-        )
-    elif config.inference.backend == "vllm":
-        return VLLMEngine(
-            model_name=config.model.name,
-            port=config.inference.port,
-            cuda_device_ids=config.inference.cuda_device_ids,
-            output_dir=output_dir,
-            dtype=config.model.dtype,
-            gpu_memory_utilization=config.inference.mem_fraction,
-        )
-    else:
-        msg = f"Unknown inference backend: {config.inference.backend}"
-        raise ValueError(msg)
+    engines = []
+    gpu_assignments = config.inference.gpu_assignments
+    ports = config.inference.ports
+
+    for i, (gpus, port) in enumerate(zip(gpu_assignments, ports, strict=False)):
+        if config.inference.backend == "sglang":
+            engine = SGLangEngine(
+                model_name=config.model.name,
+                port=port,
+                cuda_device_ids=gpus,
+                output_dir=output_dir,
+                dtype=config.model.dtype,
+                mem_fraction=config.inference.mem_fraction,
+            )
+        elif config.inference.backend == "vllm":
+            engine = VLLMEngine(
+                model_name=config.model.name,
+                port=port,
+                cuda_device_ids=gpus,
+                output_dir=output_dir,
+                dtype=config.model.dtype,
+                gpu_memory_utilization=config.inference.mem_fraction,
+            )
+        else:
+            raise ValueError(f"Unknown inference backend: {config.inference.backend}")
+        engines.append(engine)
+
+    return engines
 
 
 def _make_loss_fn(
@@ -648,17 +674,32 @@ async def _grpo_train_async(
     config.save(output_dir / "config.json")
     metrics_logger = JSONLLogger(output_dir)
 
-    # Launch inference engine
-    inference_engine = _create_inference_engine(config, output_dir)
-    gpu_str = ",".join(str(g) for g in config.inference.cuda_device_ids)
-    logger.info(f"Launching {inference_engine.name} on GPU {gpu_str}...")
+    # Launch inference engine(s) - multi-engine for higher throughput
+    inference_engines = _create_inference_engines(config, output_dir)
+    num_engines = len(inference_engines)
 
-    inference_engine.launch()
-    inference_engine.start_log_tailer()
+    if num_engines == 1:
+        gpu_str = ",".join(str(g) for g in config.inference.cuda_device_ids)
+        logger.info(f"Launching {inference_engines[0].name} on GPU {gpu_str}...")
+    else:
+        logger.info(f"Launching {num_engines} inference engines (PipelineRL-style)...")
+        for i, engine in enumerate(inference_engines):
+            gpu_str = ",".join(str(g) for g in config.inference.gpu_assignments[i])
+            logger.info(f"  Engine {i}: {engine.name} on GPU {gpu_str}, port {engine.port}")
+
+    for engine in inference_engines:
+        engine.launch()
+        engine.start_log_tailer()
+
+    # Primary engine for backward compat (endpoint creation uses first engine's base_url)
+    inference_engine = inference_engines[0]
 
     try:
-        await inference_engine.wait_until_ready()
-        logger.info(f"{inference_engine.name} ready")
+        # Wait for all engines to be ready in parallel
+        async with trio.open_nursery() as startup_nursery:
+            for engine in inference_engines:
+                startup_nursery.start_soon(engine.wait_until_ready)
+        logger.info(f"All {num_engines} inference engine(s) ready")
 
         # Setup training backend
         backend, tokenizer, endpoint = _setup_training_backend(config, output_dir, inference_engine)
@@ -690,9 +731,9 @@ async def _grpo_train_async(
 
         # Initialize NCCL weight sync if enabled (PipelineRL-style in-flight updates)
         if config.checkpoint.weight_sync_mode == "nccl":
-            logger.info("Initializing NCCL weight sync...")
+            logger.info(f"Initializing NCCL weight sync with {num_engines} engine(s)...")
             await backend.init_nccl_weight_sync(
-                inference_endpoints=[inference_engine.base_url],
+                inference_endpoints=[e.base_url for e in inference_engines],
                 master_port=config.checkpoint.nccl_master_port,
             )
             logger.info("NCCL weight sync initialized")
@@ -729,17 +770,20 @@ async def _grpo_train_async(
             )
 
             weight_sync_manager = PipelineWeightSyncManager(
-                inference_endpoints=[inference_engine.base_url],
+                inference_endpoints=[e.base_url for e in inference_engines],
                 max_lag=config.checkpoint.max_lag,
                 nccl_master_port=config.checkpoint.nccl_master_port,
             )
 
             logger.info(
                 f"Using TRUE PipelineRL mode (max_lag={config.checkpoint.max_lag}, "
-                f"queue_size={config.checkpoint.pipeline_queue_size})"
+                f"queue_size={config.checkpoint.pipeline_queue_size}, "
+                f"engines={num_engines})"
             )
             logger.info("  - Background sampling: ON (inference never stops)")
             logger.info("  - Non-blocking weight sync: ON (training never waits)")
+            if num_engines > 1:
+                logger.info(f"  - Multi-engine: {num_engines} inference servers")
 
             try:
                 # Initialize NCCL for non-blocking weight sync

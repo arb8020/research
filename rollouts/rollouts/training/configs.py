@@ -190,15 +190,53 @@ class TrainerConfig:
 class InferenceConfig:
     """Inference server settings (SGLang/vLLM).
 
+    Supports multiple inference engines for higher throughput (PipelineRL-style).
+    Each GPU in cuda_device_ids gets its own inference server on a separate port.
+
+    Example:
+        # Single inference engine on GPU 0
+        InferenceConfig(cuda_device_ids=(0,), port=30000)
+
+        # Two inference engines on GPUs 0 and 1 (ports 30000, 30001)
+        InferenceConfig(cuda_device_ids=(0, 1), port=30000)
+
+        # TP=2: one engine using 2 GPUs
+        InferenceConfig(cuda_device_ids=(0, 1), port=30000, tensor_parallel_size=2)
+
     Note: cuda_device_ids is deprecated in favor of DistributedConfig.inference_gpus.
     When DistributedConfig is provided, it takes precedence.
     """
 
     backend: str = "sglang"  # "sglang" or "vllm"
-    port: int = 30000
-    # DEPRECATED: Use DistributedConfig.inference_gpus instead
+    port: int = 30000  # Base port (engines use port, port+1, ...)
     cuda_device_ids: tuple[int, ...] = (0,)
     mem_fraction: float = 0.7
+    tensor_parallel_size: int = 1  # GPUs per engine (1 = each GPU is its own engine)
+
+    @property
+    def num_engines(self) -> int:
+        """Number of inference engines to launch."""
+        return len(self.cuda_device_ids) // self.tensor_parallel_size
+
+    @property
+    def ports(self) -> tuple[int, ...]:
+        """Port for each inference engine."""
+        return tuple(self.port + i for i in range(self.num_engines))
+
+    @property
+    def gpu_assignments(self) -> list[tuple[int, ...]]:
+        """GPU assignment for each engine (supports TP)."""
+        tp = self.tensor_parallel_size
+        gpus = self.cuda_device_ids
+        return [tuple(gpus[i * tp : (i + 1) * tp]) for i in range(self.num_engines)]
+
+    def __post_init__(self) -> None:
+        """Validate configuration."""
+        if len(self.cuda_device_ids) % self.tensor_parallel_size != 0:
+            raise ValueError(
+                f"tensor_parallel_size={self.tensor_parallel_size} must divide "
+                f"len(cuda_device_ids)={len(self.cuda_device_ids)}"
+            )
 
 
 @dataclass(frozen=True)

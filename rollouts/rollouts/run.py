@@ -51,6 +51,8 @@ if TYPE_CHECKING:
     from bifrost import BifrostClient
     from broker import ClientGPUInstance
 
+    from .training.multi_node import MultiNodeConfig
+
 logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -525,8 +527,36 @@ Examples:
     print(f"Config: {config_path}")
     print(f"Hardware: {hardware.gpu_count}x {hardware.gpu_type} on {hardware.provider}")
 
+    # Check for multi-node config (only if not forced to local)
+    multi_node: MultiNodeConfig | None = None
+    if not args.local:
+        multi_node = getattr(config_module, "multi_node", None)
+
     # Dispatch based on provider
-    if hardware.provider == "modal":
+    if multi_node is not None:
+        # Multi-node distributed training
+        import trio
+
+        from .training.multi_node import launch_multi_node_training
+
+        print(f"Multi-node: {multi_node.num_nodes} nodes × {multi_node.gpus_per_node} GPUs")
+        print(f"  Inference: {multi_node.total_inference_engines} engines")
+        print(f"  Training: {multi_node.total_trainer_gpus} FSDP ranks")
+
+        async def _run_multi_node() -> None:
+            allocation = await launch_multi_node_training(
+                config=multi_node,
+                train_config=config_module.config,
+            )
+            print(f"\nCluster launched: {allocation.fsdp_world_size} FSDP ranks")
+            print(f"Inference endpoints: {allocation.all_inference_endpoints}")
+            print("\nMonitor with:")
+            for node in allocation.nodes:
+                print(f"  ssh root@{node.public_ip} tmux attach -t trainer_0")
+
+        trio.run(_run_multi_node)
+
+    elif hardware.provider == "modal":
         # Modal execution (fast cold start)
         import trio
 
