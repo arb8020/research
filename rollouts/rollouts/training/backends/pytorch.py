@@ -854,6 +854,7 @@ class PyTorchTrainingBackend:
 
         # Store endpoints for later use
         self._nccl_inference_endpoints = list(inference_endpoints)
+        group_name = "weight_sync"
 
         # NCCL init requires all ranks to join concurrently.
         # SGLang's /init_weights_update_group blocks on dist.init_process_group,
@@ -873,7 +874,7 @@ class PyTorchTrainingBackend:
                             "master_port": master_port,
                             "rank_offset": rank,
                             "world_size": world_size,
-                            "group_name": "weight_sync",
+                            "group_name": group_name,
                             "backend": "nccl",
                         },
                     )
@@ -883,16 +884,25 @@ class PyTorchTrainingBackend:
                     results.append((endpoint, False, str(e)))
 
         async def trainer_join() -> None:
-            """Trainer joins as rank 0 (runs in thread pool since it's blocking)."""
-            if not dist.is_initialized():
-                await trio.to_thread.run_sync(
-                    lambda: dist.init_process_group(
-                        backend="nccl",
-                        init_method=f"tcp://{master_addr}:{master_port}",
-                        rank=trainer_rank,
-                        world_size=world_size,
-                    )
+            """Trainer joins weight-sync NCCL group as rank 0 (blocking, so run in thread)."""
+            from ...inference.weight_sync import create_stateless_process_group
+
+            def _join() -> Any:
+                # NCCL groups should be created with the correct device selected.
+                if self.device is not None and self.device.type == "cuda":
+                    torch.cuda.set_device(self.device)
+
+                return create_stateless_process_group(
+                    master_addr=master_addr,
+                    master_port=master_port,
+                    rank=trainer_rank,
+                    world_size=world_size,
+                    group_name=group_name,
+                    backend="nccl",
+                    timeout_seconds=300.0,
                 )
+
+            self._nccl_process_group = await trio.to_thread.run_sync(_join)
 
         # Launch all NCCL participants concurrently
         results: list[tuple[str, bool, str]] = []
@@ -912,12 +922,7 @@ class PyTorchTrainingBackend:
             if not success:
                 raise RuntimeError(f"Failed to register {endpoint}: {msg}")
             logger.info(f"  {endpoint} registered successfully")
-
-        # Create named group for weight sync
-        self._nccl_process_group = dist.new_group(
-            ranks=list(range(world_size)),
-            backend="nccl",
-        )
+        assert self._nccl_process_group is not None, "Failed to create NCCL weight-sync group"
 
         logger.info("NCCL weight sync group initialized successfully")
 
@@ -935,8 +940,6 @@ class PyTorchTrainingBackend:
             >>> # Inference engines now have updated weights
         """
         import logging
-
-        import httpx
 
         logger = logging.getLogger(__name__)
 
@@ -969,8 +972,11 @@ class PyTorchTrainingBackend:
 
         async def notify_inference_server(endpoint: str) -> None:
             """Tell inference server to start receiving weights via NCCL."""
-            async with httpx.AsyncClient(timeout=300.0) as client:
-                await client.post(
+            import requests
+
+            # Use synchronous requests in thread pool for reliable trio integration
+            def _post() -> None:
+                requests.post(
                     f"{endpoint}/update_weights_from_distributed",
                     json={
                         "names": [p["name"] for p in param_info],
@@ -979,7 +985,10 @@ class PyTorchTrainingBackend:
                         "group_name": "weight_sync",
                         "weight_version": str(self.weight_version),
                     },
+                    timeout=300.0,
                 )
+
+            await trio.to_thread.run_sync(_post)
 
         async def broadcast_weights() -> None:
             """Broadcast weights via NCCL (runs in thread pool since blocking)."""

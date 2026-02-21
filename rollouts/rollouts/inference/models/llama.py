@@ -1,9 +1,12 @@
-"""Llama model implementation for inference.
+"""Llama model implementation for inference with tensor parallelism.
 
 Compatible with Llama 2, Llama 3, and similar architectures.
+For TP: heads are sharded across GPUs, row-parallel layers all_reduce.
 """
 
 from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn as nn
@@ -16,9 +19,12 @@ from ..layers.norm import RMSNorm
 from ..layers.rotary import RotaryEmbedding, apply_rotary_pos_emb
 from .config import ModelConfig
 
+if TYPE_CHECKING:
+    from ..tp import TPConfig
+
 
 class LlamaAttention(nn.Module):
-    """Llama attention layer."""
+    """Llama attention layer with tensor parallelism support."""
 
     def __init__(
         self,
@@ -26,15 +32,14 @@ class LlamaAttention(nn.Module):
         layer_idx: int,
         rotary: RotaryEmbedding,
         dtype: torch.dtype,
+        tp: TPConfig | None = None,
     ) -> None:
         super().__init__()
         self.layer_idx = layer_idx
-        self.num_q_heads = config.num_attention_heads
-        self.num_kv_heads = config.num_key_value_heads
         self.head_dim = config.head_dim
         self.rotary = rotary
 
-        # QKV projection (merged)
+        # QKV projection (merged) - column parallel
         self.qkv_proj = QKVParallelLinear(
             hidden_size=config.hidden_size,
             num_q_heads=config.num_attention_heads,
@@ -42,14 +47,21 @@ class LlamaAttention(nn.Module):
             head_dim=config.head_dim,
             bias=False,
             dtype=dtype,
+            tp=tp,
         )
 
-        # Output projection
+        # Store local head counts (after TP sharding)
+        self.num_q_heads = self.qkv_proj.local_num_q_heads
+        self.num_kv_heads = self.qkv_proj.local_num_kv_heads
+
+        # Output projection - row parallel (input is sharded across heads)
+        # Input is local_num_q_heads * head_dim from each rank
         self.o_proj = RowParallelLinear(
             in_features=config.num_attention_heads * config.head_dim,
             out_features=config.hidden_size,
             bias=False,
             dtype=dtype,
+            tp=tp,
         )
 
     def forward(
@@ -74,9 +86,9 @@ class LlamaAttention(nn.Module):
         # QKV projection
         q, k, v = self.qkv_proj(hidden_states)
 
-        # Reshape for attention
-        # q: [total_tokens, num_q_heads * head_dim] -> [total_tokens, num_q_heads, head_dim]
-        # k: [total_tokens, num_kv_heads * head_dim] -> [total_tokens, num_kv_heads, head_dim]
+        # Reshape for attention (using local head counts)
+        # q: [total_tokens, local_num_q_heads * head_dim] -> [total_tokens, local_num_q_heads, head_dim]
+        # k: [total_tokens, local_num_kv_heads * head_dim] -> [total_tokens, local_num_kv_heads, head_dim]
         q = q.view(-1, self.num_q_heads, self.head_dim)
         k = k.view(-1, self.num_kv_heads, self.head_dim)
         v = v.view(-1, self.num_kv_heads, self.head_dim)
@@ -96,31 +108,38 @@ class LlamaAttention(nn.Module):
         )
 
         # Reshape and project
-        # attn_output: [total_tokens, num_q_heads, head_dim]
+        # attn_output: [total_tokens, local_num_q_heads, head_dim]
         attn_output = attn_output.view(-1, self.num_q_heads * self.head_dim)
         return self.o_proj(attn_output)
 
 
 class LlamaMLP(nn.Module):
-    """Llama MLP layer (SwiGLU)."""
+    """Llama MLP layer (SwiGLU) with tensor parallelism support."""
 
-    def __init__(self, config: ModelConfig, dtype: torch.dtype) -> None:
+    def __init__(
+        self,
+        config: ModelConfig,
+        dtype: torch.dtype,
+        tp: TPConfig | None = None,
+    ) -> None:
         super().__init__()
 
-        # Gate and up projection (merged)
+        # Gate and up projection (merged) - column parallel
         self.gate_up_proj = GateUpParallelLinear(
             hidden_size=config.hidden_size,
             intermediate_size=config.intermediate_size,
             bias=False,
             dtype=dtype,
+            tp=tp,
         )
 
-        # Down projection
+        # Down projection - row parallel
         self.down_proj = RowParallelLinear(
             in_features=config.intermediate_size,
             out_features=config.hidden_size,
             bias=False,
             dtype=dtype,
+            tp=tp,
         )
 
     def forward(self, x: Tensor) -> Tensor:
@@ -130,7 +149,7 @@ class LlamaMLP(nn.Module):
 
 
 class LlamaDecoderLayer(nn.Module):
-    """Single Llama transformer layer."""
+    """Single Llama transformer layer with tensor parallelism support."""
 
     def __init__(
         self,
@@ -138,10 +157,11 @@ class LlamaDecoderLayer(nn.Module):
         layer_idx: int,
         rotary: RotaryEmbedding,
         dtype: torch.dtype,
+        tp: TPConfig | None = None,
     ) -> None:
         super().__init__()
-        self.self_attn = LlamaAttention(config, layer_idx, rotary, dtype)
-        self.mlp = LlamaMLP(config, dtype)
+        self.self_attn = LlamaAttention(config, layer_idx, rotary, dtype, tp)
+        self.mlp = LlamaMLP(config, dtype, tp)
         self.input_layernorm = RMSNorm(config.hidden_size, config.rms_norm_eps, dtype)
         self.post_attention_layernorm = RMSNorm(config.hidden_size, config.rms_norm_eps, dtype)
 
@@ -180,18 +200,20 @@ class LlamaDecoderLayer(nn.Module):
 
 
 class LlamaModel(nn.Module):
-    """Llama model (without LM head)."""
+    """Llama model (without LM head) with tensor parallelism support."""
 
     def __init__(
         self,
         config: ModelConfig,
         device: torch.device,
         dtype: torch.dtype,
+        tp: TPConfig | None = None,
     ) -> None:
         super().__init__()
         self.config = config
+        self.tp = tp
 
-        # Token embeddings
+        # Token embeddings (not sharded - each rank has full embedding)
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, dtype=dtype)
 
         # Shared rotary embeddings
@@ -199,7 +221,7 @@ class LlamaModel(nn.Module):
 
         # Transformer layers
         self.layers = nn.ModuleList([
-            LlamaDecoderLayer(config, i, self.rotary, dtype)
+            LlamaDecoderLayer(config, i, self.rotary, dtype, tp)
             for i in range(config.num_hidden_layers)
         ])
 
@@ -237,19 +259,21 @@ class LlamaModel(nn.Module):
 
 
 class LlamaForCausalLM(nn.Module):
-    """Llama for causal language modeling."""
+    """Llama for causal language modeling with tensor parallelism support."""
 
     def __init__(
         self,
         config: ModelConfig,
         device: torch.device,
         dtype: torch.dtype = torch.bfloat16,
+        tp: TPConfig | None = None,
     ) -> None:
         super().__init__()
         self.config = config
-        self.model = LlamaModel(config, device, dtype)
+        self.tp = tp
+        self.model = LlamaModel(config, device, dtype, tp)
 
-        # LM head
+        # LM head (not sharded - each rank computes full logits)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False, dtype=dtype)
 
         # Tie weights if configured

@@ -101,9 +101,21 @@ def create_stateless_process_group(
     # Use PrefixStore to namespace this group
     store = PrefixStore(group_name, store)
 
-    # Create process group without touching global state
-    # NOTE: PyTorch 2.6+ renamed pg_options to backend_options
-    pg_options_param = "backend_options" if torch.__version__ >= "2.6" else "pg_options"
+    # Create process group without touching the *default* global process group.
+    # NOTE: PyTorch has renamed the kwarg from `pg_options` → `backend_options`
+    # in some versions; detect by signature instead of version-string compares.
+    import inspect
+
+    pg_helper_sig = inspect.signature(_new_process_group_helper)
+    if "backend_options" in pg_helper_sig.parameters:
+        pg_kwargs = {"backend_options": None}
+    elif "pg_options" in pg_helper_sig.parameters:
+        pg_kwargs = {"pg_options": None}
+    else:
+        raise RuntimeError(
+            "Unsupported torch.distributed version: _new_process_group_helper has neither "
+            "'backend_options' nor 'pg_options' parameter."
+        )
 
     pg, _ = _new_process_group_helper(
         world_size,
@@ -113,7 +125,7 @@ def create_stateless_process_group(
         store,
         group_name=group_name,
         timeout=timeout,
-        **{pg_options_param: None},
+        **pg_kwargs,
     )
 
     # Register in world for cleanup

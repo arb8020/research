@@ -50,7 +50,7 @@ from .models.llama_functional import (
 from .models.llama_functional import (
     load_config as load_functional_config,
 )
-from .models.weight import load_weights, remap_weights_llama
+from .models.weight import load_weights, remap_weights_llama, shard_weights_for_tp
 from .overlap import (
     ForwardInput,
     ForwardOutput,
@@ -66,6 +66,7 @@ from .scheduler import (
     has_pending_work,
     schedule_step,
 )
+from .tp import TPConfig
 
 logger = logging.getLogger(__name__)
 
@@ -98,12 +99,18 @@ class EngineConfig:
     # Model implementation
     model_impl: Literal["module", "functional"] = "module"
 
+    # Tensor parallelism settings
+    tp_rank: int = 0
+    tp_size: int = 1
+
     def __post_init__(self) -> None:
         assert self.max_batch_size > 0
         assert self.max_tokens_per_batch > 0
         assert self.max_seq_len > 0
         if self.prefill_chunk_size is not None:
             assert self.prefill_chunk_size > 0
+        assert self.tp_rank >= 0 and self.tp_rank < self.tp_size
+        assert self.tp_size >= 1
 
 
 class PageTableManager:
@@ -164,6 +171,12 @@ class InferenceEngineV2:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._is_cuda = self.device.type == "cuda"
 
+        # Tensor parallelism config
+        self.tp: TPConfig | None = None
+        if config.tp_size > 1:
+            self.tp = TPConfig(rank=config.tp_rank, world_size=config.tp_size)
+            # Note: caller must call engine.init_tp_group() before using the engine
+
         # Load model config
         self.model_config = load_model_config(config.model_path)
 
@@ -171,11 +184,17 @@ class InferenceEngineV2:
         self.tokenizer = self._load_tokenizer(config.model_path)
         self.eos_token_id = self.tokenizer.eos_token_id
 
-        # KV cache
+        # KV cache (use local head count for TP)
         num_slots = config.max_batch_size * config.max_seq_len
+        num_kv_heads = self.model_config.num_key_value_heads
+        if self.tp is not None and self.tp.is_distributed:
+            from .tp import get_local_size
+
+            num_kv_heads = get_local_size(num_kv_heads, self.tp.world_size)
+
         cache_config = CacheConfig(
             num_layers=self.model_config.num_hidden_layers,
-            num_heads=self.model_config.num_key_value_heads,
+            num_heads=num_kv_heads,
             head_dim=self.model_config.head_dim,
             num_slots=num_slots,
             dtype=config.dtype,
@@ -266,33 +285,68 @@ class InferenceEngineV2:
             backend_type == "auto" and is_flash_attn_available()
         )
 
+        # Use local head counts for TP
+        num_q_heads = self.model_config.num_attention_heads
+        num_kv_heads = self.model_config.num_key_value_heads
+        if self.tp is not None and self.tp.is_distributed:
+            from .tp import get_local_size
+
+            num_q_heads = get_local_size(num_q_heads, self.tp.world_size)
+            num_kv_heads = get_local_size(num_kv_heads, self.tp.world_size)
+
         if use_flash and is_flash_attn_available():
             return FlashAttentionBackend(
                 k_cache=self.kv_pool.k_cache,
                 v_cache=self.kv_pool.v_cache,
-                num_q_heads=self.model_config.num_attention_heads,
-                num_kv_heads=self.model_config.num_key_value_heads,
+                num_q_heads=num_q_heads,
+                num_kv_heads=num_kv_heads,
                 head_dim=self.model_config.head_dim,
             )
         else:
             return ReferenceAttentionBackend(
                 k_cache=self.kv_pool.k_cache,
                 v_cache=self.kv_pool.v_cache,
-                num_q_heads=self.model_config.num_attention_heads,
-                num_kv_heads=self.model_config.num_key_value_heads,
+                num_q_heads=num_q_heads,
+                num_kv_heads=num_kv_heads,
                 head_dim=self.model_config.head_dim,
             )
 
     def _load_model(self, model_path: str, dtype: torch.dtype) -> LlamaForCausalLM:
-        model = LlamaForCausalLM(self.model_config, self.device, dtype)
+        model = LlamaForCausalLM(self.model_config, self.device, dtype, tp=self.tp)
         model.to(self.device)
 
         hf_weights = load_weights(model_path, self.device, dtype)
         remapped = remap_weights_llama(hf_weights, self.model_config.num_hidden_layers)
+
+        # Shard weights for TP
+        if self.tp is not None and self.tp.is_distributed:
+            remapped = shard_weights_for_tp(
+                remapped,
+                self.tp,
+                num_q_heads=self.model_config.num_attention_heads,
+                num_kv_heads=self.model_config.num_key_value_heads,
+                head_dim=self.model_config.head_dim,
+                intermediate_size=self.model_config.intermediate_size,
+            )
+
         model.load_weights(remapped)
 
         model.eval()
         return model
+
+    def init_tp_group(
+        self,
+        master_addr: str = "127.0.0.1",
+        master_port: int = 29500,
+    ) -> None:
+        """Initialize tensor parallelism process group.
+
+        Call this before using the engine for multi-GPU inference.
+        Must be called once per process.
+        """
+        if self.tp is not None:
+            self.tp.init_process_group(master_addr, master_port)
+            logger.info(f"TP initialized: rank={self.tp.rank}/{self.tp.world_size}")
 
     def _model_forward(
         self,
@@ -592,23 +646,20 @@ class InferenceEngineV2:
 
         Call this after the trainer broadcasts weights.
         Blocks until weights are received, then reloads model.
+
+        For TP: receives full weights, shards them, and loads shards.
         """
         receiver = getattr(self, "_weight_sync_receiver", None)
         assert receiver is not None, "Call init_weight_sync() first"
 
-        # Get current model's state dict as template
-        if self._use_functional_model:
-            assert self._functional_weights is not None
-            template = self._functional_weights
+        if self.tp is not None and self.tp.is_distributed:
+            # TP mode: receive full weights, then shard
+            self._receive_weights_tp(receiver)
         else:
-            assert self.model is not None
-            template = self.model.state_dict()
+            # Single GPU: receive directly into model
+            self._receive_weights_single_gpu(receiver)
 
-        # Receive in-place into template
-        receiver.receive_weights_into(template)
-
-        # Reload (handles CUDA graph + radix cache invalidation)
-        # Note: For in-place receive, we still need to invalidate caches
+        # Invalidate caches
         if self._use_cuda_graphs:
             self._graph_state.clear()
             logger.info("CUDA graphs invalidated (will re-capture)")
@@ -624,6 +675,117 @@ class InferenceEngineV2:
 
         self.kv_pool.reset()
         logger.info(f"Weights received and loaded (v{receiver.weight_version})")
+
+    def _receive_weights_single_gpu(self, receiver: Any) -> None:
+        """Receive weights directly into model (non-TP path)."""
+        if self._use_functional_model:
+            assert self._functional_weights is not None
+            receiver.receive_weights_into(self._functional_weights)
+        else:
+            assert self.model is not None
+            receiver.receive_weights_into(self.model.state_dict())
+
+    def _receive_weights_tp(self, receiver: Any) -> None:
+        """Receive full weights, shard them for this TP rank, and load."""
+
+        assert self.tp is not None
+
+        # Build template with FULL (unsharded) shapes for receiving
+        param_infos = self._build_full_param_infos()
+
+        # Receive full weights
+        full_weights = receiver.receive_weights(param_infos)
+
+        # Remap from HF naming to our naming
+        remapped = remap_weights_llama(full_weights, self.model_config.num_hidden_layers)
+
+        # Shard for this TP rank
+        sharded = shard_weights_for_tp(
+            remapped,
+            self.tp,
+            num_q_heads=self.model_config.num_attention_heads,
+            num_kv_heads=self.model_config.num_key_value_heads,
+            head_dim=self.model_config.head_dim,
+            intermediate_size=self.model_config.intermediate_size,
+        )
+
+        # Load into model
+        if self._use_functional_model:
+            assert self._functional_weights is not None
+            for name, param in sharded.items():
+                if name in self._functional_weights:
+                    self._functional_weights[name].copy_(param)
+        else:
+            assert self.model is not None
+            self.model.load_weights(sharded)
+
+    def _build_full_param_infos(self) -> list[Any]:
+        """Build ParamInfo list with full (unsharded) weight shapes.
+
+        Used for receiving full weights from trainer before sharding.
+        """
+        from .weight_sync import ParamInfo
+
+        # Get shapes from model config (full sizes, not sharded)
+        hidden_size = self.model_config.hidden_size
+        num_q_heads = self.model_config.num_attention_heads
+        num_kv_heads = self.model_config.num_key_value_heads
+        head_dim = self.model_config.head_dim
+        intermediate_size = self.model_config.intermediate_size
+        vocab_size = self.model_config.vocab_size
+        num_layers = self.model_config.num_hidden_layers
+
+        q_size = num_q_heads * head_dim
+        kv_size = num_kv_heads * head_dim
+        dtype = self.config.dtype
+
+        infos = []
+
+        # Embeddings
+        infos.append(ParamInfo("model.embed_tokens.weight", (vocab_size, hidden_size), dtype))
+
+        # Layers
+        for i in range(num_layers):
+            prefix = f"model.layers.{i}"
+
+            # QKV (separate in HF format)
+            infos.append(
+                ParamInfo(f"{prefix}.self_attn.q_proj.weight", (q_size, hidden_size), dtype)
+            )
+            infos.append(
+                ParamInfo(f"{prefix}.self_attn.k_proj.weight", (kv_size, hidden_size), dtype)
+            )
+            infos.append(
+                ParamInfo(f"{prefix}.self_attn.v_proj.weight", (kv_size, hidden_size), dtype)
+            )
+            infos.append(
+                ParamInfo(f"{prefix}.self_attn.o_proj.weight", (hidden_size, q_size), dtype)
+            )
+
+            # MLP (separate in HF format)
+            infos.append(
+                ParamInfo(f"{prefix}.mlp.gate_proj.weight", (intermediate_size, hidden_size), dtype)
+            )
+            infos.append(
+                ParamInfo(f"{prefix}.mlp.up_proj.weight", (intermediate_size, hidden_size), dtype)
+            )
+            infos.append(
+                ParamInfo(f"{prefix}.mlp.down_proj.weight", (hidden_size, intermediate_size), dtype)
+            )
+
+            # Norms
+            infos.append(ParamInfo(f"{prefix}.input_layernorm.weight", (hidden_size,), dtype))
+            infos.append(
+                ParamInfo(f"{prefix}.post_attention_layernorm.weight", (hidden_size,), dtype)
+            )
+
+        # Final norm
+        infos.append(ParamInfo("model.norm.weight", (hidden_size,), dtype))
+
+        # LM head
+        infos.append(ParamInfo("lm_head.weight", (vocab_size, hidden_size), dtype))
+
+        return infos
 
     def cleanup_weight_sync(self) -> None:
         """Cleanup weight sync resources."""

@@ -106,6 +106,8 @@ async def _deploy_and_submit(
     from broker import AccountError, ProvisionError
     from pytui import Console
 
+    from .jobs import register_job, update_job_node
+
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     run_name = f"run_{timestamp}"
 
@@ -113,6 +115,25 @@ async def _deploy_and_submit(
     local_run_dir = REPO_ROOT / "results" / "rl" / run_name
     log = _setup_run_logging(local_run_dir)
     log("run_start", config=script_path, gpu_count=gpu_count, gpu_type=gpu_type, node_id=node_id)
+
+    # Register job in local registry BEFORE provisioning
+    # Use placeholder node_id if reusing, will be updated after provision
+    initial_provider = "runpod"  # Default, updated after provision
+    initial_node_id = "pending"
+    if node_id:
+        parts = node_id.split(":", 1)
+        if len(parts) == 2:
+            initial_provider, initial_node_id = parts
+    elif provider:
+        initial_provider = provider
+
+    register_job(
+        job_id=run_name,
+        provider=initial_provider,
+        node_id=initial_node_id,
+        config_path=script_path,
+        log_path=f"results/rl/{run_name}",
+    )
 
     logs_port = 9100
 
@@ -159,6 +180,9 @@ async def _deploy_and_submit(
                 bifrost, instance = await acquire_node(node_id=node_id)
                 spinner.update(f"Connected to {node_id}")
                 log("provision_done", node_id=node_id, reused=True)
+                # Update job registry with actual node info
+                if instance:
+                    update_job_node(run_name, instance.provider, instance.id)
             else:
                 bifrost, instance = await acquire_node(
                     provision=GPUQuery(
@@ -177,6 +201,9 @@ async def _deploy_and_submit(
                     node_id=node_str,
                     provider=instance.provider if instance else None,
                 )
+                # Update job registry with actual node info
+                if instance:
+                    update_job_node(run_name, instance.provider, instance.id)
     except AccountError as e:
         logger.debug("AccountError details", exc_info=True)
         print(f"\nError: {e.user_message()}", file=sys.stderr)
