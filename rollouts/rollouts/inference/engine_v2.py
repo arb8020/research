@@ -465,6 +465,8 @@ class InferenceEngineV2:
             for handle in self._cache_handles.values():
                 unlock(self._radix_state, handle)
             self._cache_handles.clear()
+            # Reinitialize radix state to clear all cached prefixes
+            init_radix_state(self._radix_state, self.device)
         self._chunk_pending_tokens.clear()
 
         self.state = empty_scheduler_state()
