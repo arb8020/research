@@ -443,9 +443,14 @@ async def _process_training_step(
     logger.info("metrics", extra={"step": step + 1, **step_metrics})
 
     if (step + 1) % config.checkpoint.log_every == 0:
+        # Include key diagnostic metrics for debugging loss issues
+        masked_frac = accumulated_metrics.get("masked_frac", 0.0)
+        avg_ratio = accumulated_metrics.get("avg_ratio", 1.0)
+        avg_advantage = accumulated_metrics.get("avg_advantage", 0.0)
         logger.info(
             f"Step {step + 1}: reward={mean_reward:.3f} | "
-            f"pg_loss={pg_loss:.4f} | entropy={entropy:.2f}"
+            f"pg_loss={pg_loss:.4f} | entropy={entropy:.2f} | "
+            f"masked={masked_frac:.2f} | ratio={avg_ratio:.3f} | adv={avg_advantage:.3f}"
         )
 
     # Checkpoint (save to disk for recovery)
@@ -561,9 +566,14 @@ async def _process_training_step_no_sync(
     logger.info("metrics", extra={"step": step + 1, **step_metrics})
 
     if (step + 1) % config.checkpoint.log_every == 0:
+        # Include key diagnostic metrics for debugging loss issues
+        masked_frac = accumulated_metrics.get("masked_frac", 0.0)
+        avg_ratio = accumulated_metrics.get("avg_ratio", 1.0)
+        avg_advantage = accumulated_metrics.get("avg_advantage", 0.0)
         logger.info(
             f"Step {step + 1}: reward={mean_reward:.3f} | "
-            f"pg_loss={pg_loss:.4f} | entropy={entropy:.2f}"
+            f"pg_loss={pg_loss:.4f} | entropy={entropy:.2f} | "
+            f"masked={masked_frac:.2f} | ratio={avg_ratio:.3f} | adv={avg_advantage:.3f}"
         )
 
     # Checkpoint (save to disk for recovery)
