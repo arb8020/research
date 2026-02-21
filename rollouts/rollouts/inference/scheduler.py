@@ -96,8 +96,11 @@ class ScheduleResult:
 
 
 def add_request(state: SchedulerState, req: Req) -> SchedulerState:
-    """Add a new request to the prefill queue."""
-    assert req.cached_len == 0, "new request should have cached_len=0"
+    """Add a new request to the prefill queue.
+
+    Note: cached_len may be > 0 if radix cache found a prefix match.
+    """
+    assert req.cached_len <= req.device_len, "cached_len exceeds device_len"
     assert req.uid not in {r.uid for r in state.prefill_queue}, "duplicate uid in prefill"
     assert req.uid not in {r.uid for r in state.decode_set}, "duplicate uid in decode"
 
