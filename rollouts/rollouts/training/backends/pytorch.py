@@ -956,8 +956,9 @@ class PyTorchTrainingBackend:
             state_dict = self.model.state_dict()
 
         # Build parameter info for inference servers
+        # SGLang expects dtype without "torch." prefix (e.g., "bfloat16" not "torch.bfloat16")
         param_info = [
-            {"name": name, "shape": list(p.shape), "dtype": str(p.dtype)}
+            {"name": name, "shape": list(p.shape), "dtype": str(p.dtype).replace("torch.", "")}
             for name, p in state_dict.items()
         ]
 

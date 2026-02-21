@@ -256,7 +256,7 @@ def sync_weights_nccl(
 
     # 1. Send metadata to inference engines (names, shapes, dtypes)
     param_info = [
-        {"name": name, "shape": list(p.shape), "dtype": str(p.dtype)}
+        {"name": name, "shape": list(p.shape), "dtype": str(p.dtype).replace("torch.", "")}
         for name, p in state_dict.items()
     ]
 
@@ -949,7 +949,7 @@ class PipelineWeightSyncManager:
 
         # Build parameter info
         param_info = [
-            {"name": name, "shape": list(p.shape), "dtype": str(p.dtype)}
+            {"name": name, "shape": list(p.shape), "dtype": str(p.dtype).replace("torch.", "")}
             for name, p in state_dict.items()
         ]
 
