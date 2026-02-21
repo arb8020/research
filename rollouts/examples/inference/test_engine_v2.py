@@ -388,6 +388,142 @@ def test_determinism(engine: Any, config: TestConfig) -> dict:
     return result
 
 
+def test_single_token_prompt(engine: Any, _config: TestConfig) -> dict:
+    """Test 11: Edge case - single token prompt."""
+    from rollouts.inference.core import SamplingParams
+
+    emit_event("test_start", test="single_token_prompt")
+    start = time.perf_counter()
+
+    engine.shutdown()
+
+    # Single token prompt (just the BOS or a single word)
+    prompt_ids = [engine.tokenizer.bos_token_id or 1]
+    params = SamplingParams(max_tokens=5, temperature=0.0)
+
+    engine.add_request(prompt_ids, params)
+    finished = engine.run_to_completion()
+
+    success = len(finished) == 1 and len(finished[0].input_ids) > len(prompt_ids)
+
+    duration_ms = (time.perf_counter() - start) * 1000
+
+    result = {
+        "test": "single_token_prompt",
+        "success": success,
+        "duration_ms": duration_ms,
+        "prompt_len": len(prompt_ids),
+        "output_len": len(finished[0].input_ids) if finished else 0,
+    }
+    emit_event("test_done", **result)
+    return result
+
+
+def test_max_length_generation(engine: Any, config: TestConfig) -> dict:
+    """Test 12: Edge case - generate until max length."""
+    from rollouts.inference.core import SamplingParams
+
+    emit_event("test_start", test="max_length_generation")
+    start = time.perf_counter()
+
+    engine.shutdown()
+
+    prompt = "Count: 1, 2, 3,"
+    # Request more tokens than we'll actually generate (should hit max_tokens)
+    max_tokens = 50
+    params = SamplingParams(max_tokens=max_tokens, temperature=0.0, ignore_eos=True)
+
+    engine.add_request(prompt, params)
+    finished = engine.run_to_completion()
+
+    prompt_len = len(engine.tokenizer.encode(prompt))
+    output_len = len(finished[0].input_ids) - prompt_len
+
+    # Should generate exactly max_tokens (or close to it)
+    success = output_len == max_tokens
+
+    duration_ms = (time.perf_counter() - start) * 1000
+
+    result = {
+        "test": "max_length_generation",
+        "success": success,
+        "duration_ms": duration_ms,
+        "expected_tokens": max_tokens,
+        "actual_tokens": output_len,
+    }
+    emit_event("test_done", **result)
+    return result
+
+
+def test_hf_reference(engine: Any, config: TestConfig) -> dict:
+    """Test 11: Compare outputs against HuggingFace reference.
+
+    This is the ground truth correctness test. We generate with both
+    engine_v2 and HuggingFace, and verify token-for-token match.
+    """
+    import torch
+    from transformers import AutoModelForCausalLM
+
+    from rollouts.inference.core import SamplingParams
+
+    emit_event("test_start", test="hf_reference")
+    start = time.perf_counter()
+
+    # Clear engine state for determinism
+    engine.shutdown()
+
+    prompt = "The quick brown fox"
+    max_tokens = 10
+
+    # 1. Generate with engine_v2
+    params = SamplingParams(max_tokens=max_tokens, temperature=0.0)
+    engine.add_request(prompt, params)
+    finished = engine.run_to_completion()
+    engine_tokens = finished[0].input_ids.tolist()
+    engine_output = engine_tokens[len(engine.tokenizer.encode(prompt)) :]
+
+    # 2. Generate with HuggingFace
+    hf_model = AutoModelForCausalLM.from_pretrained(
+        config.model_name,
+        torch_dtype=engine.config.dtype,
+        device_map=engine.device,
+    )
+    hf_model.eval()
+
+    input_ids = engine.tokenizer.encode(prompt, return_tensors="pt").to(engine.device)
+    with torch.no_grad():
+        hf_output_ids = hf_model.generate(
+            input_ids,
+            max_new_tokens=max_tokens,
+            do_sample=False,
+            pad_token_id=engine.tokenizer.pad_token_id or engine.tokenizer.eos_token_id,
+        )
+    hf_output = hf_output_ids[0, input_ids.shape[1] :].tolist()
+
+    # Free HF model memory
+    del hf_model
+    torch.cuda.empty_cache()
+
+    # Compare
+    tokens_match = engine_output == hf_output
+    match_count = sum(1 for a, b in zip(engine_output, hf_output, strict=False) if a == b)
+
+    duration_ms = (time.perf_counter() - start) * 1000
+
+    result = {
+        "test": "hf_reference",
+        "success": tokens_match,
+        "duration_ms": duration_ms,
+        "tokens_match": tokens_match,
+        "match_count": match_count,
+        "total_tokens": len(engine_output),
+        "engine_output": engine_output[:5],  # First 5 for debugging
+        "hf_output": hf_output[:5],
+    }
+    emit_event("test_done", **result)
+    return result
+
+
 def test_weight_reload(engine: Any, config: TestConfig) -> dict:
     """Test 10: Weight hot-reload (RL use case)."""
     from rollouts.inference.core import SamplingParams
@@ -480,6 +616,9 @@ def run_tests(config: TestConfig, require_gpu: bool = True) -> list[dict]:
         test_cuda_graphs,
         test_logprob_alignment,
         test_determinism,
+        test_single_token_prompt,  # Edge case: single token input
+        test_max_length_generation,  # Edge case: hit max_tokens limit
+        test_hf_reference,  # Compare to HuggingFace ground truth
         test_weight_reload,
     ]
 

@@ -182,7 +182,7 @@ class WeightSyncSender:
         assert self._process_group is not None, "Call init_group() first"
 
         handles = []
-        for name, param in state_dict.items():
+        for _name, param in state_dict.items():
             # Ensure contiguous and on GPU
             data = param.data.contiguous()
             if data.device.type != "cuda":
@@ -197,41 +197,6 @@ class WeightSyncSender:
         if async_op:
             return handles
         return None
-
-    def broadcast_weights_with_metadata(
-        self,
-        state_dict: dict[str, Tensor],
-    ) -> None:
-        """Broadcast weights with metadata (names, shapes, dtypes).
-
-        This is the full protocol used by SLIME - first send metadata,
-        then broadcast tensors.
-        """
-        assert self._process_group is not None, "Call init_group() first"
-
-        # Build metadata
-        param_info = [
-            {
-                "name": name,
-                "shape": list(param.shape),
-                "dtype": str(param.dtype),
-            }
-            for name, param in state_dict.items()
-        ]
-
-        # Broadcast metadata via Gloo (CPU)
-        # For simplicity, we assume receivers already know the param info
-        # (they have the same model). Skip metadata broadcast for now.
-
-        # Broadcast tensors
-        for name, param in state_dict.items():
-            data = param.data.contiguous()
-            if data.device.type != "cuda":
-                data = data.cuda()
-            dist.broadcast(data, src=0, group=self._process_group)
-
-        self._weight_version += 1
-        logger.info(f"Broadcast weights v{self._weight_version}")
 
     def cleanup(self) -> None:
         """Cleanup process group."""
@@ -335,7 +300,7 @@ class WeightSyncReceiver:
         """
         assert self._process_group is not None, "Call init_group() first"
 
-        for name, param in state_dict.items():
+        for _name, param in state_dict.items():
             # Receive broadcast from rank 0 directly into existing tensor
             dist.broadcast(param.data, src=0, group=self._process_group)
 
