@@ -127,10 +127,11 @@ GPU:              [forward N]                   [forward N+1]
 ### Missing for RL
 - ~~Logprobs~~ ✓ Done
 - Logprobs for given tokens (compute without sampling, for importance ratios)
-- Weight hot-reload
+- ~~Weight hot-reload~~ ✓ Done (reload_weights, reload_weights_from_path)
+- ~~NCCL weight sync~~ ✓ Done (init_weight_sync, receive_weights_from_nccl)
 
 ### Missing for Scale
-- Tensor parallelism
+- Tensor parallelism (next priority)
 - MoE support
 - Multi-architecture (currently Llama-focused)
 

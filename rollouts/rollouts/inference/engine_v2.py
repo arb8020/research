@@ -537,6 +537,90 @@ class InferenceEngineV2:
         state_dict = load_weights(model_path, self.device, self.config.dtype)
         self.reload_weights(state_dict)
 
+    # ═══════════════════════════════════════════════════════════════════════════
+    # NCCL WEIGHT SYNC (PipelineRL-style)
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def init_weight_sync(
+        self,
+        master_addr: str,
+        master_port: int,
+        rank: int,
+        world_size: int,
+        group_name: str = "weight_sync",
+    ) -> None:
+        """Initialize NCCL weight sync to receive weights from training.
+
+        Call this once at startup to join the weight sync group.
+        The trainer (rank 0) broadcasts weights, inference engines receive.
+
+        Args:
+            master_addr: IP address of trainer
+            master_port: Port for NCCL rendezvous
+            rank: This engine's rank (1-indexed, 0 is trainer)
+            world_size: Total processes (trainer + inference GPUs)
+            group_name: Name for the NCCL group
+        """
+        from .weight_sync import WeightSyncReceiver
+
+        assert rank > 0, "Rank 0 is reserved for trainer"
+
+        self._weight_sync_receiver = WeightSyncReceiver(
+            master_addr=master_addr,
+            master_port=master_port,
+            rank=rank,
+            world_size=world_size,
+            group_name=group_name,
+            device=self.device,
+        )
+        self._weight_sync_receiver.init_group()
+        logger.info(f"Weight sync initialized (rank={rank})")
+
+    def receive_weights_from_nccl(self) -> None:
+        """Receive weights from trainer via NCCL and reload.
+
+        Call this after the trainer broadcasts weights.
+        Blocks until weights are received, then reloads model.
+        """
+        receiver = getattr(self, "_weight_sync_receiver", None)
+        assert receiver is not None, "Call init_weight_sync() first"
+
+        # Get current model's state dict as template
+        if self._use_functional_model:
+            assert self._functional_weights is not None
+            template = self._functional_weights
+        else:
+            assert self.model is not None
+            template = self.model.state_dict()
+
+        # Receive in-place into template
+        receiver.receive_weights_into(template)
+
+        # Reload (handles CUDA graph + radix cache invalidation)
+        # Note: For in-place receive, we still need to invalidate caches
+        if self._use_cuda_graphs:
+            self._graph_state.clear()
+            logger.info("CUDA graphs invalidated (will re-capture)")
+
+        if self._use_radix_cache:
+            from .radix import init_radix_state, unlock
+
+            for handle in self._cache_handles.values():
+                unlock(self._radix_state, handle)
+            self._cache_handles.clear()
+            init_radix_state(self._radix_state, self.device)
+            logger.info("Radix cache invalidated")
+
+        self.kv_pool.reset()
+        logger.info(f"Weights received and loaded (v{receiver.weight_version})")
+
+    def cleanup_weight_sync(self) -> None:
+        """Cleanup weight sync resources."""
+        receiver = getattr(self, "_weight_sync_receiver", None)
+        if receiver is not None:
+            receiver.cleanup()
+            self._weight_sync_receiver = None
+
     def capture_cuda_graphs_now(self) -> None:
         """Capture CUDA graphs for decode optimization.
 

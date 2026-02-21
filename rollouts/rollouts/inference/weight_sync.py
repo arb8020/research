@@ -1,0 +1,415 @@
+"""NCCL weight sync for engine_v2.
+
+Implements PipelineRL-style weight sync: training broadcasts weights via NCCL,
+inference engines receive and load them.
+
+Two roles:
+- Sender (training side): Creates NCCL group, broadcasts state_dict
+- Receiver (inference side): Joins NCCL group, receives and loads weights
+
+Usage (sender - training process):
+    sender = WeightSyncSender(
+        master_addr="10.0.0.1",
+        master_port=29500,
+        inference_world_size=4,  # Number of inference GPUs
+    )
+    sender.init_group()
+
+    # In training loop:
+    sender.broadcast_weights(model.state_dict())
+
+    sender.cleanup()
+
+Usage (receiver - inference engine):
+    receiver = WeightSyncReceiver(
+        master_addr="10.0.0.1",
+        master_port=29500,
+        rank=1,  # This inference GPU's rank (1-indexed, 0 is trainer)
+        world_size=5,  # trainer + inference GPUs
+    )
+    receiver.init_group()
+
+    # When trainer broadcasts:
+    state_dict = receiver.receive_weights(param_info)
+    engine.reload_weights(state_dict)
+
+    receiver.cleanup()
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from typing import Any
+
+import torch
+import torch.distributed as dist
+from torch import Tensor
+
+logger = logging.getLogger(__name__)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STATELESS PROCESS GROUP (following vLLM pattern)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def create_stateless_process_group(
+    master_addr: str,
+    master_port: int,
+    rank: int,
+    world_size: int,
+    group_name: str = "weight_sync",
+    backend: str = "nccl",
+    timeout_seconds: float = 300.0,
+) -> dist.ProcessGroup:
+    """Create a process group without touching global torch.distributed state.
+
+    This follows vLLM's StatelessProcessGroup pattern - allows creating NCCL
+    groups for weight sync without interfering with training's distributed setup.
+
+    Args:
+        master_addr: IP address of the master (trainer rank 0)
+        master_port: Port for rendezvous
+        rank: This process's rank in the weight sync group
+        world_size: Total processes (trainer + inference GPUs)
+        group_name: Name for the process group
+        backend: "nccl" for GPU-to-GPU, "gloo" for CPU
+        timeout_seconds: Timeout for initialization
+
+    Returns:
+        Process group for weight sync operations
+    """
+    from datetime import timedelta
+
+    from torch.distributed.distributed_c10d import (
+        Backend,
+        PrefixStore,
+        _new_process_group_helper,
+        _world,
+        rendezvous,
+    )
+
+    timeout = timedelta(seconds=timeout_seconds)
+    init_method = f"tcp://{master_addr}:{master_port}"
+
+    # Rendezvous to get store
+    rendezvous_iterator = rendezvous(init_method, rank, world_size, timeout=timeout)
+    store, rank, world_size = next(rendezvous_iterator)
+    store.set_timeout(timeout)
+
+    # Use PrefixStore to namespace this group
+    store = PrefixStore(group_name, store)
+
+    # Create process group without touching global state
+    # NOTE: PyTorch 2.6+ renamed pg_options to backend_options
+    pg_options_param = "backend_options" if torch.__version__ >= "2.6" else "pg_options"
+
+    pg, _ = _new_process_group_helper(
+        world_size,
+        rank,
+        [],
+        Backend(backend),
+        store,
+        group_name=group_name,
+        timeout=timeout,
+        **{pg_options_param: None},
+    )
+
+    # Register in world for cleanup
+    _world.pg_group_ranks[pg] = {i: i for i in range(world_size)}
+
+    return pg
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SENDER (training side)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass
+class WeightSyncSender:
+    """Sends weights from training to inference via NCCL broadcast.
+
+    The sender is rank 0 in the weight sync group. It broadcasts each tensor
+    to all inference GPUs.
+    """
+
+    master_addr: str
+    master_port: int
+    inference_world_size: int  # Number of inference GPUs (not including trainer)
+    group_name: str = "weight_sync"
+    timeout_seconds: float = 300.0
+
+    _process_group: Any = field(default=None, init=False, repr=False)
+    _weight_version: int = field(default=0, init=False)
+
+    @property
+    def world_size(self) -> int:
+        return self.inference_world_size + 1  # +1 for trainer
+
+    @property
+    def weight_version(self) -> int:
+        return self._weight_version
+
+    def init_group(self) -> None:
+        """Initialize NCCL process group. Call once at startup."""
+        logger.info(f"Initializing weight sync sender (world_size={self.world_size})")
+        self._process_group = create_stateless_process_group(
+            master_addr=self.master_addr,
+            master_port=self.master_port,
+            rank=0,  # Trainer is always rank 0
+            world_size=self.world_size,
+            group_name=self.group_name,
+            timeout_seconds=self.timeout_seconds,
+        )
+        logger.info("Weight sync sender initialized")
+
+    def broadcast_weights(
+        self,
+        state_dict: dict[str, Tensor],
+        async_op: bool = False,
+    ) -> list[Any] | None:
+        """Broadcast state_dict to all inference GPUs.
+
+        Args:
+            state_dict: Model weights to broadcast
+            async_op: If True, return handles for async wait
+
+        Returns:
+            List of async handles if async_op=True, else None
+        """
+        assert self._process_group is not None, "Call init_group() first"
+
+        handles = []
+        for name, param in state_dict.items():
+            # Ensure contiguous and on GPU
+            data = param.data.contiguous()
+            if data.device.type != "cuda":
+                data = data.cuda()
+
+            handle = dist.broadcast(data, src=0, group=self._process_group, async_op=async_op)
+            if async_op:
+                handles.append(handle)
+
+        self._weight_version += 1
+
+        if async_op:
+            return handles
+        return None
+
+    def broadcast_weights_with_metadata(
+        self,
+        state_dict: dict[str, Tensor],
+    ) -> None:
+        """Broadcast weights with metadata (names, shapes, dtypes).
+
+        This is the full protocol used by SLIME - first send metadata,
+        then broadcast tensors.
+        """
+        assert self._process_group is not None, "Call init_group() first"
+
+        # Build metadata
+        param_info = [
+            {
+                "name": name,
+                "shape": list(param.shape),
+                "dtype": str(param.dtype),
+            }
+            for name, param in state_dict.items()
+        ]
+
+        # Broadcast metadata via Gloo (CPU)
+        # For simplicity, we assume receivers already know the param info
+        # (they have the same model). Skip metadata broadcast for now.
+
+        # Broadcast tensors
+        for name, param in state_dict.items():
+            data = param.data.contiguous()
+            if data.device.type != "cuda":
+                data = data.cuda()
+            dist.broadcast(data, src=0, group=self._process_group)
+
+        self._weight_version += 1
+        logger.info(f"Broadcast weights v{self._weight_version}")
+
+    def cleanup(self) -> None:
+        """Cleanup process group."""
+        if self._process_group is not None:
+            dist.destroy_process_group(self._process_group)
+            self._process_group = None
+            logger.info("Weight sync sender cleaned up")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RECEIVER (inference side)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass
+class ParamInfo:
+    """Metadata for a parameter to receive."""
+
+    name: str
+    shape: tuple[int, ...]
+    dtype: torch.dtype
+
+
+@dataclass
+class WeightSyncReceiver:
+    """Receives weights from training via NCCL broadcast.
+
+    The receiver joins the weight sync group and receives tensors broadcast
+    by the sender (trainer).
+    """
+
+    master_addr: str
+    master_port: int
+    rank: int  # This GPU's rank in weight sync group (1-indexed)
+    world_size: int  # Total: trainer + inference GPUs
+    group_name: str = "weight_sync"
+    timeout_seconds: float = 300.0
+    device: torch.device = field(default_factory=lambda: torch.device("cuda"))
+
+    _process_group: Any = field(default=None, init=False, repr=False)
+    _weight_version: int = field(default=0, init=False)
+
+    @property
+    def weight_version(self) -> int:
+        return self._weight_version
+
+    def init_group(self) -> None:
+        """Initialize NCCL process group. Call once at startup."""
+        assert self.rank > 0, "Rank 0 is reserved for trainer (sender)"
+        logger.info(
+            f"Initializing weight sync receiver rank={self.rank} (world_size={self.world_size})"
+        )
+        self._process_group = create_stateless_process_group(
+            master_addr=self.master_addr,
+            master_port=self.master_port,
+            rank=self.rank,
+            world_size=self.world_size,
+            group_name=self.group_name,
+            timeout_seconds=self.timeout_seconds,
+        )
+        logger.info("Weight sync receiver initialized")
+
+    def receive_weights(
+        self,
+        param_info: list[ParamInfo],
+    ) -> dict[str, Tensor]:
+        """Receive weights from trainer broadcast.
+
+        Args:
+            param_info: List of (name, shape, dtype) for expected params
+
+        Returns:
+            State dict with received weights
+        """
+        assert self._process_group is not None, "Call init_group() first"
+
+        state_dict = {}
+        for info in param_info:
+            # Allocate buffer
+            buffer = torch.empty(info.shape, dtype=info.dtype, device=self.device)
+
+            # Receive broadcast from rank 0
+            dist.broadcast(buffer, src=0, group=self._process_group)
+
+            state_dict[info.name] = buffer
+
+        self._weight_version += 1
+        logger.info(f"Received weights v{self._weight_version}")
+        return state_dict
+
+    def receive_weights_into(
+        self,
+        state_dict: dict[str, Tensor],
+    ) -> None:
+        """Receive weights directly into existing state_dict tensors (in-place).
+
+        This is more efficient than receive_weights() as it avoids allocation.
+
+        Args:
+            state_dict: Existing state dict to receive into
+        """
+        assert self._process_group is not None, "Call init_group() first"
+
+        for name, param in state_dict.items():
+            # Receive broadcast from rank 0 directly into existing tensor
+            dist.broadcast(param.data, src=0, group=self._process_group)
+
+        self._weight_version += 1
+        logger.info(f"Received weights v{self._weight_version} (in-place)")
+
+    def cleanup(self) -> None:
+        """Cleanup process group."""
+        if self._process_group is not None:
+            dist.destroy_process_group(self._process_group)
+            self._process_group = None
+            logger.info("Weight sync receiver cleaned up")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ENGINE INTEGRATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def add_weight_sync_to_engine(
+    engine: Any,
+    master_addr: str,
+    master_port: int,
+    rank: int,
+    world_size: int,
+    group_name: str = "weight_sync",
+) -> WeightSyncReceiver:
+    """Add NCCL weight sync capability to an inference engine.
+
+    This creates a WeightSyncReceiver and attaches it to the engine.
+    When weights are broadcast, call engine.receive_and_reload_weights().
+
+    Args:
+        engine: InferenceEngineV2 instance
+        master_addr: IP of trainer
+        master_port: Port for NCCL rendezvous
+        rank: This engine's rank (1-indexed)
+        world_size: Total processes
+
+    Returns:
+        WeightSyncReceiver attached to engine
+    """
+    receiver = WeightSyncReceiver(
+        master_addr=master_addr,
+        master_port=master_port,
+        rank=rank,
+        world_size=world_size,
+        group_name=group_name,
+        device=engine.device,
+    )
+    receiver.init_group()
+
+    # Store receiver on engine for later use
+    engine._weight_sync_receiver = receiver
+
+    return receiver
+
+
+def receive_and_reload_weights(engine: Any) -> None:
+    """Receive broadcasted weights and reload into engine.
+
+    Call this after sender.broadcast_weights().
+    """
+    receiver = getattr(engine, "_weight_sync_receiver", None)
+    assert receiver is not None, "Call add_weight_sync_to_engine() first"
+
+    # Get current model's state dict structure
+    if engine._use_functional_model:
+        template = engine._functional_weights
+    else:
+        template = engine.model.state_dict()
+
+    # Receive in-place
+    receiver.receive_weights_into(template)
+
+    # Reload (handles cache invalidation)
+    engine.reload_weights(template)
