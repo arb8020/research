@@ -59,7 +59,7 @@ config = GRPOConfig(
         batch_size=8,
         n_samples_per_prompt=16,
         temperature=1.0,
-        max_seq_len=2048,
+        max_seq_len=512,  # Reduced from 2048 to fit on 24GB RTX A5000
         max_tokens=128,
     ),
     trainer=TrainerConfig(
