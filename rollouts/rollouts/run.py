@@ -257,7 +257,15 @@ async def _deploy_and_submit(
         job = bifrost.submit(
             ProcessSpec(
                 command="/root/.local/bin/uv",
-                args=("run", "python", "-m", "rollouts.run", "--config", str(script_rel_path)),
+                args=(
+                    "run",
+                    "python",
+                    "-m",
+                    "rollouts.run",
+                    "--config",
+                    str(script_rel_path),
+                    "--local",
+                ),
                 cwd=f"{workspace}/rollouts",
                 env=env_vars,
             ),
