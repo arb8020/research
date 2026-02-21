@@ -11,7 +11,136 @@ without circular dependencies.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
+
+# =============================================================================
+# Hardware & Distributed Configs (provisioning + parallelism)
+# =============================================================================
+
+
+# Known GPU specs: (memory_gb, compute_capability)
+# Used for validation and auto-derivation
+GPU_SPECS: dict[str, tuple[int, str]] = {
+    "H100": (80, "9.0"),
+    "H200": (141, "9.0"),
+    "A100": (80, "8.0"),
+    "A100-40GB": (40, "8.0"),
+    "A10G": (24, "8.6"),
+    "L40S": (48, "8.9"),
+    "L40": (48, "8.9"),
+    "L4": (24, "8.9"),
+    "T4": (16, "7.5"),
+    "B200": (192, "10.0"),
+}
+
+
+@dataclass(frozen=True)
+class HardwareConfig:
+    """What hardware to provision.
+
+    This describes the physical resources to acquire, not how to use them.
+    The runner uses this to provision via Modal, RunPod, etc.
+
+    Example:
+        # Single A100 on Modal
+        HardwareConfig(gpu_type="A100", gpu_count=1, provider="modal")
+
+        # 2x H100 on RunPod
+        HardwareConfig(gpu_type="H100", gpu_count=2, provider="runpod")
+
+        # Local execution (no provisioning)
+        HardwareConfig(provider="local")
+    """
+
+    gpu_type: str = "A100"
+    gpu_count: int = 1
+    provider: Literal["modal", "runpod", "lambdalabs", "vast", "local"] = "runpod"
+
+    # Auto-derived from gpu_type if None (for known GPUs)
+    gpu_memory_gb: int | None = None
+    compute_capability: str | None = None
+
+    def __post_init__(self) -> None:
+        # Auto-derive GPU specs for known types
+        if self.gpu_type in GPU_SPECS and (
+            self.gpu_memory_gb is None or self.compute_capability is None
+        ):
+            mem, cc = GPU_SPECS[self.gpu_type]
+            # Use object.__setattr__ for frozen dataclass
+            if self.gpu_memory_gb is None:
+                object.__setattr__(self, "gpu_memory_gb", mem)
+            if self.compute_capability is None:
+                object.__setattr__(self, "compute_capability", cc)
+
+    @property
+    def total_memory_gb(self) -> int | None:
+        """Total VRAM across all GPUs."""
+        if self.gpu_memory_gb is None:
+            return None
+        return self.gpu_memory_gb * self.gpu_count
+
+
+@dataclass(frozen=True)
+class DistributedConfig:
+    """How to use the provisioned GPUs (parallelism strategy).
+
+    Separates inference parallelism from training parallelism.
+    GPU assignment determines which GPUs run inference vs training.
+
+    Example:
+        # Single GPU, shared between inference and training
+        DistributedConfig()  # defaults: inference_gpus=(0,), trainer_gpus=(0,)
+
+        # 2 GPUs: one for inference, one for training
+        DistributedConfig(
+            inference_gpus=(0,),
+            trainer_gpus=(1,),
+        )
+
+        # 4 GPUs: TP=2 for inference, DP=2 for training
+        DistributedConfig(
+            inference_gpus=(0, 1),
+            inference_tp=2,
+            trainer_gpus=(2, 3),
+            trainer_fsdp=True,
+        )
+    """
+
+    # Inference parallelism (for SGLang/vLLM)
+    inference_gpus: tuple[int, ...] = (0,)
+    inference_tp: int = 1  # Tensor parallel size (must divide len(inference_gpus))
+
+    # Training parallelism
+    trainer_gpus: tuple[int, ...] = (0,)
+    trainer_fsdp: bool = True  # Use FSDP (ZeRO-3 style sharding)
+    trainer_dp: int | None = None  # Data parallel size (derived from trainer_gpus if None)
+
+    # Multi-node settings (for future use)
+    # If master_addr is None, assumes single-node (torchrun handles setup)
+    master_addr: str | None = None
+    master_port: int = 29500
+
+    def __post_init__(self) -> None:
+        # Validate inference TP
+        if self.inference_tp > 1:
+            assert len(self.inference_gpus) % self.inference_tp == 0, (
+                f"inference_tp={self.inference_tp} must divide "
+                f"len(inference_gpus)={len(self.inference_gpus)}"
+            )
+
+        # Derive trainer_dp if not set
+        if self.trainer_dp is None:
+            object.__setattr__(self, "trainer_dp", len(self.trainer_gpus))
+
+    @property
+    def is_shared_gpu(self) -> bool:
+        """True if inference and training share any GPUs."""
+        return bool(set(self.inference_gpus) & set(self.trainer_gpus))
+
+    @property
+    def all_gpus(self) -> tuple[int, ...]:
+        """All unique GPUs used (for CUDA_VISIBLE_DEVICES)."""
+        return tuple(sorted(set(self.inference_gpus) | set(self.trainer_gpus)))
 
 
 @dataclass(frozen=True)
@@ -28,10 +157,20 @@ class ModelConfig:
     checkpoint_path: str | None = None
 
 
+# =============================================================================
+# Training Sub-Configs (algorithm-specific settings)
+# =============================================================================
+
+
 @dataclass(frozen=True)
 class TrainerConfig:
-    """Optimizer and gradient settings."""
+    """Optimizer and gradient settings.
 
+    Note: cuda_device_ids is deprecated in favor of DistributedConfig.trainer_gpus.
+    When DistributedConfig is provided, it takes precedence.
+    """
+
+    # DEPRECATED: Use DistributedConfig.trainer_gpus instead
     cuda_device_ids: tuple[int, ...] = (0,)
     lr: float = 1e-6
     weight_decay: float = 0.0
@@ -49,10 +188,15 @@ class TrainerConfig:
 
 @dataclass(frozen=True)
 class InferenceConfig:
-    """Inference server settings (SGLang/vLLM)."""
+    """Inference server settings (SGLang/vLLM).
+
+    Note: cuda_device_ids is deprecated in favor of DistributedConfig.inference_gpus.
+    When DistributedConfig is provided, it takes precedence.
+    """
 
     backend: str = "sglang"  # "sglang" or "vllm"
     port: int = 30000
+    # DEPRECATED: Use DistributedConfig.inference_gpus instead
     cuda_device_ids: tuple[int, ...] = (0,)
     mem_fraction: float = 0.7
 

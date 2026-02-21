@@ -2,31 +2,35 @@
 """Unified training runner.
 
 Usage:
-    # Local execution (requires local GPU)
-    python -m rollouts.run --config examples/rl/reverse_text/grpo_01_01.py
+    # Config-driven execution (NEW: reads hardware from config file)
+    python -m rollouts.run --config examples/rl/kernelbench/grpo_01_01.py
 
-    # Modal execution (fast ~30s cold start, recommended for CI)
-    python -m rollouts.run --config examples/rl/reverse_text/grpo_01_01.py --modal
-    python -m rollouts.run --config examples/rl/reverse_text/grpo_01_01.py --modal --gpu H100
+    # CLI overrides (optional, override config values)
+    python -m rollouts.run --config ... --gpu-type H100  # Override GPU type
+    python -m rollouts.run --config ... --provider modal  # Override provider
+    python -m rollouts.run --config ... --local  # Force local execution
 
-    # RunPod/SSH execution (slower 2-5 min cold start)
-    python -m rollouts.run --config examples/rl/reverse_text/grpo_01_01.py --provision
-    python -m rollouts.run --config examples/rl/reverse_text/grpo_01_01.py --node-id runpod:abc123
+    # Legacy CLI flags (still supported for backwards compat)
+    python -m rollouts.run --config ... --modal  # Same as --provider modal
+    python -m rollouts.run --config ... --provision  # Provision via config.hardware.provider
 
-The config file must export:
+The config file should export:
     - config: A training config (e.g., GRPOConfig)
+    - hardware: HardwareConfig (optional, defaults to local execution)
     - train(config, **kwargs): Function to run local training
 
-Execution modes:
-    --modal:     Run on Modal sandbox (fast cold start, ~30s)
-    --provision: Provision new GPU instance via SSH (RunPod, etc.)
-    --node-id:   Reuse existing SSH instance (provider:id format)
-    (none):      Run locally
+Execution modes (determined by hardware.provider or CLI override):
+    - "local":     Run on local GPU
+    - "modal":     Run on Modal sandbox (fast ~30s cold start)
+    - "runpod":    Provision GPU via RunPod SSH
+    - "lambdalabs": Provision GPU via Lambda Labs
+    - "vast":      Provision GPU via Vast.ai
 
 Options:
     --tui:       Launch TUI after submitting (default: fire-and-forget) [SSH only]
     --tail:      Stream logs to stdout (default: fire-and-forget) [SSH only]
     --keep-alive: Keep instance running after completion [SSH only]
+    --node-id:   Reuse existing SSH instance (provider:id format)
 
 Attach to running job:
     rollouts monitor --attach <run_name>
@@ -415,29 +419,48 @@ async def run_remote(
 
 
 def main() -> None:
+    from dataclasses import replace
+
+    from .training.configs import HardwareConfig
+
     parser = argparse.ArgumentParser(
         description="Run RL training",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    # Local
-    python -m rollouts.run --config examples/rl/reverse_text/grpo_01_01.py
+    # Config-driven (reads hardware from config file)
+    python -m rollouts.run --config examples/rl/kernelbench/grpo_01_01.py
 
-    # Modal (recommended for CI)
-    python -m rollouts.run --config examples/rl/reverse_text/grpo_01_01.py --modal
+    # Override provider via CLI
+    python -m rollouts.run --config ... --provider modal
+    python -m rollouts.run --config ... --local
 
-    # RunPod
-    python -m rollouts.run --config examples/rl/reverse_text/grpo_01_01.py --provision
+    # Legacy flags (still supported)
+    python -m rollouts.run --config ... --modal
+    python -m rollouts.run --config ... --provision --provider runpod
         """,
     )
     parser.add_argument("--config", required=True, help="Path to config file")
 
-    # Remote execution
-    parser.add_argument("--provision", action="store_true", help="Provision new GPU instance")
-    parser.add_argument("--node-id", type=str, help="Reuse existing instance (provider:id)")
+    # Provider/hardware overrides
     parser.add_argument(
-        "--modal", action="store_true", help="Run on Modal sandbox (fast cold start)"
+        "--provider",
+        type=str,
+        choices=["local", "modal", "runpod", "lambdalabs", "vast"],
+        help="Override hardware provider from config",
     )
+    parser.add_argument("--local", action="store_true", help="Force local execution")
+    parser.add_argument("--gpu-type", type=str, help="Override GPU type from config")
+    parser.add_argument("--gpu-count", type=int, help="Override GPU count from config")
+
+    # Legacy flags (for backwards compat)
+    parser.add_argument("--modal", action="store_true", help="[Legacy] Same as --provider modal")
+    parser.add_argument(
+        "--provision", action="store_true", help="[Legacy] Provision using config's provider"
+    )
+
+    # Remote execution options
+    parser.add_argument("--node-id", type=str, help="Reuse existing instance (provider:id)")
     parser.add_argument(
         "--tui", action="store_true", help="Launch TUI after submitting (default: fire-and-forget)"
     )
@@ -445,9 +468,6 @@ Examples:
         "--tail", action="store_true", help="Stream logs to stdout (default: fire-and-forget)"
     )
     parser.add_argument("--keep-alive", action="store_true", help="Keep GPU after completion")
-    parser.add_argument("--gpu-count", type=int, default=1, help="Number of GPUs (default: 1)")
-    parser.add_argument("--gpu-type", type=str, default="A100", help="GPU type (default: A100)")
-    parser.add_argument("--provider", type=str, help="Force specific provider (e.g., runpod, vast)")
     parser.add_argument(
         "--allow-dirty",
         action="store_true",
@@ -467,9 +487,38 @@ Examples:
         print(f"Config not found: {config_path}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Config: {config_path}")
+    # Load config module
+    config_module = load_config_module(config_path)
 
-    if args.modal:
+    if not hasattr(config_module, "config"):
+        print("Config file must export 'config'", file=sys.stderr)
+        sys.exit(1)
+
+    # Get hardware config (default to local if not specified)
+    hardware: HardwareConfig = getattr(config_module, "hardware", HardwareConfig(provider="local"))
+
+    # Apply CLI overrides
+    if args.local:
+        hardware = replace(hardware, provider="local")
+    elif args.modal:
+        # Legacy --modal flag
+        hardware = replace(hardware, provider="modal")
+    elif args.provider:
+        hardware = replace(hardware, provider=args.provider)
+    elif args.provision and hardware.provider == "local":
+        # Legacy --provision without provider: default to runpod
+        hardware = replace(hardware, provider="runpod")
+
+    if args.gpu_type:
+        hardware = replace(hardware, gpu_type=args.gpu_type)
+    if args.gpu_count:
+        hardware = replace(hardware, gpu_count=args.gpu_count)
+
+    print(f"Config: {config_path}")
+    print(f"Hardware: {hardware.gpu_count}x {hardware.gpu_type} on {hardware.provider}")
+
+    # Dispatch based on provider
+    if hardware.provider == "modal":
         # Modal execution (fast cold start)
         import trio
 
@@ -477,14 +526,15 @@ Examples:
 
         modal_config = ModalRunConfig(
             config_path=str(config_path),
-            gpu_type=args.gpu_type,
-            gpu_count=args.gpu_count,
+            gpu_type=hardware.gpu_type,
+            gpu_count=hardware.gpu_count,
         )
         results = trio.run(run_modal, modal_config)
         if not results.get("success"):
             sys.exit(1)
-    elif args.provision or args.node_id:
-        # Remote execution via SSH (RunPod, etc.)
+
+    elif hardware.provider in ("runpod", "lambdalabs", "vast") or args.node_id:
+        # Remote execution via SSH
         import trio
 
         trio.run(
@@ -493,20 +543,15 @@ Examples:
             args.keep_alive,
             args.node_id,
             args.tui,
-            args.gpu_count,
-            args.gpu_type,
+            hardware.gpu_count,
+            hardware.gpu_type,
             args.tail,
-            args.provider,
+            hardware.provider if hardware.provider != "local" else None,
             args.allow_dirty,
         )
+
     else:
         # Local execution
-        config_module = load_config_module(config_path)
-
-        if not hasattr(config_module, "config"):
-            print("Config file must export 'config'", file=sys.stderr)
-            sys.exit(1)
-
         if not hasattr(config_module, "train"):
             print("Config file must export 'train' function for local execution", file=sys.stderr)
             sys.exit(1)

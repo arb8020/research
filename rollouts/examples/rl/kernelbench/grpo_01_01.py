@@ -1,15 +1,14 @@
 """KernelBench GRPO baseline experiment.
 
 Run with:
-    # Modal (recommended for testing)
-    python examples/rl/kernelbench/grpo_01_01.py --modal
-    python examples/rl/kernelbench/grpo_01_01.py --modal --gpu-type A100
+    # Uses hardware config from this file (default: RunPod A100)
+    python rollouts/run_rl.py --config examples/rl/kernelbench/grpo_01_01.py
 
-    # RunPod
-    python examples/rl/kernelbench/grpo_01_01.py --provision --provider runpod
+    # Override to run on Modal
+    python rollouts/run_rl.py --config examples/rl/kernelbench/grpo_01_01.py --provider modal
 
-    # Local (requires GPU)
-    python examples/rl/kernelbench/grpo_01_01.py
+    # Override to run locally
+    python rollouts/run_rl.py --config examples/rl/kernelbench/grpo_01_01.py --local
 
 Note:
     Unlike reverse_text which has an SFT-warmup model, this starts from
@@ -23,6 +22,7 @@ Note:
 """
 
 from examples.rl.kernelbench.base_config import train  # noqa: F401 (used by runner)
+from rollouts.training.configs import HardwareConfig
 from rollouts.training.grpo import (
     CheckpointConfig,
     GRPOConfig,
@@ -32,6 +32,20 @@ from rollouts.training.grpo import (
     RolloutConfig,
     TrainerConfig,
 )
+
+# =============================================================================
+# Hardware Configuration (what to provision)
+# =============================================================================
+
+hardware = HardwareConfig(
+    gpu_type="A100",
+    gpu_count=1,
+    provider="runpod",  # Default to RunPod; override with --provider modal or --local
+)
+
+# =============================================================================
+# Training Configuration
+# =============================================================================
 
 # Base model options:
 # - "Nanbeige/Nanbeige4.1-3B" - Small, fast iteration, Chinese/English
@@ -63,11 +77,3 @@ config = GRPOConfig(
         mem_fraction=0.5,  # Leave room for kernel compilation during scoring
     ),
 )
-
-if __name__ == "__main__":
-    import sys
-
-    from rollouts.run import main
-
-    sys.argv = [sys.argv[0], "--config", __file__] + sys.argv[1:]
-    main()

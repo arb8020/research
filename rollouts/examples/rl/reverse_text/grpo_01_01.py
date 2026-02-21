@@ -3,19 +3,17 @@
 Matches prime-rl nightly CI configuration: examples/reverse_text/rl.toml
 
 Run with:
-    # Local (requires GPU + SGLang) - uses Prime's SFT model by default
-    python examples/rl/reverse_text/grpo_01_01.py
+    # Default: RunPod A100
+    python rollouts/run_rl.py --config examples/rl/reverse_text/grpo_01_01.py
 
-    # Modal (fast ~30s cold start, recommended for CI)
-    python examples/rl/reverse_text/grpo_01_01.py --modal
-    python examples/rl/reverse_text/grpo_01_01.py --modal --gpu-type H100
+    # Modal (fast ~30s cold start)
+    python rollouts/run_rl.py --config examples/rl/reverse_text/grpo_01_01.py --provider modal
 
-    # RunPod (slower 2-5 min cold start)
-    python examples/rl/reverse_text/grpo_01_01.py --provision
-    python examples/rl/reverse_text/grpo_01_01.py --node-id runpod:abc123
+    # Local (requires GPU)
+    python rollouts/run_rl.py --config examples/rl/reverse_text/grpo_01_01.py --local
 
-    # CI mode (asserts reward >= 0.65, matching prime-rl nightly)
-    ROLLOUTS_CHECK_REWARD=1 python examples/rl/reverse_text/grpo_01_01.py --modal
+    # CI mode (asserts reward >= 0.65)
+    ROLLOUTS_CHECK_REWARD=1 python rollouts/run_rl.py --config examples/rl/reverse_text/grpo_01_01.py --provider modal
 
 Note:
     Using the base Qwen3-0.6B model without SFT warmup typically achieves
@@ -29,6 +27,7 @@ Note:
 """
 
 from examples.rl.reverse_text.base_config import train as _base_train
+from rollouts.training.configs import HardwareConfig
 from rollouts.training.grpo import (
     CheckpointConfig,
     GRPOConfig,
@@ -38,6 +37,20 @@ from rollouts.training.grpo import (
     RolloutConfig,
     TrainerConfig,
 )
+
+# =============================================================================
+# Hardware Configuration
+# =============================================================================
+
+hardware = HardwareConfig(
+    gpu_type="A100",
+    gpu_count=1,
+    provider="runpod",
+)
+
+# =============================================================================
+# Training Configuration
+# =============================================================================
 
 # Default: Use Prime's pre-trained SFT model (recommended)
 # This model already knows how to reverse text, so RL can refine it
@@ -109,12 +122,3 @@ def train(config: GRPOConfig | None = None, **kwargs: object) -> dict:
         check_reward_threshold(results)
 
     return results
-
-
-if __name__ == "__main__":
-    import sys
-
-    from rollouts.run import main
-
-    sys.argv = [sys.argv[0], "--config", __file__] + sys.argv[1:]
-    main()
