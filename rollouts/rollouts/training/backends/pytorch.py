@@ -866,7 +866,7 @@ class PyTorchTrainingBackend:
                     json={
                         "master_address": master_addr,
                         "master_port": master_port,
-                        "rank": inference_rank,
+                        "rank_offset": inference_rank,
                         "world_size": world_size,
                         "group_name": "weight_sync",
                         "backend": "nccl",

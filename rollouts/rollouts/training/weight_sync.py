@@ -203,7 +203,7 @@ def init_nccl_weight_sync(
             json={
                 "master_address": config.master_addr,
                 "master_port": config.master_port,
-                "rank": i + 1,  # Inference ranks start at 1
+                "rank_offset": i + 1,  # Inference ranks start at 1
                 "world_size": config.world_size,
                 "group_name": config.group_name,
                 "backend": "nccl",
@@ -891,7 +891,7 @@ class PipelineWeightSyncManager:
                     json={
                         "master_address": master_addr,
                         "master_port": self.nccl_master_port,
-                        "rank": i + 1,  # Inference ranks start at 1
+                        "rank_offset": i + 1,  # Inference ranks start at 1
                         "world_size": world_size,
                         "group_name": "pipeline_weight_sync",
                         "backend": "nccl",
