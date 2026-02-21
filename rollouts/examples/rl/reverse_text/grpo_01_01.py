@@ -69,8 +69,8 @@ config = GRPOConfig(
     output=GRPOOutputConfig(experiment_name="reverse_text_grpo_01"),
     model=ModelConfig(name=DEFAULT_MODEL),
     checkpoint=CheckpointConfig(
-        num_steps=20,
-        checkpoint_every=5,
+        num_steps=100,
+        checkpoint_every=20,
         sync_weights_every=1,  # on-policy
     ),
     rollout=RolloutConfig(
