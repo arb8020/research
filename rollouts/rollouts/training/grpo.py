@@ -197,12 +197,8 @@ def _create_inference_engines(
 
     for i, (gpus, port) in enumerate(zip(gpu_assignments, ports, strict=False)):
         if config.inference.backend == "sglang":
-            # Pass weight_sync_mode to SGLang for on-policy weight updates
-            rl_target = (
-                config.checkpoint.weight_sync_mode
-                if config.checkpoint.weight_sync_mode == "nccl"
-                else None
-            )
+            # NCCL weight sync uses HTTP API (init_weights_update_group),
+            # not CLI flags. See weight_sync.py for implementation.
             engine = SGLangEngine(
                 model_name=config.model.name,
                 port=port,
@@ -210,7 +206,6 @@ def _create_inference_engines(
                 output_dir=output_dir,
                 dtype=config.model.dtype,
                 mem_fraction=config.inference.mem_fraction,
-                rl_on_policy_target=rl_target,
             )
         elif config.inference.backend == "vllm":
             engine = VLLMEngine(

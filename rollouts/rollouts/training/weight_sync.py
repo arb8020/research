@@ -437,7 +437,9 @@ class SGLangEngine:
     dtype: str = "bfloat16"
     mem_fraction: float = 0.7
     timeout: float = 300.0
-    rl_on_policy_target: str | None = None  # "nccl" or "disk" for on-policy weight updates
+    # NOTE: NCCL weight sync is done via HTTP API (/init_weights_update_group),
+    # not via CLI flags. This field is kept for compatibility but not used.
+    rl_on_policy_target: str | None = None
     _log_file: Path = field(init=False)
     _session_name: str = field(init=False)
 
@@ -484,8 +486,8 @@ class SGLangEngine:
             f"--mem-fraction-static {self.mem_fraction} "
             f"--trust-remote-code"
         )
-        if self.rl_on_policy_target:
-            cmd += f" --rl-on-policy-target {self.rl_on_policy_target}"
+        # NOTE: NCCL weight sync uses HTTP API (/init_weights_update_group),
+        # not SGLang CLI flags. The --rl-on-policy-target flag only supports 'fsdp'.
         return cmd
 
     def launch(self) -> str:
