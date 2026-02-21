@@ -437,6 +437,7 @@ class SGLangEngine:
     dtype: str = "bfloat16"
     mem_fraction: float = 0.7
     timeout: float = 300.0
+    rl_on_policy_target: str | None = None  # "nccl" or "disk" for on-policy weight updates
     _log_file: Path = field(init=False)
     _session_name: str = field(init=False)
 
@@ -472,7 +473,7 @@ class SGLangEngine:
     def build_launch_cmd(self) -> str:
         """Build SGLang launch command (without redirection - tmux handles that)."""
         gpu_str = ",".join(str(g) for g in self.cuda_device_ids)
-        return (
+        cmd = (
             f"CUDA_VISIBLE_DEVICES={gpu_str} "
             f"HF_HUB_DOWNLOAD_TIMEOUT=300 "  # 5 min timeout for model downloads
             f"python -m rollouts.training.sglang_launcher "
@@ -483,6 +484,9 @@ class SGLangEngine:
             f"--mem-fraction-static {self.mem_fraction} "
             f"--trust-remote-code"
         )
+        if self.rl_on_policy_target:
+            cmd += f" --rl-on-policy-target {self.rl_on_policy_target}"
+        return cmd
 
     def launch(self) -> str:
         """Launch SGLang server in tmux session.
@@ -866,7 +870,6 @@ class PipelineWeightSyncManager:
         Must be called once at startup before any broadcasts.
         """
         import os
-        import socket
 
         import torch.distributed as dist
 

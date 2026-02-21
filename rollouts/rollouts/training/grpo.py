@@ -197,6 +197,12 @@ def _create_inference_engines(
 
     for i, (gpus, port) in enumerate(zip(gpu_assignments, ports, strict=False)):
         if config.inference.backend == "sglang":
+            # Pass weight_sync_mode to SGLang for on-policy weight updates
+            rl_target = (
+                config.checkpoint.weight_sync_mode
+                if config.checkpoint.weight_sync_mode == "nccl"
+                else None
+            )
             engine = SGLangEngine(
                 model_name=config.model.name,
                 port=port,
@@ -204,6 +210,7 @@ def _create_inference_engines(
                 output_dir=output_dir,
                 dtype=config.model.dtype,
                 mem_fraction=config.inference.mem_fraction,
+                rl_on_policy_target=rl_target,
             )
         elif config.inference.backend == "vllm":
             engine = VLLMEngine(
@@ -367,6 +374,8 @@ async def _process_training_step(
     metrics_logger: Any,
     inference_engine: Any,
     logger: logging.Logger,
+    *,
+    node_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Process a single training step.
 
@@ -374,10 +383,16 @@ async def _process_training_step(
         Step metrics dict, or None if step was skipped
     """
     import json
+    import os
+    import socket
+    import time
 
     import torch
+    import torch.distributed as dist
 
     from ..training.losses import compute_group_advantages
+
+    step_start = time.perf_counter()
 
     if not batch.tokens:
         logger.warning("No successful rollouts, skipping step")
@@ -419,14 +434,21 @@ async def _process_training_step(
         advantages = torch.tensor([r - mean_reward for r in rewards], device=device)
 
     # Prepare batch tensors
+    prep_start = time.perf_counter()
     training_batch = _prepare_training_batch(batch, config, tokenizer, advantages, device)
+    prep_ms = (time.perf_counter() - prep_start) * 1000
 
-    # Training step
+    # Training step - forward/backward
+    fb_start = time.perf_counter()
     fb_future = backend.forward_backward(training_batch)
     fb_metrics = await fb_future.result()
+    fb_ms = (time.perf_counter() - fb_start) * 1000
 
+    # Optimizer step
+    optim_start = time.perf_counter()
     optim_future = backend.optim_step()
     optim_metrics = await optim_future.result()
+    optim_ms = (time.perf_counter() - optim_start) * 1000
 
     accumulated_metrics = {**fb_metrics, **optim_metrics}
     pg_loss = accumulated_metrics.get("pg_loss", 0.0)
@@ -457,12 +479,17 @@ async def _process_training_step(
     should_checkpoint = (step + 1) % config.checkpoint.checkpoint_every == 0
     should_sync = (step + 1) % config.checkpoint.sync_weights_every == 0
 
+    ckpt_ms = 0.0
     if should_checkpoint:
+        ckpt_start = time.perf_counter()
         ckpt_dir = await backend.save_checkpoint(step + 1, accumulated_metrics)
+        ckpt_ms = (time.perf_counter() - ckpt_start) * 1000
         logger.info(f"Saved checkpoint: {ckpt_dir}")
 
     # Sync weights to inference engine (for on-policy training)
+    sync_ms = 0.0
     if should_sync:
+        sync_start = time.perf_counter()
         if config.checkpoint.weight_sync_mode == "nccl":
             # NCCL in-flight sync: GPU-to-GPU broadcast (PipelineRL-style)
             logger.info(f"Syncing weights via NCCL to {inference_engine.name}...")
@@ -477,6 +504,35 @@ async def _process_training_step(
             logger.info(f"Syncing weights to {inference_engine.name}...")
             await inference_engine.update_weights_from_checkpoint(str(sync_dir))
             logger.info("Weight sync complete")
+        sync_ms = (time.perf_counter() - sync_start) * 1000
+
+    step_total_ms = (time.perf_counter() - step_start) * 1000
+
+    # Wide event: one structured log per step with all timing and context
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    world_size = dist.get_world_size() if dist.is_initialized() else 1
+    wide_event = {
+        "event": "step_complete",
+        "step": step + 1,
+        "rank": rank,
+        "world_size": world_size,
+        "node_id": node_id or os.environ.get("ROLLOUTS_NODE_ID"),
+        "hostname": socket.gethostname(),
+        # Timings (ms)
+        "prep_ms": round(prep_ms, 1),
+        "forward_backward_ms": round(fb_ms, 1),
+        "optim_ms": round(optim_ms, 1),
+        "checkpoint_ms": round(ckpt_ms, 1),
+        "weight_sync_ms": round(sync_ms, 1),
+        "step_total_ms": round(step_total_ms, 1),
+        # Metrics
+        "mean_reward": mean_reward,
+        "pg_loss": pg_loss,
+        "entropy": entropy,
+        "num_samples": len(rewards),
+        "num_groups": num_groups,
+    }
+    logger.info("step_complete", extra=wide_event)
 
     return step_metrics
 
@@ -491,6 +547,8 @@ async def _process_training_step_no_sync(
     output_dir: Path,
     metrics_logger: Any,
     logger: logging.Logger,
+    *,
+    node_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Process a training step without weight sync (for true_pipeline mode).
 
@@ -501,10 +559,16 @@ async def _process_training_step_no_sync(
         Step metrics dict, or None if step was skipped
     """
     import json
+    import os
+    import socket
+    import time
 
     import torch
+    import torch.distributed as dist
 
     from ..training.losses import compute_group_advantages
+
+    step_start = time.perf_counter()
 
     if not batch.tokens:
         logger.warning("No successful rollouts, skipping step")
@@ -542,14 +606,21 @@ async def _process_training_step_no_sync(
         advantages = torch.tensor([r - mean_reward for r in rewards], device=device)
 
     # Prepare batch tensors
+    prep_start = time.perf_counter()
     training_batch = _prepare_training_batch(batch, config, tokenizer, advantages, device)
+    prep_ms = (time.perf_counter() - prep_start) * 1000
 
-    # Training step
+    # Training step - forward/backward
+    fb_start = time.perf_counter()
     fb_future = backend.forward_backward(training_batch)
     fb_metrics = await fb_future.result()
+    fb_ms = (time.perf_counter() - fb_start) * 1000
 
+    # Optimizer step
+    optim_start = time.perf_counter()
     optim_future = backend.optim_step()
     optim_metrics = await optim_future.result()
+    optim_ms = (time.perf_counter() - optim_start) * 1000
 
     accumulated_metrics = {**fb_metrics, **optim_metrics}
     pg_loss = accumulated_metrics.get("pg_loss", 0.0)
@@ -577,12 +648,43 @@ async def _process_training_step_no_sync(
         )
 
     # Checkpoint (save to disk for recovery)
+    ckpt_ms = 0.0
     should_checkpoint = (step + 1) % config.checkpoint.checkpoint_every == 0
     if should_checkpoint:
+        ckpt_start = time.perf_counter()
         ckpt_dir = await backend.save_checkpoint(step + 1, accumulated_metrics)
+        ckpt_ms = (time.perf_counter() - ckpt_start) * 1000
         logger.info(f"Saved checkpoint: {ckpt_dir}")
 
     # Note: NO weight sync here - handled by PipelineWeightSyncManager
+
+    step_total_ms = (time.perf_counter() - step_start) * 1000
+
+    # Wide event: one structured log per step with all timing and context
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    world_size = dist.get_world_size() if dist.is_initialized() else 1
+    wide_event = {
+        "event": "step_complete",
+        "step": step + 1,
+        "rank": rank,
+        "world_size": world_size,
+        "node_id": node_id or os.environ.get("ROLLOUTS_NODE_ID"),
+        "hostname": socket.gethostname(),
+        # Timings (ms)
+        "prep_ms": round(prep_ms, 1),
+        "forward_backward_ms": round(fb_ms, 1),
+        "optim_ms": round(optim_ms, 1),
+        "checkpoint_ms": round(ckpt_ms, 1),
+        "weight_sync_ms": 0.0,  # No sync in this mode
+        "step_total_ms": round(step_total_ms, 1),
+        # Metrics
+        "mean_reward": mean_reward,
+        "pg_loss": pg_loss,
+        "entropy": entropy,
+        "num_samples": len(rewards),
+        "num_groups": num_groups,
+    }
+    logger.info("step_complete", extra=wide_event)
 
     return step_metrics
 
