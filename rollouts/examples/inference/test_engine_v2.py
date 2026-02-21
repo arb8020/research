@@ -284,8 +284,109 @@ def test_cuda_graphs(engine: Any, _config: TestConfig) -> dict:
     return result
 
 
+def test_logprob_alignment(engine: Any, config: TestConfig) -> dict:
+    """Test 8: Verify logprobs align with tokens (critical for RL).
+
+    For RL training, logprobs[i] must correspond to token[prompt_len + i].
+    Off-by-one errors here break importance ratio computation.
+    """
+    from rollouts.inference.core import SamplingParams
+
+    emit_event("test_start", test="logprob_alignment")
+    start = time.perf_counter()
+
+    # Use greedy decoding for determinism
+    prompt = "The answer is"
+    prompt_tokens = engine.tokenizer.encode(prompt, add_special_tokens=True)
+    prompt_len = len(prompt_tokens)
+
+    params = SamplingParams(max_tokens=10, temperature=0.0, return_logprobs=True)
+    engine.add_request(prompt, params)
+    finished = engine.run_to_completion()
+
+    req = finished[0]
+    all_tokens = req.input_ids.tolist()
+    generated_tokens = all_tokens[prompt_len:]
+    logprobs = req.logprobs.tolist() if req.logprobs is not None else []
+
+    # Critical check: num_logprobs == num_generated_tokens
+    alignment_correct = len(logprobs) == len(generated_tokens)
+
+    # Additional check: logprobs are reasonable (not all zeros, not NaN)
+    logprobs_valid = (
+        len(logprobs) > 0
+        and all(lp < 0 for lp in logprobs)  # All negative
+        and all(lp > -100 for lp in logprobs)  # Not extreme
+    )
+
+    duration_ms = (time.perf_counter() - start) * 1000
+
+    result = {
+        "test": "logprob_alignment",
+        "success": alignment_correct and logprobs_valid,
+        "duration_ms": duration_ms,
+        "prompt_len": prompt_len,
+        "num_generated": len(generated_tokens),
+        "num_logprobs": len(logprobs),
+        "alignment_correct": alignment_correct,
+        "logprobs_valid": logprobs_valid,
+        "sample_logprobs": logprobs[:5] if logprobs else [],
+    }
+    emit_event("test_done", **result)
+    return result
+
+
+def test_determinism(engine: Any, config: TestConfig) -> dict:
+    """Test 9: Verify greedy decoding is deterministic.
+
+    Same prompt + temperature=0 should always produce same output.
+    """
+    from rollouts.inference.core import SamplingParams
+
+    emit_event("test_start", test="determinism")
+    start = time.perf_counter()
+
+    prompt = "Once upon a time in a land far away"
+    params = SamplingParams(max_tokens=15, temperature=0.0, return_logprobs=True)
+
+    # Generate 3 times
+    outputs = []
+    logprobs_list = []
+    for _ in range(3):
+        engine.add_request(prompt, params)
+        finished = engine.run_to_completion()
+        outputs.append(finished[0].input_ids.tolist())
+        if finished[0].logprobs is not None:
+            logprobs_list.append(finished[0].logprobs.tolist())
+
+    # All outputs should be identical
+    all_same = all(o == outputs[0] for o in outputs)
+
+    # All logprobs should be identical (within tolerance)
+    logprobs_same = True
+    if len(logprobs_list) == 3:
+        for i in range(len(logprobs_list[0])):
+            vals = [lp[i] for lp in logprobs_list]
+            if max(vals) - min(vals) > 1e-5:
+                logprobs_same = False
+                break
+
+    duration_ms = (time.perf_counter() - start) * 1000
+
+    result = {
+        "test": "determinism",
+        "success": all_same and logprobs_same,
+        "duration_ms": duration_ms,
+        "outputs_identical": all_same,
+        "logprobs_identical": logprobs_same,
+        "output_len": len(outputs[0]),
+    }
+    emit_event("test_done", **result)
+    return result
+
+
 def test_weight_reload(engine: Any, config: TestConfig) -> dict:
-    """Test 8: Weight hot-reload (RL use case)."""
+    """Test 10: Weight hot-reload (RL use case)."""
     from rollouts.inference.core import SamplingParams
     from rollouts.inference.models.weight import load_weights
 
@@ -372,6 +473,8 @@ def run_tests(config: TestConfig, require_gpu: bool = True) -> list[dict]:
         test_batched_generation,
         test_flash_attention,
         test_cuda_graphs,
+        test_logprob_alignment,
+        test_determinism,
         test_weight_reload,
     ]
 
