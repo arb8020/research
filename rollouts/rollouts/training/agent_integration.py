@@ -342,7 +342,28 @@ def trajectory_to_sample(
 
     # Extract rollout_log_probs from Choice.logprobs (TI/TO support)
     # This avoids retokenization collapse by using actual generation logprobs
-    rollout_log_probs = _extract_logprobs_from_trajectory(trajectory)
+    completion_logprobs = _extract_logprobs_from_trajectory(trajectory)
+
+    # Align rollout_log_probs with tokens: prepend zeros for prompt positions
+    # This ensures rollout_log_probs[i] corresponds to tokens[i] and loss_mask[i]
+    # Required for correct importance ratio computation in GRPO loss
+    #
+    # Note: Some providers (like SGLang with echo=True) return logprobs for the
+    # full sequence. In that case, completion_logprobs already has the right length.
+    # Only prepend zeros if completion_logprobs has fewer tokens than the full sequence.
+    if completion_logprobs is not None:
+        if len(completion_logprobs) == len(tokens):
+            # Already aligned (provider returned full-sequence logprobs)
+            rollout_log_probs = completion_logprobs
+        elif len(completion_logprobs) < len(tokens):
+            # Completion-only logprobs, prepend zeros for prompt
+            num_prompt_tokens = len(tokens) - len(completion_logprobs)
+            rollout_log_probs = [0.0] * num_prompt_tokens + completion_logprobs
+        else:
+            # More logprobs than tokens - shouldn't happen, but truncate to be safe
+            rollout_log_probs = completion_logprobs[: len(tokens)]
+    else:
+        rollout_log_probs = None
 
     # Tiger Style: Explicit construction
     sample = Sample(
@@ -361,6 +382,10 @@ def trajectory_to_sample(
         f"tokens ({len(sample.tokens)}) != loss_mask ({len(sample.loss_mask)})"
     )
     assert all(0.0 <= w <= 1.0 for w in sample.loss_mask), "loss_mask must be in [0, 1]"
+    if sample.rollout_log_probs is not None:
+        assert len(sample.rollout_log_probs) == len(sample.tokens), (
+            f"rollout_log_probs ({len(sample.rollout_log_probs)}) != tokens ({len(sample.tokens)})"
+        )
 
     return sample
 
@@ -483,6 +508,13 @@ def _branching_trajectory_to_samples(
         tokens = input_ids + output_ids
         loss_mask = [0.0] * len(input_ids) + [1.0] * len(output_ids)
 
+        # Align rollout_logprobs with tokens: prepend zeros for prompt positions
+        # Required for correct importance ratio computation in GRPO loss
+        if rollout_logprobs is not None:
+            aligned_logprobs = [0.0] * len(input_ids) + rollout_logprobs
+        else:
+            aligned_logprobs = None
+
         # Build metadata for this turn
         turn_metadata = metadata.copy() if metadata else {}
         turn_metadata["turn_index"] = msg_idx
@@ -498,7 +530,7 @@ def _branching_trajectory_to_samples(
             else "",
             tokens=tokens,
             loss_mask=loss_mask,
-            rollout_log_probs=rollout_logprobs,
+            rollout_log_probs=aligned_logprobs,
             reward=0.0,  # Will be computed by score_fn later
             metadata=turn_metadata,
             status=Status.COMPLETED,
@@ -508,6 +540,10 @@ def _branching_trajectory_to_samples(
         assert len(sample.tokens) == len(sample.loss_mask), (
             f"tokens ({len(sample.tokens)}) != loss_mask ({len(sample.loss_mask)})"
         )
+        if sample.rollout_log_probs is not None:
+            assert len(sample.rollout_log_probs) == len(sample.tokens), (
+                f"rollout_log_probs ({len(sample.rollout_log_probs)}) != tokens ({len(sample.tokens)})"
+            )
 
         samples.append(sample)
 
