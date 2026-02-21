@@ -622,8 +622,12 @@ def _prepare_training_batch(
             batch_rollout_logprobs.append(rlp_padded)
 
     input_ids = torch.tensor(batch_tokens, device=device)
-    labels = input_ids.clone()
+    # Shift labels left: labels[i] = input_ids[i+1] (causal LM prediction target)
+    # logits[i] predicts token at position i+1, so labels[i] should be input_ids[i+1]
+    labels = torch.cat([input_ids[:, 1:], torch.zeros_like(input_ids[:, :1])], dim=1)
     loss_mask = torch.tensor(batch_loss_masks, device=device)
+    # Also shift loss_mask left to match shifted labels
+    loss_mask = torch.cat([loss_mask[:, 1:], torch.zeros_like(loss_mask[:, :1])], dim=1)
 
     training_batch = {
         "input_ids": input_ids,
@@ -634,6 +638,12 @@ def _prepare_training_batch(
 
     if has_rollout_logprobs:
         rollout_logprobs_tensor = torch.tensor(batch_rollout_logprobs, device=device)
+        # Shift rollout_logprobs left to match shifted labels/loss_mask
+        # After shift: position i has logprob for token i+1
+        rollout_logprobs_tensor = torch.cat(
+            [rollout_logprobs_tensor[:, 1:], torch.zeros_like(rollout_logprobs_tensor[:, :1])],
+            dim=1,
+        )
         seq_rollout_logprobs = (rollout_logprobs_tensor * loss_mask).sum(dim=1) / loss_mask.sum(
             dim=1
         ).clamp(min=1.0)
