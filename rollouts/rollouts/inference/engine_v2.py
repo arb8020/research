@@ -348,12 +348,19 @@ class InferenceEngineV2:
             handle, matched_slots = match_prefix(self._radix_state, prompt_tensor)
 
             if handle.cached_len > 0:
-                # Cap cached_len to prompt_len - 1 so there's always at least 1 token to process.
-                # Otherwise a full prefix match causes extend_len=0 which triggers assertion.
-                cached_len = min(handle.cached_len, len(prompt_ids) - 1)
+                # For full prefix match, we still need to process last token to get logits.
+                # Cap cached_len to prompt_len - 1 so there's always at least 1 token.
+                # Note: This means full prefix matches will recompute the last token's KV,
+                # which may cause minor non-determinism vs the cached version.
+                if handle.cached_len == len(prompt_ids):
+                    cached_len = len(prompt_ids) - 1
+                    matched_slots = matched_slots[:-1]
+                else:
+                    cached_len = handle.cached_len
+
                 lock(self._radix_state, handle)
                 self._cache_handles[uid] = handle
-                self.page_table_mgr.update_slots(table_idx, 0, matched_slots[:cached_len])
+                self.page_table_mgr.update_slots(table_idx, 0, matched_slots)
                 logger.debug(f"Radix cache hit: {cached_len} tokens for request {uid}")
 
         full_req = create_req(

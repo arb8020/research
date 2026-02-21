@@ -340,6 +340,8 @@ def test_determinism(engine: Any, config: TestConfig) -> dict:
     """Test 9: Verify greedy decoding is deterministic.
 
     Same prompt + temperature=0 should always produce same output.
+    We call shutdown() between runs to clear radix cache and ensure
+    each run starts from identical state.
     """
     from rollouts.inference.core import SamplingParams
 
@@ -349,10 +351,11 @@ def test_determinism(engine: Any, config: TestConfig) -> dict:
     prompt = "Once upon a time in a land far away"
     params = SamplingParams(max_tokens=15, temperature=0.0, return_logprobs=True)
 
-    # Generate 3 times
+    # Generate 3 times, clearing cache between runs
     outputs = []
     logprobs_list = []
     for _ in range(3):
+        engine.shutdown()  # Clear radix cache for determinism
         engine.add_request(prompt, params)
         finished = engine.run_to_completion()
         outputs.append(finished[0].input_ids.tolist())
@@ -393,7 +396,8 @@ def test_weight_reload(engine: Any, config: TestConfig) -> dict:
     emit_event("test_start", test="weight_reload")
     start = time.perf_counter()
 
-    # 1. Generate with original weights
+    # 1. Generate with original weights (clear cache first for clean state)
+    engine.shutdown()
     params = SamplingParams(max_tokens=5, temperature=0.0, return_logprobs=True)
     engine.add_request("The capital of France is", params)
     finished_before = engine.run_to_completion()
@@ -401,6 +405,7 @@ def test_weight_reload(engine: Any, config: TestConfig) -> dict:
 
     # 2. Reload the same weights (tests the mechanism, not weight changes)
     # In practice, this would be new weights from training
+    # Note: reload_weights() clears radix cache internally
     state_dict = load_weights(config.model_name, engine.device, engine.config.dtype)
     engine.reload_weights(state_dict)
 
