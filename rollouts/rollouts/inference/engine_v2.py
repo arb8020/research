@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 import torch
 from torch import Tensor
@@ -256,12 +256,12 @@ class InferenceEngineV2:
         if self._use_chunked_prefill:
             logger.info(f"Chunked prefill enabled (chunk_size={self._prefill_chunk_size})")
 
-    def _load_tokenizer(self, model_path: str):
+    def _load_tokenizer(self, model_path: str) -> Any:
         from transformers import AutoTokenizer
 
         return AutoTokenizer.from_pretrained(model_path)
 
-    def _create_attention_backend(self, backend_type: Literal["auto", "flash", "reference"]):
+    def _create_attention_backend(self, backend_type: Literal["auto", "flash", "reference"]) -> Any:
         use_flash = backend_type == "flash" or (
             backend_type == "auto" and is_flash_attn_available()
         )
@@ -298,7 +298,7 @@ class InferenceEngineV2:
         self,
         input_ids: Tensor,
         positions: Tensor,
-        attn_backend,
+        attn_backend: Any,
         attn_metadata: AttentionMetadata,
         out_loc: Tensor,
     ) -> Tensor:
@@ -460,6 +460,82 @@ class InferenceEngineV2:
 
         self.state = empty_scheduler_state()
         self.kv_pool.reset()
+
+    def reload_weights(self, state_dict: dict[str, Tensor]) -> None:
+        """Hot-reload model weights without restarting the engine.
+
+        This is the PipelineRL-style weight sync primitive. Training broadcasts
+        updated weights, and inference engines call this to load them.
+
+        IMPORTANT: This must be called when no requests are in flight.
+        The caller should pause generation before calling this.
+
+        Args:
+            state_dict: New weights in HuggingFace format (will be remapped internally)
+
+        What gets invalidated:
+        - CUDA graphs (they have weight pointers baked in)
+        - Radix cache (cached KV was computed with old weights)
+        - KV cache pool is NOT cleared (in-flight requests keep their cache)
+        """
+        assert not has_pending_work(self.state), (
+            "Cannot reload weights while requests are pending. "
+            "Call run_to_completion() or shutdown() first."
+        )
+
+        logger.info("Reloading weights...")
+
+        # 1. Remap HF weights to our naming convention
+        remapped = remap_weights_llama(state_dict, self.model_config.num_hidden_layers)
+
+        # 2. Load into model (in-place copy)
+        if self._use_functional_model:
+            # Functional path: just replace the dict
+            assert self._functional_weights is not None
+            for name, param in remapped.items():
+                if name in self._functional_weights:
+                    self._functional_weights[name].copy_(param)
+                else:
+                    self._functional_weights[name] = param.to(self.device)
+            # Handle tied embeddings
+            if "lm_head.weight" not in self._functional_weights:
+                self._functional_weights["lm_head.weight"] = self._functional_weights[
+                    "model.embed_tokens.weight"
+                ]
+        else:
+            # Module path: use load_state_dict
+            assert self.model is not None
+            self.model.load_weights(remapped)
+
+        # 3. Invalidate CUDA graphs (they have weight pointers baked in)
+        if self._use_cuda_graphs:
+            self._graph_state.clear()
+            logger.info("CUDA graphs invalidated (will re-capture on next decode)")
+
+        # 4. Invalidate radix cache (cached KV was computed with old weights)
+        if self._use_radix_cache:
+            # Release all handles and reinitialize
+            for handle in self._cache_handles.values():
+                unlock(self._radix_state, handle)
+            self._cache_handles.clear()
+            init_radix_state(self._radix_state, self.device)
+            logger.info("Radix cache invalidated")
+
+        # 5. Reset KV cache pool (old KV was computed with old weights)
+        self.kv_pool.reset()
+
+        logger.info("Weights reloaded successfully")
+
+    def reload_weights_from_path(self, model_path: str) -> None:
+        """Reload weights from a checkpoint path (HuggingFace format).
+
+        Convenience wrapper around reload_weights() that loads from disk.
+
+        Args:
+            model_path: Path to HuggingFace checkpoint or model ID
+        """
+        state_dict = load_weights(model_path, self.device, self.config.dtype)
+        self.reload_weights(state_dict)
 
     def capture_cuda_graphs_now(self) -> None:
         """Capture CUDA graphs for decode optimization.

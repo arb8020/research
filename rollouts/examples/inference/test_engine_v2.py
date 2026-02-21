@@ -284,6 +284,47 @@ def test_cuda_graphs(engine: Any, _config: TestConfig) -> dict:
     return result
 
 
+def test_weight_reload(engine: Any, config: TestConfig) -> dict:
+    """Test 8: Weight hot-reload (RL use case)."""
+    from rollouts.inference.core import SamplingParams
+    from rollouts.inference.models.weight import load_weights
+
+    emit_event("test_start", test="weight_reload")
+    start = time.perf_counter()
+
+    # 1. Generate with original weights
+    params = SamplingParams(max_tokens=5, temperature=0.0, return_logprobs=True)
+    engine.add_request("The capital of France is", params)
+    finished_before = engine.run_to_completion()
+    tokens_before = finished_before[0].input_ids.tolist()
+
+    # 2. Reload the same weights (tests the mechanism, not weight changes)
+    # In practice, this would be new weights from training
+    state_dict = load_weights(config.model_name, engine.device, engine.config.dtype)
+    engine.reload_weights(state_dict)
+
+    # 3. Generate again - should work after reload
+    engine.add_request("The capital of France is", params)
+    finished_after = engine.run_to_completion()
+    tokens_after = finished_after[0].input_ids.tolist()
+
+    duration_ms = (time.perf_counter() - start) * 1000
+
+    # With same weights and temperature=0, outputs should be identical
+    outputs_match = tokens_before == tokens_after
+
+    result = {
+        "test": "weight_reload",
+        "success": outputs_match,
+        "duration_ms": duration_ms,
+        "outputs_match": outputs_match,
+        "tokens_before": len(tokens_before),
+        "tokens_after": len(tokens_after),
+    }
+    emit_event("test_done", **result)
+    return result
+
+
 def run_tests(config: TestConfig, require_gpu: bool = True) -> list[dict]:
     """Run all tests and return results."""
     import torch
@@ -331,6 +372,7 @@ def run_tests(config: TestConfig, require_gpu: bool = True) -> list[dict]:
         test_batched_generation,
         test_flash_attention,
         test_cuda_graphs,
+        test_weight_reload,
     ]
 
     for test_fn in tests:
