@@ -18,6 +18,44 @@ from typing import Any, Literal
 # =============================================================================
 
 
+@dataclass(frozen=True)
+class DepsConfig:
+    """Environment dependencies for remote execution.
+
+    Explicit specification of what goes into the container/environment.
+    Required for Modal, optional for SSH providers (which have hardcoded bootstrap for now).
+
+    Example:
+        DepsConfig(
+            pip_packages=(
+                "torch>=2.4",
+                "sglang[all]",
+                "transformers>=5.0",
+            ),
+            pip_index_url="https://download.pytorch.org/whl/cu124",
+        )
+    """
+
+    python_version: str = "3.12"
+    base_image: str = "debian:bookworm-slim"
+    system_packages: tuple[str, ...] = (
+        "bash",
+        "curl",
+        "git",
+        "build-essential",
+        "libnuma1",
+        "tmux",
+    )
+    pip_packages: tuple[str, ...] = ()
+    pip_index_url: str | None = None
+    pip_extra_index_url: str | None = None
+    bootstrap_commands: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        assert self.python_version, "python_version cannot be empty"
+        assert self.base_image, "base_image cannot be empty"
+
+
 # Known GPU specs: (memory_gb, compute_capability)
 # Used for validation and auto-derivation
 GPU_SPECS: dict[str, tuple[int, str]] = {
@@ -42,10 +80,18 @@ class HardwareConfig:
     The runner uses this to provision via Modal, RunPod, etc.
 
     Example:
-        # Single A100 on Modal
-        HardwareConfig(gpu_type="A100", gpu_count=1, provider="modal")
+        # Single A100 on Modal (deps required)
+        HardwareConfig(
+            gpu_type="A100",
+            gpu_count=1,
+            provider="modal",
+            deps=DepsConfig(
+                pip_packages=("torch>=2.4", "sglang[all]"),
+                pip_index_url="https://download.pytorch.org/whl/cu124",
+            ),
+        )
 
-        # 2x H100 on RunPod
+        # 2x H100 on RunPod (deps optional, uses hardcoded bootstrap)
         HardwareConfig(gpu_type="H100", gpu_count=2, provider="runpod")
 
         # Local execution (no provisioning)
@@ -56,11 +102,21 @@ class HardwareConfig:
     gpu_count: int = 1
     provider: Literal["modal", "runpod", "lambdalabs", "vast", "local"] = "runpod"
 
+    # Environment dependencies (required for Modal, optional for SSH providers)
+    deps: DepsConfig | None = None
+
     # Auto-derived from gpu_type if None (for known GPUs)
     gpu_memory_gb: int | None = None
     compute_capability: str | None = None
 
     def __post_init__(self) -> None:
+        # Validate: Modal requires deps
+        if self.provider == "modal" and self.deps is None:
+            raise ValueError(
+                "HardwareConfig with provider='modal' requires deps. "
+                "Example: deps=DepsConfig(pip_packages=('torch>=2.4', 'sglang[all]'))"
+            )
+
         # Auto-derive GPU specs for known types
         if self.gpu_type in GPU_SPECS and (
             self.gpu_memory_gb is None or self.compute_capability is None
@@ -170,6 +226,9 @@ class TrainerConfig:
     When DistributedConfig is provided, it takes precedence.
     """
 
+    # Training backend implementation (pluggable, see docs/training_architecture.md)
+    backend: Literal["pytorch", "fsdp", "fsdp2", "nmoe", "megatron", "torchtitan"] = "pytorch"
+
     # DEPRECATED: Use DistributedConfig.trainer_gpus instead
     cuda_device_ids: tuple[int, ...] = (0,)
     lr: float = 1e-6
@@ -192,6 +251,32 @@ class TrainerConfig:
     teacher_model: str | None = None
     # Teacher inference server port (separate from student inference)
     teacher_port: int = 30100
+
+    # Megatron-specific settings (only used when backend="megatron")
+    # Parallelism dimensions
+    tensor_parallel_size: int = 1
+    pipeline_parallel_size: int = 1
+    expert_parallel_size: int = 1
+    # Sequence length for Megatron
+    seq_length: int = 4096
+    # Micro batch size per GPU (if None, computed from num_minibatches)
+    micro_batch_size: int | None = None
+
+    # TorchTitan-specific settings (only used when backend="torchtitan")
+    # Model name registered with torchtitan (e.g., "glm", "llama3", "qwen3")
+    torchtitan_model: str = "glm"
+    # Model size variant (e.g., "4.7-flash", "5", "8B")
+    torchtitan_model_size: str = "4.7-flash"
+    # TorchTitan parallelism (TP, CP, PP handled by torchtitan)
+    torchtitan_tp: int = 1
+    torchtitan_cp: int = 1
+    torchtitan_pp: int = 1
+
+    def __post_init__(self) -> None:
+        assert self.backend in ("pytorch", "fsdp", "fsdp2", "nmoe", "megatron", "torchtitan"), (
+            f"Unknown trainer backend: {self.backend!r}. "
+            "Use 'pytorch', 'fsdp', 'fsdp2', 'nmoe', 'megatron', or 'torchtitan'."
+        )
 
 
 @dataclass(frozen=True)

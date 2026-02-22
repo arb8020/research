@@ -24,7 +24,7 @@ Usage:
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -93,6 +93,37 @@ class GRPOConfig:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w") as f:
             json.dump(asdict(self), f, indent=2)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert config to a JSON-serializable dict."""
+        return asdict(self)
+
+    def to_json(self) -> str:
+        """Convert config to JSON string (for remote runners)."""
+        import json
+
+        return json.dumps(self.to_dict(), indent=2)
+
+    @staticmethod
+    def from_dict(data: dict[str, Any]) -> GRPOConfig:
+        """Construct GRPOConfig from a dict (inverse of to_dict)."""
+        assert isinstance(data, dict), f"data must be dict, got {type(data)}"
+
+        model = ModelConfig(**data.get("model", {}))
+        inference = InferenceConfig(**data.get("inference", {}))
+        trainer = TrainerConfig(**data.get("trainer", {}))
+        rollout = RolloutConfig(**data.get("rollout", {}))
+        checkpoint = CheckpointConfig(**data.get("checkpoint", {}))
+        output = OutputConfig(**data.get("output", {}))
+
+        return GRPOConfig(
+            model=model,
+            inference=inference,
+            trainer=trainer,
+            rollout=rollout,
+            checkpoint=checkpoint,
+            output=output,
+        )
 
 
 # ──────────────────────── Training Function ──────────────────────────────────
@@ -317,18 +348,19 @@ def _make_loss_fn(
 
 def _setup_training_backend(
     config: GRPOConfig, output_dir: Path, inference_engine: Any
-) -> tuple[Any, Any, Any]:  # (backend, tokenizer, endpoint)
+) -> tuple[Any, Any, Any, Callable[[], None] | None]:  # (backend, tokenizer, endpoint, cleanup)
     """Setup training backend, tokenizer, and endpoint.
 
     Returns:
-        Tuple of (backend, tokenizer, endpoint)
+        Tuple of (backend, tokenizer, endpoint, cleanup).
+        cleanup is an optional callable to run at shutdown (e.g., destroy process group).
     """
     # TODO: Remove HF transformers dependency. Use tokenizers library directly
     # or load tokenizer.json with custom wrapper.
     from transformers import AutoTokenizer
 
     from ..dtypes import Endpoint
-    from ..training.backends.pytorch_factory import create_pytorch_backend
+    from ..training.backends.pytorch_factory import create_pytorch_backend, parse_dtype
     from ..training.losses import grpo_loss, grpo_loss_clipped, grpo_loss_masked, opd_loss
 
     # Select loss function based on config
@@ -336,22 +368,244 @@ def _setup_training_backend(
         config.trainer, grpo_loss, grpo_loss_clipped, grpo_loss_masked, opd_fn=opd_loss
     )
 
-    gpu_rank = config.trainer.cuda_device_ids[0]
-    backend = create_pytorch_backend(
-        model_name=config.model.name,
-        checkpoint_dir=output_dir,
-        device_type="cuda",
-        dtype=config.model.dtype,
-        gpu_rank=gpu_rank,
-        learning_rate=config.trainer.lr,
-        weight_decay=config.trainer.weight_decay,
-        loss_fn=loss_fn,
-        num_minibatches=config.trainer.num_minibatches,
-        max_grad_norm=config.trainer.max_grad_norm,
-        use_lora=config.model.use_lora,
-        lora_rank=config.model.lora_rank,
-        lora_alpha=config.model.lora_alpha,
-    )
+    cleanup: Callable[[], None] | None = None
+    backend_name = config.trainer.backend
+
+    if backend_name == "pytorch":
+        gpu_rank = config.trainer.cuda_device_ids[0]
+        backend = create_pytorch_backend(
+            model_name=config.model.name,
+            checkpoint_dir=output_dir,
+            device_type="cuda",
+            dtype=config.model.dtype,
+            gpu_rank=gpu_rank,
+            learning_rate=config.trainer.lr,
+            weight_decay=config.trainer.weight_decay,
+            loss_fn=loss_fn,
+            num_minibatches=config.trainer.num_minibatches,
+            max_grad_norm=config.trainer.max_grad_norm,
+            use_lora=config.model.use_lora,
+            lora_rank=config.model.lora_rank,
+            lora_alpha=config.model.lora_alpha,
+        )
+    elif backend_name == "nmoe":
+        from ..training.backends.nmoe_backend import NmoeConfig, NmoeTrainingBackend
+
+        gpu_rank = config.trainer.cuda_device_ids[0]
+        nmoe_cfg = NmoeConfig(
+            dtype=config.model.dtype,
+            lr_dense=config.trainer.lr,
+            lr_router=config.trainer.lr,
+            lr_muon=config.trainer.lr,
+            weight_decay=config.trainer.weight_decay,
+        )
+        backend = NmoeTrainingBackend(
+            model_name=config.model.name,
+            checkpoint_dir=output_dir,
+            loss_fn=loss_fn,
+            config=nmoe_cfg,
+            device_type="cuda",
+            gpu_rank=gpu_rank,
+            num_minibatches=config.trainer.num_minibatches,
+            max_grad_norm=config.trainer.max_grad_norm,
+            use_lora=config.model.use_lora,
+            lora_rank=config.model.lora_rank,
+            lora_alpha=config.model.lora_alpha,
+        )
+    elif backend_name in ("fsdp", "fsdp2"):
+        if backend_name == "fsdp2":
+            logging.getLogger(__name__).warning(
+                "trainer.backend='fsdp2' selected; using FSDPTrainingBackend (fully_shard) "
+                "bring-up path for now."
+            )
+        # Single-process FSDP bring-up path.
+        # Multi-process/multi-node FSDP is orchestrated via rollouts.training.multi_node + fsdp_worker.
+        import os
+        import socket
+
+        import torch
+        import torch.distributed as dist
+        from transformers import AutoModelForCausalLM
+
+        from ..training.backends.fsdp import FSDPConfig, FSDPTrainingBackend
+
+        trainer_gpu = config.trainer.cuda_device_ids[0]
+        torch.cuda.set_device(trainer_gpu)
+
+        if not dist.is_initialized():
+            # Find an available port (avoid conflicts with weight sync ports / stale processes).
+            def find_free_port(start_port: int, max_attempts: int = 100) -> int:
+                for port in range(start_port, start_port + max_attempts):
+                    try:
+                        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                            s.bind(("", port))
+                            return port
+                    except OSError:
+                        continue
+                raise RuntimeError(
+                    f"No free port found in range {start_port}-{start_port + max_attempts}"
+                )
+
+            master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
+            master_port = find_free_port(config.checkpoint.nccl_master_port + 50)
+
+            dist.init_process_group(
+                backend="nccl",
+                init_method=f"tcp://{master_addr}:{master_port}",
+                rank=0,
+                world_size=1,
+            )
+
+            def _cleanup_dist() -> None:
+                if dist.is_initialized():
+                    dist.destroy_process_group()
+
+            cleanup = _cleanup_dist
+
+        # Load model on CPU then let backend move it to the correct CUDA device.
+        torch_dtype = parse_dtype(config.model.dtype)
+        model = AutoModelForCausalLM.from_pretrained(
+            config.model.name,
+            torch_dtype=torch_dtype,
+            trust_remote_code=True,
+        )
+
+        # Optimizer factory (called AFTER FSDP wrapping).
+        def make_optimizer(fsdp_model: torch.nn.Module) -> torch.optim.Optimizer:
+            return torch.optim.AdamW(
+                fsdp_model.parameters(),
+                lr=config.trainer.lr,
+                weight_decay=config.trainer.weight_decay,
+            )
+
+        fsdp_config = FSDPConfig(
+            sharding_strategy="FULL_SHARD",
+            mixed_precision=(torch_dtype in (torch.bfloat16, torch.float16)),
+            gradient_checkpointing=False,
+            clip_grad=config.trainer.max_grad_norm,
+        )
+
+        backend = FSDPTrainingBackend(
+            model=model,
+            optimizer_fn=make_optimizer,
+            loss_fn=loss_fn,
+            checkpoint_dir=output_dir,
+            config=fsdp_config,
+            device=torch.device(f"cuda:{trainer_gpu}"),
+        )
+    elif backend_name == "megatron":
+        # Megatron backend using miniray for multi-process orchestration.
+        # Workers run megatron_worker.py and communicate via miniray IPC.
+        from ..training.backends.megatron.remote_backend import (
+            MegatronRemoteBackend,
+            MegatronRemoteConfig,
+            spawn_megatron_workers,
+        )
+
+        num_trainer_gpus = len(config.trainer.cuda_device_ids)
+        megatron_config = MegatronRemoteConfig(
+            model_name=config.model.name,
+            dtype=config.model.dtype,
+            tensor_parallel_size=config.trainer.tensor_parallel_size,
+            pipeline_parallel_size=config.trainer.pipeline_parallel_size,
+            expert_parallel_size=config.trainer.expert_parallel_size,
+            lr=config.trainer.lr,
+            weight_decay=config.trainer.weight_decay,
+            max_grad_norm=config.trainer.max_grad_norm,
+            micro_batch_size=config.trainer.micro_batch_size or 1,
+            global_batch_size=config.rollout.batch_size,
+            seq_length=config.trainer.seq_length,
+            master_port=config.checkpoint.nccl_master_port,
+            inference_endpoints=[f"http://localhost:{config.inference.port}"],
+        )
+
+        workers = spawn_megatron_workers(
+            num_gpus=num_trainer_gpus,
+            config=megatron_config,
+        )
+
+        backend = MegatronRemoteBackend(
+            workers=workers,
+            config=megatron_config,
+            checkpoint_dir=output_dir,
+        )
+        backend.initialize()
+
+        def _cleanup_megatron() -> None:
+            backend.shutdown()
+
+        cleanup = _cleanup_megatron
+    elif backend_name == "torchtitan":
+        # TorchTitan backend for GLM and other models with 4D parallelism
+        import os
+        import socket
+
+        import torch
+        import torch.distributed as dist
+
+        from ..training.backends.torchtitan_backend import TorchTitanBackend, TorchTitanConfig
+
+        # Import GLM to register with torchtitan
+        from ..training.models import glm  # noqa: F401
+
+        trainer_gpu = config.trainer.cuda_device_ids[0]
+        torch.cuda.set_device(trainer_gpu)
+
+        if not dist.is_initialized():
+
+            def find_free_port(start_port: int, max_attempts: int = 100) -> int:
+                for port in range(start_port, start_port + max_attempts):
+                    try:
+                        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                            s.bind(("", port))
+                            return port
+                    except OSError:
+                        continue
+                raise RuntimeError(
+                    f"No free port found in range {start_port}-{start_port + max_attempts}"
+                )
+
+            master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
+            master_port = find_free_port(config.checkpoint.nccl_master_port + 50)
+
+            dist.init_process_group(
+                backend="nccl",
+                init_method=f"tcp://{master_addr}:{master_port}",
+                rank=0,
+                world_size=1,
+            )
+
+            def _cleanup_dist() -> None:
+                if dist.is_initialized():
+                    dist.destroy_process_group()
+
+            cleanup = _cleanup_dist
+
+        torchtitan_config = TorchTitanConfig(
+            tp_degree=config.trainer.torchtitan_tp,
+            cp_degree=config.trainer.torchtitan_cp,
+            pp_degree=config.trainer.torchtitan_pp,
+            seq_len=config.rollout.max_seq_len,
+            lr=config.trainer.lr,
+            weight_decay=config.trainer.weight_decay,
+            max_grad_norm=config.trainer.max_grad_norm,
+        )
+
+        backend = TorchTitanBackend(
+            model_name=config.trainer.torchtitan_model,
+            model_size=config.trainer.torchtitan_model_size,
+            checkpoint_dir=output_dir,
+            loss_fn=loss_fn,
+            config=torchtitan_config,
+            hf_checkpoint=config.model.name,  # Load weights from HF
+        )
+    else:
+        raise ValueError(
+            f"Unknown trainer backend: {backend_name!r}. "
+            "Use 'pytorch', 'fsdp', 'fsdp2', 'nmoe', 'megatron', or 'torchtitan'."
+        )
 
     tokenizer = AutoTokenizer.from_pretrained(config.model.name)
     if tokenizer.pad_token is None:
@@ -366,7 +620,7 @@ def _setup_training_backend(
         extra_params=config.rollout.extra_params or None,
     )
 
-    return backend, tokenizer, endpoint
+    return backend, tokenizer, endpoint, cleanup
 
 
 def _create_generate_fn(
@@ -437,8 +691,6 @@ async def _process_training_step(
     tokenizer: Any,
     device: str,
     output_dir: Path,
-    metrics_logger: Any,
-    inference_engine: Any,
     logger: logging.Logger,
     *,
     node_id: str | None = None,
@@ -475,6 +727,7 @@ async def _process_training_step(
                 "reward": sample.reward,
                 "status": sample.status.value,
                 "group_index": sample.group_index,
+                "weight_version": getattr(sample, "weight_version", 0),
                 "turns": sample.metadata.get("turns"),
                 "stop_reason": sample.metadata.get("stop_reason"),
                 "messages": sample.metadata.get("messages"),
@@ -527,7 +780,6 @@ async def _process_training_step(
         **accumulated_metrics,
     }
 
-    metrics_logger.log(step_metrics, step=step + 1)
     logger.info("metrics", extra={"step": step + 1, **step_metrics})
 
     if (step + 1) % config.checkpoint.log_every == 0:
@@ -541,42 +793,21 @@ async def _process_training_step(
             f"masked={masked_frac:.2f} | ratio={avg_ratio:.3f} | adv={avg_advantage:.3f}"
         )
 
-    # Checkpoint (save to disk for recovery)
-    should_checkpoint = (step + 1) % config.checkpoint.checkpoint_every == 0
-    should_sync = (step + 1) % config.checkpoint.sync_weights_every == 0
-
-    ckpt_ms = 0.0
-    if should_checkpoint:
-        ckpt_start = time.perf_counter()
-        ckpt_dir = await backend.save_checkpoint(step + 1, accumulated_metrics)
-        ckpt_ms = (time.perf_counter() - ckpt_start) * 1000
-        logger.info(f"Saved checkpoint: {ckpt_dir}")
-
-    # Sync weights to inference engine (for on-policy training)
-    sync_ms = 0.0
-    if should_sync:
-        sync_start = time.perf_counter()
-        if config.checkpoint.weight_sync_mode == "nccl":
-            # NCCL in-flight sync: GPU-to-GPU broadcast (PipelineRL-style)
-            logger.info(f"Syncing weights via NCCL to {inference_engine.name}...")
-            await backend.sync_weights_nccl()
-            logger.info("NCCL weight sync complete")
-        else:
-            # Disk-based sync: save to /dev/shm, reload (default)
-            from ..training.weight_sync import get_fast_sync_dir
-
-            fast_dir = get_fast_sync_dir()
-            sync_dir = await backend.save_weights_for_sampler(fast_dir / "sync_latest")
-            logger.info(f"Syncing weights to {inference_engine.name}...")
-            await inference_engine.update_weights_from_checkpoint(str(sync_dir))
-            logger.info("Weight sync complete")
-        sync_ms = (time.perf_counter() - sync_start) * 1000
-
     step_total_ms = (time.perf_counter() - step_start) * 1000
 
     # Wide event: one structured log per step with all timing and context
     rank = dist.get_rank() if dist.is_initialized() else 0
     world_size = dist.get_world_size() if dist.is_initialized() else 1
+    # Free CUDA memory after training step (QED-Nano pattern)
+    torch.cuda.empty_cache()
+
+    # Collect memory stats for wide event
+    import psutil
+
+    gpu_allocated_gb = torch.cuda.memory_allocated() / 1e9
+    gpu_reserved_gb = torch.cuda.memory_reserved() / 1e9
+    ram_gb = psutil.Process().memory_info().rss / 1e9
+
     wide_event = {
         "event": "step_complete",
         "step": step + 1,
@@ -588,8 +819,6 @@ async def _process_training_step(
         "prep_ms": round(prep_ms, 1),
         "forward_backward_ms": round(fb_ms, 1),
         "optim_ms": round(optim_ms, 1),
-        "checkpoint_ms": round(ckpt_ms, 1),
-        "weight_sync_ms": round(sync_ms, 1),
         "step_total_ms": round(step_total_ms, 1),
         # Metrics
         "mean_reward": mean_reward,
@@ -597,166 +826,12 @@ async def _process_training_step(
         "entropy": entropy,
         "num_samples": len(rewards),
         "num_groups": num_groups,
+        # Memory (GB) - for debugging leaks
+        "gpu_allocated_gb": round(gpu_allocated_gb, 3),
+        "gpu_reserved_gb": round(gpu_reserved_gb, 3),
+        "ram_gb": round(ram_gb, 3),
     }
     logger.info("step_complete", extra=wide_event)
-
-    # Free CUDA memory after training step (QED-Nano pattern)
-    torch.cuda.empty_cache()
-
-    return step_metrics
-
-
-async def _process_training_step_no_sync(
-    step: int,
-    batch: Any,
-    config: GRPOConfig,
-    backend: Any,
-    tokenizer: Any,
-    device: str,
-    output_dir: Path,
-    metrics_logger: Any,
-    logger: logging.Logger,
-    *,
-    node_id: str | None = None,
-) -> dict[str, Any] | None:
-    """Process a training step without weight sync (for true_pipeline mode).
-
-    Same as _process_training_step but without the weight sync logic.
-    Weight sync is handled separately by PipelineWeightSyncManager.
-
-    Returns:
-        Step metrics dict, or None if step was skipped
-    """
-    import json
-    import os
-    import socket
-    import time
-
-    import torch
-    import torch.distributed as dist
-
-    from ..training.losses import compute_group_advantages
-
-    step_start = time.perf_counter()
-
-    if not batch.tokens:
-        logger.warning("No successful rollouts, skipping step")
-        return None
-
-    # Save rollouts to JSONL
-    rollouts_file = output_dir / "rollouts.jsonl"
-    with open(rollouts_file, "a") as f:  # noqa: ASYNC230
-        for sample in batch.samples:
-            record = {
-                "step": step + 1,
-                "prompt": sample.prompt,
-                "response": sample.response,
-                "reward": sample.reward,
-                "status": sample.status.value,
-                "group_index": sample.group_index,
-                "weight_version": sample.weight_version,  # Track staleness
-                "turns": sample.metadata.get("turns"),
-                "stop_reason": sample.metadata.get("stop_reason"),
-                "messages": sample.metadata.get("messages"),
-            }
-            f.write(json.dumps(record) + "\n")
-            logger.info("rollout", extra=record)
-
-    # Compute advantages
-    rewards = batch.rewards
-    group_indices = batch.group_indices
-    mean_reward = sum(rewards) / len(rewards) if rewards else 0.0
-    num_groups = len(set(group_indices)) if group_indices else len(rewards)
-    logger.info(f"Reward: {mean_reward:.3f} ({len(rewards)} samples, {num_groups} groups)")
-
-    if group_indices and len(set(group_indices)) > 1:
-        advantages = compute_group_advantages(rewards, group_indices).to(device)
-    else:
-        advantages = torch.tensor([r - mean_reward for r in rewards], device=device)
-
-    # Prepare batch tensors
-    prep_start = time.perf_counter()
-    training_batch = _prepare_training_batch(batch, config, tokenizer, advantages, device)
-    prep_ms = (time.perf_counter() - prep_start) * 1000
-
-    # Training step - forward/backward
-    fb_start = time.perf_counter()
-    fb_future = backend.forward_backward(training_batch)
-    fb_metrics = await fb_future.result()
-    fb_ms = (time.perf_counter() - fb_start) * 1000
-
-    # Optimizer step
-    optim_start = time.perf_counter()
-    optim_future = backend.optim_step()
-    optim_metrics = await optim_future.result()
-    optim_ms = (time.perf_counter() - optim_start) * 1000
-
-    accumulated_metrics = {**fb_metrics, **optim_metrics}
-    pg_loss = accumulated_metrics.get("pg_loss", 0.0)
-    entropy = accumulated_metrics.get("entropy", 0.0)
-
-    step_metrics = {
-        "mean_reward": mean_reward,
-        "num_samples": len(rewards),
-        "num_groups": num_groups,
-        **accumulated_metrics,
-    }
-
-    metrics_logger.log(step_metrics, step=step + 1)
-    logger.info("metrics", extra={"step": step + 1, **step_metrics})
-
-    if (step + 1) % config.checkpoint.log_every == 0:
-        # Include key diagnostic metrics for debugging loss issues
-        masked_frac = accumulated_metrics.get("masked_frac", 0.0)
-        avg_ratio = accumulated_metrics.get("avg_ratio", 1.0)
-        avg_advantage = accumulated_metrics.get("avg_advantage", 0.0)
-        logger.info(
-            f"Step {step + 1}: reward={mean_reward:.3f} | "
-            f"pg_loss={pg_loss:.4f} | entropy={entropy:.2f} | "
-            f"masked={masked_frac:.2f} | ratio={avg_ratio:.3f} | adv={avg_advantage:.3f}"
-        )
-
-    # Checkpoint (save to disk for recovery)
-    ckpt_ms = 0.0
-    should_checkpoint = (step + 1) % config.checkpoint.checkpoint_every == 0
-    if should_checkpoint:
-        ckpt_start = time.perf_counter()
-        ckpt_dir = await backend.save_checkpoint(step + 1, accumulated_metrics)
-        ckpt_ms = (time.perf_counter() - ckpt_start) * 1000
-        logger.info(f"Saved checkpoint: {ckpt_dir}")
-
-    # Note: NO weight sync here - handled by PipelineWeightSyncManager
-
-    step_total_ms = (time.perf_counter() - step_start) * 1000
-
-    # Wide event: one structured log per step with all timing and context
-    rank = dist.get_rank() if dist.is_initialized() else 0
-    world_size = dist.get_world_size() if dist.is_initialized() else 1
-    wide_event = {
-        "event": "step_complete",
-        "step": step + 1,
-        "rank": rank,
-        "world_size": world_size,
-        "node_id": node_id or os.environ.get("ROLLOUTS_NODE_ID"),
-        "hostname": socket.gethostname(),
-        # Timings (ms)
-        "prep_ms": round(prep_ms, 1),
-        "forward_backward_ms": round(fb_ms, 1),
-        "optim_ms": round(optim_ms, 1),
-        "checkpoint_ms": round(ckpt_ms, 1),
-        "weight_sync_ms": 0.0,  # No sync in this mode
-        "step_total_ms": round(step_total_ms, 1),
-        # Metrics
-        "mean_reward": mean_reward,
-        "pg_loss": pg_loss,
-        "entropy": entropy,
-        "num_samples": len(rewards),
-        "num_groups": num_groups,
-    }
-    logger.info("step_complete", extra=wide_event)
-
-    # Free CUDA memory after training step (QED-Nano pattern)
-    torch.cuda.empty_cache()
 
     return step_metrics
 
@@ -932,6 +1007,8 @@ async def _grpo_train_async(
         teacher_engine.launch()
         teacher_engine.start_log_tailer()
 
+    backend_cleanup: Callable[[], None] | None = None
+
     try:
         # Wait for all engines to be ready in parallel
         async with trio.open_nursery() as startup_nursery:
@@ -944,7 +1021,9 @@ async def _grpo_train_async(
             logger.info("Teacher engine ready")
 
         # Setup training backend
-        backend, tokenizer, endpoint = _setup_training_backend(config, output_dir, inference_engine)
+        backend, tokenizer, endpoint, backend_cleanup = _setup_training_backend(
+            config, output_dir, inference_engine
+        )
         device = f"cuda:{config.trainer.cuda_device_ids[0]}"
 
         # Load checkpoint if provided (for SFT → RL pipeline)
@@ -971,14 +1050,20 @@ async def _grpo_train_async(
         else:
             logger.info("VRAM preflight check skipped (skip_vram_check=True)")
 
-        # Initialize NCCL weight sync if enabled (PipelineRL-style in-flight updates)
-        # Skip for true_pipeline mode - PipelineWeightSyncManager handles NCCL init separately
+        # Initialize NCCL weight sync if enabled (PipelineRL-style in-flight updates).
+        # Skip for true_pipeline mode - NCCLWeightSyncer handles NCCL init separately.
         if (
             config.checkpoint.weight_sync_mode == "nccl"
             and config.checkpoint.pipeline_mode != "true_pipeline"
         ):
             logger.info(f"Initializing NCCL weight sync with {num_engines} engine(s)...")
-            await backend.init_nccl_weight_sync(
+            init_fn = getattr(backend, "init_nccl_weight_sync", None)
+            if init_fn is None:
+                raise ValueError(
+                    "weight_sync_mode='nccl' requires the selected trainer backend to implement "
+                    "init_nccl_weight_sync()."
+                )
+            await init_fn(
                 inference_endpoints=[e.base_url for e in inference_engines],
                 master_port=config.checkpoint.nccl_master_port,
             )
@@ -999,16 +1084,67 @@ async def _grpo_train_async(
             score_fn=score_fn,
         )
 
-        # Training loop
-        metrics_history = []
+        # Training loop (delegated to rollouts.training.train.train)
+        from ..training.train import train as _train_loop
+
+        # Step-level weight syncer (blocking). True PipelineRL uses non-blocking NCCLWeightSyncer instead.
+        from ..training.weight_sync import BackendNCCLWeightSyncer, FilesystemWeightSyncer
+
+        step_weight_syncer = None
+        if config.checkpoint.pipeline_mode != "true_pipeline":
+            if config.checkpoint.weight_sync_mode == "nccl":
+                step_weight_syncer = BackendNCCLWeightSyncer(backend=backend, log=logger)
+            elif config.checkpoint.weight_sync_mode == "disk":
+                step_weight_syncer = FilesystemWeightSyncer(
+                    backend=backend, engines=inference_engines
+                )
+            else:
+                raise ValueError(
+                    f"Unknown weight_sync_mode: {config.checkpoint.weight_sync_mode!r}. "
+                    "Use 'disk' or 'nccl'."
+                )
+
+        async def _save_checkpoint(step: int, step_metrics: dict[str, Any]) -> Path:
+            save_fn = getattr(backend, "save_checkpoint", None)
+            if save_fn is None:
+                raise ValueError(
+                    "Checkpointing requires the selected trainer backend to implement "
+                    "save_checkpoint(step, metrics) -> Path."
+                )
+            numeric_metrics = {
+                k: float(v) for k, v in step_metrics.items() if isinstance(v, (int, float))
+            }
+            ckpt_dir = await save_fn(step, numeric_metrics)
+            logger.info(f"Saved checkpoint: {ckpt_dir}")
+            return ckpt_dir
+
+        async def _sync_batches() -> AsyncIterator[Any]:
+            # Synchronous training (default): generate batch, train, sync weights, repeat.
+            async with AsyncRolloutManager(data_buffer, rollout_config) as rollout_manager:
+                for _step in range(config.checkpoint.num_steps):
+                    batch = await rollout_manager.generate_batch(score_fn=score_fn)
+
+                    # Compute teacher logprobs for OPD (only supported in sync mode for now)
+                    if teacher_engine is not None and batch.samples:
+                        from ..training.opd import compute_teacher_logprobs_batch
+
+                        teacher_url = teacher_engine.base_url
+                        logger.info(
+                            f"Computing teacher logprobs for {len(batch.samples)} samples..."
+                        )
+                        await compute_teacher_logprobs_batch(teacher_url, batch.samples)
+                        # Update batch with teacher logprobs (samples were modified in-place)
+                        batch.teacher_log_probs = [s.teacher_log_probs for s in batch.samples]
+                        logger.info("Teacher logprobs computed")
+
+                    yield batch
 
         if config.checkpoint.pipeline_mode == "true_pipeline":
-            # True PipelineRL: both sampling AND weight sync are non-blocking
-            # Inference never stops, training never waits
+            # True PipelineRL: both sampling AND weight sync are non-blocking.
             from ..training.rollout_gen.pipelined_rollout_manager import PipelinedRolloutManager
-            from ..training.weight_sync import PipelineWeightSyncManager
+            from ..training.weight_sync import NCCLWeightSyncer
 
-            weight_sync_manager = PipelineWeightSyncManager(
+            weight_sync_manager = NCCLWeightSyncer(
                 inference_endpoints=[e.base_url for e in inference_engines],
                 max_lag=config.checkpoint.max_lag,
                 nccl_master_port=config.checkpoint.nccl_master_port,
@@ -1033,72 +1169,76 @@ async def _grpo_train_async(
             if num_engines > 1:
                 logger.info(f"  - Multi-engine: {num_engines} inference servers")
 
-            try:
-                # Initialize NCCL for non-blocking weight sync
-                await weight_sync_manager.init_nccl_group()
+            async def _true_pipeline_batches() -> AsyncIterator[Any]:
+                try:
+                    # Initialize NCCL for non-blocking weight sync
+                    await weight_sync_manager.init_nccl_group()
 
-                async with pipelined_manager:
-                    async with trio.open_nursery() as nursery:
-                        # Start background sampling
-                        await pipelined_manager.start_sampling(
-                            nursery=nursery,
-                            initial_weight_version=weight_sync_manager.current_version,
-                        )
-
-                        for step in range(config.checkpoint.num_steps):
-                            logger.info(f"\n--- Step {step + 1}/{config.checkpoint.num_steps} ---")
-
-                            # Get batch (filters stale samples based on weight version)
-                            batch = await pipelined_manager.get_batch(
-                                current_weight_version=weight_sync_manager.current_version,
-                                score_fn=score_fn,
+                    async with pipelined_manager:
+                        async with trio.open_nursery() as nursery:
+                            # Start background sampling
+                            await pipelined_manager.start_sampling(
+                                nursery=nursery,
+                                initial_weight_version=weight_sync_manager.current_version,
                             )
 
-                            # Training step (uses compute_grpo_loss, backward, optimizer)
-                            step_metrics = await _process_training_step_no_sync(
-                                step,
-                                batch,
-                                config,
-                                backend,
-                                tokenizer,
-                                device,
-                                output_dir,
-                                metrics_logger,
-                                logger,
-                            )
-
-                            if step_metrics:
-                                metrics_history.append({"step": step + 1, **step_metrics})
-
-                            # Non-blocking weight sync - spawns background task
-                            # Training continues immediately, doesn't wait!
-                            should_sync = (step + 1) % config.checkpoint.sync_weights_every == 0
-                            if should_sync:
-                                logger.debug(
-                                    f"Spawning async weight sync (v={weight_sync_manager.current_version + 1})"
+                            for step in range(config.checkpoint.num_steps):
+                                batch = await pipelined_manager.get_batch(
+                                    current_weight_version=weight_sync_manager.current_version,
+                                    score_fn=score_fn,
                                 )
-                                await weight_sync_manager.broadcast_weights_async(
-                                    backend.model, nursery
+                                yield batch
+
+                                # Non-blocking weight sync - spawns background task.
+                                should_sync = (step + 1) % config.checkpoint.sync_weights_every == 0
+                                if should_sync:
+                                    logger.debug(
+                                        f"Spawning async weight sync (v={weight_sync_manager.current_version + 1})"
+                                    )
+                                    await weight_sync_manager.broadcast_weights_async(
+                                        backend.model, nursery
+                                    )
+
+                                # Update version in rollout manager
+                                pipelined_manager.update_weight_version(
+                                    weight_sync_manager.current_version
                                 )
 
-                            # Update version in rollout manager
-                            pipelined_manager.update_weight_version(
-                                weight_sync_manager.current_version
+                            # Log pipeline stats
+                            stats = pipelined_manager.stats()
+                            logger.info(
+                                f"Pipeline stats: generated={stats['samples_generated']}, "
+                                f"discarded_stale={stats['samples_discarded_stale']} "
+                                f"({stats['discard_rate']:.1f}%)"
                             )
+                finally:
+                    await weight_sync_manager.close()
 
-                        # Log pipeline stats
-                        stats = pipelined_manager.stats()
-                        logger.info(
-                            f"Pipeline stats: generated={stats['samples_generated']}, "
-                            f"discarded_stale={stats['samples_discarded_stale']} "
-                            f"({stats['discard_rate']:.1f}%)"
-                        )
-            finally:
-                await weight_sync_manager.cleanup()
+            async def _process_batch(step: int, batch: Any, _backend: Any) -> dict[str, Any] | None:
+                return await _process_training_step(
+                    step,
+                    batch,
+                    config,
+                    backend,
+                    tokenizer,
+                    device,
+                    output_dir,
+                    logger,
+                )
+
+            train_result = await _train_loop(
+                config=config.checkpoint,
+                backend=backend,
+                batch_iterator=_true_pipeline_batches(),
+                process_batch=_process_batch,
+                weight_syncer=None,
+                save_checkpoint=_save_checkpoint,
+                metrics_logger=metrics_logger,
+                logger=logger,
+            )
 
         elif config.checkpoint.pipeline_mode == "async":
-            # Async sampling but blocking weight sync
-            # Sampling runs in background, but training waits for weight sync
+            # Async sampling but blocking weight sync (training waits for sync).
             from ..training.rollout_gen.pipelined_rollout_manager import PipelinedRolloutManager
 
             pipelined_manager = PipelinedRolloutManager(
@@ -1113,87 +1253,79 @@ async def _grpo_train_async(
                 f"queue_size={config.checkpoint.pipeline_queue_size})"
             )
 
-            async with pipelined_manager:
-                async with trio.open_nursery() as nursery:
-                    # Start background sampling
-                    await pipelined_manager.start_sampling(
-                        nursery=nursery,
-                        initial_weight_version=backend.weight_version,
-                    )
-
-                    for step in range(config.checkpoint.num_steps):
-                        logger.info(f"\n--- Step {step + 1}/{config.checkpoint.num_steps} ---")
-
-                        # Get batch (filters stale samples based on weight version)
-                        batch = await pipelined_manager.get_batch(
-                            current_weight_version=backend.weight_version,
-                            score_fn=score_fn,
+            async def _async_pipeline_batches() -> AsyncIterator[Any]:
+                async with pipelined_manager:
+                    async with trio.open_nursery() as nursery:
+                        await pipelined_manager.start_sampling(
+                            nursery=nursery,
+                            initial_weight_version=backend.weight_version,
                         )
 
-                        step_metrics = await _process_training_step(
-                            step,
-                            batch,
-                            config,
-                            backend,
-                            tokenizer,
-                            device,
-                            output_dir,
-                            metrics_logger,
-                            inference_engine,
-                            logger,
+                        for _step in range(config.checkpoint.num_steps):
+                            batch = await pipelined_manager.get_batch(
+                                current_weight_version=backend.weight_version,
+                                score_fn=score_fn,
+                            )
+                            yield batch
+                            pipelined_manager.update_weight_version(backend.weight_version)
+
+                        # Log pipeline stats
+                        stats = pipelined_manager.stats()
+                        logger.info(
+                            f"Pipeline stats: generated={stats['samples_generated']}, "
+                            f"discarded_stale={stats['samples_discarded_stale']} "
+                            f"({stats['discard_rate']:.1f}%)"
                         )
 
-                        if step_metrics:
-                            metrics_history.append({"step": step + 1, **step_metrics})
+            async def _process_batch(step: int, batch: Any, _backend: Any) -> dict[str, Any] | None:
+                return await _process_training_step(
+                    step,
+                    batch,
+                    config,
+                    backend,
+                    tokenizer,
+                    device,
+                    output_dir,
+                    logger,
+                )
 
-                        # Update weight version in manager (tells sampler weights changed)
-                        pipelined_manager.update_weight_version(backend.weight_version)
-
-                    # Log pipeline stats
-                    stats = pipelined_manager.stats()
-                    logger.info(
-                        f"Pipeline stats: generated={stats['samples_generated']}, "
-                        f"discarded_stale={stats['samples_discarded_stale']} "
-                        f"({stats['discard_rate']:.1f}%)"
-                    )
+            train_result = await _train_loop(
+                config=config.checkpoint,
+                backend=backend,
+                batch_iterator=_async_pipeline_batches(),
+                process_batch=_process_batch,
+                weight_syncer=step_weight_syncer,
+                save_checkpoint=_save_checkpoint,
+                metrics_logger=metrics_logger,
+                logger=logger,
+            )
 
         else:
-            # Synchronous training (default)
-            # Generate batch, train, sync weights, repeat
-            async with AsyncRolloutManager(data_buffer, rollout_config) as rollout_manager:
-                for step in range(config.checkpoint.num_steps):
-                    logger.info(f"\n--- Step {step + 1}/{config.checkpoint.num_steps} ---")
 
-                    batch = await rollout_manager.generate_batch(score_fn=score_fn)
+            async def _process_batch(step: int, batch: Any, _backend: Any) -> dict[str, Any] | None:
+                return await _process_training_step(
+                    step,
+                    batch,
+                    config,
+                    backend,
+                    tokenizer,
+                    device,
+                    output_dir,
+                    logger,
+                )
 
-                    # Compute teacher logprobs for OPD
-                    if teacher_engine is not None and batch.samples:
-                        from ..training.opd import compute_teacher_logprobs_batch
+            train_result = await _train_loop(
+                config=config.checkpoint,
+                backend=backend,
+                batch_iterator=_sync_batches(),
+                process_batch=_process_batch,
+                weight_syncer=step_weight_syncer,
+                save_checkpoint=_save_checkpoint,
+                metrics_logger=metrics_logger,
+                logger=logger,
+            )
 
-                        teacher_url = teacher_engine.base_url
-                        logger.info(
-                            f"Computing teacher logprobs for {len(batch.samples)} samples..."
-                        )
-                        await compute_teacher_logprobs_batch(teacher_url, batch.samples)
-                        # Update batch with teacher logprobs (samples were modified in-place)
-                        batch.teacher_log_probs = [s.teacher_log_probs for s in batch.samples]
-                        logger.info("Teacher logprobs computed")
-
-                    step_metrics = await _process_training_step(
-                        step,
-                        batch,
-                        config,
-                        backend,
-                        tokenizer,
-                        device,
-                        output_dir,
-                        metrics_logger,
-                        inference_engine,
-                        logger,
-                    )
-
-                    if step_metrics:
-                        metrics_history.append({"step": step + 1, **step_metrics})
+        metrics_history = train_result.metrics_history
 
         # Final summary
         logger.info("\n" + "=" * 60)
@@ -1208,22 +1340,30 @@ async def _grpo_train_async(
             logger.info(f"First: reward={first_reward:.3f}, pg_loss={first_loss:.4f}")
             logger.info(f"Last:  reward={last_reward:.3f}, pg_loss={last_loss:.4f}")
 
-        metrics_logger.finish()
         return {"metrics_history": metrics_history}
 
     finally:
         # Cleanup NCCL weight sync if it was initialized
         if config.checkpoint.weight_sync_mode == "nccl":
             try:
-                await backend.cleanup_nccl_weight_sync()
+                cleanup_fn = getattr(backend, "cleanup_nccl_weight_sync", None)
+                if cleanup_fn is not None:
+                    await cleanup_fn()
             except NameError:
                 pass  # backend not yet created
             except Exception as e:
                 logger.warning(f"NCCL cleanup failed: {e}")
 
-        logger.info(f"Shutting down {inference_engine.name}...")
-        inference_engine.shutdown()
-        logger.info(f"Logs: {inference_engine.log_path}")
+        if backend_cleanup is not None:
+            try:
+                backend_cleanup()
+            except Exception as e:
+                logger.warning(f"Backend cleanup failed: {e}")
+
+        for engine in inference_engines:
+            logger.info(f"Shutting down {engine.name} (port={engine.port})...")
+            engine.shutdown()
+            logger.info(f"Logs: {engine.log_path}")
 
         # Shutdown teacher engine if it was launched
         if teacher_engine is not None:
@@ -1233,206 +1373,4 @@ async def _grpo_train_async(
 
 # ──────────────────────── TI/TO Helpers ───────────────────────────────────────
 
-
-def _trajectory_to_samples_tito(
-    trajectory: Any,
-    tokenizer: Any,
-    strategy: str = "interleaved",
-    metadata: dict[str, Any] | None = None,
-) -> list[Sample]:
-    """Convert TI/TO trajectory to training sample(s) based on strategy.
-
-    This function is specialized for TI/TO mode where:
-    - token_ids are stored directly in Choice (no retokenization needed)
-    - logprobs are stored in Logprobs.content as per-token Logprob objects
-
-    Args:
-        trajectory: Trajectory with completions containing token_ids and logprobs
-        tokenizer: HuggingFace tokenizer
-        strategy: "interleaved" (one sample) or "branching" (one per assistant turn)
-        metadata: Optional metadata
-
-    Returns:
-        List of Samples with tokens, loss_mask, and rollout_log_probs
-    """
-    assert strategy in ("interleaved", "branching"), f"Unknown strategy: {strategy}"
-
-    if strategy == "interleaved":
-        return [_trajectory_to_sample_tito_interleaved(trajectory, tokenizer, metadata)]
-    else:
-        return _trajectory_to_samples_tito_branching(trajectory, tokenizer, metadata)
-
-
-def _trajectory_to_sample_tito_interleaved(
-    trajectory: Any,
-    tokenizer: Any,
-    metadata: dict[str, Any] | None = None,
-) -> Sample:
-    """Convert TI/TO trajectory to single sample (interleaved strategy)."""
-    from ..training.types import Sample, Status
-
-    assert trajectory is not None
-    assert tokenizer is not None
-    assert len(trajectory.messages) > 0
-
-    # Extract prompt (messages before first assistant)
-    prompt_messages = []
-    for msg in trajectory.messages:
-        if msg.role == "assistant":
-            break
-        prompt_messages.append(msg)
-
-    prompt = tokenizer.apply_chat_template(
-        [{"role": m.role, "content": _get_message_content(m)} for m in prompt_messages],
-        tokenize=False,
-        add_generation_prompt=True,
-    )
-
-    # Extract tokens and logprobs from completions
-    all_tokens: list[int] = []
-    all_logprobs: list[float] = []
-    loss_mask: list[float] = []
-
-    # First, tokenize the prompt
-    prompt_ids = list(tokenizer.encode(prompt, add_special_tokens=True))
-    all_tokens.extend(prompt_ids)
-    loss_mask.extend([0.0] * len(prompt_ids))  # Don't train on prompt
-    all_logprobs.extend([0.0] * len(prompt_ids))  # Placeholder for prompt tokens
-
-    # Extract tokens and logprobs from each completion
-    for completion in trajectory.completions:
-        if not completion.choices:
-            continue
-
-        choice = completion.choices[0]
-
-        # Use stored token_ids
-        if choice.token_ids:
-            token_ids = list(choice.token_ids)
-            all_tokens.extend(token_ids)
-            loss_mask.extend([1.0] * len(token_ids))  # Train on completion tokens
-
-            # Extract logprobs from Logprobs.content
-            if choice.logprobs and choice.logprobs.content:
-                for logprob_item in choice.logprobs.content:
-                    all_logprobs.append(logprob_item.logprob)
-            else:
-                # No logprobs stored, use placeholder
-                all_logprobs.extend([0.0] * len(token_ids))
-
-    return Sample(
-        prompt=prompt,
-        tokens=all_tokens,
-        loss_mask=loss_mask,
-        rollout_log_probs=all_logprobs,
-        reward=0.0,  # Will be computed by score_fn
-        metadata=metadata or {},
-        status=Status.COMPLETED,
-    )
-
-
-def _trajectory_to_samples_tito_branching(
-    trajectory: Any,
-    tokenizer: Any,
-    metadata: dict[str, Any] | None = None,
-) -> list[Sample]:
-    """Convert TI/TO trajectory to samples using branching strategy.
-
-    Each assistant turn becomes a separate sample:
-    - Input: tokenized history up to (but not including) that assistant turn
-    - Output: that assistant turn's token_ids (from TI/TO)
-    - Loss mask: 0 for input, 1 for output
-
-    This mirrors deployed usage exactly - each generation is independent.
-    """
-    from ..training.types import Sample, Status
-
-    assert trajectory is not None
-    assert tokenizer is not None
-
-    samples = []
-    completion_idx = 0
-
-    for msg_idx, msg in enumerate(trajectory.messages):
-        if msg.role != "assistant":
-            continue
-
-        # Get completion for this assistant turn
-        if completion_idx >= len(trajectory.completions):
-            break
-        completion = trajectory.completions[completion_idx]
-        completion_idx += 1
-
-        if not completion.choices:
-            continue
-        choice = completion.choices[0]
-        if not choice.token_ids:
-            continue
-
-        # Input = all messages before this assistant turn
-        input_messages = trajectory.messages[:msg_idx]
-        if input_messages:
-            prompt_text = tokenizer.apply_chat_template(
-                [{"role": m.role, "content": _get_message_content(m)} for m in input_messages],
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-            input_ids = list(tokenizer.encode(prompt_text, add_special_tokens=True))
-        else:
-            prompt_text = ""
-            input_ids = []
-
-        # Output tokens from stored token_ids (TI/TO)
-        output_ids = list(choice.token_ids)
-
-        # Extract logprobs if available
-        if choice.logprobs and choice.logprobs.content:
-            output_logprobs = [lp.logprob for lp in choice.logprobs.content]
-        else:
-            output_logprobs = [0.0] * len(output_ids)
-
-        # Full sequence
-        tokens = input_ids + output_ids
-        loss_mask = [0.0] * len(input_ids) + [1.0] * len(output_ids)
-        all_logprobs = [0.0] * len(input_ids) + output_logprobs
-
-        # Build metadata for this turn
-        turn_metadata = metadata.copy() if metadata else {}
-        turn_metadata["turn_index"] = msg_idx
-
-        sample = Sample(
-            prompt=prompt_text,
-            tokens=tokens,
-            loss_mask=loss_mask,
-            rollout_log_probs=all_logprobs,
-            reward=0.0,  # Will be computed by score_fn
-            metadata=turn_metadata,
-            status=Status.COMPLETED,
-        )
-
-        samples.append(sample)
-
-    return samples
-
-
-def _get_message_content(msg: Any) -> str:
-    """Extract text content from a Message."""
-    from ..dtypes import TextContent, ThinkingContent
-
-    content = msg.content
-    if isinstance(content, str):
-        return content
-    elif isinstance(content, list):
-        text_parts = []
-        for block in content:
-            if isinstance(block, TextContent):
-                text_parts.append(block.text)
-            elif isinstance(block, ThinkingContent):
-                text_parts.append(block.thinking)
-            elif isinstance(block, dict):
-                if block.get("type") == "text":
-                    text_parts.append(block.get("text", ""))
-                elif block.get("type") == "thinking":
-                    text_parts.append(block.get("thinking", ""))
-        return "".join(text_parts)
-    return str(content) if content else ""
+# Moved to rollouts.training.tito (kept as aliases for backward compatibility).

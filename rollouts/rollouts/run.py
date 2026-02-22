@@ -295,7 +295,28 @@ async def _deploy_and_submit(
             # See: https://github.com/sgl-project/sglang/issues/4159
             "~/.local/bin/uv pip install --upgrade torch datasets accelerate curl_cffi peft"
             " 'sglang[all] @ git+https://github.com/sgl-project/sglang.git@main#subdirectory=python'"
-            " && ~/.local/bin/uv pip install --upgrade 'transformers>=5.0.0' 'huggingface_hub>=1.4.0'",
+            " && ~/.local/bin/uv pip install --upgrade 'transformers>=5.0.0' 'huggingface_hub>=1.4.0'"
+            # mbridge for large model training (optional, only used with backend="megatron")
+            # Provides AutoBridge for HF<->Megatron conversion, supports GLM models
+            # From: https://github.com/ISEEKYAN/mbridge
+            " && ~/.local/bin/uv pip install --upgrade 'git+https://github.com/ISEEKYAN/mbridge.git' --no-deps || true",
+        ),
+        (
+            "Installing Megatron-LM",
+            # Megatron-LM for distributed training (optional, only used with backend="megatron")
+            # Clone NVIDIA/Megatron-LM and install as editable package
+            # Using SLIME's tested commit for GLM compatibility
+            "if [ ! -d ~/Megatron-LM ]; then "
+            "git clone https://github.com/NVIDIA/Megatron-LM.git ~/Megatron-LM --recursive && "
+            "cd ~/Megatron-LM && git checkout 3714d81d418c9f1bca4594fc35f9e8289f652862 && "
+            "~/.local/bin/uv pip install -e . --no-build-isolation"
+            "; fi || true",
+        ),
+        (
+            "Installing Megatron deps",
+            # TransformerEngine and apex for optimal Megatron performance
+            # These require compilation so may be slow
+            "~/.local/bin/uv pip install 'transformer_engine[pytorch]>=2.10.0' --no-build-isolation || true",
         ),
     ]
 
@@ -315,6 +336,10 @@ async def _deploy_and_submit(
         "ROLLOUTS_RUN_NAME": run_name,
         "ROLLOUTS_OUTPUT_DIR": f"results/rl/{run_name}",
         "ROLLOUTS_JSON_LOGS": "true",
+        # Megatron-LM needs to be on PYTHONPATH for megatron.core imports
+        "PYTHONPATH": "/root/Megatron-LM:${PYTHONPATH}",
+        # NCCL settings for multi-GPU training
+        "CUDA_DEVICE_MAX_CONNECTIONS": "1",
     }
 
     # Submit training job
@@ -657,18 +682,40 @@ Examples:
 
     elif hardware.provider == "modal":
         # Modal execution (fast cold start)
+        import json
+
         import trio
 
-        from .modal_runner import ModalRunConfig, run_modal
+        # Check if this is a benchmark config
+        from .inference.benchmark.config import BenchmarkConfig
 
-        modal_config = ModalRunConfig(
-            config_path=str(config_path),
-            gpu_type=hardware.gpu_type,
-            gpu_count=hardware.gpu_count,
-        )
-        results = trio.run(run_modal, modal_config)
-        if not results.get("success"):
-            sys.exit(1)
+        if isinstance(config_module.config, BenchmarkConfig):
+            # Benchmark run
+            from .inference.benchmark.runner import run_benchmark
+
+            assert hardware.deps is not None  # Validated by HardwareConfig
+            result = trio.run(
+                run_benchmark,
+                config_module.config,
+                hardware.deps,
+                hardware.gpu_type,
+                hardware.gpu_count,
+            )
+            # Output results
+            print(json.dumps(result.to_dict(), indent=2))
+        else:
+            # Training run
+            from .modal_runner import ModalRunConfig, run_modal
+
+            modal_config = ModalRunConfig(
+                config_path=str(config_path),
+                gpu_type=hardware.gpu_type,
+                gpu_count=hardware.gpu_count,
+                deps=hardware.deps,  # Required - validated by HardwareConfig.__post_init__
+            )
+            results = trio.run(run_modal, modal_config)
+            if not results.get("success"):
+                sys.exit(1)
 
     elif hardware.provider in ("runpod", "lambdalabs", "vast") or args.node_id:
         # Remote execution via SSH

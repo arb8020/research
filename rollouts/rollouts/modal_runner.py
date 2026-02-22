@@ -4,11 +4,8 @@ Run training workloads on Modal sandboxes with GPU access.
 Uses Modal's native async APIs via trio_asyncio bridge.
 
 Usage:
-    # From config file
-    python -m rollouts.modal_runner --config examples/rl/reverse_text/grpo_01_01.py
-
-    # With specific GPU
-    python -m rollouts.modal_runner --config examples/rl/reverse_text/grpo_01_01.py --gpu H100
+    # From config file with hardware.provider="modal"
+    python -m rollouts.run --config examples/rl/reverse_text/grpo_modal_01.py
 
 Design:
     Unlike run.py which uses bifrost (SSH-based), this uses Modal sandboxes directly.
@@ -32,7 +29,7 @@ import os
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -40,7 +37,7 @@ from typing import TYPE_CHECKING, Any
 import trio
 
 if TYPE_CHECKING:
-    pass
+    from .training.configs import DepsConfig
 
 from ._logging import setup_logging
 
@@ -52,78 +49,80 @@ REPO_ROOT = Path(__file__).parent.parent
 MODAL_APP_NAME = "rollouts-training"
 
 
-@dataclass(frozen=True)
-class ModalDeps:
-    """Dependencies for Modal sandbox.
-
-    Explicit specification of what goes into the container.
-    """
-
-    python_version: str = "3.12"
-    system_packages: tuple[str, ...] = ("bash", "curl", "git", "build-essential", "libnuma1")
-    pip_packages: tuple[str, ...] = (
-        "torch>=2.4",
-        "transformers>=4.50",
-        "datasets",
-        "accelerate",
-        "safetensors",
-        "sglang[all]",
-        "curl_cffi",
-        "peft",
-    )
-    pip_index_url: str = "https://download.pytorch.org/whl/cu124"
-    pip_extra_index_url: str = "https://pypi.org/simple"
-    bootstrap_commands: tuple[str, ...] = ()
-
-
 @dataclass
 class ModalRunConfig:
-    """Configuration for a Modal training run."""
+    """Configuration for a Modal training run.
+
+    The deps field comes from HardwareConfig.deps (DepsConfig).
+    """
 
     config_path: str
     gpu_type: str = "A100"
     gpu_count: int = 1
-    deps: ModalDeps = field(default_factory=ModalDeps)
+    deps: DepsConfig | None = None  # Required - validated by HardwareConfig
     timeout_hours: int = 4
 
-    # Git sync config
-    git_repo: str = "https://github.com/your-org/research.git"
-    git_branch: str = "main"
+    def __post_init__(self) -> None:
+        if self.deps is None:
+            raise ValueError(
+                "ModalRunConfig requires deps. This should come from HardwareConfig.deps."
+            )
 
-    # Use local code sync instead of git clone
-    use_local_sync: bool = True
 
+def _build_modal_image(modal: Any, deps: DepsConfig, gpu_type: str) -> Any:
+    """Build Modal image from DepsConfig specification.
 
-def _build_modal_image(modal: Any, deps: ModalDeps, gpu_type: str) -> Any:
-    """Build Modal image from deps specification.
-
-    Handles GPU-specific CUDA requirements (B200 needs cu128 nightly).
+    Uses nvidia/cuda base image instead of debian_slim because Megatron/SGLang
+    require nvcc for JIT kernel compilation.
     """
-    # GPU-specific torch index
+    # GPU-specific torch index and CUDA version
     if gpu_type in ("B200", "GB200"):
         pip_index = "https://download.pytorch.org/whl/nightly/cu128"
-    else:
+        cuda_version = "12.8.0"
+    elif deps.pip_index_url:
         pip_index = deps.pip_index_url
+        # Infer CUDA version from pip index URL
+        if "cu128" in pip_index:
+            cuda_version = "12.8.0"
+        elif "cu126" in pip_index:
+            cuda_version = "12.6.0"
+        elif "cu124" in pip_index:
+            cuda_version = "12.4.0"
+        else:
+            cuda_version = "12.4.0"
+    else:
+        pip_index = "https://download.pytorch.org/whl/cu124"
+        cuda_version = "12.4.0"
 
-    image = modal.Image.debian_slim(python_version=deps.python_version)
+    # Use CUDA devel image (includes nvcc) for Megatron/SGLang JIT compilation
+    cuda_image = f"nvidia/cuda:{cuda_version}-devel-ubuntu22.04"
+    image = modal.Image.from_registry(cuda_image, add_python=deps.python_version)
 
     if deps.system_packages:
         image = image.apt_install(*deps.system_packages)
 
     if deps.pip_packages:
-        image = image.pip_install(
-            *deps.pip_packages,
-            index_url=pip_index,
-            extra_index_url=deps.pip_extra_index_url,
-        )
+        # Build pip_install kwargs
+        pip_kwargs: dict[str, Any] = {"index_url": pip_index}
+        if deps.pip_extra_index_url:
+            pip_kwargs["extra_index_url"] = deps.pip_extra_index_url
+
+        image = image.pip_install(*deps.pip_packages, **pip_kwargs)
 
     for cmd in deps.bootstrap_commands:
         image = image.run_commands(cmd)
 
-    # Set up HuggingFace cache
+    # Add force rebuild marker (change this to invalidate cache)
+    image = image.run_commands("echo 'rollouts-build-v3'")
+
+    # Set up HuggingFace cache and Megatron PYTHONPATH
     image = image.env({
         "HF_HOME": "/root/.cache/huggingface",
         "HF_HUB_ENABLE_HF_TRANSFER": "1",
+        # Megatron-LM needs to be on PYTHONPATH for megatron.core imports
+        "PYTHONPATH": "/root/Megatron-LM:/root",
+        # NCCL settings for multi-GPU training
+        "CUDA_DEVICE_MAX_CONNECTIONS": "1",
     })
 
     return image
@@ -139,12 +138,16 @@ async def _create_sandbox(
     import modal
     import trio_asyncio
 
+    # Enable output to see build logs
+    modal.enable_output()
+
     logger.info(f"Looking up app: {MODAL_APP_NAME}")
     app = await trio_asyncio.aio_as_trio(
         modal.App.lookup.aio(MODAL_APP_NAME, create_if_missing=True)
     )
 
     logger.info("Building image...")
+    assert config.deps is not None  # Validated in __post_init__
     image = _build_modal_image(modal, config.deps, config.gpu_type)
     logger.info("Image built")
 
@@ -371,24 +374,9 @@ async def run_modal(config: ModalRunConfig) -> dict[str, Any]:
             await trio.to_thread.run_sync(_check_gpu)
             logger.info("GPU access verified")
 
-            # Sync code
+            # Sync code (always uses local git bundle)
             logger.info("Syncing code to sandbox...")
-            if config.use_local_sync:
-                workspace = await _sync_code_to_sandbox(sandbox, REPO_ROOT)
-            else:
-                # Git clone
-                workspace = "/workspace/rollouts"
-
-                def _git_clone() -> None:
-                    _exec_sync(
-                        sandbox,
-                        f"git clone --depth 1 --branch {config.git_branch} "
-                        f"{config.git_repo} {workspace}",
-                        timeout=300,
-                    )
-
-                await trio.to_thread.run_sync(_git_clone)
-
+            workspace = await _sync_code_to_sandbox(sandbox, REPO_ROOT)
             logger.info(f"Code synced to {workspace}")
 
             # Run training

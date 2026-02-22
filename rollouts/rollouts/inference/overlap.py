@@ -42,6 +42,8 @@ class ForwardOutput:
     next_tokens_gpu: Tensor  # On GPU
     next_tokens_cpu: Tensor  # Async copied to CPU
     copy_done: torch.cuda.Event  # Signals when CPU copy is done
+    batch: Batch  # The batch that was processed
+    logprobs: list[float | None]  # Per-token logprobs (for state update)
 
 
 def create_forward_output(
