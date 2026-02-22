@@ -971,17 +971,19 @@ async def _grpo_train_async(
             from ..training.rollout_gen.pipelined_rollout_manager import PipelinedRolloutManager
             from ..training.weight_sync import PipelineWeightSyncManager
 
+            weight_sync_manager = PipelineWeightSyncManager(
+                inference_endpoints=[e.base_url for e in inference_engines],
+                max_lag=config.checkpoint.max_lag,
+                nccl_master_port=config.checkpoint.nccl_master_port,
+            )
+
             pipelined_manager = PipelinedRolloutManager(
                 data_buffer=data_buffer,
                 config=rollout_config,
                 max_lag=config.checkpoint.max_lag,
                 queue_size=config.checkpoint.pipeline_queue_size,
-            )
-
-            weight_sync_manager = PipelineWeightSyncManager(
-                inference_endpoints=[e.base_url for e in inference_engines],
-                max_lag=config.checkpoint.max_lag,
-                nccl_master_port=config.checkpoint.nccl_master_port,
+                # Pause sampling when weight sync is in progress (SGLang is blocked)
+                sync_in_progress_fn=lambda: weight_sync_manager.sync_in_progress,
             )
 
             logger.info(

@@ -897,6 +897,12 @@ class PipelineWeightSyncManager:
     _current_version: int = field(default=0, init=False)
     _pending_sync: trio.Event | None = field(default=None, init=False, repr=False)
     _sync_nursery: trio.Nursery | None = field(default=None, init=False, repr=False)
+    _sync_in_progress: bool = field(default=False, init=False)
+
+    @property
+    def sync_in_progress(self) -> bool:
+        """True if a weight sync is currently in progress (SGLang is blocked)."""
+        return self._sync_in_progress
 
     @property
     def current_version(self) -> int:
@@ -1012,41 +1018,56 @@ class PipelineWeightSyncManager:
         nursery.start_soon(_do_sync)
 
     async def _sync_weights_nccl(self, model: Any) -> None:
-        """Internal: perform NCCL weight sync."""
+        """Internal: perform NCCL weight sync.
+
+        IMPORTANT: While this runs, SGLang is blocked receiving weights and
+        cannot process inference requests. Callers should pause sampling.
+        """
         import torch.distributed as dist
 
-        state_dict = model.state_dict()
-        new_version = self._current_version + 1
+        logger = logging.getLogger(__name__)
 
-        # Build parameter info
-        param_info = [
-            {"name": name, "shape": list(p.shape), "dtype": str(p.dtype).replace("torch.", "")}
-            for name, p in state_dict.items()
-        ]
+        self._sync_in_progress = True
+        try:
+            state_dict = model.state_dict()
+            new_version = self._current_version + 1
 
-        # Tell inference engines to prepare for NCCL receive
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            for endpoint in self.inference_endpoints:
-                await client.post(
-                    f"{endpoint}/update_weights_from_distributed",
-                    json={
-                        "names": [p["name"] for p in param_info],
-                        "shapes": [p["shape"] for p in param_info],
-                        "dtypes": [p["dtype"] for p in param_info],
-                        "group_name": "pipeline_weight_sync",
-                        "weight_version": str(new_version),
-                    },
-                )
+            # Build parameter info
+            param_info = [
+                {"name": name, "shape": list(p.shape), "dtype": str(p.dtype).replace("torch.", "")}
+                for name, p in state_dict.items()
+            ]
 
-        # Broadcast each tensor via NCCL
-        for _name, param in state_dict.items():
-            param_data = param.data.contiguous()
-            if param_data.device.type != "cuda":
-                param_data = param_data.cuda()
-            dist.broadcast(param_data, src=0, group=self._process_group)
+            logger.debug(f"Starting weight sync to v{new_version}")
 
-        # Wait for completion
-        dist.barrier(group=self._process_group)
+            # Tell inference engines to prepare for NCCL receive
+            # NOTE: This blocks SGLang's inference loop!
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                for endpoint in self.inference_endpoints:
+                    await client.post(
+                        f"{endpoint}/update_weights_from_distributed",
+                        json={
+                            "names": [p["name"] for p in param_info],
+                            "shapes": [p["shape"] for p in param_info],
+                            "dtypes": [p["dtype"] for p in param_info],
+                            "group_name": "pipeline_weight_sync",
+                            "weight_version": str(new_version),
+                        },
+                    )
+
+            # Broadcast each tensor via NCCL
+            for _name, param in state_dict.items():
+                param_data = param.data.contiguous()
+                if param_data.device.type != "cuda":
+                    param_data = param_data.cuda()
+                dist.broadcast(param_data, src=0, group=self._process_group)
+
+            # Wait for completion
+            dist.barrier(group=self._process_group)
+
+            logger.debug(f"Weight sync to v{new_version} complete")
+        finally:
+            self._sync_in_progress = False
 
     async def get_inference_weight_version(self, endpoint: str) -> int:
         """Query current weight version from an inference engine.

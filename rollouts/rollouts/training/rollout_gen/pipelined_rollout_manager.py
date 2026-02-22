@@ -72,6 +72,10 @@ class PipelinedRolloutManager:
     max_lag: int = 2  # Allow samples up to 2 versions behind
     queue_size: int = 1024  # Buffer up to 1024 samples
 
+    # Sync status callback - when True, pause sampling (inference is blocked)
+    # Set this to weight_sync_manager.sync_in_progress for true_pipeline
+    sync_in_progress_fn: Callable[[], bool] | None = None
+
     # Internal state
     _sample_queue: list[Sample] = field(default_factory=list)
     _queue_lock: trio.Lock = field(default_factory=trio.Lock)
@@ -148,8 +152,7 @@ class PipelinedRolloutManager:
         # Start sampling task
         nursery.start_soon(self._sampling_loop)
         logger.info(
-            f"Started pipelined sampling (max_lag={self.max_lag}, "
-            f"queue_size={self.queue_size})"
+            f"Started pipelined sampling (max_lag={self.max_lag}, queue_size={self.queue_size})"
         )
 
     async def stop_sampling(self) -> None:
@@ -254,6 +257,12 @@ class PipelinedRolloutManager:
         logger.debug("Sampling loop started")
 
         while not self._shutdown_requested:
+            # Pause if weight sync is in progress (SGLang is blocked)
+            if self.sync_in_progress_fn is not None and self.sync_in_progress_fn():
+                logger.debug("Weight sync in progress, pausing sampling...")
+                await trio.sleep(0.1)
+                continue
+
             # Check if queue has room
             async with self._queue_lock:
                 queue_len = len(self._sample_queue)
@@ -303,6 +312,7 @@ class PipelinedRolloutManager:
 
         Tags all samples with weight_version.
         """
+
         async def generate_for_prompt(
             prompt: str | dict[str, Any],
             group_idx: int,
@@ -361,6 +371,7 @@ class PipelinedRolloutManager:
             "current_weight_version": self._current_weight_version,
             "discard_rate": (
                 self._samples_discarded_stale / self._samples_generated * 100
-                if self._samples_generated > 0 else 0.0
+                if self._samples_generated > 0
+                else 0.0
             ),
         }
