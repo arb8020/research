@@ -230,12 +230,16 @@ class InferenceServer:
     """
 
     def __init__(self, engine: InferenceEngineV2) -> None:
+        logger.info("InferenceServer.__init__ starting")
         self.engine = engine
         self.tokenizer = engine.tokenizer
         self.model_name = engine.config.model_path
+        logger.info("InferenceServer: basic attributes set")
 
         # Engine thread for GPU work
+        logger.info("InferenceServer: creating EngineThread")
         self._engine_thread = EngineThread(engine)
+        logger.info("InferenceServer: EngineThread created")
 
         # Pending requests: uid -> (future, return_logprob)
         self._pending: dict[int, tuple[asyncio.Future, bool]] = {}
@@ -246,6 +250,7 @@ class InferenceServer:
         # Streaming requests: uid -> (queue, prompt_len, seen_len)
         # Queue receives (token_id, is_done, finish_reason) tuples
         self._streaming: dict[int, tuple[asyncio.Queue, int, int]] = {}
+        logger.info("InferenceServer.__init__ complete")
 
     def _convert_sampling_params(self, params: dict[str, Any]) -> SamplingParams:
         """Convert SGLang sampling params to our format."""
@@ -522,17 +527,27 @@ class InferenceServer:
 
 def create_app(engine: InferenceEngineV2) -> Any:
     """Create FastAPI app with inference endpoints."""
+    logger.info("create_app: starting")
     from fastapi import FastAPI, HTTPException
 
+    logger.info("create_app: creating InferenceServer")
     server = InferenceServer(engine)
+    logger.info("create_app: InferenceServer created")
+
+    logger.info("create_app: creating FastAPI app")
     app = FastAPI(title="Rollouts Inference Server")
+    logger.info("create_app: FastAPI app created")
 
     @app.on_event("startup")
     async def startup() -> None:
+        logger.info("startup: starting engine thread")
         # Start the engine thread (runs engine.step() loop)
         server._engine_thread.start()
+        logger.info("startup: engine thread started")
         # Start result dispatcher (polls results and dispatches to futures)
+        logger.info("startup: starting result dispatcher")
         asyncio.create_task(server.result_dispatcher())
+        logger.info("startup: result dispatcher started")
 
     @app.get("/health")
     async def health() -> dict:
@@ -786,10 +801,13 @@ def main() -> None:
 
     logger.info(f"Loading model: {args.model}")
     engine = InferenceEngineV2(config)
-    logger.info("Model loaded, starting server...")
+    logger.info("Model loaded successfully")
 
+    logger.info("Creating app...")
     app = create_app(engine)
+    logger.info("App created, starting uvicorn server...")
     run_server(app, host=args.host, port=args.port)
+    logger.info("Server stopped")
 
 
 if __name__ == "__main__":
