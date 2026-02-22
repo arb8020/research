@@ -175,19 +175,25 @@ async def _deploy_and_submit(
     if not allow_dirty:
         from bifrost.git_sync import _check_uncommitted_changes, _check_untracked_files
 
-        uncommitted = _check_uncommitted_changes()
-        untracked = _check_untracked_files()
+        uncommitted = _check_uncommitted_changes() or []
+        untracked = _check_untracked_files() or []
         if uncommitted or untracked:
-            dirty_files = (uncommitted or []) + (untracked or [])
             print(
-                f"\n❌ Cannot deploy: {len(dirty_files)} uncommitted/untracked file(s):",
+                "\n❌ Deploy uses git bundles - only committed code is shipped to the pod.\n",
                 file=sys.stderr,
             )
-            for f in dirty_files[:10]:
-                print(f"   - {f}", file=sys.stderr)
-            if len(dirty_files) > 10:
-                print(f"   ... and {len(dirty_files) - 10} more", file=sys.stderr)
-            print("\nCommit your changes or use --allow-dirty to proceed anyway.", file=sys.stderr)
+            total = len(uncommitted) + len(untracked)
+            print(f"{total} file(s) will NOT be deployed:\n", file=sys.stderr)
+            for f in uncommitted[:5]:
+                print(f"   - {f} (modified)", file=sys.stderr)
+            if len(uncommitted) > 5:
+                print(f"   ... and {len(uncommitted) - 5} more modified", file=sys.stderr)
+            for f in untracked[:5]:
+                print(f"   - {f} (untracked)", file=sys.stderr)
+            if len(untracked) > 5:
+                print(f"   ... and {len(untracked) - 5} more untracked", file=sys.stderr)
+            print("\nTo include them: git add <file> && git commit", file=sys.stderr)
+            print("To proceed without them: --allow-dirty", file=sys.stderr)
             sys.exit(1)
 
     # Acquire node - show which credentials profile is being used
