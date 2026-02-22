@@ -42,7 +42,7 @@ import argparse
 import importlib.util
 import logging
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,11 +50,13 @@ from typing import TYPE_CHECKING, Any
 
 
 @contextmanager
-def _quiet_spinner(msg: str) -> None:
-    """No-op context manager for quiet mode - just logs start/done."""
-    logger.info("%s", msg)
+def _quiet_spinner(msg: str) -> Generator[None, None, None]:
+    """No-op context manager for quiet mode.
+
+    Inner operations (like bifrost.acquire_node) log their own progress,
+    so we just yield without adding wrapper messages.
+    """
     yield None
-    logger.info("  done")
 
 
 if TYPE_CHECKING:
@@ -149,10 +151,20 @@ async def _deploy_and_submit(
     logs_port = 9100
 
     # Create console for coordinated spinner + logging output
-    # In quiet mode, skip spinners and just use plain logging
+    # In quiet mode, skip spinners and just use plain logging to stderr
     if quiet:
         console = None
-        spinner = _quiet_spinner  # Use plain logging
+        spinner = _quiet_spinner
+        # Ensure logs go to stderr so agents see progress
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(message)s",
+            stream=sys.stderr,
+            force=True,
+        )
+        # Silence noisy HTTP loggers
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
     else:
         console = Console()
         console.install_logging_handler(logging.getLogger())
@@ -447,20 +459,21 @@ async def run_remote(
     import shutil
     import subprocess
 
-    local_log_path = f"results/rl/{run_name}/training.log"
     sync_session = f"sync_{run_name}"
 
     if shutil.which("tmux"):
         # Start sync daemon in a detached tmux session
+        # cd to REPO_ROOT so logs sync to rollouts/results/rl/
         sync_cmd = [
             "tmux",
             "new",
             "-d",
             "-s",
             sync_session,
-            f"{sys.executable} -m rollouts monitor --attach {run_name} --sync-only",
+            f"cd {REPO_ROOT} && {sys.executable} -m rollouts monitor --attach {run_name} --sync-only",
         ]
         subprocess.run(sync_cmd, check=False, capture_output=True)
+        local_log_path = REPO_ROOT / "results" / "rl" / run_name / "training.log"
         logger.info("Syncing to: %s", local_log_path)
     else:
         logger.info("Install tmux for automatic log sync")
