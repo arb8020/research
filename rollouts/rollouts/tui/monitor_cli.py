@@ -323,7 +323,7 @@ def _cancel_job(run_id: str) -> int:
     """Cancel a running job by killing its tmux session.
 
     Looks up job via broker, SSHs to the node,
-    and kills the bifrost-job-rl-training tmux session.
+    and kills the bifrost-job-{run_id} tmux session.
     """
     import os
 
@@ -365,8 +365,9 @@ def _cancel_job(run_id: str) -> int:
         ssh_key = client.get_ssh_key_path(provider) or os.path.expanduser("~/.ssh/id_ed25519")
         ssh_connection = f"root@{instance.public_ip}:{instance.ssh_port}"
         bifrost = BifrostClient(ssh_connection, ssh_key_path=ssh_key)
+        # Kill the tmux session for this specific run
         result = bifrost.exec(
-            "tmux kill-session -t bifrost-job-rl-training 2>/dev/null && echo 'killed' || echo 'no session'"
+            f"tmux kill-session -t bifrost-job-{run_id} 2>/dev/null && echo 'killed' || echo 'no session'"
         )
         output = result.stdout.strip() if result.stdout else ""
 
@@ -428,7 +429,7 @@ def _fetch_and_print_logs_server_log(node_id: str | None, run_id: str) -> None:
         # Capture the tmux pane content to see what's happening
         print("--- logs-server tmux pane content ---")
         pane_result = bifrost.exec(
-            "tmux capture-pane -t bifrost-job-logs-server -p 2>/dev/null || echo '[no pane]'"
+            f"tmux capture-pane -t bifrost-job-logs-{run_id} -p 2>/dev/null || echo '[no pane]'"
         )
         print(pane_result.stdout if pane_result.stdout else "[empty]")
 

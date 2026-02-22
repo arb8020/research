@@ -445,7 +445,9 @@ class SGLangEngine:
 
     def __post_init__(self) -> None:
         self._log_file = self.output_dir / "sglang.log"
-        self._session_name = f"sglang-{self.port}"
+        # Use output_dir name (run_id) for session isolation across runs
+        run_id = self.output_dir.name
+        self._session_name = f"sglang-{run_id}"
 
     @property
     def name(self) -> str:
@@ -647,7 +649,9 @@ class VLLMEngine:
 
     def __post_init__(self) -> None:
         self._log_file = self.output_dir / "vllm.log"
-        self._session_name = f"vllm-{self.port}"
+        # Use output_dir name (run_id) for session isolation across runs
+        run_id = self.output_dir.name
+        self._session_name = f"vllm-{run_id}"
 
     @property
     def name(self) -> str:

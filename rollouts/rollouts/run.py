@@ -335,7 +335,7 @@ async def _deploy_and_submit(
                 cwd=f"{workspace}/rollouts",
                 env=env_vars,
             ),
-            name="rl-training",
+            name=run_name,  # Unique per run for tmux session isolation
             log_file=training_log,
             workspace=f"{workspace}/rollouts",
         )
@@ -451,7 +451,7 @@ async def run_remote(
             ),
             cwd=workspace,
         ),
-        name="logs-server",
+        name=f"logs-{run_name}",  # Unique per run for isolation
         log_file=f"{remote_output_dir}/logs_server.log",
         workspace=workspace,
     )
