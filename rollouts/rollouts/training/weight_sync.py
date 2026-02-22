@@ -1301,6 +1301,12 @@ class PipelineWeightSyncManager:
                 sync_nursery.start_soon(do_nccl_broadcast)
 
             logger.debug(f"Weight sync to v{new_version} complete")
+
+            # Free CUDA memory after weight sync (QED-Nano pattern)
+            # The broadcast creates temporary GPU tensors that should be freed
+            import torch
+
+            torch.cuda.empty_cache()
         finally:
             self._sync_in_progress = False
 

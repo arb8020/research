@@ -600,6 +600,9 @@ async def _process_training_step(
     }
     logger.info("step_complete", extra=wide_event)
 
+    # Free CUDA memory after training step (QED-Nano pattern)
+    torch.cuda.empty_cache()
+
     return step_metrics
 
 
@@ -751,6 +754,9 @@ async def _process_training_step_no_sync(
         "num_groups": num_groups,
     }
     logger.info("step_complete", extra=wide_event)
+
+    # Free CUDA memory after training step (QED-Nano pattern)
+    torch.cuda.empty_cache()
 
     return step_metrics
 
