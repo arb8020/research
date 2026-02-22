@@ -23,7 +23,7 @@ import torch
 import torch.distributed as dist
 import trio
 
-from ...training.types import TrainerConfig, TrainFuture
+from ...training.types import ImmediateTrainFuture, TrainerConfig, TrainFuture
 
 # FSDP checkpoint support (SLIME pattern)
 try:
@@ -286,9 +286,7 @@ class PyTorchTrainingBackend:
                 "micro_batch_size": micro_batch_size,
                 **accumulated_metrics,  # Include metrics from loss_fn
             }
-            future: TrainFuture[dict[str, float]] = TrainFuture(operation="forward_backward")
-            future.set_result(result)
-            return future
+            return ImmediateTrainFuture(result, operation="forward_backward")
 
         except Exception as e:
             # Poison backend on error
@@ -331,9 +329,7 @@ class PyTorchTrainingBackend:
             if grad_norm_clipped is not None:
                 result["grad_norm_clipped"] = grad_norm_clipped
 
-            future: TrainFuture[dict[str, float]] = TrainFuture(operation="optim_step")
-            future.set_result(result)
-            return future
+            return ImmediateTrainFuture(result, operation="optim_step")
 
         except Exception as e:
             # Poison backend on error
@@ -775,10 +771,7 @@ class PyTorchTrainingBackend:
             # Regular PyTorch model
             state_dict = self.model.state_dict()
 
-        # Create future with immediate result
-        future: TrainFuture[dict[str, Any]] = TrainFuture(operation="get_weights")
-        future.set_result(state_dict)
-        return future
+        return ImmediateTrainFuture(state_dict, operation="get_weights")
 
     def load_weights(self, weights: dict[str, Any]) -> TrainFuture[None]:
         """Load model weights from inference or checkpoint.
@@ -797,10 +790,7 @@ class PyTorchTrainingBackend:
             # Load state dict
             self.model.load_state_dict(weights)
 
-            # Create future with immediate result
-            future: TrainFuture[None] = TrainFuture(operation="load_weights")
-            future.set_result(None)
-            return future
+            return ImmediateTrainFuture(None, operation="load_weights")
 
         except Exception as e:
             # Poison backend on error

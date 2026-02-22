@@ -7,7 +7,7 @@ Inspired by SLIME's Sample dataclass + Tinker's loss weights + Miles unified Sam
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar, runtime_checkable
 
 import trio
 
@@ -571,11 +571,33 @@ class RLTrainingConfig:
 
 # ────────────────────── Futures (Tinker) ──────────────────────
 
+T_co = TypeVar("T_co", covariant=True)
+
+
+@runtime_checkable
+class TrainFuture(Protocol[T_co]):
+    """Protocol for training operation futures.
+
+    Enables pipelining: submit work, wait later.
+    Both async (TrainFutureImpl) and sync (ImmediateTrainFuture) implementations.
+    """
+
+    operation: str
+
+    async def result(self) -> T_co:
+        """Wait for completion and return result."""
+        ...
+
+    def done(self) -> bool:
+        """Check if future is complete (non-blocking)."""
+        ...
+
+
 T = TypeVar("T")
 
 
 @dataclass
-class TrainFuture(Generic[T]):
+class TrainFutureImpl(Generic[T]):
     """Future for training operations (Tinker-inspired).
 
     Enables pipelining: submit work, wait later.

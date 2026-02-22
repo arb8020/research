@@ -463,7 +463,6 @@ async def _run_benchmark_impl(
     engine_config = EngineConfig(
         model_path=config.model,
         max_batch_size=config.max_batch_size,
-        mem_fraction=config.mem_fraction,
     )
     engine = InferenceEngineV2(engine_config)
     app = create_app(engine)
