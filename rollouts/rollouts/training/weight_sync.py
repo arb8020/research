@@ -478,6 +478,11 @@ class SGLangEngine:
         cmd = (
             f"CUDA_VISIBLE_DEVICES={gpu_str} "
             f"HF_HUB_DOWNLOAD_TIMEOUT=300 "  # 5 min timeout for model downloads
+            # NCCL environment for cross-process weight sync:
+            # - NCCL_SHM_DISABLE=1: Use sockets instead of shared memory (avoids IPC issues)
+            # - NCCL_CUMEM_ENABLE=0: Consistent with SGLang defaults (see miles/ray/actor_group.py)
+            f"NCCL_SHM_DISABLE=1 "
+            f"NCCL_CUMEM_ENABLE=0 "
             f"python -m rollouts.training.sglang_launcher "
             f"--model-path {self.model_name} "
             f"--host 0.0.0.0 "

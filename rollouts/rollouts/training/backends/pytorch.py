@@ -888,6 +888,12 @@ class PyTorchTrainingBackend:
             from ...inference.weight_sync import create_stateless_process_group
 
             def _join() -> Any:
+                # Set NCCL env vars for cross-process IPC compatibility:
+                # - NCCL_SHM_DISABLE=1: Use sockets instead of shared memory
+                # - NCCL_CUMEM_ENABLE=0: Consistent with SGLang (see miles/ray/actor_group.py)
+                os.environ.setdefault("NCCL_SHM_DISABLE", "1")
+                os.environ.setdefault("NCCL_CUMEM_ENABLE", "0")
+
                 # NCCL groups should be created with the correct device selected.
                 if self.device is not None and self.device.type == "cuda":
                     torch.cuda.set_device(self.device)
