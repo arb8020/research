@@ -1040,30 +1040,41 @@ class PipelineWeightSyncManager:
 
             logger.debug(f"Starting weight sync to v{new_version}")
 
-            # Tell inference engines to prepare for NCCL receive
-            # NOTE: This blocks SGLang's inference loop!
-            async with httpx.AsyncClient(timeout=300.0) as client:
-                for endpoint in self.inference_endpoints:
-                    await client.post(
-                        f"{endpoint}/update_weights_from_distributed",
-                        json={
-                            "names": [p["name"] for p in param_info],
-                            "shapes": [p["shape"] for p in param_info],
-                            "dtypes": [p["dtype"] for p in param_info],
-                            "group_name": "pipeline_weight_sync",
-                            "weight_version": str(new_version),
-                        },
-                    )
+            # IMPORTANT: HTTP POST and NCCL broadcast must run concurrently!
+            # The HTTP endpoint blocks waiting for NCCL weights, so we can't do them sequentially.
 
-            # Broadcast each tensor via NCCL
-            for _name, param in state_dict.items():
-                param_data = param.data.contiguous()
-                if param_data.device.type != "cuda":
-                    param_data = param_data.cuda()
-                dist.broadcast(param_data, src=0, group=self._process_group)
+            async def send_http_requests() -> None:
+                """Tell inference engines to prepare for NCCL receive."""
+                async with httpx.AsyncClient(timeout=300.0) as client:
+                    for endpoint in self.inference_endpoints:
+                        await client.post(
+                            f"{endpoint}/update_weights_from_distributed",
+                            json={
+                                "names": [p["name"] for p in param_info],
+                                "shapes": [p["shape"] for p in param_info],
+                                "dtypes": [p["dtype"] for p in param_info],
+                                "group_name": "pipeline_weight_sync",
+                                "weight_version": str(new_version),
+                            },
+                        )
 
-            # Wait for completion
-            dist.barrier(group=self._process_group)
+            async def do_nccl_broadcast() -> None:
+                """Broadcast each tensor via NCCL (runs in thread to not block event loop)."""
+
+                def _broadcast() -> None:
+                    for _name, param in state_dict.items():
+                        param_data = param.data.contiguous()
+                        if param_data.device.type != "cuda":
+                            param_data = param_data.cuda()
+                        dist.broadcast(param_data, src=0, group=self._process_group)
+                    dist.barrier(group=self._process_group)
+
+                await trio.to_thread.run_sync(_broadcast)
+
+            # Run HTTP requests and NCCL broadcast concurrently
+            async with trio.open_nursery() as sync_nursery:
+                sync_nursery.start_soon(send_http_requests)
+                sync_nursery.start_soon(do_nccl_broadcast)
 
             logger.debug(f"Weight sync to v{new_version} complete")
         finally:
