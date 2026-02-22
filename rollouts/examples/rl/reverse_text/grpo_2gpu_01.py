@@ -54,6 +54,7 @@ config = GRPOConfig(
         pipeline_mode="true_pipeline",  # Both sampling AND sync non-blocking
         weight_sync_mode="nccl",  # GPU-to-GPU broadcast
         max_lag=2,
+        pipeline_queue_size=256,  # Reduced from 1024 to lower memory pressure
     ),
     rollout=RolloutConfig(
         batch_size=8,
