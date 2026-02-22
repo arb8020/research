@@ -835,10 +835,23 @@ class PyTorchTrainingBackend:
         """
         import logging
         import os
+        import subprocess
 
         import httpx
 
         logger = logging.getLogger(__name__)
+
+        # Kill any stale process on the NCCL master port (from previous runs)
+        subprocess.run(
+            f"fuser -k {master_port}/tcp 2>/dev/null || true",
+            shell=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            f"lsof -ti:{master_port} | xargs -r kill -9 2>/dev/null || true",
+            shell=True,
+            capture_output=True,
+        )
 
         # Determine master address
         if master_addr is None:
