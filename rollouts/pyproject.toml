@@ -44,7 +44,7 @@ training = [
     "peft>=0.7.0",
     "transformers>=4.30.0",
     "accelerate>=0.20.0",
-    "torchtitan @ file:///tmp/torchtitan",
+    "torchtitan @ git+https://github.com/pytorch/torchtitan.git",
 ]
 
 # Deployment (GPU provisioning + server management + remote monitoring)
