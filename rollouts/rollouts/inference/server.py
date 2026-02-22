@@ -18,6 +18,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import queue
+import threading
 import time
 import uuid
 from collections.abc import AsyncGenerator
@@ -26,11 +28,155 @@ from typing import Any
 
 import torch
 
-from .core import SamplingParams
+from .core import Req, SamplingParams
 from .engine_v2 import EngineConfig, InferenceEngineV2
 from .models.weight import load_weights
 
 logger = logging.getLogger(__name__)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ENGINE THREAD
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass
+class EngineResult:
+    """Result from engine thread."""
+
+    uid: int
+    req: Req | None = None  # Set when request finishes
+    new_token: int | None = None  # Set for streaming updates
+    finish_reason: str | None = None
+
+
+class EngineThread:
+    """Dedicated thread running engine loop.
+
+    The engine runs at GPU pace, pulling requests from a queue.
+    Results are pushed to a result queue for the HTTP layer to dispatch.
+    """
+
+    def __init__(self, engine: InferenceEngineV2) -> None:
+        self.engine = engine
+
+        # Thread-safe communication
+        self._request_queue: queue.Queue[tuple[list[int], SamplingParams, bool] | None] = (
+            queue.Queue()
+        )
+        self._result_queue: queue.Queue[EngineResult] = queue.Queue()
+
+        # Track streaming uids (engine's uids)
+        self._streaming_uids: set[int] = set()
+
+        # Thread state
+        self._thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
+
+    def start(self) -> None:
+        """Start the engine thread."""
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run_loop, daemon=True)
+        self._thread.start()
+        logger.info("Engine thread started")
+
+    def stop(self) -> None:
+        """Stop the engine thread."""
+        self._stop_event.set()
+        self._request_queue.put(None)
+        if self._thread:
+            self._thread.join(timeout=5.0)
+        logger.info("Engine thread stopped")
+
+    def submit_request(
+        self, input_ids: list[int], sampling_params: SamplingParams, streaming: bool = False
+    ) -> int:
+        """Submit request and return engine-assigned uid."""
+        # Add to engine directly (in main thread before request_queue)
+        # This ensures we get the uid immediately
+        uid = self.engine.add_request(input_ids, sampling_params)
+        logger.debug(f"Submitted request uid={uid}, tokens={len(input_ids)}, streaming={streaming}")
+
+        if streaming:
+            self._streaming_uids.add(uid)
+
+        # Signal the engine thread that new work is available
+        self._request_queue.put((input_ids, sampling_params, streaming))
+        return uid
+
+    def get_results(self, timeout: float | None = None) -> list[EngineResult]:
+        """Get available results (non-blocking or with timeout)."""
+        results = []
+        try:
+            result = self._result_queue.get(timeout=timeout)
+            results.append(result)
+            # Drain remaining
+            while True:
+                try:
+                    results.append(self._result_queue.get_nowait())
+                except queue.Empty:
+                    break
+        except queue.Empty:
+            pass
+        return results
+
+    def _run_loop(self) -> None:
+        """Main engine loop."""
+        logger.info("Engine loop starting")
+        step_count = 0
+
+        while not self._stop_event.is_set():
+            # Drain the request queue (requests are already added to engine)
+            self._drain_queue()
+
+            # Check for work
+            if not self.engine.has_pending():
+                logger.debug("No pending work, waiting...")
+                try:
+                    msg = self._request_queue.get(timeout=0.1)
+                    if msg is None:
+                        break
+                    # Request already added in submit_request, just continue
+                except queue.Empty:
+                    continue
+
+            # Run one step
+            step_count += 1
+            logger.debug(f"Running step {step_count}")
+            finished = self.engine.step()
+            logger.debug(f"Step {step_count} complete, finished={len(finished)}")
+
+            # Push streaming token updates for decode requests
+            for req in self.engine.state.decode_set:
+                if req.uid in self._streaming_uids:
+                    # Push latest token
+                    if len(req.input_ids) > 0:
+                        token = req.input_ids[-1].item()
+                        self._result_queue.put(EngineResult(uid=req.uid, new_token=token))
+
+            # Push finished results
+            for req in finished:
+                is_eos = req.input_ids[-1].item() == self.engine.eos_token_id
+                finish_reason = "stop" if is_eos else "length"
+                logger.debug(f"Request {req.uid} finished, reason={finish_reason}")
+                self._result_queue.put(
+                    EngineResult(uid=req.uid, req=req, finish_reason=finish_reason)
+                )
+                self._streaming_uids.discard(req.uid)
+
+        logger.info(f"Engine loop stopped after {step_count} steps")
+
+    def _drain_queue(self) -> None:
+        """Drain request queue (requests already added to engine)."""
+        while True:
+            try:
+                msg = self._request_queue.get_nowait()
+                if msg is None:
+                    self._stop_event.set()
+                    return
+                # Request was already added in submit_request, just tracking
+            except queue.Empty:
+                break
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -88,10 +234,12 @@ class InferenceServer:
         self.tokenizer = engine.tokenizer
         self.model_name = engine.config.model_path
 
+        # Engine thread for GPU work
+        self._engine_thread = EngineThread(engine)
+
         # Pending requests: uid -> (future, return_logprob)
         self._pending: dict[int, tuple[asyncio.Future, bool]] = {}
         self._lock = asyncio.Lock()
-        self._step_event = asyncio.Event()
         # Semaphore to limit concurrent requests to engine capacity
         self._request_slots = asyncio.Semaphore(engine.scheduler_config.max_batch_size)
 
@@ -118,14 +266,13 @@ class InferenceServer:
         await self._request_slots.acquire()
 
         try:
-            # Add request to engine
+            # Submit to engine thread and get uid
             async with self._lock:
-                uid = self.engine.add_request(request.input_ids, sampling_params)
+                uid = self._engine_thread.submit_request(
+                    request.input_ids, sampling_params, streaming=False
+                )
                 future: asyncio.Future = asyncio.Future()
                 self._pending[uid] = (future, request.return_logprob)
-
-            # Signal step loop
-            self._step_event.set()
 
             # Wait for completion
             result = await future
@@ -182,13 +329,14 @@ class InferenceServer:
         await self._request_slots.acquire()
 
         try:
-            # Add request to engine
+            # Submit to engine thread
             async with self._lock:
-                uid = self.engine.add_request(input_ids, sampling_params)
+                uid = self._engine_thread.submit_request(
+                    input_ids, sampling_params, streaming=False
+                )
                 future: asyncio.Future = asyncio.Future()
                 self._pending[uid] = (future, return_logprobs)
 
-            self._step_event.set()
             result = await future
         finally:
             # Release slot for next request
@@ -268,13 +416,11 @@ class InferenceServer:
             # Create token queue for streaming
             token_queue: asyncio.Queue = asyncio.Queue()
 
-            # Add request to engine
+            # Submit to engine thread
             async with self._lock:
-                uid = self.engine.add_request(input_ids, sampling_params)
+                uid = self._engine_thread.submit_request(input_ids, sampling_params, streaming=True)
                 # Register for streaming: (queue, prompt_len, seen_len)
                 self._streaming[uid] = (token_queue, prompt_len, prompt_len)
-
-            self._step_event.set()
 
             # Stream tokens as they arrive
             while True:
@@ -329,64 +475,49 @@ class InferenceServer:
 
         return json.dumps(obj, separators=(",", ":"))
 
-    async def step_loop(self) -> None:
-        """Background task that runs engine steps and dispatches results.
+    async def result_dispatcher(self) -> None:
+        """Background task that dispatches results from engine thread.
 
-        Uses asyncio.to_thread() to run the CPU-bound engine.step() without
-        blocking the event loop. This allows request handlers to continue
-        adding requests while the engine processes the current batch.
+        Polls the engine thread's result queue and dispatches to pending
+        futures and streaming queues.
         """
-        loop = asyncio.get_event_loop()
+        logger.info("Result dispatcher starting")
 
         while True:
-            # Wait for work
-            if not self.engine.has_pending():
-                await self._step_event.wait()
-                self._step_event.clear()
+            # Poll engine thread for results (blocking with timeout)
+            results = await asyncio.to_thread(self._engine_thread.get_results, 0.01)
 
-            # Run step in thread pool to avoid blocking event loop
-            finished = await loop.run_in_executor(None, self.engine.step)
+            if not results:
+                # No results, yield to other coroutines
+                await asyncio.sleep(0.001)
+                continue
 
-            # Push new tokens to streaming queues
+            logger.debug(f"Dispatching {len(results)} results")
+
             async with self._lock:
-                # Check decode_set for in-flight streaming requests
-                for req in self.engine.state.decode_set:
-                    if req.uid in self._streaming:
-                        queue, prompt_len, seen_len = self._streaming[req.uid]
-                        current_len = len(req.input_ids)
+                for result in results:
+                    uid = result.uid
 
-                        # Push any new tokens
-                        for i in range(seen_len, current_len):
-                            token_id = req.input_ids[i].item()
-                            await queue.put((token_id, False, None))
+                    if result.req is not None:
+                        # Request finished
+                        if uid in self._pending:
+                            future, _ = self._pending.pop(uid)
+                            if not future.done():
+                                logger.debug(f"Resolving future for uid={uid}")
+                                future.set_result(result.req)
 
-                        # Update seen_len
-                        self._streaming[req.uid] = (queue, prompt_len, current_len)
+                        elif uid in self._streaming:
+                            # Signal completion to streaming handler
+                            token_queue, prompt_len, seen_len = self._streaming[uid]
+                            # Push final done signal
+                            await token_queue.put((None, True, result.finish_reason))
+                            logger.debug(f"Streaming complete for uid={uid}")
 
-                # Dispatch finished results
-                for req in finished:
-                    if req.uid in self._pending:
-                        future, _ = self._pending.pop(req.uid)
-                        if not future.done():
-                            future.set_result(req)
-
-                    elif req.uid in self._streaming:
-                        # Signal completion to streaming handler
-                        queue, prompt_len, _ = self._streaming[req.uid]
-                        # Push any remaining tokens
-                        current_len = len(req.input_ids)
-                        seen_len = self._streaming[req.uid][2]
-                        for i in range(seen_len, current_len):
-                            token_id = req.input_ids[i].item()
-                            await queue.put((token_id, False, None))
-
-                        # Determine finish reason
-                        is_eos = req.input_ids[-1].item() == self.engine.eos_token_id
-                        finish_reason = "stop" if is_eos else "length"
-                        await queue.put((None, True, finish_reason))
-
-            # Small yield to allow other coroutines
-            await asyncio.sleep(0)
+                    elif result.new_token is not None:
+                        # Streaming token update
+                        if uid in self._streaming:
+                            token_queue, prompt_len, seen_len = self._streaming[uid]
+                            await token_queue.put((result.new_token, False, None))
 
 
 def create_app(engine: InferenceEngineV2) -> Any:
@@ -398,7 +529,10 @@ def create_app(engine: InferenceEngineV2) -> Any:
 
     @app.on_event("startup")
     async def startup() -> None:
-        asyncio.create_task(server.step_loop())
+        # Start the engine thread (runs engine.step() loop)
+        server._engine_thread.start()
+        # Start result dispatcher (polls results and dispatches to futures)
+        asyncio.create_task(server.result_dispatcher())
 
     @app.get("/health")
     async def health() -> dict:
