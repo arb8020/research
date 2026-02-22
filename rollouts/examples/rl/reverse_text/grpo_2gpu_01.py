@@ -71,7 +71,7 @@ config = GRPOConfig(
     inference=InferenceConfig(
         cuda_device_ids=(0,),  # GPU 0 for inference
         port=30000,
-        mem_fraction=0.9,  # Can use more VRAM since not sharing
+        mem_fraction=0.8,  # Leave headroom for NCCL weight sync
         tensor_parallel_size=1,
     ),
 )

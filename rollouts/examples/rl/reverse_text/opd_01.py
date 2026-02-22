@@ -6,16 +6,16 @@ a teacher model's token-level predictions on student-generated rollouts.
 OPD provides dense feedback (O(N) bits per episode) compared to sparse
 RL rewards (O(1) bit per episode), resulting in 9-30x compute savings.
 
-Architecture:
-- Student: Qwen3-0.6B with LoRA (trained)
-- Teacher: Qwen3-8B (frozen, provides dense signal)
+Architecture (2 GPUs):
+- GPU 0: Student inference (SGLang) + training (shared)
+- GPU 1: Teacher inference (SGLang, frozen)
 
-Both run as SGLang servers on different ports. After student generates
-a rollout, we query the teacher for log probs on those same tokens,
-then use (teacher_logprob - student_logprob) as per-token advantages.
+After student generates a rollout, we query the teacher for log probs
+on those same tokens, then use (teacher_logprob - student_logprob) as
+per-token advantages.
 
 Run:
-    # Local (requires 2 GPUs - one for student, one for teacher)
+    # Local (requires 2 GPUs)
     python rollouts/run.py --config examples/rl/reverse_text/opd_01.py --local
 
     # Remote (RunPod 2xA100)
@@ -44,7 +44,7 @@ from rollouts.training.grpo import (
 
 hardware = HardwareConfig(
     gpu_type="A100",
-    gpu_count=2,  # One for student, one for teacher
+    gpu_count=2,  # GPU 0: student, GPU 1: teacher
     provider="runpod",
 )
 
@@ -56,8 +56,9 @@ hardware = HardwareConfig(
 STUDENT_MODEL = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 # Teacher model (frozen, provides dense signal)
-# Use a larger model that knows the task well
-TEACHER_MODEL = "Qwen/Qwen3-8B"
+# For reverse_text, use the same SFT model as teacher since it knows the task
+# In practice, you'd use a larger model (e.g., Qwen3-8B)
+TEACHER_MODEL = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
 
 config = GRPOConfig(
     output=GRPOOutputConfig(experiment_name="reverse_text_opd_01"),
@@ -84,15 +85,17 @@ config = GRPOConfig(
     trainer=TrainerConfig(
         lr=1e-4,  # Higher LR for LoRA
         num_minibatches=16,
-        # Use OPD advantage estimator instead of GRPO
+        loss_type="opd",  # Use OPD loss function
+        # OPD settings
         advantage_estimator="opd",
         teacher_model=TEACHER_MODEL,
-        teacher_port=30100,  # Separate port for teacher server
+        teacher_port=30100,  # Teacher on separate port
+        cuda_device_ids=(0,),  # Training on GPU 0
     ),
     inference=InferenceConfig(
         port=30000,  # Student inference port
-        cuda_device_ids=(0,),  # Student on GPU 0
-        mem_fraction=0.5,
+        cuda_device_ids=(0,),  # Student inference on GPU 0 (shared with training)
+        mem_fraction=0.4,  # Lower since sharing with training
     ),
 )
 

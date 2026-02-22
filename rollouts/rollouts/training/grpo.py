@@ -223,6 +223,56 @@ def _create_inference_engines(
     return engines
 
 
+def _create_teacher_engine(
+    config: GRPOConfig, output_dir: Path
+) -> Any | None:  # SGLangEngine | None
+    """Create teacher inference engine for OPD (On-Policy Distillation).
+
+    The teacher model runs on a separate GPU and provides dense feedback
+    by scoring student-generated tokens. Returns None if OPD is not enabled.
+
+    Args:
+        config: Training config with teacher settings
+        output_dir: Directory for logs
+
+    Returns:
+        Teacher SGLangEngine, or None if not using OPD
+    """
+    # Only create teacher if using OPD
+    if config.trainer.advantage_estimator != "opd":
+        return None
+
+    if config.trainer.teacher_model is None:
+        raise ValueError(
+            "advantage_estimator='opd' requires teacher_model to be set. "
+            "Example: TrainerConfig(advantage_estimator='opd', teacher_model='Qwen/Qwen3-8B')"
+        )
+
+    from ..training.weight_sync import SGLangEngine
+
+    # Teacher runs on a separate GPU (assumes GPU 1 for now)
+    # TODO: Make teacher GPU configurable via DistributedConfig
+    student_gpus = set(config.inference.cuda_device_ids)
+    trainer_gpus = set(config.trainer.cuda_device_ids)
+    used_gpus = student_gpus | trainer_gpus
+
+    # Find first unused GPU for teacher (simple heuristic)
+    # For 2-GPU setup: GPU 0 = student, GPU 1 = teacher
+    teacher_gpu = max(used_gpus) + 1 if used_gpus else 1
+
+    # Teacher uses higher mem fraction since it doesn't share with training
+    teacher_engine = SGLangEngine(
+        model_name=config.trainer.teacher_model,
+        port=config.trainer.teacher_port,
+        cuda_device_ids=(teacher_gpu,),
+        output_dir=output_dir,
+        dtype=config.model.dtype,
+        mem_fraction=0.9,  # Teacher doesn't share GPU, can use more VRAM
+    )
+
+    return teacher_engine
+
+
 def _make_loss_fn(
     trainer: TrainerConfig,
     vanilla_fn: Callable,
@@ -834,12 +884,27 @@ async def _grpo_train_async(
     # Primary engine for backward compat (endpoint creation uses first engine's base_url)
     inference_engine = inference_engines[0]
 
+    # Launch teacher engine for OPD (On-Policy Distillation)
+    teacher_engine = _create_teacher_engine(config, output_dir)
+    if teacher_engine is not None:
+        teacher_gpu_str = ",".join(str(g) for g in teacher_engine.cuda_device_ids)
+        logger.info(
+            f"Launching teacher model ({config.trainer.teacher_model}) "
+            f"on GPU {teacher_gpu_str}, port {teacher_engine.port}..."
+        )
+        teacher_engine.launch()
+        teacher_engine.start_log_tailer()
+
     try:
         # Wait for all engines to be ready in parallel
         async with trio.open_nursery() as startup_nursery:
             for engine in inference_engines:
                 startup_nursery.start_soon(engine.wait_until_ready)
+            if teacher_engine is not None:
+                startup_nursery.start_soon(teacher_engine.wait_until_ready)
         logger.info(f"All {num_engines} inference engine(s) ready")
+        if teacher_engine is not None:
+            logger.info("Teacher engine ready")
 
         # Setup training backend
         backend, tokenizer, endpoint = _setup_training_backend(config, output_dir, inference_engine)
@@ -1057,6 +1122,20 @@ async def _grpo_train_async(
                     logger.info(f"\n--- Step {step + 1}/{config.checkpoint.num_steps} ---")
 
                     batch = await rollout_manager.generate_batch(score_fn=score_fn)
+
+                    # Compute teacher logprobs for OPD
+                    if teacher_engine is not None and batch.samples:
+                        from ..training.opd import compute_teacher_logprobs_batch
+
+                        teacher_url = teacher_engine.base_url
+                        logger.info(
+                            f"Computing teacher logprobs for {len(batch.samples)} samples..."
+                        )
+                        await compute_teacher_logprobs_batch(teacher_url, batch.samples)
+                        # Update batch with teacher logprobs (samples were modified in-place)
+                        batch.teacher_log_probs = [s.teacher_log_probs for s in batch.samples]
+                        logger.info("Teacher logprobs computed")
+
                     step_metrics = await _process_training_step(
                         step,
                         batch,
@@ -1102,6 +1181,11 @@ async def _grpo_train_async(
         logger.info(f"Shutting down {inference_engine.name}...")
         inference_engine.shutdown()
         logger.info(f"Logs: {inference_engine.log_path}")
+
+        # Shutdown teacher engine if it was launched
+        if teacher_engine is not None:
+            logger.info("Shutting down teacher engine...")
+            teacher_engine.shutdown()
 
 
 # ──────────────────────── TI/TO Helpers ───────────────────────────────────────

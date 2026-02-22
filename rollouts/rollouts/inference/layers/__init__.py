@@ -8,7 +8,7 @@ Simple, explicit implementations following the codebase style:
 
 from .activation import silu_and_mul
 from .linear import ColumnParallelLinear, Linear, QKVParallelLinear, RowParallelLinear
-from .moe import MoeExperts, MoeGate, MoeLayer, fused_moe
+from .moe import MoeExperts, MoeGate, MoeLayer, MoeMLP, is_fused_moe_available
 from .norm import RMSNorm
 from .rotary import RotaryEmbedding, apply_rotary_pos_emb
 
@@ -21,9 +21,10 @@ __all__ = [
     "RMSNorm",
     "RotaryEmbedding",
     "apply_rotary_pos_emb",
-    # MoE layers (TODO)
+    # MoE layers
     "MoeGate",
     "MoeExperts",
     "MoeLayer",
-    "fused_moe",
+    "MoeMLP",
+    "is_fused_moe_available",
 ]

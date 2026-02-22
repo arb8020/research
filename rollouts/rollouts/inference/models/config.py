@@ -38,6 +38,11 @@ class ModelConfig:
     tie_word_embeddings: bool
     model_type: str  # "llama", "qwen2", etc.
 
+    # MoE config (optional, only for MoE models like Qwen3-MoE)
+    num_experts: int | None = None
+    num_experts_per_tok: int | None = None  # top-k
+    moe_intermediate_size: int | None = None  # expert intermediate size
+
 
 def load_model_config(model_path: str) -> ModelConfig:
     """Load model config from HuggingFace model path.
@@ -79,6 +84,17 @@ def load_model_config(model_path: str) -> ModelConfig:
         scaling_factor=scaling_factor,
     )
 
+    # MoE config (for models like Qwen3-MoE, Mixtral)
+    num_experts = getattr(hf_config, "num_experts", None)
+    num_experts_per_tok = getattr(hf_config, "num_experts_per_tok", None)
+    moe_intermediate_size = getattr(hf_config, "moe_intermediate_size", None)
+
+    # Some models use different naming
+    if num_experts is None:
+        num_experts = getattr(hf_config, "num_local_experts", None)
+    if num_experts_per_tok is None:
+        num_experts_per_tok = getattr(hf_config, "num_selected_experts", None)
+
     return ModelConfig(
         vocab_size=hf_config.vocab_size,
         hidden_size=hf_config.hidden_size,
@@ -95,4 +111,8 @@ def load_model_config(model_path: str) -> ModelConfig:
         rotary_config=rotary_config,
         tie_word_embeddings=getattr(hf_config, "tie_word_embeddings", False),
         model_type=hf_config.model_type,
+        # MoE
+        num_experts=num_experts,
+        num_experts_per_tok=num_experts_per_tok,
+        moe_intermediate_size=moe_intermediate_size,
     )

@@ -43,9 +43,37 @@ rollouts monitor --attach <run_id> --tail
 rollouts monitor --runs
 ```
 
-Results sync locally to `results/rl/<run_id>/` while attached.
+Results sync locally to `results/rl/<run_id>/` while attached. A background sync daemon
+starts automatically when you launch a run, so logs appear locally even without `--tui`.
 
-Logs are also written to `results/rl/<run_id>/run.jsonl` (structured events) and `training.log` (raw output).
+## Log files
+
+Each run produces these files in `results/rl/<run_id>/`:
+
+| File | Format | Use |
+|------|--------|-----|
+| `metrics.jsonl` | JSON lines | **Primary** - one line per step with reward, loss, etc. Query with `jq` |
+| `training.jsonl` | JSON lines | **Primary** - structured logs from trainer, query for errors |
+| `rollouts.jsonl` | JSON lines | Individual rollout samples (prompt, response, reward) |
+| `run.jsonl` | JSON lines | Provisioning/deployment events |
+| `training.log` | Raw terminal | Terminal recording via `script` - contains ANSI codes, spinners, subprocess output. **Not for parsing** - only useful for humans replaying the session |
+| `sglang.log` | Raw text | SGLang inference server logs |
+
+**For debugging, always use the `.jsonl` files:**
+
+```bash
+# Check training progress
+cat results/rl/<run_id>/metrics.jsonl | jq -r '"Step \(.step): reward=\(.mean_reward)"'
+
+# Find errors
+cat results/rl/<run_id>/training.jsonl | jq 'select(.message | test("error|failed"; "i"))'
+
+# Check NCCL weight sync
+cat results/rl/<run_id>/training.jsonl | jq 'select(.message | test("nccl"; "i"))'
+```
+
+The `.log` files are terminal recordings (created by Unix `script` command) containing ANSI
+escape codes for colors/spinners. They're unstructured and should not be grepped for debugging.
 
 ## Known issues
 
