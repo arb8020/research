@@ -907,49 +907,83 @@ class PipelineWeightSyncManager:
         """Initialize NCCL process group between trainer and inference engines.
 
         Must be called once at startup before any broadcasts.
+
+        NCCL requires all ranks to join concurrently - SGLang's /init_weights_update_group
+        blocks on dist.init_process_group, so we must run HTTP requests AND trainer join
+        in parallel to avoid deadlock.
         """
         import os
+        import socket
 
-        import torch.distributed as dist
+        from ..inference.weight_sync import create_stateless_process_group
+
+        logger = logging.getLogger(__name__)
+
+        # Find an available port (avoids conflicts with stale processes)
+        def find_free_port(start_port: int, max_attempts: int = 100) -> int:
+            for port in range(start_port, start_port + max_attempts):
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                        s.bind(("", port))
+                        return port
+                except OSError:
+                    continue
+            raise RuntimeError(
+                f"No free port found in range {start_port}-{start_port + max_attempts}"
+            )
+
+        master_port = find_free_port(self.nccl_master_port)
+        if master_port != self.nccl_master_port:
+            logger.info(f"Port {self.nccl_master_port} in use, using {master_port}")
 
         # Get master address
         master_addr = os.environ.get("MASTER_ADDR", "localhost")
         world_size = 1 + len(self.inference_endpoints)  # trainer + inference
 
-        logging.getLogger(__name__).info(
-            f"Initializing PipelineRL NCCL group (world_size={world_size})"
-        )
+        logger.info(f"Initializing PipelineRL NCCL group (world_size={world_size})")
 
-        # Tell each inference engine to join NCCL group
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            for i, endpoint in enumerate(self.inference_endpoints):
+        # NCCL init requires all ranks to join concurrently
+        # Run HTTP requests AND trainer join in parallel
+        async def register_inference_endpoint(endpoint: str, rank: int) -> None:
+            async with httpx.AsyncClient(timeout=300.0) as client:
                 await client.post(
                     f"{endpoint}/init_weights_update_group",
                     json={
                         "master_address": master_addr,
-                        "master_port": self.nccl_master_port,
-                        "rank_offset": i + 1,  # Inference ranks start at 1
+                        "master_port": master_port,
+                        "rank_offset": rank,
                         "world_size": world_size,
                         "group_name": "pipeline_weight_sync",
                         "backend": "nccl",
                     },
                 )
 
-        # Trainer joins as rank 0
-        if not dist.is_initialized():
-            dist.init_process_group(
-                backend="nccl",
-                init_method=f"tcp://{master_addr}:{self.nccl_master_port}",
-                rank=0,
-                world_size=world_size,
-            )
+        async def trainer_join() -> None:
+            def _join() -> None:
+                # Set NCCL env vars
+                os.environ.setdefault("NCCL_SHM_DISABLE", "1")
+                os.environ.setdefault("NCCL_CUMEM_ENABLE", "0")
 
-        self._process_group = dist.new_group(
-            ranks=list(range(world_size)),
-            backend="nccl",
-        )
+                self._process_group = create_stateless_process_group(
+                    master_addr=master_addr,
+                    master_port=master_port,
+                    rank=0,
+                    world_size=world_size,
+                    group_name="pipeline_weight_sync",
+                    backend="nccl",
+                    timeout_seconds=300.0,
+                )
 
-        logging.getLogger(__name__).info("PipelineRL NCCL group initialized")
+            await trio.to_thread.run_sync(_join)
+
+        # Launch all NCCL participants concurrently
+        async with trio.open_nursery() as nursery:
+            for i, endpoint in enumerate(self.inference_endpoints):
+                nursery.start_soon(register_inference_endpoint, endpoint, i + 1)
+            nursery.start_soon(trainer_join)
+
+        logger.info("PipelineRL NCCL group initialized")
 
     async def broadcast_weights_async(
         self,

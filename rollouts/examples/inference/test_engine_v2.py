@@ -32,12 +32,26 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+from rollouts.training.configs import HardwareConfig
+
+# Hardware config for remote execution
+hardware = HardwareConfig(
+    gpu_type="RTX A5000",
+    gpu_count=1,
+    provider="runpod",
+)
+
+
 @dataclass(frozen=True)
 class TestConfig:
     model_name: str = "Qwen/Qwen2.5-0.5B"
     max_batch_size: int = 8
     max_seq_len: int = 512
     num_tokens: int = 20
+
+
+# Export config for rollouts.run compatibility
+config = TestConfig()
 
 
 def emit_event(event: str, **data: Any) -> None:
@@ -567,6 +581,103 @@ def test_weight_reload(engine: Any, config: TestConfig) -> dict:
     return result
 
 
+def test_moe_layer(_engine: Any, _config: TestConfig) -> dict:
+    """Test MoE layer forward pass."""
+    import torch
+
+    from rollouts.inference.layers.moe import MoeLayer, is_fused_moe_available
+
+    emit_event("test_start", test="moe_layer")
+    start = time.perf_counter()
+
+    fused_available = is_fused_moe_available()
+
+    # Create MoE layer on CPU for testing
+    moe = MoeLayer(
+        hidden_size=256,
+        intermediate_size=512,
+        num_experts=8,
+        top_k=2,
+        dtype=torch.float32,
+    )
+
+    # Test forward
+    batch_size = 4
+    x = torch.randn(batch_size, 256)
+
+    # Without routing info
+    out = moe(x, return_routed_experts=False)
+    shape_ok = out.shape == x.shape
+
+    # With routing info
+    out, routed = moe(x, return_routed_experts=True)
+    routed_shape_ok = routed.shape == (batch_size, 2)
+
+    # Check expert distribution
+    unique_experts = routed.unique().tolist()
+
+    duration_ms = (time.perf_counter() - start) * 1000
+
+    result = {
+        "test": "moe_layer",
+        "success": shape_ok and routed_shape_ok,
+        "duration_ms": duration_ms,
+        "fused_available": fused_available,
+        "output_shape_ok": shape_ok,
+        "routed_shape_ok": routed_shape_ok,
+        "unique_experts": unique_experts,
+    }
+    emit_event("test_done", **result)
+    return result
+
+
+def test_flashinfer_availability(_engine: Any, _config: TestConfig) -> dict:
+    """Test FlashInfer availability."""
+    from rollouts.inference.attention.flashinfer import is_flashinfer_available
+
+    emit_event("test_start", test="flashinfer_availability")
+
+    available = is_flashinfer_available()
+
+    result = {
+        "test": "flashinfer_availability",
+        "success": True,  # Not a failure if unavailable
+        "flashinfer_available": available,
+    }
+    emit_event("test_done", **result)
+    return result
+
+
+def test_qwen_config_loading(_engine: Any, _config: TestConfig) -> dict:
+    """Test loading Qwen model configs."""
+    from rollouts.inference.models.config import load_model_config
+
+    emit_event("test_start", test="qwen_config_loading")
+    start = time.perf_counter()
+
+    errors = []
+
+    # Test Qwen2
+    try:
+        qwen2_config = load_model_config("Qwen/Qwen2-0.5B")
+        qwen2_ok = qwen2_config.model_type == "qwen2"
+    except Exception as e:
+        qwen2_ok = False
+        errors.append(f"qwen2: {e}")
+
+    duration_ms = (time.perf_counter() - start) * 1000
+
+    result = {
+        "test": "qwen_config_loading",
+        "success": qwen2_ok,
+        "duration_ms": duration_ms,
+        "qwen2_ok": qwen2_ok,
+        "errors": errors,
+    }
+    emit_event("test_done", **result)
+    return result
+
+
 def run_tests(config: TestConfig, require_gpu: bool = True) -> list[dict]:
     """Run all tests and return results."""
     import torch
@@ -620,6 +731,10 @@ def run_tests(config: TestConfig, require_gpu: bool = True) -> list[dict]:
         test_max_length_generation,  # Edge case: hit max_tokens limit
         test_hf_reference,  # Compare to HuggingFace ground truth
         test_weight_reload,
+        # New tests for engine_v2 features
+        test_moe_layer,  # MoE layer forward pass
+        test_flashinfer_availability,  # FlashInfer check
+        test_qwen_config_loading,  # Qwen model config loading
     ]
 
     for test_fn in tests:
@@ -756,6 +871,27 @@ def run_remote(node_id: str | None = None, keep_alive: bool = True) -> None:
     import trio
 
     trio.run(run_remote_async, node_id, keep_alive)
+
+
+def train(config: TestConfig | None = None, **kwargs: Any) -> dict:
+    """Entry point for rollouts.run."""
+    from rollouts._logging import setup_logging
+
+    setup_logging(level="INFO", use_color=True)
+
+    if config is None:
+        config = TestConfig()
+
+    results = run_tests(config, require_gpu=True)
+
+    # Return summary
+    passed = sum(1 for r in results if r.get("success"))
+    return {
+        "total": len(results),
+        "passed": passed,
+        "failed": len(results) - passed,
+        "results": results,
+    }
 
 
 def main() -> None:
