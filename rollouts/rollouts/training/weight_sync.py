@@ -1067,7 +1067,8 @@ class PipelineWeightSyncManager:
                         if param_data.device.type != "cuda":
                             param_data = param_data.cuda()
                         dist.broadcast(param_data, src=0, group=self._process_group)
-                    dist.barrier(group=self._process_group)
+                    # NOTE: No barrier here! SGLang doesn't call barrier after receiving.
+                    # The HTTP response serves as implicit synchronization.
 
                 await trio.to_thread.run_sync(_broadcast)
 
