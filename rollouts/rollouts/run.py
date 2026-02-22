@@ -331,6 +331,25 @@ async def _deploy_and_submit(
     bifrost.exec(f"mkdir -p {remote_output_dir}")
     training_log = f"{remote_output_dir}/training.log"
 
+    # Start LogsServer in a separate tmux session BEFORE the training job.
+    # This decouples LogsServer lifetime from the training job — if training crashes,
+    # LogsServer keeps running and can serve the final logs (including tracebacks).
+    logs_port = 9100
+    logs_dir = f"{workspace}/rollouts/results/rl/{run_name}"
+    logs_session = f"logs-{run_name}"
+
+    # Kill any stale LogsServer processes from previous runs
+    bifrost.exec(f"fuser -k {logs_port}/tcp 2>/dev/null || true")
+    bifrost.exec("pkill -f 'miniray.logs_server' 2>/dev/null || true")
+    bifrost.exec(f"tmux kill-session -t {logs_session} 2>/dev/null || true")
+
+    # Start LogsServer in its own tmux session (survives training crashes)
+    logs_cmd = (
+        f"cd {workspace} && python3 -m miniray.logs_server --port {logs_port} --dir {logs_dir}"
+    )
+    bifrost.exec(f"tmux new-session -d -s {logs_session} '{logs_cmd}'")
+    log("logs_server_started", port=logs_port, session=logs_session)
+
     env_vars = {
         "PYTHONUNBUFFERED": "1",
         "ROLLOUTS_RUN_NAME": run_name,
@@ -453,39 +472,8 @@ async def run_remote(
     assert instance is not None, "run_remote requires a provisioned instance"
     node_id_str = f"{instance.provider}:{instance.id}"
 
-    from bifrost import ProcessSpec
-
-    logs_port = 9100
-    logs_dir_relative = f"rollouts/results/rl/{run_name}"
-
-    # Kill any existing LogsServer on this port (left over from a previous run on the same pod)
-    # Use multiple methods since not all may be available/work on all systems
-    bifrost.exec(f"fuser -k {logs_port}/tcp 2>/dev/null || true")
-    bifrost.exec(f"lsof -ti:{logs_port} | xargs -r kill -9 2>/dev/null || true")
-    bifrost.exec("pkill -f 'miniray.logs_server' 2>/dev/null || true")
-    bifrost.exec(
-        "tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^bifrost-job-logs-' | xargs -r -I{} tmux kill-session -t {} 2>/dev/null || true"
-    )
-
-    # Start LogsServer - use -m since workspace is repo root with miniray/ dir
-    logger.info("Starting LogsServer...")
-    bifrost.submit(
-        ProcessSpec(
-            command="python3",
-            args=(
-                "-m",
-                "miniray.logs_server",
-                "--port",
-                str(logs_port),
-                "--dir",
-                logs_dir_relative,
-            ),
-            cwd=workspace,
-        ),
-        name=f"logs-{run_name}",  # Unique per run for isolation
-        log_file=f"{remote_output_dir}/logs_server.log",
-        workspace=workspace,
-    )
+    # LogsServer is now started in _deploy_and_submit() before the training job,
+    # so it survives training crashes and can serve final logs/tracebacks.
 
     logger.info("Training submitted: %s", run_name)
     logger.info("  Node:   %s", node_id_str)

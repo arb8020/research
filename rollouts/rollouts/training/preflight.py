@@ -47,8 +47,11 @@ MODEL_PARAMS_B: dict[str, float] = {
     "GLM-Z1-9B": 9.0,
 }
 
-# Cache for HuggingFace model info
-_HF_MODEL_CACHE: dict[str, dict[str, Any]] = {}
+# Cache for HuggingFace model configs (config.json contents)
+_HF_CONFIG_CACHE: dict[str, dict[str, Any]] = {}
+
+# Cache for HuggingFace model param counts (in billions)
+_HF_PARAM_CACHE: dict[str, float] = {}
 
 
 def _fetch_hf_model_config(model_name: str) -> dict[str, Any] | None:
@@ -56,8 +59,8 @@ def _fetch_hf_model_config(model_name: str) -> dict[str, Any] | None:
 
     Returns dict with model architecture details, or None if unavailable.
     """
-    if model_name in _HF_MODEL_CACHE:
-        return _HF_MODEL_CACHE[model_name]
+    if model_name in _HF_CONFIG_CACHE:
+        return _HF_CONFIG_CACHE[model_name]
 
     try:
         import json
@@ -67,7 +70,7 @@ def _fetch_hf_model_config(model_name: str) -> dict[str, Any] | None:
         path = hf_hub_download(model_name, "config.json")
         with open(path) as f:
             config = json.load(f)
-        _HF_MODEL_CACHE[model_name] = config
+        _HF_CONFIG_CACHE[model_name] = config
         return config
     except Exception:
         pass
@@ -81,8 +84,8 @@ def _fetch_hf_param_count(model_name: str) -> float | None:
     Uses huggingface_hub to read safetensors metadata (fast, no download).
     Returns params in billions, or None if unavailable.
     """
-    if model_name in _HF_MODEL_CACHE:
-        return _HF_MODEL_CACHE[model_name]
+    if model_name in _HF_PARAM_CACHE:
+        return _HF_PARAM_CACHE[model_name]
 
     try:
         from huggingface_hub import get_safetensors_metadata
@@ -91,7 +94,7 @@ def _fetch_hf_param_count(model_name: str) -> float | None:
         if meta.parameter_count:
             total = sum(meta.parameter_count.values())
             params_b = total / 1e9
-            _HF_MODEL_CACHE[model_name] = params_b
+            _HF_PARAM_CACHE[model_name] = params_b
             return params_b
     except Exception:
         pass
