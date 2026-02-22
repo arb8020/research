@@ -18,8 +18,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import queue
-import threading
 import time
 import uuid
 from collections.abc import AsyncGenerator
@@ -28,309 +26,11 @@ from typing import Any
 
 import torch
 
-from .core import Req, SamplingParams
+from .core import SamplingParams
 from .engine_v2 import EngineConfig, InferenceEngineV2
 from .models.weight import load_weights
-from .overlap import ForwardInput, ForwardOutput, get_or_create_streams, overlap_step
-from .scheduler import SchedulerState, has_pending_work, schedule_step
 
 logger = logging.getLogger(__name__)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# ENGINE THREAD (runs overlap loop at GPU pace)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-@dataclass
-class EngineRequest:
-    """Request to add to engine."""
-
-    uid: int
-    input_ids: list[int]
-    sampling_params: SamplingParams
-
-
-@dataclass
-class EngineResult:
-    """Result from engine (finished request or token update)."""
-
-    uid: int
-    req: Req | None = None  # Set when request finishes
-    new_token: int | None = None  # Set for streaming token updates
-    current_len: int | None = None  # Current sequence length for streaming
-    finish_reason: str | None = None  # Set when request finishes
-
-
-class EngineThread:
-    """Dedicated thread running overlap loop at GPU pace.
-
-    Communication with HTTP layer via thread-safe queues:
-    - request_queue: HTTP layer pushes new requests
-    - result_queue: Engine pushes finished requests and token updates
-
-    The engine runs its own pace, pulling requests when it has capacity,
-    processing batches with overlap, and pushing results back.
-    """
-
-    def __init__(self, engine: InferenceEngineV2) -> None:
-        self.engine = engine
-        self._overlap_state: dict[str, Any] = {}
-
-        # Thread-safe communication
-        self._request_queue: queue.Queue[EngineRequest | None] = queue.Queue()
-        self._result_queue: queue.Queue[EngineResult] = queue.Queue()
-
-        # Track streaming requests (by client uid)
-        self._streaming_uids: set[int] = set()
-
-        # Map client uid -> engine uid (engine generates its own)
-        self._uid_map: dict[int, int] = {}
-        # Reverse map: engine uid -> client uid
-        self._reverse_uid_map: dict[int, int] = {}
-
-        # Thread management
-        self._thread: threading.Thread | None = None
-        self._stop_event = threading.Event()
-
-    def start(self) -> None:
-        """Start the engine thread."""
-        self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run_loop, daemon=True)
-        self._thread.start()
-        logger.info("Engine thread started")
-
-    def stop(self) -> None:
-        """Stop the engine thread."""
-        self._stop_event.set()
-        self._request_queue.put(None)  # Unblock the queue
-        if self._thread is not None:
-            self._thread.join(timeout=5.0)
-        logger.info("Engine thread stopped")
-
-    def submit_request(
-        self,
-        uid: int,
-        input_ids: list[int],
-        sampling_params: SamplingParams,
-        streaming: bool = False,
-    ) -> None:
-        """Submit a request to the engine (non-blocking)."""
-        if streaming:
-            self._streaming_uids.add(uid)
-        self._request_queue.put(
-            EngineRequest(uid=uid, input_ids=input_ids, sampling_params=sampling_params)
-        )
-
-    def get_results(self, timeout: float | None = None) -> list[EngineResult]:
-        """Get all available results (non-blocking or with timeout)."""
-        results = []
-        try:
-            # Get first result (may block)
-            result = self._result_queue.get(timeout=timeout)
-            results.append(result)
-            # Drain any additional results
-            while True:
-                try:
-                    result = self._result_queue.get_nowait()
-                    results.append(result)
-                except queue.Empty:
-                    break
-        except queue.Empty:
-            pass
-        return results
-
-    def _run_loop(self) -> None:
-        """Main engine loop - runs in dedicated thread."""
-        logger.info("Engine loop starting")
-
-        # Initialize CUDA graphs if enabled
-        if self.engine._use_cuda_graphs and "graphs" not in self.engine._graph_state:
-            logger.info("Capturing CUDA graphs...")
-            self.engine.capture_cuda_graphs_now()
-            logger.info("CUDA graphs captured")
-
-        last_output: ForwardOutput | None = None
-
-        while not self._stop_event.is_set():
-            # Pull new requests from queue (non-blocking)
-            self._pull_requests()
-
-            # Check if we have work
-            if not has_pending_work(self.engine.state) and last_output is None:
-                # Wait for new requests
-                try:
-                    req = self._request_queue.get(timeout=0.1)
-                    if req is None:  # Stop signal
-                        break
-                    self._add_request(req)
-                except queue.Empty:
-                    continue
-
-            # Run one overlap step
-            current_output = self._overlap_step(last_output)
-
-            # Note: streaming updates are pushed in _process_output after
-            # the forward pass completes and tokens are available
-
-            last_output = current_output
-
-        # Process any remaining output
-        if last_output is not None:
-            last_output.copy_done.synchronize()
-            self._process_output(last_output)
-
-        logger.info("Engine loop stopped")
-
-    def _pull_requests(self) -> None:
-        """Pull all pending requests from queue."""
-        while True:
-            try:
-                req = self._request_queue.get_nowait()
-                if req is None:  # Stop signal
-                    self._stop_event.set()
-                    return
-                self._add_request(req)
-            except queue.Empty:
-                break
-
-    def _add_request(self, req: EngineRequest) -> None:
-        """Add request to engine scheduler."""
-        # Engine generates its own uid, we track mapping both ways
-        engine_uid = self.engine.add_request(
-            req.input_ids,
-            req.sampling_params,
-        )
-        # Map both directions
-        self._uid_map[req.uid] = engine_uid
-        self._reverse_uid_map[engine_uid] = req.uid
-
-    def _overlap_step(self, last_output: ForwardOutput | None) -> ForwardOutput | None:
-        """Run one overlap step."""
-        return overlap_step(
-            state=self._overlap_state,
-            device=self.engine.device,
-            last_output=last_output,
-            forward_fn=self._forward,
-            schedule_fn=self._schedule,
-            process_fn=self._process_output,
-        )
-
-    def _schedule(self) -> ForwardInput | None:
-        """Schedule next batch (CPU work)."""
-        if not has_pending_work(self.engine.state):
-            return None
-
-        result = schedule_step(
-            state=self.engine.state,
-            config=self.engine.scheduler_config,
-            num_free_pages=self.engine._get_num_free_pages(),
-            device=self.engine.device,
-            allocate_pages=self.engine._allocate_pages,
-        )
-
-        if result.batch is None:
-            return None
-
-        batch = result.batch
-        self.engine.state = result.new_state
-
-        self.engine._update_page_table(batch)
-        attn_metadata = self.engine._build_attention_metadata(batch)
-
-        return ForwardInput(batch=batch, attn_metadata=attn_metadata)
-
-    def _forward(self, forward_input: ForwardInput) -> ForwardOutput:
-        """Run model forward (GPU work)."""
-        from .graph import can_use_graph, replay_graph
-        from .overlap import create_forward_output
-
-        batch = forward_input.batch
-        attn_metadata = forward_input.attn_metadata
-
-        use_graph = (
-            self.engine._use_cuda_graphs
-            and batch.is_decode
-            and "graphs" in self.engine._graph_state
-            and can_use_graph(self.engine._graph_state, batch)
-        )
-
-        with torch.no_grad():
-            if use_graph:
-                logits = replay_graph(self.engine._graph_state, batch, attn_metadata)
-            else:
-                logits = self.engine.model(
-                    input_ids=batch.input_ids,
-                    positions=batch.positions,
-                    attn_backend=self.engine.attn_backend,
-                    attn_metadata=attn_metadata,
-                    out_loc=batch.out_loc,
-                )
-                last_indices = attn_metadata.cu_seqlens_q[1:] - 1
-                logits = logits[last_indices]
-
-            next_tokens_gpu, logprobs = self.engine._sample_batch_gpu(logits, batch)
-
-        scheduler_stream, _ = get_or_create_streams(self._overlap_state, self.engine.device)
-
-        return create_forward_output(
-            next_tokens_gpu=next_tokens_gpu,
-            stream=scheduler_stream,
-            batch=batch,
-            logprobs=logprobs,
-        )
-
-    def _process_output(self, output: ForwardOutput) -> None:
-        """Process forward output (CPU work after GPU done)."""
-        # Push streaming updates BEFORE state update (tokens are in output)
-        self._push_streaming_updates(output)
-
-        # Update request states using engine's overlap process method
-        self.engine._overlap_process(output)
-
-        # Push finished requests to result queue
-        for req in self.engine.state.finished:
-            # Translate engine uid to client uid
-            client_uid = self._reverse_uid_map.get(req.uid, req.uid)
-            is_eos = req.input_ids[-1].item() == self.engine.eos_token_id
-            finish_reason = "stop" if is_eos else "length"
-            self._result_queue.put(
-                EngineResult(uid=client_uid, req=req, finish_reason=finish_reason)
-            )
-            self._streaming_uids.discard(client_uid)
-            # Clean up uid maps
-            self._reverse_uid_map.pop(req.uid, None)
-            self._uid_map.pop(client_uid, None)
-
-        # Clear finished from state
-        if self.engine.state.finished:
-            self.engine.state = SchedulerState(
-                prefill_queue=self.engine.state.prefill_queue,
-                decode_set=self.engine.state.decode_set,
-                finished=(),
-            )
-
-    def _push_streaming_updates(self, output: ForwardOutput) -> None:
-        """Push token updates for streaming requests.
-
-        After processing output, push the new token for each streaming request
-        that was in this batch.
-        """
-        batch = output.batch
-        next_tokens = output.next_tokens_cpu
-
-        for i, req in enumerate(batch.reqs):
-            # Translate engine uid to client uid
-            client_uid = self._reverse_uid_map.get(req.uid, req.uid)
-            if client_uid in self._streaming_uids:
-                # Push the new token that was just generated
-                new_token = next_tokens[i].item()
-                self._result_queue.put(
-                    EngineResult(
-                        uid=client_uid,
-                        new_token=new_token,
-                    )
-                )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -380,8 +80,7 @@ class GenerateResponse:
 class InferenceServer:
     """HTTP server wrapping InferenceEngineV2.
 
-    Uses dedicated engine thread running overlap loop at GPU pace.
-    HTTP layer communicates via thread-safe queues.
+    Handles async request batching and provides both SGLang and OpenAI APIs.
     """
 
     def __init__(self, engine: InferenceEngineV2) -> None:
@@ -389,13 +88,10 @@ class InferenceServer:
         self.tokenizer = engine.tokenizer
         self.model_name = engine.config.model_path
 
-        # Engine thread for overlap execution
-        self._engine_thread = EngineThread(engine)
-        self._next_uid = 0
-
         # Pending requests: uid -> (future, return_logprob)
         self._pending: dict[int, tuple[asyncio.Future, bool]] = {}
         self._lock = asyncio.Lock()
+        self._step_event = asyncio.Event()
         # Semaphore to limit concurrent requests to engine capacity
         self._request_slots = asyncio.Semaphore(engine.scheduler_config.max_batch_size)
 
@@ -414,12 +110,6 @@ class InferenceServer:
             return_logprobs=True,  # Always compute, filter in response
         )
 
-    def _get_next_uid(self) -> int:
-        """Get next request UID (thread-safe via asyncio lock)."""
-        uid = self._next_uid
-        self._next_uid += 1
-        return uid
-
     async def generate(self, request: GenerateRequest) -> GenerateResponse:
         """Handle SGLang-style /generate request."""
         sampling_params = self._convert_sampling_params(request.sampling_params)
@@ -428,14 +118,14 @@ class InferenceServer:
         await self._request_slots.acquire()
 
         try:
-            # Create future and submit request
+            # Add request to engine
             async with self._lock:
-                uid = self._get_next_uid()
+                uid = self.engine.add_request(request.input_ids, sampling_params)
                 future: asyncio.Future = asyncio.Future()
                 self._pending[uid] = (future, request.return_logprob)
 
-            # Submit to engine thread (non-blocking)
-            self._engine_thread.submit_request(uid, request.input_ids, sampling_params)
+            # Signal step loop
+            self._step_event.set()
 
             # Wait for completion
             result = await future
@@ -492,14 +182,13 @@ class InferenceServer:
         await self._request_slots.acquire()
 
         try:
-            # Create future and submit request
+            # Add request to engine
             async with self._lock:
-                uid = self._get_next_uid()
+                uid = self.engine.add_request(input_ids, sampling_params)
                 future: asyncio.Future = asyncio.Future()
                 self._pending[uid] = (future, return_logprobs)
 
-            # Submit to engine thread (non-blocking)
-            self._engine_thread.submit_request(uid, input_ids, sampling_params)
+            self._step_event.set()
             result = await future
         finally:
             # Release slot for next request
@@ -579,14 +268,13 @@ class InferenceServer:
             # Create token queue for streaming
             token_queue: asyncio.Queue = asyncio.Queue()
 
-            # Create future and submit request
+            # Add request to engine
             async with self._lock:
-                uid = self._get_next_uid()
+                uid = self.engine.add_request(input_ids, sampling_params)
                 # Register for streaming: (queue, prompt_len, seen_len)
                 self._streaming[uid] = (token_queue, prompt_len, prompt_len)
 
-            # Submit to engine thread with streaming flag
-            self._engine_thread.submit_request(uid, input_ids, sampling_params, streaming=True)
+            self._step_event.set()
 
             # Stream tokens as they arrive
             while True:
@@ -641,36 +329,61 @@ class InferenceServer:
 
         return json.dumps(obj, separators=(",", ":"))
 
-    async def result_dispatcher(self) -> None:
-        """Background task that dispatches results from engine thread.
+    async def step_loop(self) -> None:
+        """Background task that runs engine steps and dispatches results.
 
-        Polls the engine thread's result queue and dispatches to pending
-        futures and streaming queues.
+        Uses asyncio.to_thread() to run the CPU-bound engine.step() without
+        blocking the event loop. This allows request handlers to continue
+        adding requests while the engine processes the current batch.
         """
+        loop = asyncio.get_event_loop()
+
         while True:
-            # Poll for results from engine thread
-            # Use asyncio.to_thread to avoid blocking the event loop
-            results = await asyncio.to_thread(self._engine_thread.get_results, timeout=0.01)
+            # Wait for work
+            if not self.engine.has_pending():
+                await self._step_event.wait()
+                self._step_event.clear()
 
+            # Run step in thread pool to avoid blocking event loop
+            finished = await loop.run_in_executor(None, self.engine.step)
+
+            # Push new tokens to streaming queues
             async with self._lock:
-                for result in results:
-                    if result.req is not None:
-                        # Finished request
-                        if result.uid in self._pending:
-                            future, _ = self._pending.pop(result.uid)
-                            if not future.done():
-                                future.set_result(result.req)
+                # Check decode_set for in-flight streaming requests
+                for req in self.engine.state.decode_set:
+                    if req.uid in self._streaming:
+                        queue, prompt_len, seen_len = self._streaming[req.uid]
+                        current_len = len(req.input_ids)
 
-                        elif result.uid in self._streaming:
-                            # Signal completion to streaming handler
-                            token_queue, _, _ = self._streaming[result.uid]
-                            await token_queue.put((None, True, result.finish_reason))
+                        # Push any new tokens
+                        for i in range(seen_len, current_len):
+                            token_id = req.input_ids[i].item()
+                            await queue.put((token_id, False, None))
 
-                    elif result.new_token is not None:
-                        # Streaming token update
-                        if result.uid in self._streaming:
-                            token_queue, _, _ = self._streaming[result.uid]
-                            await token_queue.put((result.new_token, False, None))
+                        # Update seen_len
+                        self._streaming[req.uid] = (queue, prompt_len, current_len)
+
+                # Dispatch finished results
+                for req in finished:
+                    if req.uid in self._pending:
+                        future, _ = self._pending.pop(req.uid)
+                        if not future.done():
+                            future.set_result(req)
+
+                    elif req.uid in self._streaming:
+                        # Signal completion to streaming handler
+                        queue, prompt_len, _ = self._streaming[req.uid]
+                        # Push any remaining tokens
+                        current_len = len(req.input_ids)
+                        seen_len = self._streaming[req.uid][2]
+                        for i in range(seen_len, current_len):
+                            token_id = req.input_ids[i].item()
+                            await queue.put((token_id, False, None))
+
+                        # Determine finish reason
+                        is_eos = req.input_ids[-1].item() == self.engine.eos_token_id
+                        finish_reason = "stop" if is_eos else "length"
+                        await queue.put((None, True, finish_reason))
 
             # Small yield to allow other coroutines
             await asyncio.sleep(0)
@@ -685,10 +398,7 @@ def create_app(engine: InferenceEngineV2) -> Any:
 
     @app.on_event("startup")
     async def startup() -> None:
-        # Start engine thread (runs overlap loop at GPU pace)
-        server._engine_thread.start()
-        # Start result dispatcher (polls engine thread for results)
-        asyncio.create_task(server.result_dispatcher())
+        asyncio.create_task(server.step_loop())
 
     @app.get("/health")
     async def health() -> dict:
