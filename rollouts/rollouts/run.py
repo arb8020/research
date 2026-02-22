@@ -725,16 +725,37 @@ Examples:
 
     else:
         # Local execution
-        if not hasattr(config_module, "train"):
+        # Check if this is a benchmark config
+        from .inference.benchmark.config import BenchmarkConfig
+
+        if isinstance(config_module.config, BenchmarkConfig):
+            # Run benchmark locally
+            import json
+
+            import trio
+
+            from .inference.benchmark.runner import run_benchmark
+
+            assert hardware.deps is not None
+            result = trio.run(
+                run_benchmark,
+                config_module.config,
+                hardware.deps,
+                hardware.gpu_type,
+                hardware.gpu_count,
+            )
+            print(json.dumps(result.to_dict(), indent=2))
+        elif hasattr(config_module, "train"):
+            # Training run
+            kwargs = {}
+            if args.max_samples is not None:
+                kwargs["max_samples"] = args.max_samples
+
+            results = config_module.train(config=config_module.config, **kwargs)
+            print(f"Training complete. {len(results.get('metrics_history', []))} steps")
+        else:
             print("Config file must export 'train' function for local execution", file=sys.stderr)
             sys.exit(1)
-
-        kwargs = {}
-        if args.max_samples is not None:
-            kwargs["max_samples"] = args.max_samples
-
-        results = config_module.train(config=config_module.config, **kwargs)
-        print(f"Training complete. {len(results.get('metrics_history', []))} steps")
 
 
 if __name__ == "__main__":
