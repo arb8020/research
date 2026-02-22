@@ -80,7 +80,7 @@ class EngineConfig:
     max_tokens_per_batch: int = 4096
     max_seq_len: int = 2048
     dtype: torch.dtype = torch.bfloat16
-    attention_backend: Literal["auto", "flash", "reference"] = "auto"
+    attention_backend: Literal["auto", "flash", "flashinfer", "reference"] = "auto"
 
     # CUDA graph settings
     enable_cuda_graphs: bool = True
@@ -280,10 +280,10 @@ class InferenceEngineV2:
 
         return AutoTokenizer.from_pretrained(model_path)
 
-    def _create_attention_backend(self, backend_type: Literal["auto", "flash", "reference"]) -> Any:
-        use_flash = backend_type == "flash" or (
-            backend_type == "auto" and is_flash_attn_available()
-        )
+    def _create_attention_backend(
+        self, backend_type: Literal["auto", "flash", "flashinfer", "reference"]
+    ) -> Any:
+        from .attention.flashinfer import FlashInferBackend, is_flashinfer_available
 
         # Use local head counts for TP
         num_q_heads = self.model_config.num_attention_heads
@@ -294,7 +294,19 @@ class InferenceEngineV2:
             num_q_heads = get_local_size(num_q_heads, self.tp.world_size)
             num_kv_heads = get_local_size(num_kv_heads, self.tp.world_size)
 
-        if use_flash and is_flash_attn_available():
+        # Determine which backend to use
+        # Priority: flashinfer > flash > reference
+        if backend_type == "flashinfer" or (backend_type == "auto" and is_flashinfer_available()):
+            logger.info("Using FlashInfer attention backend")
+            return FlashInferBackend(
+                k_cache=self.kv_pool.k_cache,
+                v_cache=self.kv_pool.v_cache,
+                num_q_heads=num_q_heads,
+                num_kv_heads=num_kv_heads,
+                head_dim=self.model_config.head_dim,
+            )
+        elif backend_type == "flash" or (backend_type == "auto" and is_flash_attn_available()):
+            logger.info("Using FlashAttention backend")
             return FlashAttentionBackend(
                 k_cache=self.kv_pool.k_cache,
                 v_cache=self.kv_pool.v_cache,
@@ -303,6 +315,7 @@ class InferenceEngineV2:
                 head_dim=self.model_config.head_dim,
             )
         else:
+            logger.info("Using reference attention backend")
             return ReferenceAttentionBackend(
                 k_cache=self.kv_pool.k_cache,
                 v_cache=self.kv_pool.v_cache,
@@ -987,6 +1000,12 @@ class InferenceEngineV2:
         return self._sample_batch(last_logits, batch)
 
     def _forward_functional(self, batch: Batch) -> tuple[Tensor, list[float | None]]:
+        # TODO: This functional path is incomplete - it recomputes full KV every step (O(n²)).
+        # To make it production-ready:
+        # 1. Pass k_cache/v_cache as explicit arguments to functional_forward
+        # 2. Pass attn_metadata and out_loc for paged attention
+        # 3. Re-enable CUDA graphs and overlap scheduling
+        # For now, focus on the module path. Revisit functional once that's solid.
         assert self._functional_config is not None
         assert self._functional_weights is not None
 
