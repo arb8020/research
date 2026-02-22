@@ -729,18 +729,16 @@ Examples:
         from .inference.benchmark.config import BenchmarkConfig
 
         if isinstance(config_module.config, BenchmarkConfig):
-            # Run benchmark locally
+            # Run benchmark locally (we're already on the GPU machine)
             import json
 
             import trio
 
-            from .inference.benchmark.runner import run_benchmark
+            from .inference.benchmark.runner import run_benchmark_local
 
-            assert hardware.deps is not None
             result = trio.run(
-                run_benchmark,
+                run_benchmark_local,
                 config_module.config,
-                hardware.deps,
                 hardware.gpu_type,
                 hardware.gpu_count,
             )
