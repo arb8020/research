@@ -835,34 +835,33 @@ class PyTorchTrainingBackend:
         """
         import logging
         import os
-        import subprocess
 
         import httpx
 
         logger = logging.getLogger(__name__)
 
-        # Kill any stale process on the NCCL master port (from previous runs)
-        # First kill any training sessions from previous runs
-        subprocess.run(
-            "tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^bifrost-job-run_' | xargs -r -I{} tmux kill-session -t {} 2>/dev/null || true",
-            shell=True,
-            capture_output=True,
-        )
-        # Then kill the port holder directly
-        subprocess.run(
-            f"fuser -k {master_port}/tcp 2>/dev/null || true",
-            shell=True,
-            capture_output=True,
-        )
-        subprocess.run(
-            f"lsof -ti:{master_port} | xargs -r kill -9 2>/dev/null || true",
-            shell=True,
-            capture_output=True,
-        )
-        # Wait briefly for socket to release
-        import time
+        # Find an available port for NCCL (avoids conflicts with stale processes)
+        import socket
 
-        time.sleep(0.5)
+        def find_free_port(start_port: int, max_attempts: int = 100) -> int:
+            """Find an available port starting from start_port."""
+            for port in range(start_port, start_port + max_attempts):
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                        s.bind(("", port))
+                        return port
+                except OSError:
+                    continue
+            raise RuntimeError(
+                f"No free port found in range {start_port}-{start_port + max_attempts}"
+            )
+
+        # Use the configured port as a starting point, find first available
+        original_port = master_port
+        master_port = find_free_port(master_port)
+        if master_port != original_port:
+            logger.info(f"Port {original_port} in use, using {master_port} instead")
 
         # Determine master address
         if master_addr is None:
