@@ -935,7 +935,11 @@ async def _grpo_train_async(
             logger.info("VRAM preflight check skipped (skip_vram_check=True)")
 
         # Initialize NCCL weight sync if enabled (PipelineRL-style in-flight updates)
-        if config.checkpoint.weight_sync_mode == "nccl":
+        # Skip for true_pipeline mode - PipelineWeightSyncManager handles NCCL init separately
+        if (
+            config.checkpoint.weight_sync_mode == "nccl"
+            and config.checkpoint.pipeline_mode != "true_pipeline"
+        ):
             logger.info(f"Initializing NCCL weight sync with {num_engines} engine(s)...")
             await backend.init_nccl_weight_sync(
                 inference_endpoints=[e.base_url for e in inference_engines],
