@@ -37,6 +37,7 @@ from .core import (
     req_after_forward,
     req_append_token,
 )
+from .events import RequestTracker, emit_wide_event
 from .graph import can_use_graph, capture_graphs, replay_graph
 from .kv_cache import CacheConfig, KVCachePool
 from .models.config import load_model_config
@@ -244,6 +245,9 @@ class InferenceEngineV2:
         # Request -> cache handle mapping
         self._cache_handles: dict[int, CacheHandle] = {}
         self._chunk_pending_tokens: dict[int, Tensor] = {}
+
+        # Wide event tracking for per-request metrics
+        self._request_tracker = RequestTracker()
 
         # Feature flags
         self._use_cuda_graphs = config.enable_cuda_graphs and self._is_cuda
@@ -465,6 +469,14 @@ class InferenceEngineV2:
             )
 
         self.state = add_request(self.state, req)
+
+        # Start tracking this request
+        self._request_tracker.start_request(
+            uid=uid,
+            prompt_len=len(prompt_ids),
+            cached_len=cached_len,
+        )
+
         return uid
 
     def step(self) -> list[Req]:
@@ -866,6 +878,29 @@ class InferenceEngineV2:
             offset += extend_len
 
     def _handle_finished_request(self, req: Req) -> None:
+        # Emit wide event for this request
+        # Calculate output_len: device_len includes prompt, so subtract prompt tokens
+        # The prompt_len was tracked when request started
+        timing = self._request_tracker._timings.get(req.uid)
+        prompt_len = timing.prompt_len if timing else 0
+        output_len = req.device_len - prompt_len
+
+        # Determine finish reason
+        last_token = req.input_ids[-1].item() if req.device_len > 0 else None
+        is_eos = last_token == self.eos_token_id
+        finish_reason = "stop" if is_eos else "length"
+
+        event = self._request_tracker.finish_request(
+            uid=req.uid,
+            output_len=output_len,
+            finish_reason=finish_reason,
+            extra={
+                "model": self.config.model_path,
+                "max_batch_size": self.config.max_batch_size,
+            },
+        )
+        emit_wide_event(event)
+
         self.page_table_mgr.free_index(req.table_idx)
         self._chunked_prefill_mgr.cleanup(req.uid)
         self._chunk_pending_tokens.pop(req.uid, None)
@@ -916,6 +951,10 @@ class InferenceEngineV2:
         prefill_queue = list(state.prefill_queue)
         finished: list[Req] = []
 
+        # Record batch participation for all requests
+        for req in batch.reqs:
+            self._request_tracker.record_batch(req.uid, batch.size, batch.is_prefill)
+
         for i, (req, next_token) in enumerate(zip(batch.reqs, next_tokens.tolist(), strict=False)):
             logprob = logprobs[i]
             decode_by_uid.pop(req.uid, None)
@@ -929,8 +968,13 @@ class InferenceEngineV2:
                     prefill_queue.append(next_chunk_req)
                     continue
 
+                # First token generated after chunked prefill completes
+                self._request_tracker.record_first_token(req.uid)
                 new_req = req_append_token(chunk_prefill_req, next_token, logprob)
             else:
+                # First token for non-chunked requests happens on first prefill batch
+                if batch.is_prefill:
+                    self._request_tracker.record_first_token(req.uid)
                 new_req = req_after_decode_step(req, next_token, logprob)
 
             is_eos = next_token == self.eos_token_id and not req.sampling_params.ignore_eos
@@ -1092,7 +1136,9 @@ class InferenceEngineV2:
     def run_to_completion_overlap(self) -> list[Req]:
         """Run until all requests complete using overlap scheduling.
 
-        Uses dual-stream execution to hide CPU latency.
+        Uses dual-stream execution to hide CPU latency:
+        - While GPU runs forward on batch N, CPU processes batch N-1
+        - Processing includes state update, finished request handling
         """
         if not self._use_overlap:
             return self.run_to_completion()
@@ -1113,15 +1159,25 @@ class InferenceEngineV2:
                 process_fn=self._overlap_process,
             )
 
-            if last_output is not None:
-                last_output.copy_done.synchronize()
+            # _overlap_process already handled state update and finished requests
+            # Collect finished requests from state (they were added by _overlap_process)
+            if self.state.finished:
                 all_finished.extend(list(self.state.finished))
+                # Clear finished from state since we've collected them
+                self.state = SchedulerState(
+                    prefill_queue=self.state.prefill_queue,
+                    decode_set=self.state.decode_set,
+                    finished=(),
+                )
 
             last_output = current_output
 
+        # Process final output if any
         if last_output is not None:
             last_output.copy_done.synchronize()
-            all_finished.extend(list(self.state.finished))
+            self._overlap_process(last_output)
+            if self.state.finished:
+                all_finished.extend(list(self.state.finished))
 
         return all_finished
 
@@ -1173,18 +1229,29 @@ class InferenceEngineV2:
                 last_indices = attn_metadata.cu_seqlens_q[1:] - 1
                 logits = logits[last_indices]
 
-            # Note: overlap path doesn't support logprobs yet
-            next_tokens_gpu, _logprobs = self._sample_batch_gpu(logits, batch)
+            next_tokens_gpu, logprobs = self._sample_batch_gpu(logits, batch)
 
         # Get stream from overlap state
         from .overlap import get_or_create_streams
 
         _, engine_stream = get_or_create_streams(self._overlap_state, self.device)
-        return create_forward_output(next_tokens_gpu, engine_stream)
+        return create_forward_output(next_tokens_gpu, engine_stream, batch, logprobs)
 
     def _overlap_process(self, output: ForwardOutput) -> None:
-        # Processing happens in run_to_completion_overlap after synchronize
-        pass
+        """Process forward output: update state and handle finished requests.
+
+        This runs on the scheduler stream, overlapped with the next forward.
+        """
+        batch = output.batch
+        next_tokens = output.next_tokens_cpu
+        logprobs = output.logprobs
+
+        # Update scheduler state with new tokens
+        self.state = self._update_state_after_batch(self.state, batch, next_tokens, logprobs)
+
+        # Handle finished requests (free pages, emit events)
+        for req in self.state.finished:
+            self._handle_finished_request(req)
 
     def _sample_batch_gpu(self, logits: Tensor, batch: Batch) -> tuple[Tensor, list[float | None]]:
         """Sample batch on GPU, returning tokens and logprobs."""

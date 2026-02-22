@@ -49,12 +49,16 @@ class ForwardOutput:
 def create_forward_output(
     next_tokens_gpu: Tensor,
     stream: torch.cuda.Stream,
+    batch: Batch,
+    logprobs: list[float | None],
 ) -> ForwardOutput:
     """Create ForwardOutput with async CPU copy.
 
     Args:
         next_tokens_gpu: Next tokens on GPU
         stream: Stream to record copy event on
+        batch: The batch that was processed
+        logprobs: Per-token logprobs
 
     Returns:
         ForwardOutput with async CPU copy in progress
@@ -68,6 +72,8 @@ def create_forward_output(
         next_tokens_gpu=next_tokens_gpu,
         next_tokens_cpu=next_tokens_cpu,
         copy_done=copy_done,
+        batch=batch,
+        logprobs=logprobs,
     )
 
 
