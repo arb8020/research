@@ -43,9 +43,19 @@ import importlib.util
 import logging
 import sys
 from collections.abc import Callable
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+
+@contextmanager
+def _quiet_spinner(msg: str) -> None:
+    """No-op context manager for quiet mode - just logs start/done."""
+    logger.info("%s", msg)
+    yield None
+    logger.info("  done")
+
 
 if TYPE_CHECKING:
     from bifrost import BifrostClient
@@ -97,6 +107,7 @@ async def _deploy_and_submit(
     gpu_type: str,
     provider: str | None = None,
     allow_dirty: bool = False,
+    quiet: bool = False,
 ) -> tuple:
     """Provision node, deploy code, submit training job.
 
@@ -138,8 +149,14 @@ async def _deploy_and_submit(
     logs_port = 9100
 
     # Create console for coordinated spinner + logging output
-    console = Console()
-    console.install_logging_handler(logging.getLogger())
+    # In quiet mode, skip spinners and just use plain logging
+    if quiet:
+        console = None
+        spinner = _quiet_spinner  # Use plain logging
+    else:
+        console = Console()
+        console.install_logging_handler(logging.getLogger())
+        spinner = console.spinner  # Use interactive spinner
 
     # Fail-fast: check for uncommitted changes BEFORE provisioning
     # This prevents wasting time/money on a pod we can't deploy to
@@ -175,10 +192,11 @@ async def _deploy_and_submit(
         provision_msg = f"Provisioning {gpu_count}x {gpu_type}{profile_hint}..."
     log("provision_start", msg=provision_msg)
     try:
-        with console.spinner(provision_msg) as spinner:
+        with spinner(provision_msg) as spin:
             if node_id:
                 bifrost, instance = await acquire_node(node_id=node_id)
-                spinner.update(f"Connected to {node_id}")
+                if spin:
+                    spin.update(f"Connected to {node_id}")
                 log("provision_done", node_id=node_id, reused=True)
                 # Update job registry with actual node info
                 if instance:
@@ -195,7 +213,8 @@ async def _deploy_and_submit(
                     )
                 )
                 node_str = f"{instance.provider}:{instance.id}" if instance else "?"
-                spinner.update(f"Provisioned {node_str}")
+                if spin:
+                    spin.update(f"Provisioned {node_str}")
                 log(
                     "provision_done",
                     node_id=node_str,
@@ -234,7 +253,7 @@ async def _deploy_and_submit(
     script_rel_path = Path(script_path).relative_to(REPO_ROOT)
 
     log("deploy_start")
-    with console.spinner("Deploying code..."):
+    with spinner("Deploying code..."):
         workspace = bifrost.push("~/.bifrost/workspaces/rollouts-rl", allow_dirty=allow_dirty)
     log("deploy_done", workspace=workspace)
 
@@ -264,7 +283,7 @@ async def _deploy_and_submit(
 
     for label, cmd in bootstrap_steps:
         log("bootstrap_step_start", label=label)
-        with console.spinner(f"{label}..."):
+        with spinner(f"{label}..."):
             bifrost.exec(cmd, working_dir=workspace)
         log("bootstrap_step_done", label=label)
 
@@ -282,7 +301,7 @@ async def _deploy_and_submit(
 
     # Submit training job
     log("submit_start")
-    with console.spinner(f"Starting {run_name}...") as spinner:
+    with spinner(f"Starting {run_name}...") as spin:
         job = bifrost.submit(
             ProcessSpec(
                 command="/root/.local/bin/uv",
@@ -302,7 +321,8 @@ async def _deploy_and_submit(
             log_file=training_log,
             workspace=f"{workspace}/rollouts",
         )
-        spinner.update(f"Training started ({job.tmux_session})")
+        if spin:
+            spin.update(f"Training started ({job.tmux_session})")
     log("submit_done", tmux_session=job.tmux_session)
 
     return bifrost, instance, job, run_name, remote_output_dir, workspace, console, local_run_dir
@@ -365,6 +385,7 @@ async def run_remote(
     tail: bool = False,
     provider: str | None = None,
     allow_dirty: bool = False,
+    quiet: bool = False,
 ) -> None:
     """Run training script on remote GPU via bifrost."""
     (
@@ -383,6 +404,7 @@ async def run_remote(
         gpu_type=gpu_type,
         provider=provider,
         allow_dirty=allow_dirty,
+        quiet=quiet,
     )
 
     assert instance is not None, "run_remote requires a provisioned instance"
@@ -420,11 +442,31 @@ async def run_remote(
     logger.info("  Node:   %s", node_id_str)
     logger.info("  Local:  results/rl/%s/", run_name)
 
+    # Start background sync daemon so logs appear locally
+    # This lets agents `tail -f results/rl/<run_name>/training.log`
+    import shutil
+    import subprocess
+
+    local_log_path = f"results/rl/{run_name}/training.log"
+    sync_session = f"sync_{run_name}"
+
+    if shutil.which("tmux"):
+        # Start sync daemon in a detached tmux session
+        sync_cmd = [
+            "tmux",
+            "new",
+            "-d",
+            "-s",
+            sync_session,
+            f"{sys.executable} -m rollouts monitor --attach {run_name} --sync-only",
+        ]
+        subprocess.run(sync_cmd, check=False, capture_output=True)
+        logger.info("Syncing to: %s", local_log_path)
+    else:
+        logger.info("Install tmux for automatic log sync")
+
     # Default: fire-and-forget (print attach instructions and exit)
     if not tui and not tail:
-        logger.info("")
-        logger.info("Attach later:")
-        logger.info("  rollouts monitor --attach %s", run_name)
         if keep_alive:
             logger.info("  (instance will stay alive)")
         else:
@@ -509,6 +551,11 @@ Examples:
         "--allow-dirty",
         action="store_true",
         help="Allow deploying with uncommitted changes (not recommended)",
+    )
+    parser.add_argument(
+        "--spinners",
+        action="store_true",
+        help="Enable interactive spinners (default: plain text logging for agents)",
     )
 
     # Local execution
@@ -613,6 +660,7 @@ Examples:
             args.tail,
             hardware.provider if hardware.provider != "local" else None,
             args.allow_dirty,
+            not args.spinners,  # quiet=True by default, --spinners to enable
         )
 
     else:

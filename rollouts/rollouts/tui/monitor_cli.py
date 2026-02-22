@@ -448,6 +448,7 @@ def _run_attached(
     tail_lines: int | None = None,
     keep_alive: bool = False,
     terminate: bool = False,
+    sync_only: bool = False,
 ) -> int:
     """Attach to a remote training run via LogsServer.
 
@@ -468,7 +469,7 @@ def _run_attached(
 
     from miniray import RemoteWorker
 
-    if not tail and tail_lines is None:
+    if not tail and not sync_only and tail_lines is None:
         from .rlmon import make_app
 
     run = _resolve_job_connection(run_id)
@@ -620,7 +621,15 @@ def _run_attached(
     # Give first sync a moment to populate files
     time.sleep(1.5)
 
-    if tail:
+    if sync_only:
+        # Sync-only mode: run silently in background, block until Ctrl-C or connection lost
+        # Used by run.py to start a background sync daemon
+        try:
+            while not connection_lost.is_set():
+                time.sleep(2.0)
+        except KeyboardInterrupt:
+            pass
+    elif tail:
         # Stream mode: print new lines to stdout, block until Ctrl-C or connection lost
         print(f"Tailing: {local_sync_dir}", file=sys.stderr)
         tail_offsets: dict[str, int] = {}
@@ -804,6 +813,11 @@ def monitor_main(argv: list[str] | None = None) -> int:
         metavar="RUN_ID",
         help="Cancel a running job by killing its tmux session (keeps instance alive)",
     )
+    parser.add_argument(
+        "--sync-only",
+        action="store_true",
+        help="With --attach: sync logs to local dir silently, no TUI or stdout streaming",
+    )
     args = parser.parse_args(argv)
 
     # `rollouts monitor` runs before the main CLI's logging setup. If Python
@@ -872,6 +886,7 @@ def monitor_main(argv: list[str] | None = None) -> int:
                 tail_lines=args.tail_lines,
                 keep_alive=args.keep_alive,
                 terminate=args.terminate,
+                sync_only=args.sync_only,
             )
         else:
             return _run_attached(
@@ -880,6 +895,7 @@ def monitor_main(argv: list[str] | None = None) -> int:
                 tail_lines=args.tail_lines,
                 keep_alive=args.keep_alive,
                 terminate=args.terminate,
+                sync_only=args.sync_only,
             )
 
     # ── Local mode ──
