@@ -875,6 +875,23 @@ async def _grpo_train_async(
     )
     logger.info(f"Output: {output_dir}")
 
+    # Preflight check: validate config against hardware limits
+    # This fails fast if config is likely to OOM
+    from ..training.preflight import run_preflight_check
+
+    try:
+        # Detect GPU type from CUDA device
+        import torch
+
+        if torch.cuda.is_available():
+            gpu_name = torch.cuda.get_device_name(0)
+            run_preflight_check(config, gpu_name)
+        else:
+            logger.warning("CUDA not available, skipping preflight check")
+    except ValueError as e:
+        logger.exception(f"Preflight check failed: {e}")
+        raise
+
     config.save(output_dir / "config.json")
     metrics_logger = JSONLLogger(output_dir)
 
