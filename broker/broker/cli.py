@@ -719,7 +719,9 @@ def exec(
                 logger.error(f"✗ Instance {instance_id} found in multiple providers:")
                 for m in matches:
                     logger.error(f"  - {m.provider}")
-                logger.info(f"specify provider: broker exec {instance_id} --provider <provider> -- <cmd>")
+                logger.info(
+                    f"specify provider: broker exec {instance_id} --provider <provider> -- <cmd>"
+                )
                 raise typer.Exit(1)
 
             instance = matches[0]
@@ -732,6 +734,7 @@ def exec(
 
         # Build and execute SSH command via subprocess (simpler than async SSH)
         import subprocess
+
         ssh_cmd = instance._instance.ssh_connection_string(ssh_key_path=ssh_key, full_command=True)
         cmd_str = " ".join(command)
         full_cmd = f'{ssh_cmd} "{cmd_str}"'
@@ -1009,7 +1012,7 @@ def terminate(
     provider: str | None = typer.Argument(
         None, help="Provider (runpod|primeintellect). Auto-detect if omitted."
     ),
-    yes: bool = typer.Option(False, "-y", "--yes", help="Skip confirmation"),
+    yes: bool = typer.Option(True, "-y", "--yes", help="Skip confirmation (default: yes)"),
 ) -> None:
     """Terminate GPU instance
 
