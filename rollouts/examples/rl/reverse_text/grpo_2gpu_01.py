@@ -51,7 +51,7 @@ config = GRPOConfig(
         num_steps=100,
         checkpoint_every=20,
         sync_weights_every=1,
-        pipeline_mode="true_pipeline",  # Both sampling AND sync non-blocking
+        pipeline_mode="async",  # Overlap rollout generation with training
         weight_sync_mode="nccl",  # GPU-to-GPU broadcast
         max_lag=2,
     ),
