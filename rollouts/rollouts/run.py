@@ -434,8 +434,10 @@ async def run_remote(
     logs_dir_relative = f"rollouts/results/rl/{run_name}"
 
     # Kill any existing LogsServer on this port (left over from a previous run on the same pod)
-    # fuser may not be installed or work reliably, so also kill old LogsServer tmux sessions
+    # Use multiple methods since not all may be available/work on all systems
     bifrost.exec(f"fuser -k {logs_port}/tcp 2>/dev/null || true")
+    bifrost.exec(f"lsof -ti:{logs_port} | xargs -r kill -9 2>/dev/null || true")
+    bifrost.exec("pkill -f 'miniray.logs_server' 2>/dev/null || true")
     bifrost.exec(
         "tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^bifrost-job-logs-' | xargs -r -I{} tmux kill-session -t {} 2>/dev/null || true"
     )
