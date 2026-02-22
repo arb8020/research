@@ -91,6 +91,8 @@ class InferenceServer:
         self._pending: dict[int, tuple[asyncio.Future, bool]] = {}
         self._lock = asyncio.Lock()
         self._step_event = asyncio.Event()
+        # Semaphore to limit concurrent requests to engine capacity
+        self._request_slots = asyncio.Semaphore(engine.scheduler_config.max_batch_size)
 
     def _convert_sampling_params(self, params: dict[str, Any]) -> SamplingParams:
         """Convert SGLang sampling params to our format."""
@@ -107,17 +109,24 @@ class InferenceServer:
         """Handle SGLang-style /generate request."""
         sampling_params = self._convert_sampling_params(request.sampling_params)
 
-        # Add request to engine
-        async with self._lock:
-            uid = self.engine.add_request(request.input_ids, sampling_params)
-            future: asyncio.Future = asyncio.Future()
-            self._pending[uid] = (future, request.return_logprob)
+        # Wait for available slot (backpressure when engine is full)
+        await self._request_slots.acquire()
 
-        # Signal step loop
-        self._step_event.set()
+        try:
+            # Add request to engine
+            async with self._lock:
+                uid = self.engine.add_request(request.input_ids, sampling_params)
+                future: asyncio.Future = asyncio.Future()
+                self._pending[uid] = (future, request.return_logprob)
 
-        # Wait for completion
-        result = await future
+            # Signal step loop
+            self._step_event.set()
+
+            # Wait for completion
+            result = await future
+        finally:
+            # Release slot for next request
+            self._request_slots.release()
 
         # Build response
         output_ids = result.input_ids[len(request.input_ids) :].tolist()
@@ -162,14 +171,21 @@ class InferenceServer:
             return_logprobs=return_logprobs,
         )
 
-        # Add request to engine
-        async with self._lock:
-            uid = self.engine.add_request(input_ids, sampling_params)
-            future: asyncio.Future = asyncio.Future()
-            self._pending[uid] = (future, return_logprobs)
+        # Wait for available slot (backpressure when engine is full)
+        await self._request_slots.acquire()
 
-        self._step_event.set()
-        result = await future
+        try:
+            # Add request to engine
+            async with self._lock:
+                uid = self.engine.add_request(input_ids, sampling_params)
+                future: asyncio.Future = asyncio.Future()
+                self._pending[uid] = (future, return_logprobs)
+
+            self._step_event.set()
+            result = await future
+        finally:
+            # Release slot for next request
+            self._request_slots.release()
 
         # Build response
         output_ids = result.input_ids[len(input_ids) :].tolist()
@@ -206,15 +222,22 @@ class InferenceServer:
         }
 
     async def step_loop(self) -> None:
-        """Background task that runs engine steps and dispatches results."""
+        """Background task that runs engine steps and dispatches results.
+
+        Uses asyncio.to_thread() to run the CPU-bound engine.step() without
+        blocking the event loop. This allows request handlers to continue
+        adding requests while the engine processes the current batch.
+        """
+        loop = asyncio.get_event_loop()
+
         while True:
             # Wait for work
             if not self.engine.has_pending():
                 await self._step_event.wait()
                 self._step_event.clear()
 
-            # Run step
-            finished = self.engine.step()
+            # Run step in thread pool to avoid blocking event loop
+            finished = await loop.run_in_executor(None, self.engine.step)
 
             # Dispatch results
             async with self._lock:
