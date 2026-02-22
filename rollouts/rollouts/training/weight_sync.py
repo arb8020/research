@@ -514,6 +514,20 @@ class SGLangEngine:
             capture_output=True,
         )
 
+        # Kill any old sglang sessions (from previous runs on same pod)
+        subprocess.run(
+            "tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^sglang-' | xargs -r -I{} tmux kill-session -t {} 2>/dev/null || true",
+            shell=True,
+            capture_output=True,
+        )
+
+        # Kill any process bound to our port (stale server from previous run)
+        subprocess.run(
+            f"fuser -k {self.port}/tcp 2>/dev/null || true",
+            shell=True,
+            capture_output=True,
+        )
+
         # Kill any orphaned processes using our GPUs
         for gpu_id in self.cuda_device_ids:
             subprocess.run(
@@ -707,6 +721,20 @@ class VLLMEngine:
         # Kill existing session if present
         subprocess.run(
             ["tmux", "kill-session", "-t", self._session_name],
+            capture_output=True,
+        )
+
+        # Kill any old vllm sessions (from previous runs on same pod)
+        subprocess.run(
+            "tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^vllm-' | xargs -r -I{} tmux kill-session -t {} 2>/dev/null || true",
+            shell=True,
+            capture_output=True,
+        )
+
+        # Kill any process bound to our port (stale server from previous run)
+        subprocess.run(
+            f"fuser -k {self.port}/tcp 2>/dev/null || true",
+            shell=True,
             capture_output=True,
         )
 
