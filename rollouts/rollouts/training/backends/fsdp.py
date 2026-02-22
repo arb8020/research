@@ -114,6 +114,13 @@ class FSDPTrainingBackend:
     _fsdp_model: torch.nn.Module | None = None
     optimizer: torch.optim.Optimizer | None = None
     scheduler: Any | None = None  # Optional LR scheduler
+    # Weight version for rollout staleness tracking (PipelineRL-style).
+    # Increments on checkpoint save and NCCL weight sync.
+    weight_version: int = 0
+
+    # NCCL weight sync state (stateless process group; does not interfere with training pg).
+    _nccl_process_group: Any | None = field(default=None, init=False, repr=False)
+    _nccl_inference_endpoints: list[str] = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Initialize FSDP backend with two-phase checkpoint loading.
@@ -369,7 +376,14 @@ class FSDPTrainingBackend:
             logits = outputs
 
         # Compute loss (SLIME pattern: pass logits and batch dict)
-        loss = self.loss_fn(logits=logits, batch=batch)
+        # Support both:
+        #   - loss_fn(...) -> torch.Tensor
+        #   - loss_fn(...) -> (torch.Tensor, metrics: dict[str, float])
+        loss_result = self.loss_fn(logits=logits, batch=batch)
+        if isinstance(loss_result, tuple):
+            loss, loss_metrics = loss_result
+        else:
+            loss, loss_metrics = loss_result, {}
 
         # Tiger Style: Assert loss is valid
         assert isinstance(loss, torch.Tensor), f"loss_fn must return torch.Tensor, got {type(loss)}"
@@ -391,6 +405,7 @@ class FSDPTrainingBackend:
         metrics = {
             "loss": loss.item(),
             "grad_norm": grad_norm,
+            **{k: float(v) for k, v in loss_metrics.items()},
         }
 
         return ImmediateTrainFuture(metrics)
@@ -755,6 +770,10 @@ class FSDPTrainingBackend:
                 f"Non-main rank {self.rank} should not create checkpoint files"
             )
 
+        # Bump weight version on ALL ranks (mirrors PyTorch backend behavior).
+        # This keeps weight_version consistent across ranks.
+        self.weight_version += 1
+
         # Phase 5: Final barrier to synchronize all ranks (SLIME pattern)
         # Following SLIME checkpoint.py:171
         logger.debug(f"[BARRIER-ENTER] Rank {self.rank}: Entering final checkpoint barrier...")
@@ -764,3 +783,246 @@ class FSDPTrainingBackend:
         logger.debug(f"[STATE] Rank {self.rank}: EXITING save_checkpoint (step={step}) - SUCCESS")
 
         return ckpt_path
+
+    async def save_weights_for_sampler(self, path: Path | str) -> Path:
+        """Save inference-ready weights in HuggingFace format (for disk-based sync).
+
+        This is used by FilesystemWeightSyncer, which calls SGLang/vLLM's
+        update_weights_from_disk endpoint. It must write a standard HF
+        directory with a config.json and weight files.
+
+        Implementation notes:
+        - ALL ranks participate in the full-state gather (collective op).
+        - Only rank 0 performs file I/O.
+        - Uses atomic rename to avoid inference reading a partial checkpoint.
+        """
+        import shutil
+
+        import trio
+
+        path = Path(path)
+        temp_path = path.parent / f"{path.name}_tmp_{self.weight_version}"
+        temp_path.mkdir(parents=True, exist_ok=True)
+
+        # Collective: gather full state dict (rank 0 only receives it).
+        state_dict = await self.get_weights().result()
+
+        if is_main_process():
+            assert hasattr(self.model, "save_pretrained"), (
+                "FSDPTrainingBackend.save_weights_for_sampler requires a HuggingFace model "
+                "(missing save_pretrained)."
+            )
+            await trio.to_thread.run_sync(
+                lambda: self.model.save_pretrained(temp_path, state_dict=state_dict)
+            )
+
+            if path.exists():
+                shutil.rmtree(path)
+            temp_path.rename(path)
+
+        barrier()
+
+        if is_main_process():
+            config_path = path / "config.json"
+            assert config_path.exists(), f"save_pretrained must create config.json at {config_path}"
+
+        barrier()
+        return path
+
+    async def init_nccl_weight_sync(
+        self,
+        inference_endpoints: list[str],
+        master_addr: str | None = None,
+        master_port: int = 29500,
+    ) -> None:
+        """Initialize stateless NCCL process group for weight sync (rank 0 only)."""
+        import os
+        import socket
+
+        import httpx
+        import trio
+
+        from ...inference.weight_sync import create_stateless_process_group
+
+        assert inference_endpoints, "Must provide at least one inference endpoint"
+        self._nccl_inference_endpoints = list(inference_endpoints)
+
+        if not is_main_process():
+            return
+
+        def find_free_port(start_port: int, max_attempts: int = 100) -> int:
+            for port in range(start_port, start_port + max_attempts):
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                        s.bind(("", port))
+                        return port
+                except OSError:
+                    continue
+            raise RuntimeError(
+                f"No free port found in range {start_port}-{start_port + max_attempts}"
+            )
+
+        master_port = find_free_port(master_port)
+        if master_addr is None:
+            master_addr = os.environ.get("MASTER_ADDR", "localhost")
+
+        world_size = 1 + len(inference_endpoints)
+        group_name = "weight_sync"
+
+        logger.info(
+            f"[Rank 0] Initializing NCCL weight sync group (world_size={world_size}) "
+            f"at {master_addr}:{master_port}"
+        )
+
+        results: list[tuple[str, bool, str]] = []
+
+        async def register_inference_endpoint(endpoint: str, rank: int) -> None:
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                try:
+                    response = await client.post(
+                        f"{endpoint}/init_weights_update_group",
+                        json={
+                            "master_address": master_addr,
+                            "master_port": master_port,
+                            "rank_offset": rank,
+                            "world_size": world_size,
+                            "group_name": group_name,
+                            "backend": "nccl",
+                        },
+                    )
+                    response.raise_for_status()
+                    results.append((endpoint, True, "OK"))
+                except Exception as e:
+                    results.append((endpoint, False, str(e)))
+
+        async def trainer_join() -> None:
+            self._nccl_process_group = create_stateless_process_group(
+                master_addr=master_addr,
+                master_port=master_port,
+                rank=0,
+                world_size=world_size,
+                group_name=group_name,
+                backend="nccl",
+            )
+
+        async with trio.open_nursery() as nursery:
+            for idx, endpoint in enumerate(inference_endpoints):
+                nursery.start_soon(register_inference_endpoint, endpoint, idx + 1)
+            nursery.start_soon(trainer_join)
+
+        for endpoint, ok, msg in results:
+            if not ok:
+                raise RuntimeError(f"Failed to register {endpoint} for NCCL weight sync: {msg}")
+
+        assert self._nccl_process_group is not None, "Failed to create NCCL weight-sync group"
+        logger.info("[Rank 0] NCCL weight sync initialized")
+
+    async def sync_weights_nccl(self) -> None:
+        """Broadcast full weights to inference engines via NCCL.
+
+        Contract:
+        - ALL ranks participate in the full-state gather (collective op).
+        - Only rank 0 performs HTTP coordination + NCCL broadcast to inference.
+        - All ranks wait for rank 0 to finish before incrementing weight_version.
+        """
+        # Collective: gather full state dict (rank 0 only receives it).
+        state_dict = await self.get_weights().result()
+
+        if is_main_process():
+            assert self._nccl_process_group is not None, (
+                "NCCL weight sync not initialized. Call init_nccl_weight_sync() first."
+            )
+
+            import concurrent.futures
+
+            import requests
+            import torch.distributed as dist
+            import trio
+
+            param_info = [
+                {
+                    "name": name,
+                    "shape": list(p.shape),
+                    "dtype": str(p.dtype).replace("torch.", ""),
+                }
+                for name, p in state_dict.items()
+            ]
+
+            # STEP 1: Fire HTTP requests (non-blocking via thread pool).
+            executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=len(self._nccl_inference_endpoints)
+            )
+            http_futures = []
+            for endpoint in self._nccl_inference_endpoints:
+                future = executor.submit(
+                    requests.post,
+                    f"{endpoint}/update_weights_from_distributed",
+                    json={
+                        "names": [p["name"] for p in param_info],
+                        "shapes": [p["shape"] for p in param_info],
+                        "dtypes": [p["dtype"] for p in param_info],
+                        "group_name": "weight_sync",
+                        "weight_version": str(self.weight_version + 1),
+                    },
+                    timeout=300.0,
+                )
+                http_futures.append(future)
+
+            # STEP 2 & 3: NCCL broadcast with async_op=True, then wait.
+            def _do_broadcast() -> None:
+                handles = []
+                for _name, param in state_dict.items():
+                    param_data = param.data.contiguous()
+                    if param_data.device.type != "cuda":
+                        param_data = param_data.cuda()
+                    handle = dist.broadcast(
+                        param_data, src=0, group=self._nccl_process_group, async_op=True
+                    )
+                    handles.append(handle)
+                for handle in handles:
+                    handle.wait()
+
+            await trio.to_thread.run_sync(_do_broadcast)
+
+            # STEP 4: Wait for HTTP responses.
+            for future in http_futures:
+                response = future.result()
+                response.raise_for_status()
+            executor.shutdown(wait=False)
+
+            # Free CUDA memory created during broadcast.
+            import torch
+
+            torch.cuda.empty_cache()
+
+        # Synchronize all ranks after the broadcast.
+        barrier()
+        self.weight_version += 1
+
+    async def cleanup_nccl_weight_sync(self) -> None:
+        """Cleanup NCCL weight sync group (rank 0 only)."""
+        if not is_main_process():
+            return
+
+        if self._nccl_process_group is None:
+            return
+
+        import httpx
+        import torch.distributed as dist
+
+        logger.info("[Rank 0] Cleaning up NCCL weight sync group...")
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            for endpoint in self._nccl_inference_endpoints:
+                try:
+                    await client.post(
+                        f"{endpoint}/destroy_weights_update_group",
+                        json={"group_name": "weight_sync"},
+                    )
+                except Exception:
+                    pass  # Best-effort cleanup
+
+        dist.destroy_process_group(self._nccl_process_group)
+        self._nccl_process_group = None
+        self._nccl_inference_endpoints = []

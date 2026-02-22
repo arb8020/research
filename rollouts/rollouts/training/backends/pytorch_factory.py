@@ -71,6 +71,10 @@ def parse_dtype(dtype_str: str) -> torch.dtype:
         >>> assert dtype == torch.bfloat16
     """
     dtype_map = {
+        # Common aliases
+        "bf16": torch.bfloat16,
+        "fp16": torch.float16,
+        "fp32": torch.float32,
         "bfloat16": torch.bfloat16,
         "float32": torch.float32,
         "float16": torch.float16,
@@ -163,6 +167,8 @@ def load_hf_model(
     model_name: str,
     torch_dtype: torch.dtype,
     device_map: dict[str, int] | None,
+    *,
+    trust_remote_code: bool = True,
 ) -> torch.nn.Module:
     """Load HuggingFace model with explicit parameters.
 
@@ -199,6 +205,7 @@ def load_hf_model(
         model_name,
         torch_dtype=torch_dtype,
         device_map=device_map,
+        trust_remote_code=trust_remote_code,
     )
 
 
@@ -399,6 +406,7 @@ def create_pytorch_backend(
     use_lora: bool = False,
     lora_rank: int = 16,
     lora_alpha: int = 32,
+    trust_remote_code: bool = True,
 ) -> PyTorchTrainingBackend:
     """Create PyTorch backend with sensible defaults (Tier 2 convenience).
 
@@ -451,7 +459,12 @@ def create_pytorch_backend(
     device_map = compute_device_map_single_gpu(device_type, gpu_rank)
 
     # Tier 1: Load model
-    model = load_hf_model(model_name, torch_dtype, device_map)
+    model = load_hf_model(
+        model_name,
+        torch_dtype,
+        device_map,
+        trust_remote_code=trust_remote_code,
+    )
 
     # Tier 1: Wrap with LoRA if requested
     is_lora = False

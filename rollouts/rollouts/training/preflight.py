@@ -47,8 +47,32 @@ MODEL_PARAMS_B: dict[str, float] = {
     "GLM-Z1-9B": 9.0,
 }
 
-# Cache for HuggingFace model param counts (in billions)
-_HF_MODEL_CACHE: dict[str, float] = {}
+# Cache for HuggingFace model info
+_HF_MODEL_CACHE: dict[str, dict[str, Any]] = {}
+
+
+def _fetch_hf_model_config(model_name: str) -> dict[str, Any] | None:
+    """Fetch model config.json from HuggingFace Hub.
+
+    Returns dict with model architecture details, or None if unavailable.
+    """
+    if model_name in _HF_MODEL_CACHE:
+        return _HF_MODEL_CACHE[model_name]
+
+    try:
+        import json
+
+        from huggingface_hub import hf_hub_download
+
+        path = hf_hub_download(model_name, "config.json")
+        with open(path) as f:
+            config = json.load(f)
+        _HF_MODEL_CACHE[model_name] = config
+        return config
+    except Exception:
+        pass
+
+    return None
 
 
 def _fetch_hf_param_count(model_name: str) -> float | None:
@@ -264,9 +288,44 @@ def estimate_training_vram(
     micro_batch_size = total_samples // num_minibatches
     tokens_per_micro_batch = micro_batch_size * max_seq_len
 
-    # Activation memory scales with tokens and model size
-    # ~2GB per 1B params per 1K tokens (rough estimate)
-    activations_gb = params_b * (tokens_per_micro_batch / 1000) * 0.5
+    # Activation memory from EleutherAI Transformer Math 101:
+    # https://blog.eleuther.ai/transformer-math/
+    #
+    # With selective checkpointing (Megatron default):
+    #   activations = s * b * h * L * (10 + 24/t) bytes
+    #
+    # Where:
+    #   s = sequence length
+    #   b = micro batch size per GPU
+    #   h = hidden size
+    #   L = number of layers
+    #   t = tensor parallelism degree
+    #
+    # Note: This formula assumes fp16 activations and no sequence parallelism.
+    hf_config = _fetch_hf_model_config(model_name)
+    if hf_config is None:
+        raise ValueError(
+            f"Cannot estimate memory for {model_name}: "
+            "unable to fetch config.json from HuggingFace Hub"
+        )
+
+    hidden_size = hf_config.get("hidden_size")
+    num_layers = hf_config.get("num_hidden_layers")
+    if hidden_size is None or num_layers is None:
+        raise ValueError(
+            f"Cannot estimate memory for {model_name}: "
+            f"config.json missing hidden_size or num_hidden_layers"
+        )
+
+    # EleutherAI formula with selective checkpointing
+    s = max_seq_len
+    b = micro_batch_size
+    h = hidden_size
+    L = num_layers
+    t = tensor_parallel_size
+
+    activation_bytes = s * b * h * L * (10 + 24 / t)
+    activations_gb = activation_bytes / 1e9
 
     # NCCL buffers for weight sync
     buffer_gb = model_gb * 0.1 + 1.0  # 10% of model + 1GB misc

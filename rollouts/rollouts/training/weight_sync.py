@@ -404,6 +404,26 @@ class InferenceEngine(Protocol):
 
 
 # ══════════════════════════════════════════════════════════════
+# Weight Sync Protocol (training → inference)
+# ══════════════════════════════════════════════════════════════
+
+
+class WeightSyncer(Protocol):
+    """Protocol for syncing weights from trainer to inference.
+
+    Tiger Style: Minimal interface, explicit lifecycle.
+    """
+
+    async def sync(self) -> None:
+        """Sync current weights to inference."""
+        ...
+
+    async def close(self) -> None:
+        """Cleanup resources (process groups, temp dirs, etc.)."""
+        ...
+
+
+# ══════════════════════════════════════════════════════════════
 # Adapters (Casey Muratori: redundancy - multiple ways to do same thing)
 # ══════════════════════════════════════════════════════════════
 
@@ -444,10 +464,11 @@ class SGLangEngine:
     _session_name: str = field(init=False)
 
     def __post_init__(self) -> None:
-        self._log_file = self.output_dir / "sglang.log"
-        # Use output_dir name (run_id) for session isolation across runs
+        # Include port for multi-engine runs (each engine gets its own tmux session + log).
+        self._log_file = self.output_dir / f"sglang_{self.port}.log"
+        # Use output_dir name (run_id) for session isolation across runs.
         run_id = self.output_dir.name
-        self._session_name = f"sglang-{run_id}"
+        self._session_name = f"sglang-{run_id}-{self.port}"
 
     @property
     def name(self) -> str:
@@ -511,13 +532,6 @@ class SGLangEngine:
         # Kill existing session if present
         subprocess.run(
             ["tmux", "kill-session", "-t", self._session_name],
-            capture_output=True,
-        )
-
-        # Kill any old sglang sessions (from previous runs on same pod)
-        subprocess.run(
-            "tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^sglang-' | xargs -r -I{} tmux kill-session -t {} 2>/dev/null || true",
-            shell=True,
             capture_output=True,
         )
 
@@ -662,10 +676,11 @@ class VLLMEngine:
     _session_name: str = field(init=False)
 
     def __post_init__(self) -> None:
-        self._log_file = self.output_dir / "vllm.log"
-        # Use output_dir name (run_id) for session isolation across runs
+        # Include port for multi-engine runs (each engine gets its own tmux session + log).
+        self._log_file = self.output_dir / f"vllm_{self.port}.log"
+        # Use output_dir name (run_id) for session isolation across runs.
         run_id = self.output_dir.name
-        self._session_name = f"vllm-{run_id}"
+        self._session_name = f"vllm-{run_id}-{self.port}"
 
     @property
     def name(self) -> str:
@@ -721,13 +736,6 @@ class VLLMEngine:
         # Kill existing session if present
         subprocess.run(
             ["tmux", "kill-session", "-t", self._session_name],
-            capture_output=True,
-        )
-
-        # Kill any old vllm sessions (from previous runs on same pod)
-        subprocess.run(
-            "tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^vllm-' | xargs -r -I{} tmux kill-session -t {} 2>/dev/null || true",
-            shell=True,
             capture_output=True,
         )
 
@@ -883,9 +891,10 @@ class EngineV2Engine:
     _session_name: str = field(init=False)
 
     def __post_init__(self) -> None:
-        self._log_file = self.output_dir / "engine_v2.log"
+        # Include port for multi-engine runs (each engine gets its own tmux session + log).
+        self._log_file = self.output_dir / f"engine_v2_{self.port}.log"
         run_id = self.output_dir.name
-        self._session_name = f"engine_v2-{run_id}"
+        self._session_name = f"engine_v2-{run_id}-{self.port}"
 
     @property
     def name(self) -> str:
@@ -945,13 +954,6 @@ class EngineV2Engine:
         # Kill existing session if present
         subprocess.run(
             ["tmux", "kill-session", "-t", self._session_name],
-            capture_output=True,
-        )
-
-        # Kill any old engine_v2 sessions
-        subprocess.run(
-            "tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^engine_v2-' | xargs -r -I{} tmux kill-session -t {} 2>/dev/null || true",
-            shell=True,
             capture_output=True,
         )
 
@@ -1073,7 +1075,7 @@ class EngineV2Engine:
 
 
 @dataclass
-class PipelineWeightSyncManager:
+class NCCLWeightSyncer:
     """True PipelineRL-style weight sync: inference never stops.
 
     Unlike stop-and-sync (Miles/verl), this broadcasts weights while
@@ -1099,7 +1101,7 @@ class PipelineWeightSyncManager:
         PipelineRL accepts this for the throughput benefit.
 
     Example:
-        >>> manager = PipelineWeightSyncManager(
+        >>> manager = NCCLWeightSyncer(
         ...     inference_endpoints=["http://localhost:30000"],
         ...     max_lag=2,
         ... )
@@ -1114,6 +1116,9 @@ class PipelineWeightSyncManager:
     inference_endpoints: list[str]
     max_lag: int = 2
     nccl_master_port: int = 29500
+    model: Any | None = (
+        None  # Optional: set to use sync() (blocking) without passing model each time
+    )
 
     # Internal state
     _process_group: Any = field(default=None, init=False, repr=False)
@@ -1240,6 +1245,18 @@ class PipelineWeightSyncManager:
         # Spawn sync task in background - training continues immediately
         nursery.start_soon(_do_sync)
 
+    async def sync(self) -> None:
+        """Blocking sync (WeightSyncer protocol).
+
+        For True PipelineRL use broadcast_weights_async(model, nursery) instead.
+        """
+        assert self.model is not None, (
+            "NCCLWeightSyncer.sync() requires model=... at construction time. "
+            "For PipelineRL, use broadcast_weights_async(model, nursery) instead."
+        )
+        await self._sync_weights_nccl(self.model)
+        self._current_version += 1
+
     async def _sync_weights_nccl(self, model: Any) -> None:
         """Internal: perform NCCL weight sync.
 
@@ -1338,6 +1355,78 @@ class PipelineWeightSyncManager:
 
             dist.destroy_process_group(self._process_group)
             self._process_group = None
+
+    # Backwards-compatible aliases (Phase 3 migration)
+
+    async def close(self) -> None:
+        """Alias for cleanup() (matches WeightSyncer protocol)."""
+        await self.cleanup()
+
+
+# Backwards compat alias (old name)
+PipelineWeightSyncManager = NCCLWeightSyncer
+
+
+@dataclass
+class FilesystemWeightSyncer:
+    """Checkpoint-based weight sync via shared filesystem.
+
+    Slow but robust. Works when trainer/inference can't do NCCL.
+    """
+
+    backend: Any
+    engines: list[InferenceEngine]
+    sync_dir: Path | None = None
+
+    async def sync(self) -> None:
+        assert self.backend is not None, "backend cannot be None"
+        assert self.engines, "Must provide at least one inference engine"
+
+        # Reuse existing fast path helper (RAM disk if available).
+        base_dir = self.sync_dir or get_fast_sync_dir()
+        checkpoint_path = await self.backend.save_weights_for_sampler(base_dir / "sync_latest")
+
+        # Distributed safety: all ranks may need to participate in the backend's
+        # collective state-dict gather, but only rank 0 should poke inference.
+        import torch.distributed as dist
+
+        if dist.is_initialized() and dist.get_rank() != 0:
+            return
+
+        await sync_weights_to_engines(self.engines, str(checkpoint_path))
+
+    async def close(self) -> None:
+        # No resources to cleanup for filesystem-based sync.
+        return
+
+
+@dataclass
+class BackendNCCLWeightSyncer:
+    """Weight sync wrapper for backends that implement sync_weights_nccl()."""
+
+    backend: Any
+    log: logging.Logger | None = None
+
+    async def sync(self) -> None:
+        assert self.backend is not None, "backend cannot be None"
+
+        if self.log is not None:
+            self.log.info("Syncing weights via NCCL...")
+        await self.backend.sync_weights_nccl()
+
+        if self.log is not None:
+            self.log.info("NCCL weight sync complete")
+
+    async def close(self) -> None:
+        # Best-effort cleanup if the backend exposes it.
+        cleanup_fn = getattr(self.backend, "cleanup_nccl_weight_sync", None)
+        if cleanup_fn is None:
+            return
+        try:
+            await cleanup_fn()
+        except Exception:
+            # Cleanup is best-effort; training exit should not crash here.
+            return
 
 
 async def sync_weights_to_engines(

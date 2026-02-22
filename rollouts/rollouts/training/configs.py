@@ -257,10 +257,18 @@ class TrainerConfig:
     tensor_parallel_size: int = 1
     pipeline_parallel_size: int = 1
     expert_parallel_size: int = 1
+    context_parallel_size: int = 1
+    sequence_parallel: bool = False
     # Sequence length for Megatron
     seq_length: int = 4096
     # Micro batch size per GPU (if None, computed from num_minibatches)
     micro_batch_size: int | None = None
+    # Memory optimizations (from SLIME)
+    optimizer_cpu_offload: bool = False  # Offload Adam states to CPU
+    activation_checkpointing: bool = True  # Gradient checkpointing
+    recompute_granularity: str = "selective"  # "full", "selective", or "none"
+    recompute_method: str = "uniform"  # "uniform" or "block"
+    recompute_num_layers: int = 1  # Layers per recompute block
 
     # TorchTitan-specific settings (only used when backend="torchtitan")
     # Model name registered with torchtitan (e.g., "glm", "llama3", "qwen3")
@@ -305,6 +313,7 @@ class InferenceConfig:
     cuda_device_ids: tuple[int, ...] = (0,)
     mem_fraction: float = 0.7
     tensor_parallel_size: int = 1  # GPUs per engine (1 = each GPU is its own engine)
+    expert_parallel_size: int = 1  # For MoE models (SGLang --ep-size)
 
     @property
     def num_engines(self) -> int:

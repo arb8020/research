@@ -1,7 +1,16 @@
 '~' blocking w subtasks
 '-' in progress
 ' ' not started
-                 
+
+02-22-2026
+[ ] glm-4.7 flash rl run
+[ ] glm 5 rl run
+[ ] port to silares github
+
+02-21-2026
+[x] fix nccl weight sync
+[x] finish engine_v2 draft
+[ ] learn stuff
 
 02-20-2026
 

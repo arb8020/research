@@ -371,7 +371,8 @@ def generate_worker_commands(
                 f"python -m sglang.launch_server "
                 f"--port {port} "
                 f"--model-path $MODEL_PATH "
-                f"--tp {allocation.config.inference_tp}"
+                f"--tp {allocation.config.inference_tp} "
+                f"--trust-remote-code"
             )
             node_commands.append(cmd)
 
@@ -384,7 +385,7 @@ def generate_worker_commands(
                 f"MASTER_PORT={allocation.master_port} "
                 f"WORLD_SIZE={allocation.fsdp_world_size} "
                 f"RANK={fsdp_rank} "
-                f"LOCAL_RANK={local_idx} "
+                f"LOCAL_RANK=0 "
                 f"python -m {work_fn} "
                 f"--config {config_path} "
                 f"--is-rank-0 {1 if fsdp_rank == 0 else 0}"
@@ -524,7 +525,8 @@ def execute_commands_on_nodes(
                 f"--model-path {model_path} "
                 f"--port {port} "
                 f"--tp {allocation.config.inference_tp} "
-                f"--mem-fraction-static 0.85"
+                f"--mem-fraction-static 0.85 "
+                f"--trust-remote-code"
             )
 
             logger.info(f"  Node {node_ip}: Launching inference engine {i} on GPU {gpu_ids}")
@@ -547,7 +549,7 @@ def execute_commands_on_nodes(
                 f"MASTER_PORT={allocation.master_port} "
                 f"WORLD_SIZE={allocation.fsdp_world_size} "
                 f"RANK={fsdp_rank} "
-                f"LOCAL_RANK={local_idx} "
+                f"LOCAL_RANK=0 "
                 f"INFERENCE_ENDPOINTS={inference_endpoints} "
                 f"{python_cmd} -m rollouts.training.fsdp_worker "
                 f"--config config.json "
