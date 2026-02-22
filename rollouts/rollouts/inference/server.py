@@ -81,8 +81,13 @@ class EngineThread:
         self._request_queue: queue.Queue[EngineRequest | None] = queue.Queue()
         self._result_queue: queue.Queue[EngineResult] = queue.Queue()
 
-        # Track streaming requests
+        # Track streaming requests (by client uid)
         self._streaming_uids: set[int] = set()
+
+        # Map client uid -> engine uid (engine generates its own)
+        self._uid_map: dict[int, int] = {}
+        # Reverse map: engine uid -> client uid
+        self._reverse_uid_map: dict[int, int] = {}
 
         # Thread management
         self._thread: threading.Thread | None = None
@@ -139,6 +144,12 @@ class EngineThread:
         """Main engine loop - runs in dedicated thread."""
         logger.info("Engine loop starting")
 
+        # Initialize CUDA graphs if enabled
+        if self.engine._use_cuda_graphs and "graphs" not in self.engine._graph_state:
+            logger.info("Capturing CUDA graphs...")
+            self.engine.capture_cuda_graphs_now()
+            logger.info("CUDA graphs captured")
+
         last_output: ForwardOutput | None = None
 
         while not self._stop_event.is_set():
@@ -185,12 +196,14 @@ class EngineThread:
 
     def _add_request(self, req: EngineRequest) -> None:
         """Add request to engine scheduler."""
-        # Use engine's internal method
-        self.engine.add_request(
+        # Engine generates its own uid, we track mapping both ways
+        engine_uid = self.engine.add_request(
             req.input_ids,
             req.sampling_params,
-            uid=req.uid,
         )
+        # Map both directions
+        self._uid_map[req.uid] = engine_uid
+        self._reverse_uid_map[engine_uid] = req.uid
 
     def _overlap_step(self, last_output: ForwardOutput | None) -> ForwardOutput | None:
         """Run one overlap step."""
@@ -277,10 +290,17 @@ class EngineThread:
 
         # Push finished requests to result queue
         for req in self.engine.state.finished:
+            # Translate engine uid to client uid
+            client_uid = self._reverse_uid_map.get(req.uid, req.uid)
             is_eos = req.input_ids[-1].item() == self.engine.eos_token_id
             finish_reason = "stop" if is_eos else "length"
-            self._result_queue.put(EngineResult(uid=req.uid, req=req, finish_reason=finish_reason))
-            self._streaming_uids.discard(req.uid)
+            self._result_queue.put(
+                EngineResult(uid=client_uid, req=req, finish_reason=finish_reason)
+            )
+            self._streaming_uids.discard(client_uid)
+            # Clean up uid maps
+            self._reverse_uid_map.pop(req.uid, None)
+            self._uid_map.pop(client_uid, None)
 
         # Clear finished from state
         if self.engine.state.finished:
@@ -300,12 +320,14 @@ class EngineThread:
         next_tokens = output.next_tokens_cpu
 
         for i, req in enumerate(batch.reqs):
-            if req.uid in self._streaming_uids:
+            # Translate engine uid to client uid
+            client_uid = self._reverse_uid_map.get(req.uid, req.uid)
+            if client_uid in self._streaming_uids:
                 # Push the new token that was just generated
                 new_token = next_tokens[i].item()
                 self._result_queue.put(
                     EngineResult(
-                        uid=req.uid,
+                        uid=client_uid,
                         new_token=new_token,
                     )
                 )
