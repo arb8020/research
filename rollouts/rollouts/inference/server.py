@@ -140,8 +140,10 @@ class InferenceServer:
 
         if request.return_logprob and result.logprobs is not None:
             # Format: [[logprob, token_id], ...]
+            # Convert logprobs tensor to Python floats
+            logprobs_list = result.logprobs.tolist()
             meta_info["output_token_logprobs"] = [
-                [lp, tid] for lp, tid in zip(result.logprobs, output_ids, strict=False)
+                [float(lp), tid] for lp, tid in zip(logprobs_list, output_ids, strict=False)
             ]
 
         # TODO: return_routed_experts for MoE
@@ -201,10 +203,12 @@ class InferenceServer:
 
         if return_logprobs and result.logprobs is not None:
             # Format token IDs as "token_id:123" per QED-Nano expectation
+            # Convert logprobs tensor to Python floats
+            logprobs_list = result.logprobs.tolist()
             choice["logprobs"] = {
                 "content": [
-                    {"token": f"token_id:{tid}", "logprob": lp}
-                    for lp, tid in zip(result.logprobs, output_ids, strict=False)
+                    {"token": f"token_id:{tid}", "logprob": float(lp)}
+                    for lp, tid in zip(logprobs_list, output_ids, strict=False)
                 ]
             }
 
