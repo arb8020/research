@@ -129,7 +129,7 @@ class InferenceServer:
             else "length",
         }
 
-        if request.return_logprob and result.logprobs:
+        if request.return_logprob and result.logprobs is not None:
             # Format: [[logprob, token_id], ...]
             meta_info["output_token_logprobs"] = [
                 [lp, tid] for lp, tid in zip(result.logprobs, output_ids, strict=False)
@@ -183,7 +183,7 @@ class InferenceServer:
             else "length",
         }
 
-        if return_logprobs and result.logprobs:
+        if return_logprobs and result.logprobs is not None:
             # Format token IDs as "token_id:123" per QED-Nano expectation
             choice["logprobs"] = {
                 "content": [
