@@ -228,6 +228,7 @@ def _make_loss_fn(
     vanilla_fn: Callable,
     clipped_fn: Callable,
     masked_fn: Callable,
+    opd_fn: Callable | None = None,
 ) -> Callable:
     """Build the loss function from trainer config."""
     if trainer.loss_type == "vanilla":
@@ -241,8 +242,12 @@ def _make_loss_fn(
             return masked_fn(logits, batch, ratio_low=lo, ratio_high=hi)
 
         return _masked
+    if trainer.loss_type == "opd":
+        if opd_fn is None:
+            raise ValueError("opd_fn must be provided for loss_type='opd'")
+        return opd_fn
     raise ValueError(
-        f"Unknown loss_type: {trainer.loss_type!r}. Use 'vanilla', 'clipped', or 'masked'."
+        f"Unknown loss_type: {trainer.loss_type!r}. Use 'vanilla', 'clipped', 'masked', or 'opd'."
     )
 
 
@@ -260,10 +265,12 @@ def _setup_training_backend(
 
     from ..dtypes import Endpoint
     from ..training.backends.pytorch_factory import create_pytorch_backend
-    from ..training.losses import grpo_loss, grpo_loss_clipped, grpo_loss_masked
+    from ..training.losses import grpo_loss, grpo_loss_clipped, grpo_loss_masked, opd_loss
 
     # Select loss function based on config
-    loss_fn = _make_loss_fn(config.trainer, grpo_loss, grpo_loss_clipped, grpo_loss_masked)
+    loss_fn = _make_loss_fn(
+        config.trainer, grpo_loss, grpo_loss_clipped, grpo_loss_masked, opd_fn=opd_loss
+    )
 
     gpu_rank = config.trainer.cuda_device_ids[0]
     backend = create_pytorch_backend(
@@ -699,7 +706,9 @@ def _prepare_training_batch(
     batch_tokens = []
     batch_loss_masks = []
     batch_rollout_logprobs = []
+    batch_teacher_logprobs = []
     has_rollout_logprobs = batch.rollout_log_probs is not None
+    has_teacher_logprobs = batch.teacher_log_probs is not None
 
     for i, (toks, mask) in enumerate(zip(batch.tokens, batch.loss_masks, strict=True)):
         assert isinstance(toks, list) and (not toks or isinstance(toks[0], int)), (
@@ -717,6 +726,11 @@ def _prepare_training_batch(
             rlp = list(batch.rollout_log_probs[i][:max_len])
             rlp_padded = rlp + [0.0] * (max_len - len(rlp))
             batch_rollout_logprobs.append(rlp_padded)
+
+        if has_teacher_logprobs:
+            tlp = list(batch.teacher_log_probs[i][:max_len])
+            tlp_padded = tlp + [0.0] * (max_len - len(tlp))
+            batch_teacher_logprobs.append(tlp_padded)
 
     input_ids = torch.tensor(batch_tokens, device=device)
     # Shift labels left: labels[i] = input_ids[i+1] (causal LM prediction target)
@@ -745,6 +759,15 @@ def _prepare_training_batch(
             dim=1
         ).clamp(min=1.0)
         training_batch["old_logprobs"] = seq_rollout_logprobs
+
+    if has_teacher_logprobs:
+        teacher_logprobs_tensor = torch.tensor(batch_teacher_logprobs, device=device)
+        # Shift teacher_logprobs left to match shifted labels/loss_mask
+        teacher_logprobs_tensor = torch.cat(
+            [teacher_logprobs_tensor[:, 1:], torch.zeros_like(teacher_logprobs_tensor[:, :1])],
+            dim=1,
+        )
+        training_batch["teacher_logprobs"] = teacher_logprobs_tensor
 
     return training_batch
 

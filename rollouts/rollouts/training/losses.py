@@ -21,7 +21,7 @@ LossOutput = tuple[torch.Tensor, dict[str, float]]
 
 
 # ============================================================================
-# Advantage computation (GRPO)
+# Advantage computation (GRPO and OPD)
 # ============================================================================
 
 
@@ -74,6 +74,38 @@ def compute_group_advantages(
 
         advantages[mask] = group_advantages
 
+    return advantages
+
+
+def compute_opd_advantages(
+    student_logprobs: torch.Tensor,
+    teacher_logprobs: torch.Tensor,
+    loss_mask: torch.Tensor,
+) -> torch.Tensor:
+    """Compute On-Policy Distillation per-token advantages.
+
+    Following Miles: advantage = teacher_logprob - student_logprob
+
+    This is a per-token advantage (dense signal) unlike GRPO which uses
+    per-sequence advantages (sparse signal).
+
+    Args:
+        student_logprobs: Student's per-token log probs [batch, seq_len]
+        teacher_logprobs: Teacher's per-token log probs [batch, seq_len]
+        loss_mask: Which tokens to include [batch, seq_len]
+
+    Returns:
+        Per-token advantages [batch, seq_len]
+
+    Example:
+        >>> student_lp = torch.tensor([[-1.0, -2.0, -1.5]])
+        >>> teacher_lp = torch.tensor([[-0.5, -1.0, -1.5]])
+        >>> mask = torch.tensor([[0.0, 1.0, 1.0]])
+        >>> adv = compute_opd_advantages(student_lp, teacher_lp, mask)
+        >>> # adv = [[0.0, 1.0, 0.0]]  # teacher - student, masked
+    """
+    # Per-token advantage: encourage student to match teacher
+    advantages = (teacher_logprobs - student_logprobs) * loss_mask
     return advantages
 
 
@@ -445,6 +477,76 @@ def grpo_loss_masked(
     }
 
     return loss, metrics
+
+
+def opd_loss(
+    logits: torch.Tensor,  # [batch, seq_len, vocab_size]
+    batch: dict[str, torch.Tensor],
+) -> LossOutput:
+    """On-Policy Distillation loss with per-token advantages.
+
+    Unlike GRPO which uses per-sequence advantages from sparse rewards,
+    OPD uses per-token advantages from teacher model log probs:
+        advantage[t] = teacher_logprob[t] - student_logprob[t]
+
+    This provides dense feedback (O(N) bits per episode) vs sparse
+    (O(1) bit per episode).
+
+    Args:
+        logits: Model output [batch, seq_len, vocab_size]
+        batch: Must contain:
+            - "labels" [batch, seq_len]: Target tokens
+            - "loss_mask" [batch, seq_len]: Which tokens to train on
+            - "teacher_logprobs" [batch, seq_len]: Teacher's per-token log probs
+            - "advantages" [batch, seq_len]: Optional pre-computed per-token advantages
+                If not provided, computed from teacher_logprobs
+
+    Returns:
+        (loss, metrics) tuple
+    """
+    labels = batch["labels"]
+    loss_mask = batch["loss_mask"]
+    teacher_logprobs = batch["teacher_logprobs"]
+
+    # Compute student log probs
+    student_logprobs = get_per_token_logprobs(logits, labels)
+
+    # Compute per-token advantages if not provided
+    if "advantages" in batch:
+        advantages = batch["advantages"]
+    else:
+        advantages = compute_opd_advantages(student_logprobs, teacher_logprobs, loss_mask)
+
+    # Policy gradient with per-token advantages
+    # Loss = -sum(log_prob * advantage) / sum(mask)
+    # We detach advantages so gradients flow only through log_prob
+    masked_pg = student_logprobs * advantages.detach() * loss_mask
+    num_tokens = loss_mask.sum().clamp(min=1.0)
+    pg_loss = -masked_pg.sum() / num_tokens
+
+    # Compute metrics
+    with torch.no_grad():
+        entropy = compute_entropy(logits, loss_mask).item()
+        avg_student_lp = (student_logprobs * loss_mask).sum().item() / num_tokens.item()
+        avg_teacher_lp = (teacher_logprobs * loss_mask).sum().item() / num_tokens.item()
+        avg_advantage = (advantages * loss_mask).sum().item() / num_tokens.item()
+
+        # KL divergence: how far is student from teacher
+        kl_div = (
+            (student_logprobs - teacher_logprobs) * loss_mask
+        ).sum().item() / num_tokens.item()
+
+    metrics = {
+        "pg_loss": pg_loss.item(),
+        "entropy": entropy,
+        "avg_student_logprob": avg_student_lp,
+        "avg_teacher_logprob": avg_teacher_lp,
+        "avg_advantage": avg_advantage,
+        "kl_div": kl_div,
+        "num_tokens": num_tokens.item(),
+    }
+
+    return pg_loss, metrics
 
 
 # ============================================================================

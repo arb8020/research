@@ -107,6 +107,8 @@ class Sample:
     loss_mask: list[float] = field(default_factory=list)
     reward: float = 0.0
     rollout_log_probs: list[float] | None = None
+    # On-Policy Distillation: teacher model's log probs for student-generated tokens
+    teacher_log_probs: list[float] | None = None
 
     # Evaluation-specific
     score: "Score | None" = None
@@ -266,6 +268,7 @@ class RolloutBatch:
     response_lengths: list[int]
     group_indices: list[int] = field(default_factory=list)
     rollout_log_probs: list[list[float]] | None = None  # For TI/TO off-policy correction
+    teacher_log_probs: list[list[float]] | None = None  # For on-policy distillation
     samples: list[Sample] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 

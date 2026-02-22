@@ -185,6 +185,14 @@ class TrainerConfig:
     skip_vram_check: bool = False
     vram_safety_margin: float = 0.05  # fraction of GPU VRAM reserved for allocator fragmentation
 
+    # On-Policy Distillation (OPD) settings
+    # Advantage estimator: "grpo" (standard group-relative), "opd" (on-policy distillation)
+    advantage_estimator: str = "grpo"
+    # Teacher model for OPD (if None, uses same model as student - not recommended)
+    teacher_model: str | None = None
+    # Teacher inference server port (separate from student inference)
+    teacher_port: int = 30100
+
 
 @dataclass(frozen=True)
 class InferenceConfig:
