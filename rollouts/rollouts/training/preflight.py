@@ -24,7 +24,7 @@ GPU_VRAM_GB: dict[str, float] = {
     "A6000": 48.0,
 }
 
-# Model size estimates (billions of parameters)
+# Model size estimates (billions of parameters) - fallback cache
 MODEL_PARAMS_B: dict[str, float] = {
     # Qwen models
     "Qwen3-0.6B": 0.6,
@@ -42,7 +42,37 @@ MODEL_PARAMS_B: dict[str, float] = {
     # Mistral models
     "Mistral-7B": 7.0,
     "Mixtral-8x7B": 47.0,  # ~47B total, 13B active
+    # GLM models
+    "GLM-4.7-Flash": 30.0,  # 30B total, 3B active (MoE)
+    "GLM-Z1-9B": 9.0,
 }
+
+# Cache for HuggingFace model param counts (in billions)
+_HF_MODEL_CACHE: dict[str, float] = {}
+
+
+def _fetch_hf_param_count(model_name: str) -> float | None:
+    """Fetch parameter count from HuggingFace Hub.
+
+    Uses huggingface_hub to read safetensors metadata (fast, no download).
+    Returns params in billions, or None if unavailable.
+    """
+    if model_name in _HF_MODEL_CACHE:
+        return _HF_MODEL_CACHE[model_name]
+
+    try:
+        from huggingface_hub import get_safetensors_metadata
+
+        meta = get_safetensors_metadata(model_name)
+        if meta.parameter_count:
+            total = sum(meta.parameter_count.values())
+            params_b = total / 1e9
+            _HF_MODEL_CACHE[model_name] = params_b
+            return params_b
+    except Exception:
+        pass
+
+    return None
 
 
 @dataclass
@@ -94,8 +124,20 @@ def get_gpu_vram_gb(gpu_type: str) -> float:
 
 
 def estimate_model_params_b(model_name: str) -> float:
-    """Estimate model parameters in billions from model name."""
-    # Try exact match
+    """Estimate model parameters in billions from model name.
+
+    Tries in order:
+    1. HuggingFace Hub safetensors metadata (exact count, no download)
+    2. Local fallback cache
+    3. Regex extraction from model name
+    4. Conservative default
+    """
+    # Try HuggingFace Hub first (most accurate)
+    hf_params = _fetch_hf_param_count(model_name)
+    if hf_params is not None:
+        return hf_params
+
+    # Try local fallback cache
     for known_model, params in MODEL_PARAMS_B.items():
         if known_model.lower() in model_name.lower():
             return params

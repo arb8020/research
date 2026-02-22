@@ -58,7 +58,8 @@ hardware = HardwareConfig(
 # - 64 routed experts, top-4 routing
 # - Multi-Latent Attention (MLA)
 # - Supported via custom GLM4MoEBridge in rollouts/training/backends/megatron/mbridge/
-MODEL = "THUDM/GLM-4.7-Flash"
+# Use zai-org mirror (THUDM requires auth)
+MODEL = "zai-org/GLM-4.7-Flash"
 
 config = GRPOConfig(
     output=GRPOOutputConfig(experiment_name="reverse_text_megatron_glm47"),
