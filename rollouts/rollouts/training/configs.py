@@ -215,7 +215,7 @@ class InferenceConfig:
     When DistributedConfig is provided, it takes precedence.
     """
 
-    backend: str = "sglang"  # "sglang" or "vllm"
+    backend: str = "sglang"  # "sglang", "vllm", or "engine_v2"
     port: int = 30000  # Base port (engines use port, port+1, ...)
     cuda_device_ids: tuple[int, ...] = (0,)
     mem_fraction: float = 0.7

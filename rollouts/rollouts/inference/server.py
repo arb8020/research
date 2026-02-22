@@ -27,8 +27,22 @@ import torch
 
 from .core import SamplingParams
 from .engine_v2 import EngineConfig, InferenceEngineV2
+from .models.weight import load_weights
 
 logger = logging.getLogger(__name__)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# NCCL WEIGHT SYNC STATE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Global state for NCCL weight sync (one process group per server)
+_nccl_state: dict[str, Any] = {
+    "process_group": None,
+    "group_name": None,
+    "rank": None,
+    "world_size": None,
+}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -266,6 +280,145 @@ def create_app(engine: InferenceEngineV2) -> Any:
             return await server.chat_completions(request)
         except Exception as e:
             logger.exception("Error in /v1/chat/completions")
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # WEIGHT SYNC ENDPOINTS (for RL on-policy training)
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    @app.post("/update_weights_from_disk")
+    async def update_weights_from_disk(request: dict) -> dict:
+        """Load weights from checkpoint directory.
+
+        Request: {"model_path": "/path/to/checkpoint"}
+        """
+        model_path = request.get("model_path")
+        if not model_path:
+            raise HTTPException(status_code=400, detail="model_path required")
+
+        try:
+            logger.info(f"Loading weights from {model_path}")
+            state_dict = load_weights(model_path, engine.device, engine.config.dtype)
+            engine.reload_weights(state_dict)
+            logger.info("Weight reload complete")
+            return {"status": "ok", "model_path": model_path}
+        except Exception as e:
+            logger.exception("Error in /update_weights_from_disk")
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    @app.post("/init_weights_update_group")
+    async def init_weights_update_group(request: dict) -> dict:
+        """Initialize NCCL process group for weight sync.
+
+        Request: {
+            "master_address": "127.0.0.1",
+            "master_port": 29500,
+            "rank_offset": 1,
+            "world_size": 2,
+            "group_name": "weight_sync",
+            "backend": "nccl"
+        }
+        """
+        import os
+
+        import torch.distributed as dist
+
+        master_addr = request.get("master_address", "127.0.0.1")
+        master_port = request.get("master_port", 29500)
+        rank_offset = request.get("rank_offset", 1)
+        world_size = request.get("world_size", 2)
+        group_name = request.get("group_name", "weight_sync")
+        backend = request.get("backend", "nccl")
+
+        # Set environment for NCCL
+        os.environ["MASTER_ADDR"] = master_addr
+        os.environ["MASTER_PORT"] = str(master_port)
+
+        try:
+            logger.info(f"Initializing NCCL group: rank={rank_offset}, world_size={world_size}")
+
+            # Initialize process group
+            dist.init_process_group(
+                backend=backend,
+                rank=rank_offset,
+                world_size=world_size,
+            )
+
+            # Store state
+            _nccl_state["process_group"] = dist.group.WORLD
+            _nccl_state["group_name"] = group_name
+            _nccl_state["rank"] = rank_offset
+            _nccl_state["world_size"] = world_size
+
+            logger.info("NCCL group initialized")
+            return {"status": "ok", "rank": rank_offset, "world_size": world_size}
+        except Exception as e:
+            logger.exception("Error in /init_weights_update_group")
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    @app.post("/update_weights_from_distributed")
+    async def update_weights_from_distributed(request: dict) -> dict:
+        """Receive weights via NCCL broadcast from trainer.
+
+        Request: {
+            "names": ["model.embed_tokens.weight", ...],
+            "shapes": [[32000, 4096], ...],
+            "dtypes": ["bfloat16", ...],
+        }
+        """
+        import torch.distributed as dist
+
+        if _nccl_state["process_group"] is None:
+            raise HTTPException(status_code=400, detail="NCCL group not initialized")
+
+        names = request.get("names", [])
+        shapes = request.get("shapes", [])
+        dtypes = request.get("dtypes", [])
+
+        dtype_map = {
+            "float16": torch.float16,
+            "bfloat16": torch.bfloat16,
+            "float32": torch.float32,
+        }
+
+        try:
+            logger.info(f"Receiving {len(names)} weight tensors via NCCL")
+            new_state_dict = {}
+
+            for name, shape, dtype_str in zip(names, shapes, dtypes, strict=True):
+                dtype = dtype_map.get(dtype_str, torch.bfloat16)
+                # Allocate tensor and receive broadcast from rank 0
+                tensor = torch.empty(shape, dtype=dtype, device=engine.device)
+                dist.broadcast(tensor, src=0)
+                new_state_dict[name] = tensor
+
+            # Apply weights
+            engine.reload_weights(new_state_dict)
+            logger.info("NCCL weight update complete")
+            return {"status": "ok", "num_tensors": len(names)}
+        except Exception as e:
+            logger.exception("Error in /update_weights_from_distributed")
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    @app.post("/destroy_weights_update_group")
+    async def destroy_weights_update_group(request: dict) -> dict:
+        """Destroy NCCL process group."""
+        import torch.distributed as dist
+
+        group_name = request.get("group_name", "weight_sync")
+
+        try:
+            if _nccl_state["process_group"] is not None:
+                logger.info(f"Destroying NCCL group: {group_name}")
+                dist.destroy_process_group()
+                _nccl_state["process_group"] = None
+                _nccl_state["group_name"] = None
+                _nccl_state["rank"] = None
+                _nccl_state["world_size"] = None
+
+            return {"status": "ok"}
+        except Exception as e:
+            logger.exception("Error in /destroy_weights_update_group")
             raise HTTPException(status_code=500, detail=str(e)) from e
 
     return app

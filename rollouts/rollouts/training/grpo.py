@@ -181,7 +181,7 @@ def _create_inference_engine(
 
 def _create_inference_engines(
     config: GRPOConfig, output_dir: Path
-) -> list[Any]:  # list[SGLangEngine | VLLMEngine]
+) -> list[Any]:  # list[SGLangEngine | VLLMEngine | EngineV2Engine]
     """Create multiple inference engines for parallel rollout generation.
 
     Each engine runs on its own GPU(s) and port. More engines = more samples/second.
@@ -189,13 +189,13 @@ def _create_inference_engines(
     Returns:
         List of inference engines (one per GPU or TP group)
     """
-    from ..training.weight_sync import SGLangEngine, VLLMEngine
+    from ..training.weight_sync import EngineV2Engine, SGLangEngine, VLLMEngine
 
     engines = []
     gpu_assignments = config.inference.gpu_assignments
     ports = config.inference.ports
 
-    for i, (gpus, port) in enumerate(zip(gpu_assignments, ports, strict=False)):
+    for _idx, (gpus, port) in enumerate(zip(gpu_assignments, ports, strict=False)):
         if config.inference.backend == "sglang":
             # NCCL weight sync uses HTTP API (init_weights_update_group),
             # not CLI flags. See weight_sync.py for implementation.
@@ -215,6 +215,18 @@ def _create_inference_engines(
                 output_dir=output_dir,
                 dtype=config.model.dtype,
                 gpu_memory_utilization=config.inference.mem_fraction,
+            )
+        elif config.inference.backend == "engine_v2":
+            # Rollouts native inference engine
+            engine = EngineV2Engine(
+                model_name=config.model.name,
+                port=port,
+                cuda_device_ids=gpus,
+                output_dir=output_dir,
+                dtype=config.model.dtype,
+                mem_fraction=config.inference.mem_fraction,
+                max_batch_size=config.rollout.batch_size * 2,  # Headroom
+                max_seq_len=config.rollout.max_seq_len,
             )
         else:
             raise ValueError(f"Unknown inference backend: {config.inference.backend}")

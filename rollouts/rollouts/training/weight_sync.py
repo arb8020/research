@@ -840,6 +840,229 @@ class VLLMEngine:
 
 
 # ══════════════════════════════════════════════════════════════
+# ENGINE V2 (rollouts native inference)
+# ══════════════════════════════════════════════════════════════
+
+
+@dataclass
+class EngineV2Engine:
+    """Rollouts native inference engine with full lifecycle management.
+
+    Implements InferenceEngine protocol for engine_v2.
+    Launches server in tmux for reliability (survives parent process crashes).
+
+    This is the rollouts-native inference engine, alternative to SGLang/vLLM.
+    Supports same weight sync APIs for RL training.
+
+    Example:
+        >>> engine = EngineV2Engine(
+        ...     model_name="Qwen/Qwen3-0.6B",
+        ...     port=30000,
+        ...     cuda_device_ids=(0,),
+        ...     output_dir=Path("results/rl/run_001"),
+        ... )
+        >>> engine.launch()
+        >>> engine.start_log_tailer()  # Routes logs via Python logging
+        >>> await engine.wait_until_ready()
+        >>> # ... use engine ...
+        >>> await engine.update_weights_from_checkpoint("/ckpt/step_100")
+        >>> engine.shutdown()
+    """
+
+    model_name: str
+    port: int
+    cuda_device_ids: tuple[int, ...]
+    output_dir: Path
+    dtype: str = "bfloat16"
+    mem_fraction: float = 0.7
+    timeout: float = 300.0
+    max_batch_size: int = 32
+    max_seq_len: int = 4096
+    attention_backend: str = "auto"
+    _log_file: Path = field(init=False)
+    _session_name: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        self._log_file = self.output_dir / "engine_v2.log"
+        run_id = self.output_dir.name
+        self._session_name = f"engine_v2-{run_id}"
+
+    @property
+    def name(self) -> str:
+        return "engine_v2"
+
+    @property
+    def session_name(self) -> str:
+        return self._session_name
+
+    @property
+    def log_path(self) -> Path:
+        return self._log_file
+
+    @property
+    def health_url(self) -> str:
+        return f"http://localhost:{self.port}/health"
+
+    @property
+    def api_base(self) -> str:
+        return f"http://localhost:{self.port}/v1"
+
+    @property
+    def base_url(self) -> str:
+        """Base URL without /v1 suffix (for weight sync API)."""
+        return f"http://localhost:{self.port}"
+
+    def build_launch_cmd(self) -> str:
+        """Build engine_v2 launch command."""
+        gpu_str = ",".join(str(g) for g in self.cuda_device_ids)
+        cmd = (
+            f"CUDA_VISIBLE_DEVICES={gpu_str} "
+            f"HF_HUB_DOWNLOAD_TIMEOUT=300 "
+            # NCCL environment for cross-process weight sync
+            f"NCCL_SHM_DISABLE=1 "
+            f"NCCL_CUMEM_ENABLE=0 "
+            f"python -m rollouts.inference.server "
+            f"--model {self.model_name} "
+            f"--port {self.port} "
+            f"--dtype {self.dtype} "
+            f"--max-batch-size {self.max_batch_size} "
+            f"--max-seq-len {self.max_seq_len} "
+            f"--attention-backend {self.attention_backend}"
+        )
+        return cmd
+
+    def launch(self) -> str:
+        """Launch engine_v2 server in tmux session.
+
+        Uses tmux for reliability - survives parent process crashes.
+        Logs are piped to a file for tailing.
+
+        Returns:
+            The tmux session name
+        """
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Kill existing session if present
+        subprocess.run(
+            ["tmux", "kill-session", "-t", self._session_name],
+            capture_output=True,
+        )
+
+        # Kill any old engine_v2 sessions
+        subprocess.run(
+            "tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^engine_v2-' | xargs -r -I{} tmux kill-session -t {} 2>/dev/null || true",
+            shell=True,
+            capture_output=True,
+        )
+
+        # Kill any process bound to our port
+        subprocess.run(
+            f"fuser -k {self.port}/tcp 2>/dev/null || true",
+            shell=True,
+            capture_output=True,
+        )
+
+        # Kill any orphaned processes using our GPUs
+        for gpu_id in self.cuda_device_ids:
+            subprocess.run(
+                f"nvidia-smi --id={gpu_id} --query-compute-apps=pid --format=csv,noheader | xargs -r kill -9",
+                shell=True,
+                capture_output=True,
+            )
+
+        # Build command with log piping
+        cmd = self.build_launch_cmd()
+        full_cmd = f"{cmd} 2>&1 | tee {self._log_file}"
+
+        # Launch in tmux
+        subprocess.run(
+            ["tmux", "new-session", "-d", "-s", self._session_name, full_cmd],
+            check=True,
+        )
+
+        return self._session_name
+
+    def start_log_tailer(self) -> threading.Thread:
+        """Start daemon thread that tails engine_v2 logs via Python logging."""
+        engine_logger = logging.getLogger("engine_v2")
+
+        def tail_log() -> None:
+            try:
+                # Wait for log file to exist
+                for _ in range(30):
+                    if self._log_file.exists():
+                        break
+                    time.sleep(0.1)
+
+                with open(self._log_file) as f:
+                    while True:
+                        line = f.readline()
+                        if line:
+                            line = line.strip()
+                            if line:
+                                engine_logger.info(line)
+                        else:
+                            time.sleep(0.1)
+            except Exception:
+                pass  # File closed or thread killed
+
+        thread = threading.Thread(target=tail_log, daemon=True)
+        thread.start()
+        return thread
+
+    def _is_session_alive(self) -> bool:
+        """Check if tmux session is still running."""
+        result = subprocess.run(
+            ["tmux", "has-session", "-t", self._session_name],
+            capture_output=True,
+        )
+        return result.returncode == 0
+
+    async def wait_until_ready(self, max_wait: float = 120.0) -> None:
+        """Wait until engine_v2 health check passes."""
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            for _attempt in range(int(max_wait)):
+                # Check if tmux session crashed
+                if not self._is_session_alive():
+                    msg = f"engine_v2 server crashed during startup! Check {self._log_file}"
+                    raise RuntimeError(msg)
+
+                try:
+                    resp = await client.get(self.health_url)
+                    if resp.status_code == 200:
+                        return
+                except Exception:
+                    pass
+                await trio.sleep(1.0)
+
+        msg = f"engine_v2 failed to start after {max_wait}s. Check {self._log_file}"
+        raise RuntimeError(msg)
+
+    async def update_weights_from_checkpoint(
+        self,
+        checkpoint_path: str,
+    ) -> dict[str, Any]:
+        """Update engine_v2 server weights from checkpoint."""
+        assert checkpoint_path, "checkpoint_path cannot be empty"
+
+        # Use same endpoint as SGLang for compatibility
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.post(
+                f"{self.base_url}/update_weights_from_disk",
+                json={"model_path": checkpoint_path},
+            )
+            response.raise_for_status()
+            return response.json()
+
+    def shutdown(self) -> None:
+        """Kill the tmux session running engine_v2."""
+        subprocess.run(
+            ["tmux", "kill-session", "-t", self._session_name],
+            capture_output=True,
+        )
+
+
+# ══════════════════════════════════════════════════════════════
 # Stateless orchestration (Sean Goedecke: boring coordination)
 # ══════════════════════════════════════════════════════════════
 
