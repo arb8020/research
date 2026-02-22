@@ -20,6 +20,7 @@ import asyncio
 import logging
 import time
 import uuid
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -93,6 +94,10 @@ class InferenceServer:
         self._step_event = asyncio.Event()
         # Semaphore to limit concurrent requests to engine capacity
         self._request_slots = asyncio.Semaphore(engine.scheduler_config.max_batch_size)
+
+        # Streaming requests: uid -> (queue, prompt_len, seen_len)
+        # Queue receives (token_id, is_done, finish_reason) tuples
+        self._streaming: dict[int, tuple[asyncio.Queue, int, int]] = {}
 
     def _convert_sampling_params(self, params: dict[str, Any]) -> SamplingParams:
         """Convert SGLang sampling params to our format."""
@@ -225,6 +230,105 @@ class InferenceServer:
             },
         }
 
+    async def chat_completions_stream(self, request: dict[str, Any]) -> AsyncGenerator[str, None]:
+        """Handle streaming OpenAI-style /v1/chat/completions request.
+
+        Yields SSE-formatted chunks as tokens are generated.
+        """
+
+        messages = request.get("messages", [])
+        max_tokens = request.get("max_tokens", 16)
+        temperature = request.get("temperature", 1.0)
+        top_p = request.get("top_p", 1.0)
+        top_k = request.get("top_k", -1)
+
+        # Apply chat template
+        prompt = self.tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        input_ids = self.tokenizer.encode(prompt, add_special_tokens=False)
+        prompt_len = len(input_ids)
+
+        sampling_params = SamplingParams(
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            max_tokens=max_tokens,
+            return_logprobs=False,
+        )
+
+        # Create unique ID for this completion
+        completion_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
+        created = int(time.time())
+
+        # Wait for available slot
+        await self._request_slots.acquire()
+
+        try:
+            # Create token queue for streaming
+            token_queue: asyncio.Queue = asyncio.Queue()
+
+            # Add request to engine
+            async with self._lock:
+                uid = self.engine.add_request(input_ids, sampling_params)
+                # Register for streaming: (queue, prompt_len, seen_len)
+                self._streaming[uid] = (token_queue, prompt_len, prompt_len)
+
+            self._step_event.set()
+
+            # Stream tokens as they arrive
+            while True:
+                # Get next token or done signal
+                token_id, is_done, finish_reason = await token_queue.get()
+
+                if is_done:
+                    # Final chunk
+                    chunk = {
+                        "id": completion_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": self.model_name,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {},
+                                "finish_reason": finish_reason,
+                            }
+                        ],
+                    }
+                    yield f"data: {self._json_dumps(chunk)}\n\n"
+                    yield "data: [DONE]\n\n"
+                    break
+
+                # Decode single token
+                token_text = self.tokenizer.decode([token_id], skip_special_tokens=False)
+
+                chunk = {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": self.model_name,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": token_text},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+                yield f"data: {self._json_dumps(chunk)}\n\n"
+
+        finally:
+            # Cleanup
+            self._streaming.pop(uid, None)
+            self._request_slots.release()
+
+    def _json_dumps(self, obj: Any) -> str:
+        """JSON serialize without whitespace."""
+        import json
+
+        return json.dumps(obj, separators=(",", ":"))
+
     async def step_loop(self) -> None:
         """Background task that runs engine steps and dispatches results.
 
@@ -243,13 +347,43 @@ class InferenceServer:
             # Run step in thread pool to avoid blocking event loop
             finished = await loop.run_in_executor(None, self.engine.step)
 
-            # Dispatch results
+            # Push new tokens to streaming queues
             async with self._lock:
+                # Check decode_set for in-flight streaming requests
+                for req in self.engine.state.decode_set:
+                    if req.uid in self._streaming:
+                        queue, prompt_len, seen_len = self._streaming[req.uid]
+                        current_len = len(req.input_ids)
+
+                        # Push any new tokens
+                        for i in range(seen_len, current_len):
+                            token_id = req.input_ids[i].item()
+                            await queue.put((token_id, False, None))
+
+                        # Update seen_len
+                        self._streaming[req.uid] = (queue, prompt_len, current_len)
+
+                # Dispatch finished results
                 for req in finished:
                     if req.uid in self._pending:
                         future, _ = self._pending.pop(req.uid)
                         if not future.done():
                             future.set_result(req)
+
+                    elif req.uid in self._streaming:
+                        # Signal completion to streaming handler
+                        queue, prompt_len, _ = self._streaming[req.uid]
+                        # Push any remaining tokens
+                        current_len = len(req.input_ids)
+                        seen_len = self._streaming[req.uid][2]
+                        for i in range(seen_len, current_len):
+                            token_id = req.input_ids[i].item()
+                            await queue.put((token_id, False, None))
+
+                        # Determine finish reason
+                        is_eos = req.input_ids[-1].item() == self.engine.eos_token_id
+                        finish_reason = "stop" if is_eos else "length"
+                        await queue.put((None, True, finish_reason))
 
             # Small yield to allow other coroutines
             await asyncio.sleep(0)
@@ -301,10 +435,23 @@ def create_app(engine: InferenceEngineV2) -> Any:
             raise HTTPException(status_code=500, detail=str(e)) from e
 
     @app.post("/v1/chat/completions")
-    async def chat_completions(request: dict) -> dict:
-        """OpenAI-style chat completions endpoint."""
+    async def chat_completions(request: dict) -> Any:
+        """OpenAI-style chat completions endpoint.
+
+        Supports both streaming (stream=true) and non-streaming modes.
+        """
+        from fastapi.responses import StreamingResponse
+
         try:
-            return await server.chat_completions(request)
+            if request.get("stream", False):
+                # Streaming mode: return SSE stream
+                return StreamingResponse(
+                    server.chat_completions_stream(request),
+                    media_type="text/event-stream",
+                )
+            else:
+                # Non-streaming mode: return complete response
+                return await server.chat_completions(request)
         except Exception as e:
             logger.exception("Error in /v1/chat/completions")
             raise HTTPException(status_code=500, detail=str(e)) from e
