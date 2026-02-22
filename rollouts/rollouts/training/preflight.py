@@ -139,6 +139,7 @@ def estimate_inference_vram(
     mem_fraction: float,
     max_seq_len: int,
     batch_size: int,
+    tensor_parallel_size: int = 1,
 ) -> MemoryEstimate:
     """Estimate VRAM for inference (SGLang).
 
@@ -146,14 +147,22 @@ def estimate_inference_vram(
     - Model weights
     - KV cache (dynamic, depends on seq len and batch size)
     - Activation buffers
+
+    Args:
+        tensor_parallel_size: Number of GPUs for tensor parallelism.
+            Model weights and KV cache are split across these GPUs.
     """
     params_b = estimate_model_params_b(model_name)
     model_gb = estimate_model_vram_gb(params_b, dtype)
 
+    # Tensor parallelism splits model weights across GPUs
+    model_gb = model_gb / tensor_parallel_size
+
     # KV cache estimate: 2 * num_layers * hidden_dim * seq_len * batch_size * 2 bytes
     # Simplified: ~0.5GB per 1B params per 1K seq len at batch=1
     # Scale by batch_size and mem_fraction (SGLang uses this for KV cache)
-    kv_cache_gb = params_b * (max_seq_len / 1000) * batch_size * 0.1
+    # KV cache is also split across TP GPUs
+    kv_cache_gb = params_b * (max_seq_len / 1000) * batch_size * 0.1 / tensor_parallel_size
 
     # Activation buffers (small for inference)
     activations_gb = params_b * 0.1
@@ -178,6 +187,7 @@ def estimate_training_vram(
     n_samples_per_prompt: int,
     num_minibatches: int,
     max_seq_len: int,
+    tensor_parallel_size: int = 1,
 ) -> MemoryEstimate:
     """Estimate VRAM for training.
 
@@ -186,16 +196,24 @@ def estimate_training_vram(
     - Gradients (same size as weights)
     - Optimizer states (2x weights for Adam)
     - Activations (depends on batch size and seq len)
+
+    Args:
+        tensor_parallel_size: Number of GPUs for tensor parallelism.
+            Model weights, gradients, and optimizer states are split across these GPUs.
     """
     params_b = estimate_model_params_b(model_name)
     model_gb = estimate_model_vram_gb(params_b, dtype)
 
-    # Gradients: same size as model
+    # Tensor parallelism splits model weights across GPUs
+    model_gb = model_gb / tensor_parallel_size
+
+    # Gradients: same size as model (also split by TP)
     gradients_gb = model_gb
 
     # Optimizer states: Adam uses 2x model size (momentum + variance)
     # With mixed precision, stored in fp32 = 4 bytes per param
-    optimizer_gb = params_b * 4 * 2  # 2x for Adam states
+    # Also split by TP
+    optimizer_gb = params_b * 4 * 2 / tensor_parallel_size  # 2x for Adam states
 
     # Activations: depends on batch size, seq len, and model architecture
     # Rough estimate: ~4 bytes per param per token in batch
@@ -271,16 +289,21 @@ def validate_config(config: Any, gpu_type: str) -> PreflightResult:
     except ValueError as e:
         raise ValueError(str(e)) from e
 
-    # Estimate inference VRAM
+    # Get tensor parallel sizes (defaults to 1 if not specified)
+    inference_tp = getattr(config.inference, "tensor_parallel_size", 1)
+    trainer_tp = getattr(config.trainer, "tensor_parallel_size", 1)
+
+    # Estimate inference VRAM (per GPU after TP split)
     inference_est = estimate_inference_vram(
         model_name=config.model.name,
         dtype=getattr(config.model, "dtype", "bfloat16"),
         mem_fraction=config.inference.mem_fraction,
         max_seq_len=config.rollout.max_seq_len,
         batch_size=config.rollout.batch_size,
+        tensor_parallel_size=inference_tp,
     )
 
-    # Estimate training VRAM
+    # Estimate training VRAM (per GPU after TP split)
     training_est = estimate_training_vram(
         model_name=config.model.name,
         dtype=getattr(config.model, "dtype", "bfloat16"),
@@ -288,6 +311,7 @@ def validate_config(config: Any, gpu_type: str) -> PreflightResult:
         n_samples_per_prompt=config.rollout.n_samples_per_prompt,
         num_minibatches=config.trainer.num_minibatches,
         max_seq_len=config.rollout.max_seq_len,
+        tensor_parallel_size=trainer_tp,
     )
 
     # Check inference GPU
