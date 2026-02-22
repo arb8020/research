@@ -421,13 +421,18 @@ if __name__ == "__main__":
 async def run_benchmark_local(
     config: BenchmarkConfig,
     gpu_type: str = "A100",
-    gpu_count: int = 1,
+    gpu_count: int = 1,  # noqa: ARG001
 ) -> BenchmarkResult:
     """Run benchmark locally (when already on GPU machine).
 
     This is used when running on RunPod/SSH where we're already on the GPU.
+    Uses subprocess to start server, similar to Modal version.
     """
-    import asyncio
+    import random
+    import time
+
+    import httpx
+    import numpy as np
 
     # Get actual GPU name from nvidia-smi
     try:
@@ -441,59 +446,49 @@ async def run_benchmark_local(
     except Exception:
         gpu_name = gpu_type
 
-    # Use the run_local_benchmark function
-    return await trio.to_thread.run_sync(
-        lambda: asyncio.run(_run_benchmark_impl(config, REPO_ROOT, gpu_name))
+    # Start server as subprocess
+    workspace = REPO_ROOT
+    server_cmd = [
+        "python",
+        "-m",
+        "rollouts.inference.server",
+        "--model",
+        config.model,
+        "--port",
+        "8080",
+        "--max-batch-size",
+        str(config.max_batch_size),
+    ]
+
+    logger.info(f"Starting server: {' '.join(server_cmd)}")
+    proc = subprocess.Popen(
+        server_cmd,
+        cwd=workspace,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env={**os.environ, "PYTHONPATH": str(workspace)},
     )
-
-
-async def _run_benchmark_impl(
-    config: BenchmarkConfig, workspace: Path, gpu_name: str
-) -> BenchmarkResult:
-    """Run benchmark implementation (can be called from local or sandbox)."""
-    import asyncio
-
-    import httpx
-    import numpy as np
-
-    from ..engine_v2 import EngineConfig, InferenceEngineV2
-    from ..server import create_app
-
-    # Start the server
-    engine_config = EngineConfig(
-        model_path=config.model,
-        max_batch_size=config.max_batch_size,
-    )
-    engine = InferenceEngineV2(engine_config)
-    app = create_app(engine)
-
-    import uvicorn
-
-    server_config = uvicorn.Config(app, host="127.0.0.1", port=8080, log_level="warning")
-    server = uvicorn.Server(server_config)
-
-    # Start server in background
-    server_task = asyncio.create_task(server.serve())
 
     # Wait for server to be ready
-    import time
-
+    logger.info("Waiting for server to be ready...")
     start_wait = time.time()
     while time.time() - start_wait < 300:
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.get("http://127.0.0.1:8080/health", timeout=5)
                 if resp.status_code == 200:
+                    logger.info("Server is ready")
                     break
         except Exception:
             pass
-        await asyncio.sleep(0.5)
+        await trio.sleep(0.5)
+    else:
+        proc.terminate()
+        raise RuntimeError("Server failed to start within 5 minutes")
 
     try:
         # Generate random prompts
         def generate_random_prompt(length: int) -> list[int]:
-            import random
-
             return [random.randint(1000, 30000) for _ in range(length)]
 
         prompts = [
@@ -501,15 +496,17 @@ async def _run_benchmark_impl(
             for _ in range(config.workload.num_prompts)
         ]
 
-        # Run requests
-        semaphore = asyncio.Semaphore(config.workload.concurrency)
-        results = []
+        logger.info(
+            f"Running {len(prompts)} requests with concurrency {config.workload.concurrency}"
+        )
 
-        async def benchmark_request(client: httpx.AsyncClient, prompt: list[int], idx: int) -> dict:
+        # Run requests using trio
+        results: list[dict] = []
+        semaphore = trio.Semaphore(config.workload.concurrency)
+
+        async def benchmark_request(prompt: list[int], idx: int) -> dict:
             async with semaphore:
                 start = time.perf_counter()
-                first_token_time = None
-                tokens_received = 0
 
                 request_body = {
                     "input_ids": prompt,
@@ -519,32 +516,38 @@ async def _run_benchmark_impl(
                     },
                 }
 
-                async with client.stream(
-                    "POST",
-                    "http://127.0.0.1:8080/generate",
-                    json=request_body,
-                    timeout=300,
-                ) as response:
-                    async for chunk in response.aiter_bytes():
-                        if first_token_time is None:
-                            first_token_time = time.perf_counter()
-                        tokens_received += 1
+                # Make request
+                async with httpx.AsyncClient() as client:
+                    resp = await client.post(
+                        "http://127.0.0.1:8080/generate",
+                        json=request_body,
+                        timeout=300,
+                    )
+                    resp.raise_for_status()
 
                 end = time.perf_counter()
                 return {
                     "request_id": idx,
-                    "ttft_ms": (first_token_time - start) * 1000 if first_token_time else None,
+                    "ttft_ms": None,  # Non-streaming doesn't give TTFT
                     "e2e_ms": (end - start) * 1000,
-                    "tokens": config.workload.output_len,  # Use expected output len
+                    "tokens": config.workload.output_len,
                 }
 
         start_time = time.perf_counter()
 
-        async with httpx.AsyncClient() as client:
-            tasks = [benchmark_request(client, p, i) for i, p in enumerate(prompts)]
-            results = await asyncio.gather(*tasks)
+        # Run all requests concurrently with trio
+        async with trio.open_nursery() as nursery:
+            for i, prompt in enumerate(prompts):
+
+                async def run_request(p: list[int], idx: int) -> None:
+                    result = await benchmark_request(p, idx)
+                    results.append(result)
+
+                nursery.start_soon(run_request, prompt, i)
 
         total_time = time.perf_counter() - start_time
+
+        logger.info(f"Completed {len(results)} requests in {total_time:.2f}s")
 
         # Calculate metrics
         ttfts = [r["ttft_ms"] for r in results if r["ttft_ms"] is not None]
@@ -584,8 +587,8 @@ async def _run_benchmark_impl(
             gpu_utilization_mean=0.0,
         )
     finally:
-        server.should_exit = True
-        await server_task
+        proc.terminate()
+        proc.wait()
 
 
 async def run_benchmark(
