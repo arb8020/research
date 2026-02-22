@@ -38,6 +38,40 @@ except ImportError:
     get_model_state_dict = None
 
 
+def _clean_lora_state_dict_for_inference(
+    state_dict: dict[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
+    """Clean PEFT/LoRA state dict for HuggingFace/SGLang compatibility.
+
+    PEFT wraps Linear layers with LoraLayer which adds ".base_layer." to param names.
+    After merge_adapter(), the merged weights are in base_layer but SGLang expects
+    standard HF naming without the base_layer prefix.
+
+    Pattern from prime-rl: strip .base_layer. and remove lora_A/lora_B params.
+
+    Args:
+        state_dict: State dict with PEFT-style naming
+
+    Returns:
+        Clean state dict with standard HF naming
+    """
+    clean_state_dict = {}
+
+    for key, value in state_dict.items():
+        # Skip LoRA adapter params (already merged into base weights)
+        if "lora_A" in key or "lora_B" in key:
+            continue
+
+        # Strip PEFT's .base_layer. prefix
+        if ".base_layer." in key:
+            new_key = key.replace(".base_layer.", ".")
+            clean_state_dict[new_key] = value
+        else:
+            clean_state_dict[key] = value
+
+    return clean_state_dict
+
+
 @dataclass
 class PyTorchTrainingBackend:
     """Future-based PyTorch training backend (D6v1).
@@ -682,8 +716,18 @@ class PyTorchTrainingBackend:
                 # merge_and_unload() would permanently destroy the LoRA adapters!
                 logger.info(f"Merging LoRA weights for inference sync to {temp_path}")
                 self.model.merge_adapter()  # Merge LoRA into base weights temporarily
+
+                # Get merged state dict and clean PEFT naming for HF/SGLang compatibility
+                # PEFT adds ".base_layer." prefix that SGLang doesn't understand
+                # Pattern from prime-rl: strip .base_layer. and remove lora_A/lora_B params
+                state_dict = self.model.base_model.model.state_dict()
+                clean_state_dict = _clean_lora_state_dict_for_inference(state_dict)
+
+                # Save with cleaned keys
                 await trio.to_thread.run_sync(
-                    lambda: self.model.base_model.model.save_pretrained(temp_path)
+                    lambda: self.model.base_model.model.save_pretrained(
+                        temp_path, state_dict=clean_state_dict
+                    )
                 )
                 self.model.unmerge_adapter()  # Restore LoRA structure for continued training
                 logger.info("LoRA merge and save complete")
