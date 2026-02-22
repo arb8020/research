@@ -218,6 +218,8 @@ def _create_inference_engines(
             )
         elif config.inference.backend == "engine_v2":
             # Rollouts native inference engine
+            # max_batch_size = prompts * samples_per_prompt + headroom
+            max_batch = config.rollout.batch_size * config.rollout.n_samples_per_prompt * 2
             engine = EngineV2Engine(
                 model_name=config.model.name,
                 port=port,
@@ -225,7 +227,7 @@ def _create_inference_engines(
                 output_dir=output_dir,
                 dtype=config.model.dtype,
                 mem_fraction=config.inference.mem_fraction,
-                max_batch_size=config.rollout.batch_size * 2,  # Headroom
+                max_batch_size=max_batch,
                 max_seq_len=config.rollout.max_seq_len,
             )
         else:
