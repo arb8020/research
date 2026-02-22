@@ -965,49 +965,62 @@ class PyTorchTrainingBackend:
             for name, p in state_dict.items()
         ]
 
-        # NCCL sync requires both sides to participate concurrently.
-        # SGLang's /update_weights_from_distributed blocks on dist.broadcast(),
-        # so we must run HTTP request AND trainer broadcast in parallel.
+        # NCCL weight sync protocol (following Miles/QED-Nano pattern):
+        # 1. Fire HTTP requests to inference servers (non-blocking)
+        # 2. Do NCCL broadcasts with async_op=True
+        # 3. Wait for broadcast handles
+        # 4. Wait for HTTP responses
+        #
+        # This ensures both sides enter their broadcast loops before any NCCL ops,
+        # avoiding the race condition where trainer broadcasts before SGLang is ready.
+        import concurrent.futures
+
+        import requests
         import trio
 
-        async def notify_inference_server(endpoint: str) -> None:
-            """Tell inference server to start receiving weights via NCCL."""
-            import requests
+        # STEP 1: Fire HTTP requests (non-blocking via thread pool)
+        executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=len(self._nccl_inference_endpoints)
+        )
+        http_futures = []
+        for endpoint in self._nccl_inference_endpoints:
+            future = executor.submit(
+                requests.post,
+                f"{endpoint}/update_weights_from_distributed",
+                json={
+                    "names": [p["name"] for p in param_info],
+                    "shapes": [p["shape"] for p in param_info],
+                    "dtypes": [p["dtype"] for p in param_info],
+                    "group_name": "weight_sync",
+                    "weight_version": str(self.weight_version),
+                },
+                timeout=300.0,
+            )
+            http_futures.append(future)
 
-            # Use synchronous requests in thread pool for reliable trio integration
-            def _post() -> None:
-                requests.post(
-                    f"{endpoint}/update_weights_from_distributed",
-                    json={
-                        "names": [p["name"] for p in param_info],
-                        "shapes": [p["shape"] for p in param_info],
-                        "dtypes": [p["dtype"] for p in param_info],
-                        "group_name": "weight_sync",
-                        "weight_version": str(self.weight_version),
-                    },
-                    timeout=300.0,
+        # STEP 2 & 3: Do NCCL broadcasts with async_op=True, then wait
+        def _do_broadcast() -> None:
+            handles = []
+            for _name, param in state_dict.items():
+                param_data = param.data.contiguous()
+                if param_data.device.type != "cuda":
+                    param_data = param_data.cuda()
+                handle = dist.broadcast(
+                    param_data, src=0, group=self._nccl_process_group, async_op=True
                 )
+                handles.append(handle)
 
-            await trio.to_thread.run_sync(_post)
+            # Wait for all broadcasts to complete
+            for handle in handles:
+                handle.wait()
 
-        async def broadcast_weights() -> None:
-            """Broadcast weights via NCCL (runs in thread pool since blocking)."""
+        await trio.to_thread.run_sync(_do_broadcast)
 
-            def _do_broadcast() -> None:
-                for name, param in state_dict.items():
-                    param_data = param.data.contiguous()
-                    if param_data.device.type != "cuda":
-                        param_data = param_data.cuda()
-                    dist.broadcast(param_data, src=0, group=self._nccl_process_group)
-                dist.barrier(group=self._nccl_process_group)
-
-            await trio.to_thread.run_sync(_do_broadcast)
-
-        # Run HTTP notifications and weight broadcast concurrently
-        async with trio.open_nursery() as nursery:
-            for endpoint in self._nccl_inference_endpoints:
-                nursery.start_soon(notify_inference_server, endpoint)
-            nursery.start_soon(broadcast_weights)
+        # STEP 4: Wait for HTTP responses to confirm SGLang received everything
+        for future in http_futures:
+            response = future.result()
+            response.raise_for_status()
+        executor.shutdown(wait=False)
 
         # Restore LoRA structure if needed
         if self.is_lora:
