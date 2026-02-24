@@ -566,7 +566,7 @@ def create_app(engine: InferenceEngineV2) -> Any:
     """Create FastAPI app with inference endpoints."""
     logger.info("create_app: starting")
 
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI, HTTPException, Request
 
     logger.info("create_app: creating InferenceServer")
     server = InferenceServer(engine)
@@ -579,6 +579,18 @@ def create_app(engine: InferenceEngineV2) -> Any:
 
     logger.info("create_app: creating FastAPI app")
     app = FastAPI(title="Rollouts Inference Server")
+
+    @app.middleware("http")
+    async def access_log_middleware(request: Request, call_next: Any) -> Any:
+        logger.info(f"http_request: method={request.method} path={request.url.path}")
+        try:
+            response = await call_next(request)
+            logger.info(f"http_response: status={response.status_code} path={request.url.path}")
+            return response
+        except Exception as e:
+            logger.exception(f"http_error: path={request.url.path} error={e}")
+            raise
+
     app.state.inference_server = server
     app.state.startup_complete = None
     logger.info("create_app: FastAPI app created")
