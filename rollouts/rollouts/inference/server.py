@@ -102,7 +102,7 @@ class EngineThread:
         # Add to engine directly (in main thread before request_queue)
         # This ensures we get the uid immediately
         uid = self.engine.add_request(input_ids, sampling_params)
-        logger.debug(f"Submitted request uid={uid}, tokens={len(input_ids)}, streaming={streaming}")
+        logger.info(f"Submitted request uid={uid}, tokens={len(input_ids)}, streaming={streaming}")
 
         if streaming:
             self._streaming_uids.add(uid)
@@ -523,7 +523,7 @@ class InferenceServer:
                 await trio.sleep(0.001)
                 continue
 
-            logger.debug(f"Dispatching {len(results)} results")
+            logger.info(f"Dispatching {len(results)} results")
 
             async with self._lock:
                 for result in results:
