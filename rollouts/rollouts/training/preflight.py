@@ -486,13 +486,14 @@ def estimate_training_vram(
     # Pipeline parallelism splits layers across GPUs
     model_gb = model_gb / pipeline_parallel_size
 
-    # FSDP shards optimizer states (and optionally weights/gradients)
+    # FSDP FULL_SHARD shards weights, gradients, AND optimizer states
     fsdp_shard_factor = 1
     if use_fsdp and fsdp_world_size > 1:
-        # FSDP shards across fsdp_world_size GPUs (after TP/PP/EP splitting)
         fsdp_shard_factor = fsdp_world_size
+        # FSDP shards model weights across all FSDP GPUs
+        model_gb = model_gb / fsdp_shard_factor
 
-    # Gradients: same size as model (also split by parallelism)
+    # Gradients: same size as sharded model (FSDP shards these too)
     gradients_gb = model_gb
 
     # Optimizer states: Adam uses 2x model size (momentum + variance)
