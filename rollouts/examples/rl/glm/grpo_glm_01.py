@@ -3,15 +3,18 @@
 Uses TorchTitan backend for distributed training with GLM model support.
 
 Run with:
-    # RunPod H100 (recommended for GLM-4.7-Flash 30B MoE)
-    python -m rollouts.run --config examples/rl/glm/grpo_glm_01.py --provider runpod
+    # RunPod 2×B200 (recommended for GLM-4.7-Flash 30B MoE)
+    python -m rollouts.run --config examples/rl/glm/grpo_glm_01.py --provision --provider runpod
 
-    # Local (requires 2x A100 80GB or 4x A100 40GB)
+    # Local (requires 2x B200 or 2x H100 80GB)
     python -m rollouts.run --config examples/rl/glm/grpo_glm_01.py --local
 
 Note:
     GLM-4.7-Flash is a 30B MoE model with 3.6B active parameters.
-    Requires ~40GB VRAM for inference + training on separate GPUs.
+    With 2×B200: inference on GPU 0, training on GPU 1.
+    Expert parallelism (EP=2) is NOT used here since we have dedicated GPUs
+    for inference vs training. EP would only help if we needed to shard the
+    model across multiple GPUs for a single role.
 """
 
 from examples.rl.glm.base_config import train as _base_train
@@ -31,7 +34,7 @@ from rollouts.training.grpo import (
 # =============================================================================
 
 hardware = HardwareConfig(
-    gpu_type="H100",
+    gpu_type="B200",
     gpu_count=2,  # 1 for inference, 1 for training
     provider="runpod",
 )

@@ -1,0 +1,91 @@
+# Rollouts Repository Feedback
+
+Accumulated observations from working with this codebase.
+
+## Pyright False Positives vs Real Errors
+
+Most pyright errors are **false positives** from missing deps in local type-checking env:
+- `torch`, `trio`, `transformers`, `modal` — installed on GPU pods, not locally
+- `bifrost`, `broker` — workspace packages, pyright doesn't see them
+
+The "unclosed paren" and "undefined variable" errors were also false positives — `run.py` is syntactically correct and runs fine.
+
+**Lesson**: Don't trust pyright errors in this repo without verifying. The lazy imports and workspace structure confuse it.
+
+## CLI Naming
+
+- Renamed `--allow-dirty` to `--force-deploy-committed` — old name implied dirty code would deploy, but only committed code ever deploys (git bundle). New name is clearer about what actually happens.
+
+## Architecture Observations
+
+### What Works
+- Single-provider training (RunPod or Modal, not both)
+- Single-node multi-GPU with FSDP
+- Weight sync via disk or NCCL (same machine/VPC)
+- GLM-4.7-Flash config exists (`examples/rl/glm/grpo_glm_01.py`)
+
+### What's Missing
+- `multi_node.py` is complete but has no CLI entry point in `run.py`
+- No cross-provider orchestration (can't split inference on Modal, training on RunPod)
+- No HTTP-based weight sync for cross-cloud scenarios
+- Modal runner (`modal_runner.py`) is completely separate from bifrost/broker path
+
+### GLM-5 Feasibility
+- GLM-5: 744B total, 40B active params
+- 8×H100 (640GB): Not enough for full fine-tuning
+- 8×B200 (1.5TB): Possible with LoRA + FSDP
+- GLM-4.7-Flash: Works on 2×B200 (192GB each, ~170GB needed for training)
+
+## Running Experiments
+
+### Commands
+```bash
+# RunPod single-node
+python -m rollouts.run --config examples/rl/glm/grpo_glm_01.py --provision --provider runpod --force-deploy-committed
+
+# Modal
+python -m rollouts.modal_runner --config examples/rl/reverse_text/grpo_modal_01.py --gpu A100
+```
+
+### Monitoring (use .jsonl, not .log)
+```bash
+# Watch training progress
+watch -n5 'tail -20 results/rl/<run_id>/metrics.jsonl | jq -r "\"Step \\(.step): reward=\\(.mean_reward)\""'
+
+# Check for errors
+cat results/rl/<run_id>/training.jsonl | jq 'select(.message | test("error|failed"; "i"))'
+```
+
+Do NOT use `tail -f training.log` — that file is a raw terminal recording with ANSI codes.
+
+### Cost Estimates
+- 2×H100 RunPod: ~$4/hr
+- 2×B200 RunPod: ~$8/hr (estimate)
+- 8×H100 RunPod: ~$25/hr
+- 8×A100 Modal: ~$20/hr
+
+## TODOs Discovered
+
+1. ~~Fix syntax errors in run.py~~ — were pyright false positives, code is fine
+2. Wire up multi_node.py to CLI (code exists, no entry point)
+3. HTTP weight sync for cross-provider setups (NCCL won't work cross-cloud)
+4. Modal GPU snapshotting mentioned but not implemented
+
+## Provisioning Experience
+
+- RunPod H100 PCIe often unavailable, falls back to H100 SXM (slightly more expensive)
+- SSH wait can take 5-15 min for RunPod
+- Code deploy via git bundle is fast (~3s for 15MB)
+- Bootstrap steps (uv, sglang, megatron) take several minutes
+
+## Architecture Clarity
+
+Good:
+- Config-driven (`hardware = HardwareConfig(...)` in example files)
+- Clear separation: bifrost (SSH deploy) vs modal_runner (Modal sandboxes)
+- Weight sync strategies well-documented in code
+
+Confusing:
+- `multi_node.py` exists with full implementation but no way to invoke it from CLI
+- Modal and RunPod are completely separate code paths, can't mix
+- `--provision` flag is "legacy" but still commonly needed
