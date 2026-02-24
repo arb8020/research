@@ -102,18 +102,18 @@ def _build_modal_image(modal: Any, deps: DepsConfig, gpu_type: str) -> Any:
         image = image.apt_install(*deps.system_packages)
 
     if deps.pip_packages:
-        # Build pip_install kwargs
-        pip_kwargs: dict[str, Any] = {"index_url": pip_index}
+        # Use uv for faster installs (~5x faster than pip)
+        uv_kwargs: dict[str, Any] = {"index_url": pip_index}
         if deps.pip_extra_index_url:
-            pip_kwargs["extra_index_url"] = deps.pip_extra_index_url
+            uv_kwargs["extra_index_url"] = deps.pip_extra_index_url
 
-        image = image.pip_install(*deps.pip_packages, **pip_kwargs)
+        image = image.uv_pip_install(*deps.pip_packages, **uv_kwargs)
 
     for cmd in deps.bootstrap_commands:
         image = image.run_commands(cmd)
 
     # Add force rebuild marker (change this to invalidate cache)
-    image = image.run_commands("echo 'rollouts-build-v3'")
+    image = image.run_commands("echo 'rollouts-build-v4-uv'")
 
     # Set up HuggingFace cache and Megatron PYTHONPATH
     image = image.env({
