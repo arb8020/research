@@ -8,6 +8,7 @@ dependencies = [
     "anthropic>=0.40.0",
     "dacite>=1.8.0",
     "aiohttp>=3.9.0",
+    "hypercorn>=0.17.0",
     "trio>=0.32.0",
     "httpx>=0.25.0",
     "markdownify>=0.11.0",

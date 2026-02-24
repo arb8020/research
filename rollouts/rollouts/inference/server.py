@@ -16,7 +16,6 @@ Or programmatically:
 from __future__ import annotations
 
 import argparse
-import asyncio
 import logging
 import queue
 import threading
@@ -27,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import torch
+import trio
 
 from .core import Req, SamplingParams
 from .engine_v2 import EngineConfig, InferenceEngineV2
@@ -251,15 +251,16 @@ class InferenceServer:
         self._engine_thread = EngineThread(engine)
         logger.info("InferenceServer: EngineThread created")
 
-        # Pending requests: uid -> (future, return_logprob)
-        self._pending: dict[int, tuple[asyncio.Future, bool]] = {}
-        self._lock = asyncio.Lock()
+        # Pending requests: uid -> (event, return_logprob)
+        self._pending: dict[int, tuple[trio.Event, bool]] = {}
+        self._pending_result: dict[int, Req] = {}
+        self._lock = trio.Lock()
         # Semaphore to limit concurrent requests to engine capacity
-        self._request_slots = asyncio.Semaphore(engine.scheduler_config.max_batch_size)
+        self._request_slots = trio.Semaphore(engine.scheduler_config.max_batch_size)
 
-        # Streaming requests: uid -> (queue, prompt_len, seen_len)
-        # Queue receives (token_id, is_done, finish_reason) tuples
-        self._streaming: dict[int, tuple[asyncio.Queue, int, int]] = {}
+        # Streaming requests: uid -> (send channel, prompt_len, seen_len)
+        # Send channel receives (token_id, is_done, finish_reason) tuples
+        self._streaming: dict[int, tuple[trio.MemorySendChannel, int, int]] = {}
         logger.info("InferenceServer.__init__ complete")
 
     def _convert_sampling_params(self, params: dict[str, Any]) -> SamplingParams:
@@ -286,11 +287,14 @@ class InferenceServer:
                 uid = self._engine_thread.submit_request(
                     request.input_ids, sampling_params, streaming=False
                 )
-                future: asyncio.Future = asyncio.Future()
-                self._pending[uid] = (future, request.return_logprob)
+                event = trio.Event()
+                self._pending[uid] = (event, request.return_logprob)
 
             # Wait for completion
-            result = await future
+            await event.wait()
+            result = self._pending_result.pop(uid, None)
+            if result is None:
+                raise RuntimeError(f"Missing result for uid={uid}")
         finally:
             # Release slot for next request
             self._request_slots.release()
@@ -349,10 +353,13 @@ class InferenceServer:
                 uid = self._engine_thread.submit_request(
                     input_ids, sampling_params, streaming=False
                 )
-                future: asyncio.Future = asyncio.Future()
-                self._pending[uid] = (future, return_logprobs)
+                event = trio.Event()
+                self._pending[uid] = (event, return_logprobs)
 
-            result = await future
+            await event.wait()
+            result = self._pending_result.pop(uid, None)
+            if result is None:
+                raise RuntimeError(f"Missing result for uid={uid}")
         finally:
             # Release slot for next request
             self._request_slots.release()
@@ -429,18 +436,20 @@ class InferenceServer:
 
         try:
             # Create token queue for streaming
-            token_queue: asyncio.Queue = asyncio.Queue()
+            token_send, token_recv = trio.open_memory_channel[Any](
+                self._engine_thread.engine.scheduler_config.max_batch_size
+            )
 
             # Submit to engine thread
             async with self._lock:
                 uid = self._engine_thread.submit_request(input_ids, sampling_params, streaming=True)
                 # Register for streaming: (queue, prompt_len, seen_len)
-                self._streaming[uid] = (token_queue, prompt_len, prompt_len)
+                self._streaming[uid] = (token_send, prompt_len, prompt_len)
 
             # Stream tokens as they arrive
             while True:
                 # Get next token or done signal
-                token_id, is_done, finish_reason = await token_queue.get()
+                token_id, is_done, finish_reason = await token_recv.receive()
 
                 if is_done:
                     # Final chunk
@@ -482,6 +491,7 @@ class InferenceServer:
         finally:
             # Cleanup
             self._streaming.pop(uid, None)
+            token_send.close()
             self._request_slots.release()
 
     def _json_dumps(self, obj: Any) -> str:
@@ -490,21 +500,23 @@ class InferenceServer:
 
         return json.dumps(obj, separators=(",", ":"))
 
-    async def result_dispatcher(self) -> None:
+    async def result_dispatcher(self, startup_complete: trio.Event | None = None) -> None:
         """Background task that dispatches results from engine thread.
 
         Polls the engine thread's result queue and dispatches to pending
         futures and streaming queues.
         """
         logger.info("Result dispatcher starting")
+        if startup_complete is not None:
+            startup_complete.set()
 
         while True:
             # Poll engine thread for results (blocking with timeout)
-            results = await asyncio.to_thread(self._engine_thread.get_results, 0.01)
+            results = await trio.to_thread.run_sync(self._engine_thread.get_results, 0.01)
 
             if not results:
                 # No results, yield to other coroutines
-                await asyncio.sleep(0.001)
+                await trio.sleep(0.001)
                 continue
 
             logger.debug(f"Dispatching {len(results)} results")
@@ -516,29 +528,28 @@ class InferenceServer:
                     if result.req is not None:
                         # Request finished
                         if uid in self._pending:
-                            future, _ = self._pending.pop(uid)
-                            if not future.done():
-                                logger.debug(f"Resolving future for uid={uid}")
-                                future.set_result(result.req)
+                            event, _ = self._pending.pop(uid)
+                            self._pending_result[uid] = result.req
+                            if not event.is_set():
+                                event.set()
 
                         elif uid in self._streaming:
                             # Signal completion to streaming handler
                             token_queue, prompt_len, seen_len = self._streaming[uid]
                             # Push final done signal
-                            await token_queue.put((None, True, result.finish_reason))
+                            await token_queue.send((None, True, result.finish_reason))
                             logger.debug(f"Streaming complete for uid={uid}")
 
                     elif result.new_token is not None:
                         # Streaming token update
                         if uid in self._streaming:
                             token_queue, prompt_len, seen_len = self._streaming[uid]
-                            await token_queue.put((result.new_token, False, None))
+                            await token_queue.send((result.new_token, False, None))
 
 
 def create_app(engine: InferenceEngineV2) -> Any:
     """Create FastAPI app with inference endpoints."""
     logger.info("create_app: starting")
-    from contextlib import asynccontextmanager
 
     from fastapi import FastAPI, HTTPException
 
@@ -552,32 +563,18 @@ def create_app(engine: InferenceEngineV2) -> Any:
     logger.info("create_app: engine thread started")
 
     # Track if startup is complete (result dispatcher running)
-    startup_complete = False
-
-    @asynccontextmanager
-    async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-        nonlocal startup_complete
-        # Startup: start result dispatcher (needs event loop)
-        logger.info("lifespan: starting result dispatcher")
-        dispatcher_task = asyncio.create_task(server.result_dispatcher())
-        startup_complete = True
-        logger.info("lifespan: result dispatcher started, startup complete")
-        yield
-        # Shutdown: cancel dispatcher and stop engine thread
-        logger.info("lifespan: shutting down")
-        startup_complete = False
-        dispatcher_task.cancel()
-        server._engine_thread.stop()
-        logger.info("lifespan: shutdown complete")
+    startup_complete = trio.Event()
 
     logger.info("create_app: creating FastAPI app")
-    app = FastAPI(title="Rollouts Inference Server", lifespan=lifespan)
+    app = FastAPI(title="Rollouts Inference Server")
+    app.state.inference_server = server
+    app.state.startup_complete = startup_complete
     logger.info("create_app: FastAPI app created")
 
     @app.get("/health")
     async def health() -> dict:
         # Fail health check until startup is complete
-        if not startup_complete:
+        if not startup_complete.is_set():
             raise HTTPException(
                 status_code=503,
                 detail="Server starting up, result dispatcher not ready",
@@ -787,9 +784,33 @@ def create_app(engine: InferenceEngineV2) -> Any:
 
 def run_server(app: Any, host: str = "0.0.0.0", port: int = 8000) -> None:
     """Run the inference server."""
-    import uvicorn
+    from hypercorn.config import Config
+    from hypercorn.trio import serve
 
-    uvicorn.run(app, host=host, port=port)
+    async def serve_http() -> None:
+        server = getattr(app.state, "inference_server", None)
+        startup_complete = getattr(app.state, "startup_complete", None)
+
+        if server is None:
+            raise RuntimeError("create_app must be used before run_server")
+        if startup_complete is None:
+            raise RuntimeError("App startup state not initialized")
+
+        config = Config()
+        config.bind = [f"{host}:{port}"]
+
+        async with trio.open_nursery() as nursery:
+            nursery.start_soon(server.result_dispatcher, startup_complete)
+            logger.info("Started result dispatcher task")
+            try:
+                await serve(app, config)
+            finally:
+                server._engine_thread.stop()
+
+    try:
+        trio.run(serve_http)
+    except KeyboardInterrupt:
+        logger.info("Server stopped by user")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -843,7 +864,7 @@ def main() -> None:
 
     logger.info("Creating app...")
     app = create_app(engine)
-    logger.info("App created, starting uvicorn server...")
+    logger.info("App created, starting hypercorn (trio runtime)...")
     run_server(app, host=args.host, port=args.port)
     logger.info("Server stopped")
 
