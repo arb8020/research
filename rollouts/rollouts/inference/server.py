@@ -538,27 +538,35 @@ class InferenceServer:
 def create_app(engine: InferenceEngineV2) -> Any:
     """Create FastAPI app with inference endpoints."""
     logger.info("create_app: starting")
+    from contextlib import asynccontextmanager
+
     from fastapi import FastAPI, HTTPException
 
     logger.info("create_app: creating InferenceServer")
     server = InferenceServer(engine)
     logger.info("create_app: InferenceServer created")
 
-    logger.info("create_app: creating FastAPI app")
-    app = FastAPI(title="Rollouts Inference Server")
-    logger.info("create_app: FastAPI app created")
-
-    # Start engine thread immediately (not in startup event which may not fire reliably)
+    # Start engine thread immediately (synchronous, no event loop needed)
     logger.info("create_app: starting engine thread")
     server._engine_thread.start()
     logger.info("create_app: engine thread started")
 
-    @app.on_event("startup")
-    async def startup() -> None:
-        # Start result dispatcher (needs event loop, so must be in startup)
-        logger.info("startup: starting result dispatcher")
-        asyncio.create_task(server.result_dispatcher())
-        logger.info("startup: result dispatcher started")
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+        # Startup: start result dispatcher (needs event loop)
+        logger.info("lifespan: starting result dispatcher")
+        dispatcher_task = asyncio.create_task(server.result_dispatcher())
+        logger.info("lifespan: result dispatcher started")
+        yield
+        # Shutdown: cancel dispatcher and stop engine thread
+        logger.info("lifespan: shutting down")
+        dispatcher_task.cancel()
+        server._engine_thread.stop()
+        logger.info("lifespan: shutdown complete")
+
+    logger.info("create_app: creating FastAPI app")
+    app = FastAPI(title="Rollouts Inference Server", lifespan=lifespan)
+    logger.info("create_app: FastAPI app created")
 
     @app.get("/health")
     async def health() -> dict:
