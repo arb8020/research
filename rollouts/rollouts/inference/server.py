@@ -809,7 +809,12 @@ def create_app(engine: InferenceEngineV2) -> Any:
 
 
 def run_server(app: Any, host: str = "0.0.0.0", port: int = 8000) -> None:
-    """Run the inference server."""
+    """Run the inference server.
+
+    Uses trio_asyncio to bridge trio (for structured concurrency) with
+    uvicorn/FastAPI (which are asyncio-only). The result_dispatcher runs
+    as a trio task while uvicorn runs in the asyncio compatibility layer.
+    """
     import trio_asyncio
     import uvicorn
     from uvicorn.config import Config
@@ -829,8 +834,12 @@ def run_server(app: Any, host: str = "0.0.0.0", port: int = 8000) -> None:
             logger.info("Started result dispatcher task")
             try:
                 async with trio_asyncio.open_loop():
+                    # Use aio_as_trio to properly wrap the asyncio coroutine
+                    # uvicorn.Server.serve() is an asyncio coroutine, so we need
+                    # to wrap it for trio compatibility
                     config = Config(app=app, host=host, port=port, loop="asyncio")
-                    await uvicorn.Server(config=config).serve()
+                    uvicorn_server = uvicorn.Server(config=config)
+                    await trio_asyncio.aio_as_trio(uvicorn_server.serve)()
             finally:
                 server._engine_thread.stop()
 
