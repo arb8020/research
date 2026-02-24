@@ -444,6 +444,7 @@ def estimate_training_vram(
     expert_parallel_size: int = 1,
     pipeline_parallel_size: int = 1,
     use_fsdp: bool = False,
+    fsdp_world_size: int = 1,
     use_lora: bool = False,
     activation_checkpointing: bool = False,
 ) -> MemoryEstimate:
@@ -487,10 +488,9 @@ def estimate_training_vram(
 
     # FSDP shards optimizer states (and optionally weights/gradients)
     fsdp_shard_factor = 1
-    if use_fsdp:
-        # Assume FSDP world size = total GPUs / (TP * PP * EP)
-        # For simplicity, assume it shards optimizer states across remaining GPUs
-        fsdp_shard_factor = max(1, 8 // (tensor_parallel_size * pipeline_parallel_size))
+    if use_fsdp and fsdp_world_size > 1:
+        # FSDP shards across fsdp_world_size GPUs (after TP/PP/EP splitting)
+        fsdp_shard_factor = fsdp_world_size
 
     # Gradients: same size as model (also split by parallelism)
     gradients_gb = model_gb
@@ -633,6 +633,9 @@ def validate_config(config: Any, gpu_type: str) -> PreflightResult:
         expert_parallel_size=inference_ep,
     )
 
+    # Get number of trainer GPUs for FSDP sharding
+    trainer_gpu_count = len(getattr(config.trainer, "cuda_device_ids", (0,)))
+
     # Estimate training VRAM (per GPU after parallelism split)
     training_est = estimate_training_vram(
         model_name=config.model.name,
@@ -645,6 +648,7 @@ def validate_config(config: Any, gpu_type: str) -> PreflightResult:
         expert_parallel_size=trainer_ep,
         pipeline_parallel_size=trainer_pp,
         use_fsdp=use_fsdp,
+        fsdp_world_size=trainer_gpu_count,
         use_lora=use_lora,
         activation_checkpointing=activation_checkpointing,
     )
