@@ -406,6 +406,7 @@ class InferenceServer:
 
         Yields SSE-formatted chunks as tokens are generated.
         """
+        logger.info("chat_stream_start: state=entry")
 
         messages = request.get("messages", [])
         max_tokens = request.get("max_tokens", 16)
@@ -419,6 +420,8 @@ class InferenceServer:
         )
         input_ids = self.tokenizer.encode(prompt, add_special_tokens=False)
         prompt_len = len(input_ids)
+        logger.info(f"chat_stream_template_applied: prompt_len={prompt_len}")
+        logger.info(f"chat_stream_encoded: num_tokens={len(input_ids)}")
 
         sampling_params = SamplingParams(
             temperature=temperature,
@@ -433,7 +436,9 @@ class InferenceServer:
         created = int(time.time())
 
         # Wait for available slot
+        logger.info("chat_stream_waiting_slot: status=before_acquire")
         await self._request_slots.acquire()
+        logger.info("chat_stream_got_slot: status=acquired")
 
         try:
             # Create token queue for streaming
@@ -446,11 +451,17 @@ class InferenceServer:
                 uid = self._engine_thread.submit_request(input_ids, sampling_params, streaming=True)
                 # Register for streaming: (queue, prompt_len, seen_len)
                 self._streaming[uid] = (token_send, prompt_len, prompt_len)
+            logger.info(f"chat_stream_submitted: uid={uid}")
 
             # Stream tokens as they arrive
+            first_token = True
             while True:
                 # Get next token or done signal
+                if first_token:
+                    logger.info("chat_stream_waiting_token: iteration=first")
+                    first_token = False
                 token_id, is_done, finish_reason = await token_recv.receive()
+                logger.info(f"chat_stream_token_received: token_id={token_id}, is_done={is_done}")
 
                 if is_done:
                     # Final chunk
@@ -629,6 +640,7 @@ def create_app(engine: InferenceEngineV2) -> Any:
         from fastapi.responses import StreamingResponse
 
         try:
+            logger.info(f"chat_endpoint_called: stream={request.get('stream')}")
             if request.get("stream", False):
                 # Streaming mode: return SSE stream
                 return StreamingResponse(
