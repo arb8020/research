@@ -55,6 +55,9 @@ class EngineThread:
 
     The engine runs at GPU pace, pulling requests from a queue.
     Results are pushed to a result queue for the HTTP layer to dispatch.
+
+    If the engine thread crashes, the exception is stored in `fatal_error`
+    and all pending requests will timeout. Check this on health endpoints.
     """
 
     def __init__(self, engine: InferenceEngineV2) -> None:
@@ -68,6 +71,9 @@ class EngineThread:
 
         # Track streaming uids (engine's uids)
         self._streaming_uids: set[int] = set()
+
+        # Fatal error from engine thread (if any)
+        self.fatal_error: BaseException | None = None
 
         # Thread state
         self._thread: threading.Thread | None = None
@@ -121,50 +127,54 @@ class EngineThread:
         return results
 
     def _run_loop(self) -> None:
-        """Main engine loop."""
+        """Main engine loop.
+
+        On crash, stores exception in self.fatal_error and exits.
+        The HTTP layer should check this and fail health checks.
+        """
         logger.info("Engine loop starting")
         step_count = 0
 
-        while not self._stop_event.is_set():
-            # Drain the request queue (requests are already added to engine)
-            self._drain_queue()
+        try:
+            while not self._stop_event.is_set():
+                self._drain_queue()
 
-            # Check for work
-            if not self.engine.has_pending():
-                logger.debug("No pending work, waiting...")
-                try:
-                    msg = self._request_queue.get(timeout=0.1)
-                    if msg is None:
-                        break
-                    # Request already added in submit_request, just continue
-                except queue.Empty:
-                    continue
+                if not self.engine.has_pending():
+                    try:
+                        msg = self._request_queue.get(timeout=0.1)
+                        if msg is None:
+                            break
+                    except queue.Empty:
+                        continue
 
-            # Run one step
-            step_count += 1
-            logger.debug(f"Running step {step_count}")
-            finished = self.engine.step()
-            logger.debug(f"Step {step_count} complete, finished={len(finished)}")
+                step_count += 1
+                finished = self.engine.step()
 
-            # Push streaming token updates for decode requests
-            for req in self.engine.state.decode_set:
-                if req.uid in self._streaming_uids:
-                    # Push latest token
-                    if len(req.input_ids) > 0:
-                        token = req.input_ids[-1].item()
-                        self._result_queue.put(EngineResult(uid=req.uid, new_token=token))
+                # Push streaming token updates for decode requests
+                for req in self.engine.state.decode_set:
+                    if req.uid in self._streaming_uids:
+                        if len(req.input_ids) > 0:
+                            # req.input_ids is a tensor per core.py Req definition
+                            token = req.input_ids[-1].item()
+                            self._result_queue.put(EngineResult(uid=req.uid, new_token=token))
 
-            # Push finished results
-            for req in finished:
-                is_eos = req.input_ids[-1].item() == self.engine.eos_token_id
-                finish_reason = "stop" if is_eos else "length"
-                logger.debug(f"Request {req.uid} finished, reason={finish_reason}")
-                self._result_queue.put(
-                    EngineResult(uid=req.uid, req=req, finish_reason=finish_reason)
-                )
-                self._streaming_uids.discard(req.uid)
+                # Push finished results
+                for req in finished:
+                    # req.input_ids is a tensor per core.py Req definition
+                    last_token = req.input_ids[-1].item()
+                    is_eos = last_token == self.engine.eos_token_id
+                    finish_reason = "stop" if is_eos else "length"
+                    self._result_queue.put(
+                        EngineResult(uid=req.uid, req=req, finish_reason=finish_reason)
+                    )
+                    self._streaming_uids.discard(req.uid)
 
-        logger.info(f"Engine loop stopped after {step_count} steps")
+            logger.info(f"Engine loop stopped after {step_count} steps")
+
+        except BaseException as e:
+            # Store the exception so HTTP layer knows we crashed
+            self.fatal_error = e
+            logger.exception(f"Engine loop crashed after {step_count} steps")
 
     def _drain_queue(self) -> None:
         """Drain request queue (requests already added to engine)."""
@@ -551,6 +561,13 @@ def create_app(engine: InferenceEngineV2) -> Any:
 
     @app.get("/health")
     async def health() -> dict:
+        # Fail health check if engine thread crashed
+        if server._engine_thread.fatal_error is not None:
+            err = server._engine_thread.fatal_error
+            raise HTTPException(
+                status_code=503,
+                detail=f"Engine thread crashed: {type(err).__name__}: {err}",
+            )
         return {"status": "ok"}
 
     @app.get("/v1/models")

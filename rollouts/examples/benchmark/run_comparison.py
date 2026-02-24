@@ -1,11 +1,11 @@
-"""Run engine_v2 benchmark on Modal (single backend test).
+"""Run inference benchmark on Modal.
 
 Usage:
     cd /Users/chiraagbalu/research/rollouts
-    python examples/benchmark/run_comparison.py
-
-    # Or with sglang:
     python examples/benchmark/run_comparison.py --backend sglang
+    python examples/benchmark/run_comparison.py --backend engine_v2
+
+Images are pre-built in rollouts/inference/benchmark/images.py with pinned versions.
 """
 
 import argparse
@@ -13,6 +13,7 @@ import json
 import logging
 import sys
 from pathlib import Path
+from typing import Literal
 
 import trio
 
@@ -21,7 +22,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from rollouts.inference.benchmark.config import BenchmarkConfig, WorkloadConfig
 from rollouts.inference.benchmark.runner import run_benchmark
-from rollouts.training.configs import DepsConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,40 +39,10 @@ WORKLOAD = WorkloadConfig(
     concurrency=8,
 )
 
-# Dependencies for engine_v2
-ENGINE_V2_DEPS = DepsConfig(
-    pip_packages=(
-        "torch==2.6.0",
-        "transformers>=5.0",
-        "numpy",
-        "httpx",
-        "safetensors",
-        "triton",
-        "flashinfer-python>=0.3",
-        "fastapi",
-        "uvicorn",
-    ),
-    pip_index_url="https://download.pytorch.org/whl/cu126",
-)
 
-# Dependencies for sglang
-SGLANG_DEPS = DepsConfig(
-    pip_packages=(
-        "torch==2.6.0",
-        "transformers>=5.0",
-        "numpy",
-        "httpx",
-        "sglang[srt]>=0.4",  # srt instead of all - faster install
-    ),
-    pip_index_url="https://download.pytorch.org/whl/cu126",
-)
-
-
-async def main(backend: str) -> None:
+async def main(backend: Literal["sglang", "engine_v2"]) -> None:
     model = "Qwen/Qwen3-0.6B"
     gpu_type = "A100"
-
-    deps = ENGINE_V2_DEPS if backend == "engine_v2" else SGLANG_DEPS
 
     config = BenchmarkConfig(
         model=model,
@@ -92,7 +62,6 @@ async def main(backend: str) -> None:
     try:
         result = await run_benchmark(
             config=config,
-            deps=deps,
             gpu_type=gpu_type,
         )
 

@@ -460,11 +460,31 @@ def main() -> None:
 
     assert config_path.exists(), f"Config not found: {config_path}"
 
+    # Load config module to extract hardware config
+    config_module = load_config_module(config_path)
+    hardware = getattr(config_module, "hardware", None)
+    if hardware is None:
+        raise ValueError(
+            f"Config file must define 'hardware' (HardwareConfig). Got: {dir(config_module)}"
+        )
+
+    deps = hardware.deps
+    if deps is None:
+        raise ValueError(
+            "HardwareConfig.deps is required for Modal. "
+            "Define deps=DepsConfig(...) in your hardware config."
+        )
+
+    # Use hardware config values, allow CLI overrides
+    gpu_type = args.gpu if args.gpu != "A100" else hardware.gpu_type
+    gpu_count = args.gpu_count if args.gpu_count != 1 else hardware.gpu_count
+
     # Build run config
     run_config = ModalRunConfig(
         config_path=str(config_path),
-        gpu_type=args.gpu,
-        gpu_count=args.gpu_count,
+        gpu_type=gpu_type,
+        gpu_count=gpu_count,
+        deps=deps,
         timeout_hours=args.timeout_hours,
     )
 

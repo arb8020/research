@@ -1,7 +1,7 @@
 """Benchmark runner for Modal.
 
 Runs inference benchmarks on Modal sandboxes.
-Reuses the same DepsConfig/HardwareConfig infrastructure as training.
+Images are pre-built in images.py with pinned versions.
 """
 
 from __future__ import annotations
@@ -14,12 +14,9 @@ import tempfile
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import trio
-
-if TYPE_CHECKING:
-    from rollouts.training.configs import DepsConfig
 
 from .config import BenchmarkConfig, BenchmarkResult
 
@@ -27,48 +24,6 @@ logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).parent.parent.parent.parent
 MODAL_APP_NAME = "rollouts-benchmark"
-
-
-def _build_modal_image(modal: Any, deps: DepsConfig, gpu_type: str) -> Any:
-    """Build Modal image from DepsConfig specification.
-
-    Uses uv_pip_install for fast builds (~60s vs 5+ min with pip).
-    Uses debian_slim base - uv handles CUDA deps via torch wheels.
-    """
-    # GPU-specific torch index override
-    # Use CUDA 12.6 by default for FlashInfer 0.3+ support
-    # Use CUDA 12.8 for Blackwell (B200/GB200)
-    if gpu_type in ("B200", "GB200"):
-        pip_index = "https://download.pytorch.org/whl/nightly/cu128"
-    elif deps.pip_index_url:
-        pip_index = deps.pip_index_url
-    else:
-        pip_index = "https://download.pytorch.org/whl/cu126"
-
-    # Use debian_slim with uv for fast installs
-    # CUDA libs come bundled in torch wheels, no need for nvidia/cuda base
-    image = modal.Image.debian_slim(python_version=deps.python_version or "3.12")
-
-    # Git needed for some packages (sglang)
-    system_packages = list(deps.system_packages) if deps.system_packages else []
-    if "git" not in system_packages:
-        system_packages.append("git")
-    image = image.apt_install(*system_packages)
-
-    if deps.pip_packages:
-        # Use uv_pip_install for much faster builds
-        uv_kwargs: dict[str, Any] = {"extra_index_url": pip_index}
-        image = image.uv_pip_install(*deps.pip_packages, **uv_kwargs)
-
-    for cmd in deps.bootstrap_commands:
-        image = image.run_commands(cmd)
-
-    image = image.env({
-        "HF_HOME": "/root/.cache/huggingface",
-        "HF_HUB_ENABLE_HF_TRANSFER": "1",
-    })
-
-    return image
 
 
 def _exec_sync(sandbox: Any, command: str, timeout: int = 300) -> tuple[str, str, int]:
@@ -660,16 +615,16 @@ async def run_benchmark_local(
 
 async def run_benchmark(
     config: BenchmarkConfig,
-    deps: DepsConfig,
     gpu_type: str = "A100",
     gpu_count: int = 1,
     timeout_hours: int = 2,
 ) -> BenchmarkResult:
     """Run benchmark on Modal.
 
+    Images are pre-built in images.py with pinned versions.
+
     Args:
         config: Benchmark configuration
-        deps: Environment dependencies (from HardwareConfig.deps)
         gpu_type: GPU type to use
         gpu_count: Number of GPUs
         timeout_hours: Sandbox timeout
