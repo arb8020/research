@@ -25,6 +25,39 @@ GPU_VRAM_GB: dict[str, float] = {
     "A6000": 48.0,
 }
 
+# GPU compute capability and minimum CUDA toolkit version requirements
+# Format: (sm_version, min_cuda_major, min_cuda_minor, architecture_name)
+#
+# IMPORTANT: This is the CUDA *toolkit* version (nvcc --version), not the driver
+# version shown by nvidia-smi. The driver can be newer than the toolkit.
+#
+# Sources:
+# - https://docs.nvidia.com/cuda/blackwell-compatibility-guide/
+# - https://arnon.dk/matching-sm-architectures-arch-and-gencode-for-various-nvidia-cards/
+GPU_CUDA_REQUIREMENTS: dict[str, tuple[int, int, int, str]] = {
+    # Blackwell (sm_100/sm_100a) - requires CUDA 12.8+ toolkit
+    # FlashInfer/Triton JIT-compile kernels for sm_100a which needs nvcc 12.8+
+    "B200": (100, 12, 8, "Blackwell"),
+    "B100": (100, 12, 8, "Blackwell"),
+    "GB200": (100, 12, 8, "Blackwell"),
+    # Hopper (sm_90) - requires CUDA 12.0+ toolkit
+    "H100": (90, 12, 0, "Hopper"),
+    "H100 SXM": (90, 12, 0, "Hopper"),
+    "H200": (90, 12, 0, "Hopper"),
+    # Ada Lovelace (sm_89) - requires CUDA 11.8+ toolkit
+    "RTX 4090": (89, 11, 8, "Ada Lovelace"),
+    "L40S": (89, 11, 8, "Ada Lovelace"),
+    "L40": (89, 11, 8, "Ada Lovelace"),
+    # Ampere (sm_80/86) - requires CUDA 11.0+ toolkit
+    "A100": (80, 11, 0, "Ampere"),
+    "A100-80GB": (80, 11, 0, "Ampere"),
+    "A100 80GB": (80, 11, 0, "Ampere"),
+    "A10": (86, 11, 1, "Ampere"),
+    "A6000": (86, 11, 1, "Ampere"),
+    "RTX A5000": (86, 11, 1, "Ampere"),
+    "RTX 3090": (86, 11, 1, "Ampere"),
+}
+
 # Model size estimates (billions of parameters) - fallback cache
 MODEL_PARAMS_B: dict[str, float] = {
     # Qwen models
@@ -149,6 +182,108 @@ def get_gpu_vram_gb(gpu_type: str) -> float:
             return vram
 
     raise ValueError(f"Unknown GPU type: {gpu_type}. Known types: {list(GPU_VRAM_GB.keys())}")
+
+
+def get_gpu_cuda_requirement(gpu_type: str) -> tuple[int, int, int, str] | None:
+    """Get CUDA requirements for a GPU type.
+
+    Returns:
+        Tuple of (sm_version, min_cuda_major, min_cuda_minor, arch_name)
+        or None if GPU type is not in the table.
+    """
+    # Try exact match first
+    if gpu_type in GPU_CUDA_REQUIREMENTS:
+        return GPU_CUDA_REQUIREMENTS[gpu_type]
+
+    # Try partial match
+    for known_gpu, req in GPU_CUDA_REQUIREMENTS.items():
+        if known_gpu.lower() in gpu_type.lower():
+            return req
+
+    return None
+
+
+def check_cuda_compatibility(gpu_type: str, cuda_version: str | None = None) -> list[str]:
+    """Check if the current CUDA version supports the target GPU.
+
+    This is a LOCAL check that runs before provisioning to catch obvious
+    incompatibilities early (e.g., trying to use B200 with CUDA < 12.8).
+
+    Args:
+        gpu_type: Target GPU type (e.g., "B200", "H100")
+        cuda_version: CUDA version string (e.g., "12.4", "12.8.1").
+                     If None, attempts to detect from local nvcc.
+
+    Returns:
+        List of warning/error messages. Empty if compatible.
+    """
+    messages = []
+
+    req = get_gpu_cuda_requirement(gpu_type)
+    if req is None:
+        # Unknown GPU, can't check
+        return messages
+
+    sm_version, min_major, min_minor, arch_name = req
+
+    # Detect CUDA version if not provided
+    if cuda_version is None:
+        try:
+            import subprocess
+
+            result = subprocess.run(
+                ["nvcc", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            # Parse "release 12.4" or similar from nvcc output
+            import re
+
+            match = re.search(r"release (\d+)\.(\d+)", result.stdout)
+            if match:
+                cuda_version = f"{match.group(1)}.{match.group(2)}"
+        except Exception:
+            # Can't detect, skip local check
+            # The check will happen on the remote node
+            return messages
+
+    if cuda_version is None:
+        return messages
+
+    # Parse version
+    try:
+        parts = cuda_version.split(".")
+        cuda_major = int(parts[0])
+        cuda_minor = int(parts[1]) if len(parts) > 1 else 0
+    except (ValueError, IndexError):
+        return messages
+
+    # Check compatibility
+    if cuda_major < min_major or (cuda_major == min_major and cuda_minor < min_minor):
+        messages.append(
+            f"CUDA {cuda_version} does not support {gpu_type} ({arch_name}, sm_{sm_version}). "
+            f"Requires CUDA {min_major}.{min_minor}+. "
+            f"FlashInfer/Triton will fail to compile kernels for this GPU."
+        )
+
+    return messages
+
+
+def check_remote_cuda_compatibility(gpu_type: str, cuda_version: str) -> tuple[bool, list[str]]:
+    """Check CUDA compatibility for a remote GPU.
+
+    Called after SSH connection to validate the remote environment.
+
+    Args:
+        gpu_type: Target GPU type
+        cuda_version: CUDA version string from nvidia-smi or nvcc
+
+    Returns:
+        Tuple of (is_compatible, list of error messages)
+    """
+    messages = check_cuda_compatibility(gpu_type, cuda_version)
+    return (len(messages) == 0, messages)
 
 
 def estimate_model_params_b(model_name: str) -> float:

@@ -286,6 +286,67 @@ async def _deploy_and_submit(
             print(f"\nError: Provisioning failed: {e}", file=sys.stderr)
         sys.exit(1)
 
+    # Check CUDA toolkit version compatibility and auto-upgrade if needed
+    # The driver version (nvidia-smi) may be newer than the toolkit (nvcc)
+    # FlashInfer/Triton JIT-compile kernels and need nvcc to support the GPU arch
+    from .training.preflight import get_gpu_cuda_requirement
+
+    cuda_req = get_gpu_cuda_requirement(gpu_type)
+    needs_cuda_upgrade = False
+    if cuda_req is not None:
+        sm_version, min_major, min_minor, arch_name = cuda_req
+        log(
+            "cuda_check_start",
+            gpu_type=gpu_type,
+            arch=arch_name,
+            min_cuda=f"{min_major}.{min_minor}",
+        )
+        with spinner(f"Checking CUDA toolkit for {gpu_type} ({arch_name})..."):
+            # Get nvcc version from remote
+            try:
+                result = bifrost.exec("nvcc --version 2>/dev/null || echo 'nvcc not found'")
+                nvcc_output = result.stdout if hasattr(result, "stdout") else str(result)
+
+                # Parse "release X.Y" from nvcc output
+                import re
+
+                match = re.search(r"release (\d+)\.(\d+)", nvcc_output)
+                if match:
+                    nvcc_major, nvcc_minor = int(match.group(1)), int(match.group(2))
+                    if nvcc_major < min_major or (
+                        nvcc_major == min_major and nvcc_minor < min_minor
+                    ):
+                        logger.warning(
+                            f"CUDA toolkit {nvcc_major}.{nvcc_minor} is too old for {gpu_type} "
+                            f"(needs {min_major}.{min_minor}+). Will upgrade during bootstrap."
+                        )
+                        needs_cuda_upgrade = True
+                        log(
+                            "cuda_check_done",
+                            nvcc_version=f"{nvcc_major}.{nvcc_minor}",
+                            compatible=False,
+                            will_upgrade=True,
+                        )
+                    else:
+                        log(
+                            "cuda_check_done",
+                            nvcc_version=f"{nvcc_major}.{nvcc_minor}",
+                            compatible=True,
+                        )
+                else:
+                    # nvcc not found - will need to install
+                    logger.warning(
+                        "nvcc not found on remote. Will install CUDA toolkit during bootstrap."
+                    )
+                    needs_cuda_upgrade = True
+                    log("cuda_check_done", nvcc_version="not_found", will_upgrade=True)
+            except Exception as e:
+                log("cuda_check_done", error=str(e))
+                logger.warning(
+                    f"CUDA check failed: {e}. Will attempt toolkit install during bootstrap."
+                )
+                needs_cuda_upgrade = True
+
     # Deploy code (git sync only, no bootstrap)
     script_rel_path = Path(script_path).relative_to(REPO_ROOT)
 
@@ -295,8 +356,43 @@ async def _deploy_and_submit(
     log("deploy_done", workspace=workspace)
 
     # Bootstrap steps — each gets its own spinner with ✓ on completion
-    bootstrap_steps = [
-        ("Installing system deps", "apt-get update && apt-get install -y tmux libnuma1 || true"),
+    bootstrap_steps: list[tuple[str, str]] = [
+        (
+            "Installing system deps",
+            "apt-get update && apt-get install -y tmux libnuma1 wget || true",
+        ),
+    ]
+
+    # Add CUDA toolkit upgrade if needed (must happen before Python packages that compile CUDA code)
+    if needs_cuda_upgrade and cuda_req is not None:
+        _, req_major, req_minor, _ = cuda_req
+        # Use runfile installer with --toolkit to upgrade nvcc without touching driver
+        # This installs to /usr/local/cuda-X.Y and we update PATH to use it
+        # Download URLs from: https://developer.nvidia.com/cuda-12-8-0-download-archive
+        cuda_installers = {
+            (
+                12,
+                8,
+            ): "https://developer.download.nvidia.com/compute/cuda/12.8.0/local_installers/cuda_12.8.0_570.86.10_linux.run",
+            (
+                12,
+                9,
+            ): "https://developer.download.nvidia.com/compute/cuda/12.9.0/local_installers/cuda_12.9.0_575.51.03_linux.run",
+        }
+        installer_url = cuda_installers.get((req_major, req_minor))
+        if installer_url:
+            bootstrap_steps.append((
+                f"Upgrading CUDA toolkit to {req_major}.{req_minor}",
+                f"wget -q {installer_url} -O /tmp/cuda_installer.run && "
+                f"sh /tmp/cuda_installer.run --silent --toolkit && "
+                f"rm /tmp/cuda_installer.run && "
+                f"echo 'export PATH=/usr/local/cuda-{req_major}.{req_minor}/bin:$PATH' >> ~/.bashrc && "
+                f"export PATH=/usr/local/cuda-{req_major}.{req_minor}/bin:$PATH",
+            ))
+        else:
+            logger.warning(f"No CUDA installer URL for {req_major}.{req_minor}, skipping upgrade")
+
+    bootstrap_steps.extend([
         (
             "Installing uv",
             "curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.local/bin/env",
@@ -342,7 +438,7 @@ async def _deploy_and_submit(
             # These require compilation so may be slow
             "~/.local/bin/uv pip install 'transformer_engine[pytorch]>=2.10.0' --no-build-isolation || true",
         ),
-    ]
+    ])
 
     for label, cmd in bootstrap_steps:
         log("bootstrap_step_start", label=label)
