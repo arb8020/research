@@ -551,15 +551,21 @@ def create_app(engine: InferenceEngineV2) -> Any:
     server._engine_thread.start()
     logger.info("create_app: engine thread started")
 
+    # Track if startup is complete (result dispatcher running)
+    startup_complete = False
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+        nonlocal startup_complete
         # Startup: start result dispatcher (needs event loop)
         logger.info("lifespan: starting result dispatcher")
         dispatcher_task = asyncio.create_task(server.result_dispatcher())
-        logger.info("lifespan: result dispatcher started")
+        startup_complete = True
+        logger.info("lifespan: result dispatcher started, startup complete")
         yield
         # Shutdown: cancel dispatcher and stop engine thread
         logger.info("lifespan: shutting down")
+        startup_complete = False
         dispatcher_task.cancel()
         server._engine_thread.stop()
         logger.info("lifespan: shutdown complete")
@@ -570,6 +576,12 @@ def create_app(engine: InferenceEngineV2) -> Any:
 
     @app.get("/health")
     async def health() -> dict:
+        # Fail health check until startup is complete
+        if not startup_complete:
+            raise HTTPException(
+                status_code=503,
+                detail="Server starting up, result dispatcher not ready",
+            )
         # Fail health check if engine thread crashed
         if server._engine_thread.fatal_error is not None:
             err = server._engine_thread.fatal_error
