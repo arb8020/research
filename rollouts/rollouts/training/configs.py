@@ -314,6 +314,9 @@ class InferenceConfig:
     mem_fraction: float = 0.7
     tensor_parallel_size: int = 1  # GPUs per engine (1 = each GPU is its own engine)
     expert_parallel_size: int = 1  # For MoE models (SGLang --ep-size)
+    startup_timeout: float = (
+        300.0  # Max seconds to wait for server to start (model download can be slow)
+    )
 
     @property
     def num_engines(self) -> int:

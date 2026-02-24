@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import logging
+import os
 import sys
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
@@ -193,7 +194,7 @@ async def _deploy_and_submit(
             if len(untracked) > 5:
                 print(f"   ... and {len(untracked) - 5} more untracked", file=sys.stderr)
             print("\nTo include them: git add <file> && git commit", file=sys.stderr)
-            print("To proceed without them: --allow-dirty", file=sys.stderr)
+            print("To proceed without them: --force-deploy-committed", file=sys.stderr)
             sys.exit(1)
 
     # Acquire node - show which credentials profile is being used
@@ -325,6 +326,20 @@ async def _deploy_and_submit(
         with spinner(f"{label}..."):
             bifrost.exec(cmd, working_dir=workspace)
         log("bootstrap_step_done", label=label)
+
+    # HuggingFace login for faster authenticated downloads
+    # Token is written to ~/.cache/huggingface/token (standard HF location)
+    # Using printf to avoid token appearing in shell history or ps output
+    if hf_token := os.getenv("HF_TOKEN"):
+        log("bootstrap_step_start", label="HuggingFace login")
+        with spinner("Logging into HuggingFace..."):
+            # Use env var in subshell - token only visible to this process
+            bifrost.exec(
+                "mkdir -p ~/.cache/huggingface && printf '%s' \"$HF_TOKEN\" > ~/.cache/huggingface/token",
+                env={"HF_TOKEN": hf_token},
+                working_dir=workspace,
+            )
+        log("bootstrap_step_done", label="HuggingFace login")
 
     # Create run output directory
     remote_output_dir = f"{workspace}/rollouts/results/rl/{run_name}"
@@ -586,9 +601,9 @@ Examples:
     )
     parser.add_argument("--keep-alive", action="store_true", help="Keep GPU after completion")
     parser.add_argument(
-        "--allow-dirty",
+        "--force-deploy-committed",
         action="store_true",
-        help="Allow deploying with uncommitted changes (not recommended)",
+        help="Proceed despite uncommitted changes (only committed code is deployed)",
     )
     parser.add_argument(
         "--spinners",
@@ -719,7 +734,7 @@ Examples:
             hardware.gpu_type,
             args.tail,
             hardware.provider if hardware.provider != "local" else None,
-            args.allow_dirty,
+            args.force_deploy_committed,
             not args.spinners,  # quiet=True by default, --spinners to enable
         )
 

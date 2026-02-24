@@ -1011,11 +1011,12 @@ async def _grpo_train_async(
 
     try:
         # Wait for all engines to be ready in parallel
+        startup_timeout = config.inference.startup_timeout
         async with trio.open_nursery() as startup_nursery:
             for engine in inference_engines:
-                startup_nursery.start_soon(engine.wait_until_ready)
+                startup_nursery.start_soon(engine.wait_until_ready, startup_timeout)
             if teacher_engine is not None:
-                startup_nursery.start_soon(teacher_engine.wait_until_ready)
+                startup_nursery.start_soon(teacher_engine.wait_until_ready, startup_timeout)
         logger.info(f"All {num_engines} inference engine(s) ready")
         if teacher_engine is not None:
             logger.info("Teacher engine ready")
@@ -1134,7 +1135,12 @@ async def _grpo_train_async(
                         )
                         await compute_teacher_logprobs_batch(teacher_url, batch.samples)
                         # Update batch with teacher logprobs (samples were modified in-place)
-                        batch.teacher_log_probs = [s.teacher_log_probs for s in batch.samples]
+                        # Filter out None values - all samples should have teacher_log_probs after compute
+                        batch.teacher_log_probs = [
+                            s.teacher_log_probs
+                            for s in batch.samples
+                            if s.teacher_log_probs is not None
+                        ]
                         logger.info("Teacher logprobs computed")
 
                     yield batch
