@@ -548,13 +548,14 @@ def create_app(engine: InferenceEngineV2) -> Any:
     app = FastAPI(title="Rollouts Inference Server")
     logger.info("create_app: FastAPI app created")
 
+    # Start engine thread immediately (not in startup event which may not fire reliably)
+    logger.info("create_app: starting engine thread")
+    server._engine_thread.start()
+    logger.info("create_app: engine thread started")
+
     @app.on_event("startup")
     async def startup() -> None:
-        logger.info("startup: starting engine thread")
-        # Start the engine thread (runs engine.step() loop)
-        server._engine_thread.start()
-        logger.info("startup: engine thread started")
-        # Start result dispatcher (polls results and dispatches to futures)
+        # Start result dispatcher (needs event loop, so must be in startup)
         logger.info("startup: starting result dispatcher")
         asyncio.create_task(server.result_dispatcher())
         logger.info("startup: result dispatcher started")
