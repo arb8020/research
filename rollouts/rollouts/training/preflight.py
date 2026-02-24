@@ -14,11 +14,14 @@ GPU_VRAM_GB: dict[str, float] = {
     "RTX A5000": 24.0,
     "RTX 4090": 24.0,
     "RTX 3090": 24.0,
-    "A100": 40.0,  # 40GB variant
+    "A100": 40.0,  # 40GB variant (default)
     "A100-80GB": 80.0,
     "A100 80GB": 80.0,
+    "A100-SXM4-80GB": 80.0,  # Modal's A100-80GB variant
+    "A100-SXM-80GB": 80.0,
     "H100": 80.0,
     "H100 SXM": 80.0,
+    "H100-SXM": 80.0,
     "B200": 192.0,
     "L40S": 48.0,
     "A10": 24.0,
@@ -177,7 +180,7 @@ def get_gpu_vram_gb(gpu_type: str) -> float:
         return GPU_VRAM_GB[gpu_type]
 
     # Try partial match
-    for known_gpu, vram in GPU_VRAM_GB.items():
+    for known_gpu, vram in sorted(GPU_VRAM_GB.items(), key=lambda item: len(item[0]), reverse=True):
         if known_gpu.lower() in gpu_type.lower():
             return vram
 
@@ -196,7 +199,9 @@ def get_gpu_cuda_requirement(gpu_type: str) -> tuple[int, int, int, str] | None:
         return GPU_CUDA_REQUIREMENTS[gpu_type]
 
     # Try partial match
-    for known_gpu, req in GPU_CUDA_REQUIREMENTS.items():
+    for known_gpu, req in sorted(
+        GPU_CUDA_REQUIREMENTS.items(), key=lambda item: len(item[0]), reverse=True
+    ):
         if known_gpu.lower() in gpu_type.lower():
             return req
 
