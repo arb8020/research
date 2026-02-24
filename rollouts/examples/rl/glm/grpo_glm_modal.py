@@ -67,10 +67,12 @@ GLM_DEPS = DepsConfig(
     pip_index_url="https://download.pytorch.org/whl/nightly/cu128",
     pip_extra_index_url="https://pypi.org/simple",
     bootstrap_commands=(
+        # Install uv first (uv_pip_install installs it, but we need it for bootstrap)
+        "curl -LsSf https://astral.sh/uv/install.sh | sh && . ~/.local/bin/env",
         # Install sglang first (pins older transformers) - use uv for speed
-        "uv pip install 'sglang[all] @ git+https://github.com/sgl-project/sglang.git@main#subdirectory=python'",
+        "~/.local/bin/uv pip install --system 'sglang[all] @ git+https://github.com/sgl-project/sglang.git@main#subdirectory=python'",
         # Force-upgrade transformers/hf_hub on top (fixes sglang's pinned versions)
-        "uv pip install --upgrade 'transformers>=5.0.0' 'huggingface-hub>=1.4.0'",
+        "~/.local/bin/uv pip install --system --upgrade 'transformers>=5.0.0' 'huggingface-hub>=1.4.0'",
         # Clone Megatron-LM for megatron.core imports
         "git clone --depth 1 https://github.com/NVIDIA/Megatron-LM.git /root/Megatron-LM",
     ),
