@@ -26,17 +26,28 @@ Task: {one-liner}
 ## Goal
 {problem we're solving, why it matters}
 
-## Files to Read
-1. path/to/main/file.py - {what it does}
-2. path/to/related.py - {why it's relevant}
+## Files to Read (use ABSOLUTE paths)
+1. /full/path/to/main/file.py - {what it does}
+2. /full/path/to/reference.py - {example of the pattern to follow}
+
+## File to Modify (use ABSOLUTE path)
+/full/path/to/target.py
 
 ## What to Change
 {file-by-file or function-by-function instructions}
 {be specific about patterns, not vague}
+{include line numbers or function names when possible}
 
 ## Don't Change
 {explicit boundaries - files/functions to leave alone}
 ```
+
+## Common Pitfalls
+
+- **Ambiguous paths**: `run.py` vs `rollouts/run.py` - always use absolute paths
+- **Vague instructions**: "fix the deps" vs "move X from pip_packages to bootstrap_commands"
+- **Missing reference**: If there's a pattern to follow, point to the exact file:line
+- **No verification step**: Add "Before editing, confirm you found X at line Y"
 
 ## Running Codex
 
@@ -189,3 +200,29 @@ Markdown with:
 - Suggested fixes
 - "LGTM" if no issues
 ```
+
+### Analyze: Log file analysis
+```
+Task: Analyze benchmark logs to find why requests timeout
+
+## Goal
+engine_v2 server starts but all requests timeout after 2 minutes.
+Find what's happening (or not happening) between request submission and timeout.
+
+## Files to Read
+1. /tmp/engine_v2_benchmark.log - benchmark run logs with server output
+
+## What to Find
+1. Any logs between "benchmark_start" and first "progress" error
+2. Server-side request handling logs (POST /generate, request received, etc.)
+3. Any errors, exceptions, or warnings
+4. Check if specific expected log lines appear (e.g., "Result dispatcher starting")
+
+## What to Return
+Summary of:
+- Timeline of events
+- What's missing (expected logs that don't appear)
+- Root cause hypothesis
+```
+
+Codex is fast at log analysis because it can grep/rg efficiently and correlate across large files.
