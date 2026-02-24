@@ -813,6 +813,8 @@ def run_server(app: Any, host: str = "0.0.0.0", port: int = 8000) -> None:
 
         config = Config()
         config.bind = [f"{host}:{port}"]
+        config.accesslog = "-"  # Log to stdout
+        config.errorlog = "-"
 
         async with trio.open_nursery() as nursery:
             nursery.start_soon(server.result_dispatcher, startup_complete)
