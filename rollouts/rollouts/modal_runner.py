@@ -280,6 +280,7 @@ async def _run_training_in_sandbox(
     workspace: str,
     config_path: str,
     run_name: str,
+    gpu_count: int = 1,
 ) -> dict[str, Any]:
     """Run training script inside Modal sandbox.
 
@@ -317,7 +318,14 @@ async def _run_training_in_sandbox(
         f"ROLLOUTS_OUTPUT_DIR=results/rl/{run_name} "
     )
 
-    cmd = f"cd {workspace} && {env_vars} python {config_rel}"
+    # Use torchrun for multi-GPU DDP training
+    if gpu_count > 1:
+        cmd = (
+            f"cd {workspace} && {env_vars} "
+            f"torchrun --standalone --nproc_per_node={gpu_count} {config_rel}"
+        )
+    else:
+        cmd = f"cd {workspace} && {env_vars} python {config_rel}"
 
     def _train() -> tuple[str, str, int]:
         return _exec_sync(sandbox, cmd, timeout=14400)  # 4 hour timeout
@@ -381,7 +389,7 @@ async def run_modal(config: ModalRunConfig) -> dict[str, Any]:
                 # Run training
                 logger.info("Starting training...")
                 results = await _run_training_in_sandbox(
-                    sandbox, workspace, config.config_path, run_name
+                    sandbox, workspace, config.config_path, run_name, config.gpu_count
                 )
 
                 return results

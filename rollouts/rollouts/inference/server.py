@@ -28,7 +28,7 @@ from typing import Any
 
 import anyio
 import torch
-from anyio.streams.memory import MemoryObjectSendChannel
+from anyio.streams.memory import MemoryObjectSendStream
 
 from .core import Req, SamplingParams
 from .engine_v2 import EngineConfig, InferenceEngineV2
@@ -262,7 +262,7 @@ class InferenceServer:
 
         # Streaming requests: uid -> (send channel, prompt_len, seen_len)
         # Send channel receives (token_id, is_done, finish_reason) tuples
-        self._streaming: dict[int, tuple[MemoryObjectSendChannel[Any], int, int]] = {}
+        self._streaming: dict[int, tuple[MemoryObjectSendStream[Any], int, int]] = {}
         logger.info("InferenceServer.__init__ complete")
 
     def _convert_sampling_params(self, params: dict[str, Any]) -> SamplingParams:

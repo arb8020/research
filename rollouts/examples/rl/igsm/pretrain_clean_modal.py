@@ -9,12 +9,10 @@ Paper setup (GPT2-12-12 on iGSM-med):
 - 100k steps, cosine decay to 0.01x, 1000 step warmup
 - AdamW β=(0.9, 0.98), fp16 mixed precision
 
-Usage:
-    # Run on Modal
-    python -m rollouts.modal_runner --config examples/rl/igsm/pretrain_clean_modal.py
+Our setup: 8x H100 DDP, ~1.5-2 hours, ~$47 on Modal.
 
-    # Override GPU type
-    python -m rollouts.modal_runner --config examples/rl/igsm/pretrain_clean_modal.py --gpu H100
+Usage:
+    python -m rollouts.modal_runner --config examples/rl/igsm/pretrain_clean_modal.py
 """
 
 from __future__ import annotations
@@ -32,8 +30,8 @@ from rollouts.training.configs import DepsConfig, HardwareConfig
 # =============================================================================
 
 hardware = HardwareConfig(
-    gpu_type="A100",
-    gpu_count=1,
+    gpu_type="H100",
+    gpu_count=8,
     provider="modal",
     deps=DepsConfig(
         pip_packages=(
@@ -63,7 +61,7 @@ model_config = ModelConfig(
 config = TrainConfig(
     model=model_config,
     steps=100_000,
-    batch_size=512,
+    batch_size=64,  # Per-GPU batch (effective = 64 * 8 = 512)
     max_seq_len=768,
     warmup_steps=1000,
     lr_adamw=0.002,
