@@ -51,8 +51,9 @@ def parallelize_glm(
 
     # torch.compile per-block
     if model_compile_enabled:
-        for layer_id, layer in model.layers.items():
-            model.layers[layer_id] = torch.compile(layer, fullgraph=True)
+        layers = model.layers
+        for layer_id, layer in layers.items():
+            layers[layer_id] = torch.compile(layer, fullgraph=True)
         logger.info("Applied torch.compile to GLM model")
 
     # FSDP

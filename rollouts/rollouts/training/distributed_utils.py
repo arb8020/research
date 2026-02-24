@@ -8,12 +8,23 @@ Casey Muratori: Minimal coupling, explicit operations.
 """
 
 import logging
+from collections.abc import Callable
 from datetime import timedelta
+from typing import TYPE_CHECKING, Any
 
 import torch
 import torch.distributed as dist
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from torch.distributed.distributed_c10d import (
+        Store,
+        _new_process_group_helper,
+        _World,
+        _world,
+        default_pg_timeout,
+    )
 
 try:
     from torch.distributed.distributed_c10d import (
@@ -29,8 +40,8 @@ except ImportError:
         default_pg_timeout,
     )
 
-    _new_process_group_helper = None
-    _world = None
+    _new_process_group_helper: "Callable[..., Any] | None" = None
+    _world: "_World | None" = None
 
 
 # Global Gloo group for CPU communication (when needed)

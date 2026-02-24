@@ -12,7 +12,7 @@ Tiger Style: Pure functions, explicit transformations, all parameters visible.
 Casey Muratori: Both high-level (coarse) and low-level (fine) APIs.
 """
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import trio
 
@@ -229,7 +229,7 @@ async def generate_rollout_batch(
 
     # Generate all rollouts in parallel (trio structured concurrency)
     # Use list to collect results from concurrent tasks
-    samples: list[Sample] = [None] * len(prompts)  # pre-allocated, filled by gen_one
+    samples: list[Sample | None] = [None] * len(prompts)  # pre-allocated, filled by gen_one
 
     async def gen_one(index: int, prompt: str, metadata: dict) -> None:
         sample = await agent_rollout_to_sample(
@@ -249,9 +249,10 @@ async def generate_rollout_batch(
     # Tiger Style: Assert postconditions
     assert all(s is not None for s in samples), "all samples should be generated"
     for sample in samples:
+        assert sample is not None  # for type narrowing
         assert sample.loss_mask, "all samples should have loss_mask"
 
-    return samples
+    return cast(list[Sample], samples)
 
 
 # ──────────────────────── Low-Level API (Fine-Grained) ───────────────────────

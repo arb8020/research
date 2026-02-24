@@ -17,7 +17,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 import torch.distributed as dist
@@ -26,6 +26,11 @@ import trio
 from ...training.types import ImmediateTrainFuture, TrainerConfig, TrainFuture
 
 # FSDP checkpoint support (SLIME pattern)
+# Use TYPE_CHECKING to avoid implicit shadowing errors from ty
+if TYPE_CHECKING:
+    from torch.distributed.checkpoint.state_dict import StateDictOptions, get_model_state_dict
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
 try:
     from torch.distributed.checkpoint.state_dict import StateDictOptions, get_model_state_dict
     from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
@@ -33,9 +38,9 @@ try:
     FSDP_AVAILABLE = True
 except ImportError:
     FSDP_AVAILABLE = False
-    FSDP = None
-    StateDictOptions = None
-    get_model_state_dict = None
+    FSDP: "type[FSDP] | None" = None
+    StateDictOptions: "type[StateDictOptions] | None" = None
+    get_model_state_dict: "Callable[..., Any] | None" = None
 
 
 def _clean_lora_state_dict_for_inference(

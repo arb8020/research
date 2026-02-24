@@ -683,6 +683,39 @@ def _create_agent_generate_fn(
     return generate_fn
 
 
+def _build_grpo_run_context(
+    config: GRPOConfig,
+    run_name: str,
+    output_dir: Path,
+    node_id: str | None = None,
+    num_inference_engines: int | None = None,
+) -> dict[str, Any]:
+    """Build canonical per-run context fields for wide logging."""
+    import os
+    import socket
+
+    return {
+        "run_name": run_name,
+        "experiment_name": config.output.experiment_name,
+        "output_dir": str(output_dir),
+        "model_name": config.model.name,
+        "trainer_backend": config.trainer.backend,
+        "inference_backend": config.inference.backend,
+        "trainer_cuda_device_ids": tuple(config.trainer.cuda_device_ids),
+        "inference_cuda_device_ids": tuple(config.inference.cuda_device_ids),
+        "rollout_batch_size": config.rollout.batch_size,
+        "n_samples_per_prompt": config.rollout.n_samples_per_prompt,
+        "max_seq_len": config.rollout.max_seq_len,
+        "max_tokens": config.rollout.max_tokens,
+        "pipeline_mode": config.checkpoint.pipeline_mode,
+        "advantage_estimator": config.trainer.advantage_estimator,
+        "weight_sync_mode": config.checkpoint.weight_sync_mode,
+        "num_inference_engines": num_inference_engines,
+        "node_id": node_id or os.environ.get("ROLLOUTS_NODE_ID"),
+        "hostname": socket.gethostname(),
+    }
+
+
 async def _process_training_step(
     step: int,
     batch: Any,
@@ -692,6 +725,7 @@ async def _process_training_step(
     device: str,
     output_dir: Path,
     logger: logging.Logger,
+    run_context: dict[str, Any],
     *,
     node_id: str | None = None,
 ) -> dict[str, Any] | None:
@@ -701,8 +735,6 @@ async def _process_training_step(
         Step metrics dict, or None if step was skipped
     """
     import json
-    import os
-    import socket
     import time
 
     import torch
@@ -713,7 +745,16 @@ async def _process_training_step(
     step_start = time.perf_counter()
 
     if not batch.tokens:
-        logger.warning("No successful rollouts, skipping step")
+        logger.warning(
+            "No successful rollouts, step skipped",
+            extra={
+                "event": "grpo_step_skipped",
+                "step": step + 1,
+                "reason": "no_successful_rollouts",
+                **run_context,
+                "node_id": node_id or run_context.get("node_id"),
+            },
+        )
         return None
 
     # Save rollouts to JSONL
@@ -738,7 +779,7 @@ async def _process_training_step(
                 },
             }
             f.write(json.dumps(record) + "\n")
-            logger.info("rollout", extra=record)
+            logger.debug("rollout", extra={"event": "rollout", **record})
 
     # Compute advantages
     rewards = batch.rewards
@@ -780,13 +821,13 @@ async def _process_training_step(
         **accumulated_metrics,
     }
 
-    logger.info("metrics", extra={"step": step + 1, **step_metrics})
+    logger.debug("metrics", extra={"event": "step_metrics", "step": step + 1, **step_metrics})
 
+    masked_frac = accumulated_metrics.get("masked_frac", 0.0)
+    avg_ratio = accumulated_metrics.get("avg_ratio", 1.0)
+    avg_advantage = accumulated_metrics.get("avg_advantage", 0.0)
     if (step + 1) % config.checkpoint.log_every == 0:
         # Include key diagnostic metrics for debugging loss issues
-        masked_frac = accumulated_metrics.get("masked_frac", 0.0)
-        avg_ratio = accumulated_metrics.get("avg_ratio", 1.0)
-        avg_advantage = accumulated_metrics.get("avg_advantage", 0.0)
         logger.info(
             f"Step {step + 1}: reward={mean_reward:.3f} | "
             f"pg_loss={pg_loss:.4f} | entropy={entropy:.2f} | "
@@ -808,30 +849,32 @@ async def _process_training_step(
     gpu_reserved_gb = torch.cuda.memory_reserved() / 1e9
     ram_gb = psutil.Process().memory_info().rss / 1e9
 
-    wide_event = {
-        "event": "step_complete",
-        "step": step + 1,
-        "rank": rank,
-        "world_size": world_size,
-        "node_id": node_id or os.environ.get("ROLLOUTS_NODE_ID"),
-        "hostname": socket.gethostname(),
-        # Timings (ms)
-        "prep_ms": round(prep_ms, 1),
-        "forward_backward_ms": round(fb_ms, 1),
-        "optim_ms": round(optim_ms, 1),
-        "step_total_ms": round(step_total_ms, 1),
-        # Metrics
-        "mean_reward": mean_reward,
-        "pg_loss": pg_loss,
-        "entropy": entropy,
-        "num_samples": len(rewards),
-        "num_groups": num_groups,
-        # Memory (GB) - for debugging leaks
-        "gpu_allocated_gb": round(gpu_allocated_gb, 3),
-        "gpu_reserved_gb": round(gpu_reserved_gb, 3),
-        "ram_gb": round(ram_gb, 3),
-    }
-    logger.info("step_complete", extra=wide_event)
+    logger.info(
+        "step_complete",
+        extra={
+            **run_context,
+            "event": "step_complete",
+            "step": step + 1,
+            "node_id": node_id or run_context.get("node_id"),
+            "rank": rank,
+            "world_size": world_size,
+            # Timings (ms)
+            "prep_ms": round(prep_ms, 1),
+            "forward_backward_ms": round(fb_ms, 1),
+            "optim_ms": round(optim_ms, 1),
+            "step_total_ms": round(step_total_ms, 1),
+            # Metrics
+            "mean_reward": mean_reward,
+            "pg_loss": pg_loss,
+            "entropy": entropy,
+            "num_samples": len(rewards),
+            "num_groups": num_groups,
+            # Memory (GB) - for debugging leaks
+            "gpu_allocated_gb": round(gpu_allocated_gb, 3),
+            "gpu_reserved_gb": round(gpu_reserved_gb, 3),
+            "ram_gb": round(ram_gb, 3),
+        },
+    )
 
     return step_metrics
 
@@ -944,6 +987,7 @@ async def _grpo_train_async(
         logger_levels={"httpx": "WARNING", "httpcore": "WARNING"},
     )
     logger = logging.getLogger(__name__)
+    import os
 
     logger.info("=" * 60)
     logger.info(f"GRPO Training: {run_name}")
@@ -979,6 +1023,13 @@ async def _grpo_train_async(
     # Launch inference engine(s) - multi-engine for higher throughput
     inference_engines = _create_inference_engines(config, output_dir)
     num_engines = len(inference_engines)
+    run_context = _build_grpo_run_context(
+        config=config,
+        run_name=run_name,
+        output_dir=output_dir,
+        node_id=os.environ.get("ROLLOUTS_NODE_ID"),
+        num_inference_engines=num_engines,
+    )
 
     if num_engines == 1:
         gpu_str = ",".join(str(g) for g in config.inference.cuda_device_ids)
@@ -1230,6 +1281,7 @@ async def _grpo_train_async(
                     device,
                     output_dir,
                     logger,
+                    run_context,
                 )
 
             train_result = await _train_loop(
@@ -1293,6 +1345,7 @@ async def _grpo_train_async(
                     device,
                     output_dir,
                     logger,
+                    run_context,
                 )
 
             train_result = await _train_loop(
@@ -1318,6 +1371,7 @@ async def _grpo_train_async(
                     device,
                     output_dir,
                     logger,
+                    run_context,
                 )
 
             train_result = await _train_loop(

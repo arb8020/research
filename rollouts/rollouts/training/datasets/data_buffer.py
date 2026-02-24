@@ -674,7 +674,7 @@ class DataBuffer:
             seed=self.seed,
         )
 
-    def get_prompts(self, n: int) -> list[str | dict[str, Any]]:
+    def get_prompts(self, n: int) -> list[str | list[dict[str, str]]]:
         """Get next batch of prompts."""
         samples, self._state = get_samples_flat(self._samples, self._state, n)
         self.epoch_id = self._state.epoch_id

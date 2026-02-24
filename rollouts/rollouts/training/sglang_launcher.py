@@ -19,14 +19,14 @@ def _patch_transformers() -> None:
 
     _original = hub.list_repo_templates
 
-    def _patched_list_repo_templates(*args, **kwargs):
+    def _patched_list_repo_templates(*args: object, **kwargs: object) -> object:  # noqa: ANN202
         try:
             yield from _original(*args, **kwargs)
         except Exception:
             # additional_chat_templates directory doesn't exist - that's fine
             return
 
-    hub.list_repo_templates = _patched_list_repo_templates
+    hub.list_repo_templates = _patched_list_repo_templates  # type: ignore[invalid-assignment]
 
 
 # Apply patch before importing sglang

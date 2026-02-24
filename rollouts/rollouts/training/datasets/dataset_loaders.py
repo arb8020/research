@@ -6,7 +6,10 @@ Supports common datasets for SFT and RL training.
 
 import logging
 from collections.abc import Callable
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from datasets import Dataset, load_dataset
 
 try:
     from datasets import Dataset, load_dataset
@@ -14,8 +17,8 @@ try:
     HAS_DATASETS = True
 except ImportError:
     HAS_DATASETS = False
-    Dataset = None
-    load_dataset = None
+    Dataset: "type[Dataset] | None" = None
+    load_dataset: "Callable[..., Any] | None" = None
 
 from ...training.types import Sample
 
