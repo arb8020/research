@@ -30,6 +30,30 @@ Launch from `/Users/chiraagbalu/research/rollouts` using the workspace venv:
 
 Always specify `--provider runpod` to avoid primeintellect (pods get stuck in pending).
 
+## Managing GPU instances
+
+**IMPORTANT**: Pods do NOT auto-terminate when jobs fail or complete. Always check for running
+instances before provisioning new ones, and terminate pods you're done with.
+
+Use the `broker` CLI to manage GPU instances:
+
+```bash
+# List all running instances (DO THIS BEFORE PROVISIONING)
+broker list
+
+# Terminate a specific instance
+broker terminate <instance-id>
+
+# Check instance status
+broker status <instance-id>
+
+# SSH to an instance
+broker ssh <instance-id>
+```
+
+Do NOT use `broker cleanup` - it terminates ALL instances across the workspace, which may
+kill other people's jobs. Always use `broker terminate <id>` for specific instances.
+
 ## Monitoring jobs
 
 ```bash
@@ -86,6 +110,22 @@ is incompatible with `huggingface_hub>=1.4` (`is_offline_mode` removed). The boo
 
 - `rollouts/run.py` — remote job launcher (bootstrap, deploy, submit)
 - `rollouts/training/grpo.py` — GRPO trainer
+- `rollouts/training/preflight.py` — GPU/CUDA compatibility checks, memory estimation
 - `rollouts/tui/monitor_cli.py` — `rollouts monitor` CLI
 - `examples/rl/*/base_config.py` — per-task config + `train()` entry point
 - `~/.rollouts/jobs.json` — active job registry (used by `monitor --attach`)
+
+## Session notes (2026-02-24)
+
+**B200 support**: Added CUDA toolkit auto-upgrade. B200 (Blackwell, sm_100a) needs CUDA 12.8+
+for FlashInfer/Triton to JIT-compile kernels. After provisioning, we check `nvcc --version`
+and if too old, download the toolkit runfile and install with `--toolkit` (doesn't touch driver).
+See `GPU_CUDA_REQUIREMENTS` in preflight.py and the bootstrap logic in run.py.
+
+**Logging**: Added `_build_grpo_run_context()` in grpo.py that builds canonical per-run metadata
+(run_name, model, backend, device IDs, etc.) attached to every log line via `extra={}`. Good
+for filtering logs in production.
+
+**Next steps for B200**: The CUDA 12.8 installer download is ~4GB and takes a few minutes.
+Could pre-bake this into a custom Docker image, or use RunPod network volumes to cache it.
+The network volume task is in ~/research/todo.md.
