@@ -26,8 +26,9 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any
 
+import anyio
 import torch
-import trio
+from anyio.streams.memory import MemoryObjectSendChannel
 
 from .core import Req, SamplingParams
 from .engine_v2 import EngineConfig, InferenceEngineV2
@@ -253,15 +254,15 @@ class InferenceServer:
         logger.info("InferenceServer: EngineThread created")
 
         # Pending requests: uid -> (event, return_logprob)
-        self._pending: dict[int, tuple[trio.Event, bool]] = {}
+        self._pending: dict[int, tuple[anyio.Event, bool]] = {}
         self._pending_result: dict[int, Req] = {}
-        self._lock = trio.Lock()
+        self._lock = anyio.Lock()
         # Semaphore to limit concurrent requests to engine capacity
-        self._request_slots = trio.Semaphore(engine.scheduler_config.max_batch_size)
+        self._request_slots = anyio.Semaphore(engine.scheduler_config.max_batch_size)
 
         # Streaming requests: uid -> (send channel, prompt_len, seen_len)
         # Send channel receives (token_id, is_done, finish_reason) tuples
-        self._streaming: dict[int, tuple[trio.MemorySendChannel, int, int]] = {}
+        self._streaming: dict[int, tuple[MemoryObjectSendChannel[Any], int, int]] = {}
         logger.info("InferenceServer.__init__ complete")
 
     def _convert_sampling_params(self, params: dict[str, Any]) -> SamplingParams:
@@ -288,7 +289,7 @@ class InferenceServer:
                 uid = self._engine_thread.submit_request(
                     request.input_ids, sampling_params, streaming=False
                 )
-                event = trio.Event()
+                event = anyio.Event()
                 self._pending[uid] = (event, request.return_logprob)
 
             # Wait for completion
@@ -354,7 +355,7 @@ class InferenceServer:
                 uid = self._engine_thread.submit_request(
                     input_ids, sampling_params, streaming=False
                 )
-                event = trio.Event()
+                event = anyio.Event()
                 self._pending[uid] = (event, return_logprobs)
 
             await event.wait()
@@ -442,7 +443,7 @@ class InferenceServer:
 
         try:
             # Create token queue for streaming
-            token_send, token_recv = trio.open_memory_channel[Any](
+            token_send, token_recv = anyio.create_memory_object_stream[Any](
                 self._engine_thread.engine.scheduler_config.max_batch_size
             )
 
@@ -512,7 +513,7 @@ class InferenceServer:
 
         return json.dumps(obj, separators=(",", ":"))
 
-    async def result_dispatcher(self, startup_complete: trio.Event | None = None) -> None:
+    async def result_dispatcher(self, startup_complete: anyio.Event | None = None) -> None:
         """Background task that dispatches results from engine thread.
 
         Polls the engine thread's result queue and dispatches to pending
@@ -524,14 +525,14 @@ class InferenceServer:
 
         while True:
             # Poll engine thread for results (blocking with timeout)
-            # Use functools.partial since trio.to_thread.run_sync doesn't pass args
-            results = await trio.to_thread.run_sync(
+            # Use functools.partial since anyio.to_thread.run_sync doesn't pass args
+            results = await anyio.to_thread.run_sync(
                 functools.partial(self._engine_thread.get_results, 0.01)
             )
 
             if not results:
                 # No results, yield to other coroutines
-                await trio.sleep(0.001)
+                await anyio.sleep(0.001)
                 continue
 
             logger.info(f"Dispatching {len(results)} results")
@@ -566,7 +567,6 @@ def create_app(engine: InferenceEngineV2) -> Any:
     """Create FastAPI app with inference endpoints."""
     logger.info("create_app: starting")
 
-    import trio_asyncio
     from fastapi import FastAPI, HTTPException, Request
 
     logger.info("create_app: creating InferenceServer")
@@ -638,7 +638,7 @@ def create_app(engine: InferenceEngineV2) -> Any:
                 return_logprob=request.get("return_logprob", False),
                 return_routed_experts=request.get("return_routed_experts", False),
             )
-            response = await trio_asyncio.trio_as_aio(server.generate)(gen_request)
+            response = await server.generate(gen_request)
             return {"text": response.text, "meta_info": response.meta_info}
         except Exception as e:
             logger.exception("Error in /generate")
@@ -657,21 +657,13 @@ def create_app(engine: InferenceEngineV2) -> Any:
             logger.info(f"chat_endpoint_called: stream={request.get('stream')}")
             if request.get("stream", False):
                 # Streaming mode: return SSE stream
-                # Wrap the trio async generator for asyncio consumption
-
-                async def stream_wrapper() -> AsyncGenerator[str, None]:
-                    async for chunk in trio_asyncio.trio_as_aio(server.chat_completions_stream)(
-                        request
-                    ):
-                        yield chunk
-
                 return StreamingResponse(
-                    stream_wrapper(),
+                    server.chat_completions_stream(request),
                     media_type="text/event-stream",
                 )
             else:
                 # Non-streaming mode: return complete response
-                return await trio_asyncio.trio_as_aio(server.chat_completions)(request)
+                return await server.chat_completions(request)
         except Exception as e:
             logger.exception("Error in /v1/chat/completions")
             raise HTTPException(status_code=500, detail=str(e)) from e
@@ -821,40 +813,37 @@ def create_app(engine: InferenceEngineV2) -> Any:
 def run_server(app: Any, host: str = "0.0.0.0", port: int = 8000) -> None:
     """Run the inference server.
 
-    Uses trio_asyncio to bridge trio (for structured concurrency) with
-    uvicorn/FastAPI (which are asyncio-only). The result_dispatcher runs
-    as a trio task while uvicorn runs in the asyncio compatibility layer.
+    Uses anyio with asyncio backend for structured concurrency that works
+    natively with uvicorn/FastAPI. The result_dispatcher runs as a background
+    task in the same event loop as uvicorn.
     """
-    import trio_asyncio
     import uvicorn
-    from uvicorn.config import Config
 
-    async def serve_http() -> None:
+    async def serve_with_dispatcher() -> None:
         server = getattr(app.state, "inference_server", None)
 
         if server is None:
             raise RuntimeError("create_app must be used before run_server")
 
-        # Create startup gate inside trio event loop
-        startup_complete = trio.Event()
+        # Create startup gate
+        startup_complete = anyio.Event()
         app.state.startup_complete = startup_complete
 
-        async with trio.open_nursery() as nursery:
-            nursery.start_soon(server.result_dispatcher, startup_complete)
-            logger.info("Started result dispatcher task")
-            try:
-                async with trio_asyncio.open_loop():
-                    # Use aio_as_trio to properly wrap the asyncio coroutine
-                    # uvicorn.Server.serve() is an asyncio coroutine, so we need
-                    # to wrap it for trio compatibility
-                    config = Config(app=app, host=host, port=port, loop="asyncio")
-                    uvicorn_server = uvicorn.Server(config=config)
-                    await trio_asyncio.aio_as_trio(uvicorn_server.serve)()
-            finally:
-                server._engine_thread.stop()
+        try:
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(server.result_dispatcher, startup_complete)
+                logger.info("Started result dispatcher task")
+
+                # Run uvicorn - this blocks until server stops
+                config = uvicorn.Config(app=app, host=host, port=port)
+                uvicorn_server = uvicorn.Server(config=config)
+                await uvicorn_server.serve()
+        finally:
+            logger.info("Server shutting down, stopping engine thread")
+            server._engine_thread.stop()
 
     try:
-        trio.run(serve_http)
+        anyio.run(serve_with_dispatcher, backend="asyncio")
     except KeyboardInterrupt:
         logger.info("Server stopped by user")
 
