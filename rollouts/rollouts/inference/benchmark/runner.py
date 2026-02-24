@@ -32,40 +32,33 @@ MODAL_APP_NAME = "rollouts-benchmark"
 def _build_modal_image(modal: Any, deps: DepsConfig, gpu_type: str) -> Any:
     """Build Modal image from DepsConfig specification.
 
-    Uses nvidia/cuda base image instead of debian_slim because SGLang
-    requires nvcc for JIT kernel compilation.
+    Uses uv_pip_install for fast builds (~60s vs 5+ min with pip).
+    Uses debian_slim base - uv handles CUDA deps via torch wheels.
     """
     # GPU-specific torch index override
-    # Use CUDA 12.6 by default for FlashInfer 0.3+ support (has backend= param)
+    # Use CUDA 12.6 by default for FlashInfer 0.3+ support
     # Use CUDA 12.8 for Blackwell (B200/GB200)
     if gpu_type in ("B200", "GB200"):
         pip_index = "https://download.pytorch.org/whl/nightly/cu128"
-        cuda_version = "12.8.0"
     elif deps.pip_index_url:
         pip_index = deps.pip_index_url
-        # Infer CUDA version from pip index URL
-        if "cu128" in pip_index:
-            cuda_version = "12.8.0"
-        elif "cu126" in pip_index:
-            cuda_version = "12.6.0"
-        else:
-            cuda_version = "12.6.0"  # Default to 12.6
     else:
         pip_index = "https://download.pytorch.org/whl/cu126"
-        cuda_version = "12.6.0"
 
-    # Use CUDA devel image (includes nvcc) for SGLang JIT compilation
-    cuda_image = f"nvidia/cuda:{cuda_version}-devel-ubuntu22.04"
-    image = modal.Image.from_registry(cuda_image, add_python=deps.python_version)
+    # Use debian_slim with uv for fast installs
+    # CUDA libs come bundled in torch wheels, no need for nvidia/cuda base
+    image = modal.Image.debian_slim(python_version=deps.python_version or "3.12")
 
-    if deps.system_packages:
-        image = image.apt_install(*deps.system_packages)
+    # Git needed for some packages (sglang)
+    system_packages = list(deps.system_packages) if deps.system_packages else []
+    if "git" not in system_packages:
+        system_packages.append("git")
+    image = image.apt_install(*system_packages)
 
     if deps.pip_packages:
-        pip_kwargs: dict[str, Any] = {"index_url": pip_index}
-        if deps.pip_extra_index_url:
-            pip_kwargs["extra_index_url"] = deps.pip_extra_index_url
-        image = image.pip_install(*deps.pip_packages, **pip_kwargs)
+        # Use uv_pip_install for much faster builds
+        uv_kwargs: dict[str, Any] = {"extra_index_url": pip_index}
+        image = image.uv_pip_install(*deps.pip_packages, **uv_kwargs)
 
     for cmd in deps.bootstrap_commands:
         image = image.run_commands(cmd)
@@ -168,15 +161,17 @@ async def _run_benchmark_in_sandbox(
 
     await trio.to_thread.run_sync(_install)
 
-    # Generate benchmark script
+    # Generate benchmark script with JSONL wide event logging
     benchmark_script = f'''
 import asyncio
 import json
+import sys
 import time
 import random
 import string
 import numpy as np
 import httpx
+from datetime import datetime, timezone
 
 # Config
 MODEL = "{config.model}"
@@ -188,16 +183,24 @@ CONCURRENCY = {config.workload.concurrency}
 MAX_BATCH_SIZE = {config.max_batch_size}
 MEM_FRACTION = {config.mem_fraction}
 
+# Wide event logging - each event is a complete JSON line
+def log_event(event: str, **data):
+    """Emit a JSONL wide event to stdout."""
+    record = {{
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "event": event,
+        **data,
+    }}
+    print(json.dumps(record), flush=True)
+
 def generate_random_prompt(length: int) -> str:
     """Generate random text of approximately the given token length."""
-    # ~4 chars per token
     chars = length * 4
     return "".join(random.choices(string.ascii_letters + " ", k=chars))
 
 async def start_server():
     """Start the inference server."""
     import subprocess
-    import sys
 
     if BACKEND == "engine_v2":
         cmd = [
@@ -205,7 +208,7 @@ async def start_server():
             "--model", MODEL,
             "--port", "30000",
             "--max-batch-size", str(MAX_BATCH_SIZE),
-            "--max-seq-len", "2048",  # Limit to fit in GPU memory
+            "--max-seq-len", "2048",
         ]
     elif BACKEND == "sglang":
         cmd = [
@@ -213,42 +216,66 @@ async def start_server():
             "--model-path", MODEL,
             "--port", "30000",
             "--mem-fraction-static", str(MEM_FRACTION),
-            "--attention-backend", "triton",  # Required: Modal doesn't have nvcc for FlashInfer JIT
-            "--disable-cuda-graph",  # Also disable CUDA graphs which need nvcc
+            "--attention-backend", "triton",
+            "--disable-cuda-graph",
         ]
     else:
         raise ValueError(f"Unknown backend: {{BACKEND}}")
 
-    print(f"Starting server: {{' '.join(cmd)}}")
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    log_event("server_start", backend=BACKEND, model=MODEL, cmd=" ".join(cmd))
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,  # Merge stderr into stdout for easier debugging
+        env={{**dict(__import__("os").environ), "PYTHONUNBUFFERED": "1"}},
+    )
 
-    # Wait for server to be ready
-    for i in range(120):  # 2 min timeout
+    # Stream server output while waiting for ready
+    import selectors
+    import os
+    sel = selectors.DefaultSelector()
+    sel.register(proc.stdout, selectors.EVENT_READ)
+
+    server_logs = []
+    start_wait = time.time()
+    timeout_sec = 180  # 3 min timeout
+
+    while time.time() - start_wait < timeout_sec:
+        # Check for output (non-blocking)
+        ready = sel.select(timeout=0.1)
+        for key, _ in ready:
+            line = key.fileobj.readline()
+            if line:
+                line_str = line.decode("utf-8", errors="replace").rstrip()
+                server_logs.append(line_str)
+                log_event("server_log", line=line_str)
+
         # Check if process died
         poll = proc.poll()
         if poll is not None:
-            stdout, stderr = proc.communicate()
-            print(f"Server process exited with code {{poll}}")
-            print(f"stdout: {{stdout.decode()}}")
-            print(f"stderr: {{stderr.decode()}}")
-            raise RuntimeError(f"Server process died with exit code {{poll}}")
+            # Drain remaining output
+            remaining = proc.stdout.read().decode("utf-8", errors="replace")
+            for line in remaining.splitlines():
+                server_logs.append(line)
+                log_event("server_log", line=line)
+            log_event("server_died", exit_code=poll, logs_tail=server_logs[-20:])
+            raise RuntimeError(f"Server died with exit code {{poll}}")
 
+        # Check if server is ready
         try:
             async with httpx.AsyncClient() as client:
-                resp = await client.get("http://localhost:30000/health", timeout=2.0)
+                resp = await client.get("http://localhost:30000/health", timeout=1.0)
                 if resp.status_code == 200:
-                    print("Server ready")
+                    elapsed = time.time() - start_wait
+                    log_event("server_ready", elapsed_sec=round(elapsed, 1))
+                    sel.close()
                     return proc
-        except Exception as e:
-            if i % 10 == 0:
-                print(f"Waiting for server... ({{i}}s, {{e.__class__.__name__}})")
-        await asyncio.sleep(1)
+        except Exception:
+            pass
 
-    # Server didn't respond but process is still running - kill and report
+    # Timeout
     proc.terminate()
-    stdout, stderr = proc.communicate(timeout=5)
-    print(f"Server timeout. stdout: {{stdout.decode()[:2000]}}")
-    print(f"Server timeout. stderr: {{stderr.decode()[:2000]}}")
+    log_event("server_timeout", logs_tail=server_logs[-30:])
     raise RuntimeError("Server failed to start within timeout")
 
 async def benchmark_request(client: httpx.AsyncClient, prompt: str, request_id: int) -> dict:
@@ -256,24 +283,28 @@ async def benchmark_request(client: httpx.AsyncClient, prompt: str, request_id: 
     start = time.perf_counter()
     first_token_time = None
     tokens_received = 0
+    error = None
 
-    async with client.stream(
-        "POST",
-        "http://localhost:30000/v1/chat/completions",
-        json={{
-            "model": MODEL,
-            "messages": [{{"role": "user", "content": prompt}}],
-            "max_tokens": OUTPUT_LEN,
-            "temperature": 0.0,
-            "stream": True,
-        }},
-        timeout=120.0,
-    ) as response:
-        async for line in response.aiter_lines():
-            if line.startswith("data: "):
-                if first_token_time is None:
-                    first_token_time = time.perf_counter()
-                tokens_received += 1
+    try:
+        async with client.stream(
+            "POST",
+            "http://localhost:30000/v1/chat/completions",
+            json={{
+                "model": MODEL,
+                "messages": [{{"role": "user", "content": prompt}}],
+                "max_tokens": OUTPUT_LEN,
+                "temperature": 0.0,
+                "stream": True,
+            }},
+            timeout=120.0,
+        ) as response:
+            async for line in response.aiter_lines():
+                if line.startswith("data: "):
+                    if first_token_time is None:
+                        first_token_time = time.perf_counter()
+                    tokens_received += 1
+    except Exception as e:
+        error = f"{{type(e).__name__}}: {{e}}"
 
     end = time.perf_counter()
 
@@ -282,24 +313,49 @@ async def benchmark_request(client: httpx.AsyncClient, prompt: str, request_id: 
         "ttft_ms": (first_token_time - start) * 1000 if first_token_time else None,
         "e2e_ms": (end - start) * 1000,
         "tokens": tokens_received,
+        "error": error,
     }}
 
 async def run_benchmark():
     """Run the benchmark."""
+    log_event("benchmark_init",
+              backend=BACKEND,
+              model=MODEL,
+              num_prompts=NUM_PROMPTS,
+              input_len=INPUT_LEN,
+              output_len=OUTPUT_LEN,
+              concurrency=CONCURRENCY)
+
     proc = await start_server()
 
     try:
         # Generate prompts
         prompts = [generate_random_prompt(INPUT_LEN) for _ in range(NUM_PROMPTS)]
+        log_event("prompts_generated", count=len(prompts))
 
         # Run requests with concurrency limit
         semaphore = asyncio.Semaphore(CONCURRENCY)
         results = []
+        completed = 0
+        errors = 0
 
         async def bounded_request(client, prompt, idx):
+            nonlocal completed, errors
             async with semaphore:
-                return await benchmark_request(client, prompt, idx)
+                result = await benchmark_request(client, prompt, idx)
+                completed += 1
+                if result["error"]:
+                    errors += 1
+                # Log progress every 10% or on errors
+                if completed % max(1, NUM_PROMPTS // 10) == 0 or result["error"]:
+                    log_event("progress",
+                              completed=completed,
+                              total=NUM_PROMPTS,
+                              errors=errors,
+                              pct=round(100 * completed / NUM_PROMPTS, 1))
+                return result
 
+        log_event("benchmark_start", num_prompts=NUM_PROMPTS, concurrency=CONCURRENCY)
         start_time = time.perf_counter()
 
         async with httpx.AsyncClient() as client:
@@ -307,15 +363,19 @@ async def run_benchmark():
             results = await asyncio.gather(*tasks)
 
         total_time = time.perf_counter() - start_time
+        log_event("requests_done",
+                  total_time_sec=round(total_time, 2),
+                  completed=completed,
+                  errors=errors)
 
         # Calculate metrics
-        ttfts = [r["ttft_ms"] for r in results if r["ttft_ms"] is not None]
-        e2es = [r["e2e_ms"] for r in results]
-        total_tokens = sum(r["tokens"] for r in results)
+        successful = [r for r in results if not r["error"]]
+        ttfts = [r["ttft_ms"] for r in successful if r["ttft_ms"] is not None]
+        e2es = [r["e2e_ms"] for r in successful]
+        total_tokens = sum(r["tokens"] for r in successful)
 
-        # TPOT = (e2e - ttft) / (tokens - 1)
         tpots = []
-        for r in results:
+        for r in successful:
             if r["ttft_ms"] and r["tokens"] > 1:
                 tpots.append((r["e2e_ms"] - r["ttft_ms"]) / (r["tokens"] - 1))
 
@@ -323,9 +383,9 @@ async def run_benchmark():
             return float(np.percentile(data, p)) if data else 0.0
 
         metrics = {{
-            "requests_per_second": NUM_PROMPTS / total_time,
-            "tokens_per_second": total_tokens / total_time,
-            "output_tokens_per_second": total_tokens / total_time,
+            "requests_per_second": len(successful) / total_time if total_time > 0 else 0,
+            "tokens_per_second": total_tokens / total_time if total_time > 0 else 0,
+            "output_tokens_per_second": total_tokens / total_time if total_time > 0 else 0,
             "ttft_mean": float(np.mean(ttfts)) if ttfts else 0.0,
             "ttft_p50": percentile(ttfts, 50),
             "ttft_p95": percentile(ttfts, 95),
@@ -334,19 +394,26 @@ async def run_benchmark():
             "tpot_p50": percentile(tpots, 50),
             "tpot_p95": percentile(tpots, 95),
             "tpot_p99": percentile(tpots, 99),
-            "e2e_mean": float(np.mean(e2es)),
+            "e2e_mean": float(np.mean(e2es)) if e2es else 0.0,
             "e2e_p50": percentile(e2es, 50),
             "e2e_p95": percentile(e2es, 95),
             "e2e_p99": percentile(e2es, 99),
+            "total_requests": NUM_PROMPTS,
+            "successful_requests": len(successful),
+            "failed_requests": errors,
         }}
 
-        print("BENCHMARK_RESULTS_START")
-        print(json.dumps(metrics))
-        print("BENCHMARK_RESULTS_END")
+        log_event("benchmark_done", **metrics)
+
+        # Also print the old format for backwards compat with result parsing
+        print("BENCHMARK_RESULTS_START", flush=True)
+        print(json.dumps(metrics), flush=True)
+        print("BENCHMARK_RESULTS_END", flush=True)
 
     finally:
         proc.terminate()
         proc.wait()
+        log_event("server_stopped")
 
 if __name__ == "__main__":
     asyncio.run(run_benchmark())
@@ -363,10 +430,10 @@ if __name__ == "__main__":
             timeout=30,
         )
 
-        # Run benchmark
+        # Run benchmark with unbuffered output for streaming
         return _exec_sync(
             sandbox,
-            f"cd {workspace} && PYTHONPATH={workspace} python /tmp/benchmark.py",
+            f"cd {workspace} && PYTHONUNBUFFERED=1 PYTHONPATH={workspace} python /tmp/benchmark.py",
             timeout=3600,  # 1 hour timeout
         )
 
@@ -634,7 +701,15 @@ async def run_benchmark(
             modal.App.lookup.aio(MODAL_APP_NAME, create_if_missing=True)
         )
 
-        image = _build_modal_image(modal, deps, gpu_type)
+        # Use pre-built images (defined at module level for proper caching)
+        from .images import ENGINE_V2_IMAGE, SGLANG_IMAGE
+
+        if config.backend == "sglang":
+            image = SGLANG_IMAGE
+        elif config.backend == "engine_v2":
+            image = ENGINE_V2_IMAGE
+        else:
+            raise ValueError(f"Unknown backend: {config.backend}")
 
         gpu_spec = f"{gpu_type}:{gpu_count}" if gpu_count > 1 else gpu_type
         ts = int(datetime.now(timezone.utc).timestamp())
