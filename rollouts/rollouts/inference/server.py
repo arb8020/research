@@ -16,6 +16,7 @@ Or programmatically:
 from __future__ import annotations
 
 import argparse
+import functools
 import logging
 import queue
 import threading
@@ -512,7 +513,10 @@ class InferenceServer:
 
         while True:
             # Poll engine thread for results (blocking with timeout)
-            results = await trio.to_thread.run_sync(self._engine_thread.get_results, 0.01)
+            # Use functools.partial since trio.to_thread.run_sync doesn't pass args
+            results = await trio.to_thread.run_sync(
+                functools.partial(self._engine_thread.get_results, 0.01)
+            )
 
             if not results:
                 # No results, yield to other coroutines
