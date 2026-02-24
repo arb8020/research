@@ -62,6 +62,7 @@ GLM_DEPS = DepsConfig(
         "aiohttp",
         "trio",
         "httpx",
+        "markdownify",
     ),
     pip_index_url="https://download.pytorch.org/whl/nightly/cu128",
     pip_extra_index_url="https://pypi.org/simple",
