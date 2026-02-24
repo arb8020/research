@@ -153,6 +153,22 @@ def resolve_ssh_key(ctx) -> str:
     raise typer.Exit(1)
 
 
+def parse_instance_id(instance_id: str) -> tuple[str, str | None]:
+    """Parse instance ID, supporting optional provider prefix.
+
+    Accepts:
+        "abc123" -> ("abc123", None)
+        "runpod:abc123" -> ("abc123", "runpod")
+
+    Returns:
+        (instance_id, provider) tuple
+    """
+    if ":" in instance_id:
+        provider, id_part = instance_id.split(":", 1)
+        return (id_part, provider)
+    return (instance_id, None)
+
+
 @app.command()
 def search(  # noqa: PLR0913 - CLI search has many filter options
     ctx: typer.Context,
@@ -571,13 +587,14 @@ def list_instances(ctx: typer.Context) -> None:
 @app.command()
 def status(
     ctx: typer.Context,
-    instance_id: str = typer.Argument(..., help="Instance ID"),
-    provider: str | None = typer.Argument(
+    instance_id_arg: str = typer.Argument(..., metavar="INSTANCE_ID", help="Instance ID"),
+    provider_arg: str | None = typer.Argument(
         None, help="Provider (runpod|primeintellect). Auto-detect if omitted."
     ),
 ) -> None:
     """Get instance status
 
+    Instance ID can include provider prefix: runpod:abc123 or just abc123.
     Provider can be omitted for convenience. If omitted, will search all
     providers. Errors if instance ID exists in multiple providers.
     """
@@ -587,6 +604,10 @@ def status(
         ssh_key = resolve_ssh_key(ctx)
 
         client = GPUClient(credentials=creds, ssh_key_path=ssh_key)
+
+        # Parse provider:id format if present
+        instance_id, parsed_provider = parse_instance_id(instance_id_arg)
+        provider = provider_arg or parsed_provider
 
         # Auto-detect provider if not specified
         if provider is None:
@@ -638,13 +659,14 @@ def status(
 @app.command()
 def ssh(
     ctx: typer.Context,
-    instance_id: str = typer.Argument(...),
-    provider: str | None = typer.Argument(
+    instance_id_arg: str = typer.Argument(..., metavar="INSTANCE_ID"),
+    provider_arg: str | None = typer.Argument(
         None, help="Provider (runpod|primeintellect). Auto-detect if omitted."
     ),
 ) -> None:
     """Get SSH connection string for instance
 
+    Instance ID can include provider prefix: runpod:abc123 or just abc123.
     Provider can be omitted for convenience. If omitted, will search all
     providers. Errors if instance ID exists in multiple providers.
     """
@@ -654,6 +676,10 @@ def ssh(
         ssh_key = resolve_ssh_key(ctx)
 
         client = GPUClient(credentials=creds, ssh_key_path=ssh_key)
+
+        # Parse provider:id format if present
+        instance_id, parsed_provider = parse_instance_id(instance_id_arg)
+        provider = provider_arg or parsed_provider
 
         # Auto-detect provider if not specified (same logic as status)
         if provider is None:
@@ -685,19 +711,21 @@ def ssh(
 
 
 @app.command()
-def exec(
+def exec(  # noqa: A001 - typer command name, not shadowing builtin
     ctx: typer.Context,
-    instance_id: str = typer.Argument(..., help="Instance ID"),
+    instance_id_arg: str = typer.Argument(..., metavar="INSTANCE_ID", help="Instance ID"),
     command: list[str] = typer.Argument(..., help="Command to execute"),
-    provider: str | None = typer.Option(
+    provider_arg: str | None = typer.Option(
         None, "--provider", "-p", help="Provider (auto-detect if omitted)"
     ),
 ) -> None:
     """Execute a command on GPU instance via SSH
 
+    Instance ID can include provider prefix: runpod:abc123 or just abc123.
+
     Example:
         broker exec abc123 -- hostname
-        broker exec abc123 -- nvidia-smi
+        broker exec runpod:abc123 -- nvidia-smi
         broker exec abc123 -- tail -f /root/train.log
     """
 
@@ -706,6 +734,10 @@ def exec(
         ssh_key = resolve_ssh_key(ctx)
 
         client = GPUClient(credentials=creds, ssh_key_path=ssh_key)
+
+        # Parse provider:id format if present
+        instance_id, parsed_provider = parse_instance_id(instance_id_arg)
+        provider = provider_arg or parsed_provider
 
         # Auto-detect provider if not specified
         if provider is None:
@@ -739,7 +771,7 @@ def exec(
         cmd_str = " ".join(command)
         full_cmd = f'{ssh_cmd} "{cmd_str}"'
 
-        result = subprocess.run(full_cmd, shell=True)
+        result = subprocess.run(full_cmd, shell=True)  # noqa: ASYNC221 - intentional blocking for interactive SSH
         raise typer.Exit(result.returncode)
 
     trio.run(_exec_async)
@@ -748,13 +780,14 @@ def exec(
 @app.command()
 def info(
     ctx: typer.Context,
-    instance_id: str = typer.Argument(..., help="Instance ID"),
-    provider: str | None = typer.Argument(
+    instance_id_arg: str = typer.Argument(..., metavar="INSTANCE_ID", help="Instance ID"),
+    provider_arg: str | None = typer.Argument(
         None, help="Provider (runpod|primeintellect). Auto-detect if omitted."
     ),
 ) -> None:
     """Get detailed system information from GPU instance
 
+    Instance ID can include provider prefix: runpod:abc123 or just abc123.
     Collects GPU utilization, VRAM usage, CPU usage, memory usage, and disk usage
     via SSH connection to the instance.
     """
@@ -764,6 +797,10 @@ def info(
         ssh_key = resolve_ssh_key(ctx)
 
         client = GPUClient(credentials=creds, ssh_key_path=ssh_key)
+
+        # Parse provider:id format if present
+        instance_id, parsed_provider = parse_instance_id(instance_id_arg)
+        provider = provider_arg or parsed_provider
 
         # Auto-detect provider if not specified
         if provider is None:
@@ -1008,14 +1045,15 @@ def info(
 @app.command()
 def terminate(
     ctx: typer.Context,
-    instance_id: str = typer.Argument(...),
-    provider: str | None = typer.Argument(
+    instance_id_arg: str = typer.Argument(..., metavar="INSTANCE_ID"),
+    provider_arg: str | None = typer.Argument(
         None, help="Provider (runpod|primeintellect). Auto-detect if omitted."
     ),
     yes: bool = typer.Option(True, "-y", "--yes", help="Skip confirmation (default: yes)"),
 ) -> None:
     """Terminate GPU instance
 
+    Instance ID can include provider prefix: runpod:abc123 or just abc123.
     Provider can be omitted for convenience. If omitted, will search all
     providers. Errors if instance ID exists in multiple providers.
     """
@@ -1025,6 +1063,10 @@ def terminate(
         ssh_key = resolve_ssh_key(ctx)
 
         client = GPUClient(credentials=creds, ssh_key_path=ssh_key)
+
+        # Parse provider:id format if present
+        instance_id, parsed_provider = parse_instance_id(instance_id_arg)
+        provider = provider_arg or parsed_provider
 
         # Auto-detect provider if not specified (same logic as status)
         if provider is None:
