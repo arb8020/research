@@ -138,9 +138,6 @@ async def _create_sandbox(
     import modal
     import trio_asyncio
 
-    # Enable output to see build logs
-    modal.enable_output()
-
     logger.info(f"Looking up app: {MODAL_APP_NAME}")
     app = await trio_asyncio.aio_as_trio(
         modal.App.lookup.aio(MODAL_APP_NAME, create_if_missing=True)
@@ -347,6 +344,7 @@ async def run_modal(config: ModalRunConfig) -> dict[str, Any]:
 
     Returns training results.
     """
+    import modal
     import trio_asyncio
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -358,44 +356,45 @@ async def run_modal(config: ModalRunConfig) -> dict[str, Any]:
     logger.info(f"Config: {config.config_path}")
     logger.info(f"GPU: {config.gpu_count}x {config.gpu_type}")
 
-    async with trio_asyncio.open_loop():
-        # Create sandbox
-        logger.info("Creating Modal sandbox...")
-        sandbox, sandbox_id = await _create_sandbox(config)
+    with modal.enable_output():
+        async with trio_asyncio.open_loop():
+            # Create sandbox
+            logger.info("Creating Modal sandbox...")
+            sandbox, sandbox_id = await _create_sandbox(config)
 
-        try:
-            # Test GPU access
-            logger.info("Verifying GPU access...")
+            try:
+                # Test GPU access
+                logger.info("Verifying GPU access...")
 
-            def _check_gpu() -> None:
-                stdout, _, exit_code = _exec_sync(sandbox, "nvidia-smi", timeout=30)
-                assert exit_code == 0, "nvidia-smi failed"
+                def _check_gpu() -> None:
+                    stdout, _, exit_code = _exec_sync(sandbox, "nvidia-smi", timeout=30)
+                    assert exit_code == 0, "nvidia-smi failed"
 
-            await trio.to_thread.run_sync(_check_gpu)
-            logger.info("GPU access verified")
+                await trio.to_thread.run_sync(_check_gpu)
+                logger.info("GPU access verified")
 
-            # Sync code (always uses local git bundle)
-            logger.info("Syncing code to sandbox...")
-            workspace = await _sync_code_to_sandbox(sandbox, REPO_ROOT)
-            logger.info(f"Code synced to {workspace}")
+                # Sync code (always uses local git bundle)
+                logger.info("Syncing code to sandbox...")
+                workspace = await _sync_code_to_sandbox(sandbox, REPO_ROOT)
+                logger.info(f"Code synced to {workspace}")
 
-            # Run training
-            logger.info("Starting training...")
-            results = await _run_training_in_sandbox(
-                sandbox, workspace, config.config_path, run_name
-            )
+                # Run training
+                logger.info("Starting training...")
+                results = await _run_training_in_sandbox(
+                    sandbox, workspace, config.config_path, run_name
+                )
 
-            return results
+                return results
 
-        finally:
-            # Terminate sandbox
-            logger.info(f"Terminating sandbox: {sandbox_id}")
+            finally:
+                # Terminate sandbox
+                logger.info(f"Terminating sandbox: {sandbox_id}")
 
-            def _terminate() -> None:
-                sandbox.terminate()
+                def _terminate() -> None:
+                    sandbox.terminate()
 
-            await trio.to_thread.run_sync(_terminate)
-            logger.info("Sandbox terminated")
+                await trio.to_thread.run_sync(_terminate)
+                logger.info("Sandbox terminated")
 
 
 def load_config_module(config_path: Path) -> Any:

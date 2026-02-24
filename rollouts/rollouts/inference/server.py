@@ -566,19 +566,17 @@ def create_app(engine: InferenceEngineV2) -> Any:
     server._engine_thread.start()
     logger.info("create_app: engine thread started")
 
-    # Track if startup is complete (result dispatcher running)
-    startup_complete = trio.Event()
-
     logger.info("create_app: creating FastAPI app")
     app = FastAPI(title="Rollouts Inference Server")
     app.state.inference_server = server
-    app.state.startup_complete = startup_complete
+    app.state.startup_complete = None
     logger.info("create_app: FastAPI app created")
 
     @app.get("/health")
     async def health() -> dict:
         # Fail health check until startup is complete
-        if not startup_complete.is_set():
+        startup_complete = app.state.startup_complete
+        if startup_complete is None or not startup_complete.is_set():
             raise HTTPException(
                 status_code=503,
                 detail="Server starting up, result dispatcher not ready",
@@ -793,12 +791,13 @@ def run_server(app: Any, host: str = "0.0.0.0", port: int = 8000) -> None:
 
     async def serve_http() -> None:
         server = getattr(app.state, "inference_server", None)
-        startup_complete = getattr(app.state, "startup_complete", None)
 
         if server is None:
             raise RuntimeError("create_app must be used before run_server")
-        if startup_complete is None:
-            raise RuntimeError("App startup state not initialized")
+
+        # Create startup gate inside trio event loop
+        startup_complete = trio.Event()
+        app.state.startup_complete = startup_complete
 
         config = Config()
         config.bind = [f"{host}:{port}"]
