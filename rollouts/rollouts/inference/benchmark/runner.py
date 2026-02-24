@@ -307,7 +307,8 @@ async def run_benchmark():
                               completed=completed,
                               total=NUM_PROMPTS,
                               errors=errors,
-                              pct=round(100 * completed / NUM_PROMPTS, 1))
+                              pct=round(100 * completed / NUM_PROMPTS, 1),
+                              error=result.get("error"))
                 return result
 
         log_event("benchmark_start", num_prompts=NUM_PROMPTS, concurrency=CONCURRENCY)
