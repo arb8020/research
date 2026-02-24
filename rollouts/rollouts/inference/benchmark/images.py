@@ -53,7 +53,7 @@ ENGINE_V2_IMAGE = (
         "--index-strategy unsafe-best-match "
         f"--extra-index-url {TORCH_INDEX} "
         "torch==2.6.0 numpy 'transformers>=5.0' httpx safetensors triton "
-        "'flashinfer-python>=0.3' fastapi trio hypercorn"
+        "'flashinfer-python>=0.3' fastapi trio trio_asyncio uvicorn"
     )
     .env({
         "HF_HOME": "/root/.cache/huggingface",

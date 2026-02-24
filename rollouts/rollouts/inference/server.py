@@ -810,8 +810,9 @@ def create_app(engine: InferenceEngineV2) -> Any:
 
 def run_server(app: Any, host: str = "0.0.0.0", port: int = 8000) -> None:
     """Run the inference server."""
-    from hypercorn.config import Config
-    from hypercorn.trio import serve
+    import trio_asyncio
+    import uvicorn
+    from uvicorn.config import Config
 
     async def serve_http() -> None:
         server = getattr(app.state, "inference_server", None)
@@ -823,16 +824,13 @@ def run_server(app: Any, host: str = "0.0.0.0", port: int = 8000) -> None:
         startup_complete = trio.Event()
         app.state.startup_complete = startup_complete
 
-        config = Config()
-        config.bind = [f"{host}:{port}"]
-        config.accesslog = "-"  # Log to stdout
-        config.errorlog = "-"
-
         async with trio.open_nursery() as nursery:
             nursery.start_soon(server.result_dispatcher, startup_complete)
             logger.info("Started result dispatcher task")
             try:
-                await serve(app, config)
+                async with trio_asyncio.open_loop():
+                    config = Config(app=app, host=host, port=port, loop="asyncio")
+                    await uvicorn.Server(config=config).serve()
             finally:
                 server._engine_thread.stop()
 
@@ -893,7 +891,7 @@ def main() -> None:
 
     logger.info("Creating app...")
     app = create_app(engine)
-    logger.info("App created, starting hypercorn (trio runtime)...")
+    logger.info("App created, starting server...")
     run_server(app, host=args.host, port=args.port)
     logger.info("Server stopped")
 

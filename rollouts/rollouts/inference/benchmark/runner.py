@@ -101,6 +101,8 @@ async def _run_benchmark_in_sandbox(
     workspace: str,
     config: BenchmarkConfig,
     run_name: str,
+    *,
+    start_server: bool = True,
 ) -> BenchmarkResult:
     """Run benchmark inside Modal sandbox."""
 
@@ -137,6 +139,8 @@ OUTPUT_LEN = {config.workload.output_len}
 CONCURRENCY = {config.workload.concurrency}
 MAX_BATCH_SIZE = {config.max_batch_size}
 MEM_FRACTION = {config.mem_fraction}
+SERVER_URL = "http://localhost:30000"
+START_SERVER = {str(start_server).lower()}
 
 # Wide event logging - each event is a complete JSON line
 def log_event(event: str, **data):
@@ -219,7 +223,7 @@ async def start_server():
         # Check if server is ready
         try:
             async with httpx.AsyncClient() as client:
-                resp = await client.get("http://localhost:30000/health", timeout=1.0)
+                resp = await client.get(f"{{SERVER_URL}}/health", timeout=1.0)
                 if resp.status_code == 200:
                     elapsed = time.time() - start_wait
                     log_event("server_ready", elapsed_sec=round(elapsed, 1))
@@ -233,6 +237,25 @@ async def start_server():
     log_event("server_timeout", logs_tail=server_logs[-30:])
     raise RuntimeError("Server failed to start within timeout")
 
+
+async def wait_for_existing_server() -> None:
+    """Wait for an already running benchmark server."""
+    start_wait = time.time()
+    timeout_sec = 180
+
+    while time.time() - start_wait < timeout_sec:
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(f"{{SERVER_URL}}/health", timeout=1.0)
+                if resp.status_code == 200:
+                    elapsed = time.time() - start_wait
+                    log_event("server_ready", elapsed_sec=round(elapsed, 1))
+                    return
+        except Exception:
+            await asyncio.sleep(0.1)
+
+    raise RuntimeError("Existing server failed to become ready within timeout")
+
 async def benchmark_request(client: httpx.AsyncClient, prompt: str, request_id: int) -> dict:
     """Send a single benchmark request and measure timing."""
     start = time.perf_counter()
@@ -243,7 +266,7 @@ async def benchmark_request(client: httpx.AsyncClient, prompt: str, request_id: 
     try:
         async with client.stream(
             "POST",
-            "http://localhost:30000/v1/chat/completions",
+            f"{{SERVER_URL}}/v1/chat/completions",
             json={{
                 "model": MODEL,
                 "messages": [{{"role": "user", "content": prompt}}],
@@ -281,7 +304,12 @@ async def run_benchmark():
               output_len=OUTPUT_LEN,
               concurrency=CONCURRENCY)
 
-    proc = await start_server()
+    proc = None
+    if START_SERVER:
+        proc = await start_server()
+    else:
+        log_event("server_reuse", url=SERVER_URL)
+        await wait_for_existing_server()
 
     try:
         # Generate prompts
@@ -367,9 +395,10 @@ async def run_benchmark():
         print("BENCHMARK_RESULTS_END", flush=True)
 
     finally:
-        proc.terminate()
-        proc.wait()
-        log_event("server_stopped")
+        if proc is not None:
+            proc.terminate()
+            proc.wait()
+            log_event("server_stopped")
 
 if __name__ == "__main__":
     asyncio.run(run_benchmark())
@@ -619,6 +648,9 @@ async def run_benchmark(
     gpu_type: str = "A100",
     gpu_count: int = 1,
     timeout_hours: int = 2,
+    sandbox_id: str | None = None,
+    keep_sandbox_alive: bool = False,
+    warm_sandbox: bool = False,
 ) -> BenchmarkResult:
     """Run benchmark on Modal.
 
@@ -628,6 +660,9 @@ async def run_benchmark(
         config: Benchmark configuration
         gpu_type: GPU type to use
         gpu_count: Number of GPUs
+        sandbox_id: Reuse existing Modal sandbox by ID
+        keep_sandbox_alive: Keep sandbox alive after benchmark completes
+        warm_sandbox: Skip starting server in benchmark script (assume server already running)
         timeout_hours: Sandbox timeout
 
     Returns:
@@ -648,40 +683,50 @@ async def run_benchmark(
     logger.info(f"Model: {config.model}")
     logger.info(f"GPU: {gpu_count}x {gpu_type}")
     logger.info(f"Workload: {config.workload.type} ({config.workload.num_prompts} prompts)")
+    if warm_sandbox and sandbox_id is None:
+        logger.info(
+            "Warm benchmark mode is enabled; this assumes a server is already running on port 30000."
+        )
 
     async with trio_asyncio.open_loop():
-        # Create sandbox
-        logger.info("Creating Modal sandbox...")
-
-        app = await trio_asyncio.aio_as_trio(
-            modal.App.lookup.aio(MODAL_APP_NAME, create_if_missing=True)
-        )
-
-        # Use pre-built images (defined at module level for proper caching)
-        from .images import ENGINE_V2_IMAGE, SGLANG_IMAGE
-
-        if config.backend == "sglang":
-            image = SGLANG_IMAGE
-        elif config.backend == "engine_v2":
-            image = ENGINE_V2_IMAGE
+        # Reuse existing sandbox or create a new one
+        if sandbox_id:
+            logger.info(f"Reusing sandbox: {sandbox_id}")
+            sandbox = await trio.to_thread.run_sync(lambda: modal.Sandbox.from_id(sandbox_id))
         else:
-            raise ValueError(f"Unknown backend: {config.backend}")
+            logger.info("Creating Modal sandbox...")
 
-        gpu_spec = f"{gpu_type}:{gpu_count}" if gpu_count > 1 else gpu_type
-        ts = int(datetime.now(timezone.utc).timestamp())
-        sandbox_name = f"bench-{config.backend}-{ts}"
-
-        sandbox = await trio_asyncio.aio_as_trio(
-            modal.Sandbox.create.aio(
-                app=app,
-                image=image,
-                gpu=gpu_spec,
-                timeout=timeout_hours * 3600,
-                name=sandbox_name,
+            app = await trio_asyncio.aio_as_trio(
+                modal.App.lookup.aio(MODAL_APP_NAME, create_if_missing=True)
             )
-        )
 
-        logger.info(f"Sandbox created: {sandbox.object_id}")
+            # Use pre-built images (defined at module level for proper caching)
+            from .images import ENGINE_V2_IMAGE, SGLANG_IMAGE
+
+            if config.backend == "sglang":
+                image = SGLANG_IMAGE
+            elif config.backend == "engine_v2":
+                image = ENGINE_V2_IMAGE
+            else:
+                raise ValueError(f"Unknown backend: {config.backend}")
+
+            gpu_spec = f"{gpu_type}:{gpu_count}" if gpu_count > 1 else gpu_type
+            ts = int(datetime.now(timezone.utc).timestamp())
+            sandbox_name = f"bench-{config.backend}-{ts}"
+
+            sandbox = await trio.to_thread.run_sync(
+                lambda: modal.Sandbox.create(
+                    app=app,
+                    image=image,
+                    gpu=gpu_spec,
+                    timeout=timeout_hours * 3600,
+                    name=sandbox_name,
+                )
+            )
+
+        logger.info(f"Sandbox in use: {sandbox.object_id}")
+        if keep_sandbox_alive:
+            logger.info(f"Keeping sandbox alive: --sandbox-id {sandbox.object_id}")
 
         try:
             # Verify GPU
@@ -697,7 +742,13 @@ async def run_benchmark(
 
             # Run benchmark
             logger.info("Starting benchmark...")
-            result = await _run_benchmark_in_sandbox(sandbox, workspace, config, run_name)
+            result = await _run_benchmark_in_sandbox(
+                sandbox=sandbox,
+                workspace=workspace,
+                config=config,
+                run_name=run_name,
+                start_server=not warm_sandbox,
+            )
 
             logger.info("Benchmark complete!")
             logger.info(f"  Throughput: {result.requests_per_second:.1f} req/s")
@@ -707,9 +758,12 @@ async def run_benchmark(
             return result
 
         finally:
-            logger.info("Terminating sandbox...")
+            if keep_sandbox_alive:
+                logger.info("Keeping sandbox alive after benchmark.")
+            else:
+                logger.info("Terminating sandbox...")
 
-            def _terminate() -> None:
-                sandbox.terminate()
+                def _terminate() -> None:
+                    sandbox.terminate()
 
-            await trio.to_thread.run_sync(_terminate)
+                await trio.to_thread.run_sync(_terminate)

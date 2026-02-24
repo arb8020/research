@@ -40,7 +40,12 @@ WORKLOAD = WorkloadConfig(
 )
 
 
-async def main(backend: Literal["sglang", "engine_v2"]) -> None:
+async def main(
+    backend: Literal["sglang", "engine_v2"],
+    keep_sandbox: bool = False,
+    sandbox_id: str | None = None,
+    warm_sandbox: bool = False,
+) -> None:
     model = "Qwen/Qwen3-0.6B"
     gpu_type = "A100"
 
@@ -63,6 +68,9 @@ async def main(backend: Literal["sglang", "engine_v2"]) -> None:
         result = await run_benchmark(
             config=config,
             gpu_type=gpu_type,
+            sandbox_id=sandbox_id,
+            keep_sandbox_alive=keep_sandbox,
+            warm_sandbox=warm_sandbox,
         )
 
         print("\n" + "=" * 60)
@@ -97,5 +105,22 @@ async def main(backend: Literal["sglang", "engine_v2"]) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--backend", choices=["engine_v2", "sglang"], default="engine_v2")
+    parser.add_argument(
+        "--keep-sandbox",
+        action="store_true",
+        help="Keep Modal sandbox alive after benchmark completes",
+    )
+    parser.add_argument("--sandbox-id", help="Reuse existing Modal sandbox by ID")
+    parser.add_argument(
+        "--warm-sandbox",
+        action="store_true",
+        help="Skip launching server in benchmark script (assumes a warm sandbox is already running)",
+    )
     args = parser.parse_args()
-    trio.run(main, args.backend)
+    trio.run(
+        main,
+        args.backend,
+        keep_sandbox=args.keep_sandbox,
+        sandbox_id=args.sandbox_id,
+        warm_sandbox=args.warm_sandbox,
+    )
