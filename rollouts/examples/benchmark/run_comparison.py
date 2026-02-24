@@ -117,10 +117,13 @@ if __name__ == "__main__":
         help="Skip launching server in benchmark script (assumes a warm sandbox is already running)",
     )
     args = parser.parse_args()
-    trio.run(
-        main,
-        args.backend,
-        keep_sandbox=args.keep_sandbox,
-        sandbox_id=args.sandbox_id,
-        warm_sandbox=args.warm_sandbox,
-    )
+
+    async def run_main() -> None:
+        await main(
+            args.backend,
+            keep_sandbox=args.keep_sandbox,
+            sandbox_id=args.sandbox_id,
+            warm_sandbox=args.warm_sandbox,
+        )
+
+    trio.run(run_main)

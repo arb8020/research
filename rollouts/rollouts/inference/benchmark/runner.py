@@ -140,7 +140,7 @@ CONCURRENCY = {config.workload.concurrency}
 MAX_BATCH_SIZE = {config.max_batch_size}
 MEM_FRACTION = {config.mem_fraction}
 SERVER_URL = "http://localhost:30000"
-START_SERVER = {str(start_server).lower()}
+START_SERVER = {start_server}
 
 # Wide event logging - each event is a complete JSON line
 def log_event(event: str, **data):

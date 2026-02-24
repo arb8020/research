@@ -566,6 +566,7 @@ def create_app(engine: InferenceEngineV2) -> Any:
     """Create FastAPI app with inference endpoints."""
     logger.info("create_app: starting")
 
+    import trio_asyncio
     from fastapi import FastAPI, HTTPException, Request
 
     logger.info("create_app: creating InferenceServer")
@@ -637,7 +638,7 @@ def create_app(engine: InferenceEngineV2) -> Any:
                 return_logprob=request.get("return_logprob", False),
                 return_routed_experts=request.get("return_routed_experts", False),
             )
-            response = await server.generate(gen_request)
+            response = await trio_asyncio.trio_as_aio(server.generate)(gen_request)
             return {"text": response.text, "meta_info": response.meta_info}
         except Exception as e:
             logger.exception("Error in /generate")
@@ -649,19 +650,28 @@ def create_app(engine: InferenceEngineV2) -> Any:
 
         Supports both streaming (stream=true) and non-streaming modes.
         """
+
         from fastapi.responses import StreamingResponse
 
         try:
             logger.info(f"chat_endpoint_called: stream={request.get('stream')}")
             if request.get("stream", False):
                 # Streaming mode: return SSE stream
+                # Wrap the trio async generator for asyncio consumption
+
+                async def stream_wrapper() -> AsyncGenerator[str, None]:
+                    async for chunk in trio_asyncio.trio_as_aio(server.chat_completions_stream)(
+                        request
+                    ):
+                        yield chunk
+
                 return StreamingResponse(
-                    server.chat_completions_stream(request),
+                    stream_wrapper(),
                     media_type="text/event-stream",
                 )
             else:
                 # Non-streaming mode: return complete response
-                return await server.chat_completions(request)
+                return await trio_asyncio.trio_as_aio(server.chat_completions)(request)
         except Exception as e:
             logger.exception("Error in /v1/chat/completions")
             raise HTTPException(status_code=500, detail=str(e)) from e
