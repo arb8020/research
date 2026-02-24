@@ -111,6 +111,7 @@ async def _deploy_and_submit(
     provider: str | None = None,
     allow_dirty: bool = False,
     quiet: bool = False,
+    skip_hf_token_check: bool = False,
 ) -> tuple:
     """Provision node, deploy code, submit training job.
 
@@ -121,6 +122,23 @@ async def _deploy_and_submit(
     from pytui import Console
 
     from .jobs import register_job, update_job_node
+
+    # Check HF_TOKEN before provisioning (downloads will be slow/rate-limited without it)
+    if not skip_hf_token_check and not os.getenv("HF_TOKEN"):
+        print(
+            "ERROR: HF_TOKEN environment variable not set.\n"
+            "\n"
+            "Model downloads will be slow and rate-limited without authentication.\n"
+            "Set HF_TOKEN to enable faster downloads:\n"
+            "\n"
+            "    export HF_TOKEN=hf_...\n"
+            "\n"
+            "Get your token from: https://huggingface.co/settings/tokens\n"
+            "\n"
+            "To proceed anyway (not recommended): --no-hf-token",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     run_name = f"run_{timestamp}"
@@ -303,6 +321,11 @@ async def _deploy_and_submit(
             " && ~/.local/bin/uv pip install --upgrade 'git+https://github.com/ISEEKYAN/mbridge.git' --no-deps || true",
         ),
         (
+            "Fixing Triton permissions",
+            # uv extracts wheel binaries without +x, fix Triton's bundled ptxas/nvdisasm
+            "chmod -R +x .venv/lib/python*/site-packages/triton/backends/*/bin/ 2>/dev/null || true",
+        ),
+        (
             "Installing Megatron-LM",
             # Megatron-LM for distributed training (optional, only used with backend="megatron")
             # Clone NVIDIA/Megatron-LM and install as editable package
@@ -463,6 +486,7 @@ async def run_remote(
     provider: str | None = None,
     allow_dirty: bool = False,
     quiet: bool = False,
+    skip_hf_token_check: bool = False,
 ) -> None:
     """Run training script on remote GPU via bifrost."""
     (
@@ -482,6 +506,7 @@ async def run_remote(
         provider=provider,
         allow_dirty=allow_dirty,
         quiet=quiet,
+        skip_hf_token_check=skip_hf_token_check,
     )
 
     assert instance is not None, "run_remote requires a provisioned instance"
@@ -610,6 +635,11 @@ Examples:
         action="store_true",
         help="Enable interactive spinners (default: plain text logging for agents)",
     )
+    parser.add_argument(
+        "--no-hf-token",
+        action="store_true",
+        help="Skip HF_TOKEN check (downloads will be slower and rate-limited)",
+    )
 
     # Local execution
     parser.add_argument("--max-samples", type=int, help="Limit dataset size (local only)")
@@ -736,6 +766,7 @@ Examples:
             hardware.provider if hardware.provider != "local" else None,
             args.force_deploy_committed,
             not args.spinners,  # quiet=True by default, --spinners to enable
+            args.no_hf_token,
         )
 
     else:
