@@ -70,6 +70,13 @@ logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).parent.parent
 
+# Add workspace root to sys.path for sibling packages (miniray, bifrost, etc.)
+# The git bundle includes the full workspace, but Python doesn't know about siblings.
+# This is needed when running remotely via bifrost deploy.
+_workspace_root = REPO_ROOT.parent
+if _workspace_root.exists() and str(_workspace_root) not in sys.path:
+    sys.path.insert(0, str(_workspace_root))
+
 
 def load_config_module(config_path: Path) -> Any:
     """Load a config module from path."""
@@ -489,8 +496,10 @@ async def _deploy_and_submit(
         "ROLLOUTS_RUN_NAME": run_name,
         "ROLLOUTS_OUTPUT_DIR": f"results/rl/{run_name}",
         "ROLLOUTS_JSON_LOGS": "true",
-        # Megatron-LM needs to be on PYTHONPATH for megatron.core imports
-        "PYTHONPATH": "/root/Megatron-LM:${PYTHONPATH}",
+        # PYTHONPATH includes:
+        # - workspace root for miniray and other sibling packages
+        # - /root/Megatron-LM for megatron.core imports
+        "PYTHONPATH": f"{workspace}:/root/Megatron-LM",
         # NCCL settings for multi-GPU training
         "CUDA_DEVICE_MAX_CONNECTIONS": "1",
     }
