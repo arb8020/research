@@ -845,6 +845,10 @@ def run_server(app: Any, host: str = "0.0.0.0", port: int = 8000) -> None:
                 tg.start_soon(server.result_dispatcher, startup_complete)
                 logger.info("Started result dispatcher task")
 
+                # Wait for dispatcher to actually start before running uvicorn
+                await startup_complete.wait()
+                logger.info("Result dispatcher confirmed running")
+
                 # Run uvicorn - this blocks until server stops
                 config = uvicorn.Config(app=app, host=host, port=port)
                 uvicorn_server = uvicorn.Server(config=config)
