@@ -209,6 +209,14 @@ def init_megatron(
         expert_model_parallel_size=config.expert_parallel_size,
     )
 
+    # Initialize CUDA RNG state tracker - required by Megatron's tensor parallel layers
+    # Without this, model initialization fails with:
+    #   "cuda rng state model-parallel-rng is not added"
+    from megatron.core import tensor_parallel
+
+    seed = megatron_args.seed + (100 * mpu.get_pipeline_model_parallel_rank())
+    tensor_parallel.model_parallel_cuda_manual_seed(seed)
+
     # Log the resulting ranks
     logger.info(
         "Megatron initialized: TP rank=%d, PP rank=%d, DP rank=%d",
