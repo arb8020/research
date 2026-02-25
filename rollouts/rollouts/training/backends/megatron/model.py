@@ -292,12 +292,13 @@ def _build_model_provider(config: MegatronModelConfig, bridge: Any) -> Any:
         pre_process: bool = True,
         post_process: bool = True,
         vp_stage: int | None = None,
+        **kwargs: Any,  # Megatron's get_model() passes config=... and other args
     ) -> GPTModel:
         if num_experts:
-            kwargs: dict[str, bool | int] = {"use_transformer_engine": use_te}
+            layer_kwargs: dict[str, bool | int] = {"use_transformer_engine": use_te}
             if vp_stage is not None:
-                kwargs["vp_stage"] = vp_stage
-            transformer_layer_spec = get_gpt_decoder_block_spec(transformer_config, **kwargs)
+                layer_kwargs["vp_stage"] = vp_stage
+            transformer_layer_spec = get_gpt_decoder_block_spec(transformer_config, **layer_kwargs)
         else:
             if use_te:
                 layer_spec_kwargs = {

@@ -117,6 +117,8 @@ class ModalRunConfig:
     deps: DepsConfig | None = None  # Required - validated by HardwareConfig
     timeout_hours: int = 4
     use_torchrun: bool = True  # False for torchtitan (handles multi-GPU internally)
+    sandbox_id: str | None = None
+    keep_alive: bool = False
     model_name: str | None = None  # Model name for weight caching (e.g., "zai-org/GLM-4.7-Flash")
 
     def __post_init__(self) -> None:
@@ -328,6 +330,18 @@ async def _create_sandbox(
     """
     import modal
     import trio_asyncio
+
+    if config.sandbox_id:
+        logger.info(f"Reusing sandbox: {config.sandbox_id}")
+
+        def _attach() -> Any:
+            return modal.Sandbox.from_id(config.sandbox_id)
+
+        sandbox = await trio.to_thread.run_sync(_attach)
+        assert sandbox is not None, f"Failed to reattach to sandbox: {config.sandbox_id}"
+        assert sandbox.object_id, "Sandbox missing object_id"
+        logger.info(f"Reattached to sandbox: {sandbox.object_id}")
+        return sandbox, sandbox.object_id
 
     logger.info(f"Looking up app: {MODAL_APP_NAME}")
     app = await trio_asyncio.aio_as_trio(
@@ -645,17 +659,25 @@ async def run_modal(config: ModalRunConfig) -> dict[str, Any]:
                     config.use_torchrun,
                 )
 
+                print(
+                    "To reuse: python -m rollouts.modal_runner "
+                    f"--sandbox-id {sandbox.object_id} --config {config.config_path}"
+                )
+
                 return results
 
             finally:
                 # Terminate sandbox
-                logger.info(f"Terminating sandbox: {sandbox_id}")
+                if config.keep_alive:
+                    logger.info(f"Keeping sandbox alive: {sandbox_id}")
+                else:
+                    logger.info(f"Terminating sandbox: {sandbox_id}")
 
-                def _terminate() -> None:
-                    sandbox.terminate()
+                    def _terminate() -> None:
+                        sandbox.terminate()
 
-                await trio.to_thread.run_sync(_terminate)
-                logger.info("Sandbox terminated")
+                    await trio.to_thread.run_sync(_terminate)
+                    logger.info("Sandbox terminated")
 
 
 def load_config_module(config_path: Path) -> Any:
@@ -694,6 +716,16 @@ def main() -> None:
         type=int,
         default=4,
         help="Sandbox timeout in hours (default: 4)",
+    )
+    parser.add_argument(
+        "--sandbox-id",
+        type=str,
+        help="Reuse existing sandbox instead of creating new",
+    )
+    parser.add_argument(
+        "--keep-alive",
+        action="store_true",
+        help="Keep sandbox running after completion",
     )
 
     args = parser.parse_args()
@@ -758,6 +790,8 @@ def main() -> None:
         deps=deps,
         timeout_hours=args.timeout_hours,
         use_torchrun=hardware.use_torchrun,
+        sandbox_id=args.sandbox_id,
+        keep_alive=args.keep_alive,
         model_name=model_name,
     )
 
