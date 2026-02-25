@@ -630,6 +630,45 @@ def validate_config(config: Any, gpu_type: str) -> PreflightResult:
         backend == "megatron" and use_distributed_optimizer
     )
 
+    # =========================================================================
+    # Fail-fast validation: catch invalid configs before provisioning GPUs
+    # =========================================================================
+
+    # Validate expert parallelism divides num_experts evenly
+    moe_info = _get_moe_info(config.model.name)
+    if moe_info:
+        num_experts, _ = moe_info
+        for ep_name, ep_size in [
+            ("inference.expert_parallel_size", inference_ep),
+            ("trainer.expert_parallel_size", trainer_ep),
+        ]:
+            if ep_size > 1 and num_experts % ep_size != 0:
+                valid_eps = [i for i in range(1, num_experts + 1) if num_experts % i == 0]
+                raise ValueError(
+                    f"{ep_name}={ep_size} does not divide n_routed_experts={num_experts} evenly. "
+                    f"Valid options: {valid_eps}"
+                )
+
+    # Validate training GPU count is compatible with parallelism
+    trainer_cuda_device_ids = getattr(config.trainer, "cuda_device_ids", (0,))
+    trainer_gpu_count = len(trainer_cuda_device_ids)
+    if backend == "megatron":
+        # Megatron requires exactly TP * PP * EP GPUs
+        required_gpus = trainer_tp * trainer_pp * trainer_ep
+        if trainer_gpu_count != required_gpus:
+            raise ValueError(
+                f"Megatron backend requires exactly TP*PP*EP={trainer_tp}*{trainer_pp}*{trainer_ep}="
+                f"{required_gpus} GPUs, but cuda_device_ids has {trainer_gpu_count} GPUs. "
+                f"Adjust parallelism settings or GPU count."
+            )
+    elif trainer_ep > 1:
+        # Non-Megatron with EP requires at least EP GPUs
+        if trainer_gpu_count < trainer_ep:
+            raise ValueError(
+                f"expert_parallel_size={trainer_ep} requires at least {trainer_ep} GPUs, "
+                f"but cuda_device_ids has only {trainer_gpu_count} GPUs."
+            )
+
     # Estimate inference VRAM (per GPU after parallelism split)
     inference_est = estimate_inference_vram(
         model_name=config.model.name,
@@ -661,27 +700,27 @@ def validate_config(config: Any, gpu_type: str) -> PreflightResult:
         activation_checkpointing=activation_checkpointing,
     )
 
-    # Check inference GPU
+    # Check inference GPU - fail hard if memory doesn't fit
     inference_headroom = gpu_vram_gb - inference_est.total_gb
     if inference_headroom < 0:
-        errors.append(
+        raise ValueError(
             f"Inference requires {inference_est.total_gb:.1f}GB but GPU has {gpu_vram_gb:.1f}GB. "
             f"Reduce mem_fraction from {config.inference.mem_fraction} or use smaller model."
         )
-    elif inference_headroom < 2.0:
+    if inference_headroom < 2.0:
         warnings.append(
             f"Inference has only {inference_headroom:.1f}GB headroom. "
             f"Consider reducing mem_fraction for stability."
         )
 
-    # Check training GPU
+    # Check training GPU - fail hard if memory doesn't fit
     training_headroom = gpu_vram_gb - training_est.total_gb
     if training_headroom < 0:
-        errors.append(
+        raise ValueError(
             f"Training requires {training_est.total_gb:.1f}GB but GPU has {gpu_vram_gb:.1f}GB. "
             f"Reduce batch_size, num_minibatches, or max_seq_len."
         )
-    elif training_headroom < 2.0:
+    if training_headroom < 2.0:
         warnings.append(
             f"Training has only {training_headroom:.1f}GB headroom. "
             f"Consider reducing batch_size for stability."
