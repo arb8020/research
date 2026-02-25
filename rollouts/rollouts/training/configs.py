@@ -109,6 +109,9 @@ class HardwareConfig:
     gpu_memory_gb: int | None = None
     compute_capability: str | None = None
 
+    # Whether to use torchrun for multi-GPU (set False for torchtitan which handles FSDP internally)
+    use_torchrun: bool = True
+
     def __post_init__(self) -> None:
         # Validate: Modal requires deps
         if self.provider == "modal" and self.deps is None:

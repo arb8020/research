@@ -61,6 +61,7 @@ class ModalRunConfig:
     gpu_count: int = 1
     deps: DepsConfig | None = None  # Required - validated by HardwareConfig
     timeout_hours: int = 4
+    use_torchrun: bool = True  # False for torchtitan (handles multi-GPU internally)
 
     def __post_init__(self) -> None:
         if self.deps is None:
@@ -281,6 +282,7 @@ async def _run_training_in_sandbox(
     config_path: str,
     run_name: str,
     gpu_count: int = 1,
+    use_torchrun: bool = True,
 ) -> dict[str, Any]:
     """Run training script inside Modal sandbox.
 
@@ -318,8 +320,8 @@ async def _run_training_in_sandbox(
         f"ROLLOUTS_OUTPUT_DIR=results/rl/{run_name} "
     )
 
-    # Use torchrun for multi-GPU DDP training
-    if gpu_count > 1:
+    # Use torchrun for multi-GPU DDP training (unless disabled for backends like torchtitan)
+    if gpu_count > 1 and use_torchrun:
         cmd = (
             f"cd {workspace} && {env_vars} "
             f"torchrun --standalone --nproc_per_node={gpu_count} {config_rel}"
@@ -389,7 +391,12 @@ async def run_modal(config: ModalRunConfig) -> dict[str, Any]:
                 # Run training
                 logger.info("Starting training...")
                 results = await _run_training_in_sandbox(
-                    sandbox, workspace, config.config_path, run_name, config.gpu_count
+                    sandbox,
+                    workspace,
+                    config.config_path,
+                    run_name,
+                    config.gpu_count,
+                    config.use_torchrun,
                 )
 
                 return results
@@ -493,6 +500,7 @@ def main() -> None:
         gpu_count=gpu_count,
         deps=deps,
         timeout_hours=args.timeout_hours,
+        use_torchrun=hardware.use_torchrun,
     )
 
     # Run

@@ -83,6 +83,7 @@ hardware = HardwareConfig(
     gpu_count=8,
     provider="modal",
     deps=GLM_DEPS,
+    use_torchrun=False,  # TorchTitan handles multi-GPU FSDP internally
 )
 
 # =============================================================================
