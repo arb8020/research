@@ -1002,20 +1002,27 @@ async def _grpo_train_async(
 
     # Preflight check: validate config against hardware limits
     # This fails fast if config is likely to OOM
+    # Only run on rank 0 to avoid duplicate checks in torchrun/DDP
+    # Skip for torchtitan - the FSDP sharding estimation is tricky and we trust the manual calc
     from ..training.preflight import run_preflight_check
 
-    try:
-        # Detect GPU type from CUDA device
-        import torch
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    backend_name = getattr(config.trainer, "backend", "pytorch")
+    if local_rank == 0 and backend_name != "torchtitan":
+        try:
+            # Detect GPU type from CUDA device
+            import torch
 
-        if torch.cuda.is_available():
-            gpu_name = torch.cuda.get_device_name(0)
-            run_preflight_check(config, gpu_name)
-        else:
-            logger.warning("CUDA not available, skipping preflight check")
-    except ValueError as e:
-        logger.exception(f"Preflight check failed: {e}")
-        raise
+            if torch.cuda.is_available():
+                gpu_name = torch.cuda.get_device_name(0)
+                run_preflight_check(config, gpu_name)
+            else:
+                logger.warning("CUDA not available, skipping preflight check")
+        except ValueError as e:
+            logger.exception(f"Preflight check failed: {e}")
+            raise
+    elif backend_name == "torchtitan":
+        logger.info("Skipping preflight check for torchtitan (FSDP sharding handled by backend)")
 
     config.save(output_dir / "config.json")
     metrics_logger = JSONLLogger(output_dir)

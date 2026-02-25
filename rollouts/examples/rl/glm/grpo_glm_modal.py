@@ -1,16 +1,16 @@
-"""GLM-4.7-Flash GRPO training on Modal.
+"""GLM-4.7-Flash GRPO training on Modal with 8x A100-80GB.
 
 Modal sandbox-based training with:
+- 8x A100-80GB: 1 for inference, 7 for training (FSDP)
+- ~62GB per training GPU with FSDP/7
 - Fast iteration (~30s cold start with cached image)
-- Persistent HF cache via Modal Volume (no re-downloading models)
-- PyTorch nightly for B200/Blackwell support
 
 Run with:
     python -m rollouts.modal_runner --config examples/rl/glm/grpo_glm_modal.py
 
 Note:
     GLM-4.7-Flash is a 30B MoE model with 3.6B active parameters.
-    First run downloads model (~60GB), subsequent runs use cached volume.
+    Requires 8x A100-80GB because FSDP needs 7+ GPUs to fit optimizer states.
 """
 
 from examples.rl.glm.base_config import train as _base_train
@@ -79,8 +79,8 @@ GLM_DEPS = DepsConfig(
 )
 
 hardware = HardwareConfig(
-    gpu_type="A100",  # Start with A100 for testing, switch to B200 later
-    gpu_count=2,  # 1 for inference, 1 for training
+    gpu_type="A100-80GB",  # 8x A100-80GB: 1 for inference, 7 for training
+    gpu_count=8,
     provider="modal",
     deps=GLM_DEPS,
 )
@@ -107,8 +107,8 @@ config = GRPOConfig(
         max_grad_norm=1.0,
         num_minibatches=8,
         loss_type="vanilla",
-        # GPU assignment: inference on GPU 0, training on GPU 1
-        cuda_device_ids=(1,),
+        # GPU assignment: inference on GPU 0, training on GPUs 1-7 (7 GPUs for FSDP)
+        cuda_device_ids=(1, 2, 3, 4, 5, 6, 7),
     ),
     inference=InferenceConfig(
         backend="sglang",
