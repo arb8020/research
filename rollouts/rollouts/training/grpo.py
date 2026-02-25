@@ -1047,7 +1047,7 @@ async def _grpo_train_async(
 
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     backend_name = getattr(config.trainer, "backend", "pytorch")
-    if local_rank == 0 and backend_name not in ("torchtitan", "megatron"):
+    if local_rank == 0 and backend_name != "torchtitan":
         try:
             # Detect GPU type from CUDA device in subprocess to avoid polluting
             # main process CUDA context (which would break fork-based workers)
@@ -1061,8 +1061,6 @@ async def _grpo_train_async(
             raise
     elif backend_name == "torchtitan":
         logger.info("Skipping preflight check for torchtitan (FSDP sharding handled by backend)")
-    elif backend_name == "megatron":
-        logger.info("Skipping preflight check for megatron backend")
 
     config.save(output_dir / "config.json")
     metrics_logger = JSONLLogger(output_dir)

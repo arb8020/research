@@ -96,19 +96,22 @@ config = GRPOConfig(
         lr=1e-6,
         weight_decay=0.01,
         max_grad_norm=1.0,
-        num_minibatches=8,
+        num_minibatches=4,  # Reduced for 4 GPUs
         loss_type="vanilla",
-        # GPU assignment: inference on GPU 0, training on GPUs 1-7
-        cuda_device_ids=(1, 2, 3, 4, 5, 6, 7),
-        # Megatron parallelism settings
+        # Split mode: 4 GPUs for training (GPUs 4-7), 4 for inference (GPUs 0-3)
+        cuda_device_ids=(4, 5, 6, 7),
+        # Megatron parallelism for MoE with 4 GPUs
+        # EP=4 distributes 64 experts across 4 GPUs (16 experts per GPU)
         tensor_parallel_size=1,
         pipeline_parallel_size=1,
+        expert_parallel_size=4,
         sequence_parallel=False,
         activation_checkpointing=True,
     ),
     inference=InferenceConfig(
         backend="sglang",
-        cuda_device_ids=(0,),
+        # 4 GPUs for inference with TP=4 (or DP=4)
+        cuda_device_ids=(0, 1, 2, 3),
         mem_fraction=0.9,
         startup_timeout=600.0,
     ),

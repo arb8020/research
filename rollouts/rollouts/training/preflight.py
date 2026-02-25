@@ -619,9 +619,16 @@ def validate_config(config: Any, gpu_type: str) -> PreflightResult:
     use_lora = getattr(config.model, "use_lora", False)
     activation_checkpointing = getattr(config.trainer, "activation_checkpointing", False)
 
-    # Check if using FSDP-style backend or Megatron (which has its own sharding)
+    # Check if using FSDP-style backend (ZeRO-3 gradient sharding)
+    # Megatron defaults to use_distributed_optimizer=True (ZeRO-style optimizer sharding)
     backend = getattr(config.trainer, "backend", "pytorch")
-    use_fsdp = backend in ("fsdp", "fsdp2", "torchtitan", "megatron")
+    # Megatron defaults to True in initialize.py, match that here
+    use_distributed_optimizer = getattr(
+        config.trainer, "use_distributed_optimizer", backend == "megatron"
+    )
+    use_fsdp = backend in ("fsdp", "fsdp2", "torchtitan") or (
+        backend == "megatron" and use_distributed_optimizer
+    )
 
     # Estimate inference VRAM (per GPU after parallelism split)
     inference_est = estimate_inference_vram(
