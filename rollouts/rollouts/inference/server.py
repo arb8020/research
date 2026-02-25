@@ -544,34 +544,34 @@ class InferenceServer:
                     continue
 
                 logger.info(f"Dispatching {len(results)} results")
+
+                async with self._lock:
+                    for result in results:
+                        uid = result.uid
+
+                        if result.req is not None:
+                            # Request finished
+                            if uid in self._pending:
+                                event, _ = self._pending.pop(uid)
+                                self._pending_result[uid] = result.req
+                                if not event.is_set():
+                                    event.set()
+
+                            elif uid in self._streaming:
+                                # Signal completion to streaming handler
+                                token_queue, prompt_len, seen_len = self._streaming[uid]
+                                # Push final done signal
+                                await token_queue.send((None, True, result.finish_reason))
+                                logger.debug(f"Streaming complete for uid={uid}")
+
+                        elif result.new_token is not None:
+                            # Streaming token update
+                            if uid in self._streaming:
+                                token_queue, prompt_len, seen_len = self._streaming[uid]
+                                await token_queue.send((result.new_token, False, None))
         except Exception as e:
             logger.exception(f"result_dispatcher crashed after {loop_count} loops: {e}")
             raise
-
-            async with self._lock:
-                for result in results:
-                    uid = result.uid
-
-                    if result.req is not None:
-                        # Request finished
-                        if uid in self._pending:
-                            event, _ = self._pending.pop(uid)
-                            self._pending_result[uid] = result.req
-                            if not event.is_set():
-                                event.set()
-
-                        elif uid in self._streaming:
-                            # Signal completion to streaming handler
-                            token_queue, prompt_len, seen_len = self._streaming[uid]
-                            # Push final done signal
-                            await token_queue.send((None, True, result.finish_reason))
-                            logger.debug(f"Streaming complete for uid={uid}")
-
-                    elif result.new_token is not None:
-                        # Streaming token update
-                        if uid in self._streaming:
-                            token_queue, prompt_len, seen_len = self._streaming[uid]
-                            await token_queue.send((result.new_token, False, None))
 
 
 def create_app(engine: InferenceEngineV2) -> Any:
